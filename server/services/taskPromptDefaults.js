@@ -4,8 +4,9 @@
  * Owns the default prompt catalog and the distribution-model compatibility
  * constants for scheduled improvement tasks. This module is a pure data leaf:
  * it imports nothing from the rest of the task-scheduling graph, so both
- * taskPromptService.js (the getters) and taskSchedule.js (the auto-upgrade
- * machinery) can import it statically without forming a circular import.
+ * taskPromptService.js (the getters), taskSchedule.js (status rendering), and
+ * taskScheduleStore.js (the auto-upgrade machinery) can import it statically
+ * without forming a circular import.
  *
  * The content lives in ./taskPromptDefaults/ — prompts.js (current defaults),
  * versions.js (PROMPT_VERSIONS + audit anchor), previousDefaults.js (prior

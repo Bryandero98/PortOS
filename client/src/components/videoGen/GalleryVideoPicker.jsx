@@ -10,7 +10,7 @@
 // REFERENCED by a synced record (e.g. a mood-board item), because
 // /api/uploads' scratch dir does not federate.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X, RefreshCw, Upload } from 'lucide-react';
 import Modal from '../ui/Modal';
 import FilePickerButton from '../ui/FilePickerButton';
@@ -34,6 +34,10 @@ export default function GalleryVideoPicker({ open, onClose, onSelect, allowUploa
   // change its selected record while an upload is reading or posting; a late
   // completion must leave the saved gallery asset unselected.
   const sessionRef = useRef(0);
+  const handleSelectCard = useCallback((item) => {
+    onSelect?.(item);
+    onClose?.();
+  }, [onClose, onSelect]);
   useEffect(() => {
     sessionRef.current += 1;
     return () => { sessionRef.current += 1; };
@@ -181,7 +185,7 @@ export default function GalleryVideoPicker({ open, onClose, onSelect, allowUploa
                 item={item}
                 hideActions
                 showCollectionMenu={false}
-                onClick={() => { onSelect?.(item); onClose?.(); }}
+                onClick={handleSelectCard}
               />
             ))}
           </div>

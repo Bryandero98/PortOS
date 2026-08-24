@@ -14,7 +14,7 @@ import { isWithinAllowedRoots, outsideAllowedRootsMessage } from '../lib/workspa
 import { scaffoldVite } from './scaffoldVite.js';
 import { scaffoldExpress } from './scaffoldExpress.js';
 import { scaffoldIOS } from './scaffoldIOS.js';
-import { scaffoldXcode } from './scaffoldXcode.js';
+import { scaffoldXcode } from '../services/xcodeScaffold.js';
 import { toTargetName } from '../services/xcodeScripts.js';
 import { scaffoldPortOS } from './scaffoldPortOS.js';
 

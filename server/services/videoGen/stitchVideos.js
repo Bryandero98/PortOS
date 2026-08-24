@@ -205,6 +205,17 @@ export async function stitchVideos(videoIds, opts = {}) {
       'i2vReferenceMode',
       'conditioning',
       'renderInputsVersion',
+      // Speed profile (#4875) — the REQUESTED schedule and what the runner
+      // actually applied. Inherited for a stronger reason than the dials above:
+      // a chain's chunk entries are written `hidden: true`, so this stitched
+      // record is the ONLY one the user ever sees. Without it the lightbox's
+      // "Speed profile" row never renders for a chained render — including a
+      // chain whose TeaCache or adapter was unavailable, which is exactly the
+      // silent speed claim the feature exists to prevent — and a Remix quietly
+      // reverts to Quality. A chain applies its profile to every chunk or to
+      // none (resolveVideoSpeedProfileForModes), so videos[0] speaks for all.
+      'speedProfileId',
+      'speedProfileApplied',
     ].flatMap((key) => videos[0][key] === undefined ? [] : [[key, videos[0][key]]])),
     // Inherit applied LoRAs from the first constituent clip (a chunk chain
     // shares one LoRA set across all chunks), so the visible stitched entry

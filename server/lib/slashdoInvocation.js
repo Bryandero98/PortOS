@@ -424,14 +424,21 @@ export function oversizedBodyPointer(bodyPath, body) {
  *   suffix, so the prose would just have the agent pass the flag twice. Unpinned,
  *   the workflow resolves reviewers itself and this is the pin's only route to the
  *   CLI it spawns.
+ * @param {boolean} [opts.includeTaskContext=false] - keep the task-context bridge
+ *   even when the invocation has explicit flags instead of a free-text target
  * @returns {string} markdown section, or '' when `resolved` is null
  */
-export function buildSlashdoSection(resolved, body = null, { bodyPath = null, reviewWith = '', reviewerEffortNote = '' } = {}) {
+export function buildSlashdoSection(resolved, body = null, {
+  bodyPath = null,
+  reviewWith = '',
+  reviewerEffortNote = '',
+  includeTaskContext = false,
+} = {}) {
   if (!resolved) return '';
 
   // Without explicit args the workflow operates on the task described above —
   // say so rather than re-printing the whole description inside the invocation.
-  const target = resolved.args ? '' : ' Apply it to the task described above.';
+  const target = resolved.args && !includeTaskContext ? '' : ' Apply it to the task described above.';
 
   const lines = ['### Slashdo Workflow'];
   if (resolved.style === SLASHDO_INVOCATION_STYLES.SKILL) {

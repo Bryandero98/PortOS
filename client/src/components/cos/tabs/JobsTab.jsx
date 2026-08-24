@@ -712,8 +712,11 @@ export default function JobsTab() {
       return null;
     });
     if (result) {
-      if (result.success === false) {
-        toast.error(`Job failed (exit ${result.exitCode ?? '?'})`, { id: 'job-trigger' });
+      if (result.status === 'skipped') {
+        const notify = result.duplicate ? toast.success : toast.error;
+        notify(result.reason || 'Job was not queued', { id: 'job-trigger' });
+      } else if (result.success === false) {
+        toast.error(result.reason || `Job failed (exit ${result.exitCode ?? '?'})`, { id: 'job-trigger' });
       } else {
         const msg = result.type === 'shell' || result.type === 'script' ? 'Job executed successfully' : 'Job triggered — task queued';
         toast.success(msg, { id: 'job-trigger' });

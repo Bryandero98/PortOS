@@ -404,7 +404,7 @@ function PinButton({ label, pinned, onTogglePin }) {
       type="button"
       aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }}
-      className={`px-2 rounded-lg hover:bg-port-border/50 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-40 sm:opacity-0 sm:group-hover:opacity-100 group-focus-within:opacity-100'}`}
+      className={`inline-flex min-w-[44px] min-h-[44px] items-center justify-center rounded-lg hover:bg-port-border/50 lg:min-w-0 lg:min-h-0 lg:px-2 lg:py-1.5 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-40 [@media(hover:hover)]:sm:opacity-0 [@media(hover:hover)]:sm:group-hover:opacity-100 group-focus-within:opacity-100'}`}
     >
       {pinned ? <PinOff size={14} /> : <Pin size={14} />}
     </button>
@@ -419,7 +419,7 @@ function PinButton({ label, pinned, onTogglePin }) {
 function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
   const Icon = entry.icon;
   return (
-    <div className="group relative mx-2 min-w-0">
+    <div className="group relative mx-2 min-w-0 min-h-[44px] lg:min-h-0">
       <NavLink
         to={entry.path}
         end={entry.end}
@@ -452,7 +452,7 @@ export function SingleNavRow({ item, collapsed, active, badgeCount, pinned, onTo
   const showBadge = item.showBadge && badgeCount > 0;
   const badgeText = badgeCount > 9 ? '9+' : badgeCount;
   return (
-    <div className={`group relative min-w-0 mx-2 ${collapsed ? 'lg:flex lg:justify-center' : ''}`}>
+    <div className={`group relative min-w-0 mx-2 min-h-[44px] lg:min-h-0 ${collapsed ? 'lg:flex lg:justify-center' : ''}`}>
       <NavLink
         to={item.to}
         end={item.to === '/'}

@@ -162,6 +162,8 @@ export default function VideoGen() {
     contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     i2vReferenceMode, setI2vReferenceMode, referenceModeSupported, effectiveImageStrength,
+
+    speedProfileId, setSpeedProfileId,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
     textEncoderId, setTextEncoderId, textEncoderOptions,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
@@ -288,64 +290,70 @@ export default function VideoGen() {
     const isStarred = (v) => !!annotations[normalizeVideo(v).key]?.starred;
     return { galleryVisible: visibleHistory.filter(isStarred), galleryHidden: hiddenHistory.filter(isStarred) };
   }, [visibleHistory, hiddenHistory, favoritesOnly, annotations]);
+  const galleryVisibleItems = useMemo(() => galleryVisible.map(normalizeVideo), [galleryVisible]);
+  const galleryHiddenItems = useMemo(() => galleryHidden.map(normalizeVideo), [galleryHidden]);
   const previewItems = useMemo(() => [
-    ...galleryVisible.map(normalizeVideo),
-    ...(showHidden ? galleryHidden.map(normalizeVideo) : []),
-  ], [galleryVisible, galleryHidden, showHidden]);
+    ...galleryVisibleItems,
+    ...(showHidden ? galleryHiddenItems : []),
+  ], [galleryVisibleItems, galleryHiddenItems, showHidden]);
   const [preview, setPreview] = usePreviewRoute(previewItems);
 
-  const handleDeleteHistory = async (item) => {
-    await deleteVideoHistoryItem(item.id, { silent: true }).catch((err) => toast.error(err.message || 'Delete failed'));
-    setHistory((h) => h.filter((v) => v.id !== item.id));
-  };
-  const handleToggleHistoryHidden = async (item) => {
-    const nextHidden = !item.hidden;
-    setHistory((h) => h.map((v) => (v.id === item.id ? { ...v, hidden: nextHidden } : v)));
-    const result = await setVideoHidden(item.id, nextHidden, { silent: true }).catch((err) => {
+  const handleDeleteHistory = useCallback(async (item) => {
+    const raw = item?.raw || item;
+    await deleteVideoHistoryItem(raw.id, { silent: true }).catch((err) => toast.error(err.message || 'Delete failed'));
+    setHistory((h) => h.filter((v) => v.id !== raw.id));
+  }, []);
+  const handleToggleHistoryHidden = useCallback(async (item) => {
+    const raw = item?.raw || item;
+    const nextHidden = !raw.hidden;
+    setHistory((h) => h.map((v) => (v.id === raw.id ? { ...v, hidden: nextHidden } : v)));
+    const result = await setVideoHidden(raw.id, nextHidden, { silent: true }).catch((err) => {
       toast.error(err.message || 'Failed to update visibility');
-      setHistory((h) => h.map((v) => (v.id === item.id ? { ...v, hidden: !nextHidden } : v)));
+      setHistory((h) => h.map((v) => (v.id === raw.id ? { ...v, hidden: !nextHidden } : v)));
       return null;
     });
     if (result) toast.success(nextHidden ? 'Video hidden' : 'Video unhidden');
-  };
-  // Track which history item is being upscaled so the same MediaCard's
-  // "Upscale" button disables and shows a "working" state. Storing the id
-  // (not a boolean) lets us also surface the spinner on the right tile when
-  // the user fires multiple upscales in succession; only one runs at a time
-  // because ffmpeg is single-flight on the server.
-  const [upscalingId, setUpscalingId] = useState(null);
-  const handleUpscaleHistory = async (item) => {
-    if (upscalingId) return;
-    setUpscalingId(item.id);
+  }, []);
+  // Keep the single-flight guard outside render state so the handler remains
+  // stable for memoized cards while ffmpeg processes one upscale at a time.
+  const upscalingRef = useRef(false);
+  const handleUpscaleHistory = useCallback(async (item) => {
+    const raw = item?.raw || item;
+    if (upscalingRef.current) return;
+    upscalingRef.current = true;
     toast.loading('Upscaling 2× — typically 10-30s…');
-    const result = await upscaleVideo(item.id, { silent: true }).catch((err) => {
+    const result = await upscaleVideo(raw.id, { silent: true }).catch((err) => {
       toast.error(err.message || 'Upscale failed');
       return null;
     });
-    setUpscalingId(null);
+    upscalingRef.current = false;
     if (result?.video) {
       setHistory((h) => [result.video, ...h]);
       toast.success('Upscaled 2×');
     }
-  };
+  }, []);
 
   // Remix a prior render: hand all its params back into the form (the hook
   // owns the field-by-field restore) and scroll the form back into view.
-  const handleRemixVideo = (item) => {
-    if (!item) return;
-    applyRemix(item);
+  const handleRemixVideo = useCallback((item) => {
+    const raw = item?.raw || item;
+    if (!raw) return;
+    applyRemix(raw);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [applyRemix]);
 
   // Finish a draft (#3696): same restore as Remix, but switched to the delivery
   // model the draft's registry entry declares. Prefill only — the user presses
   // Generate themselves.
   const resolveFinishTarget = useCallback((raw) => finishTargetForRecord(raw, models), [models]);
-  const handleFinishVideo = (raw, target) => {
+  const handleFinishVideo = useCallback((raw, target) => {
     if (!raw || !target) return;
     applyFinish(raw, target.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [applyFinish]);
+  const handleContinueVideo = useCallback((item) => handleContinue(item), [handleContinue]);
+  const handleToggleFavorites = useCallback(() => setFavoritesOnly((value) => !value), []);
+  const handleToggleShowHidden = useCallback(() => setShowHidden((value) => !value), []);
 
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -1350,6 +1358,7 @@ export default function VideoGen() {
               seed={seed} onSeedChange={setSeed} onRandomSeed={handleRandomSeed}
               steps={steps} onStepsChange={setSteps}
               guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+              speedProfileId={speedProfileId} onSpeedProfileChange={setSpeedProfileId}
               imageStrength={imageStrength} onImageStrengthChange={setImageStrength}
               i2vReferenceMode={i2vReferenceMode} onI2vReferenceModeChange={setI2vReferenceMode}
               effectiveImageStrength={effectiveImageStrength}
@@ -1442,15 +1451,15 @@ export default function VideoGen() {
       <MediaJobsQueue kind="video" />
 
       <VideoGenGallery
-        galleryVisible={galleryVisible}
-        galleryHidden={galleryHidden}
+        galleryVisible={galleryVisibleItems}
+        galleryHidden={galleryHiddenItems}
         favoritesOnly={favoritesOnly}
         showHidden={showHidden}
-        onToggleFavorites={() => setFavoritesOnly((v) => !v)}
-        onToggleShowHidden={() => setShowHidden((s) => !s)}
+        onToggleFavorites={handleToggleFavorites}
+        onToggleShowHidden={handleToggleShowHidden}
         onPreview={setPreview}
         onRemix={handleRemixVideo}
-        onContinue={(v) => handleContinue(normalizeVideo(v))}
+        onContinue={handleContinueVideo}
         onUpscale={handleUpscaleHistory}
         onDelete={handleDeleteHistory}
         onToggleHidden={handleToggleHistoryHidden}

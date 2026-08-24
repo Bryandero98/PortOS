@@ -122,6 +122,14 @@ export async function startAutoConfig(io) {
   return { status: 'started', message: 'Log in and select your project, then click Continue.' };
 }
 
+export async function runSteps(steps) {
+  for (const { name, run } of steps) {
+    console.log(`📅 Auto-config step started: ${name}`);
+    await run();
+    console.log(`📅 Auto-config step completed: ${name}`);
+  }
+}
+
 export async function runAutomatedSetup(userEmail, io) {
   console.log('📅 Running automated Google OAuth setup via CDP');
   const emit = (step, message) => {
@@ -129,15 +137,10 @@ export async function runAutomatedSetup(userEmail, io) {
     console.log(`📅 Auto-config: ${message}`);
   };
 
-  let page = await getGcpPage();
-  if (!page) throw new ServerError('Google Cloud Console not open. Click "Setup with Browser" first.', { status: 400 });
+  let page;
+  let projectParam;
+  let result;
 
-  // Detect the project from the current URL
-  const projectMatch = page.url?.match(/project=([^&]+)/);
-  const project = projectMatch ? projectMatch[1] : '';
-  const projectParam = project ? `?project=${project}` : '';
-
-  // === Step 1: Enable Google APIs ===
   async function enableApi(name, librarySlug) {
     emit('enable-api', `Enabling ${name}...`);
     page = await navAndWait(`https://console.cloud.google.com/apis/library/${librarySlug}${projectParam}`, 5000);
@@ -153,317 +156,355 @@ export async function runAutomatedSetup(userEmail, io) {
     }
   }
 
-  await enableApi('Google Calendar API', 'calendar-json.googleapis.com');
-  await enableApi('Gmail API', 'gmail.googleapis.com');
+  const steps = [
+    {
+      name: 'open-console',
+      run: async () => {
+        page = await getGcpPage();
+        if (!page) throw new ServerError('Google Cloud Console not open. Click "Setup with Browser" first.', { status: 400 });
 
-  // === Step 2: Configure OAuth consent / Google Auth Platform ===
-  emit('consent', 'Configuring OAuth consent screen...');
-  page = await navAndWait(`https://console.cloud.google.com/auth/overview${projectParam}`, 5000);
-  if (page) {
-    const needsSetup = await evaluateOnPage(page, `
-      document.body.innerText.includes('not configured yet') || document.body.innerText.includes('Get started')
-    `);
+        const projectMatch = page.url?.match(/project=([^&]+)/);
+        const project = projectMatch ? projectMatch[1] : '';
+        projectParam = project ? `?project=${project}` : '';
+      },
+    },
+    {
+      name: 'enable-calendar-api',
+      run: () => enableApi('Google Calendar API', 'calendar-json.googleapis.com'),
+    },
+    {
+      name: 'enable-gmail-api',
+      run: () => enableApi('Gmail API', 'gmail.googleapis.com'),
+    },
+    {
+      name: 'configure-consent',
+      run: async () => {
 
-    if (needsSetup) {
-      // Click "Get started" link
-      await clickByText(page, ['Get started']);
-      await sleep(4000);
-      page = await waitForPageLoad();
+    emit('consent', 'Configuring OAuth consent screen...');
+    page = await navAndWait(`https://console.cloud.google.com/auth/overview${projectParam}`, 5000);
+    if (page) {
+      const needsSetup = await evaluateOnPage(page, `
+        document.body.innerText.includes('not configured yet') || document.body.innerText.includes('Get started')
+      `);
 
-      if (page) {
-        // Step 1/4: App Information — fill app name, select email
-        emit('consent', 'Filling app information...');
-        await fillByName(page, 'app name', 'PortOS');
-        await sleep(500);
+      if (needsSetup) {
+        // Click "Get started" link
+        await clickByText(page, ['Get started']);
+        await sleep(4000);
+        page = await waitForPageLoad();
 
-        // Open the support email combobox and select the first option
+        if (page) {
+          // Step 1/4: App Information — fill app name, select email
+          emit('consent', 'Filling app information...');
+          await fillByName(page, 'app name', 'PortOS');
+          await sleep(500);
+
+          // Open the support email combobox and select the first option
+          await evaluateOnPage(page, `
+            (function() {
+              const combo = document.querySelector('[role="combobox"][aria-label*="support"]') ||
+                            document.querySelector('cfc-select[formcontrolname="userSupportEmail"]');
+              if (combo) combo.click();
+            })()
+          `);
+          await sleep(1000);
+          // Click the first email option
+          await evaluateOnPage(page, `
+            (function() {
+              const options = document.querySelectorAll('[role="option"]');
+              for (const opt of options) {
+                if (opt.textContent.includes('@') && !opt.hasAttribute('disabled')) {
+                  opt.click();
+                  return true;
+                }
+              }
+              return false;
+            })()
+          `);
+          await sleep(500);
+
+          // Click Next
+          await clickByText(page, ['Next']);
+          await sleep(2000);
+
+          // Step 2/4: Audience — select External
+          emit('consent', 'Setting audience to External...');
+          await clickByText(page, ['External']);
+          await sleep(500);
+          await clickByText(page, ['Next']);
+          await sleep(2000);
+
+          // Step 3/4: Contact Information — fill email
+          emit('consent', 'Filling contact email...');
+          const email = userEmail || 'portos@localhost';
+          const safeEmail = JSON.stringify(email);
+          await evaluateOnPage(page, `
+            (function() {
+              const emailVal = ${safeEmail};
+              const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+              const emailInput = [...inputs].find(i => {
+                const ph = i.placeholder || '';
+                const label = i.closest('[class*="form"]')?.querySelector('label')?.textContent || '';
+                return !i.value && (ph.includes('email') || label.toLowerCase().includes('email'));
+              }) || [...inputs].find(i => !i.value);
+              if (emailInput) {
+                emailInput.focus();
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                if (setter) setter.call(emailInput, emailVal);
+                else emailInput.value = emailVal;
+                emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+                emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+              return false;
+            })()
+          `);
+          await sleep(500);
+          await clickByText(page, ['Next']);
+          await sleep(2000);
+
+          // Step 4/4: Finish — check agreement, click Continue then Create
+          emit('consent', 'Accepting terms...');
+          await evaluateOnPage(page, `
+            (function() {
+              const cb = document.querySelector('[role="checkbox"]') || document.querySelector('input[type="checkbox"]');
+              if (cb && !cb.checked) cb.click();
+            })()
+          `);
+          await sleep(500);
+          await clickByText(page, ['Continue', 'Create']);
+          await sleep(3000);
+          await clickByText(page, ['Create']);
+          await sleep(3000);
+
+          // Close any notification
+          await clickByText(page, ['Close message'], 3000);
+          await sleep(1000);
+        }
+    } else {
+        emit('consent', 'OAuth consent already configured');
+      }
+    }
+      },
+    },
+    {
+      name: 'add-test-user',
+      run: async () => {
+
+    emit('test-user', 'Adding test user...');
+    page = await navAndWait(`https://console.cloud.google.com/auth/audience${projectParam}`, 5000);
+    if (page) {
+      const safeUserEmail = JSON.stringify(userEmail || '');
+      const hasUser = await evaluateOnPage(page, `
+        document.body.innerText.includes(${safeUserEmail}) && !${safeUserEmail}.includes('portos')
+      `);
+      if (!hasUser && userEmail) {
+        await clickByText(page, ['Add users']);
+        await sleep(2000);
+        // Fill email in the dialog
         await evaluateOnPage(page, `
           (function() {
-            const combo = document.querySelector('[role="combobox"][aria-label*="support"]') ||
-                          document.querySelector('cfc-select[formcontrolname="userSupportEmail"]');
-            if (combo) combo.click();
+            const emailVal = ${safeUserEmail};
+            const dialog = document.querySelector('[role="dialog"]');
+            if (!dialog) return false;
+            const input = dialog.querySelector('input[type="text"], input:not([type])');
+            if (!input) return false;
+            input.focus();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(input, emailVal);
+            else input.value = emailVal;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            return true;
           })()
         `);
-        await sleep(1000);
-        // Click the first email option
+        await sleep(1500);
+        await clickByText(page, ['Save']);
+        await sleep(2000);
+      }
+    }
+      },
+    },
+    {
+      name: 'create-oauth-client',
+      run: async () => {
+
+    emit('credentials', 'Creating OAuth client...');
+    page = await navAndWait(`https://console.cloud.google.com/auth/clients/create${projectParam}`, 5000);
+    if (page) {
+      // Select "Web application" from Application type dropdown
+      await evaluateOnPage(page, `
+        (function() {
+          const combo = document.querySelector('[role="combobox"]');
+          if (combo) combo.click();
+        })()
+      `);
+      await sleep(1500);
+      await clickByText(page, ['Web application']);
+      await sleep(2000);
+
+      // Rename from "Web client 1" to "PortOS Web"
+      await evaluateOnPage(page, `
+        (function() {
+          const nameInput = document.querySelector('input[aria-label="Name"], input[formcontrolname="displayName"]')
+            || [...document.querySelectorAll('input')].find(i => i.value === 'Web client 1');
+          if (nameInput) {
+            nameInput.focus();
+            nameInput.select();
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(nameInput, 'PortOS Web');
+            else nameInput.value = 'PortOS Web';
+            nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+            nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }
+          return false;
+        })()
+      `);
+      await sleep(500);
+
+      // Add redirect URI — click "Add URI" in the redirect URIs section
+      await evaluateOnPage(page, `
+        (function() {
+          // Find the "Add URI" button in the redirect URIs fieldset
+          const fieldsets = document.querySelectorAll('fieldset');
+          for (const fs of fieldsets) {
+            if (fs.textContent.includes('redirect URI')) {
+              const btn = fs.querySelector('button');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          // Fallback: click the last "Add URI" button
+          const buttons = [...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Add URI');
+          if (buttons.length > 0) { buttons[buttons.length - 1].click(); return true; }
+          return false;
+        })()
+      `);
+      await sleep(1000);
+
+      // Fill the redirect URI (the last empty input)
+      await evaluateOnPage(page, `
+        (function() {
+          const inputs = [...document.querySelectorAll('input[type="text"], input:not([type])')];
+          const empty = inputs.reverse().find(i => !i.value && i.placeholder?.includes('example'));
+          if (!empty) return false;
+          empty.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+          if (setter) setter.call(empty, '${OAUTH_REDIRECT_URI}');
+          else empty.value = '${OAUTH_REDIRECT_URI}';
+          empty.dispatchEvent(new Event('input', { bubbles: true }));
+          empty.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()
+      `);
+      await sleep(1000);
+
+      // Click Create
+      emit('credentials', 'Submitting OAuth client...');
+      await clickByText(page, ['Create']);
+      await sleep(5000);
+      page = await waitForPageLoad();
+    }
+      },
+    },
+    {
+      name: 'capture-credentials',
+      run: async () => {
+
+    emit('capturing', 'Extracting credentials...');
+    await sleep(2000);
+
+    // First try: capture from the creation dialog (shows client ID, might have secret)
+    let credentials = await extractFromDialog(page);
+
+    if (!credentials?.clientSecret) {
+      // Close dialog and navigate to client detail to get secret from "Information and summary"
+      await clickByText(page, ['OK', 'Close'], 3000);
+      await sleep(2000);
+
+      // Find and click the client in the list
+      page = await getGcpPage();
+      if (page) {
+        // Click on the client link (matches "PortOS Web" or "Web client")
         await evaluateOnPage(page, `
           (function() {
-            const options = document.querySelectorAll('[role="option"]');
-            for (const opt of options) {
-              if (opt.textContent.includes('@') && !opt.hasAttribute('disabled')) {
-                opt.click();
+            const links = document.querySelectorAll('a');
+            for (const link of links) {
+              if (link.href?.includes('/auth/clients/') && (link.textContent.includes('PortOS Web') || link.textContent.includes('Web client'))) {
+                link.click();
                 return true;
               }
             }
             return false;
           })()
         `);
-        await sleep(500);
-
-        // Click Next
-        await clickByText(page, ['Next']);
-        await sleep(2000);
-
-        // Step 2/4: Audience — select External
-        emit('consent', 'Setting audience to External...');
-        await clickByText(page, ['External']);
-        await sleep(500);
-        await clickByText(page, ['Next']);
-        await sleep(2000);
-
-        // Step 3/4: Contact Information — fill email
-        emit('consent', 'Filling contact email...');
-        const email = userEmail || 'portos@localhost';
-        const safeEmail = JSON.stringify(email);
-        await evaluateOnPage(page, `
-          (function() {
-            const emailVal = ${safeEmail};
-            const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
-            const emailInput = [...inputs].find(i => {
-              const ph = i.placeholder || '';
-              const label = i.closest('[class*="form"]')?.querySelector('label')?.textContent || '';
-              return !i.value && (ph.includes('email') || label.toLowerCase().includes('email'));
-            }) || [...inputs].find(i => !i.value);
-            if (emailInput) {
-              emailInput.focus();
-              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-              if (setter) setter.call(emailInput, emailVal);
-              else emailInput.value = emailVal;
-              emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-              emailInput.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
-            }
-            return false;
-          })()
-        `);
-        await sleep(500);
-        await clickByText(page, ['Next']);
-        await sleep(2000);
-
-        // Step 4/4: Finish — check agreement, click Continue then Create
-        emit('consent', 'Accepting terms...');
-        await evaluateOnPage(page, `
-          (function() {
-            const cb = document.querySelector('[role="checkbox"]') || document.querySelector('input[type="checkbox"]');
-            if (cb && !cb.checked) cb.click();
-          })()
-        `);
-        await sleep(500);
-        await clickByText(page, ['Continue', 'Create']);
         await sleep(3000);
-        await clickByText(page, ['Create']);
-        await sleep(3000);
+        page = await waitForPageLoad();
 
-        // Close any notification
-        await clickByText(page, ['Close message'], 3000);
-        await sleep(1000);
-      }
-    } else {
-      emit('consent', 'OAuth consent already configured');
-    }
-  }
+        if (page) {
+          // Click "Information and summary" button
+          await clickByText(page, ['Information and summary']);
+          await sleep(2000);
 
-  // === Step 3: Add test user ===
-  emit('test-user', 'Adding test user...');
-  page = await navAndWait(`https://console.cloud.google.com/auth/audience${projectParam}`, 5000);
-  if (page) {
-    const safeUserEmail = JSON.stringify(userEmail || '');
-    const hasUser = await evaluateOnPage(page, `
-      document.body.innerText.includes(${safeUserEmail}) && !${safeUserEmail}.includes('portos')
-    `);
-    if (!hasUser && userEmail) {
-      await clickByText(page, ['Add users']);
-      await sleep(2000);
-      // Fill email in the dialog
-      await evaluateOnPage(page, `
-        (function() {
-          const emailVal = ${safeUserEmail};
-          const dialog = document.querySelector('[role="dialog"]');
-          if (!dialog) return false;
-          const input = dialog.querySelector('input[type="text"], input:not([type])');
-          if (!input) return false;
-          input.focus();
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-          if (setter) setter.call(input, emailVal);
-          else input.value = emailVal;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-          return true;
-        })()
-      `);
-      await sleep(1500);
-      await clickByText(page, ['Save']);
-      await sleep(2000);
-    }
-  }
+          // Extract from the summary panel — secret is in a copy button's aria-label
+          credentials = await evaluateOnPage(page, `
+            (function() {
+              const allText = document.body.innerText;
+              const clientIdMatch = allText.match(/([0-9]+-[a-zA-Z0-9_]+\\.apps\\.googleusercontent\\.com)/);
 
-  // === Step 4: Create OAuth client ===
-  emit('credentials', 'Creating OAuth client...');
-  page = await navAndWait(`https://console.cloud.google.com/auth/clients/create${projectParam}`, 5000);
-  if (page) {
-    // Select "Web application" from Application type dropdown
-    await evaluateOnPage(page, `
-      (function() {
-        const combo = document.querySelector('[role="combobox"]');
-        if (combo) combo.click();
-      })()
-    `);
-    await sleep(1500);
-    await clickByText(page, ['Web application']);
-    await sleep(2000);
+              // Secret is in a button aria-label: "Copy to clipboard: GOCSPX-..."
+              const buttons = document.querySelectorAll('button[aria-label*="GOCSPX"]');
+              let clientSecret = null;
+              for (const btn of buttons) {
+                const label = btn.getAttribute('aria-label') || '';
+                const secretMatch = label.match(/(GOCSPX-[a-zA-Z0-9_-]+)/);
+                if (secretMatch) { clientSecret = secretMatch[1]; break; }
+              }
 
-    // Rename from "Web client 1" to "PortOS Web"
-    await evaluateOnPage(page, `
-      (function() {
-        const nameInput = document.querySelector('input[aria-label="Name"], input[formcontrolname="displayName"]')
-          || [...document.querySelectorAll('input')].find(i => i.value === 'Web client 1');
-        if (nameInput) {
-          nameInput.focus();
-          nameInput.select();
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-          if (setter) setter.call(nameInput, 'PortOS Web');
-          else nameInput.value = 'PortOS Web';
-          nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-          nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
+              // Also check text content
+              if (!clientSecret) {
+                const secretTextMatch = allText.match(/(GOCSPX-[a-zA-Z0-9_-]+)/);
+                if (secretTextMatch) clientSecret = secretTextMatch[1];
+              }
+
+              if (clientIdMatch && clientSecret) {
+                return { clientId: clientIdMatch[1], clientSecret };
+              }
+              return clientIdMatch ? { clientId: clientIdMatch[1], partial: true } : null;
+            })()
+          `);
         }
-        return false;
-      })()
-    `);
-    await sleep(500);
-
-    // Add redirect URI — click "Add URI" in the redirect URIs section
-    await evaluateOnPage(page, `
-      (function() {
-        // Find the "Add URI" button in the redirect URIs fieldset
-        const fieldsets = document.querySelectorAll('fieldset');
-        for (const fs of fieldsets) {
-          if (fs.textContent.includes('redirect URI')) {
-            const btn = fs.querySelector('button');
-            if (btn) { btn.click(); return true; }
-          }
-        }
-        // Fallback: click the last "Add URI" button
-        const buttons = [...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Add URI');
-        if (buttons.length > 0) { buttons[buttons.length - 1].click(); return true; }
-        return false;
-      })()
-    `);
-    await sleep(1000);
-
-    // Fill the redirect URI (the last empty input)
-    await evaluateOnPage(page, `
-      (function() {
-        const inputs = [...document.querySelectorAll('input[type="text"], input:not([type])')];
-        const empty = inputs.reverse().find(i => !i.value && i.placeholder?.includes('example'));
-        if (!empty) return false;
-        empty.focus();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-        if (setter) setter.call(empty, '${OAUTH_REDIRECT_URI}');
-        else empty.value = '${OAUTH_REDIRECT_URI}';
-        empty.dispatchEvent(new Event('input', { bubbles: true }));
-        empty.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      })()
-    `);
-    await sleep(1000);
-
-    // Click Create
-    emit('credentials', 'Submitting OAuth client...');
-    await clickByText(page, ['Create']);
-    await sleep(5000);
-    page = await waitForPageLoad();
-  }
-
-  // === Step 5: Extract credentials ===
-  emit('capturing', 'Extracting credentials...');
-  await sleep(2000);
-
-  // First try: capture from the creation dialog (shows client ID, might have secret)
-  let credentials = await extractFromDialog(page);
-
-  if (!credentials?.clientSecret) {
-    // Close dialog and navigate to client detail to get secret from "Information and summary"
-    await clickByText(page, ['OK', 'Close'], 3000);
-    await sleep(2000);
-
-    // Find and click the client in the list
-    page = await getGcpPage();
-    if (page) {
-      // Click on the client link (matches "PortOS Web" or "Web client")
-      await evaluateOnPage(page, `
-        (function() {
-          const links = document.querySelectorAll('a');
-          for (const link of links) {
-            if (link.href?.includes('/auth/clients/') && (link.textContent.includes('PortOS Web') || link.textContent.includes('Web client'))) {
-              link.click();
-              return true;
-            }
-          }
-          return false;
-        })()
-      `);
-      await sleep(3000);
-      page = await waitForPageLoad();
-
-      if (page) {
-        // Click "Information and summary" button
-        await clickByText(page, ['Information and summary']);
-        await sleep(2000);
-
-        // Extract from the summary panel — secret is in a copy button's aria-label
-        credentials = await evaluateOnPage(page, `
-          (function() {
-            const allText = document.body.innerText;
-            const clientIdMatch = allText.match(/([0-9]+-[a-zA-Z0-9_]+\\.apps\\.googleusercontent\\.com)/);
-
-            // Secret is in a button aria-label: "Copy to clipboard: GOCSPX-..."
-            const buttons = document.querySelectorAll('button[aria-label*="GOCSPX"]');
-            let clientSecret = null;
-            for (const btn of buttons) {
-              const label = btn.getAttribute('aria-label') || '';
-              const secretMatch = label.match(/(GOCSPX-[a-zA-Z0-9_-]+)/);
-              if (secretMatch) { clientSecret = secretMatch[1]; break; }
-            }
-
-            // Also check text content
-            if (!clientSecret) {
-              const secretTextMatch = allText.match(/(GOCSPX-[a-zA-Z0-9_-]+)/);
-              if (secretTextMatch) clientSecret = secretTextMatch[1];
-            }
-
-            if (clientIdMatch && clientSecret) {
-              return { clientId: clientIdMatch[1], clientSecret };
-            }
-            return clientIdMatch ? { clientId: clientIdMatch[1], partial: true } : null;
-          })()
-        `);
       }
     }
-  }
 
-  if (!credentials?.clientId || !credentials?.clientSecret) {
-    emit('error', 'Could not capture credentials automatically');
-    // The route's old { error } mapping returned HTTP 500 and dropped the
-    // partial clientId; keep it available to operators via error context.
-    throw new ServerError(
-      'Automation completed but could not extract the client secret. Use "Download JSON" from the Google Cloud Console client page and paste the credentials manually.',
-      { status: 500, context: { clientId: credentials?.clientId || null } },
-    );
-  }
+    if (!credentials?.clientId || !credentials?.clientSecret) {
+      emit('error', 'Could not capture credentials automatically');
+      // The route's old { error } mapping returned HTTP 500 and dropped the
+      // partial clientId; keep it available to operators via error context.
+      throw new ServerError(
+        'Automation completed but could not extract the client secret. Use "Download JSON" from the Google Cloud Console client page and paste the credentials manually.',
+        { status: 500, context: { clientId: credentials?.clientId || null } },
+      );
+    }
 
-  // Save credentials
-  await saveCredentials(credentials);
-  emit('done', 'Credentials captured and saved!');
-  console.log(`📅 OAuth credentials captured: ${credentials.clientId}`);
+    // Save credentials
+    await saveCredentials(credentials);
+    emit('done', 'Credentials captured and saved!');
+    console.log(`📅 OAuth credentials captured: ${credentials.clientId}`);
 
-  const authResult = await getAuthUrl();
-  return {
-    status: 'success',
-    clientId: credentials.clientId,
-    authUrl: authResult.url || null
-  };
+    const authResult = await getAuthUrl();
+    result = {
+      status: 'success',
+      clientId: credentials.clientId,
+      authUrl: authResult.url || null
+    };
+      },
+    },
+  ];
+
+  await runSteps(steps);
+  return result;
 }
 
 async function extractFromDialog(page) {

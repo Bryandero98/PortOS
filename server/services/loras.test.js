@@ -202,6 +202,78 @@ describe('listLoras', () => {
   });
 });
 
+// Adapter-effect diagnostic (#4872). listLoras is a PASSIVE read — a library
+// page with 40 installed LoRAs must never fan out into 40 Python children — so
+// it surfaces only what the explicit probe already measured, and only while
+// that measurement still describes the file on disk.
+describe('listLoras — cached adapter-effect report', () => {
+  const report = (over = {}) => ({
+    probeVersion: 1, status: 'ok', modules: 8, measured: 8, skippedNonFinite: 0,
+    skippedUnsupported: 0, zeroModules: 0, medianRms: 0.004, maxRms: 0.02,
+    reason: null, measuredAt: '2026-08-23T00:00:00.000Z', ...over,
+  });
+  // The cache key is the file's real size + mtime, so the sidecar has to be
+  // written from the file that actually landed on disk — `stamp` overrides let a
+  // test deliberately mismatch one of them.
+  const writeLora = async (filename, bytes, effectReport, stamp = {}) => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    const path = join(tmpLoras, filename);
+    await fs.writeFile(path, Buffer.alloc(bytes, 1));
+    const s = await fs.stat(path);
+    const sidecar = effectReport
+      ? { effectReport: { ...effectReport, sizeBytes: s.size, mtimeMs: s.mtimeMs, ...stamp } }
+      : { name: 'Unmeasured' };
+    await fs.writeFile(join(tmpLoras, `${filename}.metadata.json`), JSON.stringify({ filename, ...sidecar }));
+  };
+
+  it('surfaces a stored report whose size and mtime still match the file', async () => {
+    await writeLora('measured.safetensors', 512, report());
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toMatchObject({ status: 'ok', measured: 8, medianRms: 0.004, sizeBytes: 512 });
+  });
+
+  it('reports null when the LoRA was never measured', async () => {
+    await writeLora('unmeasured.safetensors', 512, null);
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report once the file has been replaced under the same name', async () => {
+    // A different size is a different adapter. Surfacing the old verdict would
+    // badge a freshly-installed LoRA with the previous file's measurement.
+    await writeLora('swapped.safetensors', 1024, report(), { sizeBytes: 512 });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report when the file was rewritten at the SAME size', async () => {
+    await writeLora('rewritten.safetensors', 512, report(), { mtimeMs: 1 });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report written by a different probe version', async () => {
+    await writeLora('old.safetensors', 512, report({ probeVersion: 99 }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('normalizes a hand-edited sidecar rather than trusting it', async () => {
+    await writeLora('edited.safetensors', 512, report({ status: 'catastrophic', medianRms: 'lots', maxRms: null }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toMatchObject({ status: 'unmeasurable', medianRms: null, maxRms: null });
+  });
+
+  it('will not surface a "zero" verdict that no measurement backs', async () => {
+    // Refusing a render is the one thing a stale/edited sidecar must never be
+    // able to cause on its own.
+    await writeLora('bogus-zero.safetensors', 512, report({ status: 'zero', measured: 0, zeroModules: 0 }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport.status).toBe('unmeasurable');
+  });
+});
+
 describe('deleteLora', () => {
   it('removes file + sidecar', async () => {
     const fs = await import('fs/promises');
@@ -261,6 +333,45 @@ describe('patchLoraSidecar', () => {
     expect(patched.recommendedScale).toBe(0.5);
     expect(patched.name).toBe('Custom');
     expect(JSON.parse(readFileSync(join(tmpLoras, 'lora-y.safetensors.metadata.json'), 'utf-8')).name).toBe('Custom');
+  });
+});
+
+// The sidecar is one JSON document with several writers — the manager renaming a
+// LoRA, listLoras() healing keyLayout on read, and the effect probe caching its
+// measurement. Each patch is a read-modify-write of the WHOLE file, so
+// interleaved cycles let the last writer silently drop the other's field.
+describe('patchLoraSidecar — concurrent patches', () => {
+  it('merges every field when two patches race, rather than last-write-wins', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, 'shared.safetensors'), 'weights');
+    await fs.writeFile(join(tmpLoras, 'shared.safetensors.metadata.json'), JSON.stringify({
+      filename: 'shared.safetensors', name: 'Original',
+    }));
+
+    await Promise.all([
+      lorasService.patchLoraSidecar('shared.safetensors', { name: 'Renamed' }),
+      lorasService.patchLoraSidecar('shared.safetensors', { effectReport: { status: 'ok', measured: 4 } }),
+      lorasService.patchLoraSidecar('shared.safetensors', { keyLayout: 'comfyui' }),
+    ]);
+
+    const written = JSON.parse(await fs.readFile(join(tmpLoras, 'shared.safetensors.metadata.json'), 'utf-8'));
+    expect(written.name).toBe('Renamed');
+    expect(written.keyLayout).toBe('comfyui');
+    expect(written.effectReport).toMatchObject({ status: 'ok', measured: 4 });
+  });
+
+  it('does not serialize patches to DIFFERENT LoRAs behind each other', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    for (const name of ['a.safetensors', 'b.safetensors']) {
+      await fs.writeFile(join(tmpLoras, name), 'weights');
+    }
+    const [a, b] = await Promise.all([
+      lorasService.patchLoraSidecar('a.safetensors', { name: 'A' }),
+      lorasService.patchLoraSidecar('b.safetensors', { name: 'B' }),
+    ]);
+    expect([a.name, b.name]).toEqual(['A', 'B']);
   });
 });
 

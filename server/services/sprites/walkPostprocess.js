@@ -995,10 +995,31 @@ export async function extractVideoFrames(videoPath, rawDir) {
  * signatureOf uses) — correct and fast over a ~1.7M-pixel anchor without a
  * per-pixel JS loop. `hexToRgb` returns `{ r, g, b }`, exactly flatten's shape.
  */
-export async function prepareWalkAnchorChromaInput(anchorAbs, destAbs, chromaKey) {
-  const buf = await sharp(anchorAbs).flatten({ background: hexToRgb(chromaKey) }).png().toBuffer();
+export async function prepareWalkAnchorChromaInput(anchorAbs, destAbs, chromaKey, chooseCanvas = null) {
+  const background = hexToRgb(chromaKey);
+  const image = sharp(anchorAbs).flatten({ background });
+  let preparation = 'composited-over-solid-chroma-matte';
+  let canvas = null;
+  // Local-lane only (#4876). A cloud i2v model animates whatever aspect it is
+  // handed, but a local runtime renders on ONE of a few trained canvases and
+  // videoGen conforms the conditioning image to it with a center CROP — which
+  // would slice the head and feet off a portrait sprite anchor before the render
+  // began. Padding to the chosen canvas with the SAME matte color makes that
+  // crop a no-op: the character survives whole, and the added margin is more of
+  // exactly the background the postprocess keys out. The grok lane passes no
+  // chooser and is byte-identical to before.
+  if (chooseCanvas) {
+    const { width, height } = await sharp(anchorAbs).metadata();
+    const chosen = chooseCanvas({ width, height });
+    if (chosen?.width > 0 && chosen?.height > 0) {
+      canvas = chosen;
+      image.resize({ width: canvas.width, height: canvas.height, fit: 'contain', background });
+      preparation = 'composited-over-solid-chroma-matte-padded-to-render-canvas';
+    }
+  }
+  const buf = await image.png().toBuffer();
   await writeFile(destAbs, buf);
-  return { preparation: 'composited-over-solid-chroma-matte', sha256: sha256Buffer(buf) };
+  return { preparation, sha256: sha256Buffer(buf), canvas };
 }
 
 /**

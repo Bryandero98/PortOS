@@ -26,6 +26,7 @@ import { resolutionOptionsForModel } from '../../lib/videoGenResolutions';
 import {
   videoEdgeBoundsForModel, textEncoderOptionsForModel, STOCK_TEXT_ENCODER_ID,
   normalizeTextEncoderForModel,
+  DEFAULT_SPEED_PROFILE_ID, normalizeSpeedProfileForModel, speedProfileIdFromRecord,
 } from '../../lib/videoGenParams';
 import { loraFamilyOf, videoLoraFamily } from '../../lib/runnerFamilies';
 import LoraPicker from '../imageGen/LoraPicker';
@@ -710,6 +711,10 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   const [tiling, setTiling] = useState(p.tiling || 'auto');
   const [disableAudio, setDisableAudio] = useState(p.disableAudio === true);
   const [textEncoderId, setTextEncoderId] = useState(p.textEncoderId || STOCK_TEXT_ENCODER_ID);
+  // The failed job's sampler schedule (#4875). Seeded from its params so the
+  // picker reports what the render actually used rather than always reading
+  // "Quality", and so an unchanged retry re-submits the same schedule.
+  const [speedProfileId, setSpeedProfileId] = useState(speedProfileIdFromRecord(p.speedProfileId));
   const [availableLoras, setAvailableLoras] = useState([]);
   const [selectedLoras, setSelectedLoras] = useState(Array.isArray(p.loras) ? p.loras : []);
 
@@ -743,6 +748,15 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];
   const encoderOptions = textEncoderOptionsForModel(currentModel);
   const originalEncoder = normalizeTextEncoderForModel(p.textEncoderId || STOCK_TEXT_ENCODER_ID, currentModel);
+  const originalSpeedProfileForModel = normalizeSpeedProfileForModel(speedProfileIdFromRecord(p.speedProfileId), currentModel);
+  // Models arrive asynchronously, so the recorded profile can only be validated
+  // once the entry resolves. Until then state holds the raw recorded id; this
+  // snaps it to what the model actually declares, so an untouched form can't
+  // re-submit a schedule the registry no longer offers.
+  useEffect(() => {
+    if (!currentModel) return;
+    setSpeedProfileId((current) => normalizeSpeedProfileForModel(current, currentModel));
+  }, [currentModel]);
   // Multi-keyframe inputs are not exposed in the sanitized queue projection,
   // but FFLF is their persisted semantic mode. IC/a2v conditioning also pins
   // a single render, so keep the shared chaining controls consistent with the
@@ -753,6 +767,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     const nextModel = models.find((model) => model.id === nextModelId) || null;
     setModelId(nextModelId);
     setTextEncoderId(normalizeTextEncoderForModel(textEncoderId, nextModel));
+    setSpeedProfileId(normalizeSpeedProfileForModel(speedProfileId, nextModel));
     if (videoLoraFamily(nextModel) !== loraFamily) setSelectedLoras([]);
   };
   const setChunkPromptAt = (index, value) => setChunkPrompts((prev) => {
@@ -803,6 +818,14 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     // submit that reset explicitly so the retry does not retain the old,
     // incompatible encoder from the failed job.
     if (modelId !== p.modelId || textEncoderId !== originalEncoder) overrides.textEncoderId = textEncoderId;
+    // Same model-switch clause its sibling above carries: switching to a model
+    // that declares no profiles snaps BOTH the local value and
+    // its baseline to the default, so they compare equal and no
+    // override would be sent — leaving the old job's `speedProfileId` in the
+    // inherited params for the queue to echo as a profile the render never used.
+    if (modelId !== p.modelId || speedProfileId !== originalSpeedProfileForModel) {
+      overrides.speedProfileId = speedProfileId === DEFAULT_SPEED_PROFILE_ID ? null : speedProfileId;
+    }
     if (JSON.stringify(selectedLoras) !== JSON.stringify(p.loras || [])) overrides.loras = selectedLoras;
     onSubmit(Object.keys(overrides).length ? overrides : null);
   };
@@ -851,6 +874,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
           contextFrames={contextFrames} onContextFramesChange={setContextFrames}
           fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
           steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+          speedProfileId={speedProfileId} onSpeedProfileChange={setSpeedProfileId}
           imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
           i2vReferenceMode={i2vReferenceMode} onI2vReferenceModeChange={setI2vReferenceMode}
           effectiveImageStrength={resolveI2vReferenceStrength(i2vReferenceMode, imageStrength)}

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import NotificationDropdown from './NotificationDropdown';
 
 const makeNotifications = (count) =>
@@ -14,7 +14,12 @@ const makeNotifications = (count) =>
     timestamp: new Date('2026-01-01T00:00:00Z').toISOString()
   }));
 
-const renderDropdown = ({ notifications = makeNotifications(3), ...overrides } = {}) => {
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="location-probe">{location.pathname}</span>;
+}
+
+const renderDropdown = ({ notifications = makeNotifications(3), observeLocation = false, ...overrides } = {}) => {
   const handlers = {
     onMarkAsRead: vi.fn(),
     onMarkAllAsRead: vi.fn(),
@@ -29,6 +34,7 @@ const renderDropdown = ({ notifications = makeNotifications(3), ...overrides } =
         unreadCount={notifications.filter((n) => !n.read).length}
         {...handlers}
       />
+      {observeLocation && <LocationProbe />}
     </MemoryRouter>
   );
   return handlers;
@@ -42,6 +48,33 @@ const openPanel = () => {
 const queryPanel = () => screen.queryByRole('menu', { name: 'Notifications menu' });
 
 describe('NotificationDropdown', () => {
+  describe('links', () => {
+    it('opens absolute HTTP(S) links externally instead of routing them as app paths', () => {
+      const link = 'https://github.com/example-org/example-repo/pull/9';
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+      const notifications = [{ ...makeNotifications(1)[0], link }];
+
+      renderDropdown({ notifications });
+      openPanel();
+      fireEvent.click(screen.getByText('Notification 0'));
+
+      expect(open).toHaveBeenCalledWith(link, '_blank', 'noopener,noreferrer');
+      expect(queryPanel()).toBeNull();
+      open.mockRestore();
+    });
+
+    it('keeps internal links in the app router', () => {
+      const notifications = [{ ...makeNotifications(1)[0], link: '/cos/briefing' }];
+
+      renderDropdown({ notifications, observeLocation: true });
+      openPanel();
+      fireEvent.click(screen.getByText('Notification 0'));
+
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('/cos/briefing');
+      expect(queryPanel()).toBeNull();
+    });
+  });
+
   describe('placement', () => {
     // The bell sits mid-screen in the sidebar footer. An absolutely-positioned
     // panel ran off the right edge of a phone; placement now comes from the

@@ -8,7 +8,8 @@ import { FormField } from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 import NicotineChart from '../NicotineChart';
 import NicotineHealthCorrelation from '../NicotineHealthCorrelation';
-import { dayOfWeek, localDateStr } from '../constants';
+import { dayOfWeek } from '../constants';
+import { localDateKey } from '../../../utils/formatters';
 
 const DAYS_PER_PAGE = 50;
 
@@ -28,7 +29,7 @@ export default function NicotineTab() {
   const [buttonForm, setButtonForm] = useState({ name: '', mgPerUnit: '' });
 
   // Form state
-  const today = useMemo(() => localDateStr(), []);
+  const today = useMemo(() => localDateKey(), []);
   const [product, setProduct] = useState('');
   const [mgPerUnit, setMgPerUnit] = useState('');
   const [count, setCount] = useState(1);
@@ -71,7 +72,7 @@ export default function NicotineTab() {
     const days = { '7d': 7, '30d': 30, '90d': 90 }[chartView] || 30;
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return { correlationFrom: localDateStr(d), correlationTo: localDateStr() };
+    return { correlationFrom: localDateKey(d), correlationTo: localDateKey() };
   }, [chartView]);
 
   useEffect(() => {

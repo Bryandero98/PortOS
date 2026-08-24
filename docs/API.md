@@ -21,7 +21,7 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 - **Network isolation**: By default, access should be restricted to trusted networks (e.g., Tailscale VPN, localhost)
 - **Command allowlist**: Shell command execution is restricted to an approved allowlist (see `server/lib/commandSecurity.js`)
 - **Input validation**: All API inputs are validated using Zod schemas
-- **Opt-in authentication**: Off by default (trusting private network/Tailscale), PortOS supports opt-in instance password authentication (enforced by `server/lib/authGate.js`) gating `/api/*`, `/data/*`, and `/sdapi/*` via session cookies, Bearer tokens, or HTTP Basic credentials
+- **Opt-in authentication**: Off by default (trusting private network/Tailscale), PortOS supports opt-in instance password authentication (enforced by `server/services/authGate.js`) gating `/api/*`, `/data/*`, and `/sdapi/*` via session cookies, Bearer tokens, or HTTP Basic credentials
 
 **Important**: Do not expose PortOS APIs directly to untrusted networks. For production deployments, consider:
 - Binding to `127.0.0.1` instead of `0.0.0.0`

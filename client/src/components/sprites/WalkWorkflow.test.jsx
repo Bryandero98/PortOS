@@ -209,6 +209,88 @@ describe('WalkWorkflow loop preview', () => {
   });
 });
 
+describe('WalkWorkflow render-lane picker (#4876)', () => {
+  const renderPanel = (props = {}) => render(
+    <MemoryRouter>
+      <WalkWorkflow
+        record={{ id: 'example-walker' }}
+        reference={{
+          manifest: {
+            mainReference: { locked: true },
+            anchors: [{ direction: 'east', status: 'locked', path: 'reference/example-walker-east-v1.png' }],
+          },
+        }}
+        walk={{ runs: [], selection: { directions: {} }, walkSet: null }}
+        renders={noRenders()}
+        duration={6}
+        onDurationChange={vi.fn()}
+        onGenerate={vi.fn()}
+        onChanged={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>,
+  );
+
+  const PROVIDERS = [
+    { id: 'grok', label: 'Grok (cloud)', ready: true, reason: null },
+    { id: 'local', label: 'Local (MiniMax H3)', ready: true, reason: null },
+  ];
+
+  it('offers the lane picker beside the clip length once both lanes are known', () => {
+    renderPanel({ providers: PROVIDERS, provider: 'grok', onProviderChange: vi.fn() });
+    expect(screen.getByLabelText(/Render on/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Clip/)).toBeInTheDocument();
+  });
+
+  it('shows no picker on an install that never learned about a second lane', () => {
+    // Default props — an older page build, or a readiness probe that failed.
+    renderPanel();
+    expect(screen.queryByLabelText(/Render on/)).toBeNull();
+  });
+
+  it('hands the chosen lane back to the page', () => {
+    const onProviderChange = vi.fn();
+    renderPanel({ providers: PROVIDERS, provider: 'grok', onProviderChange });
+    fireEvent.change(screen.getByLabelText(/Render on/), { target: { value: 'local' } });
+    expect(onProviderChange).toHaveBeenCalledWith('local');
+  });
+
+  it('describes the clip length in LOCAL terms when the local lane is selected', () => {
+    // The grok copy names 6s/10s clips, which is not what H3 renders.
+    renderPanel({ providers: PROVIDERS, provider: 'local', onProviderChange: vi.fn() });
+    expect(screen.getByLabelText(/^Clip/).closest('label')).toHaveAttribute(
+      'title', expect.stringContaining('fixed frame grid'),
+    );
+  });
+
+  it('offers the Render Queue instead of the Shell for a LOCAL render', () => {
+    // The local lane has no PTY to attach to, so its rendering card would
+    // otherwise be a dead end with no way to watch or cancel the job.
+    renderPanel({
+      walk: {
+        runs: [{ id: 'walk-east-abc', direction: 'east', status: 'rendering', jobId: 'mjob-1' }],
+        selection: { directions: {} },
+        walkSet: null,
+      },
+    });
+    expect(screen.getByRole('link', { name: /Watch in Render Queue/ }))
+      .toHaveAttribute('href', '/system-resources/queues');
+    expect(screen.queryByRole('link', { name: /Watch in Shell/ })).toBeNull();
+  });
+
+  it('keeps the Shell link for a grok render, and offers only that one', () => {
+    renderPanel({
+      walk: {
+        runs: [{ id: 'walk-east-abc', direction: 'east', status: 'rendering', shellSession: 'walk-east-abc' }],
+        selection: { directions: {} },
+        walkSet: null,
+      },
+    });
+    expect(screen.getByRole('link', { name: /Watch in Shell/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Watch in Render Queue/ })).toBeNull();
+  });
+});
+
 describe('WalkWorkflow idle anchor preview', () => {
   it('shows the locked directional anchor until the direction has a packaged animation', () => {
     render(

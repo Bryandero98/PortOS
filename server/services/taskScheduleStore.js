@@ -1,0 +1,272 @@
+/** Persisted task schedule state and prompt-default compatibility upgrades. */
+
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
+import { isPlainObject } from '../lib/objects.js';
+import { emitLog } from './cosEvents.js';
+import { INTERVAL_TYPES } from './taskScheduleConstants.js';
+import {
+  DEFAULT_TASK_INTERVALS,
+  enforceBranchReconcileBatch,
+  enforceManagedAgentOptions
+} from './taskScheduleRegistry.js';
+import {
+  DEFAULT_TASK_PROMPTS,
+  PROMPT_VERSIONS,
+  PREVIOUS_DEFAULT_PROMPTS
+} from './taskPromptDefaults.js';
+
+const DATA_DIR = PATHS.cos;
+const SCHEDULE_FILE = join(DATA_DIR, 'task-schedule.json');
+
+/**
+ * Default schedule data structure (v2 - unified)
+ */
+const DEFAULT_SCHEDULE = {
+  version: 2,
+  lastUpdated: null,
+
+  // Unified task intervals (applies to all apps including PortOS)
+  tasks: {
+    ...DEFAULT_TASK_INTERVALS
+  },
+
+  // Track last execution times
+  // Format: 'task:security': { lastRun: timestamp, count: number, perApp: {} }
+  executions: {},
+
+  // On-demand task templates that can be triggered manually
+  templates: []
+};
+
+async function ensureDataDir() {
+  if (!existsSync(DATA_DIR)) {
+    await ensureDir(DATA_DIR);
+  }
+}
+
+/**
+ * Migrate v1 schedule (selfImprovement + appImprovement) to v2 (unified tasks)
+ */
+function migrateScheduleV1toV2(schedule) {
+  emitLog('info', 'Migrating task schedule from v1 to v2 (unified)', {}, '📅 TaskSchedule');
+
+  const migrated = {
+    version: 2,
+    lastUpdated: new Date().toISOString(),
+    tasks: { ...DEFAULT_TASK_INTERVALS },
+    executions: {},
+    templates: schedule.templates || [],
+    onDemandRequests: schedule.onDemandRequests || []
+  };
+
+  // Merge selfImprovement settings into tasks (excluding cos-enhancement)
+  if (schedule.selfImprovement) {
+    for (const [taskType, config] of Object.entries(schedule.selfImprovement)) {
+      if (taskType === 'cos-enhancement') continue; // Removed
+      // security stays as 'security' (was already named this in selfImprovement)
+      if (migrated.tasks[taskType]) {
+        migrated.tasks[taskType] = { ...migrated.tasks[taskType], ...config };
+      }
+    }
+  }
+
+  // Merge appImprovement settings into tasks
+  if (schedule.appImprovement) {
+    for (const [taskType, config] of Object.entries(schedule.appImprovement)) {
+      // Rename security-audit → security
+      const unifiedType = taskType === 'security-audit' ? 'security' : taskType;
+      if (migrated.tasks[unifiedType]) {
+        // If selfImprovement already set a non-default config, prefer it for overlapping types
+        // unless appImprovement has a different non-default config
+        const existing = migrated.tasks[unifiedType];
+        const isExistingDefault = existing.type === DEFAULT_TASK_INTERVALS[unifiedType]?.type;
+        const isNewDifferent = config.type !== (taskType === 'security-audit'
+          ? INTERVAL_TYPES.WEEKLY : DEFAULT_TASK_INTERVALS[unifiedType]?.type);
+        if (isExistingDefault || isNewDifferent) {
+          migrated.tasks[unifiedType] = { ...existing, ...config };
+        }
+      }
+    }
+  }
+
+  // Migrate execution keys: self-improve:X → task:X, app-improve:X → task:X
+  if (schedule.executions) {
+    for (const [key, data] of Object.entries(schedule.executions)) {
+      let newKey = key;
+      if (key.startsWith('self-improve:')) {
+        const taskType = key.replace('self-improve:', '');
+        if (taskType === 'cos-enhancement') continue; // Removed
+        newKey = `task:${taskType}`;
+      } else if (key.startsWith('app-improve:')) {
+        let taskType = key.replace('app-improve:', '');
+        if (taskType === 'security-audit') taskType = 'security';
+        newKey = `task:${taskType}`;
+      }
+
+      if (migrated.executions[newKey]) {
+        // Merge: combine counts, keep latest lastRun, merge perApp
+        const existing = migrated.executions[newKey];
+        existing.count = (existing.count || 0) + (data.count || 0);
+        if (data.lastRun && (!existing.lastRun || new Date(data.lastRun) > new Date(existing.lastRun))) {
+          existing.lastRun = data.lastRun;
+        }
+        if (data.perApp) {
+          existing.perApp = { ...existing.perApp, ...data.perApp };
+        }
+      } else {
+        migrated.executions[newKey] = { ...data };
+      }
+    }
+  }
+
+  // Populate prompts from defaults if missing
+  for (const [taskType, config] of Object.entries(migrated.tasks)) {
+    if (!config.prompt && DEFAULT_TASK_PROMPTS[taskType]) {
+      config.prompt = DEFAULT_TASK_PROMPTS[taskType];
+    }
+  }
+
+  return migrated;
+}
+
+// True when a stored prompt byte-matches a shipped default for this task — the
+// current default or any prior one in PREVIOUS_DEFAULT_PROMPTS. Used by
+// loadSchedule both to recognize legacy (unversioned) prompts and to self-heal a
+// prompt mis-flagged as customized. A genuine user edit never byte-matches a
+// shipped default, so callers can treat a match as "not really customized".
+function promptMatchesShippedDefault(prompt, taskType) {
+  if (!prompt || !DEFAULT_TASK_PROMPTS[taskType]) return false;
+  return (
+    prompt === DEFAULT_TASK_PROMPTS[taskType] ||
+    (PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(prompt)
+  );
+}
+
+/**
+ * Load schedule data (auto-migrates from v1 if needed)
+ */
+export async function loadSchedule() {
+  await ensureDataDir();
+
+  const loaded = await readJSONFile(SCHEDULE_FILE, null);
+  if (!loaded) {
+    return { ...DEFAULT_SCHEDULE };
+  }
+
+  // Auto-migrate v1 → v2
+  if (!loaded.version || loaded.version === 1) {
+    const migrated = migrateScheduleV1toV2(loaded);
+    await saveSchedule(migrated);
+    return migrated;
+  }
+
+  // v2: merge each task config with its default to backfill new fields
+  // Deep-merge taskMetadata so new default keys are inherited unless explicitly overridden
+  const mergedTasks = {};
+  for (const taskType of Object.keys(DEFAULT_TASK_INTERVALS)) {
+    const defaultTask = DEFAULT_TASK_INTERVALS[taskType];
+    const loadedTask = loaded.tasks?.[taskType] || {};
+    const merged = { ...defaultTask, ...loadedTask };
+    // Deep-merge taskMetadata: preserve explicit null (clears metadata), otherwise merge defaults with stored
+    // Only spread if loadedTask.taskMetadata is a plain object to avoid corrupting config
+    if (defaultTask.taskMetadata && loadedTask.taskMetadata !== null) {
+      const storedMeta = loadedTask.taskMetadata;
+      merged.taskMetadata = { ...defaultTask.taskMetadata, ...(isPlainObject(storedMeta) ? storedMeta : {}) };
+    }
+    mergedTasks[taskType] = merged;
+  }
+  // Preserve any extra task types from loaded that aren't in defaults
+  for (const taskType of Object.keys(loaded.tasks || {})) {
+    if (!mergedTasks[taskType]) {
+      mergedTasks[taskType] = loaded.tasks[taskType];
+    }
+  }
+
+  const schedule = {
+    ...DEFAULT_SCHEDULE,
+    ...loaded,
+    tasks: mergedTasks,
+    executions: loaded.executions || {},
+    templates: loaded.templates || []
+  };
+
+  // Populate prompts from defaults if missing, and auto-upgrade stale defaults
+  let needsSave = false;
+  for (const [taskType, config] of Object.entries(schedule.tasks)) {
+    if (enforceManagedAgentOptions(taskType, config)) needsSave = true;
+    if (enforceBranchReconcileBatch(taskType, config)) needsSave = true;
+    // Stamp a creation timestamp the first time we see a task so the cron
+    // catch-up bound (shouldRunTask) never replays a slot that predates the
+    // task. Backfilling to "now" is conservative: it only suppresses catch-up
+    // for slots already in the past — future slots fire on their real cadence.
+    if (!config.createdAt) {
+      config.createdAt = new Date().toISOString();
+      needsSave = true;
+    }
+    if (!config.prompt && DEFAULT_TASK_PROMPTS[taskType]) {
+      // No prompt set — initialize with current default and version
+      config.prompt = DEFAULT_TASK_PROMPTS[taskType];
+      config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
+      needsSave = true;
+    } else {
+      // Legacy migration: infer customization when promptVersion is missing
+      if (
+        config.prompt &&
+        config.promptVersion === undefined &&
+        DEFAULT_TASK_PROMPTS[taskType]
+      ) {
+        if (config.prompt === DEFAULT_TASK_PROMPTS[taskType]) {
+          // Matches current default — assign current version (no upgrade needed)
+          config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
+          needsSave = true;
+        } else if ((PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(config.prompt)) {
+          // Matches a known previous default — assign version 1 so auto-upgrade triggers
+          config.promptVersion = 1;
+          needsSave = true;
+        } else {
+          // Prompt differs from all known defaults — treat as user-customized
+          config.promptCustomized = true;
+          config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
+          needsSave = true;
+        }
+      }
+
+      // Self-heal a mis-flagged customization: a prompt marked promptCustomized
+      // that nonetheless byte-matches a shipped default was never user-edited —
+      // it was flagged by an earlier legacy migration that ran before this task
+      // carried a PREVIOUS_DEFAULT_PROMPTS entry (e.g. the basic self-improvement
+      // prompts that hardcoded the app name as "PortOS"). Clear the flag so the
+      // auto-upgrade below can replace the stale default.
+      if (config.promptCustomized && promptMatchesShippedDefault(config.prompt, taskType)) {
+        config.promptCustomized = false;
+        needsSave = true;
+      }
+
+      if (PROMPT_VERSIONS[taskType] && !config.promptCustomized) {
+        // Auto-upgrade non-customized prompts when code version is newer
+        const storedVersion = config.promptVersion || 1;
+        if (storedVersion < PROMPT_VERSIONS[taskType]) {
+          emitLog('info', `Upgrading ${taskType} prompt v${storedVersion} → v${PROMPT_VERSIONS[taskType]}`, { taskType }, '📅 TaskSchedule');
+          config.prompt = DEFAULT_TASK_PROMPTS[taskType];
+          config.promptVersion = PROMPT_VERSIONS[taskType];
+          needsSave = true;
+        }
+      }
+    }
+  }
+
+  if (needsSave) {
+    await saveSchedule(schedule);
+  }
+
+  return schedule;
+}
+
+export async function saveSchedule(schedule) {
+  await ensureDataDir();
+  schedule.lastUpdated = new Date().toISOString();
+  await atomicWrite(SCHEDULE_FILE, schedule);
+}
+

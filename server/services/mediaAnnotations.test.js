@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { posixPath as toPosix } from '../lib/testHelper.js';
 
 const fileStore = new Map();
+let writeDelay = 0;
 
 vi.mock('../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: '/mock/data' },
   ensureDir: vi.fn().mockResolvedValue(undefined),
-  atomicWrite: vi.fn(async (path, data) => { fileStore.set(toPosix(path), data); }),
+  atomicWrite: vi.fn(async (path, data) => {
+    if (writeDelay) await new Promise((resolve) => setTimeout(resolve, writeDelay));
+    fileStore.set(toPosix(path), data);
+  }),
   readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(toPosix(path)) ? fileStore.get(toPosix(path)) : fallback)),
 }));
 
@@ -28,6 +32,25 @@ const STATE_PATH = '/mock/data/media-annotations.json';
 describe('mediaAnnotations service (multi-author)', () => {
   beforeEach(() => {
     fileStore.clear();
+    writeDelay = 0;
+  });
+
+  it('serializes concurrent local and peer read-modify-write cycles', async () => {
+    writeDelay = 5;
+    await Promise.all([
+      svc.setAnnotation('image:local.png', { starred: true }),
+      svc.mergePeerAnnotations({
+        instanceId: 'peer-1',
+        authorName: 'Peer',
+        annotations: {
+          'image:peer.png': { starred: true, note: 'kept', updatedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      }),
+    ]);
+    expect(Object.keys(fileStore.get(STATE_PATH).annotations)).toEqual([
+      'image:local.png',
+      'image:peer.png',
+    ]);
   });
 
   it('listAnnotations returns {} for fresh state', async () => {

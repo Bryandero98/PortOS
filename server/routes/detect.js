@@ -243,10 +243,7 @@ router.post('/ai', asyncHandler(async (req, res) => {
     throw new ServerError('Path is required', { status: 400, code: 'MISSING_PATH' });
   }
 
-  const result = await detectAppWithAi(path, providerId).catch(err => ({
-    success: false,
-    error: err.message
-  }));
+  const result = await detectAppWithAi(path, providerId);
 
   res.json(result);
 }));

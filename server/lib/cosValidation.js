@@ -1258,6 +1258,13 @@ export const createCosTaskSchema = z.object({
     v => v === 'true' ? true : v === 'false' ? false : v,
     z.boolean().optional()
   ),
+  // Read-only planning mode: investigate the codebase and file the issue, but
+  // do not start implementation delivery. The task store expands this into
+  // the safe no-worktree/no-PR/no-simplify posture before persistence.
+  planOnly: z.preprocess(
+    v => v === 'true' ? true : v === 'false' ? false : v,
+    z.boolean().optional()
+  ),
   openPR: z.preprocess(
     v => v === 'true' ? true : v === 'false' ? false : v,
     z.boolean().optional()

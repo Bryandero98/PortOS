@@ -323,3 +323,129 @@ describe('AdvancedParamsPanel — reference mode before the model catalog loads'
     expect(screen.getByText(/can only anchor a reference/i)).toBeTruthy();
   });
 });
+
+// Speed profiles (#4875). The picker exists so a validated fast schedule is
+// reachable without hand-tuning steps/CFG — and so it is NEVER offered where
+// the server would decline it, which would be a dead speed affordance.
+describe('AdvancedParamsPanel — speed profiles', () => {
+  const FAST = {
+    id: 'fast',
+    name: 'Fast',
+    description: 'Validated 8+3-step two-stage schedule at CFG 1.0.',
+    speedupLabel: '~2× faster',
+    steps: 8,
+    stage2Steps: 3,
+    guidance: 1.0,
+    modes: ['text', 'image'],
+  };
+  const ltx25 = (extra = {}) => ({
+    steps: 8, guidance: 3.0, runtime: 'ltx25',
+    supportedModes: ['text', 'image', 'fflf', 'extend'],
+    speedProfiles: [FAST],
+    ...extra,
+  });
+
+  it('is hidden on a model that declares no profiles', () => {
+    renderPanel();
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  it('offers Quality plus each profile validated for the current mode', () => {
+    renderPanel({ currentModel: ltx25() });
+    const select = screen.getByLabelText('Speed');
+    expect([...select.options].map((o) => o.value)).toEqual(['quality', 'fast']);
+    expect([...select.options].map((o) => o.text)).toEqual(['Quality · default', 'Fast · ~2× faster']);
+  });
+
+  // The whole reason the picker filters by mode: on fflf/extend the server
+  // declines the profile, so offering it would promise a speed-up the render
+  // silently doesn't take.
+  it.each(['fflf', 'extend'])('is hidden on %s, where the profile is not validated', (mode) => {
+    renderPanel({ currentModel: ltx25(), mode });
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  it('is hidden on a samplerLocked model, whose own schedule is the authority', () => {
+    renderPanel({ currentModel: ltx25({ samplerLocked: true }) });
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  // A chained render is ONE clip: the server applies a profile only when every
+  // chunk's mode accepts it. Chunks 1+ re-enter as `extend` on a
+  // window-continuity chain, so offering Fast there would grey out Steps/CFG
+  // and then quietly render the whole chain at the model default.
+  it('hides the picker on a window-continuity chain, where the server declines', () => {
+    renderPanel({ currentModel: ltx25(), chainingActive: true, chunks: 4, contextFrames: 22 });
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  it('keeps the picker on a frame-hop chain, where every chunk qualifies', () => {
+    // contextFrames 0 → frame hop → chunks 1+ are `image`, which Fast supports.
+    renderPanel({ currentModel: ltx25(), chainingActive: true, chunks: 4, contextFrames: 0 });
+    expect([...screen.getByLabelText('Speed').options].map((o) => o.value)).toEqual(['quality', 'fast']);
+  });
+
+  it('keeps the picker for a single-chunk render whatever the continuity setting', () => {
+    renderPanel({ currentModel: ltx25(), chainingActive: false, chunks: 1, contextFrames: 22 });
+    expect(screen.getByLabelText('Speed')).toBeTruthy();
+  });
+
+  it('leaves Steps and CFG editable when a chain declines the selected profile', () => {
+    renderPanel({
+      currentModel: ltx25(), chainingActive: true, chunks: 4, contextFrames: 22, speedProfileId: 'fast',
+    });
+    expect(screen.getByLabelText(/Steps/).disabled).toBe(false);
+    expect(screen.getByLabelText(/CFG Scale/).disabled).toBe(false);
+  });
+
+  it('propagates a selection to the page handler', () => {
+    const onSpeedProfileChange = vi.fn();
+    renderPanel({ currentModel: ltx25(), onSpeedProfileChange });
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: 'fast' } });
+    expect(onSpeedProfileChange).toHaveBeenCalledWith('fast');
+  });
+
+  it('falls back to Quality when the selection is not offered by this model', () => {
+    // A model switch can leave a stale id in state before the reconcile effect
+    // runs; the <select> must not sit on a value with no matching <option>.
+    renderPanel({ currentModel: ltx25(), speedProfileId: 'turbo' });
+    expect(screen.getByLabelText('Speed').value).toBe('quality');
+  });
+
+  // With two profiles the picker is shown (one is valid here), so resolving
+  // the selection against the UNFILTERED list would lock Steps/CFG to the
+  // profile this mode declines — promising a schedule the render won't use.
+  it('ignores a selected profile that this mode does not support', () => {
+    const twoProfiles = ltx25({
+      speedProfiles: [FAST, { id: 'blitz', name: 'Blitz', steps: 4, guidance: 1.0, modes: ['fflf'] }],
+    });
+    renderPanel({ currentModel: twoProfiles, mode: 'text', speedProfileId: 'blitz' });
+    // 'blitz' isn't offered for text, so the picker falls back to Quality...
+    expect([...screen.getByLabelText('Speed').options].map((o) => o.value)).toEqual(['quality', 'fast']);
+    expect(screen.getByLabelText('Speed').value).toBe('quality');
+    // ...and the dials stay the user's to set.
+    expect(screen.getByLabelText(/Steps/).disabled).toBe(false);
+    expect(screen.getByLabelText(/CFG Scale/).disabled).toBe(false);
+  });
+
+  it('leaves Steps and CFG editable on Quality', () => {
+    renderPanel({ currentModel: ltx25(), speedProfileId: 'quality' });
+    expect(screen.getByLabelText(/Steps/).disabled).toBe(false);
+    expect(screen.getByLabelText(/CFG Scale/).disabled).toBe(false);
+  });
+
+  it('locks Steps and CFG to the profile while one is active', () => {
+    renderPanel({ currentModel: ltx25(), speedProfileId: 'fast', steps: '30', guidanceScale: '7' });
+    const steps = screen.getByLabelText(/Steps/);
+    const cfg = screen.getByLabelText(/CFG Scale/);
+    expect(steps.disabled).toBe(true);
+    expect(cfg.disabled).toBe(true);
+    // The profile's own numbers show as placeholders — a stale typed value
+    // must not read as if it were what the render will use.
+    expect(steps.value).toBe('');
+    expect(cfg.value).toBe('');
+    expect(steps.placeholder).toBe('8');
+    expect(cfg.placeholder).toBe('1');
+    expect(screen.getByText(/8\+3 steps, CFG 1/)).toBeTruthy();
+  });
+});

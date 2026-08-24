@@ -9,6 +9,8 @@ const PARAM_ALLOWLIST = new Set([
   'seed', 'tiling', 'disableAudio', 'mode', 'imageStrength',
   'i2vReferenceMode',
   'textEncoderId', 'chunks', 'chunkPrompts', 'contextFrames', 'loras',
+
+  'textEncoderId', 'speedProfileId', 'chunks', 'chunkPrompts', 'contextFrames', 'loras',
   'cfgScale', 'guidance', 'quantize',
   'runId', 'runtime', 'datasetId', 'characterId', 'characterName',
   'triggerWord', 'rank', 'baseModelId', 'spriteRef', 'spriteWalk',

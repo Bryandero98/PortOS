@@ -98,7 +98,25 @@
           },
           "estimatedDownloadGb": 67.7,
           "reviewedAt": "2026-08-09"
-        }
+        },
+        "speedProfiles": [
+          {
+            "id": "fast",
+            "name": "Fast",
+            "description": "Validated 8+3-step two-stage schedule at CFG 1.0 with stage-1 TeaCache. Softer detail and weaker prompt adherence than Quality.",
+            "speedupLabel": "~35-45% faster",
+            "steps": 8,
+            "stage2Steps": 3,
+            "guidance": 1,
+            "teacache": true,
+            "teacacheThresh": null,
+            "requiresAdapter": "ltx-2.5-22b-distilled-lora-450.safetensors",
+            "modes": [
+              "text",
+              "image"
+            ]
+          }
+        ]
       },
       {
         "id": "minimax_h3_8bit",

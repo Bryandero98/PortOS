@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Lock, ShieldCheck, ShieldOff } from 'lucide-react';
 import toast from '../ui/Toast';
+import FormField from '../ui/FormField';
 import BrailleSpinner from '../BrailleSpinner';
 import { getAuthStatus, setAuthPassword, clearAuthPassword } from '../../services/api';
 
@@ -111,8 +112,7 @@ export function SecurityTab() {
           <Lock className="w-4 h-4" /> {enabled ? 'Change password' : 'Set a password'}
         </h3>
         {enabled && (
-          <div>
-            <label htmlFor="security-current" className="block text-sm text-gray-300 mb-1">Current password</label>
+          <FormField label="Current password" labelClassName="block text-sm text-gray-300 mb-1">
             <input
               id="security-current"
               type="password"
@@ -121,10 +121,9 @@ export function SecurityTab() {
               onChange={(e) => setCurrentPassword(e.target.value)}
               className="w-full bg-port-bg border border-port-border rounded px-3 py-2 text-white focus:border-port-accent focus:outline-none"
             />
-          </div>
+          </FormField>
         )}
-        <div>
-          <label htmlFor="security-new" className="block text-sm text-gray-300 mb-1">New password</label>
+        <FormField label="New password" labelClassName="block text-sm text-gray-300 mb-1">
           <input
             id="security-new"
             type="password"
@@ -135,9 +134,8 @@ export function SecurityTab() {
             className="w-full bg-port-bg border border-port-border rounded px-3 py-2 text-white focus:border-port-accent focus:outline-none"
           />
           <p className="text-xs text-gray-500 mt-1">Minimum 8 characters.</p>
-        </div>
-        <div>
-          <label htmlFor="security-confirm" className="block text-sm text-gray-300 mb-1">Confirm new password</label>
+        </FormField>
+        <FormField label="Confirm new password" labelClassName="block text-sm text-gray-300 mb-1">
           <input
             id="security-confirm"
             type="password"
@@ -146,7 +144,7 @@ export function SecurityTab() {
             onChange={(e) => setConfirmPassword(e.target.value)}
             className="w-full bg-port-bg border border-port-border rounded px-3 py-2 text-white focus:border-port-accent focus:outline-none"
           />
-        </div>
+        </FormField>
         <button
           type="submit"
           disabled={saving || !newPassword || !confirmPassword || (enabled && !currentPassword)}
@@ -172,8 +170,7 @@ export function SecurityTab() {
             </button>
           ) : (
             <div className="space-y-3">
-              <div>
-                <label htmlFor="security-disable" className="block text-sm text-gray-300 mb-1">Enter current password to confirm</label>
+              <FormField label="Enter current password to confirm" labelClassName="block text-sm text-gray-300 mb-1">
                 <input
                   id="security-disable"
                   type="password"
@@ -182,7 +179,7 @@ export function SecurityTab() {
                   onChange={(e) => setDisablePassword(e.target.value)}
                   className="w-full bg-port-bg border border-port-border rounded px-3 py-2 text-white focus:border-port-accent focus:outline-none"
                 />
-              </div>
+              </FormField>
               <div className="flex gap-2">
                 <button
                   type="button"

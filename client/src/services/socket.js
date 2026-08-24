@@ -24,7 +24,7 @@ socket.on('disconnect', () => {
 });
 
 socket.on('connect_error', (err) => {
-  // Auth gate rejected the handshake (server: lib/authGate.js socketAuthGate).
+  // Auth gate rejected the handshake (server: services/authGate.js socketAuthGate).
   // Bounce to /login so the user can sign back in; skip if already there.
   if (err?.data?.code === 'AUTH_REQUIRED' && typeof window !== 'undefined') {
     if (!window.location.pathname.startsWith('/login')) {

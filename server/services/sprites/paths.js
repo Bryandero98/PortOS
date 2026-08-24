@@ -49,6 +49,18 @@ export const isSourcePipelinePath = (p) => typeof p === 'string' && p.includes(S
 // postprocess reads it, and the walk service re-derives from it.
 export const SOURCE_CLIP_NAME = 'source-video.mp4';
 
+// The record-relative home of one animation run, in the VENDOR-NEUTRAL layout
+// every new generation writes (migration 202 renamed the historical `grok/`
+// tree into it; RUN_DIR_MATCH below still accepts both prefixes on read).
+// Hoisted here when the local-render completion hook became the third consumer
+// — walk.js and animationTrackWorkflow.js had each declared their own copy.
+export const runRelPath = (runId) => `runs/${runId}`;
+
+// The per-run record inside that directory. Hoisted for the same reason
+// `runRelPath` was: walk.js, animationTrackWorkflow.js, and the local-render
+// completion hook each need to name the same file.
+export const RUN_RECORD_NAME = 'animation-run.json';
+
 /**
  * Normalize an asset-path field read out of an imported manifest to the
  * record-relative form `spriteAssetUrl`/`resolveSpriteAssetPath` expect. The

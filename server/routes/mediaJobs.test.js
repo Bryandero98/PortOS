@@ -276,6 +276,34 @@ describe('mediaJobs routes', () => {
     });
   });
 
+  // #4875 — resolveVideoSampler ranks a speed profile ABOVE explicit
+  // steps/guidanceScale, so without a clear path a retry that edits Steps on a
+  // profiled job would run at the profile's schedule and silently ignore it.
+  it('POST /:id/retry can drop a speed profile so an edited sampler takes effect', async () => {
+    jobStore.set('j-video-profile', {
+      id: 'j-video-profile', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'old', modelId: 'ltx25_mlx_q8', speedProfileId: 'fast', steps: 8 },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-video-profile/retry')
+      .send({ params: { speedProfileId: null, steps: 20 } });
+    expect(r.status).toBe(200);
+    expect(stubs.enqueueJob.mock.calls[0][0].params)
+      .toEqual({ prompt: 'old', modelId: 'ltx25_mlx_q8', steps: 20 });
+  });
+
+  it('POST /:id/retry can switch a speed profile, and inherits it when untouched', async () => {
+    jobStore.set('j-video-keep', {
+      id: 'j-video-keep', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'old', speedProfileId: 'fast' },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-video-keep/retry')
+      .send({ params: { prompt: 'new' } });
+    expect(r.status).toBe(200);
+    expect(stubs.enqueueJob.mock.calls[0][0].params.speedProfileId).toBe('fast');
+  });
+
   it('POST /:id/retry clears resettable numeric video controls with null', async () => {
     jobStore.set('j-video-clear', {
       id: 'j-video-clear', kind: 'video', owner: null, status: 'failed',

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 
 // URL-driven MediaPreview state. Returns `[preview, setPreview]` with the same
@@ -26,6 +26,13 @@ import { useSearchParams } from 'react-router';
 // the history stack.
 export default function usePreviewRoute(items, { paramName = 'preview' } = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
+  // React Router may replace both values after navigation. Refs let callers
+  // keep one action identity (important for memoized gallery cards) while the
+  // action still reads and invokes the latest router state.
+  const searchParamsRef = useRef(searchParams);
+  const setSearchParamsRef = useRef(setSearchParams);
+  searchParamsRef.current = searchParams;
+  setSearchParamsRef.current = setSearchParams;
   const previewParam = searchParams.get(paramName);
 
   const preview = useMemo(() => {
@@ -40,13 +47,14 @@ export default function usePreviewRoute(items, { paramName = 'preview' } = {}) {
   }, [items, previewParam]);
 
   const setPreview = useCallback((item) => {
-    const wasOpen = !!searchParams.get(paramName);
+    const currentSearchParams = searchParamsRef.current;
+    const wasOpen = !!currentSearchParams.get(paramName);
     const isOpen = !!item;
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(currentSearchParams);
     if (!item) next.delete(paramName);
     else next.set(paramName, item.key || item.filename || '');
-    setSearchParams(next, { replace: wasOpen || !isOpen });
-  }, [searchParams, setSearchParams, paramName]);
+    setSearchParamsRef.current(next, { replace: wasOpen || !isOpen });
+  }, [paramName]);
 
   return [preview, setPreview];
 }

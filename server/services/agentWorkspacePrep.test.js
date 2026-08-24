@@ -113,6 +113,27 @@ describe('prepareAgentWorkspace', () => {
     expect(ensureLatest).not.toHaveBeenCalled();
   });
 
+  it('plan-only task: keeps the no-worktree path even with delivery flags present', async () => {
+    const task = {
+      id: 't-plan-only',
+      taskType: 'user',
+      metadata: {
+        planOnly: true,
+        readOnly: true,
+        noCodeOutput: true,
+        useWorktree: false,
+        openPR: false,
+        simplify: false,
+      },
+    };
+    const r = await prepareAgentWorkspace({ agentId: 'agent-plan-only', task });
+    expect(r.outcome).toBe('ready');
+    expect(r.worktreeInfo).toBeNull();
+    expect(r.explicitWorktree).toBe(false);
+    expect(ensureLatest).not.toHaveBeenCalled();
+    expect(createWorktree).not.toHaveBeenCalled();
+  });
+
   it('defers when the pre-task git pull hits an unresolvable conflict', async () => {
     ensureLatest.mockResolvedValue({ conflict: true, branch: 'feature/x', error: 'rebase failed' });
     const task = { id: 't-conflict', taskType: 'user', metadata: {} };

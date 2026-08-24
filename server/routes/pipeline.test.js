@@ -483,6 +483,25 @@ describe('pipeline routes', () => {
     expect(nullUni.status).toBe(400);
   });
 
+  it('GET /series preserves the bare array and supports bounded pagination', async () => {
+    const app = makeApp();
+    await request(app).post('/api/pipeline/series').send({ name: 'Alpha', universeId: 'u-test' });
+    await request(app).post('/api/pipeline/series').send({ name: 'Beta', universeId: 'u-test' });
+    await request(app).post('/api/pipeline/series').send({ name: 'Gamma', universeId: 'u-test' });
+
+    const unpaged = await request(app).get('/api/pipeline/series');
+    expect(unpaged.status).toBe(200);
+    expect(Array.isArray(unpaged.body)).toBe(true);
+    expect(unpaged.body).toHaveLength(3);
+
+    const paged = await request(app).get('/api/pipeline/series?limit=1&offset=1');
+    expect(paged.status).toBe(200);
+    expect(paged.body.items).toHaveLength(1);
+    expect(paged.body.total).toBe(3);
+    expect(paged.body.limit).toBe(1);
+    expect(paged.body.offset).toBe(1);
+  });
+
   it('GET /series/duplicates returns grouped shape (static path not swallowed by /:id)', async () => {
     const app = makeApp();
     const res = await request(app).get('/api/pipeline/series/duplicates');

@@ -12,7 +12,9 @@
 
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest, videoDownloadSchema } from '../lib/validation.js';
+import {
+  validateRequest, videoDownloadSchema, isPaginationRequested, paginateArray,
+} from '../lib/validation.js';
 import {
   startVideoDownload,
   attachDownloadSseClient,
@@ -30,8 +32,10 @@ router.post('/', asyncHandler(async (req, res) => {
 
 // `downloads` is a distinct first segment from a job's `:jobId` (whose routes
 // are always two-segment — `:jobId/events`, `:jobId/cancel`), so no collision.
-router.get('/downloads', asyncHandler(async (_req, res) => {
-  res.json(await listDownloads());
+router.get('/downloads', asyncHandler(async (req, res) => {
+  const downloads = await listDownloads();
+  if (!isPaginationRequested(req.query)) return res.json(downloads);
+  res.json(paginateArray(downloads, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 router.delete('/downloads/:id', asyncHandler(async (req, res) => {

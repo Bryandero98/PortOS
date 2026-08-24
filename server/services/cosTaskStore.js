@@ -16,7 +16,7 @@ import { readFile, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { parseTasksMarkdown, groupTasksByStatus, getAutoApprovedTasks, getAwaitingApprovalTasks, generateTasksMarkdown, hasKnownPrefix } from '../lib/taskParser.js';
-import { REVIEW_STOP_MODES, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers, KEYED_REVIEWER_PINS } from '../lib/validation.js';
+import { KEYED_REVIEWER_PINS, MAX_TOTAL_SPAWNS, REVIEW_STOP_MODES, SWARM_COUNT_MAX, SWARM_COUNT_MIN, normalizeReviewers, normalizeReviewUsernames, normalizeOptionalReviewers } from '../lib/validation.js';
 import { isPlainObject } from '../lib/objects.js';
 import { PR_COMPLETIONS, PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { RETRY_HOLD_KEY, RETRY_HOLD_SINCE_KEY } from '../lib/taskRetryHold.js';
@@ -31,7 +31,6 @@ import { cosEvents } from './cosEvents.js';
 import { CLAIM_METADATA_KEYS, TARGET_INSTANCE_KEY, getTargetInstance } from './cosTaskClaim.js';
 import { mergeTaskLists } from './cosTaskMerge.js';
 import { canChallenge, getChallengeCount, buildChallengePatch, buildChallengeResolutionPatch, classifyRecheckOutcome, MAX_CHALLENGES_PER_TASK } from './cosChallenge.js';
-import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { runLocalCodeReview, getCodeReviewDefaults } from './codeReview.js';
 
 // First non-empty line of a string. Used by addTask dedup: stored descriptions
@@ -319,6 +318,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
   } else {
     // Generate a unique ID if not provided
     const id = taskData.id || `${taskType === 'user' ? 'task' : 'sys'}-${Date.now().toString(36)}`;
+    // Planning is an explicit workflow mode, not just a collection of UI
+    // toggles. Keep the server-side contract authoritative for direct API
+    // callers and for older clients that only send the plan-task command.
+    const planOnly = taskData.planOnly === true || taskData.slashdoCommand === 'plan-task';
 
     // Build metadata object
     const metadata = {};
@@ -445,6 +448,13 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // known (see server/lib/slashdoInvocation.js).
     if (taskData.slashdoCommand) metadata.slashdoCommand = taskData.slashdoCommand;
     if (taskData.slashdoArgs) metadata.slashdoArgs = taskData.slashdoArgs;
+    // Manual `/do:next` claim swarms are non-raw tasks. Their prompt already
+    // names the fan-out, and agentLifecycle needs this count after the markdown
+    // round-trip to lift a cloud Codex session to root + configured workers.
+    const swarmCount = Number(taskData.swarmCount);
+    if (Number.isSafeInteger(swarmCount) && swarmCount >= SWARM_COUNT_MIN && swarmCount <= SWARM_COUNT_MAX) {
+      metadata.swarmCount = swarmCount;
+    }
     if (taskData.malwareScan && typeof taskData.malwareScan === 'object' && !Array.isArray(taskData.malwareScan)) {
       metadata.malwareScan = taskData.malwareScan;
     }
@@ -495,6 +505,31 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // it gates on still reads healthy). See quotaBurnDenials.js.
     if (Number.isFinite(taskData.quotaBurnLimitingResetAt)) {
       metadata.quotaBurnLimitingResetAt = taskData.quotaBurnLimitingResetAt;
+    }
+    if (planOnly) {
+      // Plan-and-file is a single bounded CoS action. The bundled plan-task
+      // command is already issue-only, so pass its supported `--yes` flag to
+      // make this toggle's issue-filing action unattended.
+      metadata.planOnly = true;
+      metadata.slashdoCommand = 'plan-task';
+      metadata.slashdoArgs = '--yes';
+      metadata.readOnly = true;
+      metadata.noCodeOutput = true;
+      metadata.useWorktree = false;
+      metadata.openPR = false;
+      metadata.simplify = false;
+      metadata.reviewLoop = false;
+      metadata.worktreeChangesExpected = false;
+      delete metadata.createJiraTicket;
+      delete metadata.prCompletion;
+      delete metadata.reviewers;
+      delete metadata.usernames;
+      delete metadata.optionalReviewers;
+      delete metadata.reviewerMaxRounds;
+      delete metadata.reviewerModels;
+      delete metadata.reviewerEfforts;
+      delete metadata.reviewStopMode;
+      delete metadata.reviewerApplies;
     }
     // Content-edit timestamp for cross-peer newest-edit-wins LWW (#1714). Stamped
     // at creation so a freshly-added task always carries a stamp; the merge treats

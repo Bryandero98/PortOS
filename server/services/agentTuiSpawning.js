@@ -30,10 +30,11 @@ import { resolveReviewLoopOptions } from './codeReview.js';
 import { spawnTuiSessionViaRunner, classifyRunnerSpawnFailure, RUNNER_SPAWN_REFUSED, RUNNER_SPAWN_AMBIGUOUS } from './cosRunnerClient.js';
 import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 import { formatShellCommandLine } from '../lib/shellCd.js';
-import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
+import { buildCodexAgentThreadArgs, isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector, createLocalRuntimeOomDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
+import { isCodexCommand } from '../lib/codex.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   READY_POLL_INTERVAL_MS,
@@ -190,6 +191,7 @@ export async function createAgentTuiSession({
 export function buildTuiSpawnConfig(provider, model, {
   systemPromptFile = null,
   effort = null,
+  maxConcurrentThreads = null,
   shell = resolveInteractiveShell(),
 } = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
@@ -199,6 +201,9 @@ export function buildTuiSpawnConfig(provider, model, {
   // providerVendors.js#injectTuiModelAndEffort, so the two spawn paths can't
   // drift — they already had once, on cursor, before #3618.
   let args = injectTuiModelAndEffort(command, baseArgs, provider, model, effort);
+  if (isCodexCommand(command)) {
+    args = [...args, ...buildCodexAgentThreadArgs(maxConcurrentThreads)];
+  }
   // Lean mode for Ollama-backed claude sessions (no-op otherwise) — must come
   // before the system-prompt flag so `--bare` is present when the contract
   // file rides along.

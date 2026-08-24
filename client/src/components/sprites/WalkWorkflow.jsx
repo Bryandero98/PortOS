@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import {
-  Check, Film, RefreshCw, Scissors, Lock, Unlock, Terminal, Gauge, RotateCcw,
+  Check, Film, RefreshCw, Scissors, Lock, Unlock, Terminal, Gauge, RotateCcw, Cpu,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
@@ -10,6 +10,7 @@ import {
 import ConfirmButtonPair from '../ui/ConfirmButtonPair.jsx';
 import Banner from '../ui/Banner.jsx';
 import CycleTarget from './CycleTarget.jsx';
+import AnimationProviderPicker from './AnimationProviderPicker.jsx';
 import { CorrectionNoteToggle, walkCorrectionKey } from './CorrectionNote.jsx';
 import SpritePreview from './SpritePreview.jsx';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
@@ -341,6 +342,20 @@ function DirectionCard({
         </Link>
       )}
 
+      {/* The local lane has no PTY to attach to, so its observability is the
+          Render Queue row for the job — same slot, same shape, so a rendering
+          card is never a dead end on either lane. Mutually exclusive with the
+          Shell link above: a run carries a shellSession OR a jobId. */}
+      {rendering && !run?.shellSession && run?.jobId && (
+        <Link
+          to="/system-resources/queues"
+          title="Watch this local render in the Render Queue (progress / cancel)"
+          className="flex items-center gap-1 w-full justify-center px-2 py-0.5 text-xs bg-port-card border border-port-accent rounded text-port-accent hover:bg-port-accent hover:text-white"
+        >
+          <Cpu className="w-3 h-3" /> Watch in Render Queue
+        </Link>
+      )}
+
       {/* Retry also covers a run wedged at 'postprocessing' (crash between
           the video copy and the packaged save) — the endpoint is the
           documented recovery path and validates readiness server-side. */}
@@ -529,6 +544,7 @@ function DirectionCard({
 export default function WalkWorkflow({
   record, reference, walk, renders, duration, onDurationChange, onGenerate,
   onOpenTrimmer = () => {}, onChanged, corrections = null, onCorrectionChange = null,
+  providers = null, provider = 'grok', onProviderChange = () => {},
 }) {
   const recordId = record.id;
   // The cycle target is server-resolved (app contract → set pin → first approved
@@ -733,7 +749,16 @@ export default function WalkWorkflow({
               onChanged={onChanged}
               onSavingChange={setTargetSaving}
             />
-            <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={`walk-clip-${recordId}`} title="grok renders 6s or 10s clips — these are the only lengths it offers, and a shorter request comes back as 6s. Length only affects how much source footage the packer has to choose from, not the walk's speed.">
+            <AnimationProviderPicker
+              id={`walk-provider-${recordId}`}
+              providers={providers}
+              provider={provider}
+              onChange={onProviderChange}
+              disabled={finalized}
+            />
+            <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={`walk-clip-${recordId}`} title={provider === 'local'
+                ? "The local model renders on a fixed frame grid, so this length is snapped to the nearest legal clip. Length only affects how much source footage the packer has to choose from, not the walk's speed."
+                : "grok renders 6s or 10s clips — these are the only lengths it offers, and a shorter request comes back as 6s. Length only affects how much source footage the packer has to choose from, not the walk's speed."}>
               Clip
               <select
                 id={`walk-clip-${recordId}`}

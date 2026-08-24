@@ -15,7 +15,9 @@ import {
 } from '../../lib/videoReferenceModes.js';
 import { extendLatentFrames } from '../../lib/videoContinuity.js';
 import { videoLoraLayoutIssue } from '../../lib/safetensors.js';
+import { formatLoraEffect, loraEffectIssue } from '../../lib/loraEffect.js';
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
+import { LORA_EFFECT_PROBE_BUDGET_MS, probeLoraEffect } from '../loraEffectProbe.js';
 import { videoLoraFamily, isLtx2FamilyRuntime } from '../../lib/runners.js';
 import {
   isIcLoraMode, icLoraSpecForMode, assertIcReferenceCount, icResolutionIssue,
@@ -161,9 +163,13 @@ export const resolveT2vTwoStageOverride = ({
 // lora_up) or diffusers/PEFT-prefixed file matches nothing: the render burns
 // minutes of GPU time and comes back as an un-LoRA'd (or noisy) clip with no
 // error anywhere. Refuse it up front with the layout named.
-export const resolveVideoLoras = async (loras) => {
+export const resolveVideoLoras = async (loras, { probeEffect = false } = {}) => {
   if (!Array.isArray(loras) || loras.length === 0) return [];
   const out = [];
+  // ONE budget for every selected adapter, not one each. This runs before
+  // generateVideo mints a job id, so anything spent here is silence in the UI —
+  // a 4-LoRA render must not be able to stall for four full probe budgets.
+  const effectDeadline = probeEffect ? Date.now() + LORA_EFFECT_PROBE_BUDGET_MS : null;
   for (const l of loras) {
     assertSafeLoraFilename(l?.filename);
     const path = join(PATHS.loras, l.filename);
@@ -180,6 +186,29 @@ export const resolveVideoLoras = async (loras) => {
     }
     if (layout == null) {
       console.log(`⚠️ LoRA key layout undetermined for ${l.filename} — fusing anyway`);
+    }
+    // Adapter-effect gate (#4872). Opt-in — a passive library read must never
+    // spawn a probe — and the render path opts in, because this is the last
+    // moment before GPU minutes are spent on weights that may be inert. The
+    // measurement is cached in the sidecar, so this costs a Python child once
+    // per LoRA file and nothing thereafter.
+    //
+    // Only a POSITIVE measurement of entirely-zero effect refuses. A probe that
+    // could not run (no numpy anywhere), an unreadable adapter, or one whose
+    // modules all measured NaN, all render exactly as they did before this
+    // gate existed — see loraEffectIssue().
+    if (probeEffect) {
+      const report = await probeLoraEffect(l.filename, { deadline: effectDeadline });
+      const effectIssue = loraEffectIssue(report);
+      if (effectIssue) {
+        throw new ServerError(
+          `LoRA "${l.filename}" can't be used for video: ${effectIssue}.`,
+          { status: 400, code: 'LORA_EFFECT_ZERO' },
+        );
+      }
+      if (report?.measured > 0) {
+        console.log(`🔬 LoRA effect ${l.filename}: ${formatLoraEffect(report)}`);
+      }
     }
     const strength = Number.isFinite(l?.scale) ? l.scale : 1.0;
     out.push({ path, strength, filename: l.filename });
@@ -283,7 +312,7 @@ export const ltx25TextEncoderArgs = (textEncoder) => {
   return args;
 };
 
-const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile }) => {
   assertByovRuntimeInstalled(model.runtime);
   // Map PortOS UI modes to the helper's subcommand. Native extend on ltx2
   // routes to ExtendPipeline.extend_from_video — conditions on the entire
@@ -411,6 +440,30 @@ const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, hei
   // Two-stage T2V experiment passes an explicit stage-2 step count; omitted
   // otherwise so the pipeline keeps its own default.
   if (stage2Steps != null) args.push('--stage2-steps', String(stage2Steps));
+  // Speed-profile levers (#4875). Emitted ONLY for a resolved profile — a
+  // quality render must build byte-identical args to one from before the
+  // feature existed, so absence is the whole contract here.
+  //
+  // The helper, not this builder, decides whether each lever is actually
+  // available: `--speed-profile` names the profile in the child's
+  // SPEEDPROFILE: report, `--teacache` REQUESTS stage-1 caching (the helper
+  // probes the pinned pipeline for the kwarg and reports `degraded` when it
+  // isn't there), and `--require-adapter` names the distilled adapter the
+  // schedule was measured with so a pack missing it degrades loudly instead
+  // of rendering slower than the profile claims.
+  if (speedProfile) {
+    args.push('--speed-profile', speedProfile.id);
+    if (speedProfile.teacache) {
+      args.push('--teacache');
+      if (speedProfile.teacacheThresh != null) {
+        args.push('--teacache-thresh', String(speedProfile.teacacheThresh));
+      }
+    }
+    // String()'d like every other value pushed here: spawn throws
+    // ERR_INVALID_ARG_TYPE on a non-string argv entry, and a hand-edited
+    // registry can put a number in this field.
+    if (speedProfile.requiresAdapter) args.push('--require-adapter', String(speedProfile.requiresAdapter));
+  }
   if (negativePrompt) args.push('--negative-prompt', negativePrompt);
   if (imageStrength != null) args.push('--image-strength', String(imageStrength));
   // The reference-mode promise (#4874). Emitted only when it is NOT the default so
@@ -723,7 +776,7 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile }) => {
   // Reference-mode promise (#4874) — checked HERE rather than inside
   // buildLtx2Args because every runtime reaches this function and only one can
   // honor a loose reference. A wan22/mlx_video/H3 render that fell through to its
@@ -741,7 +794,7 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (isLtx2FamilyRuntime(model.runtime)) {
-    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
+    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile });
   }
   // IC-LoRA remix modes are an LTX-2 primitive (ICLoraPipeline) — no other
   // runtime has an equivalent. The route guards this too, but a non-route

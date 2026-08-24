@@ -45,6 +45,10 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { executeTuiRun } from '../../lib/tuiPromptRunner.js';
 import { GROK_TUI_ID } from '../../lib/grok.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
+import {
+  planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest,
+  normalizeStaleAnimationRun,
+} from './localAnimationRender.js';
 import { getSettings } from '../settings.js';
 import { getRecord, listRecords } from './records.js';
 import { requireTrack, loadManifest } from './reference.js';
@@ -56,15 +60,17 @@ import { clampTrackFrameCount, clampTrackFps, sourceReferenceFor } from './anima
 // track reaches generate/approve through exactly this path with no new code.
 import { effectiveTrack, getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackDirections } from './atlasGrid.js';
-import { spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME } from './paths.js';
+import {
+  spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME, runRelPath, RUN_RECORD_NAME,
+} from './paths.js';
 import { prepareWalkAnchorChromaInput, runWalkPostprocess } from './walkPostprocess.js';
 import { verifyPackagedFrames } from './walkFrames.js';
 import {
   resolveChromaKey, withAnimationWriteTail, lockedAnchorFor, lockedMainFor,
   GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
+  resolveAnimationProvider, isLocalProviderRun, runCreatedAtMs,
 } from './animationWorkflow.js';
 
-const RUN_RECORD_NAME = 'animation-run.json';
 
 /**
  * The facings a track is authored across: every direction for a directional
@@ -82,7 +88,6 @@ export const trackAuthoringDirections = (trackId) => trackDirections(trackId);
 // which is exactly what scanner.js and ambient.js each spelled for themselves.
 const selectionRelPath = (trackId, id) => `${trackId}/${id}-${trackId}-selection-v1.json`;
 export const trackSetRelPath = (trackId, id) => `${trackId}/${id}-${trackId}-set-v1.json`;
-const runRelPath = (runId) => `runs/${runId}`;
 
 const setFinalError = (row) => new ServerError(
   row.directional
@@ -113,7 +118,19 @@ async function saveRun(recordId, run) {
   await atomicWrite(join(dir, RUN_RECORD_NAME), run);
 }
 
-/** Every run on disk belonging to `trackId`, newest first. */
+/**
+ * Every run on disk belonging to `trackId`, newest first.
+ *
+ * Stranded `rendering` runs are normalized to `error` at READ time — never
+ * persisted — by the same rule the walk lane uses. Without it a run whose render
+ * could no longer be resolved (its server died and the completion hook could not
+ * reach it) sits at `rendering` forever, and the in-flight guard below then
+ * refuses every regenerate for that facing with TRACK_RENDER_IN_PROGRESS — with
+ * no per-run delete and `reopenTrackDirection` only touching APPROVED runs, that
+ * is unrecoverable short of hand-editing the record. The walk lane always had
+ * this backstop; the track lane never did, and the local lane's multi-hour
+ * renders made the gap materially more reachable.
+ */
 async function trackRuns(trackId, recordId) {
   const runsDir = join(spriteDir(recordId), 'runs');
   const entries = await readdir(runsDir, { withFileTypes: true }).catch(() => []);
@@ -121,8 +138,15 @@ async function trackRuns(trackId, recordId) {
     readJSONFile(join(runsDir, entry.name, RUN_RECORD_NAME), null)
   )));
   return runs.filter((run) => run?.track === trackId)
-    .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+    .map((run) => normalizeStaleAnimationRun(run, staleRenderError(trackId)))
+    .sort((a, b) => runCreatedAtMs(b.createdAt) - runCreatedAtMs(a.createdAt));
 }
+
+/** The read-time message a stranded run carries, named for the track it is on. */
+const staleRenderError = (trackId) => (
+  `The ${effectiveTrack(trackId).label.toLowerCase()} render was interrupted `
+  + '(server restart or timeout) — regenerate to retry.'
+);
 
 /**
  * The track's authoring state: `{ track, definition, selection, set, runs }`.
@@ -277,6 +301,15 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
   // Optional re-roll note (#3134) — blank leaves the prompt and the run record
   // exactly as a blind regenerate would.
   const correctionPrompt = typeof body.correctionPrompt === 'string' ? body.correctionPrompt.trim() : '';
+  // WHICH lane renders the clip (#4876) — same contract the walk lane uses, so a
+  // track never needs its own provider rules. Absent → grok.
+  const provider = resolveAnimationProvider(body.provider);
+  const duration = resolveGrokDuration(body.duration);
+  // Readiness first: an install with no runnable local model 409s here, before a
+  // run record exists.
+  const localPlan = provider === 'local'
+    ? await planLocalAnimationRender({ durationSeconds: duration })
+    : null;
   // Run ids stay in the clones' shapes: `<track>-<direction>-<uuid8>` for a
   // directional track, `<track>-<uuid8>` for a single-row one.
   const runId = row.directional
@@ -293,11 +326,14 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     );
   }
   const inputAbs = join(generatedAbs, source.inputName);
-  const [{ preparation, sha256: inputSha256 }, settings] = await Promise.all([
-    prepareWalkAnchorChromaInput(sourceAbs, inputAbs, chromaKey), getSettings(),
+  const [{ preparation, sha256: inputSha256, canvas }, settings] = await Promise.all([
+    prepareWalkAnchorChromaInput(sourceAbs, inputAbs, chromaKey, localPlan?.chooseCanvas || null),
+    getSettings(),
   ]);
-  const duration = resolveGrokDuration(body.duration);
   const videoAbs = join(generatedAbs, SOURCE_CLIP_NAME);
+  const prompt = buildTrackVideoPrompt(row.id, {
+    name: record.name, kind: record.kind, direction, chromaKey, correctionPrompt,
+  });
   const run = {
     schemaVersion: 1,
     kind: 'grok-game-animation-frames-run',
@@ -322,27 +358,39 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     animationInputPreparation: preparation,
     ...(correctionPrompt ? { correctionPrompt } : {}),
     createdAt: new Date().toISOString(),
+    // Spread LAST so the local lane's provider/geometry provenance wins over the
+    // grok defaults above. A local render is a queued media job, not a PTY, so it
+    // carries `jobId` in place of an attachable `shellSession`.
+    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), shellSession: null } : {}),
   };
   await saveRun(recordId, run);
+  if (localPlan) {
+    // Queued after the record is durable, and never awaited here — the
+    // boot-registered completion hook stages the clip and runs the attach. See
+    // the walk lane's note: that is what survives a restart, which matters most
+    // on this lane because track runs have no wall-clock backstop at all.
+    const jobId = enqueueLocalAnimationRender({
+      plan: localPlan, canvas, prompt, inputAbs, recordId, runId, track: row.id, direction,
+    });
+    run.jobId = jobId;
+    await saveRun(recordId, run);
+    console.log(`📡 sprite ${row.id} local render started ${recordId}/${runId} (job ${jobId.slice(0, 8)}, ${localPlan.numFrames}f @ ${localPlan.fps}fps)`);
+    return row.directional
+      ? { runId, direction, duration, provider: 'local', jobId }
+      : { runId, duration, provider: 'local', jobId };
+  }
   runTrackTuiRender(row, recordId, {
     runId,
     direction,
     generatedAbs,
     videoAbs,
     grokPath: settings.imageGen?.grok?.grokPath,
-    task: buildGrokI2vTask({
-      prompt: buildTrackVideoPrompt(row.id, {
-        name: record.name, kind: record.kind, direction, chromaKey, correctionPrompt,
-      }),
-      inputAbs,
-      videoAbs,
-      duration,
-    }),
+    task: buildGrokI2vTask({ prompt, inputAbs, videoAbs, duration }),
   }).catch((err) => console.error(`❌ sprite ${row.id} grok-tui render crashed ${recordId}/${runId}: ${err?.message || err}`));
   console.log(`📡 sprite ${row.id} grok-tui render started ${recordId}/${runId}`);
   return row.directional
-    ? { runId, direction, duration, shellSession: runId }
-    : { runId, duration, shellSession: runId };
+    ? { runId, direction, duration, provider: 'grok', shellSession: runId }
+    : { runId, duration, provider: 'grok', shellSession: runId };
 }
 
 async function runTrackTuiRender(row, recordId, { runId, direction, generatedAbs, videoAbs, grokPath, task }) {
@@ -366,12 +414,19 @@ export async function attachTrackTuiResult(trackId, recordId, runId, videoAbs) {
   if (selection?.directions?.[run.direction]?.runId === runId) return;
   if (!await pathExists(videoAbs)) {
     run.status = 'error';
-    run.postprocessError = `Grok finished without writing the ${row.label.toLowerCase()} video — check the shell session output`;
+    run.postprocessError = isLocalProviderRun(run)
+      ? `The local render produced no ${row.label.toLowerCase()} video — check the Render Queue for the failed job`
+      : `Grok finished without writing the ${row.label.toLowerCase()} video — check the shell session output`;
     run.completedAt = new Date().toISOString();
     await saveRun(recordId, run);
     return;
   }
   run.status = 'postprocessing';
+  // Anchors the packaging staleness window (normalizeStaleAnimationRun). It MUST
+  // be measured from here rather than from `createdAt`: a local render can have
+  // been queued hours before packaging starts, so a createdAt-anchored window
+  // reports every healthy local run as interrupted the moment it begins to pack.
+  run.postprocessingStartedAt = new Date().toISOString();
   run.sourceVideoPath = `${runRelPath(run.id)}/generated/${SOURCE_CLIP_NAME}`;
   await saveRun(recordId, run);
   await packageTrackRun(row, recordId, run);

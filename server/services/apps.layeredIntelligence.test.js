@@ -15,7 +15,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 vi.mock('../../lib/tailscale-https.js', () => ({ hasTailscaleCert: () => false }));
 vi.mock('../../lib/certPaths.js', () => ({ certPaths: () => ({ dir: '/mock' }) }));
 vi.mock('../lib/ports.js', () => ({ PORTS: { API: 5555, API_LOCAL: 5553, UI: 5554, COS: 5556, AUTOFIXER: 5557, AUTOFIXER_UI: 5558, CDP: 5559, CDP_HEALTH: 5560 } }));
-vi.mock('./taskSchedule.js', () => ({ SELF_IMPROVEMENT_TASK_TYPES: [] }));
+vi.mock('./taskScheduleRegistry.js', () => ({ SELF_IMPROVEMENT_TASK_TYPES: [] }));
 vi.mock('./pm2.js', () => ({ listProcessesStrict: vi.fn().mockResolvedValue([]) }));
 
 import { getAppLayeredIntelligenceConfig, updateAppLayeredIntelligence, createApp, getAppById, invalidateCache, PORTOS_APP_ID } from './apps.js';
