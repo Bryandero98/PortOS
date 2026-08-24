@@ -1011,7 +1011,7 @@ describe('CoS Routes', () => {
 
     it('rejects plan-task for an app whose tracker cannot file forge issues', async () => {
       getAppById.mockResolvedValue({ id: 'my-app', name: 'MyApp', type: 'web', repoPath: '/repo' });
-      getAppWorkTracker.mockResolvedValue({ resolved: 'jira' });
+      getAppWorkTracker.mockResolvedValueOnce({ resolved: 'jira' });
 
       const response = await request(app)
         .post('/api/cos/tasks/slashdo')

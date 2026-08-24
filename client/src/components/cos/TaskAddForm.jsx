@@ -223,7 +223,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     setUseWorktree(defaultUseWorktree);
     setOpenPR(defaultOpenPR);
     setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
-  }, [appDefaultsSig, planOnly]);
+  }, [appDefaultsSig]);
 
   // Get models for selected provider. The form carries its own Thinking Effort
   // select and submits it, so Antigravity lists BASE models (`gemini-3.6-flash`)
@@ -252,6 +252,13 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     } else if (slashdoCommand === 'plan-task') {
       setSlashdoCommand('');
       setWorktreeChangesExpected(undefined);
+      const worktreeOptOut = selectedApp?.defaultUseWorktree === false;
+      const defaultOpenPR = selectedApp?.defaultOpenPR ?? !worktreeOptOut;
+      const defaultUseWorktree = (selectedApp?.defaultUseWorktree ?? true) || defaultOpenPR;
+      setUseWorktree(defaultUseWorktree);
+      setOpenPR(defaultOpenPR);
+      setSimplify(true);
+      setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
     }
   };
 
@@ -285,6 +292,15 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         : {})
     }));
     const templatePlanOnly = template.slashdoCommand === 'plan-task';
+    if (planOnly && !templatePlanOnly) {
+      const worktreeOptOut = selectedApp?.defaultUseWorktree === false;
+      const defaultOpenPR = selectedApp?.defaultOpenPR ?? !worktreeOptOut;
+      const defaultUseWorktree = (selectedApp?.defaultUseWorktree ?? true) || defaultOpenPR;
+      setUseWorktree(defaultUseWorktree);
+      setOpenPR(defaultOpenPR);
+      setSimplify(true);
+      setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
+    }
     setSlashdoCommand(template.slashdoCommand || '');
     setPlanOnly(templatePlanOnly);
     // Hidden posture, so it follows `slashdoCommand` (set unconditionally above)
@@ -311,7 +327,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     descriptionRef.current?.focus();
     await api.applyCosTaskTemplate(template.id).catch(() => {});
     toast.success(`Template applied: ${template.name}`);
-  }, [newTask.app, providers]);
+  }, [newTask.app, planOnly, providers, selectedApp]);
 
   // Save current form as template (inline input instead of window.prompt)
   const saveAsTemplate = useCallback(async () => {
