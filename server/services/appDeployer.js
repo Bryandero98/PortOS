@@ -4,8 +4,9 @@ import { join } from 'path';
 import { NON_PM2_TYPES } from './streamingDetect.js';
 import { getAppById } from './apps.js';
 import { resolveBashBinary } from '../lib/bashResolver.js';
+import { DEPLOY_FLAGS } from '../lib/appDeployFlags.js';
 
-export const DEPLOY_FLAGS = ['--ios', '--macos', '--watch', '--all', '--skip-tests'];
+export { DEPLOY_FLAGS };
 const VALID_FLAGS = new Set(DEPLOY_FLAGS);
 const FLUSH_INTERVAL_MS = 80;
 // Maximum time (ms) a deploy.sh may run before the child is killed and the
