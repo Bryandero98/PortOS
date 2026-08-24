@@ -100,7 +100,9 @@ vi.mock('../services/cosTaskGenerator.js', async (importActual) => ({
   buildClaimWorkTask: vi.fn()
 }));
 vi.mock('../services/apps.js', () => ({
-  getAppById: vi.fn()
+  getAppById: vi.fn(),
+  getAppWorkTracker: vi.fn(),
+  PORTOS_APP_ID: 'portos-default'
 }));
 
 // The per-ticket `/tasks/jira-ticket` route loads the claim-issue-jira prompt
@@ -121,7 +123,7 @@ import * as claudeChangelog from '../services/claudeChangelog.js';
 import { enhanceTaskPrompt } from '../services/taskEnhancer.js';
 import { loadSlashdoCommand } from '../services/subAgentSpawner.js';
 import { buildClaimWorkTask } from '../services/cosTaskGenerator.js';
-import { getAppById } from '../services/apps.js';
+import { getAppById, getAppWorkTracker } from '../services/apps.js';
 import { getTaskPrompt } from '../services/taskPromptService.js';
 import { getCodeReviewDefaults } from '../services/codeReview.js';
 
@@ -1012,6 +1014,19 @@ describe('CoS Routes', () => {
       // The app's display NAME, not its id slug — matching the `next` branch.
       expect(taskData.description).toContain('MyApp');
       expect(loadSlashdoCommand).not.toHaveBeenCalled();
+    });
+
+    it('rejects plan-task for an app whose tracker cannot file forge issues', async () => {
+      getAppById.mockResolvedValue({ id: 'my-app', name: 'MyApp', type: 'web', repoPath: '/repo' });
+      getAppWorkTracker.mockResolvedValueOnce({ resolved: 'jira' });
+
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command: 'plan-task', app: 'my-app' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('UNSUPPORTED_PLAN_ONLY_TRACKER');
+      expect(cos.addTask).not.toHaveBeenCalled();
     });
 
     // #3636: the catalog posture's `worktreeChangesExpected` must reach the task,

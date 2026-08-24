@@ -156,6 +156,16 @@ describe('cosValidation quick-template deliverable posture (#3651)', () => {
   });
 });
 
+describe('cosValidation plan-only task mode', () => {
+  it('accepts boolean and form-encoded planOnly values while preserving absence', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', planOnly: true }).planOnly).toBe(true);
+    expect(createCosTaskSchema.parse({ description: 'x', planOnly: 'false' }).planOnly).toBe(false);
+    expect(createCosTaskSchema.parse({ description: 'x' }).planOnly).toBeUndefined();
+    expect(createCosTaskSchema.safeParse({ description: 'x', planOnly: 'maybe' }).success).toBe(false);
+  });
+
+});
+
 describe('cosValidation reviewer CLI binaries', () => {
   // The bug this exists to prevent: `antigravity` is the stored, federated
   // reviewer identity, but the shipped executable is `agy` — no `antigravity`
