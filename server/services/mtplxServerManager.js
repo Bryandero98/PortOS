@@ -29,7 +29,7 @@ import { launchArgs, normalizeTuning, tuningSpecsFor } from '../lib/localModelTu
 import { LOCAL_RUNTIMES, localEndpointPort, localRuntimeKind, isLocalInstanceEndpoint } from '../lib/localProviderRuntime.js';
 import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
-import { createDaemonLogBuffer, pm2ArgValue, idleWindowMs, markDaemonUsed, registerIdleDaemon, MTPLX_APP } from '../lib/managedDaemon.js';
+import { createDaemonWatcher, pm2ArgValue, idleWindowMs, markDaemonUsed, registerIdleDaemon, MTPLX_APP } from '../lib/managedDaemon.js';
 // `settings.js` is lazy-imported at its call sites below, never statically: it
 // eagerly resolves `fileUtils.PATHS` at module load, which drags PATHS into the
 // module graph of every consumer of this manager and breaks the many suites that
@@ -113,14 +113,31 @@ const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server e
 
 let currentConfig = null;
 let lastExitError = null;
-const logs = createDaemonLogBuffer();
-const appendLog = logs.append;
 
 const probeEndpoint = async (endpoint) =>
   (await probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS })).reachable;
 
 const endpointFor = (config) =>
   `http://${DEFAULT_HOST}:${config?.port ?? DEFAULT_PORT}/v1`;
+
+const daemon = createDaemonWatcher({
+  appName: MTPLX_APP,
+  defaultHost: DEFAULT_HOST,
+  defaultPort: DEFAULT_PORT,
+  endpointFor,
+  parseConfigFromArgs,
+  probe: probeEndpoint,
+  isPortInUse: (...args) => isPortInUse(...args),
+  sleep,
+  getConfig: () => currentConfig,
+  setConfig: (config) => { currentConfig = config; },
+  getLastExitError: () => lastExitError,
+  getAppStatus: (...args) => getAppStatusStrict(...args),
+  getSavedProcessNames: (...args) => getSavedProcessNames(...args),
+  execPm2: (...args) => execPm2(...args),
+  getPortReleaseTimeoutMs: () => portReleaseTimeoutMs,
+});
+const appendLog = daemon.appendLog;
 
 /**
  * Reconstructs the launch config from PM2 process args when PortOS restarted
@@ -186,11 +203,7 @@ const withinDeclaredRange = (spec, raw) => {
   return Number.isFinite(num) && num >= (spec.min ?? -Infinity) && num <= (spec.max ?? Infinity);
 };
 
-/** Block until the port is free, or the release budget elapses. */
-async function waitForPortRelease(port) {
-  const deadline = Date.now() + portReleaseTimeoutMs;
-  while (Date.now() < deadline && await isPortInUse(port)) await sleep(200);
-}
+const waitForPortRelease = daemon.waitForPortRelease;
 
 /**
  * Block until the relaunched server answers, or until it is proven dead.
@@ -243,10 +256,9 @@ const resolveMtplxBinary = () => findCommandOnPath('mtplx');
 /** Just the base URL MTPLX is serving on — no endpoint probe, no PM2 log fetch. */
 export async function getMtplxServerEndpoint() {
   if (!currentConfig) {
-    const pm2Status = await getAppStatusStrict(MTPLX_APP);
-    if (pm2Status?.status === 'online' && pm2Status.args) currentConfig = parseConfigFromArgs(pm2Status.args);
+    await daemon.readLaunch();
   }
-  return endpointFor(currentConfig);
+  return daemon.endpoint();
 }
 
 /**
@@ -267,34 +279,16 @@ export async function getMtplxServerStatus() {
   // be a false negative.
   const supported = installed || isAppleSilicon();
 
-  const [pm2Status, savedApps] = await Promise.all([getAppStatusStrict(MTPLX_APP), getSavedProcessNames()]);
-  const isReadFailed = pm2Status === null;
-  const isManagedActive = Boolean(pm2Status && pm2Status.status === 'online');
-
-  if (!currentConfig && isManagedActive && pm2Status?.args) currentConfig = parseConfigFromArgs(pm2Status.args);
-
-  const endpoint = endpointFor(currentConfig);
-  const reachable = await probeEndpoint(endpoint);
+  const base = await daemon.getStatusBase({ installed });
 
   // `models: null` means the cache could NOT be read — deliberately not the same
   // as `[]` (read, and empty). Only the latter blocks a start.
   const cache = installed ? await listMtplxCachedModels() : { models: null, error: null };
 
-  const pm2Logs = pm2Status && pm2Status.status !== 'not_found'
-    ? await execPm2(['logs', MTPLX_APP, '--nostream', '--lines', String(logs.maxLines)]).catch(() => null)
-    : null;
-
   return {
-    installed,
+    ...base,
     supported,
     unsupportedReason: supported ? null : MTPLX_UNSUPPORTED_REASON,
-    running: isManagedActive || reachable,
-    managed: isReadFailed ? null : isManagedActive,
-    pid: isManagedActive ? (pm2Status?.pid || null) : null,
-    host: DEFAULT_HOST,
-    port: currentConfig?.port ?? DEFAULT_PORT,
-    endpoint,
-    config: isManagedActive ? currentConfig : null,
     // The tuning flags the running daemon was LAUNCHED with, rendered by the
     // catalog that owns the transport rather than re-derived in the UI. A
     // measured assessment relaunches this daemon and leaves its flags on, so a
@@ -302,10 +296,7 @@ export async function getMtplxServerStatus() {
     // "running" while it serves with, say, MTP decoding switched off. Empty for
     // an untuned server, and for one PortOS does not manage — it cannot read
     // another process's launch line.
-    tuningFlags: isManagedActive ? launchArgs('mtplx', currentConfig?.tuning) : [],
-    // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
-    // `null` = the dump could not be read, which is not the same as "no".
-    runAtStartup: savedApps === null ? null : savedApps.includes(MTPLX_APP),
+    tuningFlags: base.managed === true ? launchArgs('mtplx', currentConfig?.tuning) : [],
     idleMinutes: await configuredIdleMinutes(),
     // What a lazy start will launch on, so the card's fields show the saved
     // choice rather than resetting to "Auto" on every page load.
@@ -325,8 +316,6 @@ export async function getMtplxServerStatus() {
         valid: m.validation?.ok !== false,
       })),
     cacheError: cache.error,
-    recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
-    lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
   };
 }
 
@@ -434,7 +423,7 @@ export async function startMtplxServer(options = {}) {
     );
   }
 
-  logs.reset();
+  daemon.resetLogs();
   lastExitError = null;
 
   const resolved = await resolveStartModel(requestedModel, emit);
@@ -482,7 +471,7 @@ export async function startMtplxServer(options = {}) {
     const pm2Logs = await execPm2(['logs', MTPLX_APP, '--nostream', '--lines', '15']).catch(() => null);
     const lines = `${pm2Logs?.stderr || pm2Logs?.stdout || ''}`.split('\n').map((l) => l.trimEnd()).filter(Boolean);
     for (const line of lines) appendLog(line);
-    const tail = (lines.length ? lines : logs.snapshot()).slice(-4).join(' | ');
+    const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
 
     lastExitError = `PM2 status: ${currentProc.status}`;
     await execPm2(['delete', MTPLX_APP]).catch(() => {});
@@ -712,7 +701,7 @@ async function restorePrevious(previous, failure) {
 export function _resetMtplxServerStateForTests({ startupWait, startupPoll, portRelease, relaunchReadyTimeout, idleMinutes = 0 } = {}) {
   idleMinutesOverride = idleMinutes;
   currentConfig = null;
-  logs.reset();
+  daemon.resetLogs();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.
   startupWaitMs = Number.isFinite(startupWait) ? startupWait : 8_000;

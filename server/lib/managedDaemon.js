@@ -114,6 +114,98 @@ export function pm2ArgValue(args, flag) {
   return idx !== -1 && idx + 1 < list.length ? list[idx + 1] : null;
 }
 
+/**
+ * Shared watcher for a local daemon PortOS owns through PM2.
+ *
+ * Managers supply their daemon-specific launch-line parser and endpoint probe;
+ * the watcher owns the common PM2 adoption, status skeleton, bounded logs, and
+ * stop-then-relaunch port-release wait. State remains in the manager through
+ * `getConfig` / `setConfig`, so install and tuning paths can keep their domain
+ * rules without reaching into this mechanism.
+ *
+ * Dependency callbacks are explicit both to keep this module side-effect free
+ * and to preserve the managers' existing test seams around PM2 and networking.
+ */
+export function createDaemonWatcher({
+  appName,
+  defaultHost = '127.0.0.1',
+  defaultPort,
+  endpointFor,
+  parseConfigFromArgs,
+  probe,
+  isPortInUse,
+  sleep,
+  getConfig,
+  setConfig,
+  getLastExitError,
+  getAppStatus,
+  getSavedProcessNames,
+  execPm2,
+  getPortReleaseTimeoutMs,
+  preserveConfigOnReadFailure = false,
+  maxLogLines,
+}) {
+  const logs = createDaemonLogBuffer({ maxLines: maxLogLines });
+
+  const recoverConfig = (pm2Status) => {
+    const current = getConfig();
+    if (current || pm2Status?.status !== 'online' || !pm2Status.args) return current;
+    const recovered = parseConfigFromArgs(pm2Status.args);
+    setConfig(recovered);
+    return recovered;
+  };
+
+  const readLaunch = async () => {
+    const pm2Status = await getAppStatus(appName);
+    if (pm2Status === null) return { managed: false, config: null, readFailed: true };
+    if (pm2Status.status !== 'online') return { managed: false, config: null, readFailed: false };
+    return { managed: true, config: recoverConfig(pm2Status), readFailed: false };
+  };
+
+  const endpoint = () => endpointFor(getConfig());
+
+  const getStatusBase = async ({ installed }) => {
+    const [pm2Status, savedApps] = await Promise.all([getAppStatus(appName), getSavedProcessNames()]);
+    const isReadFailed = pm2Status === null;
+    const isManagedActive = pm2Status?.status === 'online';
+    const config = recoverConfig(pm2Status);
+    const resolvedEndpoint = endpointFor(config);
+    const reachable = await probe(resolvedEndpoint);
+    const pm2Logs = pm2Status && pm2Status.status !== 'not_found'
+      ? await execPm2(['logs', appName, '--nostream', '--lines', String(logs.maxLines)]).catch(() => null)
+      : null;
+
+    return {
+      installed,
+      running: isManagedActive || reachable,
+      managed: isReadFailed ? null : isManagedActive,
+      pid: isManagedActive ? (pm2Status.pid || null) : null,
+      host: config?.host || defaultHost,
+      port: config?.port ?? defaultPort,
+      endpoint: resolvedEndpoint,
+      config: isManagedActive || (isReadFailed && preserveConfigOnReadFailure) ? config : null,
+      runAtStartup: savedApps === null ? null : savedApps.includes(appName),
+      recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
+      lastExitError: isReadFailed ? 'Failed to read PM2 status' : getLastExitError(),
+    };
+  };
+
+  const waitForPortRelease = async (port) => {
+    const deadline = Date.now() + getPortReleaseTimeoutMs();
+    while (Date.now() < deadline && await isPortInUse(port)) await sleep(200);
+  };
+
+  return {
+    appendLog: logs.append,
+    endpoint,
+    getStatusBase,
+    readLaunch,
+    resetLogs: logs.reset,
+    snapshotLogs: logs.snapshot,
+    waitForPortRelease,
+  };
+}
+
 // =============================================================================
 // IDLE REAPER
 // =============================================================================

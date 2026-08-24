@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../lib/fileUtils.js', () => ({
+sleep: vi.fn().mockResolvedValue(undefined),
 tryReadFile: vi.fn().mockResolvedValue(null),
   atomicWrite: vi.fn().mockResolvedValue(undefined),
   // `data` is required because getTrainingStats now imports meatspacePost.js

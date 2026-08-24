@@ -18,6 +18,7 @@ vi.mock('../lib/promptRunner.js', () => ({
 // service import doesn't try to touch real disk just to read
 // stripPromptControlChars.
 vi.mock('../lib/fileUtils.js', () => ({
+  sleep: vi.fn().mockResolvedValue(undefined),
   tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: '/mock/data' },
   ensureDir: vi.fn().mockResolvedValue(undefined),

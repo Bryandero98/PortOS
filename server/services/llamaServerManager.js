@@ -11,7 +11,7 @@ import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
-import { createDaemonLogBuffer, pm2ArgValue, LLAMA_APP } from '../lib/managedDaemon.js';
+import { createDaemonWatcher, pm2ArgValue, LLAMA_APP } from '../lib/managedDaemon.js';
 import { execFile } from '../lib/childProcess.js';
 import { resolveSpecModelPath } from './specDecodeModels.js';
 import { parseSpecTypes, isDraftSpecType } from '../lib/specDecodePresets.js';
@@ -77,8 +77,6 @@ let currentConfig = null;
 // cannot tell a PortOS tuning apart from the same flags typed by the user.
 let preTuningConfig = null;
 let lastExitError = null;
-const logs = createDaemonLogBuffer();
-const appendLog = logs.append;
 
 /**
  * Probes whether an OpenAI-compatible endpoint responds at the given host/port.
@@ -234,6 +232,25 @@ function parseConfigFromArgs(args) {
 const endpointFor = (config) =>
   `http://${config?.host || '127.0.0.1'}:${config?.port ?? PORTS.LLAMA_SERVER}/v1`;
 
+const daemon = createDaemonWatcher({
+  appName: LLAMA_APP,
+  defaultPort: PORTS.LLAMA_SERVER,
+  endpointFor,
+  parseConfigFromArgs,
+  probe: probeEndpoint,
+  isPortInUse: (...args) => isPortInUse(...args),
+  sleep,
+  getConfig: () => currentConfig,
+  setConfig: (config) => { currentConfig = config; },
+  getLastExitError: () => lastExitError,
+  getAppStatus: (...args) => getAppStatusStrict(...args),
+  getSavedProcessNames: (...args) => getSavedProcessNames(...args),
+  execPm2: (...args) => execPm2(...args),
+  getPortReleaseTimeoutMs: () => PORT_RELEASE_TIMEOUT_MS,
+  preserveConfigOnReadFailure: true,
+});
+const appendLog = daemon.appendLog;
+
 /**
  * Just the base URL llama-server is serving on — no endpoint probe, no PM2 log
  * fetch.
@@ -252,7 +269,7 @@ export async function getLlamaServerEndpoint() {
   // Reconstructs `currentConfig` from PM2's args as a side effect when PortOS
   // restarted under a still-running daemon — see `readLlamaServerLaunch`.
   if (!currentConfig) await readLlamaServerLaunch();
-  return endpointFor(currentConfig);
+  return daemon.endpoint();
 }
 
 /**
@@ -262,48 +279,12 @@ export async function getLlamaServerStatus() {
   const binaryPath = resolveLlamaServerBinary();
   const installed = Boolean(binaryPath);
 
-  const [pm2Status, savedApps] = await Promise.all([getAppStatusStrict(LLAMA_APP), getSavedProcessNames()]);
-  const isReadFailed = pm2Status === null;
-  const isManagedActive = Boolean(pm2Status && pm2Status.status === 'online');
-
-  if (!currentConfig && isManagedActive && pm2Status?.args) {
-    currentConfig = parseConfigFromArgs(pm2Status.args);
-  }
-
-  const host = currentConfig?.host || '127.0.0.1';
-  const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
-  const endpoint = endpointFor(currentConfig);
-
-  const reachable = await probeEndpoint(endpoint);
-
-  const pm2Logs = isManagedActive || (pm2Status && pm2Status.status !== 'not_found')
-    ? await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', String(logs.maxLines)]).catch(() => null)
-    : null;
-
   return {
-    installed,
-    running: isManagedActive || reachable,
-    managed: isReadFailed ? null : isManagedActive,
-    pid: isManagedActive ? (pm2Status?.pid || null) : null,
-    host,
-    port,
-    endpoint,
-    // NOT nulled on a failed read. `currentConfig` is the launch line PortOS
-    // itself last started this daemon on, and a subprocess hiccup reading PM2 is
-    // no evidence it stopped serving it. Nulling it here collapsed `managed:
-    // null` ("could not tell") straight back into `managed: false` ("somebody
-    // else's daemon") for every caller guarding on `!managed || !config?.model`
-    // — defeating, one line later, the entire point of the null sentinel.
-    config: isManagedActive || isReadFailed ? currentConfig : null,
-    // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
-    // `null` = the dump could not be read, which is not the same as "no".
-    runAtStartup: savedApps === null ? null : savedApps.includes(LLAMA_APP),
+    ...await daemon.getStatusBase({ installed }),
     // The SAVED window, which is what the settings field edits. What the running
     // process actually got is `config.sleepIdleMinutes` — they differ until the
     // next start, because this is a launch flag.
     idleMinutes: await configuredSleepIdleMinutes(),
-    recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
-    lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
   };
 }
 
@@ -464,7 +445,7 @@ export async function startLlamaServer(options = {}) {
   if (effectiveIdleMinutes > 0) args.push(SLEEP_IDLE_FLAG, String(effectiveIdleMinutes * 60));
 
   lastExitError = null;
-  logs.reset();
+  daemon.resetLogs();
   if (requestedIdleMinutes > 0 && effectiveIdleMinutes === 0) {
     appendLog(`This llama-server build has no ${SLEEP_IDLE_FLAG} — the model stays resident while idle`);
   }
@@ -541,7 +522,7 @@ export async function startLlamaServer(options = {}) {
     const exitLogs = await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', '15']).catch(() => null);
     const lines = (exitLogs?.stderr || exitLogs?.stdout || '').trim().split('\n').map((l) => l.trimEnd()).filter(Boolean);
     for (const line of lines) appendLog(line);
-    const tail = (lines.length ? lines : logs.snapshot()).slice(-4).join(' | ');
+    const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
 
     lastExitError = `PM2 status: ${currentProc.status}`;
 
@@ -611,10 +592,7 @@ export async function stopLlamaServer() {
  * loses a race with itself and reports "port already in use" for the server it
  * just stopped.
  */
-async function waitForPortRelease(port) {
-  const deadline = Date.now() + PORT_RELEASE_TIMEOUT_MS;
-  while (Date.now() < deadline && await isPortInUse(port)) await sleep(200);
-}
+const waitForPortRelease = daemon.waitForPortRelease;
 
 /**
  * Block until the endpoint answers, or the readiness budget elapses.
@@ -702,11 +680,7 @@ async function relaunchWithConfig(next, previous) {
  * @returns {Promise<{managed: boolean, config: object|null, readFailed: boolean}>}
  */
 export async function readLlamaServerLaunch() {
-  const pm2Status = await getAppStatusStrict(LLAMA_APP);
-  if (pm2Status === null) return { managed: false, config: null, readFailed: true };
-  if (pm2Status.status !== 'online') return { managed: false, config: null, readFailed: false };
-  if (!currentConfig && pm2Status.args) currentConfig = parseConfigFromArgs(pm2Status.args);
-  return { managed: true, config: currentConfig, readFailed: false };
+  return daemon.readLaunch();
 }
 
 /**
@@ -1171,7 +1145,7 @@ export function _resetLlamaServerStateForTests({ relaunchReadyTimeout, pm2ReadRe
   sleepIdleMinutesOverride = sleepIdleMinutes;
   currentConfig = null;
   preTuningConfig = null;
-  logs.reset();
+  daemon.resetLogs();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.
   relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 120000;
