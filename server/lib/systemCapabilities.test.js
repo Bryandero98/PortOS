@@ -178,4 +178,22 @@ describe('systemCapabilities', () => {
     expect(provider.modelHardwareCompatibility.small.state).toBe('available');
     expect(provider.modelHardwareCompatibility.large.state).toBe('unavailable');
   });
+
+  it('retains inferred local model compatibility without provider overrides', () => {
+    const provider = withProviderHardwareCompatibility({
+      id: 'ollama',
+      ollamaBacked: true,
+      models: ['qwen3.8:27b'],
+    }, {
+      platform: 'linux',
+      arch: 'x64',
+      totalMemoryGb: 16,
+      cuda: { status: 'absent' },
+    });
+
+    expect(provider.modelHardwareCompatibility['qwen3.8:27b']).toMatchObject({
+      state: 'unavailable',
+      requirements: { minMemoryGb: 32 },
+    });
+  });
 });

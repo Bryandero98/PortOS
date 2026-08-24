@@ -399,8 +399,10 @@ export function withProviderHardwareCompatibility(provider, capabilities) {
     const requirements = hardwareRequirementsForProviderModel(provider, model);
     return [model, evaluateHardwareRequirements(requirements, capabilities)];
   }));
-  if (Object.keys(hardwareRequirements).length === 0
-    && Object.keys(modelRequirementLayers).length === 0) return provider;
+  const hasModelRequirements = Object.values(modelHardwareCompatibility).some(
+    (compatibility) => Object.keys(compatibility.requirements).length > 0,
+  );
+  if (Object.keys(hardwareRequirements).length === 0 && !hasModelRequirements) return provider;
   return {
     ...provider,
     hardwareRequirements,
