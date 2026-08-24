@@ -216,7 +216,7 @@ export function buildProductActions({ post, creativeCommissions }) {
       type: 'commission_feedback',
       severity: age !== null && age >= 3 ? 'high' : 'medium',
       title: `Creative feedback overdue${name}`,
-      detail: `${creativeCommissions.unreviewedRenders} completed render${creativeCommissions.unreviewedRenders === 1 ? '' : 's'} ${age > 0 ? `await${creativeCommissions.unreviewedRenders === 1 ? 's' : ''}ing review for up to ${age} days` : 'awaiting your rating'}.`,
+      detail: `${creativeCommissions.unreviewedRenders} completed render${creativeCommissions.unreviewedRenders === 1 ? '' : 's'} ${age > 0 ? 'awaiting review' : 'awaiting your rating'}${age > 0 ? ` for up to ${age} days` : ''}.`,
       link,
       metadata: {
         unreviewedRenders: creativeCommissions.unreviewedRenders,

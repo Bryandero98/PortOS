@@ -104,6 +104,8 @@ describe('buildProductActions', () => {
       severity: 'high',
       link: '/creative-commission/commission-example?run=run-old',
     });
+    expect(actions[1].detail).toContain('awaiting review');
+    expect(actions[1].detail).not.toContain('awaitsing');
   });
 
   it('does not create actions from unavailable metrics', () => {
