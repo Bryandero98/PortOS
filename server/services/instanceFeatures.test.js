@@ -36,6 +36,14 @@ describe('instance features', () => {
     });
   });
 
+  it('fails closed for malformed persisted feature flags', async () => {
+    const settings = { instanceFeatures: { post: { enabled: 'false' } } };
+
+    expect(resolveInstanceFeatures(settings)[0]).toMatchObject({ id: 'post', enabled: false });
+    mock.settings = settings;
+    expect(await isInstanceFeatureEnabled('post')).toBe(false);
+  });
+
   it('updates one feature inside the instance-local settings slice', async () => {
     mock.settings = { theme: 'dark', instanceFeatures: { post: { enabled: true, future: 'keep' } } };
 

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import * as api from '../../../services/api';
 import { getGoalFeatureAreas } from '../../../lib/goalFeatureMap.js';
+import { INSTANCE_FEATURES_CHANGED } from '../../../constants/events.js';
 
 // Resolve a feature-area icon NAME (kept as a string in goalFeatureMap so that
 // module stays React-free and server-mirrorable) to a lucide component.
@@ -46,7 +47,7 @@ export default function DailyDriverWidget({ dashboardState }) {
 
   const fetchData = useCallback(async () => {
     const featureData = await api.getInstanceFeatures({ silent: true }).catch(() => null);
-    const enabled = featureData?.features?.find((feature) => feature.id === 'post')?.enabled !== false;
+    const enabled = featureData?.features?.find((feature) => feature.id === 'post')?.enabled === true;
     setPostEnabled(enabled);
     const [stats, recs, goalsData] = await Promise.all([
       enabled ? api.getPostStats().catch(() => null) : Promise.resolve(null),
@@ -66,7 +67,16 @@ export default function DailyDriverWidget({ dashboardState }) {
     setLoaded(true);
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    fetchData();
+    const handleFeatureChange = (event) => {
+      if (event.detail?.featureId !== 'post') return;
+      if (event.detail.enabled === false) setPostEnabled(false);
+      fetchData();
+    };
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    return () => window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+  }, [fetchData]);
 
   // Mark the day handled, then refetch dashboard state so the registry gate
   // drops the card (which unmounts this widget). On failure, re-enable the

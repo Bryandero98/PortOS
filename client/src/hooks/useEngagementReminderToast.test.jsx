@@ -10,6 +10,7 @@ const mock = vi.hoisted(() => ({
 vi.mock('../services/api', () => mock);
 
 import { toast, Toaster } from '../components/ui/Toast';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 import { useEngagementReminderToast } from './useEngagementReminderToast';
 
 function Harness() {
@@ -51,10 +52,15 @@ describe('useEngagementReminderToast', () => {
 
   it('disables the feature and closes the reminder', async () => {
     render(<MemoryRouter><Harness /><Toaster /></MemoryRouter>);
+    const featureChanged = vi.fn();
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, featureChanged);
     fireEvent.click(await screen.findByRole('button', { name: 'Disable on this instance' }));
 
     await waitFor(() => expect(mock.updateInstanceFeature).toHaveBeenCalledWith('post', false, { silent: true }));
+    await waitFor(() => expect(featureChanged).toHaveBeenCalledTimes(1));
+    expect(featureChanged.mock.calls[0][0].detail).toEqual({ featureId: 'post', enabled: false });
     expect(screen.queryByText('Daily POST is waiting')).toBeNull();
     expect(await screen.findByText('POST disabled on this instance')).toBeInTheDocument();
+    window.removeEventListener(INSTANCE_FEATURES_CHANGED, featureChanged);
   });
 });

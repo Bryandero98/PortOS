@@ -14,6 +14,7 @@ import * as api from '../services/api';
 import socket from '../services/socket';
 import toast from '../components/ui/Toast';
 import { pickActiveLayoutId, recordManualLayoutPick } from '../utils/timeWindow.js';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 
 export default function Dashboard() {
   const [apps, setApps] = useState([]);
@@ -114,8 +115,15 @@ export default function Dashboard() {
   useEffect(() => {
     fetchData();
     const handleAppsChanged = () => fetchData();
+    const handleFeatureChange = (event) => {
+      if (event.detail?.featureId === 'post') fetchData();
+    };
     socket.on('apps:changed', handleAppsChanged);
-    return () => socket.off('apps:changed', handleAppsChanged);
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    return () => {
+      socket.off('apps:changed', handleAppsChanged);
+      window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    };
   }, [fetchData]);
 
   // One-shot per mount — guards against re-evaluation stomping manual picks.

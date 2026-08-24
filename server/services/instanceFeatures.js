@@ -18,8 +18,16 @@ export const INSTANCE_FEATURES = Object.freeze([
 const FEATURE_BY_ID = new Map(INSTANCE_FEATURES.map((feature) => [feature.id, feature]));
 
 const featureEnabled = (feature, settings) => {
-  const stored = settings?.instanceFeatures?.[feature.id]?.enabled;
-  return typeof stored === 'boolean' ? stored : feature.defaultEnabled;
+  const instanceFeatures = settings?.instanceFeatures;
+  if (instanceFeatures === undefined) return feature.defaultEnabled;
+  if (!isPlainObject(instanceFeatures)) return false;
+  if (!Object.prototype.hasOwnProperty.call(instanceFeatures, feature.id)) return feature.defaultEnabled;
+
+  const featureSettings = instanceFeatures[feature.id];
+  if (!isPlainObject(featureSettings)) return false;
+  const stored = featureSettings.enabled;
+  if (stored === undefined) return feature.defaultEnabled;
+  return typeof stored === 'boolean' ? stored : false;
 };
 
 export const resolveInstanceFeatures = (settings = {}) => INSTANCE_FEATURES.map((feature) => ({

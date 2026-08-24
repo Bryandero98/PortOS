@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 
 const mock = vi.hoisted(() => ({
   getInstanceFeatures: vi.fn(),
@@ -21,12 +23,43 @@ describe('DailyPostWidget', () => {
   });
 
   it('does not collect or render POST metrics when the feature is disabled', async () => {
-    const { container } = render(<DailyPostWidget />);
+    const { container } = render(<MemoryRouter><DailyPostWidget /></MemoryRouter>);
 
     await waitFor(() => expect(mock.getInstanceFeatures).toHaveBeenCalledWith({ silent: true }));
     expect(mock.getPostStats).not.toHaveBeenCalled();
     expect(mock.getPostConfig).not.toHaveBeenCalled();
     expect(mock.getPostRecommendations).not.toHaveBeenCalled();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('does not collect POST metrics when feature participation cannot be read', async () => {
+    mock.getInstanceFeatures.mockRejectedValue(new Error('offline'));
+
+    const { container } = render(<MemoryRouter><DailyPostWidget /></MemoryRouter>);
+
+    await waitFor(() => expect(mock.getInstanceFeatures).toHaveBeenCalledWith({ silent: true }));
+    expect(mock.getPostStats).not.toHaveBeenCalled();
+    expect(mock.getPostConfig).not.toHaveBeenCalled();
+    expect(mock.getPostRecommendations).not.toHaveBeenCalled();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('refreshes the mounted widget after POST participation changes', async () => {
+    mock.getInstanceFeatures
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: true }] })
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: false }] });
+    mock.getPostStats.mockResolvedValue({ completedToday: false, currentStreak: 2 });
+    mock.getPostConfig.mockResolvedValue({});
+    mock.getPostRecommendations.mockResolvedValue({ recommendations: [] });
+
+    const { container } = render(<MemoryRouter><DailyPostWidget /></MemoryRouter>);
+    await waitFor(() => expect(mock.getPostStats).toHaveBeenCalled());
+
+    act(() => window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { featureId: 'post', enabled: false },
+    })));
+
+    await waitFor(() => expect(mock.getInstanceFeatures).toHaveBeenCalledTimes(2));
     expect(container).toBeEmptyDOMElement();
   });
 });

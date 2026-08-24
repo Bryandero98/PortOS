@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+import { INSTANCE_FEATURES_CHANGED } from '../../../constants/events.js';
 import DailyDriverWidget from './DailyDriverWidget';
 
 const mocks = vi.hoisted(() => ({
@@ -55,6 +56,33 @@ describe('DailyDriverWidget', () => {
     expect(screen.queryByText('Memory')).toBeTruthy();
     expect(mocks.getPostStats).not.toHaveBeenCalled();
     expect(mocks.getPostRecommendations).not.toHaveBeenCalled();
+  });
+
+  it('does not collect or prompt for POST when feature participation cannot be read', async () => {
+    mocks.getInstanceFeatures.mockRejectedValue(new Error('offline'));
+
+    renderWidget();
+
+    expect(await screen.findByText('Define your goals')).toBeTruthy();
+    expect(screen.queryByText('Daily POST')).toBeNull();
+    expect(mocks.getPostStats).not.toHaveBeenCalled();
+    expect(mocks.getPostRecommendations).not.toHaveBeenCalled();
+  });
+
+  it('removes the mounted POST prompt after participation changes', async () => {
+    mocks.getInstanceFeatures
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: true }] })
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: false }] });
+
+    renderWidget();
+    expect(await screen.findByText('Daily POST')).toBeTruthy();
+
+    act(() => window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { featureId: 'post', enabled: false },
+    })));
+
+    await waitFor(() => expect(screen.queryByText('Daily POST')).toBeNull());
+    expect(mocks.getInstanceFeatures).toHaveBeenCalledTimes(2);
   });
 
   it('shows the "Define your goals" empty-state when there are no active goals', async () => {

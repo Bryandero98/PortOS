@@ -4,6 +4,7 @@ import { Brain, ArrowRight, Compass } from 'lucide-react';
 import * as api from '../services/api';
 import { streakGlyph } from '../lib/streakGlyph.js';
 import { computeGoalProgress } from './meatspace/post/constants';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 
 // Surfaces the daily POST cognitive self-test on the dashboard: today's
 // completion status, the current practice streak, the top "what to practice
@@ -21,7 +22,7 @@ export default function DailyPostWidget() {
   const fetchData = useCallback(async () => {
     const featureData = await api.getInstanceFeatures({ silent: true }).catch(() => null);
     const postFeature = featureData?.features?.find((feature) => feature.id === 'post');
-    if (postFeature?.enabled === false) {
+    if (postFeature?.enabled !== true) {
       setFeatureEnabled(false);
       setLoaded(true);
       return;
@@ -45,6 +46,13 @@ export default function DailyPostWidget() {
 
   useEffect(() => {
     fetchData();
+    const handleFeatureChange = (event) => {
+      if (event.detail?.featureId !== 'post') return;
+      if (event.detail.enabled === false) setFeatureEnabled(false);
+      fetchData();
+    };
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    return () => window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
   }, [fetchData]);
 
   if (!loaded || !featureEnabled) return null;

@@ -4,6 +4,7 @@ import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import { safeReadJsonSession, safeWriteJsonSession } from '../lib/safeStorage';
 import { useAutoRefetch } from './useAutoRefetch';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 
 const SESSION_KEY = 'portos:engagement-reminders:v1';
 const MAX_REMINDER_KEYS = 100;
@@ -24,6 +25,9 @@ function ReminderToast({ t, action }) {
       return;
     }
     toast.dismiss(t.id);
+    window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { featureId: action.featureId, enabled: false },
+    }));
     toast.success(`${action.featureLabel || action.featureId} disabled on this instance`);
   };
 
