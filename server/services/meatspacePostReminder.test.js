@@ -50,6 +50,10 @@ vi.mock('./meatspacePost.js', () => ({
   postConfigEvents: postConfigEventEmitter
 }));
 
+vi.mock('./instanceFeatures.js', () => ({
+  isInstanceFeatureEnabled: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('./notifications.js', () => ({
   addNotification: vi.fn().mockResolvedValue({ id: 'n1' }),
   getNotifications: vi.fn().mockResolvedValue([]),
@@ -64,6 +68,7 @@ vi.mock('./settings.js', () => ({
 import { schedule, cancel, parseCronToPrevRun } from './eventScheduler.js';
 import { getUserTimezone, getTimezoneUpdatedAt, getLocalParts, todayInTimezone } from '../lib/timezone.js';
 import { getPostConfig, getPostSessions } from './meatspacePost.js';
+import { isInstanceFeatureEnabled } from './instanceFeatures.js';
 import { addNotification, getNotifications } from './notifications.js';
 import {
   reminderTimeToCron,
@@ -92,6 +97,7 @@ describe('reminderTimeToCron', () => {
 describe('registerPostReminderSchedule', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    isInstanceFeatureEnabled.mockResolvedValue(true);
     getUserTimezone.mockResolvedValue('UTC');
     getTimezoneUpdatedAt.mockResolvedValue(null);
     parseCronToPrevRun.mockReturnValue(null);
@@ -102,6 +108,17 @@ describe('registerPostReminderSchedule', () => {
     await registerPostReminderSchedule();
     expect(schedule).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledWith(POST_REMINDER_EVENT_ID);
+  });
+
+  it('cancels the schedule when POST is disabled for this instance', async () => {
+    isInstanceFeatureEnabled.mockResolvedValue(false);
+    getPostConfig.mockResolvedValue({ reminder: { enabled: true, time: '09:00' } });
+
+    await registerPostReminderSchedule();
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith(POST_REMINDER_EVENT_ID);
+    expect(getPostConfig).not.toHaveBeenCalled();
   });
 
   it('cancels and skips scheduling when the reminder block is entirely absent', async () => {
@@ -434,8 +451,18 @@ describe('stopPostReminderSchedule', () => {
 });
 
 describe('firePostReminderIfIncomplete', () => {
+  it('does not notify when POST is disabled for this instance', async () => {
+    isInstanceFeatureEnabled.mockResolvedValue(false);
+
+    await firePostReminderIfIncomplete();
+
+    expect(addNotification).not.toHaveBeenCalled();
+    expect(getPostConfig).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    isInstanceFeatureEnabled.mockResolvedValue(true);
     getPostSessions.mockResolvedValue([]);
     getNotifications.mockResolvedValue([]);
     getUserTimezone.mockResolvedValue('UTC');

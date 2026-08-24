@@ -15,9 +15,18 @@ export default function DailyPostWidget() {
   const [statsWeek, setStatsWeek] = useState(null);
   const [config, setConfig] = useState(null);
   const [topRec, setTopRec] = useState(null);
+  const [featureEnabled, setFeatureEnabled] = useState(true);
   const [loaded, setLoaded] = useState(false);
 
   const fetchData = useCallback(async () => {
+    const featureData = await api.getInstanceFeatures({ silent: true }).catch(() => null);
+    const postFeature = featureData?.features?.find((feature) => feature.id === 'post');
+    if (postFeature?.enabled === false) {
+      setFeatureEnabled(false);
+      setLoaded(true);
+      return;
+    }
+
     // Recommendations/config/week-stats are best-effort — a failure just hides
     // the extra rows; the streak card still renders from `stats`.
     const [data, week, cfg, recs] = await Promise.all([
@@ -30,6 +39,7 @@ export default function DailyPostWidget() {
     setStatsWeek(week);
     setConfig(cfg);
     setTopRec(recs?.recommendations?.[0] || null);
+    setFeatureEnabled(true);
     setLoaded(true);
   }, []);
 
@@ -37,7 +47,7 @@ export default function DailyPostWidget() {
     fetchData();
   }, [fetchData]);
 
-  if (!loaded) return null;
+  if (!loaded || !featureEnabled) return null;
 
   const streak = stats?.currentStreak ?? 0;
   const longest = stats?.longestStreak ?? 0;

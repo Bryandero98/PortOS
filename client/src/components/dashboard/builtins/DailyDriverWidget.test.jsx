@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router';
 import DailyDriverWidget from './DailyDriverWidget';
 
 const mocks = vi.hoisted(() => ({
+  getInstanceFeatures: vi.fn(),
   getPostStats: vi.fn(),
   getPostRecommendations: vi.fn(),
   getGoals: vi.fn(),
@@ -21,6 +22,7 @@ const renderWidget = (dashboardState = {}) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.getInstanceFeatures.mockResolvedValue({ features: [{ id: 'post', enabled: true }] });
   mocks.getPostStats.mockResolvedValue({ completedToday: false, currentStreak: 3 });
   mocks.getPostRecommendations.mockResolvedValue({ recommendations: [{ title: 'Morse copy drill' }] });
   mocks.getGoals.mockResolvedValue({ goals: [] });
@@ -38,6 +40,21 @@ describe('DailyDriverWidget', () => {
     mocks.getPostStats.mockResolvedValue({ completedToday: true, currentStreak: 5 });
     renderWidget();
     expect(await screen.findByText(/Done today · 5 day streak/)).toBeTruthy();
+  });
+
+  it('does not collect or prompt for POST when it is disabled on this instance', async () => {
+    mocks.getInstanceFeatures.mockResolvedValue({ features: [{ id: 'post', enabled: false }] });
+    mocks.getGoals.mockResolvedValue({
+      goals: [{ id: 'g1', title: 'Finish the novel', category: 'mastery', status: 'active', checkIns: [] }],
+    });
+
+    renderWidget();
+
+    expect(await screen.findByText('Finish the novel')).toBeTruthy();
+    expect(screen.queryByText('Daily POST')).toBeNull();
+    expect(screen.queryByText('Memory')).toBeTruthy();
+    expect(mocks.getPostStats).not.toHaveBeenCalled();
+    expect(mocks.getPostRecommendations).not.toHaveBeenCalled();
   });
 
   it('shows the "Define your goals" empty-state when there are no active goals', async () => {

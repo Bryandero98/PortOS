@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
@@ -9,6 +9,24 @@ const SESSION_KEY = 'portos:engagement-reminders:v1';
 const MAX_REMINDER_KEYS = 100;
 
 function ReminderToast({ t, action }) {
+  const [disabling, setDisabling] = useState(false);
+  const canDisable = typeof action.featureId === 'string' && action.featureId.length > 0;
+
+  const handleDisable = async () => {
+    if (!canDisable || disabling) return;
+    setDisabling(true);
+    const result = await api.updateInstanceFeature(action.featureId, false, { silent: true }).catch((error) => {
+      toast.error(error.message || 'Could not disable this feature on the instance');
+      return null;
+    });
+    if (!result) {
+      setDisabling(false);
+      return;
+    }
+    toast.dismiss(t.id);
+    toast.success(`${action.featureLabel || action.featureId} disabled on this instance`);
+  };
+
   return (
     <div className="flex flex-col gap-2 max-w-[min(480px,calc(100vw-4rem))]">
       <div className="flex items-start gap-2">
@@ -20,14 +38,24 @@ function ReminderToast({ t, action }) {
         <Link
           to={action.link || '/'}
           onClick={() => toast.dismiss(t.id)}
-          className="inline-flex items-center justify-center min-h-[40px] px-3 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 text-xs font-medium"
+          className="inline-flex items-center justify-center min-h-[44px] px-3 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 text-xs font-medium"
         >
           Open action
         </Link>
+        {canDisable && (
+          <button
+            type="button"
+            onClick={handleDisable}
+            disabled={disabling}
+            className="inline-flex items-center justify-center min-h-[44px] px-3 text-xs text-port-warning hover:text-port-warning/80 disabled:opacity-50"
+          >
+            {disabling ? 'Disabling…' : 'Disable on this instance'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => toast.dismiss(t.id)}
-          className="inline-flex items-center justify-center min-h-[40px] px-3 text-xs text-port-text-muted hover:text-port-text"
+          className="inline-flex items-center justify-center min-h-[44px] px-3 text-xs text-port-text-muted hover:text-port-text"
         >
           Dismiss
         </button>

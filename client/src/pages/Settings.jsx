@@ -8,6 +8,7 @@ import { BackupTab } from '../components/settings/BackupTab';
 import { CatalogTypesTab } from '../components/settings/CatalogTypesTab';
 import CodeReviewersTab from '../components/settings/CodeReviewersTab';
 import { DatabaseTab } from '../components/settings/DatabaseTab';
+import InstanceFeaturesTab from '../components/settings/InstanceFeaturesTab';
 import { TelegramTab } from '../components/settings/TelegramTab';
 import { GeneralTab } from '../components/settings/GeneralTab';
 import { MortalLoomTab } from '../components/settings/MortalLoomTab';
@@ -45,6 +46,7 @@ export default function Settings() {
       case 'catalog': return <CatalogTypesTab />;
       case 'code-reviewers': return <CodeReviewersTab />;
       case 'database': return <DatabaseTab />;
+      case 'features': return <InstanceFeaturesTab />;
       case 'security': return <SecurityTab />;
       case 'sharing': return <SharingTab />;
       case 'signal': return <SignalTab />;

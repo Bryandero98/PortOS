@@ -756,6 +756,21 @@ export const apiAccessSettingsSchema = z.object({
   sdapi: apiAccessEntrySchema.optional(),
 }).strict();
 
+// Install-local feature participation flags. The registry owns the available
+// feature ids; this schema keeps generic settings saves from persisting an
+// unknown or malformed feature state.
+export const instanceFeatureSettingsSchema = z.object({
+  post: z.object({
+    enabled: z.boolean().optional(),
+  }).strict().optional(),
+}).strict();
+
+export const instanceFeatureIdSchema = z.enum(['post']);
+
+export const instanceFeatureUpdateSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
+
 export const subdirFilterSchema = z.string()
   .refine(isSafeSubdirFilter, 'subdirFilter must be a relative path with no wildcard, ".." , or leading "/" segments');
 

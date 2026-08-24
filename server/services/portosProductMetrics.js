@@ -13,6 +13,7 @@ import { getPostSessions } from './meatspacePost.js';
 import { getAllTrainingEntries } from './postTrainingLogStore.js';
 import { listCommissions } from './creativeCommissions/store.js';
 import { getProjectsByIds } from './creativeDirector/local.js';
+import { isInstanceFeatureEnabled } from './instanceFeatures.js';
 import { computeUnifiedStreak, recordDayKey, ymdShift, ymdToUTC } from '../lib/postStreak.js';
 import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
 
@@ -193,6 +194,8 @@ export function buildProductActions({ post, creativeCommissions }) {
       title: 'Daily POST is waiting',
       detail,
       link: '/post/launcher',
+      featureId: 'post',
+      featureLabel: 'POST',
       metadata: {
         completedToday: false,
         daysSinceActivity: daysSince,
@@ -231,11 +234,15 @@ export function buildProductActions({ post, creativeCommissions }) {
 
 export function toProductMetricsAggregate(metrics) {
   const { pendingReviews: _pendingReviews, ...creative } = metrics.creativeCommissions || {};
-  return {
+  const aggregate = {
     today: metrics.today,
-    post: metrics.post,
     creativeCommissions: creative,
   };
+  // A disabled feature is not a metric. Keep the explicit disabled sentinel in
+  // the full result for user-facing callers, but do not hand it to Layered
+  // Intelligence as a product signal to interpret or improve.
+  if (metrics.post?.status !== 'disabled') aggregate.post = metrics.post;
+  return aggregate;
 }
 
 /**
@@ -248,10 +255,13 @@ export async function getProductEngagement({ now = new Date(), timezone: configu
   const timezoneResult = configuredTimezone
     ? Promise.resolve(configuredTimezone)
     : getUserTimezone().catch(() => null);
-  const timezone = await timezoneResult;
+  const [timezone, postEnabled] = await Promise.all([
+    timezoneResult,
+    isInstanceFeatureEnabled('post'),
+  ]);
   const today = timezone ? todayInTimezone(timezone, nowDate) : null;
 
-  const postPromise = timezone && today
+  const postPromise = postEnabled && timezone && today
     ? Promise.all([
       getPostSessions(undefined, undefined, { strict: true }),
       getAllTrainingEntries({ strict: true }),
@@ -273,7 +283,9 @@ export async function getProductEngagement({ now = new Date(), timezone: configu
   const [postData, creativeData] = await Promise.all([postPromise, creativePromise]);
   const metrics = {
     today,
-    post: postData || unavailableMetrics('post-read-failed'),
+    post: postEnabled
+      ? postData || unavailableMetrics('post-read-failed')
+      : { status: 'disabled', reason: 'instance-feature-disabled' },
     creativeCommissions: creativeData || unavailableMetrics('creative-read-failed'),
   };
   return {

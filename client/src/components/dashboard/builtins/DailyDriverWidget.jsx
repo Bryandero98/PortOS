@@ -28,6 +28,7 @@ const AREA_ICONS = {
 export default function DailyDriverWidget({ dashboardState }) {
   const [post, setPost] = useState(null);
   const [topRec, setTopRec] = useState(null);
+  const [postEnabled, setPostEnabled] = useState(true);
   const [goals, setGoals] = useState([]);
   // Sentinel: distinguish "goals failed to load" from "no goals exist" so a
   // transient fetch failure doesn't show the "Define your goals" CTA to a user
@@ -44,9 +45,12 @@ export default function DailyDriverWidget({ dashboardState }) {
   const firstVisitToday = !!dashboardState?.dailyDriver?.firstVisitToday;
 
   const fetchData = useCallback(async () => {
+    const featureData = await api.getInstanceFeatures({ silent: true }).catch(() => null);
+    const enabled = featureData?.features?.find((feature) => feature.id === 'post')?.enabled !== false;
+    setPostEnabled(enabled);
     const [stats, recs, goalsData] = await Promise.all([
-      api.getPostStats().catch(() => null),
-      api.getPostRecommendations(1).catch(() => null),
+      enabled ? api.getPostStats().catch(() => null) : Promise.resolve(null),
+      enabled ? api.getPostRecommendations(1).catch(() => null) : Promise.resolve(null),
       api.getGoals({ silent: true }).catch(() => null),
     ]);
     setPost(stats);
@@ -107,30 +111,32 @@ export default function DailyDriverWidget({ dashboardState }) {
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-3">
-        {/* ① Daily POST */}
-        <Link
-          to="/post/launcher"
-          className="flex items-center gap-2 p-2 rounded-lg border border-port-border hover:border-gray-600 transition-colors"
-        >
-          <Brain size={16} className="text-port-accent shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-white">Daily POST</div>
-            <div className="text-xs text-gray-500 truncate">
-              {completedToday
-                ? `Done today · ${streak} day streak`
-                : topRec
-                  ? `Up next: ${topRec.title}`
-                  : 'Start your cognitive session'}
+        {/* ① Daily POST — omitted entirely when this install does not use POST. */}
+        {postEnabled && (
+          <Link
+            to="/post/launcher"
+            className="flex items-center gap-2 p-2 rounded-lg border border-port-border hover:border-gray-600 transition-colors"
+          >
+            <Brain size={16} className="text-port-accent shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-white">Daily POST</div>
+              <div className="text-xs text-gray-500 truncate">
+                {completedToday
+                  ? `Done today · ${streak} day streak`
+                  : topRec
+                    ? `Up next: ${topRec.title}`
+                    : 'Start your cognitive session'}
+              </div>
             </div>
-          </div>
-          {completedToday ? (
-            <CheckCircle2 size={16} className="text-port-success shrink-0" />
-          ) : (
-            <span className="flex items-center gap-1 text-xs text-port-accent shrink-0">
-              Start <ArrowRight size={12} />
-            </span>
-          )}
-        </Link>
+            {completedToday ? (
+              <CheckCircle2 size={16} className="text-port-success shrink-0" />
+            ) : (
+              <span className="flex items-center gap-1 text-xs text-port-accent shrink-0">
+                Start <ArrowRight size={12} />
+              </span>
+            )}
+          </Link>
+        )}
 
         {/* ② Goal next-actions, empty-state nudge, or (on fetch failure) a
             neutral unavailable row — NOT the empty-state, which would wrongly
@@ -157,7 +163,7 @@ export default function DailyDriverWidget({ dashboardState }) {
           <>
             <div className="text-xs font-medium text-gray-400 uppercase tracking-wide">Next actions</div>
             {goals.map((goal) => {
-              const areas = getGoalFeatureAreas(goal);
+              const areas = getGoalFeatureAreas(goal).filter((area) => postEnabled || area.area !== 'post');
               const latestRec = goal.checkIns?.[goal.checkIns.length - 1]?.recommendations?.[0];
               return (
                 <div key={goal.id} className="p-2 rounded-lg border border-port-border">

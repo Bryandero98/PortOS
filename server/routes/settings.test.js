@@ -91,6 +91,46 @@ describe('Settings routes — apiAccess slice', () => {
   });
 });
 
+describe('Settings routes — instance feature participation', () => {
+  beforeEach(() => {
+    store = {};
+    vi.clearAllMocks();
+  });
+
+  it('lists local feature participation with the backward-compatible default', async () => {
+    const res = await request(buildApp()).get('/api/settings/features');
+
+    expect(res.status).toBe(200);
+    expect(res.body.features).toEqual([expect.objectContaining({ id: 'post', label: 'POST', enabled: true })]);
+  });
+
+  it('updates one feature without replacing unrelated settings', async () => {
+    store = { theme: 'dark', instanceFeatures: { post: { enabled: true } } };
+
+    const res = await request(buildApp())
+      .put('/api/settings/features/post')
+      .send({ enabled: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.features).toEqual([expect.objectContaining({ id: 'post', enabled: false })]);
+    expect(store).toEqual({ theme: 'dark', instanceFeatures: { post: { enabled: false } } });
+  });
+
+  it('rejects unknown feature ids and malformed enabled values', async () => {
+    const unknown = await request(buildApp())
+      .put('/api/settings/features/not-registered')
+      .send({ enabled: false });
+    const malformed = await request(buildApp())
+      .put('/api/settings/features/post')
+      .send({ enabled: 'false' });
+
+    expect(unknown.status).toBe(400);
+    expect(malformed.status).toBe(400);
+    expect(unknown.body.code).toBe('VALIDATION_ERROR');
+    expect(malformed.body.code).toBe('VALIDATION_ERROR');
+  });
+});
+
 // A peer that satisfies every durable gate the routing policy checks: enabled,
 // enabled as a provider, allowlisted for the routed pair, and on the tailnet.
 const routablePeer = (overrides = {}) => ({
