@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { join } from 'path';
 
 const mediaJobEvents = new EventEmitter();
 let queuedJobs = [];
@@ -34,7 +35,13 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => ({
   atomicWrite: async (path, value) => { runRecords[path] = value; },
 }));
 
-const runPath = (recordId, runId) => `/sprites/${recordId}/runs/${runId}/animation-run.json`;
+// Built with `join`, exactly as the hook builds them. Hard-coding POSIX
+// separators here made every path the hook derives miss its mock entry on
+// Windows, where `join` yields backslashes — the suite then exercised only
+// the record-not-found branch while reading like a green run.
+const spritePath = (recordId, runId, ...rest) => join(`/sprites/${recordId}`, `runs/${runId}`, ...rest);
+const runPath = (recordId, runId) => spritePath(recordId, runId, 'animation-run.json');
+const clipPath = (recordId, runId) => spritePath(recordId, runId, 'generated', 'source-video.mp4');
 
 const collectLocalAnimationClip = vi.fn(async () => true);
 vi.mock('./localAnimationRender.js', () => ({
@@ -129,10 +136,10 @@ describe('settleSpriteAnimationJob', () => {
     await settleSpriteAnimationJob(walkJob());
     expect(collectLocalAnimationClip).toHaveBeenCalledWith(expect.objectContaining({
       jobId: 'mjob-1',
-      videoAbs: '/sprites/hero/runs/walk-east-abc12345/generated/source-video.mp4',
+      videoAbs: clipPath('hero', 'walk-east-abc12345'),
     }));
     expect(attachTuiWalkResult).toHaveBeenCalledWith(
-      'hero', 'walk-east-abc12345', '/sprites/hero/runs/walk-east-abc12345/generated/source-video.mp4',
+      'hero', 'walk-east-abc12345', clipPath('hero', 'walk-east-abc12345'),
     );
     expect(attachTrackTuiResult).not.toHaveBeenCalled();
   });
@@ -141,7 +148,7 @@ describe('settleSpriteAnimationJob', () => {
     await settleSpriteAnimationJob(trackJob());
     expect(attachTrackTuiResult).toHaveBeenCalledWith(
       'scanner', 'hero', 'scanner-east-abc12345',
-      '/sprites/hero/runs/scanner-east-abc12345/generated/source-video.mp4',
+      clipPath('hero', 'scanner-east-abc12345'),
     );
     expect(attachTuiWalkResult).not.toHaveBeenCalled();
   });
