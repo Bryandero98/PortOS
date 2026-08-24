@@ -101,6 +101,10 @@ describe('validation.js', () => {
         serviceName: 'example-service',
         fromTime: '',
       }).fromTime).toBeUndefined();
+      expect(datadogSearchErrorsRequestSchema.safeParse({
+        serviceName: 's'.repeat(257),
+        environment: 'e'.repeat(129),
+      }).success).toBe(true);
       expect(providerVisionTestSchema.parse({
         imagePath: 'example.png',
         expectedContent: '',
