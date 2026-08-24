@@ -12,7 +12,9 @@ import {
   triggerNow,
   parseCronToNextRun,
   parseCronToPrevRun,
-  isValidCron
+  isValidCron,
+  parseRecurrenceToNextRun,
+  isValidRecurrence,
 } from './eventScheduler.js';
 
 // eventScheduler.js's "UTC" branch (the default, and what every consumer below
@@ -147,6 +149,47 @@ describe('parseCronToNextRun', () => {
 });
 
 // =============================================================================
+// calendar recurrence scheduling
+// =============================================================================
+
+describe('parseRecurrenceToNextRun', () => {
+  it('keeps every-two-weeks cadence anchored across a month boundary', () => {
+    const next = parseRecurrenceToNextRun({
+      frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2024-01-01',
+    }, new Date('2024-01-01T03:00:00.000Z'));
+    expect(next.toISOString()).toBe('2024-01-15T02:00:00.000Z');
+  });
+
+  it('finds the first Thursday of the month', () => {
+    const next = parseRecurrenceToNextRun({
+      frequency: 'monthly-weekday', ordinal: 'first', weekday: 4, time: '19:00',
+    }, FIXED_NOW);
+    expect(next.toISOString()).toBe('2024-01-04T19:00:00.000Z');
+  });
+
+  it('finds the last Thursday of the month', () => {
+    const next = parseRecurrenceToNextRun({
+      frequency: 'monthly-weekday', ordinal: 'last', weekday: 4, time: '19:00',
+    }, FIXED_NOW);
+    expect(next.toISOString()).toBe('2024-01-25T19:00:00.000Z');
+  });
+
+  it('jumps directly to sparse annual occurrences', () => {
+    const next = parseRecurrenceToNextRun({
+      frequency: 'monthly-date', interval: 12, dayOfMonth: 1, time: '00:00', anchorDate: '2024-01-01',
+    }, new Date('2024-01-02T00:00:00.000Z'));
+    expect(next.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  });
+
+  it('validates both rich recurrence rules and custom cron rules', () => {
+    expect(isValidRecurrence({ frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2024-01-01' })).toBe(true);
+    expect(isValidRecurrence({ frequency: 'custom', cron: '*/15 * * * *' })).toBe(true);
+    expect(isValidRecurrence({ frequency: 'custom', cron: 'not a cron' })).toBe(false);
+    expect(isValidRecurrence({ frequency: 'weekly', weekdays: [], time: '02:00' })).toBe(false);
+  });
+});
+
+// =============================================================================
 // parseCronToPrevRun
 // =============================================================================
 
@@ -262,6 +305,21 @@ describe('schedule() lifecycle with fake timers', () => {
 
     await vi.advanceTimersByTimeAsync(60 * 1000);
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires an anchored recurrence event and re-arms its next occurrence', async () => {
+    const handler = vi.fn();
+    schedule({
+      id: 'recurrence-1',
+      type: 'recurrence',
+      recurrence: { frequency: 'weekly', interval: 2, weekdays: [1], time: '00:05', anchorDate: '2024-01-01' },
+      handler,
+    });
+
+    expect(getEvent('recurrence-1').nextRunAt).toBe(new Date('2024-01-01T00:05:00.000Z').getTime());
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(getEvent('recurrence-1').nextRunAt).toBe(new Date('2024-01-15T00:05:00.000Z').getTime());
   });
 
   it('cancel() removes the event and its pending timer stops firing', async () => {

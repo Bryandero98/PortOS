@@ -5,10 +5,11 @@ import ToggleSwitch from '../../ToggleSwitch';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import * as api from '../../../services/api';
 import { timeAgo } from '../../../utils/formatters';
-import { CRON_PRESETS, DEFAULT_CRON, describeCron } from '../../../utils/cronHelpers';
-import WeekdayTimePicker from '../../WeekdayTimePicker';
+import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence } from '../../../utils/cronHelpers';
+import CronSchedulePicker from '../../CronSchedulePicker';
 import { AGENT_OPTIONS, agentOptionButtonClass } from '../../cos/constants';
 
 const INTERVAL_OPTIONS = [
@@ -43,6 +44,7 @@ function emptyForm() {
     interval: 'weekly',
     scheduledTime: '',
     cronExpression: '',
+    cronSchedule: null,
     priority: 'MEDIUM',
     autonomyLevel: 'manager',
     taskMetadata: { useWorktree: true, openPR: true, simplify: true }
@@ -54,10 +56,11 @@ function formFromJob(job) {
     name: job.name || '',
     description: job.description || '',
     promptTemplate: job.promptTemplate || '',
-    scheduleMode: job.cronExpression ? 'cron' : 'interval',
+    scheduleMode: job.cronExpression || job.cronSchedule ? 'cron' : 'interval',
     interval: job.interval || 'weekly',
     scheduledTime: job.scheduledTime || '',
     cronExpression: job.cronExpression || '',
+    cronSchedule: job.cronSchedule || (job.cronExpression ? parseCronToRecurrence(job.cronExpression) : null),
     priority: job.priority || 'MEDIUM',
     autonomyLevel: job.autonomyLevel || 'manager',
     taskMetadata: { useWorktree: false, openPR: false, simplify: false, ...(job.taskMetadata || {}) }
@@ -77,10 +80,12 @@ function toPayload(form, appId) {
     taskMetadata: form.taskMetadata
   };
   if (form.scheduleMode === 'cron') {
-    payload.cronExpression = form.cronExpression?.trim() || null;
+    payload.cronExpression = buildCronFromRecurrence(form.cronSchedule) || form.cronExpression?.trim() || null;
+    payload.cronSchedule = form.cronSchedule || null;
     payload.scheduledTime = null;
   } else {
     payload.cronExpression = null;
+    payload.cronSchedule = null;
     payload.interval = form.interval;
     payload.scheduledTime = form.scheduledTime || null;
   }
@@ -88,18 +93,19 @@ function toPayload(form, appId) {
 }
 
 function scheduleSummary(job) {
+  if (job.cronSchedule) return describeRecurrence(job.cronSchedule);
   if (job.cronExpression) return describeCron(job.cronExpression);
   const label = INTERVAL_OPTIONS.find(i => i.value === job.interval)?.label || job.interval;
   return job.scheduledTime ? `${label} at ${job.scheduledTime}` : label;
 }
 
-function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
+function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone }) {
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
   // Switching to cron seeds the expression with the default the picker displays
   // (07:00 daily) so an untouched picker is actually saveable — otherwise the
   // form shows a schedule while cronExpression stays empty and Save is blocked.
   const setScheduleMode = (mode) =>
-    setForm(f => ({ ...f, scheduleMode: mode, cronExpression: mode === 'cron' && !f.cronExpression ? DEFAULT_CRON : f.cronExpression }));
+    setForm(f => ({ ...f, scheduleMode: mode, cronExpression: mode === 'cron' && !f.cronExpression && !f.cronSchedule ? DEFAULT_CRON : f.cronExpression }));
   // Toggle a git-workflow flag while preserving the system-wide invariant that
   // openPR implies useWorktree (matches toggleAppMetadataOverride used elsewhere):
   // turning openPR on forces useWorktree on; turning useWorktree off forces openPR off.
@@ -159,28 +165,16 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
         </div>
         {form.scheduleMode === 'cron' ? (
           <div className="space-y-2">
-            <WeekdayTimePicker value={form.cronExpression || DEFAULT_CRON} onChange={value => update('cronExpression', value)} />
-            <div className="flex gap-2 items-center flex-wrap">
-              <input
-                type="text"
-                value={form.cronExpression || ''}
-                onChange={e => update('cronExpression', e.target.value)}
-                className="flex-1 min-w-[10rem] px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm font-mono"
-                placeholder="0 7 * * *"
-                aria-label="Cron expression"
-                title="Cron expression: minute hour dayOfMonth month dayOfWeek"
-              />
-              <select
-                value=""
-                onChange={e => { if (e.target.value) update('cronExpression', e.target.value); }}
-                className="px-2 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 text-xs"
-                aria-label="Cron presets"
-              >
-                <option value="">Presets</option>
-                {CRON_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-              </select>
-            </div>
-            {form.cronExpression && <span className="text-xs text-gray-500">{describeCron(form.cronExpression)}</span>}
+            <CronSchedulePicker
+              value={form.cronSchedule || form.cronExpression || DEFAULT_CRON}
+              valueShape="recurrence"
+              timezone={timezone}
+              onChange={rule => {
+                update('cronSchedule', rule);
+                const cron = buildCronFromRecurrence(rule);
+                update('cronExpression', cron || null);
+              }}
+            />
           </div>
         ) : (
           <div className="flex gap-3">
@@ -255,6 +249,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
 }
 
 export default function CustomTasksSection({ appId, appName }) {
+  const timezone = useUserTimezone();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -275,8 +270,8 @@ export default function CustomTasksSection({ appId, appName }) {
   const validate = (form) => {
     if (!form.name.trim()) { toast.error('Name is required'); return false; }
     if (!form.promptTemplate.trim()) { toast.error('Prompt is required'); return false; }
-    if (form.scheduleMode === 'cron' && (!form.cronExpression?.trim() || form.cronExpression.trim().split(/\s+/).length !== 5)) {
-      toast.error('A valid 5-field cron expression is required'); return false;
+    if (form.scheduleMode === 'cron' && !form.cronSchedule && (!form.cronExpression?.trim() || form.cronExpression.trim().split(/\s+/).length !== 5)) {
+      toast.error('A valid recurrence or 5-field cron expression is required'); return false;
     }
     return true;
   };
@@ -351,7 +346,7 @@ export default function CustomTasksSection({ appId, appName }) {
       </div>
 
       {showCreate && (
-        <TaskForm form={createForm} setForm={setCreateForm} onSave={handleCreate} onCancel={() => setShowCreate(false)} saveLabel="Create" />
+        <TaskForm form={createForm} setForm={setCreateForm} onSave={handleCreate} onCancel={() => setShowCreate(false)} saveLabel="Create" timezone={timezone} />
       )}
 
       {loading ? (
@@ -368,7 +363,7 @@ export default function CustomTasksSection({ appId, appName }) {
             <div key={job.id} className={`bg-port-card border rounded-lg ${job.enabled ? 'border-port-border' : 'border-port-border/50 opacity-70'}`}>
               {editingId === job.id ? (
                 <div className="p-3">
-                  <TaskForm form={editForm} setForm={setEditForm} onSave={handleEditSave} onCancel={() => setEditingId(null)} saveLabel="Save" />
+                  <TaskForm form={editForm} setForm={setEditForm} onSave={handleEditSave} onCancel={() => setEditingId(null)} saveLabel="Save" timezone={timezone} />
                 </div>
               ) : (
                 <div className="p-3 space-y-1">

@@ -48,6 +48,52 @@ export const MAX_DIRECTIVE_GOAL_LEN = COMMISSION_INTENT_MAX
 const clamp = (s, max) => (s.length > max ? `${s.slice(0, Math.max(0, max - 1))}…` : s);
 const clampNote = (note) => clamp(note, MAX_DIGEST_NOTE_LEN);
 
+const MONTHLY_DAY_RANGES = Object.freeze({
+  first: '1-7',
+  second: '8-14',
+  third: '15-21',
+  fourth: '22-28',
+});
+
+/** Return the rich calendar rule carried by a commission, when present. */
+export function commissionToRecurrence(schedule) {
+  if (!schedule || typeof schedule !== 'object') return null;
+  if (schedule.kind === 'RECURRENCE') return schedule.recurrence || null;
+  return null;
+}
+
+function recurrenceToCron(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+  if (rule.frequency === 'custom') return typeof rule.cron === 'string' && rule.cron.trim() ? rule.cron.trim() : null;
+  const match = typeof rule.time === 'string' ? rule.time.match(/^([01]\d|2[0-3]):([0-5]\d)$/) : null;
+  if (!match) return null;
+  const prefix = `${Number(match[2])} ${Number(match[1])}`;
+  const interval = Math.max(1, Number(rule.interval) || 1);
+  if (rule.frequency === 'daily') {
+    const weekdays = Array.isArray(rule.weekdays)
+      ? [...new Set(rule.weekdays)].filter(day => Number.isInteger(day) && day >= 0 && day <= 6).sort((a, b) => a - b)
+      : [];
+    if (weekdays.length && interval > 1) return null;
+    return `${prefix} ${interval > 1 ? `*/${interval}` : '*'} * ${weekdays.length ? weekdays.join(',') : '*'}`;
+  }
+  if (rule.frequency === 'weekly') {
+    const weekdays = Array.isArray(rule.weekdays) ? [...new Set(rule.weekdays)].sort((a, b) => a - b) : [];
+    return `${prefix} * * ${weekdays.length ? weekdays.join(',') : '*'}`;
+  }
+  if (rule.frequency === 'monthly-date') {
+    const day = Number(rule.dayOfMonth);
+    return Number.isInteger(day) && day >= 1 && day <= 31 ? `${prefix} ${day} * *` : null;
+  }
+  if (rule.frequency === 'monthly-weekday') {
+    const range = MONTHLY_DAY_RANGES[rule.ordinal];
+    const weekday = Number(rule.weekday);
+    return range && Number.isInteger(weekday) && weekday >= 0 && weekday <= 6
+      ? `${prefix} ${range} * ${weekday}`
+      : null;
+  }
+  return null;
+}
+
 /**
  * Compose a 5-field cron (`minute hour dayOfMonth month dayOfWeek`) from a
  * commission schedule. Returns the raw string, or null when the schedule is
@@ -57,6 +103,8 @@ const clampNote = (note) => clamp(note, MAX_DIGEST_NOTE_LEN);
 export function commissionToCron(schedule) {
   if (!schedule || typeof schedule !== 'object') return null;
   const { kind, atLocalTime, weekday, weekdaysOnly, cron } = schedule;
+
+  if (kind === 'RECURRENCE') return recurrenceToCron(schedule.recurrence);
 
   if (kind === 'CUSTOM') {
     return typeof cron === 'string' && cron.trim() ? cron.trim() : null;

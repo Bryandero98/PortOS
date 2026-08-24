@@ -24,7 +24,7 @@
 import { getScheduleStatus } from './taskSchedule.js';
 import * as autonomousJobs from './autonomousJobs.js';
 import { checkJobGate, hasGate, getRegisteredGates } from './jobGates.js';
-import { parseCronToNextRun } from './eventScheduler.js';
+import { parseCronToNextRun, parseRecurrenceToNextRun } from './eventScheduler.js';
 import { getLocalParts, getUserTimezone, nextLocalTime } from '../lib/timezone.js';
 
 const HOUR = 3_600_000;
@@ -232,6 +232,7 @@ export async function getWorkflowGraph({ horizonHours = 24, from = new Date() } 
         type: job.interval || (job.cronExpression ? 'cron' : 'custom'),
         intervalMs: job.intervalMs ?? null,
         cronExpression: job.cronExpression ?? null,
+        cronSchedule: job.cronSchedule ?? null,
         scheduledTime: job.scheduledTime ?? null,
         weekdaysOnly: !!job.weekdaysOnly
       },
@@ -305,6 +306,24 @@ export function projectWorkflowTimeline(nodes, { start, end, timezone = 'UTC' })
       continue;
     }
 
+    if (schedule.cronSchedule) {
+      const dueNow = isRecurrenceDueNow(node, schedule.cronSchedule, startMs, timezone);
+      if (dueNow) {
+        occurrences.push(makeOccurrence(node, startMs, 'launch', dueNowExtra(node)));
+      }
+      appendRecurrenceOccurrences({
+        node,
+        rule: schedule.cronSchedule,
+        startMs,
+        endMs,
+        timezone,
+        target: occurrences,
+        kind: 'launch',
+        skipStart: dueNow
+      });
+      continue;
+    }
+
     if (schedule.cronExpression) {
       const dueNow = isCronDueNow(node, schedule.cronExpression, startMs, timezone);
       if (dueNow) {
@@ -344,6 +363,19 @@ export function projectWorkflowTimeline(nodes, { start, end, timezone = 'UTC' })
     occurrences: occurrences.map(item => ({ ...item, collision: collisionOccurrenceIds.has(item.id) })),
     windows
   };
+}
+
+function appendRecurrenceOccurrences({ node, rule, startMs, endMs, timezone, target, kind, skipStart = false }) {
+  let cursor = new Date(skipStart ? startMs : startMs - 60_000);
+  const searchBound = new Date(endMs);
+  for (let i = 0; i < MAX_OCCURRENCES_PER_NODE; i++) {
+    const next = parseRecurrenceToNextRun(rule, cursor, timezone, searchBound);
+    if (!next || next.getTime() >= endMs) return;
+    if (next.getTime() >= startMs && isAllowedWeekday(node, next.getTime(), timezone)) {
+      target.push(makeOccurrence(node, next.getTime(), kind));
+    }
+    cursor = next;
+  }
 }
 
 function appendCronOccurrences({ node, expression, startMs, endMs, timezone, target, kind, skipStart = false }) {
@@ -495,6 +527,13 @@ function isCronDueNow(node, expression, startMs, timezone) {
   } catch {
     return false;
   }
+}
+
+function isRecurrenceDueNow(node, rule, startMs, timezone) {
+  if (node.kind === 'task') return node.shouldRun === true;
+  if (!node.lastRun) return false;
+  const next = parseRecurrenceToNextRun(rule, new Date(node.lastRun), timezone, new Date(startMs + 60_000));
+  return !!next && next.getTime() <= startMs;
 }
 
 function isIntervalJobDueNow(node, startMs, timezone) {

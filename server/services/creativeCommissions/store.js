@@ -58,7 +58,7 @@ import { PATHS } from '../../lib/fileUtils.js';
 import { createCollectionStore } from '../../lib/collectionStore.js';
 import { createPgFileFacade, resolvePgBackend, isFileBackend } from '../../lib/pgFileFacade.js';
 import { createRecordWriteQueue } from '../../lib/fileWriteQueue.js';
-import { isValidCron } from '../eventScheduler.js';
+import { isValidCron, isValidRecurrence } from '../eventScheduler.js';
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
 import {
   contentHashForRecord,
@@ -264,6 +264,9 @@ export function sanitizeCommission(raw) {
       weekday: Number.isInteger(schedule.weekday) ? schedule.weekday : null,
       weekdaysOnly: schedule.weekdaysOnly === true,
       cron: isStr(schedule.cron) ? schedule.cron : null,
+      recurrence: schedule.recurrence && typeof schedule.recurrence === 'object'
+        ? { ...schedule.recurrence, weekdays: Array.isArray(schedule.recurrence.weekdays) ? schedule.recurrence.weekdays : [] }
+        : null,
       timezone: isStr(schedule.timezone) ? schedule.timezone : null,
     },
     // Per-ability generation (#2769): a known type's adapter fills its defaults
@@ -516,6 +519,13 @@ export function _resetCommissionStore() {
  * schema — so validation.js stays a leaf free of the eventScheduler import.
  */
 export function assertValidSchedule(schedule) {
+  const recurrence = schedule?.kind === 'RECURRENCE' ? schedule.recurrence : null;
+  if (recurrence) {
+    if (!isValidRecurrence(recurrence)) {
+      throw makeErr('Invalid schedule: could not derive a valid recurrence', ERR_VALIDATION);
+    }
+    return recurrence;
+  }
   const cron = commissionToCron(schedule);
   if (!cron || !isValidCron(cron)) {
     throw makeErr('Invalid schedule: could not derive a valid cron expression', ERR_VALIDATION);

@@ -204,6 +204,11 @@ describe('assertValidSchedule', () => {
     try { assertValidSchedule({ kind: 'CUSTOM', cron: 'not a cron' }); }
     catch (e) { expect(e.code).toBe(ERR_VALIDATION); }
   });
+
+  it('accepts an anchored calendar recurrence', () => {
+    const recurrence = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+    expect(assertValidSchedule({ kind: 'RECURRENCE', recurrence })).toEqual(recurrence);
+  });
 });
 
 describe('createCommission', () => {

@@ -65,6 +65,18 @@ describe('POST /api/creative-commission', () => {
     }));
   });
 
+  it('accepts an anchored calendar recurrence schedule', async () => {
+    svc.createCommission.mockResolvedValue({ id: 'commission-2', name: 'Biweekly Surreal' });
+    const recurrence = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+    const res = await request(buildApp()).post('/api/creative-commission').send({
+      ...validBody(), schedule: { kind: 'RECURRENCE', recurrence },
+    });
+    expect(res.status).toBe(201);
+    expect(svc.createCommission).toHaveBeenCalledWith(expect.objectContaining({
+      schedule: expect.objectContaining({ kind: 'RECURRENCE', recurrence }),
+    }));
+  });
+
   it('rejects a body missing the brief with 400 (service not called)', async () => {
     const res = await request(buildApp()).post('/api/creative-commission').send({ name: 'x', schedule: { kind: 'DAILY', atLocalTime: '02:00' } });
     expect(res.status).toBe(400);

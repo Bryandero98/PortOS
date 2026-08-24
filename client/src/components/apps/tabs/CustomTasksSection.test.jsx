@@ -3,7 +3,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({
   getCosJobs: vi.fn(),
-  triggerCosJob: vi.fn()
+  triggerCosJob: vi.fn(),
+  getSettings: vi.fn()
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 
@@ -26,6 +27,7 @@ describe('CustomTasksSection trigger outcomes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getCosJobs.mockResolvedValue({ jobs: [task] });
+    api.getSettings.mockResolvedValue({ timezone: 'UTC' });
   });
 
   it('surfaces a skipped trigger without claiming the task ran', async () => {

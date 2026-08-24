@@ -7,6 +7,8 @@
  * Kept side-effect-free so both surfaces map record ↔ form identically.
  */
 
+import { describeRecurrence } from '../../utils/cronHelpers.js';
+
 // Client mirror of the server's brief field caps
 // (server/lib/creativeCommissionValidation.js). The intent is roomy on purpose:
 // it reaches the planning LLM verbatim, so it holds a whole instruction set —
@@ -194,6 +196,7 @@ export function describeSchedule(schedule) {
   if (!schedule) return 'No schedule';
   const { kind, atLocalTime, weekday, weekdaysOnly, cron } = schedule;
   if (kind === 'CUSTOM') return `Custom · ${cron || '—'}`;
+  if (kind === 'RECURRENCE') return describeRecurrence(schedule.recurrence) || 'Custom recurrence';
   if (kind === 'WEEKLY') return `Weekly · ${WEEKDAYS[weekday] ?? '—'} at ${atLocalTime || '—'}`;
   if (kind === 'DAILY') return `Daily${weekdaysOnly ? ' (weekdays)' : ''} at ${atLocalTime || '—'}`;
   return kind || 'No schedule';
@@ -233,6 +236,8 @@ export function toForm(c) {
       weekday: Number.isInteger(c.schedule?.weekday) ? c.schedule.weekday : 0,
       weekdaysOnly: c.schedule?.weekdaysOnly === true,
       cron: c.schedule?.cron || '',
+      recurrence: c.schedule?.recurrence || null,
+      timezone: c.schedule?.timezone || null,
     },
     // Per-ability generation (#2769): only the selected type's fields, filled
     // from the record or the type's defaults.
@@ -263,8 +268,11 @@ export const blankForm = () => toForm({});
 // Build the API payload from form state, dropping fields the schedule kind doesn't use.
 export function toPayload(form) {
   const s = { kind: form.schedule.kind };
+  if (form.schedule.timezone) s.timezone = form.schedule.timezone;
   if (form.schedule.kind === 'CUSTOM') {
     s.cron = form.schedule.cron.trim();
+  } else if (form.schedule.kind === 'RECURRENCE') {
+    s.recurrence = form.schedule.recurrence;
   } else {
     s.atLocalTime = form.schedule.atLocalTime;
     if (form.schedule.kind === 'WEEKLY') s.weekday = Number(form.schedule.weekday);

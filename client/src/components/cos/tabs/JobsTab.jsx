@@ -3,14 +3,15 @@ import { Plus, RefreshCw, Play, Trash2, ChevronDown, ChevronUp, Clock, ToggleLef
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
 import { timeAgo, timeUntil, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
-import { CRON_PRESETS, DEFAULT_CRON, describeCron, JOB_INTERVAL_OPTIONS as INTERVAL_OPTIONS } from '../../../utils/cronHelpers';
-import WeekdayTimePicker from '../../WeekdayTimePicker';
+import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence, JOB_INTERVAL_OPTIONS as INTERVAL_OPTIONS } from '../../../utils/cronHelpers';
+import CronSchedulePicker from '../../CronSchedulePicker';
 import { effectiveModelFor, effortAwareModelOptions } from '../../../utils/providers';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import EffortSelect from '../EffortSelect';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import useUserTimezone from '../../../hooks/useUserTimezone.js';
 
 const SCHEDULE_MODE_OPTIONS = [
   { value: 'interval', label: 'Interval' },
@@ -58,6 +59,7 @@ const INITIAL_JOB = {
   interval: 'daily',
   scheduledTime: '',
   cronExpression: '',
+  cronSchedule: null,
   priority: 'MEDIUM',
   autonomyLevel: 'manager',
   promptTemplate: '',
@@ -174,16 +176,19 @@ function normalizeJobPayload(formData) {
   // is unambiguous across create and update.
   if (!payload.appId) payload.appId = null;
   if (payload.scheduleMode === 'cron') {
-    payload.cronExpression = payload.cronExpression?.trim() || null;
+    const derivedCron = buildCronFromRecurrence(payload.cronSchedule);
+    payload.cronExpression = derivedCron || payload.cronExpression?.trim() || null;
+    payload.cronSchedule = payload.cronSchedule || null;
     payload.scheduledTime = null;
   } else {
     payload.cronExpression = null;
+    payload.cronSchedule = null;
   }
   delete payload.scheduleMode;
   return payload;
 }
 
-function ScheduleFields({ data, onChange }) {
+function ScheduleFields({ data, onChange, timezone }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
@@ -196,7 +201,7 @@ function ScheduleFields({ data, onChange }) {
               onChange('scheduleMode', opt.value);
               // Seed the expression with the picker's displayed default (07:00
               // daily) so an untouched Cron picker is actually saveable.
-              if (opt.value === 'cron' && !data.cronExpression) onChange('cronExpression', DEFAULT_CRON);
+              if (opt.value === 'cron' && !data.cronExpression && !data.cronSchedule) onChange('cronExpression', DEFAULT_CRON);
             }}
             className={`px-2 py-1 text-xs rounded transition-colors ${
               data.scheduleMode === opt.value
@@ -210,32 +215,16 @@ function ScheduleFields({ data, onChange }) {
       </div>
       {data.scheduleMode === 'cron' ? (
         <div className="space-y-2">
-          <WeekdayTimePicker value={data.cronExpression || DEFAULT_CRON} onChange={value => onChange('cronExpression', value)} />
-          <div className="flex gap-2 items-center">
-            <input
-              type="text"
-              value={data.cronExpression || ''}
-              onChange={e => onChange('cronExpression', e.target.value)}
-              className="flex-1 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm font-mono"
-              placeholder="0 7 * * *"
-              title="Cron expression: minute hour dayOfMonth month dayOfWeek"
-              aria-label="Cron expression: minute hour dayOfMonth month dayOfWeek"
-            />
-            <select
-              value=""
-              onChange={e => { if (e.target.value) onChange('cronExpression', e.target.value); }}
-              className="px-2 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 text-xs"
-              aria-label="Cron presets"
-            >
-              <option value="">Presets</option>
-              {CRON_PRESETS.map(p => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </select>
-          </div>
-          {data.cronExpression && (
-            <span className="text-xs text-gray-500">{describeCron(data.cronExpression)}</span>
-          )}
+          <CronSchedulePicker
+            value={data.cronSchedule || data.cronExpression || DEFAULT_CRON}
+            valueShape="recurrence"
+            timezone={timezone}
+            onChange={rule => {
+              onChange('cronSchedule', rule);
+              const cron = buildCronFromRecurrence(rule);
+              onChange('cronExpression', cron || null);
+            }}
+          />
         </div>
       ) : (
         <div className="flex gap-3">
@@ -264,6 +253,7 @@ function ScheduleFields({ data, onChange }) {
 
 function formatNextDue(job) {
   // Cron jobs: show human-readable schedule (server computes exact next fire time)
+  if (job.cronSchedule) return describeRecurrence(job.cronSchedule);
   if (job.cronExpression) return describeCron(job.cronExpression);
 
   const { lastRun, intervalMs, scheduledTime } = job;
@@ -284,7 +274,7 @@ function getJobTypeLabel(job) {
   return 'AI';
 }
 
-function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate }) {
+function JobCard({ job, apps, providers, timezone, onToggle, onTrigger, onDelete, onUpdate }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editData, setEditData] = useState({});
@@ -299,10 +289,11 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
       name: job.name,
       description: job.description,
       type: job.type || 'agent',
-      scheduleMode: job.cronExpression ? 'cron' : 'interval',
+      scheduleMode: job.cronExpression || job.cronSchedule ? 'cron' : 'interval',
       interval: job.interval,
       scheduledTime: job.scheduledTime || '',
       cronExpression: job.cronExpression || '',
+      cronSchedule: job.cronSchedule || (job.cronExpression ? parseCronToRecurrence(job.cronExpression) : null),
       priority: job.priority,
       autonomyLevel: job.autonomyLevel,
       promptTemplate: job.promptTemplate || '',
@@ -334,9 +325,9 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
     onUpdate();
   };
 
-  const isDue = job.enabled && (
-    !job.lastRun || (Date.now() - new Date(job.lastRun).getTime() >= job.intervalMs)
-  );
+  const isDue = job.enabled && (job.cronSchedule
+    ? (!job.lastRun || Boolean(job.nextRunAt && Date.now() >= new Date(job.nextRunAt).getTime()))
+    : (!job.lastRun || (Date.now() - new Date(job.lastRun).getTime() >= job.intervalMs)));
 
   return (
     <div className={`bg-port-card border rounded-lg transition-colors ${
@@ -382,7 +373,9 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
           <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
             <span className="flex items-center gap-1">
               <Clock size={10} />
-              {job.cronExpression
+              {job.cronSchedule
+                ? <span title={job.cronExpression || undefined}>{describeRecurrence(job.cronSchedule)}</span>
+                : job.cronExpression
                 ? <span title={job.cronExpression}>{describeCron(job.cronExpression)}</span>
                 : <>
                     {INTERVAL_OPTIONS.find(i => i.value === job.interval)?.label || job.interval}
@@ -489,7 +482,7 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
                   </select>
                 )}
               </div>
-              <ScheduleFields data={editData} onChange={(key, val) => setEditData(d => ({ ...d, [key]: val }))} />
+              <ScheduleFields data={editData} timezone={timezone} onChange={(key, val) => setEditData(d => ({ ...d, [key]: val }))} />
               {isAgentJobType(editData.type) && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-400">App scope:</span>
@@ -635,6 +628,7 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
 }
 
 export default function JobsTab() {
+  const timezone = useUserTimezone();
   const [jobs, setJobs] = useState([]);
   const [apps, setApps] = useState([]);
   const [providers, setProviders] = useState([]);
@@ -678,8 +672,8 @@ export default function JobsTab() {
       toast.error('Prompt template is required for AI jobs');
       return;
     }
-    if (newJob.scheduleMode === 'cron' && (!newJob.cronExpression?.trim() || newJob.cronExpression.trim().split(/\s+/).length !== 5)) {
-      toast.error('A valid 5-field cron expression is required for cron scheduling');
+    if (newJob.scheduleMode === 'cron' && !newJob.cronSchedule && (!newJob.cronExpression?.trim() || newJob.cronExpression.trim().split(/\s+/).length !== 5)) {
+      toast.error('A valid recurrence or 5-field cron expression is required for cron scheduling');
       return;
     }
 
@@ -847,7 +841,7 @@ export default function JobsTab() {
                 </select>
               )}
             </div>
-            <ScheduleFields data={newJob} onChange={(key, val) => setNewJob(j => ({ ...j, [key]: val }))} />
+            <ScheduleFields data={newJob} timezone={timezone} onChange={(key, val) => setNewJob(j => ({ ...j, [key]: val }))} />
             {isAgentJobType(newJob.type) && (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-400">App scope:</span>
@@ -929,6 +923,7 @@ export default function JobsTab() {
               job={job}
               apps={apps}
               providers={providers}
+              timezone={timezone}
               onToggle={handleToggle}
               onTrigger={handleTrigger}
               onDelete={handleDelete}

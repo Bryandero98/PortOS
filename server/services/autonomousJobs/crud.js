@@ -89,6 +89,7 @@ async function createJob(jobData) {
       // do isolated work and open a PR like the built-in task types.
       taskMetadata: jobData.taskMetadata || null,
       cronExpression: jobData.cronExpression || null,
+      cronSchedule: jobData.cronSchedule || null,
       type: jobType,
       interval: jobData.interval || 'weekly',
       intervalMs: resolveIntervalMs(jobData.interval || 'weekly', jobData.intervalMs),
@@ -150,7 +151,7 @@ async function updateJob(jobId, updates) {
 
     const updatableFields = [
       'name', 'description', 'category', 'type', 'interval', 'intervalMs',
-      'scheduledTime', 'cronExpression', 'weekdaysOnly', 'enabled', 'priority', 'autonomyLevel', 'promptTemplate',
+      'scheduledTime', 'cronExpression', 'cronSchedule', 'weekdaysOnly', 'enabled', 'priority', 'autonomyLevel', 'promptTemplate',
       'command', 'triggerAction', 'config', 'appId', 'taskMetadata', 'providerId', 'model', 'effort'
     ]
 

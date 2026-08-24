@@ -6,7 +6,9 @@ import { Router } from 'express';
 import * as cos from '../services/cos.js';
 import * as autonomousJobs from '../services/autonomousJobs.js';
 import { checkJobGate, hasGate, getRegisteredGates } from '../services/jobGates.js';
-import { parseCronToNextRun } from '../services/eventScheduler.js';
+import { computeNextJobRun } from '../services/autonomousJobs/scheduler.js';
+import { parseCronToNextRun, isValidRecurrence } from '../services/eventScheduler.js';
+import { getUserTimezone } from '../lib/timezone.js';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { createCosJobSchema, updateCosJobSchema } from '../lib/validation.js';
 
@@ -30,11 +32,28 @@ function validateCronExpression(cronExpression) {
   }
 }
 
+function validateRecurrenceRule(rule) {
+  if (!isValidRecurrence(rule)) {
+    throw new ServerError('Invalid cron recurrence rule', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+}
+
 // GET /api/cos/jobs - Get all autonomous jobs
 router.get('/jobs', asyncHandler(async (req, res) => {
   const jobs = await autonomousJobs.getAllJobs();
   const stats = await autonomousJobs.getJobStats();
-  const jobsWithGates = jobs.map(j => ({ ...j, hasGate: hasGate(j.id) }));
+  const recurrenceJobs = jobs.filter(job => job.cronSchedule);
+  const timezone = recurrenceJobs.length ? await getUserTimezone() : null;
+  const jobsWithGates = jobs.map(j => {
+    const nextRun = j.cronSchedule && isValidRecurrence(j.cronSchedule)
+      ? computeNextJobRun(j, timezone)
+      : null;
+    return {
+      ...j,
+      hasGate: hasGate(j.id),
+      ...(j.cronSchedule ? { nextRunAt: Number.isFinite(nextRun) ? new Date(nextRun).toISOString() : null } : {})
+    };
+  });
   res.json({ jobs: jobsWithGates, stats, registeredGates: getRegisteredGates() });
 }));
 
@@ -90,7 +109,7 @@ router.get('/jobs/:id', asyncHandler(async (req, res) => {
 router.post('/jobs', asyncHandler(async (req, res) => {
   const parsedJob = createCosJobSchema.safeParse(req.body);
   if (!parsedJob.success) failValidation(parsedJob);
-  const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, appId, taskMetadata, providerId, model, effort } = parsedJob.data;
+  const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule, enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, appId, taskMetadata, providerId, model, effort } = parsedJob.data;
 
   if (type === 'shell' && !command?.trim()) {
     throw new ServerError('command is required for shell jobs', { status: 400, code: 'VALIDATION_ERROR' });
@@ -103,9 +122,10 @@ router.post('/jobs', asyncHandler(async (req, res) => {
   if (cronExpression) {
     validateCronExpression(cronExpression);
   }
+  if (cronSchedule) validateRecurrenceRule(cronSchedule);
 
   const job = await autonomousJobs.createJob({
-    name, description, category, type, interval, intervalMs, scheduledTime, cronExpression,
+    name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule,
     enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, appId, taskMetadata, providerId, model, effort
   });
   res.json({ success: true, job });
@@ -115,13 +135,14 @@ router.post('/jobs', asyncHandler(async (req, res) => {
 router.put('/jobs/:id', asyncHandler(async (req, res) => {
   const parsedJobUpdate = updateCosJobSchema.safeParse(req.body);
   if (!parsedJobUpdate.success) failValidation(parsedJobUpdate);
-  const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression,
+  const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule,
     enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, weekdaysOnly, appId, taskMetadata, providerId, model, effort } = parsedJobUpdate.data;
   if (cronExpression) {
     validateCronExpression(cronExpression);
   }
+  if (cronSchedule) validateRecurrenceRule(cronSchedule);
   const job = await autonomousJobs.updateJob(req.params.id, {
-    name, description, category, type, interval, intervalMs, scheduledTime, cronExpression,
+    name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule,
     enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, weekdaysOnly, appId, taskMetadata, providerId, model, effort
   });
   if (!job) {

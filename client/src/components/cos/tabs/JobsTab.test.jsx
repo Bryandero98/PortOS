@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   getJobHistory: vi.fn(),
   getApps: vi.fn(),
   getProviders: vi.fn(),
+  getSettings: vi.fn(),
 }));
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), loading: vi.fn() }));
@@ -42,6 +43,7 @@ beforeEach(() => {
   api.updateCosJob.mockResolvedValue({ job: mockJob });
   api.getApps.mockResolvedValue([]);
   api.getProviders.mockResolvedValue({ providers: [] });
+  api.getSettings.mockResolvedValue({ timezone: 'UTC' });
 });
 
 describe('JobsTab / JobCard Run Now disable behavior (#4036)', () => {
@@ -109,5 +111,20 @@ describe('JobsTab / JobCard Run Now disable behavior (#4036)', () => {
 
     const reEnabledRunNow = screen.getByRole('button', { name: 'Run now' });
     expect(reEnabledRunNow).not.toBeDisabled();
+  });
+
+  it('uses the server-projected recurrence run for the Due badge', async () => {
+    const recurrenceJob = {
+      ...mockJob,
+      lastRun: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+      cronSchedule: { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' },
+      cronExpression: '0 2 * * 1',
+      nextRunAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
+    };
+    api.getCosJobs.mockResolvedValue({ jobs: [recurrenceJob] });
+    render(<JobsTab apps={[]} providers={[]} />);
+
+    await waitFor(() => expect(screen.getByText('Test Job')).toBeInTheDocument());
+    expect(screen.queryByText('Due')).not.toBeInTheDocument();
   });
 });

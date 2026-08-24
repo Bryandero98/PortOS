@@ -28,6 +28,7 @@ const api = vi.hoisted(() => ({
   toggleCosJob: vi.fn(),
   triggerCosJob: vi.fn(),
   deleteCosJob: vi.fn(),
+  getSettings: vi.fn(),
 }));
 vi.mock('../../../services/api', () => api);
 
@@ -57,6 +58,7 @@ const renderTab = async (overrides = {}) => {
   api.getCosStatus.mockResolvedValue({ paused: false });
   api.getProviders.mockResolvedValue(PROVIDERS);
   api.getCosJobs.mockResolvedValue({ jobs: [] });
+  api.getSettings.mockResolvedValue({ timezone: 'UTC' });
   api.updateAppTaskTypeOverride.mockResolvedValue({ success: true });
   render(<AutomationTab appId="app-1" appName="MyApp" />);
   await screen.findByText('layered-intelligence');

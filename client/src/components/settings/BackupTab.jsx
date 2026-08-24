@@ -8,6 +8,7 @@ import useAsyncAction from '../../hooks/useAsyncAction';
 import Modal from '../ui/Modal';
 import { getSettings, updateSettings, getBackupStatus, triggerBackup, getBackupSnapshots, restoreDatabase } from '../../services/api';
 import { formatBytes } from '../../utils/formatters';
+import CronSchedulePicker from '../CronSchedulePicker';
 
 // Set equality — rsync --exclude flags are order-independent, so reordering
 // is NOT a dirty state; only membership changes (added/removed entries) are.
@@ -38,7 +39,6 @@ const shadowsDefault = (customPath, defaultPath) => {
 
 export function BackupTab() {
   const destPathId = useId();
-  const cronId = useId();
   const additionalExcludeId = useId();
   const defaultExcludesPanelId = useId();
   const [loading, setLoading] = useState(true);
@@ -304,16 +304,9 @@ export function BackupTab() {
       </div>
 
       <div className="space-y-1">
-        <label htmlFor={cronId} className="block text-sm text-gray-400">Schedule (cron)</label>
-        <input
-          id={cronId}
-          type="text"
-          value={cronExpression}
-          onChange={e => setCronExpression(e.target.value)}
-          className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
-          placeholder="0 2 * * *"
-        />
-        <p className="text-xs text-gray-500">Default: 2:00 AM daily</p>
+        <span className="block text-sm text-gray-400">Schedule</span>
+        <CronSchedulePicker value={cronExpression} onChange={setCronExpression} cronAriaLabel="Schedule (cron)" />
+        <p className="text-xs text-gray-500">Default: 2:00 AM daily. Times use the configured timezone.</p>
       </div>
 
       {defaultExcludeRows.length > 0 && (
