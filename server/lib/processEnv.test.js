@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { basename, dirname } from 'path';
-import { findCommandOnPath, safeChildProcessEnv, stripDebugMallocEnv, whichFirst } from './processEnv.js';
+import { buildSafeCliBaseEnv, findCommandOnPath, safeChildProcessEnv, stripDebugMallocEnv, whichFirst } from './processEnv.js';
 
 describe('stripDebugMallocEnv', () => {
   it('drops every key that starts with "Malloc"', () => {
@@ -61,6 +61,30 @@ describe('safeChildProcessEnv', () => {
       if (oldPortosTest === undefined) delete process.env.PORTOS_PROCESS_ENV_TEST;
       else process.env.PORTOS_PROCESS_ENV_TEST = oldPortosTest;
     }
+  });
+});
+
+describe('buildSafeCliBaseEnv', () => {
+  it('keeps CLI essentials and provider auth while dropping unrelated app variables', () => {
+    const env = buildSafeCliBaseEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/example',
+      ANTHROPIC_API_KEY: 'provider-key',
+      PRIVATE_APP_AUTH_KEYS: 'sidecar-secret',
+      PRIVATE_APP_TOKEN: 'sidecar-token',
+    });
+
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/example',
+      ANTHROPIC_API_KEY: 'provider-key',
+    });
+  });
+
+  it('does not mutate the source environment', () => {
+    const source = { PATH: '/usr/bin', PRIVATE_APP_AUTH_KEYS: 'sidecar-secret' };
+    buildSafeCliBaseEnv(source);
+    expect(source).toEqual({ PATH: '/usr/bin', PRIVATE_APP_AUTH_KEYS: 'sidecar-secret' });
   });
 });
 
