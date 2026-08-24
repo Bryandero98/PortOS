@@ -62,4 +62,26 @@ describe('DailyPostWidget', () => {
     await waitFor(() => expect(mock.getInstanceFeatures).toHaveBeenCalledTimes(2));
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('ignores an in-flight POST read that started before opt-out', async () => {
+    let resolveStats;
+    const stats = new Promise((resolve) => { resolveStats = resolve; });
+    mock.getInstanceFeatures
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: true }] })
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: false }] });
+    mock.getPostStats.mockReturnValue(stats);
+    mock.getPostConfig.mockResolvedValue({});
+    mock.getPostRecommendations.mockResolvedValue({ recommendations: [] });
+
+    const { container } = render(<MemoryRouter><DailyPostWidget /></MemoryRouter>);
+    await waitFor(() => expect(mock.getPostStats).toHaveBeenCalled());
+
+    act(() => window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { featureId: 'post', enabled: false },
+    })));
+    await waitFor(() => expect(mock.getInstanceFeatures).toHaveBeenCalledTimes(2));
+
+    await act(async () => { resolveStats({ completedToday: false, currentStreak: 9 }); });
+    expect(container).toBeEmptyDOMElement();
+  });
 });

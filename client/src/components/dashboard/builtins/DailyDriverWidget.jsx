@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router';
 import {
   Compass, ArrowRight, X, CheckCircle2, Target, Sparkles,
@@ -37,6 +37,7 @@ export default function DailyDriverWidget({ dashboardState }) {
   const [goalsFailed, setGoalsFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [dismissing, setDismissing] = useState(false);
+  const fetchGeneration = useRef(0);
 
   const refetchDashboard = dashboardState?.refetch;
   // The first landing of the local day (recorded server-side by the dashboard's
@@ -46,7 +47,9 @@ export default function DailyDriverWidget({ dashboardState }) {
   const firstVisitToday = !!dashboardState?.dailyDriver?.firstVisitToday;
 
   const fetchData = useCallback(async () => {
+    const generation = ++fetchGeneration.current;
     const featureData = await api.getInstanceFeatures({ silent: true }).catch(() => null);
+    if (generation !== fetchGeneration.current) return;
     const enabled = featureData?.features?.find((feature) => feature.id === 'post')?.enabled === true;
     setPostEnabled(enabled);
     const [stats, recs, goalsData] = await Promise.all([
@@ -54,6 +57,7 @@ export default function DailyDriverWidget({ dashboardState }) {
       enabled ? api.getPostRecommendations(1).catch(() => null) : Promise.resolve(null),
       api.getGoals({ silent: true }).catch(() => null),
     ]);
+    if (generation !== fetchGeneration.current) return;
     setPost(stats);
     setTopRec(recs?.recommendations?.[0] || null);
     // `goalsData?.goals` present ⇒ authoritative list; null ⇒ fetch failed.
@@ -75,7 +79,10 @@ export default function DailyDriverWidget({ dashboardState }) {
       fetchData();
     };
     window.addEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
-    return () => window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    return () => {
+      fetchGeneration.current += 1;
+      window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    };
   }, [fetchData]);
 
   // Mark the day handled, then refetch dashboard state so the registry gate

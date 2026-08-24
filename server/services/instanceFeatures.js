@@ -1,6 +1,6 @@
 import { ServerError } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
-import { getSettings, updateSettingsWith } from './settings.js';
+import { getSettingsWithStatus, updateSettingsWith } from './settings.js';
 
 // Instance features are local to one PortOS install. They are deliberately
 // separate from per-feature configuration so a feature can remain available
@@ -30,19 +30,21 @@ const featureEnabled = (feature, settings) => {
   return typeof stored === 'boolean' ? stored : false;
 };
 
-export const resolveInstanceFeatures = (settings = {}) => INSTANCE_FEATURES.map((feature) => ({
+export const resolveInstanceFeatures = (settings = {}, { corrupt = false } = {}) => INSTANCE_FEATURES.map((feature) => ({
   ...feature,
-  enabled: featureEnabled(feature, settings),
+  enabled: !corrupt && featureEnabled(feature, settings),
 }));
 
 export async function getInstanceFeatures() {
-  return { features: resolveInstanceFeatures(await getSettings()) };
+  const { corrupt, settings } = await getSettingsWithStatus();
+  return { features: resolveInstanceFeatures(settings, { corrupt }) };
 }
 
 export async function isInstanceFeatureEnabled(featureId) {
   const feature = FEATURE_BY_ID.get(featureId);
   if (!feature) return false;
-  return featureEnabled(feature, await getSettings());
+  const { corrupt, settings } = await getSettingsWithStatus();
+  return !corrupt && featureEnabled(feature, settings);
 }
 
 export async function updateInstanceFeature(featureId, enabled) {

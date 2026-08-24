@@ -85,6 +85,26 @@ describe('DailyDriverWidget', () => {
     expect(mocks.getInstanceFeatures).toHaveBeenCalledTimes(2);
   });
 
+  it('ignores an in-flight POST read that started before opt-out', async () => {
+    let resolveStats;
+    const stats = new Promise((resolve) => { resolveStats = resolve; });
+    mocks.getInstanceFeatures
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: true }] })
+      .mockResolvedValueOnce({ features: [{ id: 'post', enabled: false }] });
+    mocks.getPostStats.mockReturnValue(stats);
+
+    renderWidget();
+    await waitFor(() => expect(mocks.getPostStats).toHaveBeenCalled());
+
+    act(() => window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { featureId: 'post', enabled: false },
+    })));
+    await waitFor(() => expect(mocks.getInstanceFeatures).toHaveBeenCalledTimes(2));
+
+    await act(async () => { resolveStats({ completedToday: false, currentStreak: 9 }); });
+    expect(screen.queryByText('Daily POST')).toBeNull();
+  });
+
   it('shows the "Define your goals" empty-state when there are no active goals', async () => {
     renderWidget();
     expect(await screen.findByText('Define your goals')).toBeTruthy();

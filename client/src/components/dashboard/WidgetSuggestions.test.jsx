@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import WidgetSuggestions from './WidgetSuggestions';
+import { WIDGETS_BY_ID } from './widgetRegistry.jsx';
 
 // `quick-stats` ships with gate: (s) => s.apps.length > 0 — a deterministic
 // fixture lets us exercise the "data populated but widget missing" path
@@ -12,6 +13,14 @@ describe('WidgetSuggestions', () => {
     apps: [{ id: 'a1', name: 'app', overallStatus: 'online' }],
     usage: { currentStreak: 5, longestStreak: 5, hourlyActivity: [0, 0, 1, 0] },
   };
+
+  it('gates the Daily POST registry entry on instance participation', () => {
+    const gate = WIDGETS_BY_ID['daily-post'].gate;
+
+    expect(gate({ instanceFeatures: { features: [{ id: 'post', enabled: false }] } })).toBe(false);
+    expect(gate({ instanceFeatures: { features: [{ id: 'post', enabled: true }] } })).toBe(true);
+    expect(gate({})).toBe(false);
+  });
 
   it('renders nothing when every gated widget is already present', () => {
     const { container } = render(

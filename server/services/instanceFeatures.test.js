@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const mock = vi.hoisted(() => ({ settings: {}, updateSettingsWith: vi.fn() }));
+const mock = vi.hoisted(() => ({ settings: {}, corrupt: false, updateSettingsWith: vi.fn() }));
 
 vi.mock('./settings.js', () => ({
-  getSettings: vi.fn(async () => structuredClone(mock.settings)),
+  getSettingsWithStatus: vi.fn(async () => ({ corrupt: mock.corrupt, settings: structuredClone(mock.settings) })),
   updateSettingsWith: mock.updateSettingsWith,
 }));
 
@@ -17,6 +17,7 @@ import {
 describe('instance features', () => {
   beforeEach(() => {
     mock.settings = {};
+    mock.corrupt = false;
     mock.updateSettingsWith.mockReset();
     mock.updateSettingsWith.mockImplementation(async (mutate) => {
       mock.settings = await mutate(structuredClone(mock.settings));
@@ -42,6 +43,14 @@ describe('instance features', () => {
     expect(resolveInstanceFeatures(settings)[0]).toMatchObject({ id: 'post', enabled: false });
     mock.settings = settings;
     expect(await isInstanceFeatureEnabled('post')).toBe(false);
+  });
+
+  it('fails closed when settings cannot be read or parsed', async () => {
+    mock.corrupt = true;
+
+    expect(resolveInstanceFeatures({}, { corrupt: true })[0]).toMatchObject({ id: 'post', enabled: false });
+    expect(await isInstanceFeatureEnabled('post')).toBe(false);
+    expect((await getInstanceFeatures()).features[0]).toMatchObject({ id: 'post', enabled: false });
   });
 
   it('updates one feature inside the instance-local settings slice', async () => {

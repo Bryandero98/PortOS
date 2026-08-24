@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router';
 import { Brain, ArrowRight, Compass } from 'lucide-react';
 import * as api from '../services/api';
@@ -18,9 +18,12 @@ export default function DailyPostWidget() {
   const [topRec, setTopRec] = useState(null);
   const [featureEnabled, setFeatureEnabled] = useState(true);
   const [loaded, setLoaded] = useState(false);
+  const fetchGeneration = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const generation = ++fetchGeneration.current;
     const featureData = await api.getInstanceFeatures({ silent: true }).catch(() => null);
+    if (generation !== fetchGeneration.current) return;
     const postFeature = featureData?.features?.find((feature) => feature.id === 'post');
     if (postFeature?.enabled !== true) {
       setFeatureEnabled(false);
@@ -36,6 +39,7 @@ export default function DailyPostWidget() {
       api.getPostConfig().catch(() => null),
       api.getPostRecommendations(1).catch(() => null),
     ]);
+    if (generation !== fetchGeneration.current) return;
     setStats(data);
     setStatsWeek(week);
     setConfig(cfg);
@@ -52,7 +56,10 @@ export default function DailyPostWidget() {
       fetchData();
     };
     window.addEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
-    return () => window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    return () => {
+      fetchGeneration.current += 1;
+      window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    };
   }, [fetchData]);
 
   if (!loaded || !featureEnabled) return null;
