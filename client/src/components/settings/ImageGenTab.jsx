@@ -12,6 +12,7 @@ import {
   Sparkles, Terminal, Key, Check, Trash2, SlidersHorizontal
 } from 'lucide-react';
 import toast from '../ui/Toast';
+import FormField from '../ui/FormField';
 import TabPills from '../ui/TabPills';
 import BrailleSpinner from '../BrailleSpinner';
 import LocalSetupPanel from './LocalSetupPanel';
@@ -727,24 +728,23 @@ export function ImageGenTab() {
           on the surface itself.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2 bg-port-bg/40">
-          <label htmlFor="video-default-mode" className="text-sm text-gray-300">
-            Default video backend
-            <span className="block text-xs text-gray-500 mt-0.5">
-              Used when a video render names no backend and its surface has no pin. Grok clips
-              render at 6s or 10s on xAI&rsquo;s fixed video backend.
-            </span>
-          </label>
-          <select
-            id="video-default-mode"
-            value={videoGenMode}
-            onChange={(e) => setVideoGenMode(e.target.value)}
-            className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+          <FormField
+            label={<>Default video backend<span className="block text-xs text-gray-500 mt-0.5">Used when a video render names no backend and its surface has no pin. Grok clips render at 6s or 10s on xAI&rsquo;s fixed video backend.</span></>}
+            labelClassName="text-sm text-gray-300"
+            className="contents"
           >
-            <option value="">Auto (Local)</option>
-            {VIDEO_RENDER_MODES.map((m) => (
-              <option key={m} value={m}>{modeLabel(m)}</option>
-            ))}
-          </select>
+            <select
+              id="video-default-mode"
+              value={videoGenMode}
+              onChange={(e) => setVideoGenMode(e.target.value)}
+              className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+            >
+              <option value="">Auto (Local)</option>
+              {VIDEO_RENDER_MODES.map((m) => (
+                <option key={m} value={m}>{modeLabel(m)}</option>
+              ))}
+            </select>
+          </FormField>
         </div>
         <div className="space-y-3">
           {RENDER_TARGET_OPTIONS.map(({ id, label, video }) => {
@@ -763,52 +763,57 @@ export function ImageGenTab() {
             });
             return (
               <div key={id} className={`grid grid-cols-1 ${video ? 'sm:grid-cols-[1fr_auto_auto_auto]' : 'sm:grid-cols-[1fr_auto_auto]'} gap-2 sm:items-center border border-port-border rounded-lg px-3 py-2`}>
-                <label htmlFor={modeSelectId} className="text-sm text-gray-300">{label}</label>
-                <select
-                  id={modeSelectId}
-                  value={pinnedMode}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setPin('imageMode', v || null);
-                    // ANY backend change invalidates the pinned model — model ids
-                    // are namespaced per provider, and a codex→agy switch that
-                    // kept the gpt-* id would save a pin agy errors on. The
-                    // server's leak guard can't catch this case (mode and model
-                    // are pinned together), so the clear must happen here.
-                    setPin('imageModel', null);
-                  }}
-                  className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
-                >
-                  <option value="">Auto (install default)</option>
-                  {[IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK, IMAGE_GEN_MODE.AGY].map((m) => (
-                    <option key={m} value={m}>{modeLabel(m)}</option>
-                  ))}
-                </select>
-                {supportsCloudModelOverride(pinnedMode) ? (
-                  <input
-                    id={modelInputId}
-                    type="text"
-                    value={entry.imageModel || ''}
-                    onChange={(e) => setPin('imageModel', e.target.value.trim() || null)}
-                    placeholder="Model (optional)"
-                    aria-label={`${label} model`}
-                    className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-52"
-                  />
-                ) : <span className="hidden sm:block sm:w-52" />}
-                {video && (
+                <FormField label={label} labelClassName="text-sm text-gray-300" className="contents">
                   <select
-                    id={videoSelectId}
-                    value={pinnedVideoMode}
-                    onChange={(e) => setPin('videoMode', e.target.value || null)}
-                    aria-label={`${label} video backend`}
-                    title="Video backend for this surface — no model choice (Grok video has none; local video models are picked on the surface)"
+                    id={modeSelectId}
+                    value={pinnedMode}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setPin('imageMode', v || null);
+                      // ANY backend change invalidates the pinned model — model ids
+                      // are namespaced per provider, and a codex→agy switch that
+                      // kept the gpt-* id would save a pin agy errors on. The
+                      // server's leak guard can't catch this case (mode and model
+                      // are pinned together), so the clear must happen here.
+                      setPin('imageModel', null);
+                    }}
                     className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
                   >
-                    <option value="">Video: Auto</option>
-                    {VIDEO_RENDER_MODES.map((m) => (
-                      <option key={m} value={m}>Video: {modeLabel(m)}</option>
+                    <option value="">Auto (install default)</option>
+                    {[IMAGE_GEN_MODE.LOCAL, IMAGE_GEN_MODE.CODEX, IMAGE_GEN_MODE.GROK, IMAGE_GEN_MODE.AGY].map((m) => (
+                      <option key={m} value={m}>{modeLabel(m)}</option>
                     ))}
                   </select>
+                </FormField>
+                {supportsCloudModelOverride(pinnedMode) ? (
+                  <FormField label={`${label} model`} labelClassName="sr-only" className="contents">
+                    <input
+                      id={modelInputId}
+                      type="text"
+                      value={entry.imageModel || ''}
+                      onChange={(e) => setPin('imageModel', e.target.value.trim() || null)}
+                      placeholder="Model (optional)"
+                      aria-label={`${label} model`}
+                      className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-52"
+                    />
+                  </FormField>
+                ) : <span className="hidden sm:block sm:w-52" />}
+                {video && (
+                  <FormField label={`${label} video backend`} labelClassName="sr-only" className="contents">
+                    <select
+                      id={videoSelectId}
+                      value={pinnedVideoMode}
+                      onChange={(e) => setPin('videoMode', e.target.value || null)}
+                      aria-label={`${label} video backend`}
+                      title="Video backend for this surface — no model choice (Grok video has none; local video models are picked on the surface)"
+                      className="bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent sm:w-44"
+                    >
+                      <option value="">Video: Auto</option>
+                      {VIDEO_RENDER_MODES.map((m) => (
+                        <option key={m} value={m}>Video: {modeLabel(m)}</option>
+                      ))}
+                    </select>
+                  </FormField>
                 )}
               </div>
             );
@@ -819,16 +824,17 @@ export function ImageGenTab() {
 
       {mediaTab === 'external' && (
         <div className="bg-port-card border border-port-border rounded-xl p-6 space-y-4">
-          <label htmlFor="sdapi-url" className="text-sm font-medium text-gray-300">External AUTOMATIC1111 / Forge URL</label>
-          <input
-            id="sdapi-url"
-            type="text"
-            value={sdapiUrl}
-            onChange={(e) => setSdapiUrl(e.target.value)}
-            className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
-            placeholder="http://localhost:7860"
-          />
-          <p className="text-xs text-gray-500">Base URL for the SD WebUI server PortOS should send generation requests to.</p>
+          <FormField label="External AUTOMATIC1111 / Forge URL" labelClassName="text-sm font-medium text-gray-300">
+            <input
+              id="sdapi-url"
+              type="text"
+              value={sdapiUrl}
+              onChange={(e) => setSdapiUrl(e.target.value)}
+              className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+              placeholder="http://localhost:7860"
+            />
+            <p className="text-xs text-gray-500">Base URL for the SD WebUI server PortOS should send generation requests to.</p>
+          </FormField>
           <CleanersToggles
             cleanC2PA={cleanC2PAByMode.external}
             denoise={denoiseByMode.external}
@@ -895,8 +901,7 @@ export function ImageGenTab() {
         </label>
         {codexEnabled && (
           <div className="space-y-3 pl-6 border-l-2 border-port-border">
-            <div>
-              <label htmlFor={codexPathId} className="block text-xs font-medium text-gray-400 mb-1">Codex binary path (optional)</label>
+            <FormField label="Codex binary path (optional)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <input
                 id={codexPathId}
                 type="text"
@@ -906,9 +911,8 @@ export function ImageGenTab() {
                 placeholder="codex (uses $PATH)"
               />
               <p className="text-xs text-gray-500 mt-1">Leave empty to invoke <code>codex</code> from $PATH.</p>
-            </div>
-            <div>
-              <label htmlFor={codexModelId} className="block text-xs font-medium text-gray-400 mb-1">Model override (optional)</label>
+            </FormField>
+            <FormField label="Model override (optional)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <input
                 id={codexModelId}
                 type="text"
@@ -918,9 +922,8 @@ export function ImageGenTab() {
                 placeholder={`${CODEX_IMAGEGEN_DEFAULT_MODEL} (default)`}
               />
               <p className="text-xs text-gray-500 mt-1">Passed as <code>codex exec -m &lt;model&gt;</code>. Leave empty to use the cheap default (<code>{CODEX_IMAGEGEN_DEFAULT_MODEL}</code>).</p>
-            </div>
-            <div>
-              <label htmlFor={codexEffortId} className="block text-xs font-medium text-gray-400 mb-1">Reasoning effort (optional)</label>
+            </FormField>
+            <FormField label="Reasoning effort (optional)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <select
                 id={codexEffortId}
                 value={codexEffort}
@@ -933,9 +936,8 @@ export function ImageGenTab() {
                 ))}
               </select>
               <p className="text-xs text-gray-500 mt-1">Passed as <code>codex exec -c model_reasoning_effort=&lt;level&gt;</code>. Lower effort is cheaper; leave on the shipped default (<code>{CODEX_IMAGEGEN_DEFAULT_EFFORT}</code>) or drop to <code>minimal</code> for the cheapest possible renders.</p>
-            </div>
-            <div>
-              <label htmlFor={codexParallelId} className="block text-xs font-medium text-gray-400 mb-1">Parallel render limit</label>
+            </FormField>
+            <FormField label="Parallel render limit" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <input
                 id={codexParallelId}
                 type="number"
@@ -961,7 +963,7 @@ export function ImageGenTab() {
                   </span>
                 )}
               </p>
-            </div>
+            </FormField>
             <CleanersToggles
               cleanC2PA={cleanC2PAByMode.codex}
               denoise={denoiseByMode.codex}
@@ -1012,8 +1014,7 @@ export function ImageGenTab() {
         </label>
         {grokEnabled && (
           <div className="space-y-3 pl-6 border-l-2 border-port-border">
-            <div>
-              <label htmlFor={grokPathId} className="block text-xs font-medium text-gray-400 mb-1">Grok binary path (optional)</label>
+            <FormField label="Grok binary path (optional)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <input
                 id={grokPathId}
                 type="text"
@@ -1023,9 +1024,8 @@ export function ImageGenTab() {
                 placeholder="grok (uses $PATH)"
               />
               <p className="text-xs text-gray-500 mt-1">Leave empty to invoke <code>grok</code> from $PATH.</p>
-            </div>
-            <div>
-              <label htmlFor={grokRatioId} className="block text-xs font-medium text-gray-400 mb-1">Default aspect ratio (optional)</label>
+            </FormField>
+            <FormField label="Default aspect ratio (optional)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <select
                 id={grokRatioId}
                 value={grokAspectRatio}
@@ -1040,7 +1040,7 @@ export function ImageGenTab() {
               <p className="text-xs text-gray-500 mt-1">
                 Applied when a render doesn't specify dimensions. A render's width/height maps to the nearest supported ratio automatically.
               </p>
-            </div>
+            </FormField>
             <CleanersToggles
               cleanC2PA={cleanC2PAByMode.grok}
               denoise={denoiseByMode.grok}
@@ -1080,8 +1080,7 @@ export function ImageGenTab() {
         </label>
         {agyEnabled && (
           <div className="space-y-3 pl-6 border-l-2 border-port-border">
-            <div>
-              <label htmlFor={agyPathId} className="block text-xs font-medium text-gray-400 mb-1">Agy binary path (optional)</label>
+            <FormField label="Agy binary path (optional)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
               <input
                 id={agyPathId}
                 type="text"
@@ -1090,28 +1089,29 @@ export function ImageGenTab() {
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
                 placeholder="agy (uses $PATH)"
               />
+            </FormField>
+            <div className="flex items-end justify-between gap-3 mb-1">
+              <FormField label="Agent model (drives the session — not the image model)" labelClassName="block text-xs font-medium text-gray-400" className="flex-1">
+                <input
+                  id={agyModelId}
+                  list={agyModelsListId}
+                  type="text"
+                  value={agyModel}
+                  onChange={(e) => setAgyModel(e.target.value)}
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                  placeholder={`${AGY_IMAGEGEN_DEFAULT_MODEL} (default)`}
+                />
+              </FormField>
+              <button
+                type="button"
+                onClick={refreshAgyModels}
+                disabled={agyModelsLoading}
+                className="text-xs text-port-accent hover:underline disabled:opacity-50"
+              >
+                {agyModelsLoading ? <BrailleSpinner text="Loading…" /> : 'Refresh models'}
+              </button>
             </div>
             <div>
-              <div className="flex items-end justify-between gap-3 mb-1">
-                <label htmlFor={agyModelId} className="block text-xs font-medium text-gray-400">Agent model (drives the session — not the image model)</label>
-                <button
-                  type="button"
-                  onClick={refreshAgyModels}
-                  disabled={agyModelsLoading}
-                  className="text-xs text-port-accent hover:underline disabled:opacity-50"
-                >
-                  {agyModelsLoading ? <BrailleSpinner text="Loading…" /> : 'Refresh models'}
-                </button>
-              </div>
-              <input
-                id={agyModelId}
-                list={agyModelsListId}
-                type="text"
-                value={agyModel}
-                onChange={(e) => setAgyModel(e.target.value)}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
-                placeholder={`${AGY_IMAGEGEN_DEFAULT_MODEL} (default)`}
-              />
               <datalist id={agyModelsListId}>
                 {agyModels.map((modelId) => <option key={modelId} value={modelId} />)}
               </datalist>
@@ -1193,11 +1193,8 @@ export function ImageGenTab() {
           </div>
         )}
 
-        <div>
-          <label htmlFor="hf-token-input" className="block text-xs font-medium text-gray-400 mb-1">
-            {hfTokenSource === 'stored' ? 'Replace stored token' : 'Paste a token'}
-          </label>
-          <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col sm:flex-row gap-2 items-end">
+          <FormField label={hfTokenSource === 'stored' ? 'Replace stored token' : 'Paste a token'} labelClassName="block text-xs font-medium text-gray-400 mb-1" className="flex-1 w-full">
             <input
               id="hf-token-input"
               type="password"
@@ -1210,16 +1207,16 @@ export function ImageGenTab() {
               spellCheck={false}
               className="flex-1 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
             />
-            <button
-              type="button"
-              onClick={handleSaveHfToken}
-              disabled={hfTokenBusy !== null || !hfTokenInput.trim()}
-              className="whitespace-nowrap inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-port-accent text-white text-sm font-medium hover:bg-port-accent/80 disabled:opacity-50 min-h-[40px]"
-            >
-              {hfTokenBusy === 'saving' ? <BrailleSpinner /> : <Save size={14} />}
-              Save token
-            </button>
-          </div>
+          </FormField>
+          <button
+            type="button"
+            onClick={handleSaveHfToken}
+            disabled={hfTokenBusy !== null || !hfTokenInput.trim()}
+            className="whitespace-nowrap inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-port-accent text-white text-sm font-medium hover:bg-port-accent/80 disabled:opacity-50 min-h-[40px]"
+          >
+            {hfTokenBusy === 'saving' ? <BrailleSpinner /> : <Save size={14} />}
+            Save token
+          </button>
         </div>
 
         {hfTokenSource === 'stored' && (
@@ -1282,8 +1279,7 @@ export function ImageGenTab() {
           Send a prompt through {modeLabel(effectiveTestMode)} to verify end-to-end. For richer controls, visit the
           <a href="/media/image" className="text-port-accent hover:underline ml-1">Image Gen</a> page.
         </p>
-        <div>
-          <label htmlFor={testModeId} className="block text-sm text-gray-300 mb-1">Backend</label>
+        <FormField label="Backend" labelClassName="block text-sm text-gray-300 mb-1">
           <select
             id={testModeId}
             value={effectiveTestMode}
@@ -1300,17 +1296,18 @@ export function ImageGenTab() {
           <p className="text-xs text-gray-500 mt-1">
             Only enabled backends are listed — smoke-test one without making it your default.
           </p>
-        </div>
-        <label htmlFor="test-render-prompt" className="sr-only">Test prompt</label>
-        <textarea
-          id="test-render-prompt"
-          value={testPrompt}
-          onChange={(e) => setTestPrompt(e.target.value)}
-          rows={2}
-          disabled={rendering}
-          className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 resize-y"
-          placeholder="Describe the image you want..."
-        />
+        </FormField>
+        <FormField label="Test prompt" labelClassName="sr-only">
+          <textarea
+            id="test-render-prompt"
+            value={testPrompt}
+            onChange={(e) => setTestPrompt(e.target.value)}
+            rows={2}
+            disabled={rendering}
+            className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 resize-y"
+            placeholder="Describe the image you want..."
+          />
+        </FormField>
         <button
           type="button"
           onClick={handleRenderTest}
