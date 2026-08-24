@@ -43,7 +43,7 @@ function fakeChild(stdout, code = 0) {
 function routeSpawn(routes) {
   spawn.mockImplementation((cmd, args = []) => {
     const key = `${cmd} ${args[0] || ''}`;
-    const r = routes[key];
+    const r = routes[key] ?? (key === 'gh api' ? { stdout: 'alice\n' } : undefined);
     return fakeChild(r?.stdout ?? '', r?.code ?? 0);
   });
 }
@@ -254,6 +254,7 @@ describe('perpetualWork', () => {
 
     it('keeps an issue assigned to the authenticated account claimable', async () => {
       spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'git' && args[0] === 'remote') return fakeChild('git@ghe.example.com:acme/widget.git\n');
         if (cmd === 'gh' && args[0] === 'api' && args.includes('user')) return fakeChild('alice\n');
         if (cmd === 'gh' && args[0] === 'issue') return fakeChild(JSON.stringify([{
           number: 3, title: 'retry my claim', assignees: [{ login: 'alice' }], labels: []
@@ -264,6 +265,23 @@ describe('perpetualWork', () => {
       });
       const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
       expect(out).toMatchObject({ actionable: true, count: 1, sample: [3] });
+      const loginCall = spawn.mock.calls.find(([cmd, args]) => cmd === 'gh' && args[0] === 'api' && args.includes('user'));
+      expect(loginCall[1]).toEqual(expect.arrayContaining(['--hostname', 'ghe.example.com']));
+    });
+
+    it('keeps an assigned-only queue transient when the GitHub identity probe fails', async () => {
+      spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'git' && args[0] === 'remote') return fakeChild('git@ghe.example.com:acme/widget.git\n');
+        if (cmd === 'gh' && args[0] === 'api' && args.includes('user')) return fakeChild('', 1);
+        if (cmd === 'gh' && args[0] === 'issue') return fakeChild(JSON.stringify([
+          { number: 3, title: 'retry my claim', assignees: [{ login: 'alice' }], labels: [] }
+        ]));
+        if (cmd === 'git' && args[0] === 'branch') return fakeChild('main\n');
+        if (cmd === 'gh' && args[0] === 'pr') return fakeChild('');
+        return fakeChild('');
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: false, reason: 'gh-unavailable', transient: true });
     });
 
     it('reports the open/in-flight breakdown when nothing is claimable (the "40 open but parked" case)', async () => {
@@ -463,6 +481,8 @@ describe('perpetualWork', () => {
         expect(out.sample).toEqual([1, 2]);
         expect(out.total).toBe(2);
         expect(authorListCalls()).toEqual(['alice', 'bob', 'carol']);
+        const memberCall = spawn.mock.calls.find(([cmd, args]) => cmd === 'gh' && args[0] === 'api' && args.includes('--paginate'));
+        expect(memberCall[1]).toEqual(expect.arrayContaining(['--hostname', 'github.com']));
       });
 
       it('de-duplicates an issue returned by more than one author query', async () => {
@@ -573,6 +593,17 @@ describe('perpetualWork', () => {
       });
       const out = await detectGitlabIssues(app, { issueAuthorFilter: 'any' });
       expect(out).toMatchObject({ actionable: true, count: 1, sample: [10] });
+    });
+
+    it('keeps an assigned-only queue transient when the GitLab identity probe fails', async () => {
+      routeSpawn({
+        'glab api': { stdout: '', code: 1 },
+        'glab issue': { stdout: JSON.stringify([{ iid: 10, title: 'retry my claim', assignees: [{ username: 'octo' }], labels: [] }]) },
+        'git branch': { stdout: 'main\n' },
+        'glab mr': { stdout: '[]' }
+      });
+      const out = await detectGitlabIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: false, reason: 'glab-unavailable', transient: true });
     });
 
     it('reports a transient failure when glab exits non-zero', async () => {

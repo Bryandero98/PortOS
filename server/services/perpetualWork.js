@@ -29,6 +29,7 @@ import { emitLog } from './cosEvents.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, extractSlugFromRef } from '../lib/planIds.js';
 import { readOriginRemoteUrl } from '../lib/gitRemote.js';
 import { withGlabJson } from '../lib/glabArgs.js';
+import { githubApiHost, hostFromOriginUrl } from '../lib/workTracker.js';
 
 // Labels that make a GitHub issue non-actionable for autonomous claiming. MUST
 // stay in sync with the claim-issue prompt's Phase 1 skip-list
@@ -208,8 +209,8 @@ const assigneeLogin = (assignee) => normalizeLogin(
 export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = null, currentLogin = null) {
   if (!issue || typeof issue.number !== 'number') return false;
   if (inFlight.has(issue.number)) return false;
- const assignees = Array.isArray(issue.assignees) ? issue.assignees : [];
- const normalizedCurrentLogin = normalizeLogin(currentLogin);
+  const assignees = Array.isArray(issue.assignees) ? issue.assignees : [];
+  const normalizedCurrentLogin = normalizeLogin(currentLogin);
   const hasOtherAssignee = assignees.length > 0 && (
     !normalizedCurrentLogin || !assignees.some((assignee) => assigneeLogin(assignee) === normalizedCurrentLogin)
   );
@@ -229,8 +230,25 @@ export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = n
  * `--author`-token lookup and BOTH forges' trusted-set seed, so the probe and
  * its `<cli>-unavailable` sentinel exist once.
  */
+async function resolveGithubHost(repoPath) {
+  const origin = await readOriginRemoteUrl(repoPath).catch(() => null);
+  // GitHub's public host remains the safe default for a checkout without a
+  // readable origin; managed GitHub apps normally provide one, and a parsed
+  // enterprise origin is always preferred so the identity probe cannot drift
+  // to github.com.
+  return githubApiHost(hostFromOriginUrl(origin)) || 'github.com';
+}
+
+const withGithubHost = async (args, repoPath) => [
+  args[0],
+  '--hostname',
+  await resolveGithubHost(repoPath),
+  ...args.slice(1)
+];
+
 async function resolveAuthenticatedLogin(cli, args, repoPath) {
-  const res = await runCli(cli, args, repoPath);
+  const probeArgs = cli === 'gh' ? await withGithubHost(args, repoPath) : args;
+  const res = await runCli(cli, probeArgs, repoPath);
   const login = (res.stdout || '').trim();
   return (res.code !== 0 || !login) ? { error: `${cli}-unavailable` } : { login };
 }
@@ -247,7 +265,10 @@ async function resolveAuthenticatedLogin(cli, args, repoPath) {
 async function resolveTrustedLogins(cfg, repoPath) {
   const { login, error } = await resolveAuthenticatedLogin(cfg.cli, cfg.selfLoginArgs, repoPath);
   if (error) return { error };
-  const res = await runCli(cfg.cli, cfg.membersArgs, repoPath);
+  const membersArgs = cfg.cli === 'gh'
+    ? await withGithubHost(cfg.membersArgs, repoPath)
+    : cfg.membersArgs;
+  const res = await runCli(cfg.cli, membersArgs, repoPath);
   if (res.code !== 0) return { error: cfg.membersFail, remedy: cfg.membersRemedy };
   const logins = new Set([login.toLowerCase()]);
   for (const line of (res.stdout || '').split('\n')) {
@@ -590,6 +611,7 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
       ? resolveAuthenticatedLogin(cfg.cli, cfg.selfLoginArgs, repoPath)
       : Promise.resolve({ login: null })
   ]);
+  if (currentLoginResult.error) return transient(currentLoginResult.error);
   const currentLogin = currentLoginResult.login || null;
   const total = issues.length;
   // How many of the OPEN issues were skipped only because a claim/PR is already

@@ -603,8 +603,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
     const github = DEFAULT_TASK_PROMPTS['claim-issue'];
     const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
 
-    expect(PROMPT_VERSIONS['claim-issue']).toBe(18);
+    expect(PROMPT_VERSIONS['claim-issue']).toBe(19);
     expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBe(18);
+    expect(github).toContain('gh api --hostname "$GH_HOST" user -q .login');
+    expect(github).toContain('git remote get-url origin');
     expect(github).toContain('authenticated account remains eligible for a retry');
     expect(github).toContain('at least one assignee\'s login matches `$ME`');
     expect(github).toContain('--remove-assignee "${ASSIGNEES:-@me}"');
@@ -612,8 +614,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(gitlab).toContain('at least one assignee\'s username matches `$ME`');
     expect(gitlab).toContain('--unassign --unlabel in-progress');
     expect(gitlab).toContain('clears every current assignee');
-    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue'].at(-1)).toContain('It has NO assignees');
-    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].at(-1)).toContain('It has NO assignees');
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
   });
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
   // human table at exit 0 (`-F` is `--output-format` there, a different flag from

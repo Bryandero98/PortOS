@@ -22,6 +22,11 @@ items migrated from PLAN.md or GOALS.md and opportunity-scan suggestions. A
 proposal is valid only when it is useful to do now. A refactor is valid when current evidence shows it pays off now; a deferred possibility is not an issue.
 Return/drop it and let a later audit rediscover it when the evidence changes.`;
 
+// gh api defaults to github.com, even when the checked-out repository lives on
+// GitHub Enterprise. Resolve the origin host before identity probes so an
+// enterprise login cannot be mistaken for an unrelated github.com account.
+const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"`;
+
 // ============================================================
 // Unified DEFAULT_TASK_PROMPTS — one entry per scheduled task type / pipeline stage
 // All prompts use {appName} and {repoPath} template variables
@@ -866,7 +871,8 @@ Run steps 1–5 in order.
    #   a busy queue when the first page is full of excluded/in-flight issues.
    # Keep an issue assigned to this authenticated account eligible for retry;
    # if this lookup fails, leave ME empty and skip all assigned issues.
-   ME="$(gh api user -q .login 2>/dev/null || true)"
+   ${GITHUB_HOST_SETUP}
+   ME="$(gh api --hostname "$GH_HOST" user -q .login 2>/dev/null || true)"
    OWNER="$(gh repo view --json owner -q .owner.login)"
    gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 500
    #   Any-author mode: run the SAME command WITHOUT the --author "$OWNER" flag.
