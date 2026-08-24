@@ -25,7 +25,8 @@ Return/drop it and let a later audit rediscover it when the evidence changes.`;
 // gh api defaults to github.com, even when the checked-out repository lives on
 // GitHub Enterprise. Resolve the origin host before identity probes so an
 // enterprise login cannot be mistaken for an unrelated github.com account.
-const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"`;
+const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"
+if [ "$GH_HOST" = "ssh.github.com" ]; then GH_HOST="github.com"; fi`;
 
 // ============================================================
 // Unified DEFAULT_TASK_PROMPTS — one entry per scheduled task type / pipeline stage

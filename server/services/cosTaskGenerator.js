@@ -231,7 +231,8 @@ const PLAN_GATE_TASK_TYPES = new Set(['plan-task']);
 
 // gh api defaults to github.com, so collaborator identity and member probes
 // must carry the host parsed from this checkout's origin for GitHub Enterprise.
-const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"`;
+const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"
+if [ "$GH_HOST" = "ssh.github.com" ]; then GH_HOST="github.com"; fi`;
 
 // Per-forge inputs for the `collaborators` directive. The recipe is
 // forge-agnostic — resolve the trusted login set, then filter the LISTING (not

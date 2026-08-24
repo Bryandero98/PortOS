@@ -603,10 +603,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
     const github = DEFAULT_TASK_PROMPTS['claim-issue'];
     const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
 
-    expect(PROMPT_VERSIONS['claim-issue']).toBe(19);
+    expect(PROMPT_VERSIONS['claim-issue']).toBe(20);
     expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBe(18);
     expect(github).toContain('gh api --hostname "$GH_HOST" user -q .login');
     expect(github).toContain('git remote get-url origin');
+    expect(github).toContain('if [ "$GH_HOST" = "ssh.github.com" ]');
+    expect(github).toContain('GH_HOST="github.com"');
     expect(github).toContain('authenticated account remains eligible for a retry');
     expect(github).toContain('at least one assignee\'s login matches `$ME`');
     expect(github).toContain('--remove-assignee "${ASSIGNEES:-@me}"');

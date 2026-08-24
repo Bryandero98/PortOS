@@ -736,6 +736,9 @@ describe('resolveIssueAuthorFilterBlock', () => {
       expect(block).toContain(endpoint);
       expect(block).toContain('takes exactly ONE account');
       expect(block).toContain('do NOT silently fall back');
+      if (type === 'claim-issue') {
+        expect(block).toContain('if [ "$GH_HOST" = "ssh.github.com" ]');
+      }
       // The endpoint the AGENT is told to call must be the one the work detector
       // actually calls — otherwise the claimable count PortOS shows and the set
       // the agent claims from silently diverge.
