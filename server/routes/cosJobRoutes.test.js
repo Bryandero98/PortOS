@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
+import { errorMiddleware } from '../lib/errorHandler.js';
 import jobRoutes from './cosJobRoutes.js';
 
 vi.mock('../services/cos.js', () => ({
@@ -47,6 +48,7 @@ describe('CoS Job Routes', () => {
     app = express();
     app.use(express.json());
     app.use('/api/cos', jobRoutes);
+    app.use(errorMiddleware);
     vi.clearAllMocks();
   });
 
@@ -362,6 +364,19 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.type).toBe('shell');
+      expect(response.body.status).toBe('completed');
+    });
+
+    it('returns the standard error envelope when a shell job fails', async () => {
+      autonomousJobs.getJob.mockResolvedValue({ id: 'j1', type: 'shell' });
+      autonomousJobs.isShellJob.mockReturnValue(true);
+      autonomousJobs.executeShellJob.mockRejectedValue(new Error('command failed'));
+
+      const response = await request(app).post('/api/cos/jobs/j1/trigger');
+
+      expect(response.status).toBe(500);
+      expect(response.body).toMatchObject({ error: 'command failed', code: 'INTERNAL_ERROR' });
+      expect(response.body).not.toHaveProperty('success');
     });
 
     it('should trigger a script job', async () => {
@@ -374,6 +389,20 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.type).toBe('script');
+      expect(response.body.status).toBe('completed');
+    });
+
+    it('returns the standard error envelope when a script job fails', async () => {
+      autonomousJobs.getJob.mockResolvedValue({ id: 'j1', type: 'script' });
+      autonomousJobs.isShellJob.mockReturnValue(false);
+      autonomousJobs.isScriptJob.mockReturnValue(true);
+      autonomousJobs.executeScriptJob.mockRejectedValue(new Error('handler failed'));
+
+      const response = await request(app).post('/api/cos/jobs/j1/trigger');
+
+      expect(response.status).toBe(500);
+      expect(response.body).toMatchObject({ error: 'handler failed', code: 'INTERNAL_ERROR' });
+      expect(response.body).not.toHaveProperty('success');
     });
 
     it('should trigger an agent job', async () => {
@@ -387,6 +416,7 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.type).toBe('agent');
+      expect(response.body.status).toBe('queued');
       expect(response.body.taskId).toBe('task-1');
     });
 
@@ -449,6 +479,8 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(false);
+      expect(response.body.status).toBe('skipped');
+      expect(response.body.reason).toMatch(/not queued/i);
     });
   });
 
