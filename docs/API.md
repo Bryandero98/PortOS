@@ -31,6 +31,31 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 
 ## REST Endpoints
 
+### Federated peer-probe contract
+
+PortOS peers running independently upgraded installs use the following existing
+endpoints during the periodic reachability probe in
+`server/services/instances.js`. They are a **frozen compatibility contract**:
+keep their paths, request semantics, and listed response fields compatible.
+Additive response fields are allowed. A breaking change needs a new, explicitly
+versioned endpoint and a staged migration of the probe; `schemaVersions.js`
+gates synchronized records, not these request/response contracts.
+
+All three requests use the configured peer HTTP Basic credential when the
+remote instance enables its optional password gate. They are not a general
+cross-install data channel: probe results are stored only as the local peer's
+health, app, and sync snapshots. Do not add personal records, peer lists,
+credentials, local paths, or build identity to these responses.
+
+| Method | Endpoint | Stable request and response contract |
+|--------|----------|--------------------------------------|
+| GET | `/system/health/details` | Returns an object containing `instanceId` and `version` (each may be `null`) for peer identity and compatibility display. The health summary remains an object so an older prober can retain it as its last-known health snapshot. |
+| GET | `/apps` | Returns either the legacy app array or `{ apps: [...] }`. Each app entry used by peers retains `id`, `name`, `icon`, `overallStatus`, `uiPort`, `apiPort`, and `type`; fields may be absent or `null` when unknown. |
+| GET | `/instances/sync-status?forPeer=<instance-id>` | `forPeer` is optional and remains lenient: an unknown or legacy identifier, blank value, or omitted value must degrade to the unscoped status response rather than fail the probe. A recognized peer receives its `cursorForYou` alongside the normal sync status. |
+
+The separate `/federation/media/v1` surface is already versioned and has its
+own wire contract in [FEDERATED_MEDIA_PROVIDERS.md](./FEDERATED_MEDIA_PROVIDERS.md).
+
 ### Apps
 
 | Method | Endpoint | Description |
