@@ -45,6 +45,7 @@ import { buildOpencodeEnvVars } from './opencodeConfig.js';
 import { getOpencodeLocalProviderNamespace, isClaudeCommand } from './providerModels.js';
 import { isGatewayNamespace } from './providerGateways.js';
 import { agentGuardEnv } from './agentGuard/index.js';
+import { buildSafeCliBaseEnv } from './processEnv.js';
 
 // Claude Code defaults to 32K output tokens. Thinking-capable local models can
 // legitimately spend more than that before returning their final tool call;
@@ -134,10 +135,9 @@ export function composeProviderEnv({ before = null, provider = null, model = nul
  * is true — the pm2 guard shim prepended to the final `PATH`.
  *
  * @param {object} options
- * @param {NodeJS.ProcessEnv|object} [options.baseEnv=process.env] - env to start
- *   from. Callers that must not leak host credentials to an autonomous agent
- *   (e.g. the autofixer) pass a sanitized allowlist; every later layer still
- *   overlays it.
+ * @param {NodeJS.ProcessEnv|object} [options.baseEnv=process.env] - env to
+ *   start from. It is filtered through `buildSafeCliBaseEnv`; every later
+ *   explicit layer still overlays it.
  * @param {object|null} [options.before] - see `composeProviderEnv`.
  * @param {object|null} [options.provider] - see `composeProviderEnv`.
  * @param {string|null} [options.model] - see `composeProviderEnv`.
@@ -162,7 +162,7 @@ export function buildCliChildEnv({
   guard = false,
 } = {}) {
   const env = withSpawnCwdEnv(
-    { ...baseEnv, ...composeProviderEnv({ before, provider, model, extra }) },
+    { ...buildSafeCliBaseEnv(baseEnv, provider), ...composeProviderEnv({ before, provider, model, extra }) },
     cwd,
   );
 

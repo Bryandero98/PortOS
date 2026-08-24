@@ -74,7 +74,7 @@ export function pickCliProvider(providers, config = {}) {
  * @param {string[]} [args.extraArgs] - extra argv appended after the built args (e.g. `--allowedTools …`)
  * @param {number} [args.timeoutMs] - SIGTERM after this many ms (default 300000)
  * @param {(chunk: string, stream: 'stdout'|'stderr') => void} [args.onData] - live output callback
- * @param {NodeJS.ProcessEnv} [args.baseEnv] - base env for the child (default process.env). Callers that must NOT leak host credentials to an autonomous agent (e.g. the autofixer) pass a sanitized allowlist here; provider.envVars still overlays it.
+ * @param {NodeJS.ProcessEnv} [args.baseEnv] - base env for the child (default process.env); the shared child-env composer filters inherited variables. Explicit provider.envVars still overlays it.
  * @returns {Promise<{ text: string, exitCode: number, stderr: string } | { error: string, exitCode?: number, stderr?: string }>}
  */
 export function runCliProviderPrompt(args = {}) {
