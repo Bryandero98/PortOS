@@ -29,7 +29,7 @@ and must handle both the auth-on/auth-off and HTTP/HTTPS cases per instance.
 ## 1. Discovery & identity (pre-auth)
 
 `GET /api/system/health` — **public**, bypasses the auth gate even when the
-password is on (`PUBLIC_API_PATHS` in `server/lib/authGate.js`), and is the same
+password is on (`PUBLIC_API_PATHS` in `server/services/authGate.js`), and is the same
 endpoint Tailscale reachability checks hit. Use it to confirm a tailnet host is a
 PortOS instance and to label it on a connection screen **before** the app holds
 any credential.
@@ -66,7 +66,7 @@ route is exposed pre-auth.
 ## 2. Authentication
 
 PortOS auth is a single optional password (`server/services/auth.js`,
-`server/lib/authGate.js`). The app authenticates as a **full session via HTTP
+`server/services/authGate.js`). The app authenticates as a **full session via HTTP
 Basic**, reusing the exact path peer-to-peer federation uses — nothing new to
 build server-side.
 
