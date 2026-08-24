@@ -116,6 +116,7 @@ import { useErrorNotifications } from '../hooks/useErrorNotifications';
 import { useNotifications } from '../hooks/useNotifications';
 import { useAgentFeedbackToast } from '../hooks/useAgentFeedbackToast';
 import { useOnDemandTaskToast } from '../hooks/useOnDemandTaskToast';
+import { useEngagementReminderToast } from '../hooks/useEngagementReminderToast';
 import { useSharingNotifications } from '../hooks/useSharingNotifications';
 import UpdateBanners from './UpdateBanners';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
@@ -687,6 +688,10 @@ export default function Layout() {
 
   // Toast when a user-triggered on-demand task run found no actionable work
   useOnDemandTaskToast();
+
+  // Toast once per tab/day when deterministic product metrics identify a POST
+  // exercise or creative commission feedback action needing attention.
+  useEngagementReminderToast();
 
   // Live AI operation status (model loads, "calling LM Studio…", etc.)
   useAIStatusNotifications();

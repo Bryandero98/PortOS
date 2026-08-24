@@ -180,6 +180,9 @@ export const layeredIntelligenceConfigSchema = z.object({
     // prioritized Jira backlog / PLAN.md's unchecked items, fed in so the reasoner
     // can suppress a proposal that overlaps work already in scope. Default on.
     plannedWork: z.boolean().optional(),
+    // PortOS-only product-success signals (POST engagement and creative
+    // commission feedback). Managed apps use appMetrics/custom sources.
+    productMetrics: z.boolean().optional(),
     // Feedback loop (#2428): feed past LI proposals + their tracker outcomes back
     // into the reasoning prompt. Default on for PortOS, off for managed apps.
     outcomes: z.boolean().optional(),

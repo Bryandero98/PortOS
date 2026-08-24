@@ -12,7 +12,9 @@ import {
   BookOpen,
   CheckCircle,
   Users,
-  MessageSquareReply
+  MessageSquareReply,
+  Brain,
+  Sparkles
 } from 'lucide-react';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
@@ -26,9 +28,9 @@ import ProvenanceChip from './ui/ProvenanceChip';
 const ALERT_PROVENANCE = {
   level: 'inferred',
   explainer:
-    'Detected by your Chief of Staff from trends in your goals, task success rates, costs, and system metrics — inferred from your data, not thresholds you set by hand.',
+    'Detected by your Chief of Staff from trends in your goals, task success rates, costs, system health, and product engagement — inferred from your data, not thresholds you set by hand.',
   whatWouldChange:
-    'As the underlying trend reverses — a goal resumes progress, success rates recover, costs settle — the alert clears on the next sweep.',
+    'As the underlying trend reverses — a goal resumes progress, success rates recover, costs settle, or a daily action is completed — the alert clears on the next sweep.',
 };
 
 const SEVERITY_STYLES = {
@@ -45,7 +47,9 @@ const TYPE_ICONS = {
   process_error: AlertOctagon,
   learning_health: BookOpen,
   tribe_cadence: Users,
-  tribe_unanswered: MessageSquareReply
+  tribe_unanswered: MessageSquareReply,
+  post_engagement: Brain,
+  commission_feedback: Sparkles
 };
 
 const ProactiveAlertsWidget = memo(function ProactiveAlertsWidget() {

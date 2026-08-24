@@ -160,6 +160,11 @@ describe('defaultLayeredIntelligenceConfig', () => {
     expect(defaultLayeredIntelligenceConfig(false).sources.appMetrics).toBe(true);
     expect(defaultLayeredIntelligenceConfig(true).sources.appMetrics).toBe(true);
   });
+
+  it('defaults PortOS product-engagement metrics on only for the PortOS app', () => {
+    expect(defaultLayeredIntelligenceConfig(false).sources.productMetrics).toBe(false);
+    expect(defaultLayeredIntelligenceConfig(true).sources.productMetrics).toBe(true);
+  });
 });
 
 describe('getEffectiveConfig', () => {
@@ -1491,6 +1496,18 @@ describe('buildPrompt', () => {
     expect(buildPrompt({ ...base, sources: { cosMetrics: '' } })).not.toContain('### cosMetrics');
     expect(buildPrompt({ ...base, sources: { cosMetrics: '{"delivery":{"totalApproved":3}}' } }))
       .toContain('### cosMetrics');
+  });
+
+  it('renders PortOS product metrics as a dedicated engagement signal', () => {
+    const prompt = buildPrompt({
+      app,
+      isPortos: true,
+      config: { allowedScopes: ['app-improvement'], rules: '' },
+      sources: { productMetrics: '{"post":{"completedToday":false},"creativeCommissions":{"unreviewedRenders":2}}' },
+    });
+    expect(prompt).toContain('### productMetrics');
+    expect(prompt).toContain('inactive daily POST');
+    expect(prompt.match(/### productMetrics/g)).toHaveLength(1);
   });
 
   it('injects the scope-awareness block only when present, under its own heading (#2760)', () => {

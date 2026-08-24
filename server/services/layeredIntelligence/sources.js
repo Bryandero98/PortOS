@@ -296,6 +296,14 @@ export async function gatherSources(app, config, { cosPath = PATHS.cos, trustShe
     const metrics = await tryReadFile(join(repo, 'METRICS.md'));
     if (metrics) out.appMetrics = metrics.slice(0, 8000);
   }
+  if (src.productMetrics && isPortos) {
+    // Product-success signals come from PortOS's local stores rather than a
+    // repo document. Preserve an unavailable sentinel on read failure so LI
+    // cannot mistake a failed read for zero engagement.
+    out.productMetrics = await import('../portosProductMetrics.js')
+      .then(({ getProductMetricsSource }) => getProductMetricsSource())
+      .catch(() => JSON.stringify({ status: 'unavailable', reason: 'product-metrics-read-failed' }));
+  }
   if (src.planMd && repo) {
     const plan = await tryReadFile(join(repo, 'PLAN.md'));
     if (plan) out.planMd = plan.slice(0, 8000);

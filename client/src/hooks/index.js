@@ -110,6 +110,7 @@ export * from './useAgentFeedbackToast.jsx';
 export * from './useErrorNotifications.js';
 export * from './useNotifications.js';
 export * from './useOnDemandTaskToast.js';
+export * from './useEngagementReminderToast.jsx';
 export * from './useSharingNotifications.js';
 
 // === Pipeline / Story Builder wiring ===
