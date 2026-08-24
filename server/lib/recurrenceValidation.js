@@ -55,6 +55,9 @@ export const recurrenceRuleSchema = z.object({
   if (!value.time) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['time'], message: 'recurrence requires time' });
   }
+  if (value.interval > 1 && !value.anchorDate) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['anchorDate'], message: 'multi-period recurrence requires anchorDate' });
+  }
   if (value.frequency === 'weekly' && value.interval > 52) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['interval'], message: 'weekly recurrence supports at most 52 weeks' });
   }

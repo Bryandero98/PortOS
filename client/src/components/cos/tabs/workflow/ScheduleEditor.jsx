@@ -83,7 +83,8 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
   const validateCron = (value) => String(value || '').trim().split(/\s+/).length === 5;
 
   const handleSave = async () => {
-    if (form.mode === 'cron' && !form.cronSchedule && !validateCron(form.cronExpression)) {
+    const hasValidJobRecurrence = node.kind === 'job' && form.cronSchedule;
+    if (form.mode === 'cron' && !hasValidJobRecurrence && !validateCron(form.cronExpression)) {
       toast.error('Cron schedules need five fields');
       return;
     }
@@ -103,7 +104,7 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
       const payload = {
         enabled: form.enabled,
         type: form.mode,
-        cronExpression: form.mode === 'cron' ? form.cronExpression.trim() : null,
+        cronExpression: form.mode === 'cron' ? String(form.cronExpression || '').trim() || null : null,
         runAfter: form.runAfter
       };
       if (form.mode === 'custom') payload.intervalMs = intervalHours * 3_600_000;
@@ -116,7 +117,7 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
       const payload = {
         enabled: form.enabled,
         weekdaysOnly: form.weekdaysOnly,
-        cronExpression: form.mode === 'cron' ? (buildCronFromRecurrence(form.cronSchedule) || form.cronExpression.trim() || null) : null,
+        cronExpression: form.mode === 'cron' ? (buildCronFromRecurrence(form.cronSchedule) || String(form.cronExpression || '').trim() || null) : null,
         cronSchedule: form.mode === 'cron' ? form.cronSchedule : null,
         scheduledTime: form.mode === 'interval' ? (form.scheduledTime || null) : null
       };
@@ -191,15 +192,19 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
           <div className="space-y-2">
             <span className="block text-xs text-gray-400">Run on</span>
             <CronSchedulePicker
-              value={form.cronSchedule || form.cronExpression}
-              valueShape="recurrence"
-              timezone={timezone}
-              onChange={rule => {
-                set('cronSchedule', rule);
-                set('cronExpression', buildCronFromRecurrence(rule) || null);
+              value={node.kind === 'job' ? (form.cronSchedule || form.cronExpression) : form.cronExpression}
+              valueShape={node.kind === 'job' ? 'recurrence' : 'cron'}
+              timezone={node.kind === 'job' ? timezone : undefined}
+              onChange={value => {
+                if (node.kind === 'job') {
+                  set('cronSchedule', value);
+                  set('cronExpression', buildCronFromRecurrence(value) || null);
+                } else {
+                  set('cronExpression', value);
+                }
               }}
             />
-            <p className="text-[11px] text-gray-600">No days selected runs every day.</p>
+            {node.kind === 'job' && <p className="text-[11px] text-gray-600">No days selected runs every day.</p>}
           </div>
         )}
 

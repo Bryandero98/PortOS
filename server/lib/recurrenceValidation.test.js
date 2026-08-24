@@ -19,6 +19,12 @@ describe('recurrenceRuleSchema', () => {
     expect(recurrenceRuleSchema.safeParse({ frequency: 'weekly', time: '02:00' }).success).toBe(false);
   });
 
+  it('requires an anchor for multi-period calendar recurrences', () => {
+    expect(recurrenceRuleSchema.safeParse({
+      frequency: 'monthly-date', interval: 2, dayOfMonth: 1, time: '02:00',
+    }).success).toBe(false);
+  });
+
   it('requires a raw expression for custom recurrence', () => {
     expect(recurrenceRuleSchema.safeParse({ frequency: 'custom' }).success).toBe(false);
   });

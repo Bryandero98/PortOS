@@ -165,7 +165,6 @@ function parseCronToPrevRun(cronExpr, from = new Date(), timezone = 'UTC') {
   return walkCron(cronExpr, from, timezone, { stepMs: -60 * 1000 })
 }
 
-const RECURRENCE_MINUTE = 60 * 1000
 const RECURRENCE_DAY = 24 * 60 * 60 * 1000
 
 function localDaySerial(parts) {
@@ -186,36 +185,126 @@ function daysInMonth(year, month) {
   return new Date(Date.UTC(year, month, 0)).getUTCDate()
 }
 
-function recurrenceMatches(parts, rule, anchor) {
-  const [hour, minute] = rule.time.split(':').map(Number)
-  if (parts.hour !== hour || parts.minute !== minute) return false
+function localDateFromSerial(serial) {
+  const date = new Date(serial * RECURRENCE_DAY)
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    dayOfWeek: date.getUTCDay(),
+    serial,
+  }
+}
 
-  const serial = localDaySerial(parts)
-  if (serial < anchor.serial) return false
+function monthSerial(year, month) {
+  return year * 12 + month - 1
+}
+
+function localMonthFromSerial(serial) {
+  const year = Math.floor(serial / 12)
+  return { year, month: serial - year * 12 + 1 }
+}
+
+/**
+ * Resolve a local calendar date/time to its UTC instant. A short correction
+ * loop handles ordinary timezone offsets and DST transitions without walking
+ * every minute between `from` and the next sparse occurrence.
+ */
+function localDateTimeToUtc(date, time, timezone) {
+  const [hour, minute] = time.split(':').map(Number)
+  const targetMs = Date.UTC(date.year, date.month - 1, date.day, hour, minute)
+  let candidate = new Date(targetMs)
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = getLocalParts(candidate, timezone)
+    const actualMs = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute)
+    const deltaMs = targetMs - actualMs
+    if (deltaMs === 0) return candidate
+    candidate = new Date(candidate.getTime() + deltaMs)
+  }
+
+  // A local time skipped by a DST spring-forward has no exact UTC instant.
+  return null
+}
+
+function weekdayOfMonth(year, month, weekday, ordinal) {
+  const lastDay = daysInMonth(year, month)
+  if (ordinal === 'last') {
+    const lastWeekday = new Date(Date.UTC(year, month - 1, lastDay)).getUTCDay()
+    return lastDay - ((lastWeekday - weekday + 7) % 7)
+  }
+
+  const ordinalNumber = { first: 1, second: 2, third: 3, fourth: 4 }[ordinal]
+  if (!ordinalNumber) return null
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay()
+  const day = 1 + ((weekday - firstWeekday + 7) % 7) + (ordinalNumber - 1) * 7
+  return day <= lastDay ? day : null
+}
+
+function findNextRecurrenceCandidate(rule, anchor, from, timezone, maxDate) {
+  const reference = getLocalParts(from, timezone)
+  const referenceSerial = localDaySerial(reference)
+  const maxLocalParts = getLocalParts(new Date(maxDate.getTime() - 1), timezone)
+  const maxSerial = localDaySerial(maxLocalParts)
+  const isUsable = date => {
+    if (!date || date.serial < anchor.serial || date.serial < referenceSerial || date.serial > maxSerial) return null
+    const candidate = localDateTimeToUtc(date, rule.time, timezone)
+    return candidate && candidate > from && candidate < maxDate ? candidate : null
+  }
 
   if (rule.frequency === 'daily') {
-    const days = Math.floor(serial - anchor.serial)
-    return days % rule.interval === 0 && (!rule.weekdays.length || rule.weekdays.includes(parts.dayOfWeek))
+    const firstSerial = Math.max(anchor.serial, referenceSerial)
+    const firstIndex = Math.max(0, Math.ceil((firstSerial - anchor.serial) / rule.interval))
+    for (let index = firstIndex; ; index += 1) {
+      const serial = anchor.serial + index * rule.interval
+      if (serial > maxSerial) return null
+      const date = localDateFromSerial(serial)
+      if (rule.weekdays.length && !rule.weekdays.includes(date.dayOfWeek)) continue
+      const candidate = isUsable(date)
+      if (candidate) return candidate
+    }
   }
 
   if (rule.frequency === 'weekly') {
-    const currentWeek = serial - parts.dayOfWeek
     const anchorWeek = anchor.serial - anchor.dayOfWeek
-    const weeks = Math.floor((currentWeek - anchorWeek) / 7)
-    return weeks >= 0 && weeks % rule.interval === 0 && rule.weekdays.includes(parts.dayOfWeek)
+    const referenceWeek = referenceSerial - reference.dayOfWeek
+    const firstWeek = Math.max(anchorWeek, referenceWeek)
+    const firstIndex = Math.max(0, Math.ceil((firstWeek - anchorWeek) / (7 * rule.interval)))
+    const weekdays = [...rule.weekdays].sort((a, b) => a - b)
+    for (let index = firstIndex; ; index += 1) {
+      const weekStart = anchorWeek + index * rule.interval * 7
+      if (weekStart > maxSerial) return null
+      for (const weekday of weekdays) {
+        const date = localDateFromSerial(weekStart + weekday)
+        const candidate = isUsable(date)
+        if (candidate) return candidate
+      }
+    }
   }
 
-  const months = (parts.year - anchor.year) * 12 + parts.month - anchor.month
-  if (months < 0 || months % rule.interval !== 0) return false
+  const anchorMonth = monthSerial(anchor.year, anchor.month)
+  const referenceMonth = monthSerial(reference.year, reference.month)
+  const firstMonth = Math.max(anchorMonth, referenceMonth)
+  const firstIndex = Math.max(0, Math.ceil((firstMonth - anchorMonth) / rule.interval))
+  const maxMonth = monthSerial(maxLocalParts.year, maxLocalParts.month)
 
-  if (rule.frequency === 'monthly-date') return parts.day === rule.dayOfMonth
-  if (rule.frequency === 'monthly-weekday') {
-    if (parts.dayOfWeek !== rule.weekday) return false
-    if (rule.ordinal === 'last') return parts.day + 7 > daysInMonth(parts.year, parts.month)
-    const ordinal = Math.floor((parts.day - 1) / 7) + 1
-    return ordinal === ({ first: 1, second: 2, third: 3, fourth: 4 }[rule.ordinal] || 0)
+  for (let index = firstIndex; ; index += 1) {
+    const currentMonth = anchorMonth + index * rule.interval
+    if (currentMonth > maxMonth) return null
+    const { year, month } = localMonthFromSerial(currentMonth)
+    const day = rule.frequency === 'monthly-date'
+      ? (rule.dayOfMonth <= daysInMonth(year, month) ? rule.dayOfMonth : null)
+      : weekdayOfMonth(year, month, rule.weekday, rule.ordinal)
+    if (!day) continue
+    const candidate = isUsable({
+      year,
+      month,
+      day,
+      dayOfWeek: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+      serial: Date.UTC(year, month - 1, day) / RECURRENCE_DAY,
+    })
+    if (candidate) return candidate
   }
-  return false
 }
 
 /**
@@ -239,20 +328,10 @@ function parseRecurrenceToNextRun(rule, from = new Date(), timezone = 'UTC', unt
     serial: localDaySerial(reference),
     dayOfWeek: reference.dayOfWeek,
   }
-  const cursor = new Date(from)
-  cursor.setSeconds(0, 0)
-  cursor.setMinutes(cursor.getMinutes() + 1)
   const boundary = new Date(from)
   boundary.setFullYear(boundary.getFullYear() + 2)
   const maxDate = until instanceof Date && until < boundary ? until : boundary
-  let iterations = 0
-  while (cursor < maxDate) {
-    if (++iterations > MAX_CRON_ITERATIONS) return null
-    const parts = getLocalParts(cursor, timezone)
-    if (recurrenceMatches(parts, normalized, anchor)) return cursor
-    cursor.setTime(cursor.getTime() + RECURRENCE_MINUTE)
-  }
-  return null
+  return findNextRecurrenceCandidate(normalized, anchor, from, timezone, maxDate)
 }
 
 /**

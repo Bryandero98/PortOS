@@ -174,6 +174,13 @@ describe('parseRecurrenceToNextRun', () => {
     expect(next.toISOString()).toBe('2024-01-25T19:00:00.000Z');
   });
 
+  it('jumps directly to sparse annual occurrences', () => {
+    const next = parseRecurrenceToNextRun({
+      frequency: 'monthly-date', interval: 12, dayOfMonth: 1, time: '00:00', anchorDate: '2024-01-01',
+    }, new Date('2024-01-02T00:00:00.000Z'));
+    expect(next.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  });
+
   it('validates both rich recurrence rules and custom cron rules', () => {
     expect(isValidRecurrence({ frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2024-01-01' })).toBe(true);
     expect(isValidRecurrence({ frequency: 'custom', cron: '*/15 * * * *' })).toBe(true);
