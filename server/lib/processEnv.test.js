@@ -69,6 +69,7 @@ describe('buildSafeCliBaseEnv', () => {
     const env = buildSafeCliBaseEnv({
       PATH: '/usr/bin',
       HOME: '/home/example',
+      CODEX_HOME: '/tmp/example-codex',
       ANTHROPIC_API_KEY: 'provider-key',
       PRIVATE_APP_AUTH_KEYS: 'sidecar-secret',
       PRIVATE_APP_TOKEN: 'sidecar-token',
@@ -77,6 +78,7 @@ describe('buildSafeCliBaseEnv', () => {
     expect(env).toEqual({
       PATH: '/usr/bin',
       HOME: '/home/example',
+      CODEX_HOME: '/tmp/example-codex',
       ANTHROPIC_API_KEY: 'provider-key',
     });
   });

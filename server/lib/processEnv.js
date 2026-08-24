@@ -44,7 +44,7 @@ export function safeChildProcessOptions(options = {}) {
 const SAFE_CLI_BASE_ENV_KEYS = new Set([
   'PATH', 'Path', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'PWD', 'TMPDIR', 'TMP', 'TEMP',
   'LANG', 'LANGUAGE', 'TERM', 'COLORTERM', 'TZ', 'HOSTNAME', 'NODE', 'NODE_ENV', 'NODE_PATH',
-  'NVM_DIR', 'NVM_BIN', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+  'NVM_DIR', 'NVM_BIN', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CODEX_HOME',
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'EDITOR', 'VISUAL', 'PORTOS_REAL_PM2',
   'SystemRoot', 'SystemDrive', 'ComSpec', 'PATHEXT', 'USERPROFILE', 'APPDATA',
   'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'HOMEDRIVE', 'HOMEPATH',
