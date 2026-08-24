@@ -7,6 +7,7 @@ let store = {};
 
 vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ ...store })),
+  getSettingsWithStatus: vi.fn(async () => ({ corrupt: false, settings: { ...store } })),
   updateSettings: vi.fn(async (patch) => {
     store = { ...store, ...patch };
     return { ...store };
