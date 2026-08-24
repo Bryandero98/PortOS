@@ -1,12 +1,12 @@
 import { request } from './apiCore.js';
 
 // Platform Accounts
-export const getPlatformAccounts = (agentId = null, platform = null) => {
+export const getPlatformAccounts = (agentId = null, platform = null, options = {}) => {
   const params = new URLSearchParams();
   if (agentId) params.set('agentId', agentId);
   if (platform) params.set('platform', platform);
   const query = params.toString();
-  return request(`/agents/accounts${query ? `?${query}` : ''}`);
+  return request(`/agents/accounts${query ? `?${query}` : ''}`, options);
 };
 export const getPlatformAccount = (id) => request(`/agents/accounts/${id}`);
 export const createPlatformAccount = (data) => request('/agents/accounts', {

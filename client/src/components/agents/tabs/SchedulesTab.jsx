@@ -11,6 +11,7 @@ export default function SchedulesTab({ agentId }) {
   const [accounts, setAccounts] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     agentId: agentId,
@@ -23,15 +24,21 @@ export default function SchedulesTab({ agentId }) {
   const [runningId, setRunningId] = useState(null);
 
   const fetchData = useCallback(async () => {
-    const [schedulesData, accountsData, statsData] = await Promise.all([
-      api.getAutomationSchedules(agentId),
-      api.getPlatformAccounts(agentId),
-      api.getScheduleStats()
-    ]);
-    setSchedules(schedulesData);
-    setAccounts(accountsData);
-    setStats(statsData);
-    setLoading(false);
+    setLoading(true);
+    setLoadError(false);
+    await Promise.all([
+      api.getAutomationSchedules(agentId, null, { silent: true }),
+      api.getPlatformAccounts(agentId, null, { silent: true }),
+      api.getScheduleStats({ silent: true })
+    ]).then(([nextSchedules, nextAccounts, nextStats]) => {
+      setSchedules(nextSchedules);
+      setAccounts(nextAccounts);
+      setStats(nextStats);
+    }).catch(() => {
+      setLoadError(true);
+    }).finally(() => {
+      setLoading(false);
+    });
   }, [agentId]);
 
   useEffect(() => {
@@ -119,6 +126,23 @@ export default function SchedulesTab({ agentId }) {
 
   if (loading) {
     return <div className="p-4"><BrailleSpinner text="Loading schedules" /></div>;
+  }
+
+  if (loadError) {
+    return (
+      <div className="p-4">
+        <div role="alert" className="rounded border border-port-error/40 bg-port-error/10 p-4 text-sm text-port-error">
+          <p>Could not load automation schedules.</p>
+          <button
+            type="button"
+            onClick={fetchData}
+            className="mt-3 rounded bg-port-error/20 px-3 py-1.5 text-xs font-medium hover:bg-port-error/30"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
