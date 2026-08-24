@@ -32,7 +32,7 @@ import { join } from 'path';
 import { rename } from 'fs/promises';
 import os from 'os';
 import { PATHS, atomicWrite, ensureDir, tryReadFile, safeJSONParse } from '../lib/fileUtils.js';
-import { getAvailableMemoryGb } from '../lib/localMemory.js';
+import { getAvailableMemoryGb } from './localMemory.js';
 import { compareEnvironments, describeStaleness, measuredFitVerdict } from '../lib/localModelAssessment.js';
 import { ASSESSABLE_RUNTIMES } from '../lib/localProviderRuntime.js';
 import { getVersion as getOllamaVersion } from './ollamaManager.js';

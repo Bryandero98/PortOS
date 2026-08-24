@@ -204,7 +204,6 @@ export * from './imageFrameStats.js';
 export * from './imageRgba.js';
 export * from './imageWatermark.js';
 export * from './localImageFilename.js';
-export * from './localMemory.js';
 export * from './pgFileFacade.js';
 export * from './multipart.js';
 export * from './safetensors.js';

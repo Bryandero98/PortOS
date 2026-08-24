@@ -8,7 +8,7 @@ import { PATHS } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
 import { createLineReader } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
-import { prepareLocalMemory, gpuBlockersMessage } from '../../lib/localMemory.js';
+import { prepareLocalMemory, gpuBlockersMessage } from '../localMemory.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { videoGenEvents } from './events.js';
 import {

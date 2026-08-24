@@ -105,7 +105,7 @@ vi.mock('./lmStudioManager.js', () => ({
 }));
 
 // A fixed, generous memory budget so the memory axis is deterministic.
-vi.mock('../lib/localMemory.js', () => ({ getAvailableMemoryGb: async () => 64 }));
+vi.mock('./localMemory.js', () => ({ getAvailableMemoryGb: async () => 64 }));
 
 const svc = await import('./localModelAssessments.js');
 // The durable store is a separate module (no path to a provider); the read-only
