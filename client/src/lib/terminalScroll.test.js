@@ -4,6 +4,7 @@ import {
   attachTerminalWheelScroll,
   measureTerminalGeometry,
   planTouchScrollSteps,
+  resetTerminalWheelScroll,
   scrollTerminalLines,
   scrollTerminalPage,
   sendTerminalPageKey,
@@ -174,6 +175,18 @@ describe('attachTerminalWheelScroll', () => {
     const detach = attachTerminalWheelScroll(term);
     term.element.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
     expect(term.input).toHaveBeenCalledWith('\x1b[6~', false);
+    detach();
+  });
+
+  it('resets fractional wheel state when the terminal session changes', () => {
+    const term = makeTerminal({ rows: 24, height: 480 });
+    const detach = attachTerminalWheelScroll(term);
+    term.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -20, bubbles: true, cancelable: true }));
+
+    resetTerminalWheelScroll(term);
+    term.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -60, bubbles: true, cancelable: true }));
+
+    expect(term.input).not.toHaveBeenCalled();
     detach();
   });
 

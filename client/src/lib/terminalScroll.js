@@ -87,6 +87,13 @@ const wheelDeltaLines = (event, rowHeightPx) => {
   return event.deltaY / rowHeightPx;
 };
 
+const wheelScrollResetters = new WeakMap();
+
+/** Clear fractional wheel state before a reused terminal starts a new session. */
+export const resetTerminalWheelScroll = (terminal) => {
+  if (terminal && typeof terminal === 'object') wheelScrollResetters.get(terminal)?.();
+};
+
 /**
  * Scroll the normal terminal buffer by `lines` (negative = toward older output).
  * Alternate-screen apps have no terminal scrollback, so each requested logical
@@ -153,8 +160,14 @@ export const attachTerminalWheelScroll = (terminal) => {
     if (pages) scrollTerminalLines(terminal, pages);
   };
 
+  const reset = () => { remainderLines = 0; };
+  wheelScrollResetters.set(terminal, reset);
   el.addEventListener('wheel', onWheel, { capture: true, passive: false });
-  return () => el.removeEventListener('wheel', onWheel, { capture: true });
+  return () => {
+    reset();
+    if (wheelScrollResetters.get(terminal) === reset) wheelScrollResetters.delete(terminal);
+    el.removeEventListener('wheel', onWheel, { capture: true });
+  };
 };
 
 /**
