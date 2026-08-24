@@ -86,6 +86,142 @@ export function buildWeeklyCron(days, time) {
   return `${minute} ${hr} * * ${dow}`;
 }
 
+export const RECURRENCE_FREQUENCIES = [
+  { value: 'daily', label: 'Every day' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly-date', label: 'Day of the month' },
+  { value: 'monthly-weekday', label: 'Nth weekday of the month' },
+  { value: 'custom', label: 'Custom cron' },
+];
+
+export const RECURRENCE_ORDINALS = [
+  { value: 'first', label: 'First' },
+  { value: 'second', label: 'Second' },
+  { value: 'third', label: 'Third' },
+  { value: 'fourth', label: 'Fourth' },
+  { value: 'last', label: 'Last' },
+];
+
+const MONTHLY_DAY_RANGES = {
+  first: '1-7',
+  second: '8-14',
+  third: '15-21',
+  fourth: '22-28',
+};
+
+const ORDINAL_LABELS = Object.fromEntries(RECURRENCE_ORDINALS.map(({ value, label }) => [value, label]));
+
+const validTime = (time) => {
+  const match = String(time || '').match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  return match ? `${match[1]}:${match[2]}` : null;
+};
+
+const sortedUniqueDays = (days) => [...new Set((Array.isArray(days) ? days : []).map(Number))]
+  .filter(day => Number.isInteger(day) && day >= 0 && day <= 6)
+  .sort((a, b) => a - b);
+
+/**
+ * Parse the part of cron that the recurrence editor can round-trip. More
+ * expressive/legacy strings return a custom rule so the advanced editor never
+ * replaces a value merely because its friendly controls cannot model it.
+ */
+export function parseCronToRecurrence(expr) {
+  if (!expr) return null;
+  const parts = String(expr).trim().split(/\s+/);
+  if (parts.length !== 5) return { frequency: 'custom', cron: String(expr).trim() };
+  const [minute, hour, dom, mon, dow] = parts;
+  const time = validTime(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+  if (!time || mon !== '*') return { frequency: 'custom', cron: String(expr).trim() };
+
+  if (dom === '*') {
+    const days = parseDowField(dow);
+    if (!days) return { frequency: 'custom', cron: String(expr).trim() };
+    return days.length === 0
+      ? { frequency: 'daily', interval: 1, weekdays: [], time }
+      : { frequency: 'weekly', interval: 1, weekdays: days, time };
+  }
+
+  if (dow === '*' && /^\d{1,2}$/.test(dom)) {
+    const dayOfMonth = Number(dom);
+    if (dayOfMonth >= 1 && dayOfMonth <= 31) {
+      return { frequency: 'monthly-date', interval: 1, dayOfMonth, time };
+    }
+  }
+
+  const ordinal = Object.entries(MONTHLY_DAY_RANGES).find(([, range]) => range === dom)?.[0];
+  if (ordinal && /^\d$/.test(dow) && Number(dow) <= 7) {
+    return { frequency: 'monthly-weekday', interval: 1, ordinal, weekday: Number(dow) % 7, time };
+  }
+
+  return { frequency: 'custom', cron: String(expr).trim() };
+}
+
+/** Build a compatibility cron string from a recurrence rule. */
+export function buildCronFromRecurrence(rule) {
+  if (!rule || typeof rule !== 'object') return '';
+  if (rule.frequency === 'custom') return String(rule.cron || '').trim();
+  const time = validTime(rule.time);
+  if (!time) return '';
+  const [hour, minute] = time.split(':').map(Number);
+  const prefix = `${minute} ${hour}`;
+  const interval = Math.max(1, Number(rule.interval) || 1);
+
+  if (rule.frequency === 'daily') {
+    const days = sortedUniqueDays(rule.weekdays);
+    // A stepped day-of-month field combined with a weekday is not an exact
+    // representation of an anchored daily interval. Keep the preview honest.
+    if (days.length && interval > 1) return '';
+    return `${prefix} ${interval > 1 ? `*/${interval}` : '*'} * ${days.length ? days.join(',') : '*'}`;
+  }
+  if (rule.frequency === 'weekly') {
+    const days = sortedUniqueDays(rule.weekdays);
+    return `${prefix} * * ${days.length ? days.join(',') : '*'}`;
+  }
+  if (rule.frequency === 'monthly-date') {
+    const day = Number(rule.dayOfMonth);
+    return Number.isInteger(day) && day >= 1 && day <= 31 ? `${prefix} ${day} * *` : '';
+  }
+  if (rule.frequency === 'monthly-weekday') {
+    const range = MONTHLY_DAY_RANGES[rule.ordinal];
+    const weekday = Number(rule.weekday);
+    if (!range || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) return '';
+    // `last` is intentionally left to the recurrence scheduler; there is no
+    // portable five-field cron spelling for the last weekday of a month.
+    return range ? `${prefix} ${range} * ${weekday}` : '';
+  }
+  return '';
+}
+
+/** Human-readable rendering for a rule emitted by CronSchedulePicker. */
+export function describeRecurrence(rule) {
+  if (!rule) return '';
+  if (rule.frequency === 'custom') return rule.cron || '';
+  const time = validTime(rule.time) || '—';
+  const interval = Math.max(1, Number(rule.interval) || 1);
+  if (rule.frequency === 'daily') {
+    const weekdaysOnly = sortedUniqueDays(rule.weekdays).join(',') === '1,2,3,4,5';
+    if (weekdaysOnly) return `Weekdays at ${time}`;
+    const days = sortedUniqueDays(rule.weekdays).map(day => WEEKDAYS[day]?.label || day).join(', ');
+    const cadence = interval === 1 ? 'Daily' : `Every ${interval} days`;
+    return `${cadence}${days ? ` on ${days}` : ''} at ${time}`;
+  }
+  if (rule.frequency === 'weekly') {
+    const days = sortedUniqueDays(rule.weekdays).map(day => WEEKDAYS[day]?.label || day).join(', ');
+    const cadence = interval === 1 ? 'Weekly' : `Every ${interval} weeks`;
+    return `${cadence}${days ? ` on ${days}` : ''} at ${time}`;
+  }
+  if (rule.frequency === 'monthly-date') {
+    const cadence = interval === 1 ? 'every month' : `every ${interval} months`;
+    return `Day ${rule.dayOfMonth || '—'} of ${cadence} at ${time}`;
+  }
+  if (rule.frequency === 'monthly-weekday') {
+    const weekday = WEEKDAYS[Number(rule.weekday)]?.label || 'weekday';
+    const cadence = interval === 1 ? 'every month' : `every ${interval} months`;
+    return `${ORDINAL_LABELS[rule.ordinal] || 'Nth'} ${weekday} of ${cadence} at ${time}`;
+  }
+  return '';
+}
+
 export function describeCron(expr) {
   if (!expr) return '';
   const parts = expr.trim().split(/\s+/);

@@ -4,6 +4,7 @@ import BrailleSpinner from '../../BrailleSpinner';
 import { FormField } from '../../ui/FormField';
 import { ACTION_TYPES, SCHEDULE_TYPES, CRON_PRESETS, INTERVAL_PRESETS } from '../constants';
 import { formatDateTime } from '../../../utils/formatters';
+import CronSchedulePicker from '../../CronSchedulePicker';
 
 export default function SchedulesTab({ agentId }) {
   const [schedules, setSchedules] = useState([]);
@@ -204,18 +205,11 @@ export default function SchedulesTab({ agentId }) {
           </FormField>
 
           {formData.schedule.type === 'cron' && (
-            <FormField label="Cron Expression" className="mb-4">
-              <select
+            <FormField label="Cron schedule" className="mb-4">
+              <CronSchedulePicker
                 value={formData.schedule.cron}
-                onChange={(e) => setFormData({ ...formData, schedule: { ...formData.schedule, cron: e.target.value } })}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white"
-              >
-                {CRON_PRESETS.map(preset => (
-                  <option key={preset.value} value={preset.value}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
+                onChange={cron => setFormData({ ...formData, schedule: { ...formData.schedule, cron } })}
+              />
             </FormField>
           )}
 

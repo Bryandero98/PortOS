@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parseSimpleCron, buildWeeklyCron, describeCron, WEEKDAYS } from './cronHelpers.js';
+import {
+  parseSimpleCron, buildWeeklyCron, describeCron, WEEKDAYS,
+  parseCronToRecurrence, buildCronFromRecurrence, describeRecurrence,
+} from './cronHelpers.js';
 
 describe('parseSimpleCron', () => {
   it('parses a daily cron as every-day (no days)', () => {
@@ -82,6 +85,30 @@ describe('WEEKDAYS', () => {
   it('is Sunday-first with cron-aligned values', () => {
     expect(WEEKDAYS.map(w => w.value)).toEqual([0, 1, 2, 3, 4, 5, 6]);
     expect(WEEKDAYS[0].label).toBe('Sun');
+  });
+});
+
+describe('calendar recurrence helpers', () => {
+  it('builds and describes an anchored every-two-weeks rule', () => {
+    const rule = {
+      frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31',
+    };
+    expect(buildCronFromRecurrence(rule)).toBe('0 2 * * 1');
+    expect(describeRecurrence(rule)).toBe('Every 2 weeks on Mon at 02:00');
+  });
+
+  it('parses a first-Thursday cron into the monthly weekday shape', () => {
+    const rule = parseCronToRecurrence('0 19 1-7 * 4');
+    expect(rule).toEqual({
+      frequency: 'monthly-weekday', interval: 1, ordinal: 'first', weekday: 4, time: '19:00',
+    });
+    expect(buildCronFromRecurrence(rule)).toBe('0 19 1-7 * 4');
+  });
+
+  it('keeps last-weekday recurrence in the rich shape', () => {
+    const rule = { frequency: 'monthly-weekday', interval: 1, ordinal: 'last', weekday: 4, time: '19:00' };
+    expect(buildCronFromRecurrence(rule)).toBe('');
+    expect(describeRecurrence(rule)).toBe('Last Thu of every month at 19:00');
   });
 });
 // @vitest-environment node

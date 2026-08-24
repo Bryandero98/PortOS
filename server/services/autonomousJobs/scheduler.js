@@ -7,7 +7,7 @@
  */
 
 import { getUserTimezone, getLocalParts, nextLocalTime } from '../../lib/timezone.js'
-import { parseCronToNextRun } from '../eventScheduler.js'
+import { parseCronToNextRun, parseRecurrenceToNextRun } from '../eventScheduler.js'
 import { DAY } from './constants.js'
 import { loadJobs } from './store.js'
 
@@ -40,9 +40,11 @@ async function getDueJobs() {
 
   for (const job of enabledJobs) {
     // Cron-mode jobs: compute next run from cron expression
-    if (job.cronExpression) {
+    if (job.cronSchedule || job.cronExpression) {
       const from = job.lastRun ? new Date(job.lastRun) : new Date(now)
-      const next = parseCronToNextRun(job.cronExpression, from, timezone)
+      const next = job.cronSchedule
+        ? parseRecurrenceToNextRun(job.cronSchedule, from, timezone)
+        : parseCronToNextRun(job.cronExpression, from, timezone)
       if (!next || next.getTime() > now) continue
 
       due.push({
@@ -111,10 +113,12 @@ async function getNextDueJob() {
   for (const job of enabledJobs) {
     let nextDue
 
-    if (job.cronExpression) {
+    if (job.cronSchedule || job.cronExpression) {
       // Cron-mode: derive next due from cron expression
       const from = job.lastRun ? new Date(job.lastRun) : new Date()
-      const next = parseCronToNextRun(job.cronExpression, from, timezone)
+      const next = job.cronSchedule
+        ? parseRecurrenceToNextRun(job.cronSchedule, from, timezone)
+        : parseCronToNextRun(job.cronExpression, from, timezone)
       if (!next) continue
       nextDue = next.getTime()
     } else {

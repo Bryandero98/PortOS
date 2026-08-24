@@ -33,7 +33,8 @@ vi.mock('../services/jobGates.js', () => ({
 }));
 
 vi.mock('../services/eventScheduler.js', () => ({
-  parseCronToNextRun: vi.fn()
+  parseCronToNextRun: vi.fn(),
+  isValidRecurrence: vi.fn(() => true),
 }));
 
 import * as cos from '../services/cos.js';
@@ -197,6 +198,19 @@ describe('CoS Job Routes', () => {
         .send({ name: 'Cron Job', promptTemplate: 'test', cronExpression: '0 9 * * 1' });
 
       expect(response.status).toBe(200);
+    });
+
+    it('accepts and forwards an anchored calendar recurrence', async () => {
+      parseCronToNextRun.mockReturnValue(new Date());
+      autonomousJobs.createJob.mockResolvedValue({ id: 'j1' });
+
+      const cronSchedule = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+      const response = await request(app)
+        .post('/api/cos/jobs')
+        .send({ name: 'Biweekly Job', promptTemplate: 'test', cronExpression: '0 2 * * 1', cronSchedule });
+
+      expect(response.status).toBe(200);
+      expect(autonomousJobs.createJob).toHaveBeenCalledWith(expect.objectContaining({ cronSchedule }));
     });
 
     it('should return 400 for invalid cron expression format', async () => {

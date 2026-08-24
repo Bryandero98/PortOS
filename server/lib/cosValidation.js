@@ -17,6 +17,7 @@ import { CURSOR_COMMAND } from './cursor.js';
 import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { AGENT_RUN_EVENT_KINDS, RUN_EVENT_READ_LIMITS } from './agentRunEvents.js';
+import { recurrenceRuleSchema } from './recurrenceValidation.js';
 
 // =============================================================================
 // COS TASK SCHEMAS
@@ -1438,6 +1439,10 @@ export const createCosJobSchema = z.object({
   // distinguish "clear this field" from an omitted field it should preserve.
   scheduledTime: z.string().nullable().optional(),
   cronExpression: z.string().nullable().optional(),
+  // Optional calendar rule for schedules that need an anchored interval (for
+  // example every two weeks). cronExpression remains the compatibility preview
+  // and the raw/custom path.
+  cronSchedule: recurrenceRuleSchema.nullable().optional(),
   enabled: z.boolean().optional(),
   priority: z.string().optional(),
   autonomyLevel: z.enum(['standby', 'assistant', 'manager', 'yolo']).optional(),

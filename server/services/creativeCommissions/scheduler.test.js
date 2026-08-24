@@ -8,6 +8,7 @@ vi.mock('../eventScheduler.js', () => ({
   schedule: (...a) => scheduleMock(...a),
   cancel: (...a) => cancelMock(...a),
   isValidCron: (expr) => typeof expr === 'string' && expr.trim().split(/\s+/).length === 5,
+  isValidRecurrence: (rule) => rule?.frequency === 'weekly' && Array.isArray(rule.weekdays) && rule.weekdays.length > 0,
 }));
 
 vi.mock('../../lib/timezone.js', () => ({ getUserTimezone: async () => 'UTC' }));
@@ -134,6 +135,13 @@ describe('activeCommissions', () => {
     ]);
     expect(active.map((e) => e.id)).toEqual(['c']);
   });
+
+  it('keeps rich recurrence for the event scheduler instead of flattening intervals', () => {
+    const recurrence = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+    expect(activeCommissions([videoCommission({ schedule: { kind: 'RECURRENCE', recurrence } })])).toEqual([{
+      id: 'commission-1', recurrence, timezone: null,
+    }]);
+  });
 });
 
 describe('startCommissionScheduler (no cold-boot generation)', () => {
@@ -148,6 +156,15 @@ describe('startCommissionScheduler (no cold-boot generation)', () => {
     // The load-bearing guarantee: arming a schedule fires NO LLM/generation.
     expect(createProjectMock).not.toHaveBeenCalled();
     expect(advanceMock).not.toHaveBeenCalled();
+  });
+
+  it('registers rich recurrence as a recurrence event', async () => {
+    const recurrence = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+    listCommissionsMock.mockResolvedValue([videoCommission({ schedule: { kind: 'RECURRENCE', recurrence } })]);
+    await startCommissionScheduler();
+    expect(scheduleMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'creative-commission-commission-1', type: 'recurrence', recurrence,
+    }));
   });
 
   it('cancels crons whose commission was removed on the next sync', async () => {

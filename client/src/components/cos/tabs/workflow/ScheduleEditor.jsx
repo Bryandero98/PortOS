@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bot, GitBranch, Loader2, Plus, Save, X } from 'lucide-react';
 import toast from '../../../ui/Toast';
 import * as api from '../../../../services/api';
-import { describeCron, parseSimpleCron, buildWeeklyCron, DEFAULT_CRON } from '../../../../utils/cronHelpers';
-import WeekdayTimePicker from '../../../WeekdayTimePicker';
+import { DEFAULT_CRON } from '../../../../utils/cronHelpers';
+import CronSchedulePicker from '../../../CronSchedulePicker';
 
 const TASK_MODES = [
   ['cron', 'Pinned time (cron)'],
@@ -187,16 +187,9 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
 
         {form.mode === 'cron' && (
           <div className="space-y-2">
-            <div>
-              <span className="block text-xs text-gray-400">Run on</span>
-              <WeekdayTimePicker value={form.cronExpression || DEFAULT_CRON} onChange={value => set('cronExpression', value)} className="mt-1.5" />
-              <p className="mt-1 text-[11px] text-gray-600">No days selected runs every day.</p>
-            </div>
-            <label className="block text-xs text-gray-400">
-              Advanced cron
-              <input value={form.cronExpression} onChange={event => set('cronExpression', event.target.value)} placeholder="0 9 * * *" className="mt-1.5 w-full rounded border border-port-border bg-port-bg px-3 py-2 font-mono text-sm text-white" />
-            </label>
-            {validateCron(form.cronExpression) && <p className="text-xs text-gray-500">{describeCron(form.cronExpression)}</p>}
+            <span className="block text-xs text-gray-400">Run on</span>
+            <CronSchedulePicker value={form.cronExpression} onChange={value => set('cronExpression', value)} />
+            <p className="text-[11px] text-gray-600">No days selected runs every day.</p>
           </div>
         )}
 
@@ -205,14 +198,7 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
             <p className="text-xs text-gray-400">
               Drains work back-to-back. Once parked, this is its reset/recheck time — leave blank to keep the default interval-based recheck cadence.
             </p>
-            <input
-              type="time"
-              value={parseSimpleCron(form.recheckCron)?.time ?? ''}
-              aria-label="Perpetual recheck time"
-              onChange={event => set('recheckCron', buildWeeklyCron(parseSimpleCron(form.recheckCron)?.days ?? [], event.target.value))}
-              className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-white"
-            />
-            <input value={form.recheckCron} onChange={event => set('recheckCron', event.target.value)} placeholder="0 9 * * *" className="w-full rounded border border-port-border bg-port-bg px-3 py-2 font-mono text-xs text-gray-300" aria-label="Perpetual recheck cron" />
+            <CronSchedulePicker value={form.recheckCron} onChange={value => set('recheckCron', value)} />
           </div>
         )}
 

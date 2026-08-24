@@ -39,6 +39,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `quotaBurnValidation.js` | Zod schemas for the Quota Burn routes (partial config PUT, manual-run body, `run once` re-arm body). |
 | `quotaReset.js` | `parseHumanReset` turns a provider CLI's human reset string into ISO 8601 (call it from the adapter); `normalizeResetAt`/`hoursUntilReset` compute time remaining without treating unknown values as imminent resets; `parseObservedReset` pulls the reset a provider stated in its own refusal text, and `isObservedBlockActive` is the shared "is that refusal still holding?" predicate every observed-refusal ledger uses. |
 | `quotaWindows.js` | Classifies a quota window by PERIOD (`windowPeriodHours`); `classifyWindows` splits one card's windows into the weekly allowance that expires unused and the 5-hour one that refuses first, in one pass. `windowLabelOf` names a window. Pure. |
+| `recurrenceValidation.js` | Shared Zod shape and vocabulary for anchored calendar recurrences that cannot be represented faithfully by five-field cron. |
 | `appleHealthValidation.js` | Apple Health import payloads. |
 | `brainValidation.js` | Brain/memory route schemas (search, ingest, edit). |
 | `catalogValidation.js` | Creative ingredients catalog route schemas (scraps, ingredients, links, relations, tags, revisions, sync envelope). |

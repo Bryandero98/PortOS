@@ -7,6 +7,7 @@
 
 import { cosEvents } from './cosEvents.js'
 import { getLocalParts } from '../lib/timezone.js'
+import { recurrenceRuleSchema } from '../lib/recurrenceValidation.js'
 
 // Maximum safe setTimeout value (2^31 - 1 ms, ~24.8 days)
 const MAX_TIMEOUT = 2147483647
@@ -164,6 +165,96 @@ function parseCronToPrevRun(cronExpr, from = new Date(), timezone = 'UTC') {
   return walkCron(cronExpr, from, timezone, { stepMs: -60 * 1000 })
 }
 
+const RECURRENCE_MINUTE = 60 * 1000
+const RECURRENCE_DAY = 24 * 60 * 60 * 1000
+
+function localDaySerial(parts) {
+  return Date.UTC(parts.year, parts.month - 1, parts.day) / RECURRENCE_DAY
+}
+
+function parseAnchorDate(value) {
+  if (typeof value !== 'string') return null
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3])
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return null
+  return { year, month, day, serial: date.getTime() / RECURRENCE_DAY, dayOfWeek: date.getUTCDay() }
+}
+
+function daysInMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
+}
+
+function recurrenceMatches(parts, rule, anchor) {
+  const [hour, minute] = rule.time.split(':').map(Number)
+  if (parts.hour !== hour || parts.minute !== minute) return false
+
+  const serial = localDaySerial(parts)
+  if (serial < anchor.serial) return false
+
+  if (rule.frequency === 'daily') {
+    const days = Math.floor(serial - anchor.serial)
+    return days % rule.interval === 0 && (!rule.weekdays.length || rule.weekdays.includes(parts.dayOfWeek))
+  }
+
+  if (rule.frequency === 'weekly') {
+    const currentWeek = serial - parts.dayOfWeek
+    const anchorWeek = anchor.serial - anchor.dayOfWeek
+    const weeks = Math.floor((currentWeek - anchorWeek) / 7)
+    return weeks >= 0 && weeks % rule.interval === 0 && rule.weekdays.includes(parts.dayOfWeek)
+  }
+
+  const months = (parts.year - anchor.year) * 12 + parts.month - anchor.month
+  if (months < 0 || months % rule.interval !== 0) return false
+
+  if (rule.frequency === 'monthly-date') return parts.day === rule.dayOfMonth
+  if (rule.frequency === 'monthly-weekday') {
+    if (parts.dayOfWeek !== rule.weekday) return false
+    if (rule.ordinal === 'last') return parts.day + 7 > daysInMonth(parts.year, parts.month)
+    const ordinal = Math.floor((parts.day - 1) / 7) + 1
+    return ordinal === ({ first: 1, second: 2, third: 3, fourth: 4 }[rule.ordinal] || 0)
+  }
+  return false
+}
+
+/**
+ * Find the next local-calendar occurrence for an anchored recurrence rule.
+ * Unlike cron, the interval is measured from the persisted local anchor, so
+ * every two weeks remains every two weeks across month boundaries and DST.
+ */
+function parseRecurrenceToNextRun(rule, from = new Date(), timezone = 'UTC', until = null) {
+  const parsed = recurrenceRuleSchema.safeParse(rule)
+  if (!parsed.success) return null
+  const normalized = parsed.data
+  if (normalized.frequency === 'custom') return parseCronToNextRun(normalized.cron, from, timezone, until)
+
+  const reference = getLocalParts(from, timezone)
+  const parsedAnchor = parseAnchorDate(normalized.anchorDate)
+  if (normalized.anchorDate && !parsedAnchor) return null
+  const anchor = parsedAnchor || {
+    year: reference.year,
+    month: reference.month,
+    day: reference.day,
+    serial: localDaySerial(reference),
+    dayOfWeek: reference.dayOfWeek,
+  }
+  const cursor = new Date(from)
+  cursor.setSeconds(0, 0)
+  cursor.setMinutes(cursor.getMinutes() + 1)
+  const boundary = new Date(from)
+  boundary.setFullYear(boundary.getFullYear() + 2)
+  const maxDate = until instanceof Date && until < boundary ? until : boundary
+  let iterations = 0
+  while (cursor < maxDate) {
+    if (++iterations > MAX_CRON_ITERATIONS) return null
+    const parts = getLocalParts(cursor, timezone)
+    if (recurrenceMatches(parts, normalized, anchor)) return cursor
+    cursor.setTime(cursor.getTime() + RECURRENCE_MINUTE)
+  }
+  return null
+}
+
 /**
  * Check if a value matches a cron field expression
  * @param {number} value - Current value
@@ -246,6 +337,7 @@ function createSafeTimer(callback, delayMs, eventId) {
  * @param {string} config.id - Unique event identifier
  * @param {string} config.type - Event type (cron, interval, once)
  * @param {string} config.cron - Cron expression (for type: cron)
+ * @param {Object} config.recurrence - Anchored calendar rule (for type: recurrence)
  * @param {number} config.intervalMs - Interval in ms (for type: interval)
  * @param {number} config.delayMs - Delay in ms (for type: once)
  * @param {Function} config.handler - Event handler function
@@ -253,7 +345,7 @@ function createSafeTimer(callback, delayMs, eventId) {
  * @returns {Object} - Scheduled event
  */
 function schedule(config) {
-  const { id, type, cron, timezone, intervalMs, delayMs, handler, metadata = {} } = config
+  const { id, type, cron, recurrence, timezone, intervalMs, delayMs, handler, metadata = {} } = config
 
   if (!id || !type || !handler) {
     throw new Error('Event requires id, type, and handler')
@@ -268,6 +360,7 @@ function schedule(config) {
     id,
     type,
     cron,
+    recurrence,
     timezone: timezone || 'UTC',
     intervalMs,
     delayMs,
@@ -285,6 +378,11 @@ function schedule(config) {
     case 'cron':
       if (!cron) throw new Error('Cron type requires cron expression')
       event.nextRunAt = parseCronToNextRun(cron, new Date(), event.timezone)?.getTime() || null
+      break
+
+    case 'recurrence':
+      if (!recurrence) throw new Error('Recurrence type requires recurrence rule')
+      event.nextRunAt = parseRecurrenceToNextRun(recurrence, new Date(), event.timezone)?.getTime() || null
       break
 
     case 'interval':
@@ -397,6 +495,11 @@ function updateNextRunTime(event) {
       event.nextRunAt = nextDate?.getTime() || null
       break
 
+    case 'recurrence':
+      const nextRecurrence = parseRecurrenceToNextRun(event.recurrence, new Date(), event.timezone || 'UTC')
+      event.nextRunAt = nextRecurrence?.getTime() || null
+      break
+
     case 'interval':
       event.nextRunAt = Date.now() + event.intervalMs
       break
@@ -478,6 +581,8 @@ function getScheduledEvents() {
     id: e.id,
     type: e.type,
     active: e.active,
+    cron: e.cron,
+    recurrence: e.recurrence,
     nextRunAt: e.nextRunAt,
     lastRunAt: e.lastRunAt,
     runCount: e.runCount,
@@ -499,6 +604,7 @@ function getEvent(id) {
     type: event.type,
     active: event.active,
     cron: event.cron,
+    recurrence: event.recurrence,
     intervalMs: event.intervalMs,
     nextRunAt: event.nextRunAt,
     lastRunAt: event.lastRunAt,
@@ -597,6 +703,16 @@ function isValidCron(expr) {
   }
 }
 
+/** Non-throwing predicate for the richer calendar recurrence path. */
+function isValidRecurrence(rule) {
+  if (!recurrenceRuleSchema.safeParse(rule).success) return false
+  try {
+    return Boolean(parseRecurrenceToNextRun(rule))
+  } catch {
+    return false
+  }
+}
+
 export {
   schedule,
   cancel,
@@ -610,6 +726,8 @@ export {
   triggerNow,
   parseCronToNextRun,
   parseCronToPrevRun,
+  parseRecurrenceToNextRun,
   isValidCron,
+  isValidRecurrence,
   MAX_TIMEOUT
 }

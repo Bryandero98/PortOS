@@ -18,6 +18,7 @@ import {
   ACTION_TONES, manualCaseActions, labelFor,
 } from './constants';
 import { isHttpUrl } from '../../utils/urlNormalize';
+import CronSchedulePicker from '../CronSchedulePicker';
 
 // Digest action icon by descriptor `icon` token (positive resolution vs dismiss).
 const ACTION_ICONS = { check: CheckCircle2, x: XCircle };
@@ -244,16 +245,9 @@ export default function PrivacyBrokersTab({ subjectId }) {
               )}
             </label>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <label htmlFor="privacy-recheck-cron" className="text-[11px] uppercase tracking-wide text-gray-500">Cron</label>
-              <input
-                id="privacy-recheck-cron"
-                type="text"
-                value={cronDraft}
-                onChange={(e) => setCronDraft(e.target.value)}
-                placeholder="0 4 * * 0"
-                className="px-2 py-1 text-sm rounded bg-port-bg border border-port-border text-gray-200 font-mono w-36"
-              />
+            <div className="space-y-2">
+              <span className="text-[11px] uppercase tracking-wide text-gray-500">Recheck cadence</span>
+              <CronSchedulePicker value={cronDraft} onChange={setCronDraft} />
               <button
                 onClick={saveCron}
                 disabled={!cronDirty || scheduleSaving}

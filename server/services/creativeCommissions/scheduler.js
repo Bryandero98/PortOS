@@ -22,14 +22,14 @@
  * `syncCommissionSchedules` after a mutation), not on settings:updated.
  */
 
-import { schedule, cancel, isValidCron } from '../eventScheduler.js';
+import { schedule, cancel, isValidCron, isValidRecurrence } from '../eventScheduler.js';
 import { getUserTimezone } from '../../lib/timezone.js';
 import { getSettings, settingsEvents } from '../settings.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
 import { renderTargetDefaults } from '../imageGen/cloudProviderConfig.js';
 import { resolveVideoMode, VIDEO_GEN_MODE } from '../videoGen/modes.js';
 import { listCommissions, getCommission, recordCommissionRun, commissionEvents } from './store.js';
-import { commissionToCron } from './directive.js';
+import { commissionToCron, commissionToRecurrence } from './directive.js';
 import { buildCommissionDirective, getAbilityAdapter } from './abilityAdapters.js';
 import { buildMusicTasteRecipe } from './musicTasteRecipe.js';
 import { surfaceCommissionRun } from './surface.js';
@@ -67,6 +67,12 @@ export function activeCommissions(commissions) {
   const out = [];
   for (const c of commissions || []) {
     if (!c || c.enabled === false || !c.id) continue;
+    const recurrence = commissionToRecurrence(c.schedule);
+    if (recurrence) {
+      if (!isValidRecurrence(recurrence)) continue;
+      out.push({ id: c.id, recurrence, timezone: c.schedule?.timezone || null });
+      continue;
+    }
     const cron = commissionToCron(c.schedule);
     if (!cron || !isValidCron(cron)) continue;
     out.push({ id: c.id, cron, timezone: c.schedule?.timezone || null });
@@ -77,7 +83,7 @@ export function activeCommissions(commissions) {
 function signatureOf(active, fallbackTz) {
   return JSON.stringify({
     tz: fallbackTz || null,
-    s: active.map((e) => [e.id, e.cron, e.timezone]),
+    s: active.map((e) => [e.id, e.cron || null, e.recurrence || null, e.timezone]),
   });
 }
 
@@ -88,8 +94,9 @@ function registerSchedule(entry, timezone) {
   try {
     schedule({
       id: eventId(entry.id),
-      type: 'cron',
+      type: entry.recurrence ? 'recurrence' : 'cron',
       cron: entry.cron,
+      recurrence: entry.recurrence,
       timezone: entry.timezone || timezone,
       handler: () => runScheduledCommission(entry.id),
       metadata: { source: 'creativeCommissionScheduler', commissionId: entry.id },
@@ -155,8 +162,9 @@ export async function runScheduledCommission(commissionId) {
   const commission = await getCommission(commissionId).catch(() => null);
   if (!commission || commission.enabled === false) return;
 
+  const recurrence = commissionToRecurrence(commission.schedule);
   const cron = commissionToCron(commission.schedule);
-  if (!cron || !isValidCron(cron)) return; // schedule became invalid since registration
+  if (recurrence ? !isValidRecurrence(recurrence) : (!cron || !isValidCron(cron))) return; // schedule became invalid since registration
 
   await fireCommission(commission, 'schedule');
 }

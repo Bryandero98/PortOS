@@ -52,6 +52,12 @@ describe('commissionForm helpers', () => {
       expect(p.schedule).toEqual({ kind: 'CUSTOM', cron: '0 2 * * *' });
     });
 
+    it('round-trips rich recurrence and an explicit timezone', () => {
+      const recurrence = { frequency: 'monthly-weekday', interval: 1, ordinal: 'first', weekday: 4, time: '19:00' };
+      const form = toForm({ schedule: { kind: 'RECURRENCE', recurrence, timezone: 'UTC' } });
+      expect(toPayload(form).schedule).toEqual({ kind: 'RECURRENCE', recurrence, timezone: 'UTC' });
+    });
+
     it('nulls a provider-less model so a stored pin never dangles', () => {
       const form = { ...blankForm(), assignment: { providerId: '', model: 'gpt-x' } };
       expect(toPayload(form).assignment).toEqual({ providerId: null, model: null });

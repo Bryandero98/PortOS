@@ -16,8 +16,9 @@ import ProviderModelSelector from '../ProviderModelSelector';
 import { isProcessProvider } from '../../utils/providers';
 import { getProviders, getSettings, listImageModels, listVideoModels, listMusicEngines } from '../../services/api';
 import { deriveAvailableBackends } from '../../lib/imageGenBackends';
+import CronSchedulePicker from '../CronSchedulePicker';
 import {
-  WEEKDAYS, inputCls, labelCls, describeSchedule,
+  inputCls, labelCls,
   ABILITY_OPTIONS, GENERATION_FIELDS_BY_ABILITY, mergeGenerationForAbility,
   backendFieldsForAbility, RENDER_BACKEND_AUTO,
   COMMISSION_NAME_MAX, COMMISSION_INTENT_MAX, COMMISSION_STYLE_SPEC_MAX, COMMISSION_BRIEF_TAG_MAX,
@@ -131,70 +132,11 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
       {/* Schedule */}
       <section className="space-y-3 border-t border-port-border pt-4">
         <h3 className="text-sm font-semibold text-gray-200">Schedule</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className={labelCls} htmlFor="commission-kind">Cadence</label>
-            <select
-              id="commission-kind"
-              className={inputCls}
-              value={form.schedule.kind}
-              onChange={(e) => patchForm(['schedule', 'kind'], e.target.value)}
-            >
-              <option value="DAILY">Daily</option>
-              <option value="WEEKLY">Weekly</option>
-              <option value="CUSTOM">Custom (cron)</option>
-            </select>
-          </div>
-          {form.schedule.kind !== 'CUSTOM' && (
-            <div>
-              <label className={labelCls} htmlFor="commission-time">Time (24h, local)</label>
-              <input
-                id="commission-time"
-                type="time"
-                className={inputCls}
-                value={form.schedule.atLocalTime}
-                onChange={(e) => patchForm(['schedule', 'atLocalTime'], e.target.value)}
-              />
-            </div>
-          )}
-          {form.schedule.kind === 'WEEKLY' && (
-            <div>
-              <label className={labelCls} htmlFor="commission-weekday">Day of week</label>
-              <select
-                id="commission-weekday"
-                className={inputCls}
-                value={form.schedule.weekday}
-                onChange={(e) => patchForm(['schedule', 'weekday'], Number(e.target.value))}
-              >
-                {WEEKDAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
-              </select>
-            </div>
-          )}
-          {form.schedule.kind === 'CUSTOM' && (
-            <div>
-              <label className={labelCls} htmlFor="commission-cron">Cron (5-field)</label>
-              <input
-                id="commission-cron"
-                className={inputCls}
-                value={form.schedule.cron}
-                maxLength={120}
-                onChange={(e) => patchForm(['schedule', 'cron'], e.target.value)}
-                placeholder="0 2 * * *"
-              />
-            </div>
-          )}
-        </div>
-        {form.schedule.kind === 'DAILY' && (
-          <label className="flex items-center gap-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
-              checked={form.schedule.weekdaysOnly}
-              onChange={(e) => patchForm(['schedule', 'weekdaysOnly'], e.target.checked)}
-            />
-            Weekdays only (Mon–Fri)
-          </label>
-        )}
-        <p className="text-xs text-gray-500">{describeSchedule(form.schedule)}</p>
+        <CronSchedulePicker
+          value={form.schedule}
+          valueShape="commission"
+          onChange={schedule => patchForm(['schedule'], schedule)}
+        />
       </section>
 
       {/* Generation — fields adapt to the selected output type (#2769) */}
