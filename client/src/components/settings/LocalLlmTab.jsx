@@ -1498,7 +1498,7 @@ export function LocalLlmTab() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={catalogSource === 'huggingface' ? (activeCategory === 'audio' ? 'Search Hugging Face audio models…' : 'Search Hugging Face GGUF models…') : `Search the ${labelFor(selected)} catalog…`}
-              className="flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
+              className="w-full flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
             />
             </FormField>
           </div>
@@ -1509,7 +1509,7 @@ export function LocalLlmTab() {
               value={manualId}
               onChange={(e) => setManualId(e.target.value)}
               placeholder={selected === 'ollama' ? 'pull by name e.g. llama3.2' : 'publisher/Model-GGUF'}
-              className="flex-1 sm:w-56 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
+              className="w-full flex-1 sm:w-56 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
             />
             </FormField>
             <button

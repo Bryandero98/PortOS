@@ -1205,7 +1205,7 @@ export function ImageGenTab() {
               placeholder="hf_…"
               autoComplete="off"
               spellCheck={false}
-              className="flex-1 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
+              className="w-full flex-1 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
             />
           </FormField>
           <button
