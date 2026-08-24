@@ -98,7 +98,13 @@ describe('buildProductActions', () => {
     });
 
     expect(actions).toHaveLength(2);
-    expect(actions[0]).toMatchObject({ type: 'post_engagement', severity: 'high', link: '/post/launcher' });
+    expect(actions[0]).toMatchObject({
+      type: 'post_engagement',
+      severity: 'high',
+      link: '/post/launcher',
+      featureId: 'post',
+      featureLabel: 'POST',
+    });
     expect(actions[1]).toMatchObject({
       type: 'commission_feedback',
       severity: 'high',
@@ -133,6 +139,19 @@ describe('toProductMetricsAggregate', () => {
       today,
       post: { status: 'ok', completedToday: false },
       creativeCommissions: { status: 'ok', unreviewedRenders: 1 },
+    });
+  });
+
+  it('omits disabled features from the intelligence aggregate', () => {
+    const result = toProductMetricsAggregate({
+      today,
+      post: { status: 'disabled', reason: 'instance-feature-disabled' },
+      creativeCommissions: { status: 'unavailable', reason: 'creative-read-failed' },
+    });
+
+    expect(result).toEqual({
+      today,
+      creativeCommissions: { status: 'unavailable', reason: 'creative-read-failed' },
     });
   });
 });

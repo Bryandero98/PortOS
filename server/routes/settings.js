@@ -10,10 +10,11 @@ import {
   CODEX_PARALLEL_DEFAULT,
 } from '../services/mediaJobQueue/index.js';
 import { assertMediaRoutingConfig } from '../services/federatedMedia/routingPolicy.js';
+import { getInstanceFeatures, updateInstanceFeature } from '../services/instanceFeatures.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, openWorldSnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, openWorldSnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, instanceFeatureSettingsSchema, instanceFeatureIdSchema, instanceFeatureUpdateSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -153,6 +154,18 @@ router.get('/ai-assignments', asyncHandler(async (_req, res) => {
   res.json(await getAiAssignments());
 }));
 
+// GET /api/settings/features
+router.get('/features', asyncHandler(async (_req, res) => {
+  res.json(await getInstanceFeatures());
+}));
+
+// PUT /api/settings/features/:featureId
+router.put('/features/:featureId', asyncHandler(async (req, res) => {
+  const featureId = validateRequest(instanceFeatureIdSchema, req.params.featureId);
+  const { enabled } = validateRequest(instanceFeatureUpdateSchema, req.body || {});
+  res.json(await updateInstanceFeature(featureId, enabled));
+}));
+
 // PUT /api/settings/ai-assignments/:id
 router.put('/ai-assignments/:id', asyncHandler(async (req, res) => {
   const payload = validateRequest(aiAssignmentUpdateSchema, req.body || {});
@@ -260,6 +273,9 @@ router.put('/', asyncHandler(async (req, res) => {
   // disk (the registry would then silently treat it as its default).
   if (req.body?.apiAccess !== undefined) {
     validateRequest(apiAccessSettingsSchema.partial(), req.body.apiAccess);
+  }
+  if (req.body?.instanceFeatures !== undefined) {
+    validateRequest(instanceFeatureSettingsSchema, req.body.instanceFeatures);
   }
   // Local MCP agent-context opt-in. Validate the whole strict slice so an
   // unknown scope/profile cannot silently broaden what the server exposes.

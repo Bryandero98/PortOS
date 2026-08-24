@@ -1510,6 +1510,18 @@ describe('buildPrompt', () => {
     expect(prompt.match(/### productMetrics/g)).toHaveLength(1);
   });
 
+  it('does not treat an omitted feature as an inactive improvement target', () => {
+    const prompt = buildPrompt({
+      app,
+      isPortos: true,
+      config: { allowedScopes: ['app-improvement'], rules: '' },
+      sources: { productMetrics: '{"creativeCommissions":{"unreviewedRenders":2}}' },
+    });
+
+    expect(prompt).toContain('An omitted feature is not an inactive feature');
+    expect(prompt).not.toContain('"post"');
+  });
+
   it('injects the scope-awareness block only when present, under its own heading (#2760)', () => {
     const base = { app, isPortos: true, config: { allowedScopes: ['loop-meta'], rules: '' } };
     const without = buildPrompt(base);

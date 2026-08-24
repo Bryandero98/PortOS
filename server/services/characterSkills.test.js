@@ -63,6 +63,9 @@ vi.mock('./meatspaceLoggingStats.js', () => ({ getLoggingStats: vi.fn(async () =
 vi.mock('./identity/goals.js', () => ({ getGoals: vi.fn(async () => stats.goals) }));
 vi.mock('./memoryBackend.js', () => ({ countMemories: vi.fn(async () => stats.memories) }));
 vi.mock('./mediaAssetIndex/db.js', () => ({ countAssets: vi.fn(async () => stats.assets) }));
+vi.mock('./instanceFeatures.js', () => ({
+  isInstanceFeatureEnabled: vi.fn(async () => true),
+}));
 
 import { getCharacterSkills, levelFromValue, SKILLS, MAX_SKILL_LEVEL } from './characterSkills.js';
 import { countUniverses } from './universeBuilder.js';
@@ -71,6 +74,7 @@ import { getLoggingStats } from './meatspaceLoggingStats.js';
 import { countMemories } from './memoryBackend.js';
 import { countAssets } from './mediaAssetIndex/db.js';
 import { countWorks } from './writersRoom/local.js';
+import { isInstanceFeatureEnabled } from './instanceFeatures.js';
 
 const rows = (list) => Array.from({ length: list }, (_, i) => ({ id: `r${i}` }));
 
@@ -93,6 +97,7 @@ beforeEach(() => {
   vi.mocked(getLoggingStats).mockImplementation(async () => stats.logging);
   vi.mocked(countMemories).mockImplementation(async () => stats.memories);
   vi.mocked(countAssets).mockImplementation(async () => stats.assets);
+  vi.mocked(isInstanceFeatureEnabled).mockResolvedValue(true);
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -187,6 +192,17 @@ describe('getCharacterSkills — empty domains', () => {
       expect(skill).toMatchObject({ level: 0, value: 0, unavailable: false });
       expect(skill.level).not.toBeNull();
     }
+  });
+});
+
+describe('getCharacterSkills — disabled features', () => {
+  it('omits POST skill derivation when POST is disabled on this instance', async () => {
+    isInstanceFeatureEnabled.mockResolvedValue(false);
+
+    const skills = await getCharacterSkills();
+
+    expect(skills).toHaveLength(SKILLS.length - 1);
+    expect(byId(skills, 'mentalist')).toBeUndefined();
   });
 });
 

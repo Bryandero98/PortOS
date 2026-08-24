@@ -85,7 +85,7 @@ export function buildPrompt({ app, config, sources = {}, openIssues = [], isPort
   // aggregate signal so inactivity is evaluated as product evidence, not as a
   // generic request to add more telemetry.
   const productMetricsBlock = (isPortos && typeof sources.productMetrics === 'string' && sources.productMetrics.trim())
-    ? `\n### productMetrics\n${sources.productMetrics.trim()}\n\nThese are current PortOS product-engagement signals. Treat an inactive daily POST or overdue creative feedback as evidence that the product should improve its prompts, visibility, or action flow. Prefer a concrete user-facing improvement grounded in these numbers; do not propose generic telemetry when the signal already identifies the engagement gap. If the source says unavailable, do not infer zero activity.\n`
+    ? `\n### productMetrics\n${sources.productMetrics.trim()}\n\nThese are current PortOS product-engagement signals. Treat an inactive daily POST or overdue creative feedback as evidence that the product should improve its prompts, visibility, or action flow only when that signal appears in the source. An omitted feature is not an inactive feature and must not be treated as a missing metric or improvement target. Prefer a concrete user-facing improvement grounded in these numbers; do not propose generic telemetry when the signal already identifies the engagement gap. If the source says unavailable, do not infer zero activity.\n`
     : '';
 
   // Feedback loop (#2428): show the reasoner how its own past proposals fared so
