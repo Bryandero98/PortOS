@@ -162,7 +162,7 @@ export function buildCliChildEnv({
   guard = false,
 } = {}) {
   const env = withSpawnCwdEnv(
-    { ...buildSafeCliBaseEnv(baseEnv), ...composeProviderEnv({ before, provider, model, extra }) },
+    { ...buildSafeCliBaseEnv(baseEnv, provider), ...composeProviderEnv({ before, provider, model, extra }) },
     cwd,
   );
 

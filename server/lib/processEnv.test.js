@@ -70,7 +70,10 @@ describe('buildSafeCliBaseEnv', () => {
       PATH: '/usr/bin',
       HOME: '/home/example',
       CODEX_HOME: '/tmp/example-codex',
-      ANTHROPIC_API_KEY: 'provider-key',
+      SSH_AUTH_SOCK: '/tmp/example-agent.sock',
+      GH_TOKEN: 'owner-token',
+      GITHUB_TOKEN: 'owner-token-alias',
+      ANTHROPIC_API_KEY: 'unselected-provider-key',
       PRIVATE_APP_AUTH_KEYS: 'sidecar-secret',
       PRIVATE_APP_TOKEN: 'sidecar-token',
     });
@@ -79,8 +82,24 @@ describe('buildSafeCliBaseEnv', () => {
       PATH: '/usr/bin',
       HOME: '/home/example',
       CODEX_HOME: '/tmp/example-codex',
-      ANTHROPIC_API_KEY: 'provider-key',
+      SSH_AUTH_SOCK: '/tmp/example-agent.sock',
+      GH_TOKEN: 'owner-token',
+      GITHUB_TOKEN: 'owner-token-alias',
     });
+  });
+
+  it('keeps only the selected provider auth and drops paid keys for local providers', () => {
+    const source = {
+      ANTHROPIC_API_KEY: 'claude-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
+      OPENAI_API_KEY: 'openai-key',
+    };
+
+    expect(buildSafeCliBaseEnv(source, { id: 'claude-code', command: 'claude' })).toEqual({
+      ANTHROPIC_API_KEY: 'claude-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
+    });
+    expect(buildSafeCliBaseEnv(source, { id: 'opencode-ollama', command: 'opencode', ollamaBacked: true })).toEqual({});
   });
 
   it('does not mutate the source environment', () => {

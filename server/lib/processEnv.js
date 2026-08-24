@@ -36,11 +36,11 @@ export function safeChildProcessOptions(options = {}) {
   return { ...rest, env: stripDebugMallocEnv(env), windowsHide: true };
 }
 
-// AI CLIs need the host's runtime essentials and provider authentication, but
-// they do not need the rest of the server's ambient environment. Keeping this
-// list here makes the boundary reusable by direct and durable agent spawns;
-// explicit provider.envVars / before overlays remain available for configured
-// credentials and per-run settings.
+// AI CLIs need the host's runtime essentials and forge-delivery fallbacks, but
+// they do not need the rest of the server's ambient environment. Provider
+// authentication is selected below per child provider; explicit provider.envVars
+// / before overlays remain available for configured credentials and per-run
+// settings.
 const SAFE_CLI_BASE_ENV_KEYS = new Set([
   'PATH', 'Path', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'PWD', 'TMPDIR', 'TMP', 'TEMP',
   'LANG', 'LANGUAGE', 'TERM', 'COLORTERM', 'TZ', 'HOSTNAME', 'NODE', 'NODE_ENV', 'NODE_PATH',
@@ -48,30 +48,59 @@ const SAFE_CLI_BASE_ENV_KEYS = new Set([
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'EDITOR', 'VISUAL', 'PORTOS_REAL_PM2',
   'SystemRoot', 'SystemDrive', 'ComSpec', 'PATHEXT', 'USERPROFILE', 'APPDATA',
   'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'HOMEDRIVE', 'HOMEPATH',
-  'AWS_REGION', 'AWS_DEFAULT_REGION',
-  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
-  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
-  'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_BASE',
-  'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY',
-  'XAI_API_KEY', 'GROK_API_KEY', 'OPENROUTER_API_KEY',
-  'OLLAMA_HOST', 'OLLAMA_API_BASE', 'OPENCODE_CONFIG_CONTENT',
+  'AWS_REGION', 'AWS_DEFAULT_REGION', 'SSH_AUTH_SOCK', 'GH_TOKEN', 'GITHUB_TOKEN',
 ]);
 
-const SAFE_CLI_BASE_ENV_PREFIXES = ['LC_', 'CLAUDE_CODE_', 'CLAUDE_', 'GEMINI_CLI_'];
+const SAFE_CLI_BASE_ENV_PREFIXES = ['LC_'];
+
+const CLI_PROVIDER_AUTH_RULES = Object.freeze({
+  claude: {
+    keys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'],
+    prefixes: ['CLAUDE_CODE_', 'CLAUDE_'],
+  },
+  codex: { keys: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_BASE'], prefixes: [] },
+  agy: { keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY'], prefixes: ['GEMINI_CLI_'] },
+  grok: { keys: ['XAI_API_KEY', 'GROK_API_KEY'], prefixes: [] },
+  kimi: { keys: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'], prefixes: [] },
+  cursor: { keys: ['CURSOR_API_KEY'], prefixes: [] },
+});
+
+const LOCAL_PROVIDER_MARKERS = ['ollamaBacked', 'mtplxBacked', 'llamaBacked', 'vllmBacked', 'sglangBacked'];
+
+function cliProviderAuthRule(provider) {
+  const command = typeof provider?.command === 'string'
+    ? provider.command.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '')
+    : '';
+  const id = String(provider?.id || '').toLowerCase();
+  const local = LOCAL_PROVIDER_MARKERS.some((marker) => provider?.[marker] === true);
+  if (local) return null;
+  if (command === 'claude' || id.startsWith('claude-code')) return CLI_PROVIDER_AUTH_RULES.claude;
+  if (command === 'codex' || id === 'codex' || id === 'codex-tui') return CLI_PROVIDER_AUTH_RULES.codex;
+  if (command === 'agy' || command === 'antigravity' || id.startsWith('antigravity')) return CLI_PROVIDER_AUTH_RULES.agy;
+  if (command === 'grok' || id.startsWith('grok-')) return CLI_PROVIDER_AUTH_RULES.grok;
+  if (command === 'kimi' || id.startsWith('kimi-')) return CLI_PROVIDER_AUTH_RULES.kimi;
+  if (command === 'cursor-agent' || id.startsWith('cursor-')) return CLI_PROVIDER_AUTH_RULES.cursor;
+  return null;
+}
 
 /**
- * Keep only the environment an AI CLI needs to start and authenticate.
- * Provider-specific values should be supplied through the explicit overlays,
- * not inherited from the PortOS server process.
+ * Keep only the environment an AI CLI needs to start, deliver work, and use
+ * the selected provider's ambient auth. Unrelated provider credentials are
+ * dropped; provider-specific values should otherwise be supplied through the
+ * explicit overlays, not inherited from the PortOS server process.
  *
  * @param {NodeJS.ProcessEnv|object} [env=process.env]
+ * @param {{id?:string, command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, vllmBacked?:boolean, sglangBacked?:boolean}|null} [provider]
  * @returns {Record<string,string>}
  */
-export function buildSafeCliBaseEnv(env = process.env) {
+export function buildSafeCliBaseEnv(env = process.env, provider = null) {
+  const authRule = cliProviderAuthRule(provider);
   return Object.fromEntries(
     Object.entries(env || {}).filter(([key, value]) => value != null && (
       SAFE_CLI_BASE_ENV_KEYS.has(key)
       || SAFE_CLI_BASE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
+      || authRule?.keys.includes(key)
+      || authRule?.prefixes.some((prefix) => key.startsWith(prefix))
     )),
   );
 }
