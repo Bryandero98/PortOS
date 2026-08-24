@@ -383,6 +383,8 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toContain('not browserless');
       expect(prompt).toContain('127.0.0.1:5556');
       expect(prompt).toContain('webSocketDebuggerUrl');
+      expect(prompt).toContain('about:blank');
+      expect(prompt).toContain('page socket');
       expect(prompt).toContain('running local system');
       expect(prompt).toContain('native or source-only target');
     });
