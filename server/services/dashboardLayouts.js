@@ -81,6 +81,27 @@ export const INTENT_LAYOUTS = [
   },
 ];
 
+// Product engagement is a landing action surface, so seed it at the front of
+// the two user-facing day-start layouts. Existing installs receive the same
+// change through migration 297; custom layouts remain user-owned.
+const seedDailyActions = (layout) => {
+  if (!['default', 'morning-review'].includes(layout.id)) return layout;
+  const existingGrid = Array.isArray(layout.grid) ? layout.grid : [];
+  if (layout.widgets.includes('daily-actions') && existingGrid.some((item) => item.id === 'daily-actions')) return layout;
+  const grid = existingGrid.filter((item) => item.id !== 'daily-actions').map((item) => ({
+    ...item,
+    order: Number.isFinite(item.order) ? item.order + 1 : 1,
+  }));
+  return {
+    ...layout,
+    widgets: layout.widgets.includes('daily-actions') ? layout.widgets : ['daily-actions', ...layout.widgets],
+    grid: [
+      { id: 'daily-actions', x: 0, w: 12, order: 0, h: 4 },
+      ...grid,
+    ],
+  };
+};
+
 const DEFAULT_LAYOUTS = [
   {
     id: 'default',
@@ -190,7 +211,7 @@ const DEFAULT_LAYOUTS = [
     ],
   },
   ...INTENT_LAYOUTS.map((l) => ({ ...l, builtIn: true })),
-];
+].map(seedDailyActions);
 
 const DEFAULT_STATE = {
   activeLayoutId: 'default',

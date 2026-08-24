@@ -565,14 +565,16 @@ async function clearInlineFeedback(id) {
   });
 }
 
-export async function listCommissions() {
+export async function listCommissions({ strict = false } = {}) {
   const raw = await commissionStore().listRaw();
   const recs = raw.map(sanitizeCommission).filter(Boolean);
   // Hydrate the federated feedback view (read-through) in ONE pass — feedback is
   // no longer stored inline on the machine-local commission (#2686). Read-only:
   // any un-migrated legacy inline feedback is split lazily by getCommission /
   // backfillAllCommissionFeedback, not on this hot list path.
-  const byId = await listFeedbackByCommissionIds(recs.map((r) => r.id)).catch(() => new Map());
+  const byId = strict
+    ? await listFeedbackByCommissionIds(recs.map((r) => r.id))
+    : await listFeedbackByCommissionIds(recs.map((r) => r.id)).catch(() => new Map());
   // Prefer the federated view; fall back to the record's own (sanitized) inline
   // feedback only when NO federated reaction exists for it yet — the transient
   // pre-migration window before getCommission / backfillAllCommissionFeedback has

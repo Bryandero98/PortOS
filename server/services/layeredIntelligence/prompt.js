@@ -15,7 +15,7 @@ import { extractSlugFromBody } from './dedup.js';
 // Keeping them in one named set — rather than accreting `&& k !== 'x'` clauses on the
 // filter — documents WHY these keys are special and gives the next dedicated-block
 // signal a single edit point.
-const BESPOKE_SOURCE_BLOCK_KEYS = new Set(['plannedWork', 'scopeGuidance', 'churnSignals']);
+const BESPOKE_SOURCE_BLOCK_KEYS = new Set(['plannedWork', 'productMetrics', 'scopeGuidance', 'churnSignals']);
 
 /**
  * Build the JSON-only reasoning prompt for one app. Deterministic: given the
@@ -79,6 +79,13 @@ export function buildPrompt({ app, config, sources = {}, openIssues = [], isPort
   // planned" and license a proposal straight into committed work.
   const plannedWorkBlock = (typeof sources.plannedWork === 'string' && sources.plannedWork.trim())
     ? `\n### plannedWork\n${sources.plannedWork.trim()}\n\n${PLANNED_WORK_GUIDANCE}\n`
+    : '';
+
+  // PortOS product-success telemetry: keep the interpretation next to the
+  // aggregate signal so inactivity is evaluated as product evidence, not as a
+  // generic request to add more telemetry.
+  const productMetricsBlock = (isPortos && typeof sources.productMetrics === 'string' && sources.productMetrics.trim())
+    ? `\n### productMetrics\n${sources.productMetrics.trim()}\n\nThese are current PortOS product-engagement signals. Treat an inactive daily POST or overdue creative feedback as evidence that the product should improve its prompts, visibility, or action flow. Prefer a concrete user-facing improvement grounded in these numbers; do not propose generic telemetry when the signal already identifies the engagement gap. If the source says unavailable, do not infer zero activity.\n`
     : '';
 
   // Feedback loop (#2428): show the reasoner how its own past proposals fared so
@@ -175,7 +182,7 @@ ${openList}
 
 Gathered sources:
 ${sourceBlocks || (plannedWorkBlock ? '(no other sources available — you may propose an app-data-gap to add telemetry)' : '(no sources available — you may propose an app-data-gap to add telemetry)')}
-${plannedWorkBlock}${outcomesBlock}${selfEvalBlock}${deliveryThrottleBlock}${scopeGuidanceBlock}${churnSignalsBlock}${proposalExecutionBlock}${crossReferenceBlock}${playbookBlock}
+${plannedWorkBlock}${productMetricsBlock}${outcomesBlock}${selfEvalBlock}${deliveryThrottleBlock}${scopeGuidanceBlock}${churnSignalsBlock}${proposalExecutionBlock}${crossReferenceBlock}${playbookBlock}
 Respond with JSON only (no markdown fences):
 {
   "analysis": "brief reasoning summary",

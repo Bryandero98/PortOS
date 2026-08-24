@@ -21,6 +21,7 @@ import { getUsage } from './usage.js';
 import { getCareSummary } from './tribe.js';
 import { findUnansweredTribeThreads } from './tribeOutreach.js';
 import { getMemoryStats } from '../lib/memoryStats.js';
+import { getProductEngagement } from './portosProductMetrics.js';
 
 const STALL_THRESHOLD_DAYS = 14;
 const SUCCESS_RATE_WARNING = 50;
@@ -320,23 +321,34 @@ async function checkUnansweredTribeThreads() {
 }
 
 /**
+ * Surface user-success gaps alongside infrastructure and CoS health. This is
+ * deterministic read-only telemetry; it deliberately does not bypass the
+ * Layered Intelligence delivery throttle or call an AI provider.
+ */
+async function checkProductEngagement() {
+  const result = await getProductEngagement().catch(() => null);
+  return result?.actions || [];
+}
+
+/**
  * Generate all proactive alerts by running all checks.
  * Returns a sorted list with critical/high items first.
  */
 export async function generateAlerts() {
   const startMs = Date.now();
 
-  const [goalAlerts, successAlerts, systemAlerts, learningAlerts, usageAlerts, tribeAlerts, unansweredAlerts] = await Promise.all([
+  const [goalAlerts, successAlerts, systemAlerts, learningAlerts, usageAlerts, tribeAlerts, unansweredAlerts, productAlerts] = await Promise.all([
     checkGoalStalls(),
     checkSuccessRates(),
     checkSystemHealth(),
     checkLearningHealth(),
     checkUsageSpikes(),
     checkTribeCadence(),
-    checkUnansweredTribeThreads()
+    checkUnansweredTribeThreads(),
+    checkProductEngagement()
   ]);
 
-  const all = [...goalAlerts, ...successAlerts, ...systemAlerts, ...learningAlerts, ...usageAlerts, ...tribeAlerts, ...unansweredAlerts];
+  const all = [...goalAlerts, ...successAlerts, ...systemAlerts, ...learningAlerts, ...usageAlerts, ...tribeAlerts, ...unansweredAlerts, ...productAlerts];
 
   // Sort by severity: critical > high > medium > low
   const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
