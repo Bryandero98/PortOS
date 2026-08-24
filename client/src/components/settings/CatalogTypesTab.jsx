@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Sparkles, Plus, Trash2, Save, X, Loader2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
+import { FormField } from '../ui/FormField';
 import { createCatalogType, updateCatalogType, deleteCatalogType } from '../../services/apiCatalogTypes';
 import { useCatalogTypes } from '../../hooks/useCatalogTypes.jsx';
 import { USER_TYPE_FIELD_KINDS } from '../../lib/catalogTypes';
@@ -181,24 +182,23 @@ export function CatalogTypesTab() {
         <div className="bg-port-card border border-port-border rounded-lg p-4 sm:p-6 space-y-4">
           <h3 className="text-lg font-semibold text-white">{editing === 'new' ? 'New type' : `Edit "${draft.label || draft.id}"`}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="catalog-type-label" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">Label</label>
+            <FormField label="Label" labelClassName="block text-xs uppercase tracking-wider text-gray-500 mb-1">
               <input id="catalog-type-label" type="text" value={draft.label} maxLength={80}
                 onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
                 placeholder="e.g. Faction"
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm" />
-            </div>
-            <div>
-              <label htmlFor="catalog-type-id" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-                Id {editing !== 'new' && <span className="normal-case text-gray-600">(immutable)</span>}
-              </label>
+            </FormField>
+            <FormField
+              label={<>Id {editing !== 'new' && <span className="normal-case text-gray-600">(immutable)</span>}</>}
+              labelClassName="block text-xs uppercase tracking-wider text-gray-500 mb-1"
+            >
               <input id="catalog-type-id" type="text"
                 value={editing === 'new' ? draft.id : draft.id}
                 disabled={editing !== 'new'} maxLength={32}
                 onChange={(e) => setDraft((d) => ({ ...d, id: e.target.value }))}
                 placeholder="auto from label"
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm font-mono disabled:opacity-50" />
-            </div>
+            </FormField>
           </div>
 
           <div>
@@ -213,28 +213,25 @@ export function CatalogTypesTab() {
             <div className="space-y-2">
               {draft.fields.map((f, i) => (
                 <div key={i} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_160px_auto] gap-2 items-end">
-                  <div>
-                    <label htmlFor={`field-label-${i}`} className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Field label</label>
+                  <FormField label="Field label" labelClassName="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
                     <input id={`field-label-${i}`} type="text" value={f.label} maxLength={80}
                       onChange={(e) => updateField(i, { label: e.target.value })}
                       placeholder="e.g. Headquarters"
                       className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm" />
-                  </div>
-                  <div>
-                    <label htmlFor={`field-key-${i}`} className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Key</label>
+                  </FormField>
+                  <FormField label="Key" labelClassName="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
                     <input id={`field-key-${i}`} type="text" value={f.key} maxLength={64}
                       onChange={(e) => updateField(i, { key: e.target.value })}
                       placeholder="auto from label"
                       className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm font-mono" />
-                  </div>
-                  <div>
-                    <label htmlFor={`field-kind-${i}`} className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">Kind</label>
+                  </FormField>
+                  <FormField label="Kind" labelClassName="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
                     <select id={`field-kind-${i}`} value={f.kind}
                       onChange={(e) => updateField(i, { kind: e.target.value })}
                       className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm">
                       {USER_TYPE_FIELD_KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k] || k}</option>)}
                     </select>
-                  </div>
+                  </FormField>
                   <button type="button" onClick={() => removeField(i)} aria-label="Remove field"
                     className="px-2 py-1.5 rounded border border-port-border text-gray-400 hover:text-port-error">
                     <X size={14} />
@@ -244,10 +241,10 @@ export function CatalogTypesTab() {
             </div>
           </div>
 
-          <div>
-            <label htmlFor="catalog-type-primary" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              Primary content field <span className="normal-case text-gray-600">(the body shown in the quick-create form)</span>
-            </label>
+          <FormField
+            label={<>Primary content field <span className="normal-case text-gray-600">(the body shown in the quick-create form)</span></>}
+            labelClassName="block text-xs uppercase tracking-wider text-gray-500 mb-1"
+          >
             <select id="catalog-type-primary" value={draft.primaryContentKey}
               onChange={(e) => setDraft((d) => ({ ...d, primaryContentKey: e.target.value }))}
               className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm">
@@ -256,7 +253,7 @@ export function CatalogTypesTab() {
                 <option key={i} value={slugify(f.key || f.label).replace(/-/g, '_')}>{f.label || f.key}</option>
               ))}
             </select>
-          </div>
+          </FormField>
 
           <div className="flex justify-end gap-2">
             <button type="button" onClick={cancel} className="px-3 py-2 rounded-lg text-gray-400 hover:text-white text-sm">Cancel</button>
