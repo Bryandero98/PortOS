@@ -84,11 +84,11 @@ export const UI_AUDIT_TASK_TYPES = Object.freeze([
 const UI_AUDIT_TASK_TYPE_SET = new Set(UI_AUDIT_TASK_TYPES);
 
 export const UI_AUDIT_RUNTIME_RULE = `## UI Audit Runtime (PortOS local system)
-This is an unattended run, but it is not browserless. PortOS provides a managed Chromium browser for CoS agents over Chrome DevTools Protocol (CDP). Use the available Playwright/browser tools with that PortOS-managed browser to inspect the target app; do not skip live UI verification or assume the browser is unavailable because no human is present.
+This is an unattended run, but it is not browserless when the target has a web UI. PortOS provides a managed Chromium browser for CoS agents over Chrome DevTools Protocol (CDP). Use the available Playwright/browser tools with that PortOS-managed browser, or connect to its CDP endpoint from the local shell when this provider has no browser MCP configured; do not skip live UI verification or assume the browser is unavailable because no human is present.
 
-- Reuse the PortOS-managed browser over CDP instead of launching a separate browser. Check the browser status/configuration when needed; the CDP endpoint is local and its port is configurable (the shipped default is 127.0.0.1:5556).
+- Reuse the PortOS-managed browser over CDP instead of launching a separate browser. Check the browser status/configuration when needed; the CDP endpoint is local and its port is configurable (the shipped default is 127.0.0.1:5556). A direct fallback is to query the CDP health endpoint and /json/version or /json/list, then attach to the returned webSocketDebuggerUrl with Node's WebSocket or another installed CDP client; use Page, Runtime, Log, and Network domains for live evidence.
 - Treat the target as a running local system: discover its actual UI/API URL and ports from the app configuration, PortOS app/process state, and health endpoints, then inspect scoped server logs when diagnosing console or request failures. Do not guess a URL or treat source-only speculation as a UI finding.
-- Capture live evidence (snapshots, console/request results, and observed runtime state) before changing code. If the managed browser or target app is genuinely unavailable, record the concrete health/process error and stop the UI audit cleanly.`;
+- Capture live evidence (snapshots, console/request results, and observed runtime state) before changing code. If the managed browser or target app is genuinely unavailable, record the concrete health/process error and stop the web-UI portion cleanly. For a native or source-only target with no web surface, continue the relevant audit without inventing a browser target and record that limitation.`;
 
 export function isUiAuditTask(task) {
   const taskType = task?.metadata?.analysisType
