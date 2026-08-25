@@ -6,10 +6,19 @@
 import fs from 'fs/promises';
 import { createHttpClient } from '../lib/httpClient.js';
 import path from 'path';
-import { ensureDir, PATHS } from '../lib/fileUtils.js';
+import { ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { hostFromOriginUrl } from '../lib/workTracker.js';
 
 const JIRA_CONFIG_FILE = path.join(PATHS.data, 'jira.json');
+
+// Whether this install has any JIRA instance configured. Read-only on purpose:
+// unlike getInstances() it never seeds an empty config file, because the
+// instance-feature registry calls it just to decide whether the JIRA nav
+// entries should appear on a fresh install.
+export async function hasConfiguredInstances() {
+  const config = await readJSONFile(JIRA_CONFIG_FILE, { instances: {} }, { logError: false });
+  return Object.keys(config?.instances || {}).length > 0;
+}
 
 export const escapeJql = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 

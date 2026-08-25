@@ -29,6 +29,14 @@ export async function getInstances() {
   return await readJSONFile(DATADOG_CONFIG_FILE, { instances: {} });
 }
 
+// Whether this install has any DataDog instance configured — the signal the
+// instance-feature registry uses to decide whether the DataDog nav entries
+// should appear before the user has toggled the feature explicitly.
+export async function hasConfiguredInstances() {
+  const config = await getInstances();
+  return Object.keys(config?.instances || {}).length > 0;
+}
+
 /**
  * Save DataDog instances configuration
  */

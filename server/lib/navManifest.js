@@ -52,7 +52,16 @@ const OPEN_WORLD_REGION_COMMANDS = [
   keywords: ['openworld', 'fast travel', 'warp', 'region', 'teleport'],
 }));
 
-export const NAV_COMMANDS = [
+// Sections whose every page belongs to one optional instance feature, so a page
+// added there inherits the gate with no edit. A single page inside an otherwise
+// ungated section (DataDog, JIRA) carries `feature` on its own entry instead.
+// Keys must be real section labels and values must be ids declared in
+// server/lib/instanceFeatureRegistry.js — navManifest.test.js fails on both
+// kinds of drift, because a stale key here would silently un-gate a section
+// with every other assertion still green.
+export const SECTION_FEATURE = new Map([['POST', 'post']]);
+
+const RAW_NAV_COMMANDS = [
   { id: 'nav.dashboard', path: '/', label: 'Dashboard', section: 'Main', aliases: ['dashboard', 'home'], keywords: ['overview', 'start'] },
   { id: 'nav.review-hub', path: '/review', label: 'Review Hub', section: 'Main', aliases: ['review', 'review-hub'] },
   { id: 'nav.cybercity', path: '/openworld', label: 'OpenWorld', section: 'Main', previousPaths: ['/city'], aliases: ['openworld', 'open world', 'open-world', 'city'], keywords: ['3d', 'visualization', 'game', 'map', 'explore'] },
@@ -173,13 +182,13 @@ export const NAV_COMMANDS = [
   { id: 'nav.devtools.agents', path: '/devtools/agents', label: 'AI Agents', section: 'Dev Tools', aliases: ['ai-agents', 'devtools'] },
   { id: 'nav.browser', path: '/browser', label: 'Browser', section: 'Dev Tools', aliases: ['browser'] },
   { id: 'nav.devtools.runner', path: '/devtools/runner', label: 'Code', section: 'Dev Tools', aliases: ['devtools-runner'] },
-  { id: 'nav.devtools.datadog', path: '/devtools/datadog', label: 'DataDog', section: 'Dev Tools', previousPaths: ['/datadog'], aliases: ['datadog', 'devtools-datadog'] },
+  { id: 'nav.devtools.datadog', path: '/devtools/datadog', label: 'DataDog', section: 'Dev Tools', feature: 'datadog', previousPaths: ['/datadog'], aliases: ['datadog', 'devtools-datadog'] },
   { id: 'nav.devtools.flows', path: '/devtools/flows', label: 'Flows', section: 'Dev Tools', aliases: ['flows', 'integration-flows', 'workflows'], keywords: ['architecture', 'diagram', 'data flow', 'integrations', 'how it works'] },
   { id: 'nav.devtools.github', path: '/devtools/github', label: 'GitHub', section: 'Dev Tools', aliases: ['github', 'devtools-github'] },
   { id: 'nav.devtools.history', path: '/devtools/history', label: 'History', section: 'Dev Tools', aliases: ['devtools-history'] },
   { id: 'nav.devtools.image-clean', path: '/devtools/image-clean', label: 'Image Cleaner', section: 'Dev Tools', aliases: ['image-clean', 'image-cleaner'], keywords: ['metadata', 'c2pa', 'content-credentials', 'sharp', 'denoise'] },
-  { id: 'nav.devtools.jira', path: '/devtools/jira', label: 'JIRA', section: 'Dev Tools', previousPaths: ['/jira'], aliases: ['jira', 'devtools-jira'] },
-  { id: 'nav.devtools.jira-reports', path: '/devtools/jira/reports', label: 'JIRA Reports', section: 'Dev Tools', aliases: ['jira-reports'] },
+  { id: 'nav.devtools.jira', path: '/devtools/jira', label: 'JIRA', section: 'Dev Tools', feature: 'jira', previousPaths: ['/jira'], aliases: ['jira', 'devtools-jira'] },
+  { id: 'nav.devtools.jira-reports', path: '/devtools/jira/reports', label: 'JIRA Reports', section: 'Dev Tools', feature: 'jira', aliases: ['jira-reports'] },
   { id: 'nav.devtools.quota-burn', path: '/devtools/quota-burn', label: 'Quota Burn', section: 'Dev Tools', aliases: ['quota-burn', 'burn-quota', 'quota'], keywords: ['subscription', 'usage', 'reset window', 'spend quota', 'claude', 'codex', 'grok', 'agy', 'burn'] },
   { id: 'nav.shell', path: '/shell', label: 'Shell', section: 'Dev Tools', aliases: ['shell', 'terminal'] },
   { id: 'nav.devtools.usage', path: '/devtools/usage', label: 'Usage', section: 'Dev Tools', aliases: ['devtools-usage'] },
@@ -331,6 +340,26 @@ export const NAV_COMMANDS = [
   { id: 'nav.wiki.log', path: '/wiki/log', label: 'Log', section: 'Brain', aliases: ['wiki-log'] },
   { id: 'nav.wiki.search', path: '/wiki/search', label: 'Search', section: 'Brain', aliases: ['wiki-search'] },
 ];
+
+// A gated entry carries `feature`: the id of the optional instance feature it
+// belongs to (server/lib/instanceFeatureRegistry.js). The manifest ships the tag
+// rather than dropping the entry, and the GATE IS APPLIED CLIENT-SIDE — by the
+// sidebar and the ⌘K palette, which both hold the user's live feature state and
+// so react to a toggle without a reload. Filtering here instead would defeat the
+// manifest's HTTP caching and still leave ⌘K stale, because it caches the
+// manifest for the session.
+//
+// Gating hides a page from those two BROWSE surfaces only. The route keeps
+// working, and so does navigating to it by name — a bookmark, a direct URL, or
+// voice `ui_navigate` all still resolve, the same way a disabled feature's page
+// stays reachable when opened directly.
+export const NAV_COMMANDS = RAW_NAV_COMMANDS.map((cmd) => {
+  const feature = cmd.feature || SECTION_FEATURE.get(cmd.section);
+  return feature ? { ...cmd, feature } : cmd;
+});
+
+// Every feature id this manifest gates on, for the registry-drift guard.
+export const NAV_FEATURE_IDS = [...new Set(NAV_COMMANDS.map((c) => c.feature).filter(Boolean))].sort();
 
 const seenIds = new Set();
 for (const cmd of NAV_COMMANDS) {

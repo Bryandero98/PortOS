@@ -122,6 +122,8 @@ import UpdateBanners from './UpdateBanners';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
 import { useNavWorkingSet } from '../hooks/useNavWorkingSet.js';
 import { migrateLegacyNavPath } from '../utils/navWorkingSet.js';
+import { useInstanceFeatures } from '../hooks/useInstanceFeatures.js';
+import { filterNavByFeatures } from '../lib/navFeatures.js';
 import { useSidebarApps } from '../hooks/useSidebarApps.js';
 import { useSidebarSeries } from '../hooks/useSidebarSeries.js';
 import { useSidebarUniverses } from '../hooks/useSidebarUniverses.js';
@@ -273,14 +275,14 @@ const navItems = [
       { to: '/capabilities', label: 'Capabilities', icon: Compass },
       { to: '/devtools/runner', label: 'Code', icon: Code2 },
       { to: '/data', label: 'Data', icon: HardDrive },
-      { to: '/devtools/datadog', label: 'DataDog', icon: Dog },
+      { to: '/devtools/datadog', label: 'DataDog', icon: Dog, feature: 'datadog' },
       { to: '/devtools/flows', label: 'Flows', icon: WorkflowIcon },
       { to: '/devtools/github', label: 'GitHub', icon: GitBranch },
       { to: '/devtools/history', label: 'History', icon: History },
       { to: '/devtools/image-clean', label: 'Image Cleaner', icon: Eraser },
       { to: '/instances', label: 'Instances', icon: Network },
-      { to: '/devtools/jira', label: 'JIRA', icon: Ticket },
-      { to: '/devtools/jira/reports', label: 'JIRA Reports', icon: FileText },
+      { to: '/devtools/jira', label: 'JIRA', icon: Ticket, feature: 'jira' },
+      { to: '/devtools/jira/reports', label: 'JIRA Reports', icon: FileText, feature: 'jira' },
       { to: '/loops', label: 'Loops', icon: RefreshCw },
       { to: '/devtools/processes', label: 'Processes', icon: Activity },
       { to: '/devtools/quota-burn', label: 'Quota Burn', icon: Flame },
@@ -376,6 +378,7 @@ const navItems = [
   {
     label: 'POST',
     icon: Zap,
+    feature: 'post',
     defaultTo: '/post/launcher',
     children: [
       { to: '/post/config', label: 'Config', icon: Settings },
@@ -709,6 +712,9 @@ export default function Layout() {
   // Sidebar data-fetch loops (apps / pipeline series / universes) live in
   // dedicated hooks so the shared focus-debounce + signature-guard pattern is
   // testable in isolation. See client/src/hooks/useSidebar*.js.
+  // Optional features the user turned off in Settings > Features drop out of the
+  // sidebar entirely (their routes keep working for a direct link/bookmark).
+  const { isFeatureEnabled } = useInstanceFeatures();
   const sidebarApps = useSidebarApps();
   const pipelineSeries = useSidebarSeries();
   const universes = useSidebarUniverses();
@@ -723,13 +729,15 @@ export default function Layout() {
       .catch((err) => console.warn(`⚠️ Layout: palette manifest fetch failed: ${err?.message || err}`));
   }, []);
 
+  // Manifest-only paths still honour the feature gate, so a row pinned before the
+  // user disabled its feature stops resolving into Pinned/Recent too.
   const manifestEntryByPath = useMemo(() => {
     const map = new Map();
-    manifestNav.forEach((c) => {
+    filterNavByFeatures(manifestNav, isFeatureEnabled).forEach((c) => {
       if (c?.path && !map.has(c.path)) map.set(c.path, { path: c.path, label: c.label, icon: Navigation });
     });
     return map;
-  }, [manifestNav]);
+  }, [manifestNav, isFeatureEnabled]);
 
   useEffect(() => {
     safeWriteStorage(SIDEBAR_KEY, String(collapsed));
@@ -768,7 +776,20 @@ export default function Layout() {
         })),
       };
     };
-    return navItems.map((item) => {
+    // Feature gate, applied before any decoration: a disabled feature drops its
+    // whole section (POST) or just its tagged rows (DataDog, JIRA), and a
+    // section left with no navigable child disappears with them. Sections that
+    // lose nothing keep their identity so the memo below doesn't reallocate.
+    const gatedItems = navItems.flatMap((item) => {
+      if (!isFeatureEnabled(item.feature)) return [];
+      if (!Array.isArray(item.children)) return [item];
+      const children = item.children.filter((child) => isFeatureEnabled(child.feature));
+      if (children.length === item.children.length) return [item];
+      const navigable = item.dynamic || children.some((child) => child.to || child.href);
+      return navigable ? [{ ...item, children }] : [];
+    });
+
+    return gatedItems.map((item) => {
       if (item.dynamic === 'apps') {
         return {
           ...item,
@@ -788,7 +809,7 @@ export default function Layout() {
       }
       return item;
     });
-  }, [sidebarApps, pipelineSeries, universes]);
+  }, [sidebarApps, pipelineSeries, universes, isFeatureEnabled]);
 
   // Flat path -> { path, label, icon } lookup over every leaf nav row, so the
   // Pinned/Recent sections render a stored path with its real label + icon.

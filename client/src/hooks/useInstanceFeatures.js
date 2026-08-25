@@ -1,0 +1,113 @@
+import { useCallback, useEffect, useState } from 'react';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
+import * as api from '../services/api';
+
+// Shared read of Settings > Features (`GET /api/settings/features`), with one
+// module-level cache so the sidebar, the ⌘K palette, and the Features tab
+// collapse to a single fetch per page load.
+//
+// Change notification rides the EXISTING `INSTANCE_FEATURES_CHANGED` window
+// event rather than a second broadcast channel — the engagement-reminder toast
+// already publishes on it and three dashboard widgets already listen, so a
+// private subscriber list here would have left those halves able to drift.
+// A publisher that already holds the server's fresh list passes it as
+// `detail.features` to skip the refetch; the `{ featureId, enabled }` shape the
+// existing publisher sends still works and simply triggers one.
+//
+// `null` features means NOT LOADED — deliberately distinct from `[]`, which
+// means loaded and this version registers no optional features.
+let cached = null;
+let inFlight = null;
+
+const loadInstanceFeatures = () => {
+  if (!inFlight) {
+    inFlight = api.getInstanceFeatures({ silent: true })
+      .then((data) => ({ features: Array.isArray(data?.features) ? data.features : [], error: null }))
+      .catch((error) => {
+        // Fail OPEN: an unreadable feature list must not blank out navigation.
+        console.warn(`⚠️ instance features fetch failed: ${error?.message || error}`);
+        return { features: null, error };
+      })
+      .then((result) => {
+        cached = result;
+        inFlight = null;
+        return result;
+      });
+  }
+  return inFlight;
+};
+
+/**
+ * @returns {{
+ *   features: Array|null,   // null while loading or after a failed fetch
+ *   error: Error|null,
+ *   isFeatureEnabled: (featureId: string) => boolean,
+ *   reload: () => Promise<void>,
+ * }}
+ *
+ * `isFeatureEnabled` answers for navigation gating:
+ *   - loaded  → the stored/auto-resolved value; an unregistered id is enabled
+ *               (an unknown gate must never erase a page)
+ *   - loading → false, so a gated row appears once rather than flashing away
+ *   - errored → true, so a server hiccup shows everything instead of hiding it
+ */
+export function useInstanceFeatures() {
+  const [state, setState] = useState(() => cached || { features: null, error: null });
+
+  useEffect(() => {
+    let active = true;
+    const sync = (result) => { if (active) setState(result); };
+
+    if (cached) sync(cached); else loadInstanceFeatures().then(sync);
+
+    const onFeaturesChanged = (event) => {
+      const features = event?.detail?.features;
+      if (Array.isArray(features)) {
+        cached = { features, error: null };
+        sync(cached);
+        return;
+      }
+      cached = null;
+      loadInstanceFeatures().then(sync);
+    };
+
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, onFeaturesChanged);
+    return () => {
+      active = false;
+      window.removeEventListener(INSTANCE_FEATURES_CHANGED, onFeaturesChanged);
+    };
+  }, []);
+
+  const { features, error } = state;
+
+  const isFeatureEnabled = useCallback((featureId) => {
+    if (!featureId) return true;
+    if (error) return true;
+    if (features === null) return false;
+    const feature = features.find((item) => item?.id === featureId);
+    return feature ? feature.enabled !== false : true;
+  }, [features, error]);
+
+  const reload = useCallback(() => {
+    cached = null;
+    return loadInstanceFeatures().then((result) => setState(result));
+  }, []);
+
+  return { features, error, isFeatureEnabled, reload };
+}
+
+/**
+ * Announce a feature change on the shared channel. Pass the server's fresh
+ * `features` list so every listener applies it without a second round-trip.
+ */
+export const publishInstanceFeatures = (features, { featureId, enabled } = {}) => {
+  window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+    detail: { featureId, enabled, features: Array.isArray(features) ? features : undefined },
+  }));
+};
+
+// Test-only: drop the module cache so suites don't leak state between tests.
+export const __resetInstanceFeatureCache = () => {
+  cached = null;
+  inFlight = null;
+};

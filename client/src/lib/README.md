@@ -17,6 +17,7 @@ is the contract.
 grep -i "what you want to do" client/src/lib/README.md
 ```
 
+| `navFeatures.js` | `filterNavByFeatures(navEntries, isFeatureEnabled)` — drops nav-manifest entries whose optional instance feature (`post`, `datadog`, `jira`) is off. The single gate for BROWSE surfaces (sidebar, ⌘K); routes stay reachable by URL, bookmark, and voice. Pair with `useInstanceFeatures`. |
 | `postQuickSession.js` | Pure Quick POST duration presets, local-observation estimator, deterministic budget composer, and preview metadata. |
 
 ---

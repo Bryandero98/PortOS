@@ -52,12 +52,25 @@ vi.mock('../services/socket', () => ({
 
 // --- API: every sidebar fetch resolves empty so the dynamic sections stay bare
 //     and the single rows are the only top-level leaves under test. ---
+// Instance features gate sidebar rows (POST / DataDog / JIRA). Default every
+// feature ON so these tests see the full sidebar; the gating itself is covered
+// by 'Layout — instance feature gating' below.
+const allFeaturesOn = () => [
+  { id: 'post', label: 'POST', enabled: true },
+  { id: 'datadog', label: 'DataDog', enabled: true },
+  { id: 'jira', label: 'JIRA', enabled: true },
+];
+const featureMock = vi.hoisted(() => ({ features: null }));
+
 vi.mock('../services/api', () => ({
   getApps: vi.fn(() => Promise.resolve([])),
   listPipelineSeries: vi.fn(() => Promise.resolve([])),
   listUniverses: vi.fn(() => Promise.resolve([])),
   getPaletteManifest: vi.fn(() => Promise.resolve({ nav: [] })),
+  getInstanceFeatures: vi.fn(() => Promise.resolve({ features: featureMock.features })),
 }));
+
+import { __resetInstanceFeatureCache } from '../hooks/useInstanceFeatures.js';
 
 import Layout, { isFullWidthRoute } from './Layout';
 
@@ -82,6 +95,10 @@ const pinnedSection = () => screen.queryByTestId('pinned-section');
 
 beforeEach(() => {
   localStorage.clear();
+  // The feature list is cached at module scope so every consumer shares one
+  // fetch — drop it between tests so a case that flips a flag cannot leak.
+  __resetInstanceFeatureCache();
+  featureMock.features = allFeaturesOn();
   // __APP_VERSION__ is a Vite build-time define; undefined under vitest.
   vi.stubGlobal('__APP_VERSION__', 'test');
 });
@@ -135,6 +152,53 @@ describe('Layout — pinned single nav rows', () => {
     expect(within(pinned).getByRole('link', { name: /OpenWorld/i })).toHaveAttribute('href', '/openworld');
     // The unknown path contributes no row.
     expect(within(pinned).getAllByRole('link')).toHaveLength(1);
+  });
+});
+
+describe('Layout — instance feature gating', () => {
+  // Rendering an UNGATED /devtools/* route auto-expands the Dev Tools section,
+  // so its children are queryable without driving the disclosure — and the
+  // expansion does not itself depend on a gated row surviving the filter.
+  it('shows the DataDog and JIRA rows while those features are on', async () => {
+    await renderLayout('/devtools/flows');
+
+    expect(screen.getByRole('link', { name: 'DataDog' })).toHaveAttribute('href', '/devtools/datadog');
+    expect(screen.getByRole('link', { name: 'JIRA' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'JIRA Reports' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'POST' })).toBeTruthy();
+  });
+
+  it('drops only the rows of the features this install turned off', async () => {
+    featureMock.features = allFeaturesOn()
+      .map((f) => (f.id === 'post' ? f : { ...f, enabled: false }));
+
+    await renderLayout('/devtools/flows');
+
+    expect(screen.queryByRole('link', { name: 'DataDog' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'JIRA' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'JIRA Reports' })).toBeNull();
+    // Ungated Dev Tools rows and the POST section stay put.
+    expect(screen.getByRole('link', { name: 'Flows' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'POST' })).toBeTruthy();
+  });
+
+  it('drops the whole POST section when POST is off', async () => {
+    featureMock.features = allFeaturesOn()
+      .map((f) => (f.id === 'post' ? { ...f, enabled: false } : f));
+
+    await renderLayout('/devtools/flows');
+
+    expect(screen.queryByRole('button', { name: 'POST' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'DataDog' })).toBeTruthy();
+  });
+
+  it('shows everything when the feature list cannot be read', async () => {
+    api.getInstanceFeatures.mockRejectedValueOnce(new Error('offline'));
+
+    await renderLayout('/devtools/flows');
+
+    expect(screen.getByRole('link', { name: 'DataDog' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'POST' })).toBeTruthy();
   });
 });
 
