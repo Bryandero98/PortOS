@@ -1101,6 +1101,30 @@ describe('createInputReadyTracker', () => {
     });
   });
 
+  describe('Claude external-imports offer', () => {
+    const OFFER = "This project's CLAUDE.md imports files outside the current working directory.\n"
+      + 'Never allow this for third-party repositories.\n'
+      + 'External imports:\n'
+      + '  /workspace-parent/AGENTS.md\n'
+      + '1. Yes, allow external imports\n'
+      + '2. No, disable external imports\n';
+
+    it('suppresses ready and does not re-arm after external imports are disabled', () => {
+      const tracker = createInputReadyTracker();
+      tracker.observe(`${PASTE_OFF}${PASTE_ON}`, OFFER);
+      expect(tracker.needsExternalImportsChoice).toBe(true);
+      expect(tracker.ready).toBe(false);
+
+      tracker.ackExternalImportsChoice();
+      expect(tracker.needsExternalImportsChoice).toBe(false);
+      expect(tracker.ready).toBe(true);
+
+      tracker.observe('', 'Claude ready'); // rolling tail still contains the offer
+      expect(tracker.needsExternalImportsChoice).toBe(false);
+      expect(tracker.ready).toBe(true);
+    });
+  });
+
   describe('Codex hook-review offer', () => {
     const OFFER = 'Hooks need review\n'
       + '1 hook is new or changed.\n'

@@ -776,10 +776,11 @@ ${prompt}`;
       }
     };
 
-    // Ready watch — known startup dialogs (folder trust, Codex's hook review)
-    // are dismissed for EVERY provider before anything is sent, since each of
-    // them swallows a paste. Claude then waits for its positive input-ready
-    // signal; other providers retain the idle/deadline fallback for delivery.
+    // Ready watch — known startup dialogs (folder trust, external imports,
+    // Codex's hook review) are dismissed for EVERY provider before anything is
+    // sent, since each of them swallows a paste. Claude then waits for its
+    // positive input-ready signal; other providers retain the idle/deadline
+    // fallback for delivery.
     readyTimer = setInterval(() => {
       if (finalized || promptSentAt) {
         clearInterval(readyTimer);
@@ -795,6 +796,19 @@ ${prompt}`;
       // has not repainted. Requiring fresh output-then-silence after the
       // keystroke makes delivery wait for what the dismissal reveals;
       // PASTE_DEADLINE_MS still backstops a dismissal the TUI ignores entirely.
+
+      // A managed-app worktree nested below PortOS can make Claude discover the
+      // parent PortOS CLAUDE.md and offer to import its external AGENTS.md.
+      // Decline option 1 rather than crossing that repository boundary. The
+      // target checkout's own instructions remain available after option 2.
+      if (inputReady.needsExternalImportsChoice) {
+        if (dismissStartupDialog('\x1b[B\r', 'external-imports prompt')) {
+          inputReady.ackExternalImportsChoice();
+        }
+        lastOutputAt = now;
+        firstOutputAt = null;
+        return;
+      }
 
       // Codex's hook-review selector precedes its composer. An unattended run
       // must not grant hooks permission to execute outside the sandbox, so take

@@ -635,6 +635,7 @@ export async function spawnTuiAgent({
   });
   let trustAccepted = false;
   let autoModeDeclined = false;
+  let externalImportsDeclined = false;
   let hookReviewDeclined = false;
   // True once shell.js actually injects the `claude` command (after its
   // round-trip readiness probe). The probe runs its OWN shell command first,
@@ -1442,6 +1443,22 @@ export async function spawnTuiAgent({
     // output-then-silence AFTER the keystroke makes the paste wait for whatever
     // the dismissal reveals; if the TUI ignores the keystroke entirely,
     // PASTE_DEADLINE_MS still backstops delivery.
+
+    // Claude can discover PortOS's parent CLAUDE.md from a managed-app worktree
+    // nested under data/cos/worktrees, then ask whether to allow that file's
+    // external AGENTS.md import. Decline it: the parent repository's instructions
+    // must not leak into the target app, and option 2 leaves the target's own
+    // instruction files intact. Like the auto-mode offer, arrow-down + Enter
+    // avoids accepting the highlighted option 1.
+    if (inputReady.needsExternalImportsChoice && !externalImportsDeclined) {
+      externalImportsDeclined = true;
+      shellService.writeToSession(sessionId, '\x1b[B\r');
+      inputReady.ackExternalImportsChoice();
+      lastOutputAt = now;
+      firstOutputAt = null;
+      appendLine(`📟 Declined ${tuiConfig.command} external instruction imports for session ${sessionId.slice(0, 8)}`);
+      return;
+    }
 
     // Codex can present a hook-review selector before its composer exists.
     // Do not trust hooks from an unattended run: option 3 keeps them disabled

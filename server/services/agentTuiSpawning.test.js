@@ -1110,6 +1110,36 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
+  it('claude external-imports offer: disables parent imports before pasting the prompt', async () => {
+    runSpawn({ tuiConfig: claudeTuiConfig });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      `${PASTE_OFF}This project's CLAUDE.md imports files outside the current working directory.\n`
+      + 'Never allow this for third-party repositories.\n'
+      + 'External imports:\n'
+      + '  /workspace-parent/AGENTS.md\n'
+      + '❯ 1. Yes, allow external imports\n'
+      + '2. No, disable external imports\n',
+    ));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(700);
+    await flushMicrotasks();
+
+    // Down+Enter takes the conservative option 2. A bare Enter would import
+    // instructions from PortOS's parent workspace into the managed app.
+    const writes = vi.mocked(shellService.writeToSession).mock.calls.map(([, data]) => data);
+    expect(writes).toContain('\x1b[B\r');
+    expect(writes).not.toContain('\r');
+    expect(pasteCount()).toBe(0);
+
+    await capturedOnData(Buffer.from(PASTE_ON));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
   it('codex hook-review offer: continues without trusting hooks before pasting the prompt', async () => {
     runSpawn();
     await flushMicrotasks();

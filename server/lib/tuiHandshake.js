@@ -306,6 +306,17 @@ export const TUI_TRUST_PROMPT_PATTERN =
 export const TUI_AUTO_MODE_PROMPT_PATTERN =
   /automodeyourdefaultpermissionmode|setautomodeasmydefaultpermissionmode/i;
 
+// Claude Code can discover a parent workspace's CLAUDE.md when PortOS places a
+// managed-app worktree below its own data/cos/worktrees directory. If that file
+// imports an instruction file outside the managed app's checkout, Claude stops
+// on an "allow external imports" selector before its composer exists. Importing
+// the parent repository's instructions would cross the managed-app boundary, so
+// unattended runs choose "No, disable external imports". Without recognizing
+// this gate, the normal task paste is swallowed and the agent never starts.
+// Match the stable heading and choice wording after whitespace stripping.
+export const TUI_EXTERNAL_IMPORTS_PROMPT_PATTERN =
+  /claude\.mdimportsfilesoutsidethecurrentworkingdirectory|disableexternalimports/i;
+
 // Codex can stop before its composer on a hook-review selector when a newly
 // configured hook has not yet been trusted. `--dangerously-bypass-approvals-and-
 // sandbox` deliberately does not answer this prompt: trusting a hook permits
@@ -364,6 +375,11 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
   // false until the 45s deadline. Arm-once, same as the gates above it.
   let needsAutoModeChoice = false;
   let autoModeAnswered = false;
+  // External-import selector: latched until the consumer sends the conservative
+  // "disable" choice, then terminally acknowledged so its stale screen text
+  // cannot re-arm the gate from the rolling tail.
+  let needsExternalImportsChoice = false;
+  let externalImportsAnswered = false;
   // Like the auto-mode offer, hook-review text remains in the rolling tail
   // after its selector closes. A terminal acknowledgement prevents a repaint
   // from re-arming the dialog and blocking delivery forever.
@@ -386,14 +402,18 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
     // modal is still swallowing input. Cleared by ackAutoModeChoice() once the
     // spawner has answered it.
     get ready() {
-      return sawCommandRun && pasteModeOn && !needsAutoModeChoice && !needsHookReview
+      return sawCommandRun && pasteModeOn && !needsAutoModeChoice
+        && !needsExternalImportsChoice && !needsHookReview
         && (!readyTextPattern || sawReadyText);
     },
     get needsTrust() { return needsTrust; },
     get needsAutoModeChoice() { return needsAutoModeChoice; },
+    get needsExternalImportsChoice() { return needsExternalImportsChoice; },
     get needsHookReview() { return needsHookReview; },
     /** Spawner reports the dismissal keystrokes went out; re-arms `ready`. */
     ackAutoModeChoice() { needsAutoModeChoice = false; autoModeAnswered = true; },
+    /** Spawner selected Claude's "No, disable external imports" option. */
+    ackExternalImportsChoice() { needsExternalImportsChoice = false; externalImportsAnswered = true; },
     /** Spawner selected Codex's safe "Continue without trusting" option. */
     ackHookReview() { needsHookReview = false; hookReviewAnswered = true; },
     // rawText: un-stripped chunk (paste-mode toggles live here);
@@ -416,6 +436,9 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
         tail = (tail + strippedText.replace(/\s+/g, '')).slice(-OBSERVE_TAIL_MAX_LEN);
         if (!needsTrust && TUI_TRUST_PROMPT_PATTERN.test(tail)) needsTrust = true;
         if (!needsAutoModeChoice && !autoModeAnswered && TUI_AUTO_MODE_PROMPT_PATTERN.test(tail)) needsAutoModeChoice = true;
+        if (!needsExternalImportsChoice && !externalImportsAnswered && TUI_EXTERNAL_IMPORTS_PROMPT_PATTERN.test(tail)) {
+          needsExternalImportsChoice = true;
+        }
         if (!needsHookReview && !hookReviewAnswered && TUI_HOOK_REVIEW_PROMPT_PATTERN.test(tail)) needsHookReview = true;
         if (readyTextPattern && !sawReadyText && readyTextPattern.test(tail)) sawReadyText = true;
       }

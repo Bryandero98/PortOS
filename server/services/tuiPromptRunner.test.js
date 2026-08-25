@@ -568,6 +568,41 @@ describe('executeTuiRun', () => {
       await promise;
     });
 
+    it('disables Claude external imports before waiting for input readiness', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      const provider = { id: 'claude', type: 'tui', command: 'claude', tuiPromptDelayMs: 50 };
+      const promise = executeTuiRun({
+        runId: 'run-claude-external-imports', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE, timeout: 60000,
+      });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData(
+        "This project's CLAUDE.md imports files outside the current working directory.\n"
+        + 'Never allow this for third-party repositories.\n'
+        + 'External imports:\n'
+        + '  /workspace-parent/AGENTS.md\n'
+        + '1. Yes, allow external imports\n'
+        + '2. No, disable external imports\n',
+      );
+      await vi.advanceTimersByTimeAsync(400);
+
+      expect(pty.write).toHaveBeenCalledWith('\x1b[B\r');
+      expect(pty.write).not.toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
+
+      // The dialog precedes Claude's composer. Paste only after Claude paints
+      // the input box and enables bracketed-paste mode.
+      pty.emitData('\x1b[?2004h');
+      await vi.advanceTimersByTimeAsync(400);
+      expect(pty.write).toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
+
+      pty.emitExit({ exitCode: 0 });
+      await promise;
+    });
+
     it('confirms the Codex directory-trust gate before its idle path can paste', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
