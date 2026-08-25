@@ -54,6 +54,12 @@ const CLAIM_FLOW_DEFAULT_PROMPTS = Object.freeze({
   'plan-task': PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1)
 });
 
+function isShippedDefaultPrompt(prompt, taskType) {
+  if (!prompt || !DEFAULT_TASK_PROMPTS[taskType]) return false;
+  return prompt === DEFAULT_TASK_PROMPTS[taskType]
+    || (PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(prompt);
+}
+
 // ============================================================
 // Prompt getters
 // ============================================================
@@ -94,7 +100,8 @@ async function resolvePromptPlaceholders(prompt) {
 
 export async function getTaskPrompt(taskType, { claimFlow = false } = {}) {
   const interval = await getTaskInterval(taskType);
-  let prompt = interval.prompt
+  const storedDefault = claimFlow && isShippedDefaultPrompt(interval.prompt, taskType);
+  let prompt = (interval.prompt && !storedDefault ? interval.prompt : null)
     || (claimFlow ? CLAIM_FLOW_DEFAULT_PROMPTS[taskType] : null)
     || DEFAULT_TASK_PROMPTS[taskType]
     || `[Improvement] ${taskType} analysis

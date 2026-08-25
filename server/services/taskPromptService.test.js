@@ -41,6 +41,21 @@ describe('claim-flow prompt variants', () => {
     expect(manual).toContain('## Phase 6 — Review locally');
     expect(manual).toContain('{reviewers}');
   });
+
+  it('treats a persisted shipped default as non-customized for manual PLAN claims', async () => {
+    getTaskInterval.mockResolvedValue({ prompt: DEFAULT_TASK_PROMPTS['plan-task'], promptVersion: 18 });
+
+    const manual = await getTaskPrompt('plan-task', { claimFlow: true });
+
+    expect(manual).toContain('## Phase 6 — Review locally');
+    expect(manual).toContain('{reviewers}');
+  });
+
+  it('preserves a genuinely customized persisted prompt for manual claims', async () => {
+    getTaskInterval.mockResolvedValue({ prompt: 'custom claim prompt' });
+
+    await expect(getTaskPrompt('plan-task', { claimFlow: true })).resolves.toBe('custom claim prompt');
+  });
 });
 
 // A pipeline STAGE body (pr-reviewer-security, code-reviewer-review, …) is read
