@@ -41,6 +41,7 @@ import { OtherTab, TrunkView } from './UniverseTrunkPanels';
 import { appendImageRefById } from '../../lib/bibleLimits';
 import { downloadBlob } from '../../lib/downloadBlob';
 import { totalVariationCount } from '../../lib/universeBuilderCounts';
+import { universeMarkdownFilename } from '../../lib/universeMarkdownFilename';
 import {
   TAB_BIBLE,
   TAB_CAST,
@@ -55,14 +56,6 @@ import {
 
 export { CategoryEditor } from './UniverseCategoryEditor';
 export { OtherTab, TrunkView };
-
-const downloadSlug = (name) => String(name || 'universe')
-  .normalize('NFKD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, '-')
-  .replace(/^-+|-+$/g, '') || 'universe';
-
 
 // Universe autocomplete combobox: search existing universes or create one when
 // the trimmed query doesn't exactly match any. `onCreate` is wired to a
@@ -118,6 +111,7 @@ export default function UniverseBuilder() {
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const [exporting, setExporting] = useState(false);
+  const [waitingForWrites, setWaitingForWrites] = useState(false);
   // `goToWorld` preserves `location.search` (e.g. `?tab=&bucket=&series=`) so
   // the auto-save → create path doesn't snap the user back to the Bible tab
   // after they triggered Generate From Idea from inside Cast/Places/Objects.
@@ -229,10 +223,19 @@ export default function UniverseBuilder() {
   });
 
   const handleExportMarkdown = useCallback(async () => {
-    const exportIsReady = () => selectedIdRef.current === selectedId && draftRef.current?.id === selectedId;
+    const exportIsReady = () => mountedRef.current
+      && selectedIdRef.current === selectedId
+      && draftRef.current?.id === selectedId;
     if (!selectedId || exporting || saving || !exportIsReady()) return;
     setExporting(true);
-    await waitForUniverseWrites(selectedId);
+    setWaitingForWrites(true);
+    const writesReady = await waitForUniverseWrites(selectedId);
+    setWaitingForWrites(false);
+    if (!writesReady) {
+      setExporting(false);
+      toast.error('Changes are still saving — try the export again in a moment');
+      return;
+    }
     if (!exportIsReady()) {
       setExporting(false);
       return;
@@ -242,7 +245,14 @@ export default function UniverseBuilder() {
       setExporting(false);
       return;
     }
-    await waitForUniverseWrites(selectedId);
+    setWaitingForWrites(true);
+    const flushedWritesReady = await waitForUniverseWrites(selectedId);
+    setWaitingForWrites(false);
+    if (!flushedWritesReady) {
+      setExporting(false);
+      toast.error('Changes are still saving — try the export again in a moment');
+      return;
+    }
     if (!exportIsReady()) {
       setExporting(false);
       return;
@@ -260,7 +270,7 @@ export default function UniverseBuilder() {
       return;
     }
     setExporting(false);
-    const filename = `${downloadSlug(draftRef.current?.name || draft.name)}.md`;
+    const filename = universeMarkdownFilename(draftRef.current?.name || draft.name);
     downloadBlob(markdown, filename, 'text/markdown');
     toast.success(`Downloaded ${filename}`);
   }, [draft.name, draftRef, exporting, flushDraftIfDirty, saving, selectedId]);
@@ -407,7 +417,7 @@ export default function UniverseBuilder() {
                 title="Export universe as Markdown"
               >
                 {exporting ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
-                {exporting ? 'Exporting…' : 'Export .md'}
+                {waitingForWrites ? 'Saving changes…' : exporting ? 'Exporting…' : 'Export .md'}
               </button>
               <ShareToButton kind="universe" ids={[selectedId]} label="Share" />
               <SyncToPeerButton recordKind="universe" recordId={selectedId} label="Sync" />

@@ -23,6 +23,7 @@ describe('universeToMarkdown', () => {
     expect(markdown).toContain('# The Bright World');
     expect(markdown).toContain('A world beneath two suns.\n\nEvery map changes when the second sun rises.');
     expect(markdown).toContain('## Characters\n\n### Mira');
+    expect(markdown).toContain('### Mira\n\n**Role:** Cartographer');
     expect(markdown).toContain('**Physical Description:** Patient and precise.');
     expect(markdown).toContain('## Places\n\n### The Archive');
     expect(markdown).toContain('## Objects\n\n### Sun Compass');
@@ -80,6 +81,18 @@ describe('universeToMarkdown', () => {
     expect(first).toContain('Compass');
     expect(first).not.toContain('prop-old');
     expect(first).not.toContain('2020-01-01');
+  });
+
+  it('keeps multiline values inside their Markdown field', () => {
+    const markdown = universeToMarkdown({
+      name: 'Safe World',
+      logline: 'A world\n## Not a heading',
+      characters: [{ name: 'Aster', notes: 'a note\n## Not a heading' }],
+    });
+
+    expect(markdown).toContain('A world ## Not a heading');
+    expect(markdown).toContain('**Notes:** a note ## Not a heading');
+    expect(markdown).not.toMatch(/^## Not a heading$/m);
   });
 });
 

@@ -49,8 +49,6 @@ const compareNames = (left, right) => {
   return rawA < rawB ? -1 : rawA > rawB ? 1 : 0;
 };
 
-const asTrimmedText = (value) => (typeof value === 'string' ? value.trim() : '');
-
 const hasContent = (value) => {
   if (value === null || value === undefined) return false;
   if (typeof value === 'string') return Boolean(value.trim());
@@ -67,7 +65,7 @@ const formatFieldLabel = (key) => String(key)
 
 const formatInlineValue = (value) => {
   if (value === null || value === undefined) return '';
-  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'string') return value.trim().replace(/\s*[\r\n]+\s*/g, ' ');
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (Array.isArray(value)) {
     return value.map(formatInlineValue).filter(Boolean).join(', ');
@@ -112,7 +110,7 @@ const renderEntry = (kind, entry, fallback) => {
     if (!rendered) continue;
     lines.push(`**${formatFieldLabel(key)}:** ${rendered}`);
   }
-  return lines.join('\n');
+  return lines.join('\n\n');
 };
 
 const renderCanonSection = (key, title, record) => {
@@ -135,8 +133,8 @@ const renderCategory = (name, category) => {
       continue;
     }
     if (!variation || typeof variation !== 'object') continue;
-    const label = asTrimmedText(variation.label || variation.name);
-    const prompt = asTrimmedText(variation.prompt || variation.description);
+    const label = formatInlineValue(variation.label || variation.name);
+    const prompt = formatInlineValue(variation.prompt || variation.description);
     if (!label && !prompt) continue;
     if (label && prompt) lines.push(`- **${label}** — ${prompt}`);
     else lines.push(`- ${label || prompt}`);
@@ -154,7 +152,7 @@ const renderCategories = (record) => {
 };
 
 const listValues = (value) => (Array.isArray(value) ? value : [])
-  .map((item) => (typeof item === 'string' ? item.trim() : ''))
+  .map((item) => formatInlineValue(item))
   .filter(Boolean);
 
 const renderInfluences = (record) => {
@@ -170,14 +168,14 @@ const renderInfluences = (record) => {
 const filenamesFor = (item) => [
   ...(Array.isArray(item?.imageRefs) ? item.imageRefs : []),
   ...(typeof item?.filename === 'string' ? [item.filename] : []),
-].map((filename) => filename.trim()).filter(Boolean);
+].map((filename) => formatInlineValue(filename)).filter(Boolean);
 
 const renderNamedFileList = (title, values, nameKeys) => {
   if (!Array.isArray(values) || values.length === 0) return '';
   const lines = values.map((item) => {
     if (typeof item === 'string') return item.trim();
     if (!item || typeof item !== 'object') return '';
-    const name = nameKeys.map((key) => asTrimmedText(item[key])).find(Boolean) || '';
+    const name = nameKeys.map((key) => formatInlineValue(item[key])).find(Boolean) || '';
     const filenames = filenamesFor(item);
     return [name, ...filenames].filter(Boolean).join(' — ');
   }).filter(Boolean);
@@ -213,7 +211,7 @@ export function universeToMarkdown(record) {
   const source = record && typeof record === 'object' ? record : {};
   const sections = [`# ${headingText(source.name, 'Untitled Universe')}`];
   const prose = ['logline', 'premise', 'styleNotes']
-    .map((key) => asTrimmedText(source[key]))
+    .map((key) => formatInlineValue(source[key]))
     .filter(Boolean);
   if (prose.length) sections.push(prose.join('\n\n'));
 
