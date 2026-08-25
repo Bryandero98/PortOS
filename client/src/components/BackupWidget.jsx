@@ -208,7 +208,8 @@ function SnapshotList() {
     setDownloadingId(snapshotId);
     api.downloadBackupSnapshot(snapshotId)
       .then(() => toast.success('Snapshot downloaded'))
-      .catch(err => toast.error(`Download failed: ${err.message}`))
+      // Dismissing the browser's save dialog is a choice, not a failure.
+      .catch(err => { if (err?.name !== 'AbortError') toast.error(`Download failed: ${err.message}`); })
       .finally(() => setDownloadingId(null));
   }, []);
 

@@ -577,7 +577,12 @@ export async function openSnapshotStream(destPath, snapshotId) {
     // external/network mount, so a tar wedged on stalled I/O is the exact case
     // SIGTERM alone does not clear.
     if (proc.exitCode === null && proc.signalCode === null) {
-      killWithEscalation(proc, { label: `snapshot download ${snapshotId}`, stillRunning: () => !finished });
+      // stillRunning is `true` on purpose: the helper already skips SIGKILL once
+      // the child has exited, and this proc is captured in the closure so there is
+      // no handle that could be swapped out from under us. Gating on the stream's
+      // own state instead would read as false by the time the timer fires (finish()
+      // runs on the next line) and silently disable the escalation.
+      killWithEscalation(proc, { label: `snapshot download ${snapshotId}`, stillRunning: () => true });
     }
     finish(new Error(`Snapshot download aborted: ${snapshotId}`));
   };

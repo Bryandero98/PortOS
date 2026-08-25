@@ -27,7 +27,11 @@ import { onClientDisconnect } from './sseDownload.js';
  */
 export function streamAttachment(res, stream, { filename, contentType, failure, label }) {
   res.set('Content-Type', contentType);
-  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  // Quote the filename at the boundary rather than trusting every caller to have
+  // slugged it: a quote or newline in a record-derived name would otherwise
+  // break out of the header value.
+  const safeName = String(filename).replace(/[^\w.\-]+/g, '_') || 'download';
+  res.set('Content-Disposition', `attachment; filename="${safeName}"`);
   // Attachments are never meant to be sniffed into an executable type.
   res.set('X-Content-Type-Options', 'nosniff');
 
@@ -45,6 +49,12 @@ export function streamAttachment(res, stream, { filename, contentType, failure, 
     sendErrorResponse(res, failure);
   });
 
-  onClientDisconnect(null, res, () => stream.abort?.());
+  // A tar/child-backed stream exposes abort() to kill its process; a plain file
+  // read has none, and without destroy() its fd stays open for every download the
+  // client walked away from.
+  onClientDisconnect(null, res, () => {
+    if (typeof stream.abort === 'function') stream.abort();
+    else stream.destroy();
+  });
   stream.pipe(res);
 }

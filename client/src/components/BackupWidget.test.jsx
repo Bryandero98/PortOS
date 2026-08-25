@@ -58,6 +58,20 @@ describe('BackupWidget snapshots', () => {
     expect(mockToast.success).toHaveBeenCalledWith('Snapshot downloaded');
   });
 
+  it('stays silent when the user dismisses the save dialog', async () => {
+    mockDownloadBackupSnapshot.mockRejectedValue(
+      Object.assign(new Error('The user aborted a request.'), { name: 'AbortError' }),
+    );
+    renderWidget();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Snapshots' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Download snapshot 2026-08-25T11-00-00/ }));
+
+    await waitFor(() => expect(mockDownloadBackupSnapshot).toHaveBeenCalled());
+    expect(mockToast.error).not.toHaveBeenCalled();
+    expect(mockToast.success).not.toHaveBeenCalled();
+  });
+
   it('shows a toast when a snapshot download fails', async () => {
     mockDownloadBackupSnapshot.mockRejectedValue(new Error('Connection lost'));
     renderWidget();

@@ -367,6 +367,7 @@ describe('openSnapshotStream', () => {
   });
 
   it('escalates the kill when the response disconnects', async () => {
+    vi.useFakeTimers();
     const proc = readySnapshot();
 
     const stream = await openSnapshotStream('/dest', 'snap-1');
@@ -374,7 +375,29 @@ describe('openSnapshotStream', () => {
     stream.abort();
 
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+    // A tar wedged on a stalled mount ignores SIGTERM. The escalation must still
+    // fire after the grace window — it is gated on the CHILD's exit state, not on
+    // the archive stream's, which abort() has already settled by this point.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+    vi.useRealTimers();
+
     await expect(failed).resolves.toMatchObject({ message: 'Snapshot download aborted: snap-1' });
+  });
+
+  it('does not escalate once tar has already exited', async () => {
+    vi.useFakeTimers();
+    const proc = readySnapshot();
+
+    const stream = await openSnapshotStream('/dest', 'snap-1');
+    stream.on('error', () => {});
+    proc.exitCode = 0;
+    stream.abort();
+
+    expect(proc.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(proc.kill).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });
 
