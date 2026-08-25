@@ -467,7 +467,15 @@ describe('CoS Job Routes', () => {
       autonomousJobs.generateTaskFromJob.mockResolvedValue({
         description: 'Review',
         priority: 'MEDIUM',
-        metadata: { app: 'app-xyz', useWorktree: true, openPR: true, simplify: false }
+        metadata: {
+          app: 'app-xyz',
+          useWorktree: true,
+          openPR: true,
+          simplify: false,
+          provider: 'anthropic',
+          model: 'claude-opus-4-8',
+          effort: 'high'
+        }
       });
       cos.addTask.mockResolvedValue({ id: 'task-2' });
 
@@ -475,7 +483,15 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(cos.addTask).toHaveBeenCalledWith(
-        expect.objectContaining({ app: 'app-xyz', useWorktree: true, openPR: true, simplify: false }),
+        expect.objectContaining({
+          app: 'app-xyz',
+          useWorktree: true,
+          openPR: true,
+          simplify: false,
+          provider: 'anthropic',
+          model: 'claude-opus-4-8',
+          effort: 'high'
+        }),
         'internal'
       );
     });
@@ -487,7 +503,7 @@ describe('CoS Job Routes', () => {
       autonomousJobs.generateTaskFromJob.mockResolvedValue({
         description: 'Review',
         priority: 'MEDIUM',
-        metadata: { provider: 'anthropic', model: 'claude-opus-4-8' }
+        metadata: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }
       });
       cos.addTask.mockResolvedValue({ id: 'task-3' });
 
@@ -495,7 +511,7 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(cos.addTask).toHaveBeenCalledWith(
-        expect.objectContaining({ provider: 'anthropic', model: 'claude-opus-4-8' }),
+        expect.objectContaining({ provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }),
         'internal'
       );
     });

@@ -201,9 +201,11 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     simplify: task.metadata?.simplify,
     // Forward the job's AI provider/model override so a manual trigger uses the
     // same provider/model the scheduled path would (addTask maps these top-level
-    // keys onto metadata.provider/metadata.model).
+    // keys onto metadata.provider/metadata.model). Effort follows the same path
+    // so a manual run cannot silently lose its saved reasoning override.
     provider: task.metadata?.provider,
-    model: task.metadata?.model
+    model: task.metadata?.model,
+    effort: task.metadata?.effort
   }, 'internal');
 
   if (!taskResult?.id) {
