@@ -648,8 +648,9 @@ const buildMiniMaxH3Args = ({ model, prompt, negativePrompt, width, height, numF
   if (lastImagePath) args.push('--image', lastImagePath, '--anchor', 'last');
   // Runtime (never fused) application — each --lora needs its own --lora-scale,
   // in the same order, mirroring the --image/--anchor pairing above. buildArgs
-  // has already rejected LoRAs unless the probe proved this checkout can apply
-  // them to the quantized DiT (see runtimes.js `loraProbeArgs`).
+  // has already rejected LoRAs unless the probe proved this checkout plus the
+  // PortOS adapter can apply them to the quantized DiT (see runtimes.js
+  // `loraProbeArgs`).
   for (const l of loras ?? []) args.push('--lora', l.path, '--lora-scale', String(l.strength));
   // Substituted prompt conditioner (lib/videoTextEncoders.js). Absent for the
   // stock choice, so the argv of an unswapped render is byte-identical to what

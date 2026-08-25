@@ -3267,8 +3267,9 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
 
 // H3's DiT is quantized, so LoRAs ride along only if the installed runner
 // applies them at render time from quantization metadata. That is a property of
-// the pinned checkout, so the verdict comes from a probe — and the render path
-// must honor it in both directions rather than blanket-rejecting the runtime.
+// the installed runtime plus adapter, so the verdict comes from a probe — and
+// the render path must honor it in both directions rather than blanket-rejecting
+// the runtime.
 describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
   const h3Render = (jobId) => generateVideo({
     jobId,
@@ -3300,7 +3301,7 @@ describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
     expect(args).toContain('--lora');
   });
 
-  it('rejects LoRAs with an H3-specific reason when the runner has no applicator', async () => {
+  it('rejects LoRAs with an H3-specific reason when the adapter probe fails', async () => {
     h3LoraState.capable = false;
     await expect(h3Render('h3-lora-blocked')).rejects.toMatchObject({
       code: 'MINIMAX_H3_LORA_UNSUPPORTED',

@@ -103,7 +103,8 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 // Attach the runtime capabilities a model entry can't express on its own:
 // whether an FFLF last frame is a real anchor, and whether the *installed* BYOV
 // runner can apply user LoRAs (H3's DiT is quantized, so that depends on the
-// pinned checkout — see runtimes.js `loraProbeArgs`). Both are declared in
+// pinned checkout plus PortOS's activation-space adapter — see runtimes.js
+// `loraProbeArgs`). Both are declared in
 // runtimes.js and surfaced here so the Video Gen form and videoLoraFamily() read
 // them off the model instead of keeping their own lists. Applied by BOTH model
 // resolvers, so the render path and the API payload can never disagree about

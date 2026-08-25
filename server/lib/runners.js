@@ -103,9 +103,10 @@ export const isMlxVideoLtxLoraCapable = (model) => {
 //   - notapalindrome's `mlx_video` on a non-quantized LTX-2.x model — fused
 //     offline into the transformer weights (see isMlxVideoLtxLoraCapable +
 //     scripts/generate_av_lora.py).
-//   - `minimax_h3`, but ONLY when the installed runner can apply LoRAs to the
-//     quantized DiT at runtime. That is a property of the pinned checkout, not
-//     of the model entry, so it can't be derived here: listVideoModels()
+//   - `minimax_h3`, but ONLY when the installed runner plus PortOS's
+//     activation-space adapter can apply LoRAs to the quantized DiT at runtime.
+//     That is a property of the installed checkout, not of the model entry, so
+//     it can't be derived here: listVideoModels()
 //     decorates each model with `runtimeLoraCapable` from the probe in
 //     services/videoGen/runtimes.js and this reads it off the payload (the same
 //     shape as `lastFrameAnchored`). An undecorated model therefore reads as

@@ -1313,7 +1313,7 @@ export default function VideoGen() {
                 {loraUnavailableHint.kind === 'ltx' ? (
                   <>You have {loraUnavailableHint.count} LTX video LoRA{loraUnavailableHint.count === 1 ? '' : 's'} installed, but <strong className="font-semibold">{currentModel?.name}</strong> can't fuse LoRAs (its quantized <code>mlx_video</code> runtime isn't supported yet). Switch to the <strong className="font-semibold">LTX-2.3 Unified Beta</strong> (bf16) or an <strong className="font-semibold">LTX-2.3 dgrauet (Q4/Q8)</strong> model to use them.</>
                 ) : (
-                  <>You have {loraUnavailableHint.count} MiniMax H3 LoRA{loraUnavailableHint.count === 1 ? '' : 's'} installed, but the installed H3 runtime can't apply them — its DiT is quantized, so LoRAs need a runner that applies them at render time from quantization metadata. Upgrade the <strong className="font-semibold">MiniMax H3</strong> runtime from the model setup panel once a build that supports it is pinned.</>
+                  <>You have {loraUnavailableHint.count} MiniMax H3 LoRA{loraUnavailableHint.count === 1 ? '' : 's'} installed, but this H3 runtime did not pass PortOS's quantization-aware LoRA probe. Repair the <strong className="font-semibold">MiniMax H3</strong> runtime from the model setup panel, then retry.</>
                 )}
               </div>
             )}

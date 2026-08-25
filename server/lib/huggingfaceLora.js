@@ -244,8 +244,9 @@ export const looksLikeMiniMaxH3 = (blob) => MINIMAX_H3_RE.test(blob);
 
 // Detect the PortOS video-LoRA family for an HF repo. LTX-2 / LTX-Video LoRAs
 // (fal, Lightricks) map to `ltx-video`; MiniMax H3 LoRAs map to `minimax-h3`,
-// which only renders once the installed H3 runtime proves it can apply LoRAs to
-// its quantized DiT (see services/videoGen/runtimes.js). Looks at the repo id,
+// which only renders once the installed H3 runtime plus PortOS's adapter proves
+// it can apply LoRAs to its quantized DiT (see services/videoGen/runtimes.js).
+// Looks at the repo id,
 // HF tags, and the card's `base_model`. Returns a VIDEO_LORA_FAMILIES value or
 // null (unrecognized → the installer surfaces a clear error rather than
 // mis-tagging it).
