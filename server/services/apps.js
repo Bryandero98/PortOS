@@ -470,7 +470,8 @@ export async function updateApp(id, updates) {
 }
 
 /**
- * Delete an app (PortOS baseline app cannot be deleted)
+ * Remove an app from PortOS's registry (the repository on disk is untouched).
+ * The PortOS baseline app cannot be removed.
  */
 export async function deleteApp(id) {
   if (id === PORTOS_APP_ID) return false;
