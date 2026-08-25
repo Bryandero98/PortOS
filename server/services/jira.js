@@ -4,13 +4,36 @@
  */
 
 import fs from 'fs/promises';
+import { createBoundedStateMap } from '../lib/boundedStateMap.js';
 import { createHttpClient } from '../lib/httpClient.js';
+import { createSingleFlight } from '../lib/singleFlight.js';
 import path from 'path';
 import { ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { hostFromOriginUrl } from '../lib/workTracker.js';
 import { countConfiguredInstances } from '../lib/instanceFeatureRegistry.js';
 
 const JIRA_CONFIG_FILE = path.join(PATHS.data, 'jira.json');
+
+// Resolved Cloud user-search results are stable until the instance credentials
+// change, and ticket creation can happen repeatedly in one run. Keep only
+// positive results in a bounded per-instance cache so a transient failure or an
+// initially hidden user can recover on the next ticket.
+const cloudAssigneeCache = new Map();
+const cloudAssigneeLookupFlight = createSingleFlight();
+
+function getCloudAssigneeCache(instanceId) {
+  let instanceCache = cloudAssigneeCache.get(instanceId);
+  if (!instanceCache) {
+    instanceCache = createBoundedStateMap();
+    cloudAssigneeCache.set(instanceId, instanceCache);
+  }
+  return instanceCache;
+}
+
+export function clearCloudAssigneeCache(instanceId) {
+  if (instanceId === undefined) cloudAssigneeCache.clear();
+  else cloudAssigneeCache.delete(instanceId);
+}
 
 // Whether this install has any JIRA instance configured. Read-only on purpose:
 // unlike getInstances() it never seeds an empty config file, because the
@@ -79,6 +102,7 @@ export async function upsertInstance(instanceId, instanceData) {
   };
 
   await saveInstances(config);
+  clearCloudAssigneeCache(instanceId);
   return config.instances[instanceId];
 }
 
@@ -89,6 +113,7 @@ export async function deleteInstance(instanceId) {
   const config = await getInstances();
   delete config.instances[instanceId];
   await saveInstances(config);
+  clearCloudAssigneeCache(instanceId);
 }
 
 /**
@@ -225,6 +250,68 @@ export async function getProjects(instanceId) {
 }
 
 /**
+ * Resolve a literal Cloud assignee to the GDPR-compatible accountId field.
+ *
+ * Jira's user search accepts both email addresses and display names. Keep the
+ * query's original spelling for Jira, but normalize the cache key so harmless
+ * casing differences do not create another request. A null result is reported
+ * but deliberately not cached, so an unresolvable configured value creates an
+ * unassigned ticket and can resolve on a later retry without sending the
+ * rejected `{ name }` shape to Cloud.
+ */
+async function resolveCloudAssignee(instanceId, client, assignee) {
+  const query = assignee.trim();
+  if (!query) return null;
+  const cacheKey = query.toLowerCase();
+  const instanceCache = getCloudAssigneeCache(instanceId);
+
+  const cachedAccountId = instanceCache.get(cacheKey);
+  if (cachedAccountId !== undefined) return cachedAccountId;
+
+  const lookup = cloudAssigneeLookupFlight.run(`${instanceId}\u0000${cacheKey}`, async () => {
+    const response = await client.get('/rest/api/2/user/search', { params: { query } });
+    if (!Array.isArray(response.data)) throw new Error('JIRA Cloud assignee search returned an invalid user list');
+
+    const users = response.data.filter(user => {
+      const accountType = typeof user?.accountType === 'string' ? user.accountType.toLowerCase() : null;
+      return user?.active !== false && accountType !== 'app';
+    });
+    const exactAccountIds = [...new Set(users
+      .filter(user => [user?.accountId, user?.emailAddress, user?.displayName, user?.name]
+        .some(value => typeof value === 'string' && value.trim().toLowerCase() === cacheKey))
+      .map(user => user?.accountId)
+      .filter(accountId => typeof accountId === 'string' && accountId.trim())
+      .map(accountId => accountId.trim()))];
+    const soleAccountId = response.data.length === 1 && users.length === 1 && typeof users[0]?.accountId === 'string'
+      ? users[0].accountId.trim()
+      : '';
+    const accountId = exactAccountIds.length === 1
+      ? exactAccountIds[0]
+      : exactAccountIds.length > 1
+        ? null
+        : soleAccountId
+          ? soleAccountId
+          : null;
+
+    if (accountId && cloudAssigneeCache.get(instanceId) === instanceCache) {
+      instanceCache.set(cacheKey, accountId);
+    }
+    if (!accountId) {
+      console.warn(`⚠️ JIRA Cloud assignee could not be resolved for instance ${instanceId}; creating ticket unassigned`);
+    }
+
+    return accountId;
+  });
+  return lookup.then(
+    accountId => accountId,
+    () => {
+      console.warn(`⚠️ JIRA Cloud assignee lookup failed for instance ${instanceId}; creating ticket unassigned`);
+      return null;
+    }
+  );
+}
+
+/**
  * Create JIRA ticket
  */
 export async function createTicket(instanceId, ticketData) {
@@ -251,8 +338,14 @@ export async function createTicket(instanceId, ticketData) {
   };
 
   // Add optional fields
-  if (ticketData.assignee) {
-    issue.fields.assignee = { name: ticketData.assignee };
+  const assignee = typeof ticketData.assignee === 'string' ? ticketData.assignee.trim() : '';
+  if (assignee) {
+    if (isCloudInstance(instance.baseUrl)) {
+      const accountId = await resolveCloudAssignee(instanceId, client, assignee);
+      if (accountId) issue.fields.assignee = { accountId };
+    } else {
+      issue.fields.assignee = { name: assignee };
+    }
   }
 
   // Custom field IDs vary per JIRA instance — use instance config or defaults
@@ -739,6 +832,7 @@ export default {
   saveInstances,
   upsertInstance,
   deleteInstance,
+  clearCloudAssigneeCache,
   testConnection,
   getProjects,
   getBoards,
