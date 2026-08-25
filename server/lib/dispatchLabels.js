@@ -71,12 +71,22 @@ export const CONTRIBUTOR_LABEL_DESCRIPTIONS = Object.freeze({
  */
 export const EPIC_DECOMPOSED_LABEL = 'decomposed';
 
+/**
+ * The umbrella marker itself. Half of the "already handled" signal — an issue is
+ * skipped by the claim queue only when it is BOTH epic-shaped and decomposed —
+ * so a flow that promotes an oversized issue to an epic has to be able to create
+ * this label too, not just apply it.
+ */
+export const EPIC_LABEL = 'epic';
+
 export const WORKFLOW_LABEL_COLORS = Object.freeze({
   [EPIC_DECOMPOSED_LABEL]: 'BFD4F2',
+  [EPIC_LABEL]: 'B60205',
 });
 
 export const WORKFLOW_LABEL_DESCRIPTIONS = Object.freeze({
   [EPIC_DECOMPOSED_LABEL]: 'Epic already split into per-slice child issues',
+  [EPIC_LABEL]: 'Umbrella/tracking issue — shipped as per-slice children, never as one PR',
 });
 
 const MODEL_SET = new Set(DISPATCH_MODEL_TIERS);

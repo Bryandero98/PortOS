@@ -33,7 +33,7 @@ import { githubApiHost, hostFromOriginUrl } from '../lib/workTracker.js';
 // The epic marker lives with the forge label vocabulary (name + color + the
 // `label create` idiom the prompt bodies interpolate), so the detector and the
 // live claim agent cannot drift on what "already decomposed" is spelled.
-import { EPIC_DECOMPOSED_LABEL } from '../lib/dispatchLabels.js';
+import { EPIC_DECOMPOSED_LABEL, EPIC_LABEL } from '../lib/dispatchLabels.js';
 
 export { EPIC_DECOMPOSED_LABEL };
 
@@ -191,7 +191,7 @@ export function titleMarksEpic(title) {
 
 // True when an issue is a tracking/umbrella epic — by `epic` label or by the
 // title conventions above. `labels` is the caller's already-lowercased list.
-const isEpicIssue = (title, labels) => labels.includes('epic') || titleMarksEpic(title);
+const isEpicIssue = (title, labels) => labels.includes(EPIC_LABEL) || titleMarksEpic(title);
 
 const normalizeLogin = (value) => (value == null ? '' : String(value)).trim().toLowerCase();
 
