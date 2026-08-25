@@ -47,6 +47,19 @@ beforeEach(() => {
 });
 
 describe('BackupWidget snapshots', () => {
+  it('offers neither action for a snapshot that is still being written', async () => {
+    mockGetBackupSnapshots.mockResolvedValue([
+      { id: '2026-08-25T12-00-00', fileCount: 0, incomplete: true },
+    ]);
+    renderWidget();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Snapshots' }));
+    expect(await screen.findByText('Still being written…')).toBeInTheDocument();
+    // The server 409s both; a button that can only fail should not be offered.
+    expect(screen.getByRole('button', { name: /Download snapshot/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeDisabled();
+  });
+
   it('offers a download action for each snapshot and confirms success', async () => {
     renderWidget();
 

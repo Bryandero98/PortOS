@@ -27,11 +27,12 @@ describe('downloadBackupSnapshot', () => {
     const blob = new Blob(['snapshot']);
     fetch.mockResolvedValue({
       ok: true,
-      headers: new Headers({ 'Content-Disposition': 'attachment; filename="custom.tar.gz"' }),
+      headers: new Headers(),
       blob: vi.fn().mockResolvedValue(blob),
     });
 
-    await expect(downloadBackupSnapshot('2026-08-25T12-00-00')).resolves.toEqual({ filename: 'custom.tar.gz' });
+    await expect(downloadBackupSnapshot('2026-08-25T12-00-00'))
+      .resolves.toEqual({ filename: 'portos-snapshot-2026-08-25T12-00-00.tar.gz' });
 
     expect(fetch).toHaveBeenCalledWith(
       '/api/backup/snapshots/2026-08-25T12-00-00/download',
@@ -56,42 +57,72 @@ describe('downloadBackupSnapshot', () => {
 
   it('streams large responses to a file picker when available', async () => {
     const pipeTo = vi.fn().mockResolvedValue(undefined);
-    const createWritable = vi.fn().mockResolvedValue({});
+    const writable = {};
+    const createWritable = vi.fn().mockResolvedValue(writable);
     const blob = vi.fn();
     window.showSaveFilePicker = vi.fn().mockResolvedValue({ createWritable });
-    fetch.mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'Content-Disposition': 'attachment; filename="large.tar.gz"' }),
-      body: { pipeTo },
-      blob,
-    });
+    fetch.mockResolvedValue({ ok: true, headers: new Headers(), body: { pipeTo }, blob });
 
     await expect(downloadBackupSnapshot('large'))
-      .resolves.toEqual({ filename: 'large.tar.gz' });
+      .resolves.toEqual({ filename: 'portos-snapshot-large.tar.gz' });
 
-    expect(window.showSaveFilePicker).toHaveBeenCalledWith({ suggestedName: 'large.tar.gz' });
+    expect(window.showSaveFilePicker).toHaveBeenCalledWith({ suggestedName: 'portos-snapshot-large.tar.gz' });
     expect(createWritable).toHaveBeenCalledOnce();
-    expect(pipeTo).toHaveBeenCalledWith({});
+    expect(pipeTo).toHaveBeenCalledWith(writable);
     expect(blob).not.toHaveBeenCalled();
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('falls back to the blob download when the file picker loses activation', async () => {
+  it('opens the save picker BEFORE fetching, so the click activation is still valid', async () => {
+    const order = [];
+    window.showSaveFilePicker = vi.fn(async () => {
+      order.push('picker');
+      return { createWritable: async () => ({}) };
+    });
+    fetch.mockImplementation(async () => {
+      order.push('fetch');
+      return { ok: true, headers: new Headers(), body: { pipeTo: vi.fn() }, blob: vi.fn() };
+    });
+
+    await downloadBackupSnapshot('large');
+
+    expect(order).toEqual(['picker', 'fetch']);
+  });
+
+  it('aborts the opened file handle when the download turns out to 404', async () => {
+    const abort = vi.fn().mockResolvedValue(undefined);
+    window.showSaveFilePicker = vi.fn().mockResolvedValue({ createWritable: async () => ({ abort }) });
+    fetch.mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: vi.fn().mockResolvedValue({ error: 'Snapshot not found', code: 'NOT_FOUND' }),
+    });
+
+    await expect(downloadBackupSnapshot('missing')).rejects.toMatchObject({ status: 404 });
+    // Otherwise the picker leaves a 0-byte file where the user chose to save.
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the blob download when the picker is unavailable', async () => {
     const blob = new Blob(['snapshot']);
     const body = { pipeTo: vi.fn() };
-    const pickerError = Object.assign(new Error('User activation is required'), { name: 'SecurityError' });
+    const pickerError = Object.assign(new Error('Not supported here'), { name: 'SecurityError' });
     window.showSaveFilePicker = vi.fn().mockRejectedValue(pickerError);
-    fetch.mockResolvedValue({
-      ok: true,
-      headers: new Headers(),
-      body,
-      blob: vi.fn().mockResolvedValue(blob),
-    });
+    fetch.mockResolvedValue({ ok: true, headers: new Headers(), body, blob: vi.fn().mockResolvedValue(blob) });
 
     await expect(downloadBackupSnapshot('large'))
       .resolves.toEqual({ filename: 'portos-snapshot-large.tar.gz' });
 
     expect(body.pipeTo).not.toHaveBeenCalled();
     expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+  });
+
+  it('propagates a dismissed picker as a cancel, without fetching at all', async () => {
+    window.showSaveFilePicker = vi.fn().mockRejectedValue(
+      Object.assign(new Error('The user aborted a request.'), { name: 'AbortError' }),
+    );
+
+    await expect(downloadBackupSnapshot('large')).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

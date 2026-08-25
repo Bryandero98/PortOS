@@ -75,7 +75,7 @@ vi.mock('../lib/childProcess.js', async (importOriginal) => ({
 // used by backup.js + fileUtils.js keeps its real implementation.
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal();
-  return { ...actual, stat: vi.fn(actual.stat), readFile: vi.fn(actual.readFile) };
+  return { ...actual, stat: vi.fn(actual.stat), readFile: vi.fn(actual.readFile), access: vi.fn(actual.access) };
 });
 
 import { checkHealth, getServerMajorVersion } from '../lib/db.js';
@@ -92,6 +92,15 @@ vi.mock('./settings.js', async (importOriginal) => ({
 }));
 import { reloadSettings } from './settings.js';
 import { DEFAULT_EXCLUDES, computeEffectiveExcludes, listSnapshots, openSnapshotStream, restoreSnapshot } from './backup.js';
+
+// fs.access is mocked file-wide because backup.js probes the .in-progress marker
+// with it. Restore the real implementation before EVERY test: vi.clearAllMocks()
+// resets call history but NOT implementations, so a single test's
+// mockResolvedValue would otherwise make every later test see a marker and 409.
+beforeEach(async () => {
+  const actual = await vi.importActual('fs/promises');
+  fs.access.mockImplementation(actual.access);
+});
 
 // Mirrors backup.js's MACHINE_HOST derivation so expected paths can be built
 // without hardcoding this machine's hostname.
@@ -289,15 +298,28 @@ describe('openSnapshotStream', () => {
   afterEach(async () => {
     const actual = await vi.importActual('fs/promises');
     fs.stat.mockImplementation(actual.stat);
+    fs.access.mockImplementation(actual.access);
     spawn.mockReset();
   });
 
-  // An existing snapshot directory, ready for tar.
+  beforeEach(() => {
+    fs.access.mockRejectedValue(new Error('ENOENT'));
+  });
+
+  // An existing, COMPLETE snapshot directory, ready for tar: the directory stats
+  // fine while the .in-progress marker is absent.
   function readySnapshot() {
     fs.stat.mockResolvedValue({ isDirectory: () => true });
+    fs.access.mockRejectedValue(new Error('ENOENT'));   // no .in-progress marker
     const proc = fakeProc();
     spawn.mockReturnValue(proc);
     return proc;
+  }
+
+  // Same directory, but a marker left behind by a crashed run.
+  function crashedSnapshot() {
+    fs.stat.mockResolvedValue({ isDirectory: () => true });
+    fs.access.mockResolvedValue(undefined);             // .in-progress present
   }
 
   const ended = (stream) => new Promise((resolveEnd) => stream.once('end', resolveEnd));
@@ -312,6 +334,16 @@ describe('openSnapshotStream', () => {
       .rejects.toMatchObject({ status: 400, code: 'VALIDATION_ERROR' });
     expect(spawn).not.toHaveBeenCalled();
     expect(fs.stat).not.toHaveBeenCalled();
+  });
+
+  it('refuses a snapshot whose .in-progress marker survived a crash', async () => {
+    // activeSnapshotId is module state and resets on restart; the marker is what
+    // still says "this tree was never finished" after PM2 restarts mid-backup.
+    crashedSnapshot();
+
+    await expect(openSnapshotStream('/dest', 'snap-1'))
+      .rejects.toMatchObject({ status: 409, code: 'SNAPSHOT_INCOMPLETE' });
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('returns 404 for an unknown snapshot without spawning tar', async () => {
@@ -653,6 +685,19 @@ describe('restorePostgres', () => {
     vi.spyOn(fs, 'stat').mockRejectedValue(new Error('ENOENT'));
     const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
     expect(result).toEqual({ status: 'skipped', reason: 'no_dump' });
+  });
+
+  // portos-db.sql is still being written while a backup runs. Replaying a half
+  // dump into the live database is the most destructive thing this module can
+  // do, so the guard has to cover it — not just download and file restore.
+  it('refuses an incomplete snapshot before reading the dump', async () => {
+    fs.access.mockResolvedValue(undefined);            // .in-progress present
+    const statSpy = vi.spyOn(fs, 'stat');
+
+    await expect(restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false }))
+      .rejects.toMatchObject({ status: 409, code: 'SNAPSHOT_INCOMPLETE' });
+    expect(statSpy).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('dry-run reports size/tableCount without spawning psql', async () => {

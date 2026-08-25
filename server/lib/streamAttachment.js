@@ -1,6 +1,14 @@
 import { sendErrorResponse } from './errorHandler.js';
 import { onClientDisconnect } from './sseDownload.js';
 
+// A tar/child-backed stream exposes abort() to kill its process; a plain file read
+// has none, and without destroy() its fd stays open for every download the client
+// walked away from.
+function teardown(stream) {
+  if (typeof stream.abort === 'function') stream.abort();
+  else stream.destroy();
+}
+
 /**
  * Pipe a readable to an Express response as a file attachment.
  *
@@ -26,6 +34,14 @@ import { onClientDisconnect } from './sseDownload.js';
  * @param {string} opts.label - short subject for the warning log.
  */
 export function streamAttachment(res, stream, { filename, contentType, failure, label }) {
+  // The route awaited settings/stat before getting here, so the client may have
+  // already gone — in which case res's 'close' fired before the listener below
+  // was installed and nothing would ever tear the stream down.
+  if (res.destroyed || res.writableEnded) {
+    teardown(stream);
+    return;
+  }
+
   res.set('Content-Type', contentType);
   // Quote the filename at the boundary rather than trusting every caller to have
   // slugged it: a quote or newline in a record-derived name would otherwise
@@ -49,12 +65,6 @@ export function streamAttachment(res, stream, { filename, contentType, failure, 
     sendErrorResponse(res, failure);
   });
 
-  // A tar/child-backed stream exposes abort() to kill its process; a plain file
-  // read has none, and without destroy() its fd stays open for every download the
-  // client walked away from.
-  onClientDisconnect(null, res, () => {
-    if (typeof stream.abort === 'function') stream.abort();
-    else stream.destroy();
-  });
+  onClientDisconnect(null, res, () => teardown(stream));
   stream.pipe(res);
 }

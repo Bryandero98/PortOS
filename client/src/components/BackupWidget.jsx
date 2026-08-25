@@ -198,7 +198,7 @@ function SnapshotList() {
       // the oldest — walk every rendered tuple (id + fileCount) so a stale
       // server-side fileCount recount or a middle-row mutation can't hide
       // behind the head/tail id check.
-      compare: (prev, next) => equalListByKeys(prev, next, ['id', 'fileCount']),
+      compare: (prev, next) => equalListByKeys(prev, next, ['id', 'fileCount', 'incomplete']),
     },
   );
   const [selectedId, setSelectedId] = useState(null);
@@ -234,7 +234,9 @@ function SnapshotList() {
           <div className="flex items-center justify-between gap-2 py-1.5 px-2 rounded bg-port-bg/50 hover:bg-port-bg/80 transition-colors">
             <div className="min-w-0 flex-1">
               <div className="text-xs text-gray-300 font-mono truncate">{snap.id}</div>
-              <div className="text-xs text-gray-600">{snap.fileCount} files</div>
+              <div className="text-xs text-gray-600">
+                {snap.incomplete ? 'Still being written…' : `${snap.fileCount} files`}
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <button
@@ -242,7 +244,7 @@ function SnapshotList() {
                 // Deliberately disabled across every row, not just this one:
                 // each download spawns a tar over the whole snapshot on the
                 // same external drive, so two at once only thrash the disk.
-                disabled={downloadingId !== null}
+                disabled={downloadingId !== null || snap.incomplete}
                 aria-label={`Download snapshot ${snap.id}`}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-port-accent hover:text-port-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[32px]"
               >
@@ -251,7 +253,8 @@ function SnapshotList() {
               </button>
               <button
                 onClick={() => setSelectedId(selectedId === snap.id ? null : snap.id)}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-port-accent hover:text-port-accent/80 transition-colors min-h-[32px]"
+                disabled={snap.incomplete}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-port-accent hover:text-port-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[32px]"
               >
                 <RotateCcw size={12} />
                 Restore

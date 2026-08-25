@@ -8,7 +8,7 @@
 
 import { spawn } from '../lib/childProcess.js';
 import { killWithEscalation } from '../lib/killWithEscalation.js';
-import { access, readdir, readFile, stat, unlink } from 'fs/promises';
+import { access, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import { PassThrough } from 'node:stream';
 import { hostname } from 'os';
 import { join, resolve, relative, isAbsolute } from 'path';
@@ -27,11 +27,34 @@ import { reloadSettings } from './settings.js';
 let isRunning = false;
 
 const STATE_PATH = join(PATHS.data, 'backup', 'state.json');
-// The id of the snapshot currently being assembled, or null. One server
-// process per install (see AGENTS.md trust model), so in-process state is the
-// whole truth here — and unlike a marker file on the backup volume it cannot
-// survive a crash and strand a snapshot as permanently un-downloadable.
+// A snapshot mid-assembly is a truncated tree that looks like a finished backup.
+// Two signals guard it, because neither alone is sufficient:
+//   - `activeSnapshotId` catches the in-process case with no I/O.
+//   - the `.in-progress` marker survives a hard crash or PM2 restart, which
+//     resets module state while the partial directory stays on the drive.
+// The marker is removed on BOTH the success and failure paths — clearing it only
+// on success is what previously left a failed run's snapshot blocked forever.
+const SNAPSHOT_IN_PROGRESS_MARKER = '.in-progress';
 let activeSnapshotId = null;
+
+const markerPath = (snapshotDir) => join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER);
+const markerExists = (snapshotDir) =>
+  access(markerPath(snapshotDir)).then(() => true, () => false);
+
+/**
+ * Reject a snapshot that is still being written. Every consumer that reads a
+ * snapshot as if it were finished — download, file restore, DB restore — must
+ * call this; restoring half a backup over live data is the worst outcome here.
+ */
+async function assertSnapshotComplete(snapshotDir, snapshotId) {
+  const incomplete = snapshotId === activeSnapshotId || await markerExists(snapshotDir);
+  if (incomplete) {
+    throw new ServerError(`Snapshot is still being written: ${snapshotId}`, {
+      status: 409,
+      code: 'SNAPSHOT_INCOMPLETE',
+    });
+  }
+}
 
 // Serialize state read-merge-write so two saveState() calls (e.g. a run
 // completing while the scheduler stamps a status) can't each read the same
@@ -243,18 +266,24 @@ export async function runBackup(destPath, io = null, { excludePaths = [], disabl
 
   await ensureDir(dataDestDir);
   activeSnapshotId = snapshotId;
+  await writeFile(markerPath(snapshotDir), '');
 
   let changedFiles = [];
   let manifest;
 
-  const complete = async (result) => {
+  const clearInProgress = async () => {
+    await unlink(markerPath(snapshotDir)).catch(() => {});
     activeSnapshotId = null;
+  };
+
+  const complete = async (result) => {
+    await clearInProgress();
     isRunning = false;
     return result;
   };
 
   const fail = async (err) => {
-    activeSnapshotId = null;
+    await clearInProgress();
     isRunning = false;
     await saveState({ lastRun: new Date().toISOString(), status: 'error', error: err.message, pgBackup: null });
     if (io) io.emit('backup:failed', { snapshotId, error: err.message });
@@ -479,14 +508,20 @@ export async function listSnapshots(destPath) {
 
   const snapshots = await Promise.all(
     ids.map(async (id) => {
-      const manifestPath = join(snapshotsDir, id, 'manifest.json');
+      const snapshotDir = join(snapshotsDir, id);
+      const manifestPath = join(snapshotDir, 'manifest.json');
       // logError:false — a snapshot taken before manifests existed legitimately
       // has none; the null is handled below, so it isn't worth a warning per list.
       const manifest = await readJSONFile(manifestPath, null, { logError: false });
+      // Report a still-being-written snapshot rather than hiding it: the row is
+      // real and the user should see the run in flight, but download and restore
+      // must not be offered for it. Mirrors assertSnapshotComplete's two signals.
+      const incomplete = id === activeSnapshotId || await markerExists(snapshotDir);
       return {
         id,
         createdAt: manifest?.generatedAt ?? null,
-        fileCount: manifest?.fileCount ?? 0
+        fileCount: manifest?.fileCount ?? 0,
+        incomplete
       };
     })
   );
@@ -529,16 +564,11 @@ function resolveSnapshotPath(destPath, snapshotId) {
  */
 export async function openSnapshotStream(destPath, snapshotId) {
   const { snapshotsRoot, snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
-  // A snapshot still being assembled would tar up as a truncated tree that
-  // looks like a complete backup. One server process per install, so the
-  // in-process id is authoritative and self-clears on crash or restart.
-  if (snapshotId === activeSnapshotId) {
-    throw new ServerError(`Snapshot is still being written: ${snapshotId}`, { status: 409, code: 'SNAPSHOT_INCOMPLETE' });
-  }
   const info = await stat(snapshotDir).catch(() => null);
   if (!info?.isDirectory?.()) {
     throw new ServerError(`Snapshot not found: ${snapshotId}`, { status: 404, code: 'NOT_FOUND' });
   }
+  await assertSnapshotComplete(snapshotDir, snapshotId);
 
   // tar's stderr is a pipe (spawn's default) and MUST be drained: left unread
   // it fills its ~64KB buffer on a tree that warns a lot — files changing under
@@ -599,9 +629,7 @@ export async function openSnapshotStream(destPath, snapshotId) {
  */
 export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, subdirFilter = null } = {}) {
   const { snapshotsRoot, snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
-  if (snapshotId === activeSnapshotId) {
-    throw new ServerError(`Snapshot is still being written: ${snapshotId}`, { status: 409, code: 'SNAPSHOT_INCOMPLETE' });
-  }
+  await assertSnapshotComplete(snapshotDir, snapshotId);
   const srcDir = join(snapshotDir, 'data');
 
   // Defense-in-depth for non-route callers (the route already validates via
@@ -644,6 +672,7 @@ export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, sub
  */
 export async function restorePostgres(destPath, snapshotId, { dryRun = true } = {}) {
   const { snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
+  await assertSnapshotComplete(snapshotDir, snapshotId);
   const sqlPath = join(snapshotDir, 'portos-db.sql');
 
   const info = await stat(sqlPath).catch(() => null);
