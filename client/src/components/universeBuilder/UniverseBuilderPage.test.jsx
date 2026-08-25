@@ -180,4 +180,23 @@ describe('UniverseBuilderPage Markdown export', () => {
 
     expect(downloadMock.downloadBlob).not.toHaveBeenCalled();
   });
+
+  it('downloads the current universe Markdown with the shared filename and MIME type', async () => {
+    apiMocks.exportUniverseMarkdown.mockResolvedValueOnce('# First World\n');
+
+    render(
+      <MemoryRouter initialEntries={['/universes/u1']}>
+        <NavigationProbe />
+        <Routes>
+          <Route path="/universes/:universeId" element={<UniverseBuilderPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Export .md' }));
+    await waitFor(() => expect(downloadMock.downloadBlob).toHaveBeenCalledWith(
+      '# First World\n', 'first-world.md', 'text/markdown',
+    ));
+    expect(toastMock.success).toHaveBeenCalledWith('Downloaded first-world.md');
+  });
 });

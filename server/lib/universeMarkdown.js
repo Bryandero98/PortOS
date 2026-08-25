@@ -84,6 +84,22 @@ const formatInlineValue = (value) => {
   return '';
 };
 
+const formatBlockValue = (value) => {
+  if (typeof value !== 'string') return formatInlineValue(value);
+  return value
+    .trim()
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const leading = line.match(/^\s*/u)?.[0] || '';
+      const content = line.slice(leading.length);
+      return /^(?:#{1,6}\s|>\s?|[-*_]{3,}\s*$|`{3,})/u.test(content)
+        ? `${leading}\\${content}`
+        : line;
+    })
+    .join('\n');
+};
+
 const headingText = (value, fallback) => String(value || fallback)
   .trim()
   .replace(/[\r\n]+/g, ' ')
@@ -91,13 +107,19 @@ const headingText = (value, fallback) => String(value || fallback)
 
 const entryName = (entry, fallback) => headingText(entry?.name || entry?.slugline, fallback);
 
+const entryHeadingKey = (entry) => (typeof entry?.name === 'string' && entry.name.trim()
+  ? 'name'
+  : typeof entry?.slugline === 'string' && entry.slugline.trim() ? 'slugline' : null);
+
 const orderedEntryKeys = (kind, entry) => {
   const preferred = CANON_ENTRY_FIELD_ORDER[kind] || [];
+  const headingKey = entryHeadingKey(entry);
   const preferredKeys = preferred.filter((key) => Object.prototype.hasOwnProperty.call(entry, key));
   const remainingKeys = Object.keys(entry)
-    .filter((key) => key !== 'name' && !preferred.includes(key) && !ENTRY_METADATA_FIELDS.has(key))
+    .filter((key) => key !== 'name' && key !== headingKey
+      && !preferred.includes(key) && !ENTRY_METADATA_FIELDS.has(key))
     .sort(compareNames);
-  return [...preferredKeys, ...remainingKeys];
+  return [...preferredKeys.filter((key) => key !== headingKey), ...remainingKeys];
 };
 
 const renderEntry = (kind, entry, fallback) => {
@@ -106,7 +128,7 @@ const renderEntry = (kind, entry, fallback) => {
   for (const key of orderedEntryKeys(kind, entry)) {
     const value = entry[key];
     if (!hasContent(value)) continue;
-    const rendered = formatInlineValue(value);
+    const rendered = formatBlockValue(value);
     if (!rendered) continue;
     lines.push(`**${formatFieldLabel(key)}:** ${rendered}`);
   }
@@ -129,7 +151,8 @@ const renderCategory = (name, category) => {
   if (category?.kind) lines.push(`**Kind:** ${formatInlineValue(category.kind)}`);
   for (const variation of variations) {
     if (typeof variation === 'string') {
-      if (variation.trim()) lines.push(`- ${variation.trim()}`);
+      const rendered = formatInlineValue(variation);
+      if (rendered) lines.push(`- ${rendered}`);
       continue;
     }
     if (!variation || typeof variation !== 'object') continue;
@@ -173,7 +196,7 @@ const filenamesFor = (item) => [
 const renderNamedFileList = (title, values, nameKeys) => {
   if (!Array.isArray(values) || values.length === 0) return '';
   const lines = values.map((item) => {
-    if (typeof item === 'string') return item.trim();
+    if (typeof item === 'string') return formatInlineValue(item);
     if (!item || typeof item !== 'object') return '';
     const name = nameKeys.map((key) => formatInlineValue(item[key])).find(Boolean) || '';
     const filenames = filenamesFor(item);
@@ -211,7 +234,7 @@ export function universeToMarkdown(record) {
   const source = record && typeof record === 'object' ? record : {};
   const sections = [`# ${headingText(source.name, 'Untitled Universe')}`];
   const prose = ['logline', 'premise', 'styleNotes']
-    .map((key) => formatInlineValue(source[key]))
+    .map((key) => formatBlockValue(source[key]))
     .filter(Boolean);
   if (prose.length) sections.push(prose.join('\n\n'));
 
