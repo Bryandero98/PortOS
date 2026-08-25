@@ -225,6 +225,11 @@ export default function UniverseBuilder() {
   const handleExportMarkdown = useCallback(async () => {
     if (!selectedId || exporting) return;
     setExporting(true);
+    const flushed = await flushDraftIfDirty();
+    if (!flushed) {
+      setExporting(false);
+      return;
+    }
     const markdown = await exportUniverseMarkdown(selectedId, { silent: true }).catch((error) => {
       toast.error(error?.message || 'Failed to export universe');
       return null;
@@ -234,7 +239,7 @@ export default function UniverseBuilder() {
     const filename = `${downloadSlug(draft.name)}.md`;
     downloadBlob(markdown, filename, 'text/markdown');
     toast.success(`Downloaded ${filename}`);
-  }, [draft.name, exporting, selectedId]);
+  }, [draft.name, exporting, flushDraftIfDirty, selectedId]);
 
   // Page-level lightbox + gallery-metadata concern. A single MediaPreview at
   // this level covers EVERY thumb on the page: variations, composite sheets,
