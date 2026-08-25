@@ -198,6 +198,7 @@ describe('QuickBrainCapture', () => {
       renderWidget();
       type(REPO);
       fireEvent.click(screen.getByLabelText('Study for app ideas'));
+      await waitFor(() => expect(screen.getByLabelText('Provider')).toBeInTheDocument());
       fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'claude-code' } });
       fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'claude-sonnet' } });
       fireEvent.change(screen.getByLabelText('Thinking effort'), { target: { value: 'high' } });

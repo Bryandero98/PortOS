@@ -50,19 +50,20 @@ export function capturedGitHubRepo(text) {
  *   can't ride along on a capture the user retyped into a plain thought.
  */
 export function useRepoIntake(text) {
+  const [malwareScan, setMalwareScan] = useLocalStorageBool(STORAGE_KEYS.malwareScan, false);
+  const [learn, setLearn] = useLocalStorageBool(STORAGE_KEYS.learn, false);
+  const repo = useMemo(() => capturedGitHubRepo(text), [text]);
   const { providers, activeProviderId } = useProviderModels({
     allowDefault: true,
     silent: true,
     withEffort: true,
+    enabled: Boolean(repo && learn),
   });
-  const [malwareScan, setMalwareScan] = useLocalStorageBool(STORAGE_KEYS.malwareScan, false);
-  const [learn, setLearn] = useLocalStorageBool(STORAGE_KEYS.learn, false);
   const [managedApps, setManagedApps] = useState([{ id: PORTOS_APP_ID, name: 'PortOS' }]);
   const [targetAppId, setTargetAppId] = useState(PORTOS_APP_ID);
   const [studyContext, setStudyContext] = useState('');
   const [providerOverride, setProviderOverride] = useState({ providerId: '', model: '', effort: '' });
 
-  const repo = useMemo(() => capturedGitHubRepo(text), [text]);
   const repoKey = repo ? `${repo.owner}/${repo.repo}` : null;
   const options = useMemo(() => ({ malwareScan, learn }), [malwareScan, learn]);
   const setters = { malwareScan: setMalwareScan, learn: setLearn };

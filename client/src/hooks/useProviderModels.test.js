@@ -102,6 +102,26 @@ describe('useProviderModels — provider envelope metadata', () => {
   });
 });
 
+describe('useProviderModels — lazy loading', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('does not fetch while disabled and fetches when enabled', async () => {
+    api.getProviders.mockResolvedValue({ providers: [CODEX] });
+    const hook = renderHook(
+      ({ enabled }) => useProviderModels({ allowDefault: true, enabled }),
+      { initialProps: { enabled: false } },
+    );
+
+    expect(hook.result.current.loading).toBe(false);
+    expect(api.getProviders).not.toHaveBeenCalled();
+
+    hook.rerender({ enabled: true });
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    expect(api.getProviders).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.providers).toEqual([CODEX]);
+  });
+});
+
 // A capability-scoped picker (vision) starts on the client-side id regex and
 // widens once the server's authoritative list resolves, so its `modelFilter`
 // identity changes AFTER the first load. Stand-in filters here: the contract

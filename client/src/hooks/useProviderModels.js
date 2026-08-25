@@ -58,14 +58,16 @@ const sourceModels = (provider, withEffort) => {
  *   — then list BASE models instead, with effort picked separately. Leave off
  *   for a picker with no effort control: there the suffixed ids are the only
  *   way to express a tier, so collapsing them would strip the capability.
+ * @param {boolean} [options.enabled] - Load the provider catalog only when true.
+ *   Disabled pickers keep an empty catalog and do not issue a provider request.
  * @returns {{ providers, activeProviderId, selectedProviderId, selectedModel, availableModels, selectedProvider, setSelectedProviderId, setSelectedModel, loading }}
  */
-export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter, withEffort = false } = {}) {
+export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter, withEffort = false, enabled = true } = {}) {
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState('');
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const hasSetInitialRef = useRef(false);
   // Latched once the model is chosen deliberately — a picker change, or a
   // caller restoring a saved pin. The auto re-pick below then stands down for
@@ -129,7 +131,15 @@ export default function useProviderModels({ filter, allowDefault = false, silent
     setLoading(false);
   }, [filter, allowDefault, silent]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!enabled) {
+      setProviders([]);
+      setActiveProviderId('');
+      setLoading(false);
+      return;
+    }
+    load();
+  }, [enabled, load]);
 
   const currentProvider = useMemo(
     () => providers.find(p => p.id === selectedProviderId),
