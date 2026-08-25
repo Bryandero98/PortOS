@@ -413,6 +413,13 @@ export async function createApp(appData) {
     // concrete tracker (PLAN.md / GitHub / GitLab / JIRA) from the git origin
     // host at dispatch time — see server/lib/workTracker.js.
     workTracker: appData.workTracker || 'auto',
+    // Only persisted when explicitly sent. Absent means ON (see
+    // repoStateVerificationEnabled), so writing a default here would freeze the
+    // app against a future change of that default — but an explicit `false` on
+    // create MUST survive, or a new app cannot opt out through POST at all.
+    ...(typeof appData.verifyRepoStateOnCompletion === 'boolean'
+      ? { verifyRepoStateOnCompletion: appData.verifyRepoStateOnCompletion }
+      : {}),
     taskTypeOverrides: Object.fromEntries(
       SELF_IMPROVEMENT_TASK_TYPES.map(t => [t, { enabled: false }])
     ),

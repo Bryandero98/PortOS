@@ -230,6 +230,27 @@ describe('portless / desktop apps (#2991)', () => {
     expect(stored.devUiPort).toBeNull();
   });
 
+  it('createApp persists an explicit repo-state-audit opt-out, and leaves it absent otherwise', async () => {
+    // Absent means ON (repoStateVerificationEnabled), so createApp must NOT stamp a
+    // default — that would freeze the app against a later change of that default.
+    // But an explicit `false` has to survive, or a new app cannot opt out via POST
+    // at all: createApp builds the record field-by-field and drops anything it
+    // doesn't name.
+    readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
+
+    const optedOut = await createApp({
+      name: 'Quiet App',
+      repoPath: '/tmp/quiet-app',
+      verifyRepoStateOnCompletion: false,
+    });
+    expect(optedOut.verifyRepoStateOnCompletion).toBe(false);
+    expect(atomicWrite.mock.calls.at(-1)[1].apps[optedOut.id].verifyRepoStateOnCompletion).toBe(false);
+
+    const unset = await createApp({ name: 'Default App', repoPath: '/tmp/default-app' });
+    expect(unset).not.toHaveProperty('verifyRepoStateOnCompletion');
+    expect(atomicWrite.mock.calls.at(-1)[1].apps[unset.id]).not.toHaveProperty('verifyRepoStateOnCompletion');
+  });
+
   it('createApp preserves web ports when a separate native target is present', async () => {
     readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
     const nativeLaunch = {

@@ -353,15 +353,35 @@ describe('verifyAgentRepoState — never fires', () => {
     // GitLab is probed too — leaving it unasked would silently pass an open MR as
     // a clean repo. States come back lowercase from glab.
     resolveForgeForRepo.mockResolvedValue({ cli: 'glab', env: null });
-    findMergeRequestForBranch.mockResolvedValue({ status: 'found', url: 'https://gitlab.example.com/mr/4', detail: 'opened' });
+    findMergeRequestForBranch.mockResolvedValue({ status: 'found', url: 'https://gitlab.example.com/mr/4', number: 4, detail: 'opened' });
 
     const result = await run();
 
     expect(findPullRequestForBranch).not.toHaveBeenCalled();
     expect(result.issues.map(i => i.code)).toEqual([REPO_STATE_ISSUES.PR_UNMERGED]);
     // The remediation must speak glab — a `gh pr merge` line is unrunnable there.
-    expect(addTask.mock.calls[0][0].context).toContain('glab mr merge');
+    // The real IID, not a `<iid>` placeholder the recovery agent cannot run.
+    expect(addTask.mock.calls[0][0].context).toContain('glab mr merge 4 --yes --remove-source-branch');
     expect(addTask.mock.calls[0][0].context).not.toContain('gh pr merge');
+  });
+
+  it('does not claim unmerged work when the merge check could not be answered', async () => {
+    // `isBranchMergedInto` fails CLOSED (`false`, not a throw) when it cannot read
+    // a ref — right for its original caller, inverted into a false finding here.
+    // An unresolvable ref must read as unknown, not as "carries unmerged commits".
+    execGit.mockImplementation((args) => {
+      if (args[0] === 'show-ref') return Promise.resolve({ exitCode: 0, stdout: '', stderr: '' });
+      // rev-parse --verify fails => the ref could not be resolved
+      return Promise.resolve({ exitCode: 128, stdout: '', stderr: 'bad revision' });
+    });
+    isBranchMergedInto.mockResolvedValue(false);
+
+    const result = await run({ prExpected: false });
+
+    expect(isBranchMergedInto).not.toHaveBeenCalled();
+    expect(result.observed.branchMerged).toBeNull();
+    expect(result.issues.map(i => i.code)).not.toContain(REPO_STATE_ISSUES.BRANCH_UNMERGED);
+    expect(result.observed.unreadable).toContain('branch-merged');
   });
 
   it('does not report a MERGED GitLab merge request', async () => {

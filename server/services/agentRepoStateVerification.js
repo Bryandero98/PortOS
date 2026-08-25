@@ -112,6 +112,21 @@ async function branchHasPendingOwner(branchName, app) {
 }
 
 /**
+ * Is `branch` already on `target`? Tri-state, unlike `isBranchMergedInto`, which
+ * answers `false` both for "not merged" and for "could not tell".
+ *
+ * @returns {Promise<boolean|null>} null when either ref could not be resolved
+ */
+async function probeBranchMerged(repoPath, branch, target) {
+  const resolvable = async (ref) => execGit(['rev-parse', '--verify', `${ref}^{commit}`], repoPath, { ignoreExitCode: true })
+    .then(r => r.exitCode === 0)
+    .catch(() => false);
+  const [hasBranch, hasTarget] = await Promise.all([resolvable(branch), resolvable(target)]);
+  if (!hasBranch || !hasTarget) return null;
+  return git.isBranchMergedInto(repoPath, branch, target).catch(() => null);
+}
+
+/**
  * Probe the repository for the facts the expectation is judged against.
  *
  * Every field is tri-state: `true` / `false` / `null` for "could not determine".
@@ -164,26 +179,30 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
   // same tri-state contract and both return the change request's state in
   // `detail`, so no second round trip is needed to read it.
   const probePr = async () => {
-    if (!prExpected || !branchShouldBeGone) return { prState: null, prUrl: null, cli: null, readable: true };
+    if (!prExpected || !branchShouldBeGone) return { prState: null, prUrl: null, prNumber: null, cli: null, readable: true };
     const forge = await withTimeout(
       git.resolveForgeForRepo(sourceWorkspace).catch(() => null),
       FORGE_RESOLVE_TIMEOUT_MS,
       null
     );
-    if (!forge?.cli) return { prState: null, prUrl: null, cli: null, readable: false };
+    if (!forge?.cli) return { prState: null, prUrl: null, prNumber: null, cli: null, readable: false };
     const { cli, env } = forge;
     const found = cli === 'glab'
       ? await (await import('./gitlab.js')).findMergeRequestForBranch(branchName, sourceWorkspace)
         .catch(() => ({ status: 'unavailable' }))
       : await (await import('./github.js')).findPullRequestForBranch(branchName, { cwd: sourceWorkspace, env: env || null })
         .catch(() => ({ status: 'unavailable' }));
-    if (found.status === 'unavailable') return { prState: null, prUrl: null, cli, readable: false };
+    if (found.status === 'unavailable') return { prState: null, prUrl: null, prNumber: null, cli, readable: false };
     // `none` is a real answer, not a gap — `verifyPrClaim` already owns "the agent
     // never opened one", so there is nothing here to report and nothing missing.
-    if (found.status !== 'found') return { prState: null, prUrl: null, cli, readable: true };
+    if (found.status !== 'found') return { prState: null, prUrl: null, prNumber: null, cli, readable: true };
     return {
       prState: found.detail ? String(found.detail).toUpperCase() : null,
       prUrl: found.url || null,
+      // The forge's own identifier for the change request — a GitLab `glab mr
+      // merge` line needs the IID, and emitting a literal `<iid>` placeholder
+      // hands the recovery agent a command it cannot run.
+      prNumber: found.number ?? null,
       cli,
       readable: !!found.detail,
     };
@@ -200,14 +219,19 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
     probeLocalBranch(),
     probeRemoteBranch(),
     probeDefaultBranch(),
-    probePr().catch(() => ({ prState: null, prUrl: null, cli: null, readable: false })),
+    probePr().catch(() => ({ prState: null, prUrl: null, prNumber: null, cli: null, readable: false })),
   ]);
 
-  // Only meaningful while the branch still exists locally — `isBranchMergedInto`
-  // answers `false` for a missing ref, which would read as "unmerged work" for
-  // the successful case.
+  // Only meaningful while the branch still exists locally.
+  //
+  // `isBranchMergedInto` fails CLOSED — it returns `false`, not a throw, when it
+  // cannot resolve either ref (git.js). That polarity is right for its original
+  // caller, which preserves a branch on doubt; here it inverts into a FINDING, so
+  // an unreadable repo would file a recovery task claiming unmerged work. Resolve
+  // both refs first: if either cannot be read, the answer is `null` (unknown), and
+  // only a `false` backed by two resolvable refs is reported.
   const branchMerged = localBranchPresent === true && defaultBranch
-    ? await git.isBranchMergedInto(sourceWorkspace, branchName, defaultBranch).catch(() => null)
+    ? await probeBranchMerged(sourceWorkspace, branchName, defaultBranch)
     : null;
 
   // Which probes that COULD have produced a finding came back unreadable. The
@@ -234,6 +258,7 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
     branchMerged,
     prState: pr.prState,
     prUrl: pr.prUrl,
+    prNumber: pr.prNumber,
     forgeCli: pr.cli,
     defaultBranch,
     unreadable,
@@ -362,8 +387,8 @@ export const REPO_STATE_REMEDIATIONS = Object.freeze({
   // Forge-aware: `driveToMerge` emits a `gh pr merge` procedure, which a GitLab
   // recovery agent cannot run. Its non-gh caveats still apply on either forge —
   // merge from the repo ROOT, and remove the worktree before deleting the branch.
-  [REPO_STATE_ISSUES.PR_UNMERGED]: ({ prUrl, forgeCli }) => (forgeCli === 'glab'
-    ? `Finish the merge request${prUrl ? ` ${prUrl}` : ''}: fix failing pipeline jobs, resolve threads, then merge it from the repo ROOT (not inside the branch's worktree) with "glab mr merge <iid> --remove-source-branch". Remove the worktree before deleting the local branch — the delete fails while a worktree still has it checked out.`
+  [REPO_STATE_ISSUES.PR_UNMERGED]: ({ prUrl, prNumber, forgeCli }) => (forgeCli === 'glab'
+    ? `Finish the merge request${prUrl ? ` ${prUrl}` : ''}: fix failing pipeline jobs, resolve threads, then merge it from the repo ROOT (not inside the branch's worktree) with "glab mr merge ${prNumber ?? '<iid>'} --yes --remove-source-branch". Remove the worktree before deleting the local branch — the delete fails while a worktree still has it checked out.`
     : `Finish the pull request${prUrl ? ` ${prUrl}` : ''}. ${driveToMerge(prUrl || '<num>')}`),
 });
 
@@ -379,7 +404,7 @@ export const REPO_STATE_REMEDIATIONS = Object.freeze({
 async function fileRepoStateRecoveryTask({ agentId, task, branchName, sourceWorkspace, worktreePath, issues, observed, appId }) {
   const appName = task?.metadata?.appName || appId || 'PortOS';
   const base = observed.defaultBranch || 'the default branch';
-  const ctx = { branchName, base, prUrl: observed.prUrl, worktreePath, forgeCli: observed.forgeCli };
+  const ctx = { branchName, base, prUrl: observed.prUrl, prNumber: observed.prNumber, worktreePath, forgeCli: observed.forgeCli };
 
   const context = [
     'An agent finished successfully but the repository did not end up in the expected state.',
