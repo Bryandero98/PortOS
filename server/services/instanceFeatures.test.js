@@ -140,6 +140,17 @@ describe('instance features', () => {
       expect(await isInstanceFeatureEnabled('datadog')).toBe(false);
     });
 
+    // A PRESENT-but-corrupt config file is the case that fails silently: the
+    // detector must throw so this resolves to the shipped default, NOT report a
+    // confident "no instances" that would hide the navigation.
+    it('treats a corrupt integration config as detection failure, not "unconfigured"', async () => {
+      mock.datadogThrows = true;
+      mock.settings = {};
+
+      expect((await detectFeatureConfiguration()).datadog).toBeNull();
+      expect(byId((await getInstanceFeatures()).features, 'datadog')).toMatchObject({ source: 'default' });
+    });
+
     it('reports no detection for a feature with no detector', async () => {
       expect(await detectFeatureConfiguration()).toMatchObject({ post: null });
       expect(byId((await getInstanceFeatures()).features, 'post')).toMatchObject({ source: 'default' });

@@ -8,6 +8,7 @@ const mock = vi.hoisted(() => ({
 
 vi.mock('../../services/api', () => mock);
 
+import { INSTANCE_FEATURES_CHANGED } from '../../constants/events.js';
 import { __resetInstanceFeatureCache } from '../../hooks/useInstanceFeatures.js';
 import InstanceFeaturesTab from './InstanceFeaturesTab';
 
@@ -71,6 +72,27 @@ describe('InstanceFeaturesTab', () => {
     render(<InstanceFeaturesTab />);
 
     expect(await screen.findByText(/no JIRA instance is configured yet/i)).toBeInTheDocument();
+  });
+
+  // The sidebar and ⌘K read the same module cache; a retry that updated only
+  // this tab would leave them in the fail-open state until a full reload.
+  it('broadcasts a successful retry to the other consumers', async () => {
+    mock.getInstanceFeatures.mockRejectedValueOnce(new Error('offline'));
+    const heard = [];
+    const listen = (event) => heard.push(event.detail);
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, listen);
+
+    try {
+      render(<InstanceFeaturesTab />);
+      const retry = await screen.findByRole('button', { name: 'Retry' });
+      mock.getInstanceFeatures.mockResolvedValue({ features: [POST_FEATURE] });
+      fireEvent.click(retry);
+
+      await screen.findByRole('switch', { name: 'Disable POST on this instance' });
+      expect(heard.some((detail) => Array.isArray(detail?.features))).toBe(true);
+    } finally {
+      window.removeEventListener(INSTANCE_FEATURES_CHANGED, listen);
+    }
   });
 
   it('offers a retry when the feature list cannot be read', async () => {

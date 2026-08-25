@@ -32,8 +32,14 @@ export async function getInstances() {
 // Whether this install has any DataDog instance configured — the signal the
 // instance-feature registry uses to decide whether the DataDog nav entries
 // should appear before the user has toggled the feature explicitly.
+//
+// Deliberately NOT getInstances(): `strict` makes a PRESENT-but-corrupt config
+// throw instead of reading as the empty default, so the caller records
+// "detection failed" and falls back to the shipped default rather than a
+// confident "no instances" that would silently hide the DataDog navigation. An
+// absent file still returns the empty default — absent is a trustworthy empty.
 export async function hasConfiguredInstances() {
-  const config = await getInstances();
+  const config = await readJSONFile(DATADOG_CONFIG_FILE, { instances: {} }, { logError: false, strict: true });
   return Object.keys(config?.instances || {}).length > 0;
 }
 

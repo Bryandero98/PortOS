@@ -88,9 +88,15 @@ export function useInstanceFeatures() {
     return feature ? feature.enabled !== false : true;
   }, [features, error]);
 
+  // Announced rather than applied locally: after a failed first fetch every
+  // consumer is sitting in the fail-open error state, and a retry that updated
+  // only the Settings tab would leave the sidebar and ⌘K stale until a reload.
   const reload = useCallback(() => {
     cached = null;
-    return loadInstanceFeatures().then((result) => setState(result));
+    return loadInstanceFeatures().then((result) => {
+      if (result.features) publishInstanceFeatures(result.features);
+      else setState(result);
+    });
   }, []);
 
   return { features, error, isFeatureEnabled, reload };
@@ -104,6 +110,16 @@ export const publishInstanceFeatures = (features, { featureId, enabled } = {}) =
   window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
     detail: { featureId, enabled, features: Array.isArray(features) ? features : undefined },
   }));
+};
+
+/**
+ * Announce that the state a feature's AUTO-detection reads has changed — the
+ * integration pages call this after adding or removing an instance, because the
+ * DataDog/JIRA gates are derived from whether one is configured. Carries no
+ * feature list, so every listener re-fetches the freshly-resolved answer.
+ */
+export const invalidateInstanceFeatures = (featureId) => {
+  publishInstanceFeatures(null, { featureId });
 };
 
 // Test-only: drop the module cache so suites don't leak state between tests.

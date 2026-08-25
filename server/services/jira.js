@@ -15,8 +15,14 @@ const JIRA_CONFIG_FILE = path.join(PATHS.data, 'jira.json');
 // unlike getInstances() it never seeds an empty config file, because the
 // instance-feature registry calls it just to decide whether the JIRA nav
 // entries should appear on a fresh install.
+//
+// `strict` so a PRESENT-but-corrupt config throws instead of reading as the
+// empty default. The caller turns a throw into "detection failed" and falls back
+// to the shipped default; without it an unparseable jira.json would report a
+// confident "no instances" and silently hide the JIRA navigation. A genuinely
+// absent file still returns the empty default — absent is a trustworthy empty.
 export async function hasConfiguredInstances() {
-  const config = await readJSONFile(JIRA_CONFIG_FILE, { instances: {} }, { logError: false });
+  const config = await readJSONFile(JIRA_CONFIG_FILE, { instances: {} }, { logError: false, strict: true });
   return Object.keys(config?.instances || {}).length > 0;
 }
 
