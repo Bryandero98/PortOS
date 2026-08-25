@@ -32,6 +32,18 @@ export const THIRD_PERSON = {
   lookDampRate: 12, // aim smoothing (tighter than position so aim stays crisp)
 };
 
+// Scroll-wheel boom zoom: a multiplier over THIRD_PERSON.boom. Steps are multiplicative
+// (exp of the wheel delta) so each notch feels equally sized at both ends of the range,
+// the way pinch-zoom does.
+export const BOOM_ZOOM = {
+  min: 0.45,
+  max: 2.1,
+  wheelRate: 0.0011, // exp factor per unit of WheelEvent.deltaY
+};
+
+export const nextBoomZoom = (current, deltaY) =>
+  Math.min(BOOM_ZOOM.max, Math.max(BOOM_ZOOM.min, current * Math.exp(deltaY * BOOM_ZOOM.wheelRate)));
+
 // Arcade vehicle tuning for the default rover. It deliberately stops short of a full
 // rigid-body simulation: OpenWorld needs a dependable, low-latency toy-car feel on a
 // dashboard canvas, while still borrowing the important reference-game cues — ramped

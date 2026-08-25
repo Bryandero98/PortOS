@@ -17,7 +17,7 @@ const WHEEL_Z = CAR_LENGTH * 0.31;
 const _rootTarget = new THREE.Vector3();
 
 export default function PlayerAvatar({ rigRef }) {
-  const { accent, surface } = useOpenWorldPalette();
+  const { accent, surface, isDay } = useOpenWorldPalette();
   const rootRef = useRef();
   const bodyRef = useRef();
   const hoverRingRef = useRef();
@@ -31,6 +31,10 @@ export default function PlayerAvatar({ rigRef }) {
   const bodyShadow = mixHex('#263447', accent, 0.16);
   const glassColor = mixHex('#294765', accent, 0.22);
   const wheelColor = '#17212d';
+  // Night driving readability: additive light cones project from the headlamps after
+  // dark (the palette's day flag doubles as the world's local time of day). Visual-only
+  // beams — no real light — keeps the rig free of per-frame shadow/light cost.
+  const headlightsOn = !isDay;
 
   useFrame(({ clock }, delta) => {
     const root = rootRef.current;
@@ -114,6 +118,38 @@ export default function PlayerAvatar({ rigRef }) {
           <boxGeometry args={[CAR_WIDTH * 0.72, 0.26, CAR_LENGTH * 0.46]} />
           <meshStandardMaterial {...surface} color={glassColor} roughness={0.24} metalness={0.36} transparent opacity={0.92} />
         </mesh>
+        {/* Hood scoop breaks up the flat hood line and reads at speed. */}
+        <mesh position={[0, 0.72, -CAR_LENGTH * 0.16]}>
+          <boxGeometry args={[CAR_WIDTH * 0.26, 0.06, CAR_LENGTH * 0.16]} />
+          <meshStandardMaterial {...surface} color={bodyShadow} roughness={0.5} metalness={0.3} />
+        </mesh>
+        {/* Aero: front splitter + side skirts ground the body visually. */}
+        <mesh position={[0, 0.2, -CAR_LENGTH * 0.48]}>
+          <boxGeometry args={[CAR_WIDTH * 0.94, 0.05, 0.18]} />
+          <meshStandardMaterial color={wheelColor} roughness={0.85} metalness={0.1} />
+        </mesh>
+        {[-1, 1].map((side) => (
+          <mesh key={`skirt-${side}`} position={[side * (CAR_WIDTH / 2), 0.24, 0]}>
+            <boxGeometry args={[0.06, 0.13, CAR_LENGTH * 0.66]} />
+            <meshStandardMaterial color={wheelColor} roughness={0.85} metalness={0.1} />
+          </mesh>
+        ))}
+        {/* Rear wing on two struts — the silhouette cue that says "rover" from far away. */}
+        {[-1, 1].map((side) => (
+          <mesh key={`strut-${side}`} position={[side * CAR_WIDTH * 0.28, 0.76, CAR_LENGTH * 0.38]}>
+            <boxGeometry args={[0.05, 0.14, 0.07]} />
+            <meshStandardMaterial {...surface} color={bodyShadow} roughness={0.5} metalness={0.35} />
+          </mesh>
+        ))}
+        <mesh position={[0, 0.85, CAR_LENGTH * 0.4]}>
+          <boxGeometry args={[CAR_WIDTH * 1.04, 0.05, CAR_LENGTH * 0.13]} />
+          <meshStandardMaterial {...surface} color={bodyShadow} roughness={0.45} metalness={0.4} />
+        </mesh>
+        {/* Trailing accent strip along the wing's back edge. */}
+        <mesh position={[0, 0.85, CAR_LENGTH * 0.5]}>
+          <boxGeometry args={[CAR_WIDTH * 1.02, 0.03, 0.02]} />
+          <meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={0.5} />
+        </mesh>
         <mesh position={[0, 0.39, -CAR_LENGTH * 0.53]}>
           <boxGeometry args={[CAR_WIDTH * 0.88, 0.08, 0.1]} />
           <meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={0.45} />
@@ -122,6 +158,35 @@ export default function PlayerAvatar({ rigRef }) {
           <boxGeometry args={[CAR_WIDTH * 0.82, 0.07, 0.08]} />
           <meshStandardMaterial color="#ef5252" emissive="#ef5252" emissiveIntensity={0.28} />
         </mesh>
+        {/* Twin exhaust tips below the rear light bar. */}
+        {[-1, 1].map((side) => (
+          <mesh key={`exhaust-${side}`} position={[side * CAR_WIDTH * 0.18, 0.3, CAR_LENGTH * 0.54]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.045, 0.05, 0.09, 8]} />
+            <meshStandardMaterial color={bodyShadow} roughness={0.35} metalness={0.65} />
+          </mesh>
+        ))}
+
+        {/* Headlight beams after dark: apex at the lamp, cone spreading forward and a
+            touch down so the road ahead reads while driving at night. */}
+        {headlightsOn && [-1, 1].map((side) => (
+          <group key={`beam-${side}`} position={[side * CAR_WIDTH * 0.3, 0.55, -CAR_LENGTH * 0.55]} rotation={[-0.09, 0, 0]}>
+            {/* Cone axis is +Y by default; rotating +90° about X aims the apex
+                backward (+Z), so the mesh is offset half its height to plant the
+                apex on the lamp and spread the wide end out ahead of the rover. */}
+            <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0, 2.7]}>
+              <coneGeometry args={[1.15, 5.4, 10, 1, true]} />
+              <meshBasicMaterial
+                color="#ffe9b8"
+                transparent
+                opacity={0.13}
+                blending={THREE.AdditiveBlending}
+                depthWrite={false}
+                side={THREE.DoubleSide}
+                toneMapped={false}
+              />
+            </mesh>
+          </group>
+        ))}
 
         <group ref={thrusterRef} position={[0, 0.38, CAR_LENGTH * 0.58]} visible={false}>
           {[-CAR_WIDTH * 0.24, CAR_WIDTH * 0.24].map((offsetX, i) => (
