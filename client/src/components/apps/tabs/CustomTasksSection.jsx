@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, Play, Trash2, Edit3, Save, X, Clock } from 'lucide-react';
 import toast from '../../ui/Toast';
 import ToggleSwitch from '../../ToggleSwitch';
@@ -11,7 +11,8 @@ import { timeAgo } from '../../../utils/formatters';
 import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence } from '../../../utils/cronHelpers';
 import CronSchedulePicker from '../../CronSchedulePicker';
 import { AGENT_OPTIONS, agentOptionButtonClass } from '../../cos/constants';
-import AgentJobProviderFields, { activeProviderIdFromResponse, filterRunnableProviders } from '../../cos/AgentJobProviderFields';
+import AgentJobProviderFields from '../../cos/AgentJobProviderFields';
+import { filterRunnableProviders } from '../../../utils/providers';
 
 const INTERVAL_OPTIONS = [
   { value: 'hourly', label: 'Every Hour' },
@@ -276,24 +277,31 @@ export default function CustomTasksSection({ appId, appName }) {
   const [createForm, setCreateForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyForm);
-  const [providers, setProviders] = useState([]);
+  const [rawProviders, setRawProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState('');
   const [triggering, setTriggering] = useState(null);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
+  const providers = useMemo(
+    () => filterRunnableProviders(rawProviders, tasks.map(job => job.providerId)),
+    [rawProviders, tasks]
+  );
+
   const fetchTasks = useCallback(async () => {
-    const [data, providerData] = await Promise.all([
-      api.getCosJobs().catch(() => null),
-      api.getProviders({ silent: true }).catch(() => ({ providers: [] }))
-    ]);
+    const data = await api.getCosJobs({ silent: true }).catch(() => null);
     const appTasks = (data?.jobs || []).filter(j => j.appId === appId);
     setTasks(appTasks);
-    setProviders(filterRunnableProviders(providerData?.providers, appTasks.map(job => job.providerId)));
-    setActiveProviderId(activeProviderIdFromResponse(providerData?.activeProvider));
     setLoading(false);
   }, [appId]);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
+
+  useEffect(() => {
+    api.getProviders({ silent: true }).then(data => {
+      setRawProviders(data?.providers || []);
+      setActiveProviderId(data?.activeProvider || '');
+    }).catch(() => {});
+  }, []);
 
   const validate = (form) => {
     if (!form.name.trim()) { toast.error('Name is required'); return false; }

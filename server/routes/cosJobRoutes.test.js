@@ -468,6 +468,8 @@ describe('CoS Job Routes', () => {
         description: 'Review',
         priority: 'MEDIUM',
         metadata: {
+          autonomousJob: true,
+          jobId: 'j1',
           app: 'app-xyz',
           useWorktree: true,
           openPR: true,
@@ -490,7 +492,9 @@ describe('CoS Job Routes', () => {
           simplify: false,
           provider: 'anthropic',
           model: 'claude-opus-4-8',
-          effort: 'high'
+          effort: 'high',
+          autonomousJob: true,
+          jobId: 'j1'
         }),
         'internal'
       );

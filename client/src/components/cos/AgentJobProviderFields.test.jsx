@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import AgentJobProviderFields, { filterRunnableProviders } from './AgentJobProviderFields';
+import AgentJobProviderFields from './AgentJobProviderFields';
+import { filterRunnableProviders } from '../../utils/providers.js';
 
 const PROVIDERS = [
   {
@@ -89,5 +90,19 @@ describe('AgentJobProviderFields', () => {
 
     expect(screen.getByRole('option', { name: 'Ollama API' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Claude' })).toBeInTheDocument();
+  });
+
+  it('does not borrow active-provider models for an unresolvable saved pin', async () => {
+    render(
+      <AgentJobProviderFields
+        data={{ providerId: 'deleted-provider', model: 'deleted-model', effort: '' }}
+        providers={PROVIDERS}
+        activeProviderId="claude-code"
+        onChange={vi.fn()}
+      />
+    );
+    await act(async () => {});
+
+    expect(screen.queryByRole('option', { name: 'claude-sonnet' })).not.toBeInTheDocument();
   });
 });

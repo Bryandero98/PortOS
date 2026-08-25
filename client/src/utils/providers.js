@@ -175,6 +175,26 @@ export const PROVIDER_TYPES = Object.freeze({
   API: 'api'
 });
 
+// Agent jobs need the CLI/TUI file-writing harnesses. Keep this allowlist in
+// lockstep with isAgentHarness in server/services/agentProviderResolution.js.
+export const RUNNABLE_PROVIDER_TYPES = Object.freeze([
+  PROVIDER_TYPES.CLI,
+  PROVIDER_TYPES.TUI
+]);
+
+/**
+ * Retain an existing non-runnable pin so a saved job can still be edited and
+ * cleared, while limiting new agent-job selections to runnable providers.
+ */
+export const filterRunnableProviders = (providers, selectedProviderIds = []) => {
+  const preservedIds = new Set(
+    (Array.isArray(selectedProviderIds) ? selectedProviderIds : [selectedProviderIds]).filter(Boolean)
+  );
+  return (Array.isArray(providers) ? providers : []).filter(provider =>
+    RUNNABLE_PROVIDER_TYPES.includes(provider?.type) || preservedIds.has(provider?.id)
+  );
+};
+
 /**
  * Returns the provider's model list with internal sentinel values removed.
  * Use this anywhere a list of user-selectable models is needed.

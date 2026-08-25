@@ -205,7 +205,11 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     // so a manual run cannot silently lose its saved reasoning override.
     provider: task.metadata?.provider,
     model: task.metadata?.model,
-    effort: task.metadata?.effort
+    effort: task.metadata?.effort,
+    // Preserve the markers consumed by the job:spawned listener so Run now
+    // records the execution and re-registers the saved schedule.
+    autonomousJob: task.metadata?.autonomousJob,
+    jobId: task.metadata?.jobId
   }, 'internal');
 
   if (!taskResult?.id) {

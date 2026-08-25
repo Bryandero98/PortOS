@@ -5,7 +5,8 @@ import * as api from '../../../services/api';
 import { timeAgo, timeUntil, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence, JOB_INTERVAL_OPTIONS as INTERVAL_OPTIONS } from '../../../utils/cronHelpers';
 import CronSchedulePicker from '../../CronSchedulePicker';
-import AgentJobProviderFields, { activeProviderIdFromResponse, filterRunnableProviders } from '../AgentJobProviderFields';
+import AgentJobProviderFields from '../AgentJobProviderFields';
+import { filterRunnableProviders } from '../../../utils/providers';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
@@ -621,7 +622,7 @@ export default function JobsTab() {
   useEffect(() => {
     api.getProviders({ silent: true }).then(data => {
       setRawProviders(data?.providers || []);
-      setActiveProviderId(activeProviderIdFromResponse(data?.activeProvider));
+      setActiveProviderId(data?.activeProvider || '');
     }).catch(() => {});
   }, []);
 

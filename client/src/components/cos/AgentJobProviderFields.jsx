@@ -1,31 +1,5 @@
-import { effortAwareModelOptions, PROVIDER_TYPES } from '../../utils/providers.js';
+import { effortAwareModelOptions, filterRunnableProviders, resolveEffectiveProvider } from '../../utils/providers.js';
 import ProviderModelSelector from '../ProviderModelSelector.jsx';
-
-export const RUNNABLE_PROVIDER_TYPES = Object.freeze([
-  PROVIDER_TYPES.CLI,
-  PROVIDER_TYPES.TUI
-]);
-
-/**
- * Keep the provider source shared by every agent-job form. ProviderModelSelector
- * applies the enabled/hardware visibility rules while retaining a saved disabled
- * provider long enough for the user to clear or replace it.
- */
-export const filterRunnableProviders = (providers, selectedProviderIds = []) => {
-  const preservedIds = new Set(
-    (Array.isArray(selectedProviderIds) ? selectedProviderIds : [selectedProviderIds]).filter(Boolean)
-  );
-  return (Array.isArray(providers) ? providers : []).filter(provider =>
-    RUNNABLE_PROVIDER_TYPES.includes(provider?.type) || preservedIds.has(provider?.id)
-  );
-};
-
-/**
- * The providers endpoint has historically returned either an id or a provider
- * object in `activeProvider`; normalize both wire shapes for job forms.
- */
-export const activeProviderIdFromResponse = (activeProvider) =>
-  typeof activeProvider === 'string' ? activeProvider : (activeProvider?.id || '');
 
 /**
  * Shared provider/model/effort controls for persisted CoS agent jobs.
@@ -44,15 +18,14 @@ export default function AgentJobProviderFields({
 }) {
   if (!providers?.length) return null;
 
-  const selectedProvider = providers.find(provider => provider.id === data.providerId)
-    || providers.find(provider => provider.id === activeProviderId);
-  const selectableProviders = providers.filter(provider =>
-    RUNNABLE_PROVIDER_TYPES.includes(provider?.type) || provider?.id === data.providerId
+  const selectableProviders = filterRunnableProviders(providers, data.providerId);
+  const { provider: selectedProvider, usingActive } = resolveEffectiveProvider(
+    selectableProviders,
+    data.providerId,
+    activeProviderId
   );
   const availableModels = effortAwareModelOptions(selectedProvider, data.model);
-  const effectiveProviderId = data.providerId
-    ? undefined
-    : (RUNNABLE_PROVIDER_TYPES.includes(selectedProvider?.type) ? (activeProviderId || undefined) : undefined);
+  const effectiveProviderId = usingActive ? (activeProviderId || undefined) : undefined;
 
   return (
     <div>
