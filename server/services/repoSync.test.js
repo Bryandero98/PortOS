@@ -58,6 +58,7 @@ const {
 const cleanState = (over = {}) => ({
   repoPath: '/tmp/example-repo',
   isRepo: true,
+  hasOrigin: true,
   fetchError: null,
   defaultBranch: 'main',
   remoteDefault: 'origin/main',
@@ -152,6 +153,13 @@ describe('planRepoSync — refuses to act on an unsettled repo', () => {
     expect(kinds(escalations)).toContain(ESCALATION_KINDS.SCAN_FAILED);
   });
 
+  it('refuses to mutate a repository with no origin remote', () => {
+    const { steps, escalations } = planRepoSync(cleanState({ hasOrigin: false, remoteDefault: null }));
+    expect(steps).toEqual([]);
+    expect(kinds(escalations)).toEqual([ESCALATION_KINDS.SCAN_FAILED]);
+    expect(escalations[0].detail).toContain('no origin remote');
+  });
+
   it('plans nothing when a snapshot read failed', () => {
     // An unreadable status/branch/stash read defaults to the value that LOOKS
     // safe (clean tree, no branches, no stashes) — exactly the values that unlock
@@ -188,6 +196,15 @@ describe('planRepoSync — publishing local commits', () => {
   it('pushes a branch that is strictly ahead of its upstream', () => {
     const { steps } = planRepoSync(cleanState({ branches: [branch('feature/x', { ahead: 2 })] }));
     expect(steps).toEqual([{ kind: 'push', branch: 'feature/x', ahead: 2, remote: 'origin', remoteRef: 'feature/x' }]);
+  });
+
+  it('does not push a branch checked out in another worktree', () => {
+    const { steps, escalations } = planRepoSync(cleanState({
+      branches: [branch('feature/x', { ahead: 2, worktree: true })]
+    }));
+    expect(steps).toEqual([]);
+    expect(kinds(escalations)).toEqual([ESCALATION_KINDS.IN_FLIGHT_BRANCH]);
+    expect(escalations[0].detail).toContain('another worktree');
   });
 
   it('never pushes a branch that has diverged — it escalates instead', () => {
@@ -619,7 +636,7 @@ describe('syncRepo — the argv it issues is the non-destructive form', () => {
     gitMocks.isRepo.mockResolvedValueOnce(false);
     const result = await syncRepo({ repoPath: process.cwd(), name: 'Not a repo' });
     expect(result.notARepo).toBe(true);
-    expect(result.escalations).toEqual([]);
+    expect(result.escalations[0].kind).toBe(ESCALATION_KINDS.SCAN_FAILED);
   });
 });
 

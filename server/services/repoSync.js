@@ -143,6 +143,9 @@ const STASH_CLASSIFY_CONCURRENCY = 6;
  */
 async function detectOperationInProgress(repoPath) {
   const out = await execGitSafe(['rev-parse', '--git-dir'], repoPath, { ignoreExitCode: true });
+  if (out.exitCode !== 0) {
+    throw new Error(out.stderr || `could not inspect git operation state (exit code ${out.exitCode})`);
+  }
   const raw = (out.stdout || '').trim();
   if (!raw) return null;
   const gitDir = isAbsolute(raw) ? raw : join(repoPath, raw);
@@ -294,7 +297,7 @@ async function collectRepoState(repoPath) {
 
   const [operationInProgress, origin] = await Promise.all([
     detectOperationInProgress(repoPath),
-    getOriginInfo(repoPath).catch(() => null)
+    getOriginInfo(repoPath)
   ]);
   const hasOrigin = Boolean(origin?.hasOrigin);
 
@@ -324,10 +327,10 @@ async function collectRepoState(repoPath) {
     return fallback;
   });
   const [defaultBranch, headBranch, porcelain, branches, rawStashes, activeAgentId] = await Promise.all([
-    getDefaultBranch(repoPath).then((b) => b || 'main', () => 'main'),
+    required('default branch', getDefaultBranch(repoPath, { strict: true }), null),
     required('current branch', getBranch(repoPath), ''),
     required('working-tree status', getStatusPorcelain(repoPath), ''),
-    required('branch list', getBranches(repoPath), []),
+    required('branch list', getBranches(repoPath, { strict: true }), []),
     // The planner refuses to act on a repo mid-operation, so classifying its
     // stashes (2–3 git spawns each) buys nothing.
     operationInProgress
@@ -342,15 +345,22 @@ async function collectRepoState(repoPath) {
         }),
     // A lookup failure here must NOT read as "nobody is working in this
     // checkout" — that is the fact every mutating step below is gated on.
-    required('active-agent lookup', findActiveAgentInWorkspace(repoPath), null)
+    required('active-agent lookup', findActiveAgentInWorkspace(repoPath, { includePaused: true, failClosed: true }), null)
   ]);
+
+  if (!defaultBranch) readFailures.push('default branch: no default branch could be determined');
 
   const detached = headBranch === 'HEAD' || headBranch === '';
   const currentBranch = detached ? null : headBranch;
   const dirtyTracked = dirtyTrackedPaths(porcelain);
   const remoteDefault = hasOrigin ? `origin/${defaultBranch}` : null;
-  const remotes = await execGitSafe(['remote'], repoPath, { ignoreExitCode: true })
-    .then((r) => (r.exitCode === 0 ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []));
+  const remoteResult = await execGitSafe(['remote'], repoPath, { ignoreExitCode: true });
+  const remotes = remoteResult.exitCode === 0
+    ? remoteResult.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+    : [];
+  if (remoteResult.exitCode !== 0) {
+    readFailures.push(`remote list: ${remoteResult.stderr || `git exited with code ${remoteResult.exitCode}`}`);
+  }
 
   // How the LOCAL default branch stands against origin's copy — the number that
   // decides fast-forward vs "diverged, hand it to the agent". `getBranches`
@@ -358,16 +368,20 @@ async function collectRepoState(repoPath) {
   // case needs no extra spawn; the `rev-list` fallback covers a default branch
   // that tracks something other than `origin/<default>` (or nothing at all).
   const defaultEntry = branches.find((b) => b.name === defaultBranch);
-  const defaultDivergence = !remoteDefault
-    ? null
-    : defaultEntry?.tracking === remoteDefault
+  let defaultDivergence = null;
+  if (remoteDefault) {
+    defaultDivergence = defaultEntry?.tracking === remoteDefault
       ? { ahead: defaultEntry.ahead, behind: defaultEntry.behind }
       : await countAheadBehind(repoPath, defaultBranch, remoteDefault);
+    if (!defaultDivergence) {
+      readFailures.push(`default branch comparison: could not compare ${defaultBranch} with ${remoteDefault}`);
+    }
+  }
 
   // Compare stashes against origin's default when we have it (that is what the
   // branch will be after the fast-forward below) and the local default
   // otherwise, so an offline machine still gets a correct — just staler — answer.
-  const stashTarget = remoteDefault && defaultDivergence ? remoteDefault : defaultBranch;
+  const stashTarget = remoteDefault && !fetchError ? remoteDefault : defaultBranch;
 
   // `getBranches` derives ahead/behind from `%(upstream:track)`, which is EMPTY
   // for a branch that was never pushed — so its `ahead` is 0 and the
@@ -377,8 +391,13 @@ async function collectRepoState(repoPath) {
   const localOnly = branches.filter((b) => !b.tracking && b.name !== defaultBranch);
   const localAheadByBranch = new Map(await mapWithConcurrency(localOnly, STASH_CLASSIFY_CONCURRENCY, async (b) => [
     b.name,
-    (await countAheadBehind(repoPath, b.name, defaultBranch))?.ahead ?? 0
+    (await countAheadBehind(repoPath, b.name, defaultBranch))?.ahead ?? null
   ]));
+  for (const branch of localOnly) {
+    if (localAheadByBranch.get(branch.name) === null) {
+      readFailures.push(`local branch comparison for ${branch.name}: could not compare with ${defaultBranch}`);
+    }
+  }
   const branchesWithLocalAhead = branches.map((b) => (
     localAheadByBranch.has(b.name) ? { ...b, localAhead: localAheadByBranch.get(b.name) } : b
   ));
@@ -405,6 +424,7 @@ async function collectRepoState(repoPath) {
   return {
     repoPath,
     isRepo: true,
+    hasOrigin,
     fetchError,
     readFailures,
     remotes,
@@ -478,6 +498,12 @@ export function planRepoSync(state, actions = {}) {
     return { steps, escalations };
   }
 
+  if (state.hasOrigin !== true) {
+    escalate(ESCALATION_KINDS.SCAN_FAILED,
+      'no origin remote is configured — the repository cannot be synchronized automatically');
+    return { steps, escalations };
+  }
+
   // Somebody's agent is working in this checkout right now. Pushing its branch,
   // fast-forwarding under it, dropping its stashes, or reaping its worktrees all
   // race live work — the switch-back gate below is NOT enough on its own.
@@ -528,6 +554,16 @@ export function planRepoSync(state, actions = {}) {
       continue;
     }
     if (branch.ahead > 0 && actionOn(actions, 'syncPush')) {
+      // A branch checked out in another worktree may belong to a live agent or
+      // a human. Publishing it from the source checkout would race that work
+      // and could expose an unfinished branch, so leave it for judgment. The
+      // branch-reconcile pass has the worktree ownership gates needed to decide
+      // whether that tree is safe to clean up later.
+      if (branch.worktree) {
+        escalate(ESCALATION_KINDS.IN_FLIGHT_BRANCH,
+          `${branch.name} is checked out in another worktree — left untouched`);
+        continue;
+      }
       // The ahead count was measured against THIS branch's configured upstream,
       // so the push has to go there. `git push origin <local name>` would publish
       // to a different ref whenever the upstream is on another remote or carries
@@ -726,7 +762,13 @@ export async function syncRepo(repo, { activeAgentIds = new Set() } = {}) {
   if (state.scanError) {
     return { ...base, escalations: [{ kind: ESCALATION_KINDS.SCAN_FAILED, detail: state.scanError }] };
   }
-  if (!state.isRepo) return { ...base, notARepo: true };
+  if (!state.isRepo) {
+    return {
+      ...base,
+      notARepo: true,
+      escalations: [{ kind: ESCALATION_KINDS.SCAN_FAILED, detail: 'managed app path is not a git repository' }]
+    };
+  }
 
   const { steps, escalations } = planRepoSync(state, actions);
   const performed = [];
@@ -751,7 +793,9 @@ export async function syncRepo(repo, { activeAgentIds = new Set() } = {}) {
   // Gated on the same facts the planner refuses to act without: reconcile
   // DELETES branches and worktrees, so an incomplete snapshot, a live agent, or
   // an unfetched origin must keep it out exactly as they keep out the steps above.
-  const reconcileSafe = !state.operationInProgress
+  const reconcileSafe = state.hasOrigin === true
+    && Boolean(state.defaultBranch && state.remoteDefault)
+    && !state.operationInProgress
     && !state.readFailures?.length
     && !state.activeAgentId
     && !state.fetchError;

@@ -671,7 +671,7 @@ export async function suggestPRTitle(dir, baseBranch, headBranch, fallbackText) 
   return firstLine.trim().substring(0, 100) || 'CoS automated task';
 }
 
-export async function getDefaultBranch(dir, { allowRemote = true } = {}) {
+export async function getDefaultBranch(dir, { allowRemote = true, strict = false } = {}) {
   const symRef = await execGitSafe(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], dir);
   if (symRef.stdout?.trim()) {
     const branch = symRef.stdout.trim().replace(/^origin\//, '');
@@ -696,6 +696,11 @@ export async function getDefaultBranch(dir, { allowRemote = true } = {}) {
   const branches = (result.stdout || '').trim().split('\n').map(b => b.replace(/^\*?\s+/, '')).filter(Boolean);
   if (branches.includes('main')) return 'main';
   if (branches.includes('master')) return 'master';
+
+  // Callers that are about to mutate a checkout need a known default branch;
+  // falling back to whichever feature branch happens to be checked out would
+  // make a remote-sync operation treat that branch as the canonical target.
+  if (strict) return null;
 
   // Last resort: use the currently checked-out branch
   const head = await execGitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], dir);
@@ -770,7 +775,7 @@ async function getLocalMergedBranchNames(dir, defaultBranch) {
  * Get all local branches with tracking info
  * @returns {Promise<Array<{name: string, current: boolean, tracking: string|null, ahead: number, behind: number, isDefault: boolean, merged: boolean, worktree: boolean}>>}
  */
-export async function getBranches(dir) {
+export async function getBranches(dir, { strict = false } = {}) {
   // Get branches with verbose info (includes tracking)
   const [result, { baseBranch }, worktreeBranches] = await Promise.all([
     execGit(
@@ -781,6 +786,10 @@ export async function getBranches(dir) {
     getRepoBranches(dir),
     getWorktreeBranches(dir)
   ]);
+
+  if (strict && result.exitCode !== 0) {
+    throw new Error(result.stderr || `git branch -vv failed with exit code ${result.exitCode}`);
+  }
 
   const defaultBranch = baseBranch || 'main';
   const protectedSet = new Set(PROTECTED_BRANCHES);
@@ -1239,13 +1248,22 @@ async function clearSequencerState(dir, gitDirPath) {
  * @param {string} dir - Repo root to check
  * @returns {Promise<string|null>} - Agent id, or null
  */
-export async function findActiveAgentInWorkspace(dir) {
-  const { getAgents } = await import('./cosAgentLifecycle.js').catch(() => ({ getAgents: null }));
-  if (!getAgents) return null;
-  const agents = await getAgents().catch(() => []);
+export async function findActiveAgentInWorkspace(dir, { includePaused = false, failClosed = false } = {}) {
+  const { getAgents } = await import('./cosAgentLifecycle.js').catch((err) => {
+    if (failClosed) throw err;
+    return { getAgents: null };
+  });
+  if (!getAgents) {
+    if (failClosed) throw new Error('could not load the CoS agent registry');
+    return null;
+  }
+  const agents = await getAgents().catch((err) => {
+    if (failClosed) throw err;
+    return [];
+  });
   const target = resolve(dir);
   const busy = agents.find(agent =>
-    agent.status === 'running'
+    (agent.status === 'running' || (includePaused && agent.status === 'paused'))
     && agent.metadata?.workspacePath
     && resolve(agent.metadata.workspacePath) === target
   );
