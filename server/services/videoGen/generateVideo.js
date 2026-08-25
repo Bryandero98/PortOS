@@ -103,7 +103,8 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 // Attach the runtime capabilities a model entry can't express on its own:
 // whether an FFLF last frame is a real anchor, and whether the *installed* BYOV
 // runner can apply user LoRAs (H3's DiT is quantized, so that depends on the
-// pinned checkout — see runtimes.js `loraProbeArgs`). Both are declared in
+// pinned checkout plus PortOS's activation-space adapter — see runtimes.js
+// `loraProbeArgs`). Both are declared in
 // runtimes.js and surfaced here so the Video Gen form and videoLoraFamily() read
 // them off the model instead of keeping their own lists. Applied by BOTH model
 // resolvers, so the render path and the API payload can never disagree about
@@ -303,9 +304,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   // Resolve LoRA basenames → absolute { path, strength } pairs up-front so a
   // missing/typo'd LoRA fails with a clean 400 before any GPU work. buildArgs
-  // rejects LoRAs on non-ltx2 runtimes (the route also guards), so this is a
-  // no-op there.
-  const resolvedLoras = await resolveVideoLoras(loras, { probeEffect: true });
+  // rejects LoRAs on runtimes without a compatible loader (the route also
+  // guards), so this remains a no-op for those doomed jobs.
+  const resolvedLoras = await resolveVideoLoras(loras, { probeEffect: true, runtime: model.runtime });
   // `model` was decorated from a SYNC cache read, which is false on a cold
   // cache. Resolve the probe and re-decorate from the settled verdict before
   // buildArgs reads it off the snapshot — otherwise the first LoRA render after

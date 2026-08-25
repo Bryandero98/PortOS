@@ -956,8 +956,8 @@ async function resolvePreparedParams({
   // _pending_loras hook, see scripts/generate_ltx2.py) and non-quantized
   // LTX-2.x `mlx_video` models (merged offline by scripts/generate_av_lora.py).
   // `minimax_h3` applies them at runtime, but only if the installed checkout
-  // implements a quant-aware applicator — listVideoModels() decorates that
-  // probe result as `runtimeLoraCapable`, which videoLoraFamily() reads.
+  // passes PortOS's quant-aware adapter probe — listVideoModels() decorates that
+  // result as `runtimeLoraCapable`, which videoLoraFamily() reads.
   // videoLoraFamily() returns null for everything else (wan22 / hunyuan /
   // quantized mlx_video) — reject up-front so a bad modelId can't enqueue a
   // doomed job that only fails in the worker.

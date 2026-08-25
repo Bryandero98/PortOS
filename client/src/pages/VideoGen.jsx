@@ -1280,9 +1280,9 @@ export default function VideoGen() {
               </FormField>
             )}
 
-            {/* Video LoRAs — only on ltx2-runtime models (loraFamily non-null)
-                and only when at least one video-family LoRA is installed
-                (videoLoras is the strict ltx-video subset; see the hook). */}
+            {/* Video LoRAs — only on runtimes with a compatible video family
+                (loraFamily non-null) and when at least one matching LoRA is
+                installed (videoLoras is the strict family subset; see hook). */}
             {loraFamily && videoLoras.length > 0 && (
               <div className="col-span-2 sm:col-span-3">
                 <LoraPicker
@@ -1313,7 +1313,7 @@ export default function VideoGen() {
                 {loraUnavailableHint.kind === 'ltx' ? (
                   <>You have {loraUnavailableHint.count} LTX video LoRA{loraUnavailableHint.count === 1 ? '' : 's'} installed, but <strong className="font-semibold">{currentModel?.name}</strong> can't fuse LoRAs (its quantized <code>mlx_video</code> runtime isn't supported yet). Switch to the <strong className="font-semibold">LTX-2.3 Unified Beta</strong> (bf16) or an <strong className="font-semibold">LTX-2.3 dgrauet (Q4/Q8)</strong> model to use them.</>
                 ) : (
-                  <>You have {loraUnavailableHint.count} MiniMax H3 LoRA{loraUnavailableHint.count === 1 ? '' : 's'} installed, but the installed H3 runtime can't apply them — its DiT is quantized, so LoRAs need a runner that applies them at render time from quantization metadata. Upgrade the <strong className="font-semibold">MiniMax H3</strong> runtime from the model setup panel once a build that supports it is pinned.</>
+                  <>You have {loraUnavailableHint.count} MiniMax H3 LoRA{loraUnavailableHint.count === 1 ? '' : 's'} installed, but this H3 runtime did not pass PortOS's quantization-aware LoRA probe. Repair the <strong className="font-semibold">MiniMax H3</strong> runtime from the model setup panel, then retry.</>
                 )}
               </div>
             )}
@@ -1494,7 +1494,13 @@ export default function VideoGen() {
         label={byovStatus?.label}
         streamMethod="POST"
         onClose={() => setInstallModalOpen(false)}
-        onComplete={() => refreshByovStatus()}
+        onComplete={() => {
+          refreshByovStatus();
+          // The capability probe is part of /video-gen/status's model
+          // decoration. Refresh it after install/repair so H3's LoRA picker
+          // and warning react without a manual page reload.
+          refreshStatus();
+        }}
       />
     </div>
   );

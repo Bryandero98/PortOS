@@ -43,6 +43,8 @@ const state = vi.hoisted(() => ({
   // (settings.videoGen.acceptedModelTerms) the terms endpoints read and write.
   acceptedTerms: [],
   setVideoModelTerms: vi.fn(),
+  getVideoGenStatus: vi.fn(),
+  runtimeInstallComplete: null,
 }));
 
 // Acceptance lives on the server, not in this browser, so a single
@@ -58,15 +60,7 @@ vi.mock('../services/api', () => ({
   // as a media provider the picker renders nothing and every local path below
   // is unchanged.
   getInstances: vi.fn(async () => ({ peers: [] })),
-  getVideoGenStatus: vi.fn(async () => ({
-    connected: true,
-    pythonPath: '/opt/example/python3',
-    defaultModel: 'h3-one',
-    models: [H3_ONE, H3_TWO],
-    byovRuntimes: [],
-    systemMemoryGb: 128,
-    backendDisclosures: [],
-  })),
+  getVideoGenStatus: (...args) => state.getVideoGenStatus(...args),
   generateVideo: (...args) => state.generateVideo(...args),
   cancelVideoGen: vi.fn(async () => ({})),
   listVideoHistory: vi.fn(async () => []),
@@ -135,7 +129,12 @@ vi.mock('../components/ui/Toast', () => ({
 vi.mock('../components/Drawer', () => ({ default: () => null }));
 vi.mock('../components/settings/ImageGenTab', () => ({ ImageGenTab: () => null }));
 vi.mock('../components/settings/LocalSetupPanel', () => ({ default: () => null }));
-vi.mock('../components/install/RuntimeInstallModal', () => ({ default: () => null }));
+vi.mock('../components/install/RuntimeInstallModal', () => ({
+  default: ({ onComplete }) => {
+    state.runtimeInstallComplete = onComplete;
+    return null;
+  },
+}));
 vi.mock('../components/videoGen/FramePanel', () => ({ default: () => null }));
 vi.mock('../components/videoGen/KeyframePanel', () => ({ default: () => null }));
 vi.mock('../components/videoGen/AudioPanel', () => ({ default: () => null }));
@@ -187,6 +186,16 @@ describe('VideoGen MiniMax H3 orchestration', () => {
         : state.acceptedTerms.filter((id) => id !== termsId);
       return { accepted: [...state.acceptedTerms] };
     });
+    state.getVideoGenStatus.mockReset().mockResolvedValue({
+      connected: true,
+      pythonPath: '/opt/example/python3',
+      defaultModel: 'h3-one',
+      models: [H3_ONE, H3_TWO],
+      byovRuntimes: [],
+      systemMemoryGb: 128,
+      backendDisclosures: [],
+    });
+    state.runtimeInstallComplete = null;
     state.eventSourceRef.current = null;
     state.attach.mockReset().mockImplementation(async (_jobId, handlers) => {
       handlers.onComplete({ result: { filename: 'example.mp4' } });
@@ -246,5 +255,15 @@ describe('VideoGen MiniMax H3 orchestration', () => {
     expect(repair).toBeEnabled();
     fireEvent.click(repair);
     expect(state.repairModel).toHaveBeenCalledWith(H3_ONE.id);
+  });
+
+  it('refreshes the model capability payload after runtime setup completes', async () => {
+    await renderPage();
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue(H3_ONE.id));
+    const before = state.getVideoGenStatus.mock.calls.length;
+
+    await act(async () => { await state.runtimeInstallComplete(); });
+
+    await waitFor(() => expect(state.getVideoGenStatus).toHaveBeenCalledTimes(before + 1));
   });
 });

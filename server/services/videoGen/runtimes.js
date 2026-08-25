@@ -143,16 +143,13 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     // Install / Repair passes the flag (scripts/setup-image-video.sh), which is
     // where a pin bump is actionable.
     probeArgs: [MINIMAX_H3_RUNTIME_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
-    // Separate, OPTIONAL capability probe: can this checkout apply LoRAs to the
-    // quantized DiT at runtime? H3's shipped weights are 8-bit, so a LoRA can
-    // only ride along if the runner reads logical layer dims from the
-    // quantization metadata and adds deltas in the forward pass (fusing into
-    // packed-uint32 weights is not possible). The pinned revision has no LoRA
-    // code at all, so this probe fails today and LoRAs stay rejected with a
-    // precise reason — advancing the pin to a revision that satisfies the
-    // contract (see scripts/minimax_h3_lora_probe.py) opens the gate with no
-    // code change here. Absence of this key means "runtime can never take
-    // LoRAs", which is the correct answer for wan22 / hunyuan.
+    // Separate, OPTIONAL capability probe: can PortOS apply LoRAs to this
+    // checkout's quantized DiT at runtime? H3's shipped weights are 8-bit, so
+    // the applicator must read logical layer dims from quantization metadata
+    // and add deltas in the forward pass (fusing into packed-uint32 weights is
+    // not possible). The probe exercises the local adapter against the pinned
+    // runtime without loading the model. Absence of this key means "runtime can
+    // never take LoRAs", which is the correct answer for wan22 / hunyuan.
     loraProbeArgs: [MINIMAX_H3_LORA_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
     fingerprintPackages: ['mlx', 'mlx-metal', 'mlx-vlm', 'transformers', 'huggingface-hub'],
   },
@@ -344,11 +341,11 @@ const summarizeProbeStderr = (stderr) => stderr.replace(/\s+/g, ' ').trim() || '
 // unread pipe can fill and block the child.
 //
 // Two negative outcomes, deliberately different icons: a non-zero exit is the
-// probe ANSWERING — for the LoRA probe, "this checkout has no applicator" is
-// the documented normal verdict (see scripts/minimax_h3_lora_probe.py), cached
-// as a legitimate `false` — while a spawn error or timeout means it never
-// answered at all. Calling the first one a failure cries wolf on every healthy
-// install that predates the applicator.
+// probe ANSWERING — for the LoRA probe, "the runtime plus adapter cannot apply"
+// is the documented normal verdict (see scripts/minimax_h3_lora_probe.py),
+// cached as a legitimate `false` — while a spawn error or timeout means it
+// never answered at all. Calling the first one a failure cries wolf on every
+// healthy install with an incompatible runtime.
 //
 // `label` names the runtime and which probe ran, so a status request that fans
 // out over several runtimes produces attributable lines. It must never carry a
@@ -451,7 +448,7 @@ export function byovRuntimeLoraCapable(runtimeId) {
 export function videoLoraUnsupportedError(model, modelId) {
   if (model?.runtime === 'minimax_h3') {
     return new ServerError(
-      `The installed MiniMax H3 runtime cannot apply LoRAs. Model "${modelId}" has a quantized DiT, so LoRAs need a runner that applies them at render time from quantization metadata — the pinned checkout has no such applicator. Upgrade the H3 runtime from Video Gen once a build that supports it is pinned.`,
+      `The installed MiniMax H3 runtime cannot apply LoRAs. Model "${modelId}" has a quantized DiT, so PortOS needs its quantization-aware render-time adapter to pass the runtime capability probe. Repair the H3 runtime from Video Gen, then retry.`,
       { status: 400, code: 'MINIMAX_H3_LORA_UNSUPPORTED' },
     );
   }

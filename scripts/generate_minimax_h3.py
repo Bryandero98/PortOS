@@ -661,14 +661,14 @@ def main() -> int:
     # applicator has to take each layer's logical dims from the quantization
     # metadata (packed-uint32 storage shapes match no LoRA) and add the deltas
     # during the forward pass. PortOS only ever passes --lora when its capability
-    # probe has already confirmed this module exists, so an ImportError here is a
-    # real contract violation and should surface, not be swallowed.
+    # probe has already exercised this local applicator, so an import or shape
+    # error here is a real contract violation and should surface, not be swallowed.
     if args.lora:
         print("STAGE:apply-loras", file=sys.stderr, flush=True)
-        from minimax_h3_mlx.lora import apply_loras
+        from minimax_h3_lora import apply_loras
 
         apply_loras(
-            pipe.transformer,
+            pipe.dit,
             [{"path": p, "scale": s} for p, s in zip(args.lora, args.lora_scale)],
         )
 
