@@ -49,6 +49,23 @@ describe('AgentJobProviderFields', () => {
     expect(onChange).toHaveBeenCalledWith({ providerId: 'codex', model: '', effort: '' });
   });
 
+  it('pins the active provider when a model is selected from the inherited state', async () => {
+    const onChange = vi.fn();
+    render(
+      <AgentJobProviderFields
+        data={{ providerId: '', model: '', effort: '' }}
+        providers={PROVIDERS}
+        activeProviderId="claude-code"
+        onChange={onChange}
+      />
+    );
+    await act(async () => {});
+
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'claude-sonnet' } });
+
+    expect(onChange).toHaveBeenCalledWith({ providerId: 'claude-code', model: 'claude-sonnet' });
+  });
+
   it('keeps a legacy Antigravity model pin visible while it is being edited', async () => {
     render(
       <AgentJobProviderFields

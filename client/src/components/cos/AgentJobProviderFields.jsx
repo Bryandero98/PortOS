@@ -7,6 +7,8 @@ import ProviderModelSelector from '../ProviderModelSelector.jsx';
  * Empty selections are intentional inherit/default sentinels. Changing the
  * provider clears the model and effort together, while a saved legacy model pin
  * remains visible through effortAwareModelOptions until the user changes it.
+ * Selecting a model or effort from the inherited state pins the active provider
+ * too, so a later active-provider change cannot make that override incompatible.
  * Existing API-only pins remain in the input list only long enough to be cleared;
  * new selections are restricted to providers with a CoS coding harness.
  */
@@ -26,6 +28,8 @@ export default function AgentJobProviderFields({
   );
   const availableModels = effortAwareModelOptions(selectedProvider, data.model);
   const effectiveProviderId = usingActive ? (activeProviderId || undefined) : undefined;
+  const patchWithActiveProvider = (patch) =>
+    data.providerId || !activeProviderId ? patch : { providerId: activeProviderId, ...patch };
 
   return (
     <div>
@@ -37,9 +41,9 @@ export default function AgentJobProviderFields({
         selectedModel={data.model || ''}
         availableModels={availableModels}
         onProviderChange={providerId => onChange({ providerId, model: '', effort: '' })}
-        onModelChange={model => onChange({ model })}
+        onModelChange={model => onChange(patchWithActiveProvider({ model }))}
         effort={data.effort || ''}
-        onEffortChange={effort => onChange({ effort })}
+        onEffortChange={effort => onChange(patchWithActiveProvider({ effort }))}
         compact
         emptyProviderOption="Default (active provider)"
         emptyModelOption="Default model"

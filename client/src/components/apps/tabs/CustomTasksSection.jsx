@@ -269,7 +269,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone, provid
   );
 }
 
-export default function CustomTasksSection({ appId, appName }) {
+export default function CustomTasksSection({ appId, appName, providerCatalog, activeProviderId: inheritedActiveProviderId = '' }) {
   const timezone = useUserTimezone();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -277,8 +277,8 @@ export default function CustomTasksSection({ appId, appName }) {
   const [createForm, setCreateForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyForm);
-  const [rawProviders, setRawProviders] = useState([]);
-  const [activeProviderId, setActiveProviderId] = useState('');
+  const [rawProviders, setRawProviders] = useState(providerCatalog || []);
+  const [activeProviderId, setActiveProviderId] = useState(inheritedActiveProviderId);
   const [triggering, setTriggering] = useState(null);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
@@ -297,11 +297,16 @@ export default function CustomTasksSection({ appId, appName }) {
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
   useEffect(() => {
+    if (providerCatalog) {
+      setRawProviders(providerCatalog);
+      setActiveProviderId(inheritedActiveProviderId || '');
+      return;
+    }
     api.getProviders({ silent: true }).then(data => {
       setRawProviders(data?.providers || []);
       setActiveProviderId(data?.activeProvider || '');
     }).catch(() => {});
-  }, []);
+  }, [providerCatalog, inheritedActiveProviderId]);
 
   const validate = (form) => {
     if (!form.name.trim()) { toast.error('Name is required'); return false; }

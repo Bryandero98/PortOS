@@ -104,7 +104,10 @@ import {
   executeScheduledJob,
   getScheduledActionReservations,
   clearSpawningJob,
+  registerSingleJobSchedule,
 } from './cosJobScheduler.js';
+import { schedule as scheduleEvent, cancel as cancelEvent } from './eventScheduler.js';
+import { getJob } from './autonomousJobs.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
 
 beforeEach(() => {
@@ -217,5 +220,18 @@ describe('executeScheduledJob — same-tick daily-action budget race (#984)', ()
     await executeScheduledJob('job-a');
     expect(generateTaskFromJob).toHaveBeenCalledTimes(1);
     expect(getScheduledActionReservations()).toBe(0);
+  });
+});
+
+describe('registerSingleJobSchedule', () => {
+  it('cancels a disabled job instead of registering a recurring timer', async () => {
+    scheduleEvent.mockClear();
+    cancelEvent.mockClear();
+    getJob.mockResolvedValueOnce({ id: 'job-disabled', enabled: false });
+
+    await registerSingleJobSchedule('job-disabled');
+
+    expect(cancelEvent).toHaveBeenCalledWith('job:job-disabled');
+    expect(scheduleEvent).not.toHaveBeenCalled();
   });
 });

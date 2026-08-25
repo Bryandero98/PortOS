@@ -176,8 +176,8 @@ export const PROVIDER_TYPES = Object.freeze({
 });
 
 // Agent jobs need the CLI/TUI file-writing harnesses. Keep this allowlist in
-// lockstep with isAgentHarness in server/services/agentProviderResolution.js.
-export const RUNNABLE_PROVIDER_TYPES = Object.freeze([
+// lockstep with the api-provider rejection in server/services/agentProviderResolution.js.
+export const AGENT_HARNESS_PROVIDER_TYPES = Object.freeze([
   PROVIDER_TYPES.CLI,
   PROVIDER_TYPES.TUI
 ]);
@@ -191,7 +191,7 @@ export const filterRunnableProviders = (providers, selectedProviderIds = []) => 
     (Array.isArray(selectedProviderIds) ? selectedProviderIds : [selectedProviderIds]).filter(Boolean)
   );
   return (Array.isArray(providers) ? providers : []).filter(provider =>
-    RUNNABLE_PROVIDER_TYPES.includes(provider?.type) || preservedIds.has(provider?.id)
+    AGENT_HARNESS_PROVIDER_TYPES.includes(provider?.type) || preservedIds.has(provider?.id)
   );
 };
 
