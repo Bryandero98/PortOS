@@ -36,8 +36,11 @@ export {
   extractAgentSummary
 };
 
-// Like execGit but catches rejections (e.g. timeout) into a failed-result shape
-const execGitSafe = (args, cwd, options) =>
+// Like execGit but catches rejections (e.g. timeout) into a failed-result shape.
+// Exported because every caller that wants `ignoreExitCode` semantics also has to
+// survive the two rejections `ignoreExitCode` does NOT suppress — a timeout and a
+// maxBuffer overflow — and each one hand-rolling that catch drops `stdout`.
+export const execGitSafe = (args, cwd, options) =>
   execGit(args, cwd, options).catch(err => ({ exitCode: 1, stdout: '', stderr: err.message }));
 
 /**
@@ -207,8 +210,8 @@ export function clearFetchCache() {
   activeFetches.clear();
 }
 
-function fetchOriginAttempt(dir, attempt) {
-  return execGit(['fetch', 'origin'], dir).then(
+function fetchOriginAttempt(dir, attempt, prune = false) {
+  return execGit(prune ? ['fetch', '--prune', 'origin'] : ['fetch', 'origin'], dir).then(
     () => {
       recordFetchSuccess(dir);
       return true;
@@ -226,13 +229,21 @@ function fetchOriginAttempt(dir, attempt) {
       }
       // Another PortOS surface or agent may advance the same remote ref mid-fetch.
       if (attempt >= FETCH_MAX_ATTEMPTS || !isGitLockError(err.message)) throw err;
-      return sleep(FETCH_RETRY_DELAY_MS).then(() => fetchOriginAttempt(dir, attempt + 1));
+      return sleep(FETCH_RETRY_DELAY_MS).then(() => fetchOriginAttempt(dir, attempt + 1, prune));
     }
   );
 }
 
-export function fetchOrigin(dir) {
-  return fetchOriginAttempt(dir, 1);
+/**
+ * Fetch origin with the concurrency handling a raw `git fetch` lacks: retries an
+ * `index.lock` collision, and treats a lost compare-and-swap on refs another
+ * PortOS surface already wrote as the SUCCESS it is.
+ * @param {string} dir
+ * @param {{prune?: boolean}} [opts] - `prune` also drops remote-tracking refs whose
+ *   remote branch is gone, for callers that go on to reason about what origin still has.
+ */
+export function fetchOrigin(dir, { prune = false } = {}) {
+  return fetchOriginAttempt(dir, 1, prune);
 }
 
 /**
@@ -1228,7 +1239,7 @@ async function clearSequencerState(dir, gitDirPath) {
  * @param {string} dir - Repo root to check
  * @returns {Promise<string|null>} - Agent id, or null
  */
-async function findActiveAgentInWorkspace(dir) {
+export async function findActiveAgentInWorkspace(dir) {
   const { getAgents } = await import('./cosAgentLifecycle.js').catch(() => ({ getAgents: null }));
   if (!getAgents) return null;
   const agents = await getAgents().catch(() => []);

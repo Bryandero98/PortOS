@@ -1644,9 +1644,33 @@ export const MAX_TOTAL_SPAWNS = 5;
 // allowlist — like `prAuthorFilter` / `issueAuthorFilter` — so a per-app
 // override can disable an individual rectification behavior and survive
 // sanitizeTaskMetadata.
+// repo-sync's per-app / per-schedule action toggles. Each is ON unless
+// explicitly `false` (branch-reconcile's opt-out convention), EXCEPT
+// `reapRemotes`, which mutates `origin` and is therefore opt-IN. Lives here so
+// the sanitizer's allowlist and services/repoSync.js read ONE list — the two
+// drifting would silently drop a toggle at the app-override boundary.
+export const REPO_SYNC_ACTION_KEYS = ['syncPush', 'syncPull', 'switchDefault', 'cleanupMerged', 'dropStashes', 'reapRemotes'];
+
 const ALLOWED_TASK_METADATA_KEYS = [
   ...PIPELINE_BEHAVIOR_FLAGS, 'readOnly', 'claimFlow',
   'cleanupMerged', 'openPr', 'resolveConflicts', 'autoMerge', 'finishAbandoned', 'autoClose',
+  // repo-sync's action toggles (REPO_SYNC_ACTION_KEYS above): publish branches
+  // strictly ahead of their upstream, fast-forward the default branch, return the
+  // checkout to it, delete merged branches, drop provably-redundant stashes, and
+  // (opt-IN, since it mutates origin) reap merged orphan remote branches.
+  // `cleanupMerged` deliberately reuses branch-reconcile's NAME because it means
+  // the same thing — but task metadata is stored per task type, so the two are
+  // independent settings. Turning it off on branch-reconcile does NOT turn it off
+  // here; each task type carries its own value.
+  ...REPO_SYNC_ACTION_KEYS,
+  // repo-sync's per-app opt-OUT. The sweep is install-wide by design, so it
+  // needs a key of its own rather than reading the per-app `enabled` flag next
+  // to it: createApp SEEDS `{ enabled: false }` for every task type, so
+  // `enabled` cannot distinguish "leave this repo alone" from "never configured",
+  // and reading it would exclude every app on a fresh install. `enabled` still
+  // governs whether the app gets its own SCHEDULED repo-sync run; this governs
+  // whether the install-wide sweep visits its checkout.
+  'skipRepoSync',
   // Throwaway-worktree posture for programmatic-I/O reasoning tasks (layered-
   // intelligence): the worktree is discarded without a merge or PR so a reasoning
   // agent can't land code. See agentWorktreeCleanup.js.
@@ -1684,6 +1708,17 @@ export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
 // vocabulary.
 export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 
+
+// repo-sync verify-mode vocabulary — when the coordinator agent is dispatched
+// after the deterministic sweep. 'always' verifies every run; 'when-changed'
+// (the default) verifies only a run that actually mutated a checkout, so a sweep
+// over an already-clean machine makes no provider call at all; 'never' dispatches
+// only when the sweep left something unresolved. An ESCALATION dispatches under
+// every mode. Kept here so the sanitizer and services/repoSync.js agree on the
+// vocabulary — and so the static task registry can name the default without
+// importing the git-heavy service (it is deliberately dependency-light).
+export const REPO_SYNC_VERIFY_MODES = ['always', 'when-changed', 'never'];
+export const DEFAULT_REPO_SYNC_VERIFY_MODE = 'when-changed';
 // `issueExcludeLabels` — extra labels a user wants left for human contributors
 // (e.g. `good first issue`) rather than auto-claimed by claim-issue/claim-work.
 // Unioned with the fixed NON_ACTIONABLE_ISSUE_LABELS set at read time
@@ -1860,6 +1895,13 @@ export function sanitizeTaskMetadata(raw) {
   // string the watcher would silently treat as "any".
   if (Object.prototype.hasOwnProperty.call(raw, 'prAuthorFilter') && PR_AUTHOR_FILTERS.includes(raw.prAuthorFilter)) {
     clean.prAuthorFilter = raw.prAuthorFilter;
+    hasKeys = true;
+  }
+  // `verifyMode` decides when repo-sync dispatches its coordinator agent after a
+  // clean deterministic pass — constrained, so an arbitrary string can't reach the
+  // dispatch gate (which would fall back to the default anyway, silently).
+  if (Object.prototype.hasOwnProperty.call(raw, 'verifyMode') && REPO_SYNC_VERIFY_MODES.includes(raw.verifyMode)) {
+    clean.verifyMode = raw.verifyMode;
     hasKeys = true;
   }
   // `issueAuthorFilter` gates claim-issue dispatch on issue authorship —

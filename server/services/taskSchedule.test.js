@@ -104,6 +104,7 @@ vi.mock('./cosState.js', async () => {
 
 import {
   INTERVAL_TYPES,
+  INSTALL_WIDE_TASK_TYPES,
   SELF_IMPROVEMENT_TASK_TYPES,
   loadSchedule,
   getTaskInterval,
@@ -229,6 +230,18 @@ describe('taskSchedule', () => {
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('performance')
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('dependency-updates')
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('do-replan')
+    })
+  })
+
+  describe('INSTALL_WIDE_TASK_TYPES', () => {
+    it('names only task types that really sweep the whole install', () => {
+      expect([...INSTALL_WIDE_TASK_TYPES]).toEqual(['repo-sync'])
+    })
+
+    it('every install-wide type is a registered task type', () => {
+      for (const t of INSTALL_WIDE_TASK_TYPES) {
+        expect(SELF_IMPROVEMENT_TASK_TYPES).toContain(t)
+      }
     })
   })
 
