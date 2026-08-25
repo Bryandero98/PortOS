@@ -11,7 +11,14 @@
 
 // PORTOS_API_URL is interpolated into the jira-status-report default prompt below.
 import { PORTOS_API_URL } from '../../lib/ports.js';
-import { ISSUE_QUALITY_GUIDANCE } from '../../lib/dispatchLabels.js';
+import { EPIC_DECOMPOSED_LABEL, ISSUE_QUALITY_GUIDANCE, formatLabelCreateCommand } from '../../lib/dispatchLabels.js';
+
+// The epic marker and its idempotent `label create` line come from the shared
+// label registry, so the label the claim agent stamps is by construction the one
+// perpetualWork.js#isActionableIssue reads, and the create is `|| true` — a
+// second decomposition must not abort Phase 1b just because the label exists.
+const EPIC_LABEL_CREATE_GH = formatLabelCreateCommand(EPIC_DECOMPOSED_LABEL);
+const EPIC_LABEL_CREATE_GLAB = formatLabelCreateCommand(EPIC_DECOMPOSED_LABEL, { cli: 'glab' });
 
 const SCHEDULED_ISSUE_QUALITY_GATE = `## Scheduled issue-quality gate
 
@@ -883,10 +890,56 @@ Run steps 1–5 in order.
    - Its number is NOT in the in-flight set.
    - It has no assignees, or at least one assignee's login matches \`$ME\` (an issue assigned only to another account is already claimed). If \`$ME\` is empty, skip every assigned issue.
    - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
-   - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). An epic needs per-slice partial-ship (each slice its own PR, \`Refs\` not \`Closes\`), so leave it for a human or \`/claim --issues\` to split — don't claim it wholesale here. **The bare \`plan\` label is NOT a skip signal.** \`do-replan --issues\` (and \`/do:replan --issues\`) labels EVERY migrated backlog item \`plan\` — atomic bug-fixes included — so \`plan\` marks the *claimable* queue exactly as \`/do:next --issues\` treats it (it is that flow's required candidate label). Skipping all \`plan\` issues would discard the entire actionable backlog and falsely report an empty queue.
-5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
+   - It is NOT an ALREADY-DECOMPOSED tracking/umbrella **epic**. An epic is recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive); it counts as decomposed once it carries the \`decomposed\` label. Skip a decomposed epic — its child slices are ordinary claimable issues in this very list, so claiming the parent would duplicate them. An epic that is NOT yet decomposed IS eligible, but only as a **last resort**: it can't ship as one PR, so prefer every eligible non-epic issue first and fall through to an epic only when the walk finds no atomic work. An epic you pick goes to **Phase 1b**, not Phase 2. **The bare \`plan\` label is NOT a skip signal.** \`do-replan --issues\` (and \`/do:replan --issues\`) labels EVERY migrated backlog item \`plan\` — atomic bug-fixes included — so \`plan\` marks the *claimable* queue exactly as \`/do:next --issues\` treats it (it is that flow's required candidate label). Skipping all \`plan\` issues would discard the entire actionable backlog and falsely report an empty queue.
+5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. **But an open, undecomposed epic is NOT an empty queue**: never report "no work available" while one is unclaimed. Splitting it is the work — go to Phase 1b.
 
 Capture the issue number as \`NUM\`, its title, and its full body — you'll reuse them in the PR and the \`Closes #<num>\` trailer.
+
+## Phase 1b — Decompose an epic (only when Phase 1 landed on one)
+
+You reach this phase two ways: Phase 1 found no eligible atomic issue and fell through to an undecomposed epic, or the user pinned this run to an epic. **Never end a run reporting "nothing to do" while an undecomposed epic is open** — turning it into shippable slices IS this round's work, and it is what refills the queue for every later run.
+
+Capture the epic's number as \`EPIC\`. This phase writes ONLY to the issue tracker: no worktree, no branch, no PR, no edits in the source repo.
+
+1. Read it in full, comments included: \`gh issue view "\${EPIC}" --comments\`.
+2. **Find the children it already has** — an epic a human (or an earlier run) already split must never be re-split:
+   \`\`\`bash
+   gh issue view "\${EPIC}" --json body -q .body
+   gh issue list --state all --search "in:body \\"Part of #\${EPIC}\\"" --json number,title,state,labels,assignees --limit 200
+   \`\`\`
+   Union that with every \`#<num>\` the epic's own body checklist references.
+3. **If children already exist, do NOT file more.**
+   - **Some child still OPEN** → the epic is already decomposed. Make sure it carries the \`${EPIC_DECOMPOSED_LABEL}\` label and that its body checklist lists every child (step 6), then set \`NUM\` to the FIRST open child that passes Phase 1 step 4's eligibility rules (oldest-first) and continue at **Phase 2** with that child. If every open child is in flight, assigned elsewhere, or blocked, exit cleanly — that queue is busy, not empty.
+   - **Every child CLOSED** → the epic's work is done. Post a comment naming the children that delivered it, close it (\`gh issue close "\${EPIC}" --reason completed\`), and return to Phase 1 to look for other work.
+   - **Labeled \`${EPIC_DECOMPOSED_LABEL}\` but NO children exist** → an earlier split claimed the epic and died before filing anything. Treat it as undecomposed and continue at step 4; the marker is already in place, so nothing needs re-claiming.
+4. **Otherwise, plan the split.** Read the code the epic actually names before slicing — a split that never met the repo is worthless. Produce 2–8 slices, each of them independently shippable in ONE PR, valuable on its own, and written with concrete scope + acceptance criteria + the files/areas involved. Slice by user-visible behavior or subsystem; never one-issue-per-file, and never invent scope the epic doesn't ask for. Decide the boundaries yourself — an ambiguous epic is decided, not deferred (same rule as Phase 3). Only an epic so vague that no split survives contact with the code is a \`needs-input\` case: comment what is missing, \`gh issue edit "\${EPIC}" --add-label needs-input\`, and exit.
+5. **Claim the epic, THEN file the slices.** Stamp the marker before the first \`gh issue create\` — the label IS this phase's claim (Phase 1 skips a \`${EPIC_DECOMPOSED_LABEL}\` epic), so two concurrent runs can't both file a full slice set, and a run that dies mid-split can't be re-split from scratch on the next tick. Marking last would instead leave the epic actionable forever whenever that final edit failed:
+   \`\`\`bash
+   ${EPIC_LABEL_CREATE_GH}
+   gh issue edit "\${EPIC}" --add-label ${EPIC_DECOMPOSED_LABEL}
+   gh issue comment "\${EPIC}" --body "Decomposing into per-slice issues — <one line on how you sliced it>"
+   # The queue label the slices carry must exist before the first create, or every
+   # \`gh issue create\` below fails on a repo that has never used it.
+   gh label create plan --color 0E8A16 --description "Claimable backlog item" 2>/dev/null || true
+   \`\`\`
+   Then file each slice, in the order you want them worked:
+   \`\`\`bash
+   gh issue create --title "<specific, human-readable>" --label plan \\
+     --body "<what + why + acceptance criteria + files/areas>
+
+Part of #\${EPIC}"
+   \`\`\`
+   Use \`Part of #\${EPIC}\` — NEVER \`Closes #\${EPIC}\`, which would close the whole epic on the first slice that merges. Carry over the epic's \`area:*\` labels, and add dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) or contributor labels (\`good first issue\`, \`help wanted\`) only where that slice genuinely justifies them; create a missing label immediately before applying it.
+6. **Write the checklist back to the epic** so the next run can follow it — keep the original body and append a \`## Decomposed into\` list naming every child:
+   \`\`\`bash
+   EPIC_BODY=$(mktemp)
+   gh issue view "\${EPIC}" --json body -q .body > "\${EPIC_BODY}"
+   printf '\\n\\n## Decomposed into\\n\\n- [ ] #<a> — <title>\\n- [ ] #<b> — <title>\\n' >> "\${EPIC_BODY}"
+   gh issue edit "\${EPIC}" --body-file "\${EPIC_BODY}"
+   rm -f "\${EPIC_BODY}"
+   \`\`\`
+   The marker from step 5 is what stops the next run from splitting the same epic again; this checklist is what lets a claim aimed at the epic resolve the next available child. Leave the epic OPEN, unassigned, and WITHOUT \`in-progress\` — it closes when its last child closes.
+7. **Then claim the first slice you filed** — set \`NUM\` to it and continue at **Phase 2**, shipping that ONE slice normally (its PR closes the slice, never the epic). If claiming it fails because another run won the race, exit cleanly: the decomposition alone is a successful round, and the next claim run picks up the next linked child.
 
 ## Phase 2 — Claim (worktree + markers)
 
@@ -917,7 +970,7 @@ Read the full issue (\`gh issue view "\${NUM}" --comments\`) before writing any 
 
 (A too-large scope is NOT in this list — it has its own park path below.)
 
-**A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, post a brief comment naming the split you'd suggest, **tag it \`needs-input\`** (\`gh issue edit "\${NUM}" --add-label needs-input\`), release the claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it is what stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
+**A genuinely too-large issue gets SPLIT, not parked.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, promote it to an epic and decompose it: file the slices and rewrite the parent exactly as **Phase 1b** steps 4–6 describe (each slice carrying \`Part of #\${NUM}\`; add \`epic\` and \`decomposed\` to THIS issue), release its claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, then continue at Phase 2 with the first slice you filed. Splitting an omnibus issue is work you do, not a hand-off. Park to \`needs-input\` (\`gh issue edit "\${NUM}" --add-label needs-input\`, release the markers, remove the worktree, exit) ONLY when the issue is too vague to slice against the code at all — that park is what stops a perpetual drain from re-picking an un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
 
 **Ambiguity is NOT a release trigger — decide, don't defer.** If the issue is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to \`needs-input\`. Pick the most reasonable interpretation, record the approach you chose in a brief issue comment (\`gh issue comment "\${NUM}" --body "..."\`) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the issue parked waiting on a decision they didn't ask to make. Reserve \`needs-input\` — which pulls the issue out of the autonomous queue — for the narrow cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, post the explaining comment, **tag it \`needs-input\`** (\`gh issue edit "\${NUM}" --add-label needs-input\`), release the claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and exit cleanly. **That label is what lets an autonomous drain converge** — Phase 1 step 4 skips \`needs-input\` issues. Never leave a half-claimed issue.
 
@@ -1031,10 +1084,24 @@ Run steps 1–5 in order.
    - Its number (\`iid\`) is NOT in the in-flight set.
    - It has no assignees, or at least one assignee's username matches \`$ME\` (an issue assigned only to another account is already claimed). If \`$ME\` is empty, skip every assigned issue.
    - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
-   - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). Leave epics for a human to split. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
-5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
+   - It is NOT an ALREADY-DECOMPOSED tracking/umbrella **epic**. An epic is recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive); it counts as decomposed once it carries the \`decomposed\` label. Skip a decomposed epic — its child slices are ordinary claimable issues in this very list. An epic that is NOT yet decomposed IS eligible, but only as a **last resort**: prefer every eligible non-epic issue first, and an epic you pick goes to **Phase 1b**, not Phase 2. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
+5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. **But an open, undecomposed epic is NOT an empty queue** — go to Phase 1b instead of reporting "no work available".
 
 Capture the issue number (GitLab \`iid\`) as \`NUM\`, its title, and its full description — you'll reuse them in the MR and the \`Closes #<num>\` line.
+
+## Phase 1b — Decompose an epic (only when Phase 1 landed on one)
+
+Same contract as the GitHub flow: an undecomposed epic is work, not a dead end. Capture its \`iid\` as \`EPIC\`. This phase writes ONLY to the issue tracker — no worktree, no branch, no MR.
+
+1. Read it in full: \`glab issue view "\${EPIC}" --comments\`.
+2. **Find the children it already has** — never re-split an epic somebody already split. Union the \`#<num>\` refs in its own description checklist with \`glab issue list --all --search "Part of #\${EPIC}" --output json --per-page 100\`.
+3. **If children already exist, do NOT file more.** Some child still OPEN → make sure the epic carries the \`decomposed\` label and a complete checklist (step 6), set \`NUM\` to the FIRST open child passing Phase 1 step 4's rules (oldest-first), and continue at **Phase 2** with that child; if every open child is in flight/assigned/blocked, exit cleanly. Every child CLOSED → comment naming what delivered it, \`glab issue close "\${EPIC}"\`, and return to Phase 1.
+4. **Otherwise, plan the split** against the actual code the epic names: 2–8 slices, each independently shippable in ONE MR, valuable on its own, each with concrete scope + acceptance criteria + the files/areas involved. Slice by user-visible behavior, never one-issue-per-file, never invent scope. Decide the boundaries yourself; only an epic too vague to slice against the code is a \`needs-input\` case (comment why, \`glab issue update "\${EPIC}" --label needs-input\`, exit).
+5. **Claim the epic, THEN file the slices.** Stamp the marker before the first create — the label IS this phase's claim, so two concurrent runs can't both file a full slice set and a run that dies mid-split can't be re-split from scratch: \`${EPIC_LABEL_CREATE_GLAB}\`, then \`glab issue update "\${EPIC}" --label ${EPIC_DECOMPOSED_LABEL}\`, then post a comment saying a split is under way. Create the \`plan\` queue label the same way if the project lacks it, or every create below fails. Then file each slice in the order you want them worked: \`glab issue create --title "<specific>" --label plan --description "<what + why + acceptance criteria + files/areas>
+
+Part of #\${EPIC}"\`. Use \`Part of #\${EPIC}\`, NEVER \`Closes #\${EPIC}\`. Carry over the epic's \`area:*\` labels; add \`model:*\`/\`effort:*\` or contributor labels only where justified.
+6. **Write the checklist back to the epic**: keep its description and append a \`## Decomposed into\` checklist (\`- [ ] #<num> — <title>\`) via \`glab issue update "\${EPIC}" --description "<full text>"\`. Leave the epic OPEN, unassigned, and without \`in-progress\` — it closes when its last child closes. The step-5 marker is what stops the next run from re-splitting it; the checklist is what lets a claim aimed at the epic resolve the next available child. An epic already labeled \`${EPIC_DECOMPOSED_LABEL}\` with NO children is a split that died before filing — treat it as undecomposed and resume at step 4.
+7. **Then claim the first slice you filed** — set \`NUM\` to it and continue at **Phase 2**. If another run won the race, exit cleanly: the decomposition itself is a successful round.
 
 ## Phase 2 — Claim (worktree + markers)
 
@@ -1068,7 +1135,7 @@ Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **E
 
 (A too-large scope is NOT in this list — it has its own park path below.)
 
-**A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, post a brief note naming the split you'd suggest, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
+**A genuinely too-large issue gets SPLIT, not parked.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, promote it to an epic and decompose it exactly as **Phase 1b** steps 4–6 describe (each slice carrying \`Part of #\${NUM}\`; add \`epic\` and \`decomposed\` to THIS issue), release its claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, then continue at Phase 2 with the first slice you filed. Splitting an omnibus issue is work you do, not a hand-off. Park to \`needs-input\` (\`glab issue update "\${NUM}" --label needs-input\`, release the markers, remove the worktree, exit) ONLY when the issue is too vague to slice against the code at all — that park stops a perpetual drain from re-picking an un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
 
 **Ambiguity is NOT a release trigger — decide, don't defer.** If the issue is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to \`needs-input\`. Pick the most reasonable interpretation, record the approach you chose in a brief issue note (\`glab issue note "\${NUM}" -m "..."\`) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the issue parked waiting on a decision they didn't ask to make. Reserve \`needs-input\` — which pulls the issue out of the autonomous queue — for the narrow cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, post the explaining note, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit cleanly. **That label is what lets an autonomous drain converge** — Phase 1 step 4 skips \`needs-input\` issues. Never leave a half-claimed issue.
 
@@ -1174,10 +1241,22 @@ Run steps 1–5 in order.
    - Its status is a not-started status (e.g. "To Do", "Open", "Backlog", "Selected for Development", "Ready"). Skip tickets already "In Progress", "In Review", "Done", or any closed/resolved status — those are claimed or finished.
    - Its KEY is NOT in the in-flight set from step 3.
    - It has enough of a summary/description to act on. A ticket that merely leaves a design choice unstated is still eligible — you'll decide the reading in Phase 3, not skip it here. Skip only a ticket with essentially no actionable content (bare title, no description or acceptance criteria).
-   - It is NOT an Epic (issue type "Epic", or a title ending in "(epic)"). Leave epics for a human to split.
-5. **If no eligible ticket exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. If a ticket is in the sprint but too vague or blocked to start, create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" or "[<KEY>] Blocked" and a description of what's missing) instead of claiming it.
+   - It is NOT an ALREADY-DECOMPOSED Epic (issue type "Epic", or a title ending in "(epic)"; decomposed once it carries the \`decomposed\` label). Skip a decomposed epic — its child tickets are ordinary claimable work. An epic that is NOT yet decomposed IS eligible, but only as a **last resort**: prefer every non-epic ticket first, and an epic you pick goes to **Phase 1b**, not Phase 2.
+5. **If no eligible ticket exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. **But an open, undecomposed Epic is NOT an empty queue** — go to Phase 1b rather than reporting "no work available". If a ticket is in the sprint but too vague or blocked to start, create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" or "[<KEY>] Blocked" and a description of what's missing) instead of claiming it.
 
 Capture the ticket KEY as \`KEY\`, its summary, and its full description — you'll reuse them in the branch, the MR/PR, and the commit trailer.
+
+## Phase 1b — Decompose an Epic (only when Phase 1 landed on one)
+
+Same contract as the GitHub/GitLab flows: an undecomposed epic is work, not a dead end. Capture its key as \`EPIC\`. This phase writes ONLY to JIRA — no worktree, no branch, no MR/PR.
+
+1. Read it: GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/issues/<EPIC>.
+2. **Find the children it already has** — never re-split an epic somebody already split. Re-read the sprint list from Phase 1 step 2 for tickets whose epic link is \`EPIC\`, and union that with every \`<PROJ-nnn>\` key its description checklist names.
+3. **If children already exist, do NOT file more.** Any child still in a not-started status → set \`KEY\` to the first that passes Phase 1 step 4's rules and continue at **Phase 2** with it (first ensure the epic carries the \`decomposed\` label and a complete checklist, per step 6). Every child Done/closed → comment naming what delivered it, transition the epic to **Done**, and return to Phase 1.
+4. **Otherwise, plan the split** against the actual code the epic names: 2–8 slices, each independently shippable in ONE MR/PR, valuable on its own, each with concrete scope + acceptance criteria + the files/areas involved. Slice by user-visible behavior, never one-ticket-per-file, never invent scope. Decide the boundaries yourself; only an epic too vague to slice against the code becomes a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<EPIC>] Needs clarification") — then exit.
+5. **Claim the Epic, THEN file the slices.** First PUT the parent's \`labels\` with \`${EPIC_DECOMPOSED_LABEL}\` added (step 6's shape) and POST a comment saying a split is under way — that marker IS this phase's claim, so two concurrent runs can't both file a full slice set and a run that dies mid-split can't be re-split from scratch. Then file each slice in the order you want it worked: POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets with body {"projectKey": "<projectKey>", "summary": "<specific>", "description": "<what + why + acceptance criteria + files/areas>\\n\\nPart of <EPIC>", "issueType": "Task", "epicKey": "<EPIC>", "labels": ["plan"]}. The \`epicKey\` link is what keeps the slice attached to its parent on the board. Add independently justified labels (\`model-light\`/\`model-medium\`/\`model-heavy\`, \`effort-low\`…\`effort-max\`, \`good-first-issue\`, \`help-wanted\`) only where the slice warrants them.
+6. **Write the checklist back to the Epic so the next run can follow it.** PUT ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<EPIC> with a \`description\` that keeps the original text and appends a "Decomposed into" checklist naming every child key, and a \`labels\` array containing the ticket's EXISTING labels plus \`${EPIC_DECOMPOSED_LABEL}\` (send the full list — the update replaces it). Leave the Epic OPEN in its current status — it moves to Done when its last child is done. The step-5 marker is what stops the next run from re-splitting it; the checklist is what lets a claim aimed at the Epic resolve the next available child. A ticket already labeled \`${EPIC_DECOMPOSED_LABEL}\` with NO children is a split that died before filing — treat it as undecomposed and resume at step 4.
+7. **Then claim the first slice you filed** — set \`KEY\` to it and continue at **Phase 2**. If another run won the race, exit cleanly: the decomposition itself is a successful round.
 
 ## Phase 2 — Claim (In Progress + worktree)
 
@@ -1211,7 +1290,7 @@ Re-read the ticket (GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/ticket
 
 (A too-large scope is NOT in this list — it has its own park path below.)
 
-**A genuinely too-large ticket needs parking so the queue converges.** If the work is bigger than one coherent claim — it would touch files far outside the ticket's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to ship first, splitting the omnibus is a human call: create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" and the split you'd suggest), transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status**, which would re-queue it under Phase 1 (ticket selection never consults Review Hub todos, so a not-started ticket is immediately re-eligible and the run would re-park it every pass); if the workflow has no held status, leave it **In Progress**. Phase 1's not-started-only filter keeps a non-not-started ticket out of the ready queue, and the Review Hub todo is the durable human signal — together they let the claim run converge. Then remove the worktree and exit.
+**A genuinely too-large ticket gets SPLIT, not parked.** If the work is bigger than one coherent claim — it would touch files far outside the ticket's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to ship first, decompose it exactly as **Phase 1b** steps 4–6 describe (each slice linked with \`"epicKey": "<KEY>"\` and carrying \`Part of <KEY>\`), then continue at Phase 2 with the first slice you filed. Phase 1 skips a parent only when it is BOTH epic-shaped AND marked, so promote this ticket on both axes: add \`${EPIC_DECOMPOSED_LABEL}\` to its labels, and make it epic-shaped — change its issue type to Epic where the project allows it, otherwise append " (epic)" to its summary, which is the title convention Phase 1 recognizes. A ticket marked but still typed Task stays eligible and gets re-split every pass. Splitting an omnibus ticket is work you do, not a hand-off. Only when the ticket is too vague to slice against the code at all is it a human call: create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" and the split you'd suggest), transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status**, which would re-queue it under Phase 1 (ticket selection never consults Review Hub todos, so a not-started ticket is immediately re-eligible and the run would re-park it every pass); if the workflow has no held status, leave it **In Progress**. Phase 1's not-started-only filter keeps a non-not-started ticket out of the ready queue, and the Review Hub todo is the durable human signal — together they let the claim run converge. Then remove the worktree and exit.
 
 **Ambiguity is NOT a release trigger — decide, don't defer.** If the ticket is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to a "Needs clarification" todo. Pick the most reasonable interpretation, record the approach you chose in a ticket comment (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the ticket parked waiting on a decision they didn't ask to make. Reserve the "Needs clarification" todo for cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, create the todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" and what a human must resolve), transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status** (which would re-queue it under Phase 1, since ticket selection never consults Review Hub todos); if the workflow has no held status, leave it **In Progress** so Phase 1's not-started-only filter excludes it. Then remove the worktree and **exit — do NOT proceed to Phase 4**.
 

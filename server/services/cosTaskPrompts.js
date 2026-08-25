@@ -23,7 +23,7 @@ const forgeIssueConstraint = (forge) => (ref, excludeLabelsBlock) => {
   const labels = excludeLabelsBlock || '`in-progress`, `blocked`, `needs-input`';
   return `## Target Issue Constraint
 
-The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, ignore the author filter above, and ignore its current assignee (an explicit selection overrides both filters). Still honor the safety checks: if #${ref} is already closed, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, ignore the author filter above, and ignore its current assignee (an explicit selection overrides both filters). Still honor the safety checks: if #${ref} is already closed, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, or is stale (Phase 3), exit cleanly rather than forcing it. **If #${ref} is a tracking epic, do NOT exit** — run Phase 1b against it: claim the next eligible issue already linked from it, or, when it has none, decompose it into per-slice issues first and then claim the first slice. That is the one case where this run legitimately ships an issue other than #${ref}. Otherwise run Phases 2–7 against #${ref}.`;
 };
 
 const TARGET_ITEM_BLOCKS = {
@@ -34,7 +34,7 @@ PLAN.md item \`[${ref}]\` is reserved for this run. You MUST work on that exact 
   'claim-issue-gitlab': forgeIssueConstraint('GitLab'),
   'claim-issue-jira': (ref) => `## Target Ticket Constraint
 
-The user explicitly selected JIRA ticket \`${ref}\` from the board. Override Phase 1 ("Pick the target ticket"): do NOT pick a different ticket and do NOT scan for the next-ready one — claim exactly \`${ref}\`. Still honor the safety checks: if \`${ref}\` is already In Progress / In Review / Done / closed, is already on a \`claim/${ref}\` (or \`cos/.../${ref}/...\`) branch, or its requirements are too ambiguous or too large to implement in a single PR, exit cleanly (file a Review Hub todo for ambiguous requirements) rather than forcing it. Otherwise run Phases 2–7 against \`${ref}\`.`
+The user explicitly selected JIRA ticket \`${ref}\` from the board. Override Phase 1 ("Pick the target ticket"): do NOT pick a different ticket and do NOT scan for the next-ready one — claim exactly \`${ref}\`. Still honor the safety checks: if \`${ref}\` is already In Progress / In Review / Done / closed, is already on a \`claim/${ref}\` (or \`cos/.../${ref}/...\`) branch, or its requirements are too vague to slice against the code at all, exit cleanly (file a Review Hub todo for that last case) rather than forcing it. **Being an Epic — or simply too large for one PR — is NOT an exit**: run Phase 1b against \`${ref}\` instead, claiming the next eligible ticket already linked to it, or decomposing it into per-slice child tickets first and then claiming the first slice. That is the one case where this run legitimately ships a ticket other than \`${ref}\`. Otherwise run Phases 2–7 against \`${ref}\`.`
 };
 
 export function buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock = '') {

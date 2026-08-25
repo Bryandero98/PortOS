@@ -9,6 +9,7 @@ import {
   PREVIOUS_DEFAULT_PROMPTS,
 } from './taskPromptDefaults.js';
 import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
+import { EPIC_DECOMPOSED_LABEL } from './perpetualWork.js';
 
 // Hash snapshot of every exported prompt body and version. This pins the
 // cross-install prompt-upgrade contract (see AGENTS.md "Distribution model"):
@@ -616,8 +617,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
     const github = DEFAULT_TASK_PROMPTS['claim-issue'];
     const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
 
-    expect(PROMPT_VERSIONS['claim-issue']).toBe(20);
-    expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBe(18);
+    // Floors, not equalities: this pins that the assignee-retry revision shipped
+    // WITH its version bump, and later revisions keep bumping past it.
+    expect(PROMPT_VERSIONS['claim-issue']).toBeGreaterThanOrEqual(20);
+    expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBeGreaterThanOrEqual(18);
     expect(github).toContain('gh api --hostname "$GH_HOST" user -q .login');
     expect(github).toContain('git remote get-url origin');
     expect(github).toContain('if [ "$GH_HOST" = "ssh.github.com" ]');
@@ -632,6 +635,43 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
     expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
   });
+
+  // Epic decomposition. Every claim flow used to skip an epic outright ("leave
+  // it for a human to split"), so a tracker whose remaining work was all epics
+  // ended each run with nothing done and reported an empty queue. Phase 1b makes
+  // splitting the epic the work: file per-slice children, stamp the parent
+  // `decomposed`, claim the first slice. The marker label is the convergence
+  // signal perpetualWork.js#isActionableIssue reads, so the live agent and the
+  // drain agree on when an epic stops being claimable.
+  it('claim flows decompose an undecomposed epic instead of skipping it, preserving the outgoing defaults', () => {
+    const keys = ['claim-issue', 'claim-issue-gitlab', 'claim-issue-jira'];
+    const floors = { 'claim-issue': 21, 'claim-issue-gitlab': 19, 'claim-issue-jira': 14 };
+
+    for (const key of keys) {
+      const current = DEFAULT_TASK_PROMPTS[key];
+      expect(PROMPT_VERSIONS[key]).toBeGreaterThanOrEqual(floors[key]);
+      expect(current).toContain('Phase 1b');
+      // The literal the prompt stamps must be the label the detector reads.
+      expect(current).toContain(EPIC_DECOMPOSED_LABEL);
+      expect(current).not.toContain('Leave epics for a human to split');
+      expect(current).not.toContain("don't claim it wholesale here");
+
+      // The outgoing body stays recognizable so an install storing it auto-upgrades
+      // rather than being pinned to the skip-the-epic flow forever. One entry per
+      // shipped version, in ship order, is what makes .at(-1) the outgoing one.
+      const previous = PREVIOUS_DEFAULT_PROMPTS[key];
+      expect(previous).toHaveLength(PROMPT_VERSIONS[key] - 1);
+      expect(previous.at(-1)).not.toBe(current);
+      expect(previous.at(-1)).not.toContain('Phase 1b');
+    }
+
+    // A slice references its parent without closing it, and the parent keeps the
+    // checklist a later claim follows to the next available child.
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('Part of #${EPIC}');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('## Decomposed into');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).toContain('"epicKey": "<EPIC>"');
+  });
+
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
   // human table at exit 0 (`-F` is `--output-format` there, a different flag from
   // `--output`), and `glab mr list --state <x>` does not exist at all. The tree
@@ -660,9 +700,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
       (prompt) => prompt.includes('glab issue list --per-page 100 -F json') && prompt.includes('{issueExcludeLabels}'),
     );
     expect(withBoth).toHaveLength(1);
-    // …and it was appended after every body that predates v15, so it sits in the
-    // newest third of the list even once later revisions append behind it.
-    expect(previous.indexOf(withBoth[0])).toBeGreaterThan(previous.length - 4);
+    // …at the position its version number implies. PREVIOUS_DEFAULT_PROMPTS holds
+    // exactly one entry per shipped version in ship order, so the v15 body lives at
+    // index 14 forever — later revisions append behind it and cannot move it.
+    expect(previous.indexOf(withBoth[0])).toBe(14);
     expect(withBoth[0]).not.toBe(current);
   });
 

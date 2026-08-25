@@ -16,9 +16,9 @@
     "feature-ideas": "d3282f16da29efe2d53595b3b34778bc",
     "plan-feature": "b20980c8eda2256060d09d4bca397244",
     "plan-task": "b85fe92999aa4ee4a8910320457c4242",
-    "claim-issue": "6a9bebb3f31b7c1b0a0728def0fe5b3c",
-    "claim-issue-gitlab": "1f9ec476dce71d04e588d17e72cd46c9",
-    "claim-issue-jira": "c66170bfcdee911f03e60261c4f503db",
+    "claim-issue": "e54b568d0db816457ad00c9aba330d49",
+    "claim-issue-gitlab": "37a6aea663c4b52b6d33368467bec60d",
+    "claim-issue-jira": "c7548b7ae22fec055d64ec6a2ebbd32d",
     "code-reviewer-review": "27ded42013f28e7d327d8f1cc624aac1",
     "code-reviewer-implement": "2e10cac7c1e1cd021d06bfddb5c1eaf2",
     "error-handling": "9afba2e99b90a8d5771c75e7f0615d96",
@@ -42,9 +42,9 @@
     "do-replan": 2,
     "feature-ideas": 10,
     "plan-task": 18,
-    "claim-issue": 20,
-    "claim-issue-gitlab": 18,
-    "claim-issue-jira": 13,
+    "claim-issue": 21,
+    "claim-issue-gitlab": 19,
+    "claim-issue-jira": 14,
     "pr-reviewer": 3,
     "code-reviewer-a": 1,
     "code-reviewer-b": 1,
@@ -122,7 +122,8 @@
       "927766326e492e4c9c2566534f465512",
       "364ecf5feb38ec1f7ada50a7bcbf3199",
       "52fd3506aad0b283be7234b608cf31ca",
-      "9d782972b20d6b721eb44d0673315cad"
+      "9d782972b20d6b721eb44d0673315cad",
+      "c66170bfcdee911f03e60261c4f503db"
     ],
     "claim-issue-gitlab": [
       "fae92c45c89c65455930b4b06a1b88c4",
@@ -141,7 +142,8 @@
       "7ff928b2560ed6bb1a96dbbc80142ed9",
       "eed428fc96a8a58ee94d38e6e4896932",
       "ed2c2c9c8cd6297340b3a92666cb2c5a",
-      "348ed6348b90dcc6eead03e06df049e9"
+      "348ed6348b90dcc6eead03e06df049e9",
+      "1f9ec476dce71d04e588d17e72cd46c9"
     ],
     "claim-issue": [
       "37949d1b1fa8d461a15658f8f4192d97",
@@ -162,7 +164,8 @@
       "5bcaf3230a7a46ee039404943feab187",
       "542ce3673abbdee93e895f9df660aaf7",
       "a91b3df45864cf1aeaea7b326a7717ae",
-      "a6f069d7276c9f31fdca3b50666324e2"
+      "a6f069d7276c9f31fdca3b50666324e2",
+      "6a9bebb3f31b7c1b0a0728def0fe5b3c"
     ],
     "security": [
       "d0f54c1fbe62d067b1a23ee0a9f3528c"
