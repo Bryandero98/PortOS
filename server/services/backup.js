@@ -7,7 +7,8 @@
  */
 
 import { spawn } from '../lib/childProcess.js';
-import { access, readdir, readFile, stat, unlink } from 'fs/promises';
+import { access, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
+import { PassThrough } from 'node:stream';
 import { hostname } from 'os';
 import { join, resolve, relative, isAbsolute } from 'path';
 import { PATHS, ensureDir, readJSONFile, atomicWrite, sha256File } from '../lib/fileUtils.js';
@@ -25,6 +26,7 @@ import { reloadSettings } from './settings.js';
 let isRunning = false;
 
 const STATE_PATH = join(PATHS.data, 'backup', 'state.json');
+const SNAPSHOT_IN_PROGRESS_MARKER = '.in-progress';
 
 // Serialize state read-merge-write so two saveState() calls (e.g. a run
 // completing while the scheduler stamps a status) can't each read the same
@@ -235,11 +237,13 @@ export async function runBackup(destPath, io = null, { excludePaths = [], disabl
   if (io) io.emit('backup:started', { snapshotId });
 
   await ensureDir(dataDestDir);
+  await writeFile(join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER), '');
 
   let changedFiles = [];
   let manifest;
 
   const complete = async (result) => {
+    await unlink(join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER)).catch(() => {});
     isRunning = false;
     return result;
   };
@@ -488,6 +492,83 @@ export async function listSnapshots(destPath) {
   });
 }
 
+const SNAPSHOT_ID_PATTERN = /^[\w\-.:T]+$/;
+
+function resolveSnapshotPath(destPath, snapshotId) {
+  if (!snapshotId || !SNAPSHOT_ID_PATTERN.test(snapshotId)) {
+    throw new ServerError(`Invalid snapshotId: ${snapshotId}`, {
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  const snapshotsRoot = resolve(join(destPath, 'snapshots', MACHINE_HOST));
+  const snapshotDir = resolve(join(snapshotsRoot, snapshotId));
+  const rel = relative(snapshotsRoot, snapshotDir);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new ServerError(`Path traversal detected for snapshotId: ${snapshotId}`, {
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  return { snapshotsRoot, snapshotDir, archivePath: rel };
+}
+
+/**
+ * Open a gzip tar stream for one complete snapshot.
+ * @param {string} destPath - Path to external drive backup root
+ * @param {string} snapshotId - Snapshot ID to archive
+ * @returns {Promise<import('stream').Readable>}
+ */
+export async function openSnapshotStream(destPath, snapshotId) {
+  const { snapshotsRoot, snapshotDir, archivePath } = resolveSnapshotPath(destPath, snapshotId);
+  const info = await stat(snapshotDir).catch(() => null);
+  if (!info?.isDirectory?.()) {
+    throw new ServerError(`Snapshot not found: ${snapshotId}`, { status: 404, code: 'NOT_FOUND' });
+  }
+
+  // New backups carry an explicit marker while they are being assembled. Do
+  // not use manifest.json as the marker: listSnapshots intentionally preserves
+  // legacy pre-manifest snapshots, and those must remain downloadable.
+  const inProgressInfo = await stat(join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER)).catch(() => null);
+  if (inProgressInfo?.isFile?.()) {
+    throw new ServerError(`Snapshot is incomplete: ${snapshotId}`, { status: 409, code: 'SNAPSHOT_INCOMPLETE' });
+  }
+
+  const proc = spawn('tar', ['-czf', '-', '-C', snapshotsRoot, archivePath], { shell: false });
+  const archive = new PassThrough();
+  let finished = false;
+  const finish = (error = null) => {
+    if (finished) return;
+    finished = true;
+    if (error) archive.destroy(error);
+    else archive.end();
+  };
+
+  // Keep the response open until tar's close event. stdout can end before tar
+  // reports a read/permission failure; delaying EOF lets the route turn that
+  // non-zero exit into a failed download instead of a false 200 success.
+  proc.stdout.on('error', finish);
+  proc.stdout.pipe(archive, { end: false });
+  proc.on('error', (err) => {
+    finish(err);
+  });
+  proc.on('close', (code, signal) => {
+    if (code === 0) {
+      finish();
+      return;
+    }
+    const detail = code == null ? `signal ${signal || 'unknown'}` : `code ${code}`;
+    finish(new Error(`tar exited with ${detail}`));
+  });
+  archive.abort = () => {
+    if (proc.exitCode == null && !proc.killed) proc.kill?.('SIGTERM');
+    finish(new Error(`Snapshot download aborted: ${snapshotId}`));
+  };
+  return archive;
+}
+
 /**
  * Restore a snapshot back to PATHS.data using rsync.
  * @param {string} destPath - Path to external drive backup root
@@ -497,18 +578,8 @@ export async function listSnapshots(destPath) {
  * @param {string|null} [options.subdirFilter=null] - Limit restore to a subdirectory
  */
 export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, subdirFilter = null } = {}) {
-  // Validate snapshotId to prevent path traversal
-  if (!snapshotId || !/^[\w\-.:T]+$/.test(snapshotId)) {
-    throw new Error(`Invalid snapshotId: ${snapshotId}`);
-  }
-  const snapshotsRoot = resolve(join(destPath, 'snapshots', MACHINE_HOST));
-  const srcDir = join(snapshotsRoot, snapshotId, 'data');
-  // Use path.relative to stay cross-platform and avoid prefix-match pitfalls
-  // (e.g. /snaps vs /snaps2).
-  const rel = relative(snapshotsRoot, resolve(srcDir));
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`Path traversal detected for snapshotId: ${snapshotId}`);
-  }
+  const { snapshotsRoot, snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
+  const srcDir = join(snapshotDir, 'data');
 
   // Defense-in-depth for non-route callers (the route already validates via
   // subdirFilterSchema). subdirFilter is interpolated into an rsync include arg,

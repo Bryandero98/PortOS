@@ -61,6 +61,7 @@ vi.mock('./memoryBackend.js', () => ({
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
+import { PassThrough } from 'node:stream';
 import { spawn } from '../lib/childProcess.js';
 // Partial mock: only override spawn. Preserve execFile et al. because
 // backup.js transitively imports fileUtils.js, which promisifies execFile.
@@ -90,13 +91,16 @@ vi.mock('./settings.js', async (importOriginal) => ({
   reloadSettings: vi.fn(async () => {}),
 }));
 import { reloadSettings } from './settings.js';
-import { DEFAULT_EXCLUDES, computeEffectiveExcludes, listSnapshots, restoreSnapshot } from './backup.js';
+import { DEFAULT_EXCLUDES, computeEffectiveExcludes, listSnapshots, openSnapshotStream, restoreSnapshot } from './backup.js';
 
 // Helper: build a fake child process whose close/error we can drive.
 function fakeProc() {
   const proc = new EventEmitter();
-  proc.stdout = new EventEmitter();
+  proc.stdout = new PassThrough();
   proc.stderr = new EventEmitter();
+  proc.exitCode = null;
+  proc.killed = false;
+  proc.kill = vi.fn(() => { proc.killed = true; });
   return proc;
 }
 
@@ -273,6 +277,113 @@ describe('listSnapshots', () => {
     const readdirSpy = vi.spyOn(fs, 'readdir');
     expect(await listSnapshots('')).toEqual([]);
     expect(readdirSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('openSnapshotStream', () => {
+  afterEach(async () => {
+    const actual = await vi.importActual('fs/promises');
+    fs.stat.mockImplementation(actual.stat);
+    spawn.mockReset();
+  });
+
+  it.each([
+    ['a slash', 'snap/id'],
+    ['a wildcard', 'snap*id'],
+  ])('rejects %s before spawning tar', async (_label, snapshotId) => {
+    await expect(openSnapshotStream('/dest', snapshotId))
+      .rejects.toMatchObject({ status: 400, code: 'VALIDATION_ERROR' });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.stat).not.toHaveBeenCalled();
+  });
+
+  it('rejects a traversal snapshot id before spawning tar', async () => {
+    await expect(openSnapshotStream('/dest', '..'))
+      .rejects.toMatchObject({ status: 400, code: 'VALIDATION_ERROR' });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.stat).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown snapshot without spawning tar', async () => {
+    fs.stat.mockRejectedValue(new Error('ENOENT'));
+
+    await expect(openSnapshotStream('/dest', 'snap-1'))
+      .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a newly created in-progress snapshot without spawning tar', async () => {
+    fs.stat
+      .mockResolvedValueOnce({ isDirectory: () => true })
+      .mockResolvedValueOnce({ isFile: () => true });
+
+    await expect(openSnapshotStream('/dest', 'snap-1'))
+      .rejects.toMatchObject({ status: 409, code: 'SNAPSHOT_INCOMPLETE' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('spawns tar with the snapshot directory as its archive root', async () => {
+    fs.stat
+      .mockResolvedValueOnce({ isDirectory: () => true })
+      .mockResolvedValueOnce({ isFile: () => false });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const stream = await openSnapshotStream('/dest', 'snap-1');
+
+    expect(spawn).toHaveBeenCalledWith(
+      'tar',
+      ['-czf', '-', '-C', resolve(join('/dest', 'snapshots', hostname().toLowerCase().replace(/[^\w.\-]/g, '_') || 'unknown')), 'snap-1'],
+      { shell: false },
+    );
+    const ended = new Promise((resolveEnd) => stream.once('end', resolveEnd));
+    stream.resume();
+    proc.emit('close', 0);
+    await expect(ended).resolves.toBeUndefined();
+  });
+
+  it('allows legacy snapshots without a manifest', async () => {
+    fs.stat
+      .mockResolvedValueOnce({ isDirectory: () => true })
+      .mockResolvedValueOnce({ isFile: () => false });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const stream = await openSnapshotStream('/dest', 'legacy-snapshot');
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    stream.resume();
+    proc.emit('close', 0);
+    await expect(new Promise(resolveEnd => stream.once('end', resolveEnd))).resolves.toBeUndefined();
+  });
+
+  it('fails the archive stream when tar exits unsuccessfully', async () => {
+    fs.stat
+      .mockResolvedValueOnce({ isDirectory: () => true })
+      .mockResolvedValueOnce({ isFile: () => false });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const stream = await openSnapshotStream('/dest', 'snap-1');
+    const error = new Promise((resolveError) => stream.once('error', resolveError));
+    proc.emit('close', 2);
+
+    await expect(error).resolves.toMatchObject({ message: 'tar exited with code 2' });
+  });
+
+  it('can abort tar when the response disconnects', async () => {
+    fs.stat
+      .mockResolvedValueOnce({ isDirectory: () => true })
+      .mockResolvedValueOnce({ isFile: () => false });
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+
+    const stream = await openSnapshotStream('/dest', 'snap-1');
+    const error = new Promise((resolveError) => stream.once('error', resolveError));
+    stream.abort();
+
+    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+    await expect(error).resolves.toMatchObject({ message: 'Snapshot download aborted: snap-1' });
   });
 });
 

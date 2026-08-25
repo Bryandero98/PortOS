@@ -1,4 +1,5 @@
-import { request } from './apiCore.js';
+import { request, API_BASE, maybeRedirectToLogin } from './apiCore.js';
+import { downloadBlob } from '../lib/downloadBlob.js';
 
 // Alerts
 export const getAlertsSummary = (options) => request('/alerts/summary', options);
@@ -165,6 +166,46 @@ export const getBackupStatus = (options) => request('/backup/status', options);
 export const triggerBackup = (options) => request('/backup/run', { method: 'POST', ...options });
 export const getBackupSnapshots = (options) => request('/backup/snapshots', options);
 export const restoreBackup = (data, options = {}) => request('/backup/restore', { method: 'POST', body: JSON.stringify(data), ...options });
+export async function downloadBackupSnapshot(snapshotId) {
+  const response = await fetch(`${API_BASE}/backup/snapshots/${encodeURIComponent(snapshotId)}/download`, {
+    credentials: 'same-origin',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    maybeRedirectToLogin(response, error);
+    const err = new Error(error.error || `HTTP ${response.status}`);
+    err.code = error.code;
+    err.status = response.status;
+    throw err;
+  }
+
+  const disposition = response.headers.get('Content-Disposition');
+  const filename = disposition?.match(/filename="([^"]+)"/)?.[1]
+    || `portos-snapshot-${snapshotId}.tar.gz`;
+
+  // Chromium's File System Access API keeps multi-gigabyte snapshots out of
+  // browser memory. Older browsers retain the required Blob/object-URL path.
+  let writable = null;
+  if (typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function' && response.body?.pipeTo) {
+    // The fetch itself may consume the button's transient user activation.
+    // If Chromium rejects the picker, the response body is still untouched, so
+    // fall back to the required Blob/object-URL path instead of failing a
+    // download that the browser can otherwise save.
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: filename });
+      writable = await handle.createWritable();
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+    }
+  }
+  if (writable) {
+    await response.body.pipeTo(writable);
+  } else {
+    const blob = await response.blob();
+    downloadBlob(blob, filename);
+  }
+  return { filename };
+}
 export const restoreDatabase = (data, options) => request('/backup/restore-db', { method: 'POST', body: JSON.stringify(data), ...options });
 
 // Data Manager
