@@ -8,7 +8,7 @@
  * panel modules.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import {
   ArrowLeft, BookOpen, FolderTree, ImagePlus, Layers, Loader2,
@@ -16,7 +16,11 @@ import {
 } from 'lucide-react';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import toast from '../ui/Toast';
-import { exportUniverseMarkdown, WORLD_CATEGORY_KEY_MAX } from '../../services/api';
+import {
+  exportUniverseMarkdown,
+  waitForUniverseWrites,
+  WORLD_CATEGORY_KEY_MAX,
+} from '../../services/api';
 import useUniverseBucketActions from '../../hooks/useUniverseBucketActions';
 import useUniverseDraft from '../../hooks/useUniverseDraft';
 import useUniverseExpand from '../../hooks/useUniverseExpand';
@@ -111,6 +115,8 @@ export default function UniverseBuilder() {
   // treat the `new` sentinel as "no id" (blank draft). Real universe ids are
   // UUIDs, so this can never shadow an actual record.
   const selectedId = params.universeId && params.universeId !== 'new' ? params.universeId : null;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   const [exporting, setExporting] = useState(false);
   // `goToWorld` preserves `location.search` (e.g. `?tab=&bucket=&series=`) so
   // the auto-save → create path doesn't snap the user back to the Bible tab
@@ -223,10 +229,21 @@ export default function UniverseBuilder() {
   });
 
   const handleExportMarkdown = useCallback(async () => {
-    if (!selectedId || exporting) return;
+    const exportIsReady = () => selectedIdRef.current === selectedId && draftRef.current?.id === selectedId;
+    if (!selectedId || exporting || saving || !exportIsReady()) return;
     setExporting(true);
+    await waitForUniverseWrites(selectedId);
+    if (!exportIsReady()) {
+      setExporting(false);
+      return;
+    }
     const flushed = await flushDraftIfDirty();
     if (!flushed) {
+      setExporting(false);
+      return;
+    }
+    await waitForUniverseWrites(selectedId);
+    if (!exportIsReady()) {
       setExporting(false);
       return;
     }
@@ -236,10 +253,10 @@ export default function UniverseBuilder() {
     });
     setExporting(false);
     if (markdown === null) return;
-    const filename = `${downloadSlug(draft.name)}.md`;
+    const filename = `${downloadSlug(draftRef.current?.name || draft.name)}.md`;
     downloadBlob(markdown, filename, 'text/markdown');
     toast.success(`Downloaded ${filename}`);
-  }, [draft.name, exporting, flushDraftIfDirty, selectedId]);
+  }, [draft.name, draftRef, exporting, flushDraftIfDirty, saving, selectedId]);
 
   // Page-level lightbox + gallery-metadata concern. A single MediaPreview at
   // this level covers EVERY thumb on the page: variations, composite sheets,
@@ -378,7 +395,7 @@ export default function UniverseBuilder() {
             <>
               <button
                 onClick={handleExportMarkdown}
-                disabled={exporting}
+                disabled={exporting || saving || draft.id !== selectedId}
                 className="px-3 py-2 rounded flex items-center gap-2 min-h-[40px] border border-port-border hover:bg-port-card-hover disabled:opacity-50"
                 title="Export universe as Markdown"
               >
