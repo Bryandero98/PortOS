@@ -1098,7 +1098,10 @@ const verifyGate = 'Rebase onto the default branch before opening or updating a 
 //
 // `pr` is the PR's number when the branch already has one, else the `<num>`
 // placeholder the agent fills in after opening it.
-const driveToMerge = (pr) => [
+// Exported so the per-agent repo-state audit (services/agentRepoStateVerification.js)
+// hands a recovery agent the SAME merge procedure, rather than re-authoring a
+// `gh pr merge` line that loses these caveats.
+export const driveToMerge = (pr) => [
   'Opening (or approving) the PR is NOT the end state — a green PR left open is still an unfinished branch that this task will simply re-drive on its next run.',
   `Wait for CI in-session by re-polling \`gh pr checks ${pr} --required\` every 30s so the run stays observable while CI is pending. Budget 15 minutes for the run; past that, leave the PR open and report that CI was still pending.`,
   'If a required check FAILS, fix it on the branch, push, and re-poll (max 3 rounds); if it is still red after that, leave the PR open and report exactly which check failed.',

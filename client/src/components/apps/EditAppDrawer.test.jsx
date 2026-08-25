@@ -165,6 +165,21 @@ describe('EditAppDrawer work tracker selector', () => {
     await waitFor(() => expect(api.updateApp).toHaveBeenCalled());
     expect(api.updateApp.mock.calls[0][1].defaultPrCompletion).toBe('leave-open');
   });
+  it('defaults the repo-state audit ON for an app that has never set it, and saves an opt-out', async () => {
+    // Unset means ON server-side (repoStateVerificationEnabled), so an app record
+    // with no such key must render checked — otherwise the first save of an
+    // unrelated field would silently turn the audit off.
+    renderDrawer({ app: { ...APP, defaultUseWorktree: true } });
+    await openTab('Workflow');
+
+    const toggle = await screen.findByLabelText(/Verify repo state after each agent/);
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => expect(api.updateApp).toHaveBeenCalled());
+    expect(api.updateApp.mock.calls[0][1].verifyRepoStateOnCompletion).toBe(false);
+  });
 });
 
 describe('EditAppDrawer native launch target', () => {
