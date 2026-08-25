@@ -118,11 +118,10 @@ function fakeProc() {
   return proc;
 }
 
-// dumpPostgres awaits checkHealth() before calling spawn() and attaching its
-// close/error listeners. Flush the microtask queue so the listeners exist
-// before the test drives the fake process — otherwise an 'error' emit throws
-// (no listener) and 'close' emits fall into the void (test hangs).
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// The restore/dump helpers await filesystem and health checks before calling
+// spawn() and attaching child-process listeners. Wait for the mocked spawn
+// call itself so CI scheduling cannot emit into an uninitialized fake process.
+const flush = () => vi.waitFor(() => expect(spawn).toHaveBeenCalled());
 
 const overridable = DEFAULT_EXCLUDES.filter(e => e.overridable).map(e => e.path);
 const nonOverridable = DEFAULT_EXCLUDES.filter(e => !e.overridable).map(e => e.path);
