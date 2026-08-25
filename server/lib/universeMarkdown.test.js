@@ -90,8 +90,32 @@ describe('universeToMarkdown', () => {
       characters: [{ name: 'Aster', notes: 'a note\n## Not a heading' }],
     });
 
-    expect(markdown).toContain('A world ## Not a heading');
-    expect(markdown).toContain('**Notes:** a note ## Not a heading');
+    expect(markdown).toContain('A world\n\\## Not a heading');
+    expect(markdown).toContain('**Notes:** a note\n\\## Not a heading');
+    expect(markdown).not.toMatch(/^## Not a heading$/m);
+  });
+
+  it('uses a slugline-only place as its heading without repeating the field', () => {
+    const markdown = universeToMarkdown({
+      name: 'Places World',
+      places: [{ slugline: 'INT. TOWER - DAY' }],
+    });
+
+    expect(markdown).toContain('### INT. TOWER - DAY');
+    expect(markdown).not.toContain('**Slugline:** INT. TOWER - DAY');
+  });
+
+  it('protects legacy string-shaped categories and auxiliary lists', () => {
+    const markdown = universeToMarkdown({
+      name: 'Legacy World',
+      categories: { old: ['a line\n## Not a heading'] },
+      compositeSheets: ['sheet\n## Not a heading'],
+      styleReferences: ['reference\n## Not a heading'],
+    });
+
+    expect(markdown).toContain('- a line ## Not a heading');
+    expect(markdown).toContain('- sheet ## Not a heading');
+    expect(markdown).toContain('- reference ## Not a heading');
     expect(markdown).not.toMatch(/^## Not a heading$/m);
   });
 });

@@ -15,9 +15,11 @@ export const WORLD_INFLUENCE_ENTRY_MAX = 120;
 export const WORLD_INFLUENCES_PER_LIST_MAX = 30;
 export const WORLD_STYLE_REFERENCES_MAX = 20;
 
-// Targeted canon/style-reference editors persist outside the general draft
-// snapshot. Keep their requests visible to actions that immediately read the
-// persisted universe, such as Markdown export.
+// Every request whose response completes a persisted universe write outside the
+// general draft snapshot is tracked here, including LLM-backed mutations.
+// Fire-and-forget render jobs are excluded because their completion write is
+// not represented by the request promise. Export waits for tracked requests
+// for a bounded interval and aborts if one is still running.
 const pendingUniverseWrites = new Map();
 
 const trackUniverseWrite = (universeId, promise) => {
@@ -44,8 +46,13 @@ export const waitForUniverseWrites = async (universeId, { timeoutMs = 15000 } = 
     if (remainingMs <= 0) return false;
     const writes = [...pendingUniverseWrites.get(universeId)];
     const settled = Promise.allSettled(writes).then(() => true);
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(false), remainingMs));
-    if (!(await Promise.race([settled, timeout]))) return false;
+    let timeoutId;
+    const timeout = new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve(false), remainingMs);
+    });
+    const ready = await Promise.race([settled, timeout]);
+    clearTimeout(timeoutId);
+    if (!ready) return false;
   }
   return true;
 };
@@ -317,29 +324,29 @@ export const listWorldRuns = (id) => request(`/universe-builder/${encodeURICompo
 // canon arrays. The corpus is usually an issue's prose stage output but can
 // be anything text-shaped.
 export const extractUniverseCanon = (universeId, { corpus, kinds, parallel, providerOverride } = {}, options = {}) =>
-  request(`/universe-builder/${encodeURIComponent(universeId)}/extract-canon`, {
+  trackUniverseWrite(universeId, request(`/universe-builder/${encodeURIComponent(universeId)}/extract-canon`, {
     method: 'POST',
     body: JSON.stringify({ corpus, kinds, parallel, providerOverride }),
     ...options,
-  });
+  }));
 
 export const refineUniverseCharacter = (universeId, entryId, { providerId, model } = {}, options = {}) =>
-  request(`/universe-builder/${encodeURIComponent(universeId)}/characters/${encodeURIComponent(entryId)}/refine`, {
+  trackUniverseWrite(universeId, request(`/universe-builder/${encodeURIComponent(universeId)}/characters/${encodeURIComponent(entryId)}/refine`, {
     method: 'POST',
     body: JSON.stringify({ providerId, model }),
     ...options,
-  });
+  }));
 
 // One LLM call fills BLANK extended character fields (pronouns / age / stats /
 // motivations / colorPalette / expressions / hand gestures / ...). No-clobber
 // on populated fields. Locked characters return `{ locked: true }` instead of
 // a 4xx — the UI surfaces this as a "Locked" badge.
 export const expandUniverseCharacter = (universeId, entryId, { providerId, model } = {}, options = {}) =>
-  request(`/universe-builder/${encodeURIComponent(universeId)}/characters/${encodeURIComponent(entryId)}/expand`, {
+  trackUniverseWrite(universeId, request(`/universe-builder/${encodeURIComponent(universeId)}/characters/${encodeURIComponent(entryId)}/expand`, {
     method: 'POST',
     body: JSON.stringify({ providerId, model }),
     ...options,
-  });
+  }));
 
 // Catalog of every registered reference-sheet variant. The panel iterates
 // this on mount to render one row per variant. New variants light up
@@ -374,11 +381,11 @@ export const deleteCharacterReferenceSheet = (universeId, entryId, { variant, ..
 // Cast-wide differentiate — single LLM call rewrites every character so the
 // whole cast has no visually-colliding pairs.
 export const differentiateUniverseCast = (universeId, { providerId, model } = {}, options = {}) =>
-  request(`/universe-builder/${encodeURIComponent(universeId)}/characters/differentiate-cast`, {
+  trackUniverseWrite(universeId, request(`/universe-builder/${encodeURIComponent(universeId)}/characters/differentiate-cast`, {
     method: 'POST',
     body: JSON.stringify({ providerId, model }),
     ...options,
-  });
+  }));
 
 // Cross-reference: where each canon entry appears across the universe's
 // linked series. Returns `{ characters: { [entryId]: [{seriesId, seriesName,
@@ -439,18 +446,18 @@ export const setUniverseVariationsLockAll = (universeId, { locked, category = nu
 export const promoteVariationToCanon = (universeId, {
   category, label, targetKind, providerId, model,
 } = {}, options = {}) =>
-  request(`/universe-builder/${encodeURIComponent(universeId)}/promote-variation`, {
+  trackUniverseWrite(universeId, request(`/universe-builder/${encodeURIComponent(universeId)}/promote-variation`, {
     method: 'POST',
     body: JSON.stringify({ category, label, targetKind, providerId, model }),
     ...options,
-  });
+  }));
 
 // Bulk-classify every `kind: 'other'` bucket on a universe. Server returns
 // `{ universe, results: [{ sourceKey, kind, suggestedKey? }], llm, runId }`.
 // Pass `{ silent: true }` when the caller owns its own error toast.
 export const autoSortBuckets = (universeId, { providerId, model } = {}, options = {}) =>
-  request(`/universe-builder/${encodeURIComponent(universeId)}/auto-sort`, {
+  trackUniverseWrite(universeId, request(`/universe-builder/${encodeURIComponent(universeId)}/auto-sort`, {
     method: 'POST',
     body: JSON.stringify({ providerId, model }),
     ...options,
-  });
+  }));
