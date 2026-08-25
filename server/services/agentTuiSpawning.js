@@ -1444,7 +1444,7 @@ export async function spawnTuiAgent({
     // the dismissal reveals; if the TUI ignores the keystroke entirely,
     // PASTE_DEADLINE_MS still backstops delivery.
 
-    // Claude can discover PortOS's parent CLAUDE.md from a managed-app worktree
+    // Claude can discover PortOS's parent AGENTS.md (via CLAUDE.md) from a managed-app worktree
     // nested under data/cos/worktrees, then ask whether to allow that file's
     // external AGENTS.md import. Decline it: the parent repository's instructions
     // must not leak into the target app, and option 2 leaves the target's own
