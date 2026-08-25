@@ -1,4 +1,5 @@
-import { request } from './apiCore.js';
+import { request, API_BASE, maybeRedirectToLogin } from './apiCore.js';
+import { downloadBlob } from '../lib/downloadBlob.js';
 
 // Alerts
 export const getAlertsSummary = (options) => request('/alerts/summary', options);
@@ -165,6 +166,53 @@ export const getBackupStatus = (options) => request('/backup/status', options);
 export const triggerBackup = (options) => request('/backup/run', { method: 'POST', ...options });
 export const getBackupSnapshots = (options) => request('/backup/snapshots', options);
 export const restoreBackup = (data, options = {}) => request('/backup/restore', { method: 'POST', body: JSON.stringify(data), ...options });
+export async function downloadBackupSnapshot(snapshotId) {
+  // The server names the file the same way; deriving it here too lets the save
+  // picker open BEFORE the fetch, while the click's transient user activation is
+  // still valid. Waiting for response headers first — as this used to — routinely
+  // outlives that window on a cold external drive, Chromium then refuses the
+  // picker, and the download falls back to buffering a multi-gigabyte archive in
+  // tab memory: exactly the case the streaming path exists to avoid.
+  const filename = `portos-snapshot-${snapshotId}.tar.gz`;
+
+  let writable = null;
+  if (typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function') {
+    // A dismissed picker is the user declining; it propagates as AbortError and
+    // callers treat it as a cancel, not a failure. Any other picker error (an
+    // unsupported context, say) falls through to the Blob path below.
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: filename });
+      writable = await handle.createWritable();
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/backup/snapshots/${encodeURIComponent(snapshotId)}/download`, {
+    credentials: 'same-origin',
+  });
+  if (!response.ok) {
+    // Close the handle we opened before we knew the request would fail, so the
+    // picker doesn't leave a 0-byte file behind.
+    await writable?.abort?.().catch(() => {});
+    const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    maybeRedirectToLogin(response, error);
+    const err = new Error(error.error || `HTTP ${response.status}`);
+    err.code = error.code;
+    err.status = response.status;
+    throw err;
+  }
+
+  if (writable && response.body?.pipeTo) {
+    await response.body.pipeTo(writable);
+  } else {
+    // No File System Access API (Firefox, Safari): the Blob path is the only one
+    // available, and it is why the server caps nothing — the browser holds it all.
+    await writable?.abort?.().catch(() => {});
+    downloadBlob(await response.blob(), filename);
+  }
+  return { filename };
+}
 export const restoreDatabase = (data, options) => request('/backup/restore-db', { method: 'POST', body: JSON.stringify(data), ...options });
 
 // Data Manager

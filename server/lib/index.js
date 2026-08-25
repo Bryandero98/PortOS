@@ -404,6 +404,7 @@ export * from './slashdoLoader.js';
 export * from './singleFlight.js';
 export * from './staleWhileRevalidate.js';
 export * from './staticImportGraph.js';
+export * from './streamAttachment.js';
 export * from './streamBackpressure.js';
 export * from './streamingSpawn.js';
 export * from './sseUtils.js';
