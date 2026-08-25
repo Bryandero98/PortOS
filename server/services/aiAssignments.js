@@ -12,6 +12,7 @@ import * as autonomousJobsService from './autonomousJobs.js';
 import { getVoiceConfig, updateVoiceConfig } from './voice/config.js';
 import { isPlainObject } from '../lib/objects.js';
 import { ServerError } from '../lib/errorHandler.js';
+import { effortLevelsForProvider } from '../lib/providerModels.js';
 
 const textProviderTypes = ['api', 'cli', 'tui'];
 const cliProviderTypes = ['cli', 'tui'];
@@ -431,7 +432,8 @@ const addRecordEntries = async (entries) => {
   }
 
   for (const job of autonomousJobs) {
-    if (job.type !== 'agent' || (!job.providerId && !job.model && !job.effort)) continue;
+    // Legacy/custom jobs omitted `type`; execution treats those as agent jobs.
+    if ((job.type || 'agent') !== 'agent' || (!job.providerId && !job.model && !job.effort)) continue;
     entries.push(makeEntry({
       id: `cos.job.${job.id}`,
       area: 'Chief of Staff',
@@ -455,21 +457,32 @@ export async function getAiAssignments() {
   await addSettingsEntries(entries);
   await addRecordEntries(entries);
   return {
-    providers: providersData.providers.map((p) => ({
-      id: p.id,
-      name: p.name,
-      type: p.type,
-      enabled: p.enabled !== false,
-      defaultModel: p.defaultModel || null,
-      models: pickModelOptions(p),
-      // Resolved HERE rather than client-side: the client mirror of this
-      // predicate reads `envVars.ANTHROPIC_BASE_URL` / `endpoint`, and this
-      // payload deliberately ships neither (envVars can hold secrets). Without
-      // the resolved flag a renamed `claude-ollama-tui` — the exact provider
-      // class the tool-use warning exists for — looked like a cloud agent to
-      // every editor and was silently skipped.
-      ollamaBacked: isOllamaBackedProvider(p),
-    })),
+    providers: providersData.providers.map((p) => {
+      const models = pickModelOptions(p);
+      return {
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        enabled: p.enabled !== false,
+        defaultModel: p.defaultModel || null,
+        models,
+        // Publish only the derived capability, never the command/path used to
+        // detect it. Renamed/path-configured CLIs then retain effort controls
+        // without exposing machine identity in this safe settings payload.
+        effortLevels: [...(effortLevelsForProvider(p) || [])],
+        effortLevelsByModel: Object.fromEntries(models.map((model) => [
+          model,
+          [...(effortLevelsForProvider(p, model) || [])],
+        ])),
+        // Resolved HERE rather than client-side: the client mirror of this
+        // predicate reads `envVars.ANTHROPIC_BASE_URL` / `endpoint`, and this
+        // payload deliberately ships neither (envVars can hold secrets). Without
+        // the resolved flag a renamed `claude-ollama-tui` — the exact provider
+        // class the tool-use warning exists for — looked like a cloud agent to
+        // every editor and was silently skipped.
+        ollamaBacked: isOllamaBackedProvider(p),
+      };
+    }),
     activeProvider: providersData.activeProvider || null,
     assignments: entries,
   };

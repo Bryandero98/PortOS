@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { ArrowRight, Bot, RefreshCw, Save, Search } from 'lucide-react';
 import toast from '../ui/Toast';
 import FormField from '../ui/FormField';
+import EffortSelect from '../cos/EffortSelect.jsx';
 import ToolUseWarning from '../ui/ToolUseWarning.jsx';
 import TabPills from '../ui/TabPills.jsx';
 import { getAiAssignments, updateAiAssignment } from '../../services/api';
@@ -120,15 +121,20 @@ export default function AiAssignmentsTab() {
 
   const bulkTargets = useMemo(() => {
     if (!fromProvider || !toProvider) return [];
-    return (data.assignments || []).filter((entry) => (
-      entry.editable !== false &&
-      entry.providerEditable !== false &&
-      entry.providerId === fromProvider &&
-      (!fromModel || entry.model === fromModel) &&
-      assignmentProviderOptions(entry, data.providers).some((option) => option.id === toProvider) &&
-      (!toModel || assignmentModelOptions(entry, data.providers, toProvider, visionIdsByProvider).includes(toModel))
-    ));
-  }, [data.assignments, data.providers, fromModel, fromProvider, toModel, toProvider, visionIdsByProvider]);
+    return (data.assignments || []).filter((entry) => {
+      const modelCompatible = !toModel || (
+        entry.modelFilter === 'vision'
+          ? assignmentModelOptions(entry, data.providers, toProvider, visionIdsByProvider).includes(toModel)
+          : targetModels.includes(toModel)
+      );
+      return entry.editable !== false &&
+        entry.providerEditable !== false &&
+        entry.providerId === fromProvider &&
+        (!fromModel || entry.model === fromModel) &&
+        assignmentProviderOptions(entry, data.providers).some((option) => option.id === toProvider) &&
+        modelCompatible;
+    });
+  }, [data.assignments, data.providers, fromModel, fromProvider, targetModels, toModel, toProvider, visionIdsByProvider]);
 
   // Everything except the provider chips, so the chip counts describe what the
   // OTHER filters left behind (faceted-filter behaviour) instead of a global
@@ -213,7 +219,11 @@ export default function AiAssignmentsTab() {
     let latest = data;
     const savedIds = [];
     for (const entry of bulkTargets) {
-      const nextModel = entry.modelEditable === false ? (entry.model || '') : toModel;
+      const nextModel = entry.modelEditable === false
+        ? (entry.model || '')
+        : (toModel || (entry.modelFilter === 'vision'
+          ? assignmentDefaultModel(entry, data.providers, toProvider, visionIdsByProvider)
+          : ''));
       const next = await updateAiAssignment(entry.id, {
         providerId: toProvider,
         model: nextModel || null,
@@ -315,21 +325,16 @@ export default function AiAssignmentsTab() {
             </FormField>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-            {effortOptionsFor(targetProvider, toModel || targetProvider?.defaultModel).length > 0 && (
-              <FormField label="Target effort" labelClassName="sr-only" className="min-w-0 sm:w-48">
-                <select
-                  value={toEffort}
-                  onChange={(e) => setToEffort(e.target.value)}
-                  aria-label="Target effort"
-                  className="w-full bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
-                >
-                  <option value="">Default effort</option>
-                  {effortOptionsFor(targetProvider, toModel || targetProvider?.defaultModel).map((effort) => (
-                    <option key={effort} value={effort}>{effort}</option>
-                  ))}
-                </select>
-              </FormField>
-            )}
+            <EffortSelect
+              provider={targetProvider}
+              model={toModel || targetProvider?.defaultModel}
+              value={toEffort}
+              onChange={setToEffort}
+              label="Target effort"
+              labelClassName="sr-only"
+              fieldClassName="min-w-0 sm:w-48"
+              className="w-full bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
+            />
             <button
               type="button"
               onClick={runBulkMigration}
@@ -391,7 +396,7 @@ export default function AiAssignmentsTab() {
           <tbody className="divide-y divide-port-border bg-port-bg">
             {filtered.map((entry) => {
               const draft = drafts[entry.id] || getDraft(entry);
-              const selectedProvider = data.providers.find((p) => p.id === draft.providerId);
+              const selectedProvider = data.providers.find((p) => p.id === (draft.providerId || data.activeProvider));
               const providerOptions = assignmentProviderOptions(entry, data.providers);
               const modelOptions = assignmentModelOptions(entry, data.providers, draft.providerId, visionIdsByProvider);
               const dirty = !sameDraft(entry, draft);
@@ -483,19 +488,15 @@ export default function AiAssignmentsTab() {
                   </td>
                   <td className="px-3 py-3">
                     {entry.effortEditable && effortOptionsFor(selectedProvider, draft.model || selectedProvider?.defaultModel).length > 0 ? (
-                      <FormField label={`Effort for ${entry.label}`} labelClassName="sr-only">
-                        <select
-                          value={draft.effort}
-                          onChange={(e) => setDraft(entry.id, { effort: e.target.value })}
-                          aria-label={`Effort for ${entry.label}`}
-                          className="w-full bg-port-card border border-port-border rounded px-2 py-2 text-sm text-white"
-                        >
-                          <option value="">Default</option>
-                          {effortOptionsFor(selectedProvider, draft.model || selectedProvider?.defaultModel).map((effort) => (
-                            <option key={effort} value={effort}>{effort}</option>
-                          ))}
-                        </select>
-                      </FormField>
+                      <EffortSelect
+                        provider={selectedProvider}
+                        model={draft.model || selectedProvider?.defaultModel}
+                        value={draft.effort}
+                        onChange={(effort) => setDraft(entry.id, { effort })}
+                        label={`Effort for ${entry.label}`}
+                        labelClassName="sr-only"
+                        className="w-full bg-port-card border border-port-border rounded px-2 py-2 text-sm text-white"
+                      />
                     ) : (
                       <span className="text-sm text-gray-600">—</span>
                     )}

@@ -278,4 +278,59 @@ describe('AiAssignmentsTab assignment management', () => {
       { silent: true },
     ));
   });
+
+  it('uses the active provider for an inherited scheduled effort pin', async () => {
+    const providers = [
+      ...PROVIDERS,
+      { id: 'claude-code', name: 'Claude Code', type: 'cli', enabled: true, defaultModel: 'opus', models: ['opus'], ollamaBacked: false },
+    ];
+    getAiAssignments.mockResolvedValue({
+      providers,
+      activeProvider: 'claude-code',
+      assignments: [entry({
+        id: 'cos.job.audit',
+        area: 'Chief of Staff',
+        assignmentType: 'Scheduled tasks',
+        label: 'Scheduled job: Audit',
+        providerId: '',
+        model: '',
+        effort: 'high',
+        providerTypes: ['cli', 'tui'],
+        needsTools: true,
+        effortEditable: true,
+      })],
+    });
+    renderTab();
+
+    expect(await screen.findByLabelText('Effort for Scheduled job: Audit')).toHaveValue('high');
+  });
+
+  it('seeds a compatible model when bulk-replacing a vision assignment with the target default', async () => {
+    const providers = [
+      ...PROVIDERS,
+      { id: 'lmstudio', name: 'LM Studio', type: 'api', enabled: true, defaultModel: 'text-model', models: ['text-model', 'qwen2.5-vl'], ollamaBacked: false },
+    ];
+    const before = entry({
+      id: 'settings.creativeDirector.evaluation',
+      label: 'Scene evaluation vision model',
+      providerId: 'openai',
+      model: 'gpt-4o',
+      modelFilter: 'vision',
+    });
+    const after = { ...before, providerId: 'lmstudio', model: 'qwen2.5-vl' };
+    getVisionModels.mockResolvedValue({ models: [{ providerId: 'lmstudio', id: 'qwen2.5-vl' }] });
+    getAiAssignments.mockResolvedValue({ providers, activeProvider: 'openai', assignments: [before] });
+    updateAiAssignment.mockResolvedValue({ providers, activeProvider: 'openai', assignments: [after] });
+    renderTab();
+
+    await userEvent.selectOptions(await screen.findByLabelText('Replace from provider'), 'openai');
+    await userEvent.selectOptions(screen.getByLabelText('Replace with provider'), 'lmstudio');
+    await userEvent.click(screen.getByRole('button', { name: 'Replace all matches' }));
+
+    await waitFor(() => expect(updateAiAssignment).toHaveBeenCalledWith(
+      'settings.creativeDirector.evaluation',
+      { providerId: 'lmstudio', model: 'qwen2.5-vl' },
+      { silent: true },
+    ));
+  });
 });

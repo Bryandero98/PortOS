@@ -80,7 +80,7 @@ beforeEach(() => {
     activeProvider: 'openai',
     providers: [
       { id: 'openai', name: 'OpenAI', type: 'api', enabled: true, defaultModel: 'gpt-4', models: ['gpt-4', 'gpt-4o'], fallbackProvider: null },
-      { id: 'claude', name: 'Claude', type: 'cli', enabled: true, defaultModel: 'opus', models: ['opus'], fallbackProvider: 'openai' },
+      { id: 'claude', name: 'Claude', type: 'cli', command: 'claude', enabled: true, defaultModel: 'opus', models: ['opus'], fallbackProvider: 'openai' },
     ],
   });
   mocks.getSettings.mockResolvedValue({
@@ -106,14 +106,14 @@ describe('getAiAssignments', () => {
     const result = await getAiAssignments();
     expect(result.activeProvider).toBe('openai');
     expect(result.providers).toEqual([
-      { id: 'openai', name: 'OpenAI', type: 'api', enabled: true, defaultModel: 'gpt-4', models: ['gpt-4', 'gpt-4o'], ollamaBacked: false },
-      { id: 'claude', name: 'Claude', type: 'cli', enabled: true, defaultModel: 'opus', models: ['opus'], ollamaBacked: false },
+      { id: 'openai', name: 'OpenAI', type: 'api', enabled: true, defaultModel: 'gpt-4', models: ['gpt-4', 'gpt-4o'], effortLevels: [], effortLevelsByModel: { 'gpt-4': [], 'gpt-4o': [] }, ollamaBacked: false },
+      { id: 'claude', name: 'Claude', type: 'cli', enabled: true, defaultModel: 'opus', models: ['opus'], effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], effortLevelsByModel: { opus: ['low', 'medium', 'high', 'xhigh', 'max'] }, ollamaBacked: false },
     ]);
     // The provider mock has no apiKey, but assert the curated shape has no extra
     // keys regardless — in particular no `envVars`, which is why `ollamaBacked`
     // has to be resolved server-side instead of re-derived by the client.
     for (const p of result.providers) {
-      expect(Object.keys(p).sort()).toEqual(['defaultModel', 'enabled', 'id', 'models', 'name', 'ollamaBacked', 'type']);
+      expect(Object.keys(p).sort()).toEqual(['defaultModel', 'effortLevels', 'effortLevelsByModel', 'enabled', 'id', 'models', 'name', 'ollamaBacked', 'type']);
     }
     const ids = result.assignments.map((a) => a.id);
     expect(ids).not.toContain('provider.active');
@@ -134,6 +134,7 @@ describe('getAiAssignments', () => {
   it('includes explicitly assigned recurring agent jobs with model effort', async () => {
     mocks.getAllJobs.mockResolvedValue([
       { id: 'managed-app', name: 'Managed app audit', type: 'agent', providerId: 'claude', model: 'opus', effort: 'high' },
+      { id: 'legacy-agent', name: 'Legacy agent', providerId: 'claude', model: 'opus' },
       { id: 'shell-job', name: 'Shell cleanup', type: 'shell', providerId: 'claude', model: 'opus' },
       { id: 'inherited', name: 'Inherited agent', type: 'agent', providerId: null, model: null, effort: null },
     ]);
@@ -148,6 +149,7 @@ describe('getAiAssignments', () => {
     });
     expect(result.assignments.some((a) => a.id === 'cos.job.shell-job')).toBe(false);
     expect(result.assignments.some((a) => a.id === 'cos.job.inherited')).toBe(false);
+    expect(result.assignments.some((a) => a.id === 'cos.job.legacy-agent')).toBe(true);
   });
 
   it('marks agent-harness assignments needsTools so every editor warns from one flag', async () => {
