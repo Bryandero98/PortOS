@@ -58,10 +58,11 @@ const sourceModels = (provider, withEffort) => {
  *   — then list BASE models instead, with effort picked separately. Leave off
  *   for a picker with no effort control: there the suffixed ids are the only
  *   way to express a tier, so collapsing them would strip the capability.
- * @returns {{ providers, selectedProviderId, selectedModel, availableModels, selectedProvider, setSelectedProviderId, setSelectedModel, loading }}
+ * @returns {{ providers, activeProviderId, selectedProviderId, selectedModel, availableModels, selectedProvider, setSelectedProviderId, setSelectedModel, loading }}
  */
 export default function useProviderModels({ filter, allowDefault = false, silent = false, modelFilter, withEffort = false } = {}) {
   const [providers, setProviders] = useState([]);
+  const [activeProviderId, setActiveProviderId] = useState('');
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(true);
@@ -112,8 +113,9 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // Log even when `silent` suppresses the toast, so a failed fetch leaves
       // a breadcrumb (matches the prior inline console.warn behavior).
       console.warn(`⚠️ Provider list fetch failed: ${err?.message || err}`);
-      return { providers: [] };
+      return { activeProvider: '', providers: [] };
     });
+    setActiveProviderId(typeof data?.activeProvider === 'string' ? data.activeProvider : '');
     const filterFn = filter || (p => p.enabled);
     const filtered = (data.providers || [])
       .filter(isProviderHardwareCompatible)
@@ -202,6 +204,7 @@ export default function useProviderModels({ filter, allowDefault = false, silent
 
   return {
     providers,
+    activeProviderId,
     selectedProviderId,
     selectedModel,
     availableModels,

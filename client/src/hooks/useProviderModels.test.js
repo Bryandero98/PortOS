@@ -91,6 +91,17 @@ describe('useProviderModels — Antigravity base models', () => {
   });
 });
 
+describe('useProviderModels — provider envelope metadata', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('exposes the configured active provider alongside the catalog', async () => {
+    api.getProviders.mockResolvedValue({ activeProvider: 'codex', providers: [CODEX] });
+    const { result } = renderHook(() => useProviderModels({ allowDefault: true }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.activeProviderId).toBe('codex');
+  });
+});
+
 // A capability-scoped picker (vision) starts on the client-side id regex and
 // widens once the server's authoritative list resolves, so its `modelFilter`
 // identity changes AFTER the first load. Stand-in filters here: the contract
