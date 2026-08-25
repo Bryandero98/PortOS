@@ -286,8 +286,9 @@ export default function CustomTasksSection({ appId, appName }) {
       api.getCosJobs().catch(() => null),
       api.getProviders({ silent: true }).catch(() => ({ providers: [] }))
     ]);
-    setTasks((data?.jobs || []).filter(j => j.appId === appId));
-    setProviders(filterRunnableProviders(providerData?.providers));
+    const appTasks = (data?.jobs || []).filter(j => j.appId === appId);
+    setTasks(appTasks);
+    setProviders(filterRunnableProviders(providerData?.providers, appTasks.map(job => job.providerId)));
     setActiveProviderId(activeProviderIdFromResponse(providerData?.activeProvider));
     setLoading(false);
   }, [appId]);

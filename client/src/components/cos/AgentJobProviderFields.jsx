@@ -1,17 +1,24 @@
 import { effortAwareModelOptions, PROVIDER_TYPES } from '../../utils/providers.js';
 import ProviderModelSelector from '../ProviderModelSelector.jsx';
 
-export const RUNNABLE_PROVIDER_TYPES = Object.values(PROVIDER_TYPES);
+export const RUNNABLE_PROVIDER_TYPES = Object.freeze([
+  PROVIDER_TYPES.CLI,
+  PROVIDER_TYPES.TUI
+]);
 
 /**
  * Keep the provider source shared by every agent-job form. ProviderModelSelector
  * applies the enabled/hardware visibility rules while retaining a saved disabled
  * provider long enough for the user to clear or replace it.
  */
-export const filterRunnableProviders = (providers) =>
-  (Array.isArray(providers) ? providers : []).filter(provider =>
-    RUNNABLE_PROVIDER_TYPES.includes(provider?.type)
+export const filterRunnableProviders = (providers, selectedProviderIds = []) => {
+  const preservedIds = new Set(
+    (Array.isArray(selectedProviderIds) ? selectedProviderIds : [selectedProviderIds]).filter(Boolean)
   );
+  return (Array.isArray(providers) ? providers : []).filter(provider =>
+    RUNNABLE_PROVIDER_TYPES.includes(provider?.type) || preservedIds.has(provider?.id)
+  );
+};
 
 /**
  * The providers endpoint has historically returned either an id or a provider
@@ -26,6 +33,8 @@ export const activeProviderIdFromResponse = (activeProvider) =>
  * Empty selections are intentional inherit/default sentinels. Changing the
  * provider clears the model and effort together, while a saved legacy model pin
  * remains visible through effortAwareModelOptions until the user changes it.
+ * Existing API-only pins remain in the input list only long enough to be cleared;
+ * new selections are restricted to providers with a CoS coding harness.
  */
 export default function AgentJobProviderFields({
   data,
@@ -37,14 +46,19 @@ export default function AgentJobProviderFields({
 
   const selectedProvider = providers.find(provider => provider.id === data.providerId)
     || providers.find(provider => provider.id === activeProviderId);
+  const selectableProviders = providers.filter(provider =>
+    RUNNABLE_PROVIDER_TYPES.includes(provider?.type) || provider?.id === data.providerId
+  );
   const availableModels = effortAwareModelOptions(selectedProvider, data.model);
-  const effectiveProviderId = data.providerId ? undefined : (activeProviderId || undefined);
+  const effectiveProviderId = data.providerId
+    ? undefined
+    : (RUNNABLE_PROVIDER_TYPES.includes(selectedProvider?.type) ? (activeProviderId || undefined) : undefined);
 
   return (
     <div>
       <span className="text-xs text-gray-400 block mb-1">AI Provider &amp; Model (optional)</span>
       <ProviderModelSelector
-        providers={providers}
+        providers={selectableProviders}
         selectedProviderId={data.providerId || ''}
         effectiveProviderId={effectiveProviderId}
         selectedModel={data.model || ''}
@@ -57,6 +71,7 @@ export default function AgentJobProviderFields({
         emptyProviderOption="Default (active provider)"
         emptyModelOption="Default model"
         alwaysShowModel
+        highlightToolUse
       />
     </div>
   );

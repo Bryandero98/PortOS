@@ -620,13 +620,13 @@ export default function JobsTab() {
 
   useEffect(() => {
     api.getProviders().then(data => {
-      setProviders(filterRunnableProviders(data?.providers));
+      setProviders(filterRunnableProviders(data?.providers, jobs.map(job => job.providerId)));
       setActiveProviderId(activeProviderIdFromResponse(data?.activeProvider));
     }).catch(() => {
       setProviders([]);
       setActiveProviderId('');
     });
-  }, []);
+  }, [jobs]);
 
   const handleCreate = async () => {
     if (!newJob.name.trim()) {
