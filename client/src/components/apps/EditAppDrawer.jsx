@@ -593,7 +593,11 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                 {formData.workTracker === 'jira' && (
                   <p className="text-xs text-gray-500 mt-1">
                     {appUsesJira(app) ? (
-                      <>Instance, project, and board live on the app’s <Link to={`/apps/${app.id}/jira`} className="underline hover:text-white">JIRA tab</Link>.</>
+                      // Closing is load-bearing, not politeness: AppDetailView only
+                      // clears `editing` when the appId CHANGES, so a same-app tab
+                      // link would leave this portaled drawer sitting over the JIRA
+                      // tab it just navigated to.
+                      <>Instance, project, and board live on the app’s <Link to={`/apps/${app.id}/jira`} onClick={onClose} className="underline hover:text-white">JIRA tab</Link>.</>
                     ) : (
                       <>Save to reveal the app’s JIRA tab, where the instance, project, and board are configured.</>
                     )}
