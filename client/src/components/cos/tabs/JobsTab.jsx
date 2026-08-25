@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, RefreshCw, Play, Trash2, ChevronDown, ChevronUp, Clock, ToggleLeft, ToggleRight, Edit3, Save, X, Terminal } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
@@ -593,7 +593,7 @@ export default function JobsTab() {
   const timezone = useUserTimezone();
   const [jobs, setJobs] = useState([]);
   const [apps, setApps] = useState([]);
-  const [providers, setProviders] = useState([]);
+  const [rawProviders, setRawProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState('');
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -619,14 +619,16 @@ export default function JobsTab() {
   }, []);
 
   useEffect(() => {
-    api.getProviders().then(data => {
-      setProviders(filterRunnableProviders(data?.providers, jobs.map(job => job.providerId)));
+    api.getProviders({ silent: true }).then(data => {
+      setRawProviders(data?.providers || []);
       setActiveProviderId(activeProviderIdFromResponse(data?.activeProvider));
-    }).catch(() => {
-      setProviders([]);
-      setActiveProviderId('');
-    });
-  }, [jobs]);
+    }).catch(() => {});
+  }, []);
+
+  const providers = useMemo(
+    () => filterRunnableProviders(rawProviders, jobs.map(job => job.providerId)),
+    [rawProviders, jobs]
+  );
 
   const handleCreate = async () => {
     if (!newJob.name.trim()) {
