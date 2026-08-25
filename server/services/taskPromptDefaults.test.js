@@ -644,8 +644,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // signal perpetualWork.js#isActionableIssue reads, so the live agent and the
   // drain agree on when an epic stops being claimable.
   it('claim flows decompose an undecomposed epic instead of skipping it, preserving the outgoing defaults', () => {
-    const keys = ['claim-issue', 'claim-issue-gitlab', 'claim-issue-jira'];
-    const floors = { 'claim-issue': 21, 'claim-issue-gitlab': 19, 'claim-issue-jira': 14 };
+    // JIRA is deliberately NOT in this list: its reads expose neither labels nor
+    // epic links (jira.js#getIssue / #fetchMyCurrentSprintTickets), so a decomposition
+    // marker is invisible there and an epic's children unfindable — that flow still
+    // leaves an epic for a human, and says so. Tracked in #5042.
+    const keys = ['claim-issue', 'claim-issue-gitlab'];
+    const floors = { 'claim-issue': 21, 'claim-issue-gitlab': 19 };
 
     for (const key of keys) {
       const current = DEFAULT_TASK_PROMPTS[key];
@@ -669,7 +673,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
     // checklist a later claim follows to the next available child.
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('Part of #${EPIC}');
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('## Decomposed into');
-    expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).toContain('"epicKey": "<EPIC>"');
+    // The JIRA flow keeps its human-split behavior, and names the API gap that forces it.
+    expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).not.toContain('Phase 1b');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).toContain('Leave epics for a human to split');
   });
 
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
