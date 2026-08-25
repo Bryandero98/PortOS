@@ -30,6 +30,12 @@ import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, e
 import { readOriginRemoteUrl } from '../lib/gitRemote.js';
 import { withGlabJson } from '../lib/glabArgs.js';
 import { githubApiHost, hostFromOriginUrl } from '../lib/workTracker.js';
+// The epic marker lives with the forge label vocabulary (name + color + the
+// `label create` idiom the prompt bodies interpolate), so the detector and the
+// live claim agent cannot drift on what "already decomposed" is spelled.
+import { EPIC_DECOMPOSED_LABEL, EPIC_LABEL } from '../lib/dispatchLabels.js';
+
+export { EPIC_DECOMPOSED_LABEL };
 
 // Labels that make a GitHub issue non-actionable for autonomous claiming. MUST
 // stay in sync with the claim-issue prompt's Phase 1 skip-list
@@ -166,33 +172,49 @@ async function inFlightIssueNumbers(repoPath, forge = 'github') {
 
 /**
  * Recognize a tracking/umbrella EPIC from its title alone — the programmatic
- * half of the claim-issue prompt's Phase 1 epic skip. An epic needs a human to
- * split it per-slice, so the claim agent always skips one; the detector MUST
- * skip it too or a perpetual drain re-picks it every tick and never parks.
- * Matches the epic-title conventions the prompt names and the agent honors:
+ * half of the claim-issue prompt's epic handling (`isActionableIssue` decides
+ * what that means for claimability). Matches the epic-title conventions the
+ * prompt names and the agent honors:
  *   - a trailing `(epic)` tag  — e.g. "Redesign nav (epic)"
  *   - a leading `[epic]` bracket or `Epic:` colon tag — e.g. "[Epic] Billing
  *     revamp", "[epic: theme] …", "Epic: Redesign nav" (case-insensitive)
- * The leading-tag branch is what closes the real-world non-convergence bug: an
- * epic titled "[Epic] …" that carries NO `epic` label kept reading as actionable
- * (label check missed it, and it doesn't END in "(epic)"), so the drain spawned
- * a claim agent that correctly skipped it, completed with nothing shipped, and
- * re-fired back-to-back. The `\b` + `[:\]]` terminator keeps a bare adjective
- * ("Epic rework of nav") and near-words ("[epicenter] …") from matching — only a
- * real bracketed/colon-delimited `epic` tag counts.
+ * The leading-tag branch is what makes an "[Epic] …" issue with no `epic` label
+ * read as an epic at all (label check misses it, and it doesn't END in
+ * "(epic)"). The `\b` + `[:\]]` terminator keeps a bare adjective ("Epic rework
+ * of nav") and near-words ("[epicenter] …") from matching — only a real
+ * bracketed/colon-delimited `epic` tag counts.
  */
 export function titleMarksEpic(title) {
   const t = (title || '').trim().toLowerCase();
   return t.endsWith('(epic)') || /^\[?\s*epic\b\s*[:\]]/.test(t);
 }
 
+// True when an issue is a tracking/umbrella epic — by `epic` label or by the
+// title conventions above. `labels` is the caller's already-lowercased list.
+const isEpicIssue = (title, labels) => labels.includes(EPIC_LABEL) || titleMarksEpic(title);
+
+const normalizeLogin = (value) => (value == null ? '' : String(value)).trim().toLowerCase();
+
+const assigneeLogin = (assignee) => normalizeLogin(
+  typeof assignee === 'string' ? assignee : assignee?.login || assignee?.username
+);
+
 /**
  * Decide whether a single forge issue (as returned by `gh`/`glab` issue list)
  * is autonomously claimable. Mirrors the claim-issue prompt's Phase 1 step 4
  * predicate: no in-flight claim ref, no assignee belonging to another
- * account, no blocking label, not an epic. An issue assigned to the current
- * authenticated account remains claimable so a previous self-claim can be
- * retried. Exported for direct unit testing.
+ * account, no blocking label, and — for an epic — not already decomposed. An
+ * issue assigned to the current authenticated account remains claimable so a
+ * previous self-claim can be retried. Exported for direct unit testing.
+ *
+ * An UNdecomposed epic counts as actionable: the claim agent's Phase 1b splits
+ * it into per-slice issues (and then claims the first slice), which is real work
+ * and the only way the queue moves when every remaining item is an epic. Once
+ * that agent stamps `EPIC_DECOMPOSED_LABEL` on the parent, the epic drops out and
+ * its children are ordinary claimable issues. A user who does not want a
+ * particular epic auto-split puts a blocking label on it (`future`, `blocked`,
+ * `needs-input`) — that works whether the epic is marked by label or only by its
+ * title, which `epic` in `issueExcludeLabels` would not.
  *
  * `excludeLabels` is the app's configured `issueExcludeLabels`
  * (`taskMetadata.issueExcludeLabels`) — extra labels a user wants left for
@@ -200,12 +222,6 @@ export function titleMarksEpic(title) {
  * `NON_ACTIONABLE_ISSUE_LABELS`, never replacing it: the base set is
  * structural (in-progress/blocked/etc.), not user-configurable.
  */
-const normalizeLogin = (value) => (value == null ? '' : String(value)).trim().toLowerCase();
-
-const assigneeLogin = (assignee) => normalizeLogin(
-  typeof assignee === 'string' ? assignee : assignee?.login || assignee?.username
-);
-
 export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = null, currentLogin = null) {
   if (!issue || typeof issue.number !== 'number') return false;
   if (inFlight.has(issue.number)) return false;
@@ -220,8 +236,11 @@ export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = n
     .map((s) => s.toLowerCase());
   if (labels.some((l) => NON_ACTIONABLE_ISSUE_LABELS.has(l))) return false;
   if (excludeLabels && labels.some((l) => excludeLabels.has(l))) return false;
-  if (labels.includes('epic')) return false;
-  if (titleMarksEpic(issue.title)) return false;
+  // Marker first: the label scan is a 2–5 element array walk, while isEpicIssue
+  // lowercases and regex-tests the title. Only a decomposed issue needs the
+  // epic check, so this skips that work for essentially every issue in a
+  // 500-issue fetch.
+  if (labels.includes(EPIC_DECOMPOSED_LABEL) && isEpicIssue(issue.title, labels)) return false;
   return true;
 }
 
@@ -321,9 +340,9 @@ const FORGE_ISSUE_CONFIG = {
     // NON_ACTIONABLE_ISSUE_LABELS plus any configured `issueExcludeLabels`)
     // runs client-side AFTER this fetch, so a small fetch cap risks the
     // detector parking on a false "no actionable issues" when the first page
-    // happens to be full of excluded/in-flight/epic issues even though real
-    // work exists further down the queue. Matches the same tradeoff the
-    // /do:next auto-pick walk already makes for the identical reason.
+    // happens to be full of excluded/in-flight/decomposed-epic issues even
+    // though real work exists further down the queue. Matches the same
+    // tradeoff the /do:next auto-pick walk already makes for the same reason.
     listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '500'],
     listFail: 'gh-list-failed',
     parseFail: 'gh-parse-failed',
@@ -368,9 +387,9 @@ const FORGE_ISSUE_CONFIG = {
     // `--per-page` maxes out at 100 (GitLab's own per-call ceiling; unlike
     // gh's `--limit`, there's no single-call "give me more" here) — same
     // residual gap the /do:next auto-pick walk documents for GitLab: a busy
-    // tracker whose first page is dominated by excluded/in-flight/epic issues
-    // can still park on a false "no actionable issues" despite real work
-    // further down the queue. `--issues-label`-style curation is the
+    // tracker whose first page is dominated by excluded/in-flight/
+    // decomposed-epic issues can still park on a false "no actionable issues"
+    // despite real work further down the queue. `--issues-label`-style curation is the
     // practical mitigation there; this detector has no equivalent knob yet.
     listArgs: withGlabJson(['issue', 'list', '--per-page', '100']),
     listFail: 'glab-list-failed',
@@ -595,8 +614,8 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
     // count so the user is told to widen the filter, not that there is nothing
     // to do. The count is raw open issues (any author), not claimable ones —
     // best effort: switching to `any` may still yield `no-actionable-issues`
-    // when the other-authored issues are all blocked/assigned/epics. Counting
-    // claimable ones would cost the full skip-list scan here.
+    // when the other-authored issues are all blocked/assigned/decomposed
+    // epics. Counting claimable ones would cost the full skip-list scan here.
     if (authorApplied) {
       const openCount = await countOpenIssuesUnfiltered(cfg, repoPath);
       if (openCount > 0) return parked('no-authored-issues', openCount);
@@ -616,8 +635,8 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
   const total = issues.length;
   // How many of the OPEN issues were skipped only because a claim/PR is already
   // in flight for them (stale post-merge branches count here). Surfacing this
-  // separately from the label/assignee/epic filter tells the user WHY an
-  // apparently-non-empty queue yields zero claimable work — the exact confusion
+  // separately from the label/assignee/decomposed-epic filter tells the user
+  // WHY an apparently-non-empty queue yields zero claimable work — the exact confusion
   // behind "40 open issues but it parked."
   const inFlightCount = issues.filter((i) => typeof i.number === 'number' && inFlight.has(i.number)).length;
   const excludeSet = Array.isArray(issueExcludeLabels) && issueExcludeLabels.length > 0

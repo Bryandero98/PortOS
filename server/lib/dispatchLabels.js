@@ -60,6 +60,35 @@ export const CONTRIBUTOR_LABEL_DESCRIPTIONS = Object.freeze({
   [HELP_WANTED_LABEL]: 'Extra hands welcome — scoped enough to pick up cold',
 });
 
+/**
+ * Workflow marker the claim flow stamps on a tracking epic once it has filed
+ * that epic's per-slice child issues (claim-issue Phase 1b). Not a dispatch
+ * hint — it is how the live agent and the programmatic work detector
+ * (`perpetualWork.js#isActionableIssue`) agree that an epic has stopped being
+ * claimable: undecomposed ⇒ splitting it IS the work, decomposed ⇒ its children
+ * carry the work. It lives here so the label's name, color, and `label create`
+ * idiom have one definition shared by the detector and the prompt bodies.
+ */
+export const EPIC_DECOMPOSED_LABEL = 'decomposed';
+
+/**
+ * The umbrella marker itself. Half of the "already handled" signal — an issue is
+ * skipped by the claim queue only when it is BOTH epic-shaped and decomposed —
+ * so a flow that promotes an oversized issue to an epic has to be able to create
+ * this label too, not just apply it.
+ */
+export const EPIC_LABEL = 'epic';
+
+export const WORKFLOW_LABEL_COLORS = Object.freeze({
+  [EPIC_DECOMPOSED_LABEL]: 'BFD4F2',
+  [EPIC_LABEL]: 'B60205',
+});
+
+export const WORKFLOW_LABEL_DESCRIPTIONS = Object.freeze({
+  [EPIC_DECOMPOSED_LABEL]: 'Epic already split into per-slice child issues',
+  [EPIC_LABEL]: 'Umbrella/tracking issue — shipped as per-slice children, never as one PR',
+});
+
 const MODEL_SET = new Set(DISPATCH_MODEL_TIERS);
 const EFFORT_SET = new Set(DISPATCH_EFFORT_LEVELS);
 
@@ -157,7 +186,7 @@ export function jiraIssueLabels({ model, effort, goodFirstIssue, helpWanted } = 
   ];
 }
 
-/** `{ name, color, description }` for a forge dispatch or contributor label, or null. */
+/** `{ name, color, description }` for a forge dispatch, contributor, or workflow label, or null. */
 export function dispatchLabelSpec(name) {
   if (typeof name !== 'string') return null;
   if (DISPATCH_LABEL_COLORS[name]) {
@@ -172,6 +201,13 @@ export function dispatchLabelSpec(name) {
       name,
       color: CONTRIBUTOR_LABEL_COLORS[name],
       description: CONTRIBUTOR_LABEL_DESCRIPTIONS[name],
+    };
+  }
+  if (WORKFLOW_LABEL_COLORS[name]) {
+    return {
+      name,
+      color: WORKFLOW_LABEL_COLORS[name],
+      description: WORKFLOW_LABEL_DESCRIPTIONS[name],
     };
   }
   return null;

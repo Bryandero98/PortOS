@@ -22,7 +22,8 @@ import {
   registerWorkDetector,
   getWorkDetector,
   hasWorkDetector,
-  NON_ACTIONABLE_ISSUE_LABELS
+  NON_ACTIONABLE_ISSUE_LABELS,
+  EPIC_DECOMPOSED_LABEL
 } from './perpetualWork.js';
 
 // A fake child process that emits canned stdout then closes — enough for the
@@ -78,17 +79,41 @@ describe('perpetualWork', () => {
       expect(isActionableIssue({ ...base, labels: [{ name: 'needs-input' }] })).toBe(false);
     });
 
-    it('rejects an epic by label, by "(epic)" title suffix, or by "[epic]" title prefix', () => {
-      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }] })).toBe(false);
-      expect(isActionableIssue({ ...base, title: 'Big rollup (epic)' })).toBe(false);
-      // The non-convergence case: an epic titled "[Epic] …" with NO `epic`
-      // label kept reading as actionable, so the drain re-spawned a claim agent
-      // that always skips it — never parking.
+    it('rejects an epic ONLY once it is decomposed — by label, by "(epic)" title suffix, or by "[epic]" title prefix', () => {
+      const decomposed = { name: EPIC_DECOMPOSED_LABEL };
+      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }, decomposed] })).toBe(false);
+      expect(isActionableIssue({ ...base, title: 'Big rollup (epic)', labels: [decomposed] })).toBe(false);
+      // An epic titled "[Epic] …" with NO `epic` label is still an epic: the
+      // title convention alone has to reach the decomposed skip, or the drain
+      // re-splits it every tick.
       expect(isActionableIssue({
         ...base,
-        labels: [{ name: 'enhancement' }, { name: 'roadmap' }],
+        labels: [{ name: 'enhancement' }, decomposed],
         title: '[Epic] Redesign the billing dashboard'
       })).toBe(false);
+    });
+
+    it('accepts an UNdecomposed epic — decomposing it is the claim agent\'s Phase 1b work', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }] })).toBe(true);
+      expect(isActionableIssue({ ...base, title: 'Big rollup (epic)' })).toBe(true);
+      expect(isActionableIssue({
+        ...base,
+        labels: [{ name: 'enhancement' }],
+        title: '[Epic] Redesign the billing dashboard'
+      })).toBe(true);
+    });
+
+    it('still rejects an undecomposed epic that carries a blocking label', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }, { name: 'blocked' }] })).toBe(false);
+      expect(isActionableIssue(
+        { ...base, labels: [{ name: 'epic' }] },
+        new Set(),
+        new Set(['epic'])
+      )).toBe(false);
+    });
+
+    it('does not let the decomposed label block an ordinary (non-epic) issue', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: EPIC_DECOMPOSED_LABEL }] })).toBe(true);
     });
 
     it('accepts a plan-labelled issue (plan is the claimable queue, not a skip)', () => {
@@ -227,14 +252,32 @@ describe('perpetualWork', () => {
       ]);
     });
 
-    it('converges (0 actionable) on a queue whose only unblocked issue is a "[Epic]"-prefixed one with no epic label', async () => {
-      // Regression for the perpetual-swarm churn: every open issue is either
-      // needs-input/blocked OR a "[Epic] …" umbrella with no `epic` label. The
-      // claim agent skips the epic; the detector MUST too, or the drain
-      // re-spawns a no-op agent every tick and never parks.
+    it('reports the "[Epic]"-prefixed issue as actionable while it is still undecomposed', async () => {
+      // The queue holds nothing but needs-input/blocked issues plus one "[Epic]
+      // …" umbrella with no `epic` label. Parking here is what left epics to rot
+      // and reported an empty queue: decomposing that epic IS work, so the
+      // detector must dispatch a claim agent (which runs Phase 1b) for it.
       routeSpawn({
         'gh issue': { stdout: JSON.stringify([
-          { number: 1, title: '[Epic] Redesign the billing dashboard', assignees: [], labels: [{ name: 'enhancement' }, { name: 'roadmap' }] },
+          { number: 1, title: '[Epic] Redesign the billing dashboard', assignees: [], labels: [{ name: 'enhancement' }] },
+          { number: 2, title: 'Add a dark-mode toggle', assignees: [], labels: [{ name: 'needs-input' }] },
+          { number: 3, title: 'Document the export API', assignees: [], labels: [{ name: 'blocked' }] }
+        ]) },
+        'git branch': { stdout: 'main\n' },
+        'gh pr': { stdout: '' }
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: true, count: 1, reason: 'actionable-issues', sample: [1] });
+      expect(out.filteredCount).toBe(2);
+    });
+
+    it('converges (0 actionable) once that epic carries the decomposed label', async () => {
+      // The convergence marker: the claim agent stamps `decomposed` on an epic
+      // after filing its slices, so the drain stops re-picking the parent and
+      // works the children instead. Without it the drain would re-split forever.
+      routeSpawn({
+        'gh issue': { stdout: JSON.stringify([
+          { number: 1, title: '[Epic] Redesign the billing dashboard', assignees: [], labels: [{ name: 'enhancement' }, { name: EPIC_DECOMPOSED_LABEL }] },
           { number: 2, title: 'Add a dark-mode toggle', assignees: [], labels: [{ name: 'needs-input' }] },
           { number: 3, title: 'Document the export API', assignees: [], labels: [{ name: 'needs-input' }] },
           { number: 4, title: 'Record the onboarding walkthrough', assignees: [], labels: [{ name: 'needs-input' }] },
