@@ -161,6 +161,14 @@ describe('localLlmCatalog', () => {
     it('never lists an Ollama `:cloud` tag — those manifests carry no local weights', () => {
       expect(LOCAL_LLM_CATALOG.every((e) => !/(?:^|:)cloud$/.test(e.ollama || ''))).toBe(true);
     });
+
+    it('ships the refreshed local models for reasoning, coding, and multilingual categories', () => {
+      const ollama = getCatalog('ollama');
+      expect(ollama.find((m) => m.key === 'deepseek-r1-8b')?.id).toBe('deepseek-r1:8b');
+      expect(ollama.find((m) => m.key === 'qwen2.5-coder-7b')?.id).toBe('qwen2.5-coder:7b');
+      expect(ollama.find((m) => m.key === 'phi-4-14b')?.id).toBe('phi4');
+      expect(ollama.find((m) => m.key === 'aya-expanse-8b')?.id).toBe('aya-expanse:8b');
+    });
   });
 
   describe('searchCatalog', () => {
