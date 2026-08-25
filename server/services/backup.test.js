@@ -1226,7 +1226,7 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
     const proc = fakeProc();
     spawn.mockReturnValue(proc);
     const pending = restoreSnapshot(...args);
-    await flush();
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
     proc.emit('close', 0);
     return pending;
   }
@@ -1319,7 +1319,7 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
       const proc = fakeProc();
       spawn.mockReturnValue(proc);
       const pending = restoreSnapshot('/dest', 'snap-1', { dryRun: false });
-      await flush();
+      await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
       proc.stderr.emit('data', Buffer.from('boom'));
       proc.emit('close', 1);
 
