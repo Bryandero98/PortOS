@@ -72,7 +72,8 @@ vi.mock('../services/api', () => ({
 
 import { __resetInstanceFeatureCache } from '../hooks/useInstanceFeatures.js';
 
-import Layout, { isFullWidthRoute } from './Layout';
+import { NAV_COMMANDS } from '../../../server/lib/navManifest.js';
+import Layout, { isFullWidthRoute, NAV_PRESENTATION } from './Layout';
 
 const renderLayout = async (initialPath = '/brain/inbox') => {
   const utils = render(
@@ -92,6 +93,20 @@ const renderLayout = async (initialPath = '/brain/inbox') => {
 // without depending on the heading's DOM nesting (a benign style refactor of the
 // label shouldn't break these tests). Returns null when the section isn't rendered.
 const pinnedSection = () => screen.queryByTestId('pinned-section');
+
+describe('Layout — manifest-derived sidebar structure', () => {
+  it('keeps NAV_PRESENTATION presentation-only and keyed to live manifest paths', () => {
+    const manifestPaths = new Set(NAV_COMMANDS.map((command) => command.path));
+    expect(Object.keys(NAV_PRESENTATION).filter((path) => !manifestPaths.has(path))).toEqual([]);
+    for (const presentation of Object.values(NAV_PRESENTATION)) {
+      expect(presentation).not.toHaveProperty('to');
+      expect(presentation).not.toHaveProperty('label');
+      expect(presentation).not.toHaveProperty('section');
+      expect(presentation).not.toHaveProperty('feature');
+      expect(presentation.icon).toBeTruthy();
+    }
+  });
+});
 
 beforeEach(() => {
   localStorage.clear();
