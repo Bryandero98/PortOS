@@ -152,8 +152,9 @@ def _normalize_target(target: str) -> tuple[str, str]:
 
 
 def _parse_tensor_key(key: str) -> tuple[str, str, str] | None:
+    lowered = key.lower()
     for suffix, kind in _LORA_SUFFIXES:
-        if key.endswith(suffix):
+        if lowered.endswith(suffix.lower()):
             target = key[:-len(suffix)]
             target, source_layout = _normalize_target(target)
             return target, kind, source_layout

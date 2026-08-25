@@ -57,7 +57,7 @@ describe.skipIf(!pyBin)('minimax_h3_lora.py', () => {
       '    path = Path(temp) / "adapter_native.safetensors"',
       '    down = mx.arange(32, dtype=mx.float32).reshape(1, 32) / 32',
       '    up = mx.arange(24, dtype=mx.float32).reshape(24, 1) / 24',
-      '    mx.save_safetensors(str(path), {"blocks.0.attn.qkv_proj.lora_A.weight": down, "blocks.0.attn.qkv_proj.lora_B.weight": up, "blocks.0.attn.qkv_proj.alpha": mx.array([1.0])})',
+      '    mx.save_safetensors(str(path), {"blocks.0.attn.qkv_proj.lora_a.weight": down, "blocks.0.attn.qkv_proj.lora_b.weight": up, "blocks.0.attn.qkv_proj.alpha": mx.array([1.0])})',
       '    apply_loras(model, [{"path": str(path), "scale": 0.5}])',
       '    after = model.blocks[0].attn.qkv_proj(x)',
       '    expected = before + ((x @ down.T) @ up.T) * 0.5',

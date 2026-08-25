@@ -4320,6 +4320,18 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
     }
   });
 
+  it('lets the MiniMax H3 adapter handle Diffusers and kohya layouts', async () => {
+    for (const layout of ['diffusers', 'kohya']) {
+      loraLayoutState.layout = layout;
+      expect(await resolveVideoLoras(
+        [{ filename: 'style.safetensors', scale: 0.7 }],
+        { runtime: 'minimax_h3' },
+      )).toEqual([
+        { path: join(MOCK_PATHS.loras, 'style.safetensors'), strength: 0.7, filename: 'style.safetensors' },
+      ]);
+    }
+  });
+
   it('rejects a kohya-layout LoRA with an actionable 400 naming the layout', async () => {
     loraLayoutState.layout = 'kohya';
     await expect(resolveVideoLoras([{ filename: 'style.safetensors', scale: 1.0 }]))

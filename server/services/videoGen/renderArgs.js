@@ -155,15 +155,15 @@ export const resolveT2vTwoStageOverride = ({
 // basename can't escape PATHS.loras (assertSafeLoraFilename) and that the file
 // exists — a typo or a deleted LoRA would otherwise surface as an opaque
 // Python FileNotFoundError deep inside the render. Returns [] for no LoRAs.
-// Only the ltx2 runtime consumes the result; buildArgs rejects LoRAs on the
-// other runtimes before this is even reached for a doomed job.
+// The ltx2 and MiniMax H3 MLX runtimes consume the result; buildArgs rejects
+// LoRAs on the other runtimes before this is even reached for a doomed job.
 //
 // Also gates on the safetensors KEY LAYOUT. The loader fuses `lora_A`/`lora_B`
-// pairs after stripping a leading `diffusion_model.`, so a kohya (lora_down/
-// lora_up) or diffusers/PEFT-prefixed file matches nothing: the render burns
-// minutes of GPU time and comes back as an un-LoRA'd (or noisy) clip with no
-// error anywhere. Refuse it up front with the layout named.
-export const resolveVideoLoras = async (loras, { probeEffect = false } = {}) => {
+// pairs after stripping a leading `diffusion_model.`. The MiniMax H3 adapter
+// also normalizes kohya (lora_down/lora_up) and Diffusers/PEFT-prefixed files,
+// so only the LTX loader keeps the older layout restriction. Refuse an
+// unsupported LTX layout up front with the layout named.
+export const resolveVideoLoras = async (loras, { probeEffect = false, runtime = null } = {}) => {
   if (!Array.isArray(loras) || loras.length === 0) return [];
   const out = [];
   // ONE budget for every selected adapter, not one each. This runs before
@@ -177,7 +177,7 @@ export const resolveVideoLoras = async (loras, { probeEffect = false } = {}) => 
       throw new ServerError(`LoRA not found: ${l.filename}`, { status: 400, code: 'LORA_NOT_FOUND' });
     }
     const layout = await getLoraKeyLayout(l.filename);
-    const issue = videoLoraLayoutIssue(layout);
+    const issue = runtime === 'minimax_h3' ? null : videoLoraLayoutIssue(layout);
     if (issue) {
       throw new ServerError(
         `LoRA "${l.filename}" can't be used for video: ${issue}.`,
