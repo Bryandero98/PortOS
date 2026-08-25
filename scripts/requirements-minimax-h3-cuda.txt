@@ -12,14 +12,7 @@
 # it first, from the host's correct index (see WIN_TORCH_CUDA_INDEX in
 # server/lib/pythonSetup.js, and PORTOS_TORCH_CUDA_INDEX to override).
 
-# diffusers' MiniMax-H3 integration (PR #14355) merged to main on 2026-08-05 and
-# is NOT in any tagged release — v0.39.0 predates it. Pinned to a main commit
-# until a release ships it; when one does, swap this for the `==` version and
-# drop the git URL. The runtime's import probe checks for
-# `MiniMaxH3Transformer3DModel` specifically, so an install that silently
-# resolved to a release without the integration reports as not-ready rather than
-# failing deep inside a render.
-diffusers @ git+https://github.com/huggingface/diffusers.git@2da7040be1a2e5f2fcbc8b985083342a308f5a86
+diffusers==0.40.0
 
 # int8 weight-only quantization. This is what makes H3 fit a consumer card at
 # all: the bf16 transformer + Qwen3-VL conditioner are 133 GB together, and

@@ -178,9 +178,9 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     installSourceLabel: 'pinned PyPI wheels',
     // Three things must hold before a render is even attempted, and each fails
     // as an unusable install rather than as a bad render: diffusers must carry
-    // the H3 modular integration (merged to main after v0.39.0 and in no tagged
-    // release yet, so a released wheel imports fine and then has no pipeline —
-    // which is why the requirements file pins a commit), torchao must be present
+    // the H3 modular integration (merged to main after v0.39.0 and released in
+    // diffusers 0.40.0, which is the version pinned by the requirements file),
+    // torchao must be present
     // (int8 weight-only is the only way the 133 GB bf16 pair fits a consumer
     // card), and CUDA must actually be visible. A CPU-only torch is the trap
     // here: it installs cleanly on Windows, hides the setup banner, and then
