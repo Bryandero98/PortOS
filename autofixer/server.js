@@ -143,7 +143,13 @@ async function ensureHistoryDir() {
 
 async function loadIndex() {
   const index = await readJsonSafe(INDEX_FILE, null);
-  return index ?? [];
+  if (index == null) {
+    throw new Error('Autofixer history index is unreadable');
+  }
+  if (!Array.isArray(index)) {
+    throw new Error('Autofixer history index must be an array');
+  }
+  return index;
 }
 
 async function saveIndex(index) {
