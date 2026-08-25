@@ -366,6 +366,20 @@ describe('cosTaskStore.addTask', () => {
       expect(created.metadata.prompt).toBeUndefined();
     });
 
+    it('preserves autonomous-job markers for manual triggers', async () => {
+      const created = await addTask({
+        description: 'manual scheduled job',
+        id: 'task-manual-job',
+        autonomousJob: true,
+        jobId: 'job-example'
+      }, 'internal');
+
+      expect(created.metadata).toMatchObject({ autonomousJob: true, jobId: 'job-example' });
+      const reloaded = await getTaskById('task-manual-job');
+      expect(reloaded.metadata.autonomousJob === true || reloaded.metadata.autonomousJob === 'true').toBe(true);
+      expect(reloaded.metadata.jobId).toBe('job-example');
+    });
+
     it('round-trips OpenCode Ollama generation controls, including thinking off', async () => {
       const created = await addTask({
         description: 'local task', id: 'task-opencode', effort: 'high', temperature: 0.25, thinking: false,

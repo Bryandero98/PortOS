@@ -1,13 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, RefreshCw, Play, Trash2, ChevronDown, ChevronUp, Clock, ToggleLeft, ToggleRight, Edit3, Save, X, Terminal } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
 import { timeAgo, timeUntil, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence, JOB_INTERVAL_OPTIONS as INTERVAL_OPTIONS } from '../../../utils/cronHelpers';
 import CronSchedulePicker from '../../CronSchedulePicker';
-import { effectiveModelFor, effortAwareModelOptions } from '../../../utils/providers';
-import ProviderModelSelector from '../../ProviderModelSelector';
-import EffortSelect from '../EffortSelect';
+import AgentJobProviderFields from '../AgentJobProviderFields';
+import { filterRunnableProviders } from '../../../utils/providers';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
@@ -104,51 +103,6 @@ function BriefingConfig({ config, onChange }) {
           </button>
         ))}
       </div>
-    </div>
-  );
-}
-
-// Provider + model + effort override for an agent job. Empty selection = use the
-// active provider / its default model / default effort. Only rendered for agent
-// jobs (shell/script jobs never reach the AI runner). `data` carries
-// `providerId`/`model`/`effort`; `onChange` applies a partial patch back onto the
-// form state. Effort only renders for effort-capable providers (claude/codex/agy)
-// and resets when the provider changes.
-//
-// The stored model is left as-is rather than split into base + effort on read:
-// this edits a saved record in place, so rewriting the displayed value without
-// saving would put the form and the record out of sync. A legacy suffixed id
-// stays visible via `effortAwareModelOptions`' pin and still runs — the server
-// splits it into base + `--effort`.
-function JobProviderModelFields({ data, providers, onChange }) {
-  if (!providers?.length) return null;
-  const selectedProvider = providers.find(p => p.id === data.providerId);
-  const availableModels = effortAwareModelOptions(selectedProvider, data.model);
-  return (
-    <div>
-      <span className="text-xs text-gray-400 block mb-1">AI Provider &amp; Model (optional)</span>
-      <ProviderModelSelector
-        providers={providers}
-        selectedProviderId={data.providerId || ''}
-        selectedModel={data.model || ''}
-        availableModels={availableModels}
-        onProviderChange={id => onChange({ providerId: id, model: '', effort: '' })}
-        onModelChange={model => onChange({ model })}
-        compact
-        emptyProviderOption="Default (active provider)"
-        emptyModelOption="Default model"
-        alwaysShowModel
-      />
-      <EffortSelect
-        provider={selectedProvider}
-        model={effectiveModelFor(selectedProvider, data.model)}
-        value={data.effort}
-        onChange={effort => onChange({ effort })}
-        label="Thinking Effort (optional)"
-        fieldClassName="mt-2"
-        labelClassName="text-xs text-gray-400 block mb-1"
-        className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-white text-xs"
-      />
     </div>
   );
 }
@@ -275,7 +229,7 @@ function getJobTypeLabel(job) {
   return 'AI';
 }
 
-function JobCard({ job, apps, providers, timezone, onToggle, onTrigger, onDelete, onUpdate }) {
+function JobCard({ job, apps, providers, activeProviderId, timezone, onToggle, onTrigger, onDelete, onUpdate }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editData, setEditData] = useState({});
@@ -502,9 +456,10 @@ function JobCard({ job, apps, providers, timezone, onToggle, onTrigger, onDelete
                 </div>
               )}
               {isAgentJobType(editData.type) && (
-                <JobProviderModelFields
+                <AgentJobProviderFields
                   data={editData}
                   providers={providers}
+                  activeProviderId={activeProviderId}
                   onChange={patch => setEditData(d => ({ ...d, ...patch }))}
                 />
               )}
@@ -639,7 +594,8 @@ export default function JobsTab() {
   const timezone = useUserTimezone();
   const [jobs, setJobs] = useState([]);
   const [apps, setApps] = useState([]);
-  const [providers, setProviders] = useState([]);
+  const [rawProviders, setRawProviders] = useState([]);
+  const [activeProviderId, setActiveProviderId] = useState('');
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -664,8 +620,16 @@ export default function JobsTab() {
   }, []);
 
   useEffect(() => {
-    api.getProviders().then(data => setProviders(data?.providers || [])).catch(() => setProviders([]));
+    api.getProviders({ silent: true }).then(data => {
+      setRawProviders(data?.providers || []);
+      setActiveProviderId(data?.activeProvider || '');
+    }).catch(() => {});
   }, []);
+
+  const providers = useMemo(
+    () => filterRunnableProviders(rawProviders, jobs.map(job => job.providerId)),
+    [rawProviders, jobs]
+  );
 
   const handleCreate = async () => {
     if (!newJob.name.trim()) {
@@ -867,9 +831,10 @@ export default function JobsTab() {
               </div>
             )}
             {isAgentJobType(newJob.type) && (
-              <JobProviderModelFields
+              <AgentJobProviderFields
                 data={newJob}
                 providers={providers}
+                activeProviderId={activeProviderId}
                 onChange={patch => setNewJob(j => ({ ...j, ...patch }))}
               />
             )}
@@ -937,6 +902,7 @@ export default function JobsTab() {
               job={job}
               apps={apps}
               providers={providers}
+              activeProviderId={activeProviderId}
               timezone={timezone}
               onToggle={handleToggle}
               onTrigger={handleTrigger}

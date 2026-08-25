@@ -3,7 +3,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({
   getCosJobs: vi.fn(),
+  getProviders: vi.fn(),
+  createCosJob: vi.fn(),
+  updateCosJob: vi.fn(),
   triggerCosJob: vi.fn(),
+  toggleCosJob: vi.fn(),
   getSettings: vi.fn()
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
@@ -11,7 +15,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock('../../../services/api', () => api);
 vi.mock('../../ui/Toast', () => ({ default: toast }));
 
-import CustomTasksSection from './CustomTasksSection';
+import CustomTasksSection, { emptyForm, formFromJob, toPayload } from './CustomTasksSection';
 
 const task = {
   id: 'job-1',
@@ -20,6 +24,10 @@ const task = {
   enabled: true,
   type: 'agent',
   interval: 'daily',
+  promptTemplate: 'Do the thing',
+  providerId: 'claude-code',
+  model: 'claude-sonnet',
+  effort: 'high',
   runCount: 0
 };
 
@@ -27,7 +35,96 @@ describe('CustomTasksSection trigger outcomes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getCosJobs.mockResolvedValue({ jobs: [task] });
+    api.getProviders.mockResolvedValue({
+      activeProvider: 'claude-code',
+      providers: [{
+        id: 'claude-code',
+        name: 'Claude',
+        type: 'cli',
+        enabled: true,
+        defaultModel: 'claude-sonnet',
+        models: ['claude-sonnet']
+      }, {
+        id: 'codex',
+        name: 'Codex',
+        type: 'cli',
+        enabled: true,
+        defaultModel: 'gpt-5',
+        models: ['gpt-5']
+      }]
+    });
     api.getSettings.mockResolvedValue({ timezone: 'UTC' });
+  });
+
+  it('includes the app scope and all AI overrides, including explicit clears', () => {
+    const form = {
+      ...emptyForm(),
+      name: 'Example Task',
+      promptTemplate: 'Do the thing',
+      providerId: 'claude-code',
+      model: 'claude-sonnet',
+      effort: 'high'
+    };
+
+    expect(toPayload(form, 'app-1')).toEqual(expect.objectContaining({
+      type: 'agent',
+      appId: 'app-1',
+      providerId: 'claude-code',
+      model: 'claude-sonnet',
+      effort: 'high'
+    }));
+    expect(toPayload({ ...form, providerId: '', model: '', effort: '' }, 'app-1')).toEqual(
+      expect.objectContaining({ providerId: null, model: null, effort: null })
+    );
+  });
+
+  it('keeps saved provider/model/effort pins in edit state until the user changes them', () => {
+    expect(formFromJob(task)).toEqual(expect.objectContaining({
+      providerId: 'claude-code',
+      model: 'claude-sonnet',
+      effort: 'high'
+    }));
+  });
+
+  it('creates an app-scoped task with provider, model, and effort selections', async () => {
+    api.createCosJob.mockResolvedValue({ success: true, job: task });
+
+    render(<CustomTasksSection appId="app-1" appName="Example App" />);
+    await screen.findByText('Example Task');
+    fireEvent.click(screen.getByRole('button', { name: /New Custom Task/ }));
+    fireEvent.change(screen.getByPlaceholderText('Task name *'), { target: { value: 'Pinned Task' } });
+    fireEvent.change(screen.getByPlaceholderText('Prompt for the agent *'), { target: { value: 'Do the thing' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5' } });
+    fireEvent.change(screen.getByLabelText('Thinking effort'), { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(api.createCosJob).toHaveBeenCalledWith(expect.objectContaining({
+      appId: 'app-1',
+      type: 'agent',
+      providerId: 'codex',
+      model: 'gpt-5',
+      effort: 'high'
+    })));
+  });
+
+  it('edits the saved task pins through the shared controls', async () => {
+    api.updateCosJob.mockResolvedValue({ success: true, job: task });
+
+    render(<CustomTasksSection appId="app-1" appName="Example App" />);
+    await screen.findByText('Example Task');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-5' } });
+    fireEvent.change(screen.getByLabelText('Thinking effort'), { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosJob).toHaveBeenCalledWith('job-1', expect.objectContaining({
+      appId: 'app-1',
+      providerId: 'codex',
+      model: 'gpt-5',
+      effort: 'high'
+    })));
   });
 
   it('surfaces a skipped trigger without claiming the task ran', async () => {
@@ -59,5 +156,20 @@ describe('CustomTasksSection trigger outcomes', () => {
 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('An equivalent task is already queued'));
     expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps Run now available for a disabled recurring schedule', async () => {
+    api.getCosJobs.mockResolvedValue({ jobs: [{ ...task, enabled: false }] });
+    api.triggerCosJob.mockResolvedValue({ success: true, status: 'queued' });
+
+    render(<CustomTasksSection appId="app-1" appName="Example App" />);
+    await screen.findByText('Example Task');
+
+    const runNow = screen.getByRole('button', { name: 'Run now' });
+    expect(runNow).not.toBeDisabled();
+    fireEvent.click(runNow);
+
+    await waitFor(() => expect(api.triggerCosJob).toHaveBeenCalledWith('job-1'));
+    expect(api.toggleCosJob).not.toHaveBeenCalled();
   });
 });

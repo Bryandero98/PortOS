@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, Play, Trash2, Edit3, Save, X, Clock } from 'lucide-react';
 import toast from '../../ui/Toast';
 import ToggleSwitch from '../../ToggleSwitch';
@@ -11,6 +11,8 @@ import { timeAgo } from '../../../utils/formatters';
 import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence } from '../../../utils/cronHelpers';
 import CronSchedulePicker from '../../CronSchedulePicker';
 import { AGENT_OPTIONS, agentOptionButtonClass } from '../../cos/constants';
+import AgentJobProviderFields from '../../cos/AgentJobProviderFields';
+import { filterRunnableProviders } from '../../../utils/providers';
 
 const INTERVAL_OPTIONS = [
   { value: 'hourly', label: 'Every Hour' },
@@ -35,7 +37,7 @@ const AUTONOMY_OPTIONS = [
 // toggles below mirror the per-app built-in task overrides for visual consistency.
 const TASK_META_FIELDS = AGENT_OPTIONS.filter(o => ['useWorktree', 'openPR', 'simplify'].includes(o.field));
 
-function emptyForm() {
+export function emptyForm() {
   return {
     name: '',
     description: '',
@@ -47,11 +49,14 @@ function emptyForm() {
     cronSchedule: null,
     priority: 'MEDIUM',
     autonomyLevel: 'manager',
+    providerId: '',
+    model: '',
+    effort: '',
     taskMetadata: { useWorktree: true, openPR: true, simplify: true }
   };
 }
 
-function formFromJob(job) {
+export function formFromJob(job) {
   return {
     name: job.name || '',
     description: job.description || '',
@@ -63,12 +68,15 @@ function formFromJob(job) {
     cronSchedule: job.cronSchedule || (job.cronExpression ? parseCronToRecurrence(job.cronExpression) : null),
     priority: job.priority || 'MEDIUM',
     autonomyLevel: job.autonomyLevel || 'manager',
+    providerId: job.providerId || '',
+    model: job.model || '',
+    effort: job.effort || '',
     taskMetadata: { useWorktree: false, openPR: false, simplify: false, ...(job.taskMetadata || {}) }
   };
 }
 
 // Build the API payload from form state, scoped to this app as an agent job.
-function toPayload(form, appId) {
+export function toPayload(form, appId) {
   const payload = {
     name: form.name.trim(),
     description: form.description.trim(),
@@ -77,6 +85,9 @@ function toPayload(form, appId) {
     promptTemplate: form.promptTemplate,
     priority: form.priority,
     autonomyLevel: form.autonomyLevel,
+    providerId: form.providerId || null,
+    model: form.model || null,
+    effort: form.effort || null,
     taskMetadata: form.taskMetadata
   };
   if (form.scheduleMode === 'cron') {
@@ -99,7 +110,7 @@ function scheduleSummary(job) {
   return job.scheduledTime ? `${label} at ${job.scheduledTime}` : label;
 }
 
-function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone }) {
+function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone, providers, activeProviderId }) {
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
   // Switching to cron seeds the expression with the default the picker displays
   // (07:00 daily) so an untouched picker is actually saveable — otherwise the
@@ -218,6 +229,13 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone }) {
         </select>
       </div>
 
+      <AgentJobProviderFields
+        data={form}
+        providers={providers}
+        activeProviderId={activeProviderId}
+        onChange={patch => setForm(f => ({ ...f, ...patch }))}
+      />
+
       {/* Git-workflow options */}
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-gray-400">Options:</span>
@@ -251,7 +269,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone }) {
   );
 }
 
-export default function CustomTasksSection({ appId, appName }) {
+export default function CustomTasksSection({ appId, appName, providerCatalog, activeProviderId: inheritedActiveProviderId = '' }) {
   const timezone = useUserTimezone();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -259,16 +277,36 @@ export default function CustomTasksSection({ appId, appName }) {
   const [createForm, setCreateForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyForm);
+  const [rawProviders, setRawProviders] = useState(providerCatalog || []);
+  const [activeProviderId, setActiveProviderId] = useState(inheritedActiveProviderId);
   const [triggering, setTriggering] = useState(null);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
+  const providers = useMemo(
+    () => filterRunnableProviders(rawProviders, tasks.map(job => job.providerId)),
+    [rawProviders, tasks]
+  );
+
   const fetchTasks = useCallback(async () => {
-    const data = await api.getCosJobs().catch(() => null);
-    setTasks((data?.jobs || []).filter(j => j.appId === appId));
+    const data = await api.getCosJobs({ silent: true }).catch(() => null);
+    const appTasks = (data?.jobs || []).filter(j => j.appId === appId);
+    setTasks(appTasks);
     setLoading(false);
   }, [appId]);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
+
+  useEffect(() => {
+    if (providerCatalog) {
+      setRawProviders(providerCatalog);
+      setActiveProviderId(inheritedActiveProviderId || '');
+      return;
+    }
+    api.getProviders({ silent: true }).then(data => {
+      setRawProviders(data?.providers || []);
+      setActiveProviderId(data?.activeProvider || '');
+    }).catch(() => {});
+  }, [providerCatalog, inheritedActiveProviderId]);
 
   const validate = (form) => {
     if (!form.name.trim()) { toast.error('Name is required'); return false; }
@@ -349,7 +387,16 @@ export default function CustomTasksSection({ appId, appName }) {
       </div>
 
       {showCreate && (
-        <TaskForm form={createForm} setForm={setCreateForm} onSave={handleCreate} onCancel={() => setShowCreate(false)} saveLabel="Create" timezone={timezone} />
+        <TaskForm
+          form={createForm}
+          setForm={setCreateForm}
+          onSave={handleCreate}
+          onCancel={() => setShowCreate(false)}
+          saveLabel="Create"
+          timezone={timezone}
+          providers={providers}
+          activeProviderId={activeProviderId}
+        />
       )}
 
       {loading ? (
@@ -366,7 +413,16 @@ export default function CustomTasksSection({ appId, appName }) {
             <div key={job.id} className={`bg-port-card border rounded-lg ${job.enabled ? 'border-port-border' : 'border-port-border/50 opacity-70'}`}>
               {editingId === job.id ? (
                 <div className="p-3">
-                  <TaskForm form={editForm} setForm={setEditForm} onSave={handleEditSave} onCancel={() => setEditingId(null)} saveLabel="Save" timezone={timezone} />
+                  <TaskForm
+                    form={editForm}
+                    setForm={setEditForm}
+                    onSave={handleEditSave}
+                    onCancel={() => setEditingId(null)}
+                    saveLabel="Save"
+                    timezone={timezone}
+                    providers={providers}
+                    activeProviderId={activeProviderId}
+                  />
                 </div>
               ) : (
                 <div className="p-3 space-y-1">
@@ -381,7 +437,7 @@ export default function CustomTasksSection({ appId, appName }) {
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      <button onClick={() => handleTrigger(job)} disabled={triggering === job.id || !job.enabled} className="p-1.5 text-gray-500 hover:text-port-accent transition-colors disabled:opacity-40" title="Run now" aria-label="Run now">
+                      <button onClick={() => handleTrigger(job)} disabled={triggering === job.id} className="p-1.5 text-gray-500 hover:text-port-accent transition-colors disabled:opacity-40" title="Run now" aria-label="Run now">
                         <Play size={14} />
                       </button>
                       <button onClick={() => startEdit(job)} className="p-1.5 text-gray-500 hover:text-white transition-colors" title="Edit" aria-label="Edit">
