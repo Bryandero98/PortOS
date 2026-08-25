@@ -8,7 +8,7 @@ vi.mock('./taskSchedule.js', () => ({
   getTaskInterval: vi.fn(async () => ({ prompt: 'before {worktreesRoot}/claim-x after' })),
 }));
 
-import { getTaskPrompt, getStagePrompt, DEFAULT_TASK_PROMPTS } from './taskPromptService.js';
+import { getTaskPrompt, getStagePrompt, DEFAULT_TASK_PROMPTS, PREVIOUS_DEFAULT_PROMPTS } from './taskPromptService.js';
 import { getTaskInterval } from './taskSchedule.js';
 import { PATHS } from '../lib/fileUtils.js';
 
@@ -23,6 +23,23 @@ describe('taskPromptService {worktreesRoot} substitution', () => {
     const out = await getTaskPrompt('claim-issue');
     expect(out).toBe(`before ${PATHS.worktrees}/claim-x after`);
     expect(out).not.toContain('{worktreesRoot}');
+  });
+});
+
+describe('claim-flow prompt variants', () => {
+  it('keeps scheduled plan-task review-free while manual PLAN claims retain review guidance', async () => {
+    getTaskInterval.mockResolvedValue({ prompt: null });
+
+    const scheduled = await getTaskPrompt('plan-task');
+    const manual = await getTaskPrompt('plan-task', { claimFlow: true });
+
+    expect(scheduled).not.toContain('## Phase 6 — Review locally');
+    expect(scheduled).toContain('gh pr checks <num> --required --watch --fail-fast');
+    const expectedManual = PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1)
+      .replace(/\{worktreesRoot\}/g, PATHS.worktrees);
+    expect(manual).toBe(expectedManual);
+    expect(manual).toContain('## Phase 6 — Review locally');
+    expect(manual).toContain('{reviewers}');
   });
 });
 

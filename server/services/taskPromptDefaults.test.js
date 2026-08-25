@@ -51,7 +51,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(gitlab).toContain('Never force-delete with `-D`');
   });
 
-  it('plan-task v18 omits the code-review phase while preserving v17', () => {
+  it('plan-task v18 scheduled default omits review while preserving CI and v17', () => {
     const current = DEFAULT_TASK_PROMPTS['plan-task'];
     const previous = PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1);
 
@@ -60,6 +60,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).not.toContain('{reviewers}');
     expect(current).not.toContain('LOCAL reviewers');
     expect(current).not.toContain('PR-SIDE reviewers');
+    expect(current).toContain('gh pr checks <num> --required --watch --fail-fast');
     expect(previous).toContain('## Phase 6 — Review locally');
     expect(previous).toContain('{reviewers}');
     expect(previous).not.toBe(current);

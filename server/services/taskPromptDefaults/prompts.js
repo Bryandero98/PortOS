@@ -810,7 +810,8 @@ Use \`feat:\` / \`fix:\` / \`refactor:\` / \`chore:\` / etc. (The bracketed-scop
 
 1. Push the branch: \`git push -u origin claim/<slug>\`.
 2. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
-3. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
+3. **Wait for required CI before merging.** Run \`gh pr checks <num> --required --watch --fail-fast\` — REQUIRED checks only, so optional jobs cannot stall the merge. If a required check stays red, comment on the PR naming the failure, remove only the worktree, and leave the branch and PR for reconciliation.
+4. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
    \`\`\`bash
    PR_URL=$(gh pr view --json url -q .url)   # no number: resolves the PR from the checked-out branch
    gh pr merge "$PR_URL" --merge --delete-branch || {
