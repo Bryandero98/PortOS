@@ -2448,7 +2448,7 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   if (taskType !== 'branch-reconcile') return { skip: false, block: '' };
   const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature, describeIdleReconcilePark } = await import('./branchReconcile.js');
   const { formatSupersededForPrompt } = await import('./supersededLedger.js');
-  const { getActiveAgentIds } = await import('./agentState.js');
+  const { getActiveAgentIds, isTruthyMeta } = await import('./agentState.js');
   // Action toggles were merged (global → per-app override) + value-constrained
   // by sanitizeTaskMetadata into `metadata`; each is ON unless explicitly false.
   const actions = {
@@ -2569,7 +2569,7 @@ async function resolveRepoSyncBlock(app, taskType, metadata) {
   if (taskType !== 'repo-sync') return { skip: false, block: '' };
   const {
     REPO_SYNC_ACTION_KEYS, syncRepos, resolveSyncTargets, summarizeSync,
-    shouldDispatchVerifier, formatRepoSyncReport
+    shouldDispatchVerifier, formatRepoSyncReport, formatWithheldSweepReport
   } = await import('./repoSync.js');
   const { getActiveAgentIds } = await import('./agentState.js');
 
@@ -2596,6 +2596,17 @@ async function resolveRepoSyncBlock(app, taskType, metadata) {
   if (!targets.length) {
     emitLog('info', `🔄 repo-sync: no managed repositories to sweep`, { analysisType: taskType });
     return { skip: true };
+  }
+
+  // `requireApproval` means "no unattended action until a human says go" — and
+  // this sweep IS action: it pushes, checks out, fast-forwards, drops stashes,
+  // and deletes worktrees. Running it here to build the agent's report would
+  // perform every one of those BEFORE the approval gate downstream ever sees the
+  // task. So withhold it and hand the agent the job instead; it runs only once
+  // the task has been approved and dispatched.
+  if (isTruthyMeta(metadata.requireApproval)) {
+    emitLog('info', `🔄 repo-sync: deterministic sweep withheld — this task requires approval`, { analysisType: taskType });
+    return { skip: false, block: formatWithheldSweepReport(targets) };
   }
 
   const results = await syncRepos(targets, { activeAgentIds: new Set(getActiveAgentIds()) })

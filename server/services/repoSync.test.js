@@ -63,6 +63,8 @@ const cleanState = (over = {}) => ({
   remoteDefault: 'origin/main',
   currentBranch: 'main',
   operationInProgress: null,
+  readFailures: [],
+  remotes: ['origin'],
   dirtyTracked: [],
   branches: [{ name: 'main', current: true, tracking: 'origin/main', ahead: 0, behind: 0, isDefault: true, merged: false, worktree: false }],
   defaultDivergence: { ahead: 0, behind: 0 },
@@ -75,6 +77,10 @@ const cleanState = (over = {}) => ({
 const branch = (name, over = {}) => ({
   name, current: false, tracking: `origin/${name}`, ahead: 0, behind: 0, isDefault: false, merged: false, worktree: false, ...over
 });
+// A branch that was never pushed: git reports ahead:0 for it (the count comes
+// from %(upstream:track), which is empty), so the snapshot measures it against
+// the default branch and stores the result as localAhead.
+const localBranch = (name, localAhead) => branch(name, { tracking: null, ahead: 0, localAhead });
 
 const kinds = (escalations) => escalations.map((e) => e.kind);
 const stepKinds = (steps) => steps.map((s) => s.kind);
@@ -146,6 +152,31 @@ describe('planRepoSync — refuses to act on an unsettled repo', () => {
     expect(kinds(escalations)).toContain(ESCALATION_KINDS.SCAN_FAILED);
   });
 
+  it('plans nothing when a snapshot read failed', () => {
+    // An unreadable status/branch/stash read defaults to the value that LOOKS
+    // safe (clean tree, no branches, no stashes) — exactly the values that unlock
+    // mutations. The gate refuses until the snapshot is whole.
+    const { steps, escalations } = planRepoSync(cleanState({
+      readFailures: ['working-tree status: git died'],
+      branches: [branch('feature/x', { ahead: 2 })],
+      defaultDivergence: { ahead: 0, behind: 3 }
+    }));
+    expect(steps).toEqual([]);
+    expect(kinds(escalations)).toEqual([ESCALATION_KINDS.SCAN_FAILED]);
+  });
+
+  it('plans no remote-dependent action when the fetch failed', () => {
+    // Every remote-derived number is stale without a successful fetch, so a push
+    // or fast-forward would act on a guess.
+    const { steps, escalations } = planRepoSync(cleanState({
+      fetchError: 'could not read from remote',
+      branches: [branch('feature/x', { ahead: 2 })],
+      defaultDivergence: { ahead: 0, behind: 3 }
+    }));
+    expect(steps).toEqual([]);
+    expect(kinds(escalations)).toEqual([ESCALATION_KINDS.SCAN_FAILED]);
+  });
+
   it('does nothing to a repo that is already in the target state', () => {
     const { steps, escalations } = planRepoSync(cleanState());
     expect(steps).toEqual([]);
@@ -156,7 +187,7 @@ describe('planRepoSync — refuses to act on an unsettled repo', () => {
 describe('planRepoSync — publishing local commits', () => {
   it('pushes a branch that is strictly ahead of its upstream', () => {
     const { steps } = planRepoSync(cleanState({ branches: [branch('feature/x', { ahead: 2 })] }));
-    expect(steps).toEqual([{ kind: 'push', branch: 'feature/x', ahead: 2 }]);
+    expect(steps).toEqual([{ kind: 'push', branch: 'feature/x', ahead: 2, remote: 'origin', remoteRef: 'feature/x' }]);
   });
 
   it('never pushes a branch that has diverged — it escalates instead', () => {
@@ -166,16 +197,39 @@ describe('planRepoSync — publishing local commits', () => {
   });
 
   it('escalates local commits on a branch with no upstream', () => {
-    const { steps, escalations } = planRepoSync(cleanState({ branches: [branch('feature/x', { tracking: null, ahead: 4 })] }));
+    // Keyed on localAhead, NOT ahead: git reports ahead:0 for every branch
+    // without an upstream, so an `ahead`-keyed check could never fire for
+    // exactly the never-pushed branches this escalation exists to catch.
+    const { steps, escalations } = planRepoSync(cleanState({ branches: [localBranch('feature/x', 4)] }));
     expect(steps).toEqual([]);
     expect(kinds(escalations)).toEqual([ESCALATION_KINDS.UNPUSHED_BRANCH]);
-    expect(escalations[0].detail).toContain('4 local commit(s)');
+    expect(escalations[0].detail).toContain('4 commit(s) not on main');
   });
 
   it('ignores an upstream-less branch carrying no commits of its own', () => {
-    const { steps, escalations } = planRepoSync(cleanState({ branches: [branch('scratch', { tracking: null, ahead: 0 })] }));
+    const { steps, escalations } = planRepoSync(cleanState({ branches: [localBranch('scratch', 0)] }));
     expect(steps).toEqual([]);
     expect(escalations).toEqual([]);
+  });
+
+  it('pushes to the branch\'s CONFIGURED upstream, not origin/<local name>', () => {
+    // A branch tracking a differently-named ref (or another remote) has its ahead
+    // count measured against THAT upstream — pushing to origin/<local name>
+    // publishes somewhere nobody watches and leaves the real upstream behind.
+    const { steps } = planRepoSync(cleanState({
+      remotes: ['origin', 'upstream'],
+      branches: [branch('feature/x', { tracking: 'upstream/renamed-x', ahead: 1 })]
+    }));
+    expect(steps).toEqual([{ kind: 'push', branch: 'feature/x', ahead: 1, remote: 'upstream', remoteRef: 'renamed-x' }]);
+  });
+
+  it('refuses to guess when the upstream names a remote this repo does not have', () => {
+    const { steps, escalations } = planRepoSync(cleanState({
+      remotes: ['origin'],
+      branches: [branch('feature/x', { tracking: 'gone/feature/x', ahead: 1 })]
+    }));
+    expect(steps).toEqual([]);
+    expect(kinds(escalations)).toEqual([ESCALATION_KINDS.UNPUSHED_BRANCH]);
   });
 
   it('honours syncPush: false', () => {
@@ -243,10 +297,19 @@ describe('planRepoSync — returning to the default branch', () => {
     expect(kinds(escalations)).toContain(ESCALATION_KINDS.OFF_DEFAULT_BRANCH);
   });
 
-  it('will not switch a checkout an agent is running in', () => {
-    const { steps, escalations } = planRepoSync(offDefault({ currentBranchMerged: true, activeAgentId: 'agent-7' }));
-    expect(stepKinds(steps)).not.toContain('switch-default');
-    expect(escalations.find((e) => e.kind === ESCALATION_KINDS.OFF_DEFAULT_BRANCH).detail).toContain('agent-7');
+  it('will not touch a checkout an agent is running in — at all', () => {
+    // Not merely "won't switch": pushing its branch, fast-forwarding under it, or
+    // dropping its stashes all race live work just as badly.
+    const { steps, escalations } = planRepoSync(offDefault({
+      currentBranchMerged: true,
+      activeAgentId: 'agent-7',
+      branches: [branch('feature/x', { current: true, ahead: 3 })],
+      defaultDivergence: { ahead: 0, behind: 2 },
+      stashes: [{ ref: 'stash@{0}', sha: 's0', message: 'wip', superseded: true, reason: 'identical' }]
+    }));
+    expect(steps).toEqual([]);
+    expect(kinds(escalations)).toEqual([ESCALATION_KINDS.AGENT_AT_WORK]);
+    expect(escalations[0].detail).toContain('agent-7');
   });
 
   it('will not switch off a branch whose work has not landed', () => {
@@ -309,7 +372,7 @@ describe('classifyStash', () => {
   };
 
   it('treats a stash that records no change as redundant', async () => {
-    scriptGit([['diff --name-only', { stdout: '' }], ['ls-tree', { exitCode: 128 }]]);
+    scriptGit([['diff --name-only', { stdout: '' }]]);
     const verdict = await classifyStash('/repo', 'sha1', 'origin/main');
     expect(verdict).toEqual({ superseded: true, reason: 'empty stash (no changes recorded)' });
   });
@@ -317,7 +380,6 @@ describe('classifyStash', () => {
   it('is redundant when every touched path is identical on the target', async () => {
     scriptGit([
       ['diff --name-only', { stdout: 'a.js\nb.js\n' }],
-      ['ls-tree', { exitCode: 128 }],
       ['diff --quiet', { exitCode: 0 }]
     ]);
     const verdict = await classifyStash('/repo', 'sha1', 'origin/main');
@@ -332,7 +394,6 @@ describe('classifyStash', () => {
   it('is NOT redundant when the target differs', async () => {
     scriptGit([
       ['diff --name-only', { stdout: 'a.js\n' }],
-      ['ls-tree', { exitCode: 128 }],
       ['diff --quiet', { exitCode: 1 }]
     ]);
     expect((await classifyStash('/repo', 'sha1', 'origin/main')).superseded).toBe(false);
@@ -342,24 +403,58 @@ describe('classifyStash', () => {
     scriptGit([
       ['diff --name-only', { stdout: 'a.js\n' }],
       ['ls-tree', { stdout: 'scratch/new.txt\n' }],
-      ['diff --quiet', { exitCode: 1 }]
+      ['diff --quiet', { exitCode: 0 }]
     ]);
     await classifyStash('/repo', 'sha1', 'origin/main', 3);
-    const diffCall = execGitMock.mock.calls.map(([args]) => args).find((args) => args[0] === 'diff' && args.includes('--quiet'));
-    expect(diffCall).toContain('scratch/new.txt');
+    const quiet = execGitMock.mock.calls.map(([args]) => args).filter((args) => args[0] === 'diff' && args.includes('--quiet'));
+    // The untracked path lives ONLY in the stash's third parent. Comparing it
+    // against the stash COMMIT would find it missing on both sides and call the
+    // stash redundant — dropping the untracked work outright.
+    const untrackedProbe = quiet.find((args) => args.includes('scratch/new.txt'));
+    expect(untrackedProbe).toEqual(['diff', '--quiet', 'sha1^3', 'origin/main', '--', 'scratch/new.txt']);
+    const trackedProbe = quiet.find((args) => args.includes('a.js'));
+    expect(trackedProbe).toEqual(['diff', '--quiet', 'sha1', 'origin/main', '--', 'a.js']);
+  });
+
+  it('keeps a stash whose untracked content is NOT on the target', async () => {
+    scriptGit([
+      ['diff --name-only', { stdout: '' }],
+      ['ls-tree', { stdout: 'scratch/new.txt\n' }],
+      ['diff --quiet', { exitCode: 1 }]
+    ]);
+    const verdict = await classifyStash('/repo', 'sha1', 'origin/main', 3);
+    expect(verdict.superseded).toBe(false);
+    expect(verdict.reason).toContain('untracked content differs');
+  });
+
+  it('keeps a stash whose path list could not be read', async () => {
+    // An unreadable path list used to collapse to "no paths", which reads as an
+    // empty stash — and an empty stash is dropped.
+    scriptGit([['diff --name-only', { exitCode: 128 }]]);
+    const verdict = await classifyStash('/repo', 'sha1', 'origin/main');
+    expect(verdict.superseded).toBe(false);
+    expect(verdict.reason).toContain('could not read');
+  });
+
+  it('keeps a -u stash whose third-parent read failed', async () => {
+    scriptGit([['diff --name-only', { stdout: 'a.js\n' }], ['ls-tree', { exitCode: 128 }]]);
+    const verdict = await classifyStash('/repo', 'sha1', 'origin/main', 3);
+    expect(verdict.superseded).toBe(false);
+    expect(verdict.reason).toContain('could not read');
   });
 
   it('skips the third-parent read for a stash that has no untracked half', async () => {
     // Every stash NOT taken with `-u` has two parents, so `<sha>^3` cannot
     // resolve — spawning it is a guaranteed failure per ordinary stash.
     scriptGit([['diff --name-only', { stdout: 'a.js\n' }], ['diff --quiet', { exitCode: 0 }]]);
-    await classifyStash('/repo', 'sha1', 'origin/main', 2);
+    const verdict = await classifyStash('/repo', 'sha1', 'origin/main', 2);
+    expect(verdict.superseded).toBe(true);
     expect(execGitMock.mock.calls.some(([args]) => args[0] === 'ls-tree')).toBe(false);
   });
 
   it('refuses to auto-classify a stash too large to compare in one spawn', async () => {
     const many = Array.from({ length: MAX_STASH_PATHS_FOR_AUTO_CLASSIFY + 1 }, (_, i) => `f${i}.js`).join('\n');
-    scriptGit([['diff --name-only', { stdout: many }], ['ls-tree', { exitCode: 128 }]]);
+    scriptGit([['diff --name-only', { stdout: many }]]);
     const verdict = await classifyStash('/repo', 'sha1', 'origin/main');
     expect(verdict.superseded).toBe(false);
     expect(verdict.reason).toContain('too large');
@@ -367,7 +462,7 @@ describe('classifyStash', () => {
   });
 
   it('fails closed when git errors out', async () => {
-    scriptGit([['diff --name-only', { stdout: 'a.js\n' }], ['ls-tree', { exitCode: 128 }], ['diff --quiet', { exitCode: 129 }]]);
+    scriptGit([['diff --name-only', { stdout: 'a.js\n' }], ['diff --quiet', { exitCode: 129 }]]);
     expect((await classifyStash('/repo', 'sha1', 'origin/main')).superseded).toBe(false);
   });
 });
@@ -384,6 +479,7 @@ describe('syncRepo — the argv it issues is the non-destructive form', () => {
     execGitMock.mockImplementation(async (args) => {
       const line = args.join(' ');
       if (line.startsWith('rev-parse --git-dir')) return { stdout: '.git', stderr: '', exitCode: 0 };
+      if (line === 'remote') return { stdout: 'origin\n', stderr: '', exitCode: 0 };
       if (line.startsWith('rev-list')) return { stdout: divergence, stderr: '', exitCode: 0 };
       if (line.startsWith('stash list')) return { stdout: stashList, stderr: '', exitCode: 0 };
       return { stdout: '', stderr: '', exitCode: 0 };
@@ -458,6 +554,9 @@ describe('syncRepo — the argv it issues is the non-destructive form', () => {
     expect(result.performed).toEqual([]);
     expect(result.escalations.map((e) => e.kind)).toEqual([ESCALATION_KINDS.ACTION_FAILED]);
     expect(result.escalations[0].detail).toContain('rejected');
+    // Pushed to the resolved upstream, as an explicit <local>:<remote-ref> refspec.
+    const pushCall = execGitMock.mock.calls.map(([a]) => a).find((a) => a[0] === 'push');
+    expect(pushCall).toEqual(['push', 'origin', 'feature/x:feature/x']);
   });
 
   it('re-verifies a stash sha before dropping it and skips a shifted ref', async () => {

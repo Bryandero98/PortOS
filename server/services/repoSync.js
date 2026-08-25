@@ -89,6 +89,7 @@ export const ESCALATION_KINDS = Object.freeze({
   IN_FLIGHT_BRANCH: 'in-flight-branch',
   ORPHAN_REMOTE: 'orphan-remote',
   ACTION_FAILED: 'action-failed',
+  AGENT_AT_WORK: 'agent-at-work',
   SCAN_FAILED: 'scan-failed'
 });
 
@@ -201,24 +202,34 @@ export function parseStashList(stdout) {
 }
 
 /**
- * Every path a stash commit carries — its tracked diff against its own base
- * plus, when the stash was taken with `-u`, the untracked snapshot in its third
- * parent. An unreadable read yields nothing from that half, which is also the
- * safe direction: a path we cannot see cannot be proven redundant.
+ * The paths a stash commit carries, kept in their two classes because each lives
+ * in a DIFFERENT tree: the tracked changes are in the stash commit itself, while
+ * the untracked snapshot a `git stash -u` captured is in its third parent. A
+ * caller that flattens them and compares everything against the stash commit
+ * would find an untracked path missing from BOTH sides and conclude the stash is
+ * redundant — dropping work that only ever existed in `^3`.
+ *
+ * Fails CLOSED: an unreadable read yields `failed: true` rather than an empty
+ * list, because "no paths" is the one answer that makes a stash look droppable.
+ *
  * @param {string} repoPath
  * @param {string} sha - the stash commit
  * @param {number} parentCount - from `parseStashList`; 3 ⇒ carries untracked files
- * @returns {Promise<string[]>}
+ * @returns {Promise<{tracked:string[], untracked:string[], failed:boolean}>}
  */
 async function stashPaths(repoPath, sha, parentCount) {
+  const hasUntracked = parentCount >= 3;
   const [tracked, untracked] = await Promise.all([
     execGitSafe(['diff', '--name-only', `${sha}^1`, sha], repoPath, { ignoreExitCode: true }),
-    parentCount >= 3
+    hasUntracked
       ? execGitSafe(['ls-tree', '-r', '--name-only', `${sha}^3`], repoPath, { ignoreExitCode: true })
-      : Promise.resolve({ exitCode: 1, stdout: '' })
+      : Promise.resolve({ exitCode: 0, stdout: '' })
   ]);
-  const lines = (out) => (out.exitCode === 0 ? out.stdout : '').split('\n').map((l) => l.trim()).filter(Boolean);
-  return [...new Set([...lines(tracked), ...lines(untracked)])];
+  if (tracked.exitCode !== 0 || untracked.exitCode !== 0) {
+    return { tracked: [], untracked: [], failed: true };
+  }
+  const lines = (out) => out.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  return { tracked: lines(tracked), untracked: lines(untracked), failed: false };
 }
 
 /**
@@ -231,6 +242,12 @@ async function stashPaths(repoPath, sha, parentCount) {
  * "SUPERSEDED" classification the `stash-cleanup` prompt asks a model to make by
  * hand — everything this can't prove is left for that judgment call.
  *
+ * Each path class is compared against the tree that HOLDS it — tracked changes
+ * against the stash commit, the untracked snapshot against its third parent.
+ * Comparing an untracked path against the stash commit would find it missing on
+ * both sides and call the stash redundant, which is how this check would come to
+ * delete the very work it exists to protect.
+ *
  * Fails CLOSED in every direction: an unreadable path list, a too-large stash,
  * or a git error all yield `superseded: false`.
  *
@@ -242,15 +259,23 @@ async function stashPaths(repoPath, sha, parentCount) {
  */
 export async function classifyStash(repoPath, sha, target, parentCount = 2) {
   const paths = await stashPaths(repoPath, sha, parentCount);
-  if (paths.length === 0) return { superseded: true, reason: 'empty stash (no changes recorded)' };
-  if (paths.length > MAX_STASH_PATHS_FOR_AUTO_CLASSIFY) {
-    return { superseded: false, reason: `touches ${paths.length} paths — too large to auto-classify` };
+  if (paths.failed) return { superseded: false, reason: 'could not read the stash contents' };
+  const total = paths.tracked.length + paths.untracked.length;
+  if (total === 0) return { superseded: true, reason: 'empty stash (no changes recorded)' };
+  if (total > MAX_STASH_PATHS_FOR_AUTO_CLASSIFY) {
+    return { superseded: false, reason: `touches ${total} paths — too large to auto-classify` };
   }
-  const diff = await execGitSafe(['diff', '--quiet', sha, target, '--', ...paths], repoPath, { ignoreExitCode: true });
-  if (diff.exitCode === 0) {
-    return { superseded: true, reason: `content identical to ${target} on all ${paths.length} path(s)` };
+  // Two probes, one per tree. A non-zero exit is "differs OR unreadable"; both
+  // must keep the stash, so they share an answer.
+  if (paths.tracked.length) {
+    const diff = await execGitSafe(['diff', '--quiet', sha, target, '--', ...paths.tracked], repoPath, { ignoreExitCode: true });
+    if (diff.exitCode !== 0) return { superseded: false, reason: `differs from ${target}` };
   }
-  return { superseded: false, reason: `differs from ${target}` };
+  if (paths.untracked.length) {
+    const diff = await execGitSafe(['diff', '--quiet', `${sha}^3`, target, '--', ...paths.untracked], repoPath, { ignoreExitCode: true });
+    if (diff.exitCode !== 0) return { superseded: false, reason: `untracked content differs from ${target}` };
+  }
+  return { superseded: true, reason: `content identical to ${target} on all ${total} path(s)` };
 }
 
 /**
@@ -288,24 +313,44 @@ async function collectRepoState(repoPath) {
     fetchError = await fetchOrigin(repoPath, { prune: true }).then(() => null, (err) => err.message);
   }
 
+  // EVERY read below feeds a safety decision, so a failure is recorded as such
+  // rather than degrading into the value that happens to look safe. Left to
+  // `.catch(() => '')`, an unreadable `git status` reads as a CLEAN tree, an
+  // unreadable branch list as NO branches, and a failed stash list as NO stashes
+  // — each of which unlocks a mutation the real state would have refused.
+  const readFailures = [];
+  const required = async (label, promise, fallback) => promise.catch((err) => {
+    readFailures.push(`${label}: ${err.message}`);
+    return fallback;
+  });
   const [defaultBranch, headBranch, porcelain, branches, rawStashes, activeAgentId] = await Promise.all([
     getDefaultBranch(repoPath).then((b) => b || 'main', () => 'main'),
-    getBranch(repoPath).catch(() => ''),
-    getStatusPorcelain(repoPath).catch(() => ''),
-    getBranches(repoPath).catch(() => []),
+    required('current branch', getBranch(repoPath), ''),
+    required('working-tree status', getStatusPorcelain(repoPath), ''),
+    required('branch list', getBranches(repoPath), []),
     // The planner refuses to act on a repo mid-operation, so classifying its
     // stashes (2–3 git spawns each) buys nothing.
     operationInProgress
       ? Promise.resolve([])
       : execGitSafe(['stash', 'list', '--format=%gd%x1f%H%x1f%P%x1f%gs'], repoPath, { ignoreExitCode: true })
-        .then((r) => parseStashList(r.stdout)),
-    findActiveAgentInWorkspace(repoPath).catch(() => null)
+        .then((r) => {
+          if (r.exitCode !== 0) {
+            readFailures.push(`stash list: ${(r.stderr || '').trim().split('\n').slice(-1)[0] || 'git exited non-zero'}`);
+            return [];
+          }
+          return parseStashList(r.stdout);
+        }),
+    // A lookup failure here must NOT read as "nobody is working in this
+    // checkout" — that is the fact every mutating step below is gated on.
+    required('active-agent lookup', findActiveAgentInWorkspace(repoPath), null)
   ]);
 
   const detached = headBranch === 'HEAD' || headBranch === '';
   const currentBranch = detached ? null : headBranch;
   const dirtyTracked = dirtyTrackedPaths(porcelain);
   const remoteDefault = hasOrigin ? `origin/${defaultBranch}` : null;
+  const remotes = await execGitSafe(['remote'], repoPath, { ignoreExitCode: true })
+    .then((r) => (r.exitCode === 0 ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []));
 
   // How the LOCAL default branch stands against origin's copy — the number that
   // decides fast-forward vs "diverged, hand it to the agent". `getBranches`
@@ -323,6 +368,20 @@ async function collectRepoState(repoPath) {
   // branch will be after the fast-forward below) and the local default
   // otherwise, so an offline machine still gets a correct — just staler — answer.
   const stashTarget = remoteDefault && defaultDivergence ? remoteDefault : defaultBranch;
+
+  // `getBranches` derives ahead/behind from `%(upstream:track)`, which is EMPTY
+  // for a branch that was never pushed — so its `ahead` is 0 and the
+  // unpushed-work escalation below could never fire for exactly the branches it
+  // exists to catch. Measure those against the default branch instead. Bounded,
+  // and only for the upstream-less ones, so a normal repo pays nothing.
+  const localOnly = branches.filter((b) => !b.tracking && b.name !== defaultBranch);
+  const localAheadByBranch = new Map(await mapWithConcurrency(localOnly, STASH_CLASSIFY_CONCURRENCY, async (b) => [
+    b.name,
+    (await countAheadBehind(repoPath, b.name, defaultBranch))?.ahead ?? 0
+  ]));
+  const branchesWithLocalAhead = branches.map((b) => (
+    localAheadByBranch.has(b.name) ? { ...b, localAhead: localAheadByBranch.get(b.name) } : b
+  ));
 
   const [stashes, currentBranchMerged] = await Promise.all([
     mapWithConcurrency(rawStashes, STASH_CLASSIFY_CONCURRENCY, async (entry) => ({
@@ -347,12 +406,14 @@ async function collectRepoState(repoPath) {
     repoPath,
     isRepo: true,
     fetchError,
+    readFailures,
+    remotes,
     defaultBranch,
     remoteDefault,
     currentBranch,
     operationInProgress,
     dirtyTracked,
-    branches,
+    branches: branchesWithLocalAhead,
     defaultDivergence,
     stashes,
     activeAgentId,
@@ -395,16 +456,44 @@ export function planRepoSync(state, actions = {}) {
 
   if (!state?.isRepo) return { steps, escalations };
 
-  // A settled HEAD is the precondition for every safety property in this
-  // module, so a repo mid-operation gets no steps at all.
+  // Everything below decides what to MUTATE from what the snapshot observed, so
+  // each of these three says "the snapshot is not a sound basis for that" and
+  // returns no steps at all. Reporting without acting is always available; acting
+  // on state we could not establish is what loses work.
+
+  // A settled HEAD is the precondition for every safety property in this module.
   if (state.operationInProgress) {
     escalate(ESCALATION_KINDS.OPERATION_IN_PROGRESS,
       `a ${state.operationInProgress} is in progress — resolve it before this checkout can be synced`);
     return { steps, escalations };
   }
 
+  // A read that failed leaves a fact missing, and every missing fact defaults to
+  // the value that looks safe (clean tree, no branches, no stashes, no agent) —
+  // precisely the values that unlock mutations. Refuse until the snapshot is whole.
+  if (state.readFailures?.length) {
+    for (const failure of state.readFailures) {
+      escalate(ESCALATION_KINDS.SCAN_FAILED, `could not read ${failure} — no automatic action taken on this repo`);
+    }
+    return { steps, escalations };
+  }
+
+  // Somebody's agent is working in this checkout right now. Pushing its branch,
+  // fast-forwarding under it, dropping its stashes, or reaping its worktrees all
+  // race live work — the switch-back gate below is NOT enough on its own.
+  if (state.activeAgentId) {
+    escalate(ESCALATION_KINDS.AGENT_AT_WORK,
+      `agent ${state.activeAgentId} is running in this checkout — left untouched`);
+    return { steps, escalations };
+  }
+
+  // Without a successful fetch every remote-derived number is stale, so the
+  // remote-dependent steps (push, fast-forward) would act on a guess. Report and
+  // stop; the next run re-fetches.
   if (state.fetchError) {
-    escalate(ESCALATION_KINDS.SCAN_FAILED, `could not fetch from origin: ${state.fetchError}`);
+    escalate(ESCALATION_KINDS.SCAN_FAILED,
+      `could not fetch from origin (${state.fetchError}) — origin state is unknown, so no automatic action was taken`);
+    return { steps, escalations };
   }
 
   const clean = state.dirtyTracked.length === 0;
@@ -423,12 +512,13 @@ export function planRepoSync(state, actions = {}) {
   // judgment call, not a sync step.
   for (const branch of state.branches) {
     if (!branch.tracking) {
-      // No upstream at all. Unpushed commits are unreviewed by definition; a
-      // bare pointer at the default branch's tip is just cruft the merged-branch
-      // cleanup handles, so only a branch with its own commits escalates.
-      if (branch.ahead > 0 && !branch.isDefault) {
+      // No upstream at all, so `ahead` is 0 by construction — the snapshot
+      // measured these against the default branch instead (`localAhead`). A bare
+      // pointer at the default tip is just cruft the merged-branch cleanup
+      // handles; a branch with commits of its own is unreviewed work.
+      if (branch.localAhead > 0 && !branch.isDefault) {
         escalate(ESCALATION_KINDS.UNPUSHED_BRANCH,
-          `${branch.name} has ${branch.ahead} local commit(s) and no upstream — never pushed, no PR`);
+          `${branch.name} has ${branch.localAhead} commit(s) not on ${state.defaultBranch} and no upstream — never pushed, no PR`);
       }
       continue;
     }
@@ -438,7 +528,18 @@ export function planRepoSync(state, actions = {}) {
       continue;
     }
     if (branch.ahead > 0 && actionOn(actions, 'syncPush')) {
-      steps.push({ kind: 'push', branch: branch.name, ahead: branch.ahead });
+      // The ahead count was measured against THIS branch's configured upstream,
+      // so the push has to go there. `git push origin <local name>` would publish
+      // to a different ref whenever the upstream is on another remote or carries
+      // another name — landing commits somewhere nobody is watching while the
+      // real upstream stays behind.
+      const upstream = parseUpstream(branch.tracking, state.remotes);
+      if (!upstream) {
+        escalate(ESCALATION_KINDS.UNPUSHED_BRANCH,
+          `${branch.name} is ${branch.ahead} ahead of ${branch.tracking}, whose remote is not one of this repo's (${state.remotes.join(', ') || 'none'}) — push it by hand`);
+        continue;
+      }
+      steps.push({ kind: 'push', branch: branch.name, ahead: branch.ahead, remote: upstream.remote, remoteRef: upstream.ref });
     }
   }
 
@@ -504,6 +605,26 @@ export function planRepoSync(state, actions = {}) {
   return { steps, escalations };
 }
 
+/**
+ * Split a `%(upstream:short)` value (`origin/feature/x`) into the remote and the
+ * branch name on it, or null when the leading segment is not one of this repo's
+ * remotes. Remote names cannot contain `/`, so the first segment is the remote
+ * and everything after it is the ref — which is what keeps a branch named
+ * `feature/x` from being mistaken for a remote called `feature`. Pure.
+ * @param {string} tracking
+ * @param {string[]} remotes
+ * @returns {{remote:string, ref:string}|null}
+ */
+export function parseUpstream(tracking, remotes = []) {
+  const value = String(tracking || '');
+  const slash = value.indexOf('/');
+  if (slash <= 0) return null;
+  const remote = value.slice(0, slash);
+  const ref = value.slice(slash + 1);
+  if (!ref || !remotes.includes(remote)) return null;
+  return { remote, ref };
+}
+
 /** Numeric index of a `stash@{N}` ref; -1 when unparseable. Pure. */
 export function stashIndex(ref) {
   const m = /^stash@\{(\d+)\}$/.exec(String(ref || '').trim());
@@ -532,7 +653,7 @@ async function runStep(repoPath, step) {
     return r.exitCode === 0 ? { ok: true, step } : fail((r.stderr + r.stdout).trim().split('\n').slice(-3).join(' '));
   };
 
-  if (step.kind === 'push') return attempt(['push', 'origin', step.branch]);
+  if (step.kind === 'push') return attempt(['push', step.remote, `${step.branch}:${step.remoteRef}`]);
   if (step.kind === 'switch-default') return attempt(['checkout', step.to]);
 
   if (step.kind === 'ff-default') {
@@ -576,7 +697,7 @@ async function runStep(repoPath, step) {
  */
 export function describeStep(step) {
   switch (step.kind) {
-    case 'push': return `pushed ${step.branch} (${step.ahead} commit(s)) to origin`;
+    case 'push': return `pushed ${step.branch} (${step.ahead} commit(s)) to ${step.remote}/${step.remoteRef}`;
     case 'switch-default': return `switched checkout from ${step.from} to ${step.to}`;
     case 'ff-default': return `fast-forwarded ${step.branch} (${step.behind} behind origin)`;
     case 'drop-stash': return `dropped ${step.ref} — ${step.reason}`;
@@ -627,7 +748,14 @@ export async function syncRepo(repo, { activeAgentIds = new Set() } = {}) {
   // classified `inFlight` set is REPORTED, not driven: see the scope boundary in
   // the module header for why finishing those branches belongs to
   // branch-reconcile and not here.
-  if (actionOn(actions, 'cleanupMerged') && !state.operationInProgress) {
+  // Gated on the same facts the planner refuses to act without: reconcile
+  // DELETES branches and worktrees, so an incomplete snapshot, a live agent, or
+  // an unfetched origin must keep it out exactly as they keep out the steps above.
+  const reconcileSafe = !state.operationInProgress
+    && !state.readFailures?.length
+    && !state.activeAgentId
+    && !state.fetchError;
+  if (actionOn(actions, 'cleanupMerged') && reconcileSafe) {
     const { reconcile } = await import('./branchReconcile.js');
     const result = await reconcile(repoPath, {
       cleanup: true,
@@ -766,6 +894,34 @@ export function formatRepoSyncReport(results, { verifyReason = '' } = {}) {
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * The `{repoSyncReport}` block for a run whose deterministic sweep was WITHHELD
+ * because the task requires approval. The sweep mutates checkouts, so running it
+ * to build a report would be the very mutation the approval gate exists to hold —
+ * the agent is told to do the whole job itself instead, once it is approved. Pure.
+ * @param {{repoPath:string, appId?:string, name?:string}[]} targets
+ * @returns {string}
+ */
+export function formatWithheldSweepReport(targets) {
+  return [
+    '## Programmatic sync pass — WITHHELD (this task requires approval)',
+    '',
+    'No automatic pass ran: it mutates checkouts, and this task is configured to',
+    'require approval before that happens. **You are doing the whole sync yourself**,',
+    'so treat the list below as your job, not as a verification pass.',
+    '',
+    'For each repository: fetch and prune, push any branch strictly ahead of its own',
+    'configured upstream (never `--force`, never one that has diverged), fast-forward',
+    'the default branch (`--ff-only` only), return the checkout to the default branch',
+    'when the branch it is on is clean and already merged, delete branches and',
+    'worktrees already merged into the default branch, and drop only stash entries',
+    'whose content is already identical to the default branch. Skip — and report —',
+    'any repository mid-merge/rebase or with an agent running in it.',
+    '',
+    ...(targets || []).map((t) => `- **${t.name}**${t.appId ? ` (${t.appId})` : ''} — \`${t.repoPath}\``)
+  ].join('\n');
 }
 
 /**
