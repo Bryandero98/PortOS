@@ -11,7 +11,13 @@
 
 // PORTOS_API_URL is interpolated into the jira-status-report default prompt below.
 import { PORTOS_API_URL } from '../../lib/ports.js';
-import { EPIC_DECOMPOSED_LABEL, EPIC_LABEL, ISSUE_QUALITY_GUIDANCE, formatLabelCreateCommand } from '../../lib/dispatchLabels.js';
+import {
+  EPIC_DECOMPOSED_LABEL,
+  EPIC_LABEL,
+  ISSUE_QUALITY_GUIDANCE,
+  formatContributorLabelReleaseCommands,
+  formatLabelCreateCommand,
+} from '../../lib/dispatchLabels.js';
 
 // The epic marker and its idempotent `label create` line come from the shared
 // label registry, so the label the claim agent stamps is by construction the one
@@ -25,6 +31,11 @@ const EPIC_LABEL_CREATE_GLAB = formatLabelCreateCommand(EPIC_DECOMPOSED_LABEL, {
 // actionable and it gets re-split every pass.
 const UMBRELLA_LABEL_CREATE_GH = formatLabelCreateCommand(EPIC_LABEL);
 const UMBRELLA_LABEL_CREATE_GLAB = formatLabelCreateCommand(EPIC_LABEL, { cli: 'glab' });
+// Claiming an issue retires its human-contributor invitations. The `${NUM}` here
+// is SHELL text, not a JS interpolation — these are single-quoted so the claim
+// agent gets the literal `"${NUM}"` its own script sets.
+const CONTRIBUTOR_RELEASE_GH = formatContributorLabelReleaseCommands('"${NUM}"').join('\n');
+const CONTRIBUTOR_RELEASE_GLAB = formatContributorLabelReleaseCommands('"${NUM}"', { cli: 'glab' }).join('\n');
 
 const SCHEDULED_ISSUE_QUALITY_GATE = `## Scheduled issue-quality gate
 
@@ -960,10 +971,17 @@ git worktree add --no-track -b "claim/issue-\${NUM}" "\${WORKTREE}" origin/main
 # Cross-machine claim markers (best-effort — do not abort the run if these fail):
 gh issue edit "\${NUM}" --add-assignee @me 2>/dev/null
 gh issue edit "\${NUM}" --add-label in-progress 2>/dev/null
+# Retire the contributor invitations — this issue is taken now, so it must stop
+# advertising itself to a human looking for something to pick up. One edit per
+# label: \`--remove-label\` fails the WHOLE call when a named label is absent, so
+# a combined call on an issue carrying only one of them would remove neither.
+${CONTRIBUTOR_RELEASE_GH}
 cd "\${WORKTREE}"
 \`\`\`
 
 (If the repo's default branch is not \`main\`, detect it with \`gh repo view --json defaultBranchRef -q .defaultBranchRef.name\` and substitute it for \`main\` above.)
+
+Releasing \`good first issue\` / \`help wanted\` is deliberate and one-way: they invite a human contributor, and every path out of this flow either closes the issue or returns it to the AUTONOMOUS queue, where those labels mean nothing. Do NOT restore them when Phase 3 or Phase 7 releases the claim — re-advertising the issue to humans is a call for the human who wants it re-advertised.
 
 **If \`git worktree add\` fails because the \`claim/issue-<num>\` branch already exists** (a concurrent run won the race, or a remote claim branch is now visible), do NOT force or reuse it — that branch IS another run's claim. Treat the issue as in-flight, return to Phase 1, and pick the next eligible issue; if nothing else is eligible, exit cleanly. Stash \`WORKTREE\` — you'll need it for Phase 7 cleanup.
 
@@ -1132,8 +1150,15 @@ git worktree add --no-track -b "claim/issue-\${NUM}" "\${WORKTREE}" "origin/\${D
 ME="$(glab api user 2>/dev/null | sed -n 's/.*"username":"\\([^"]*\\)".*/\\1/p')"
 glab issue update "\${NUM}" --assignee "\${ME:-@me}" 2>/dev/null
 glab issue update "\${NUM}" --label in-progress 2>/dev/null
+# Retire the contributor invitations — this issue is taken now, so it must stop
+# advertising itself to a human looking for something to pick up. One update per
+# label: \`--unlabel\` fails the WHOLE call when a named label is absent, so a
+# combined call on an issue carrying only one of them would remove neither.
+${CONTRIBUTOR_RELEASE_GLAB}
 cd "\${WORKTREE}"
 \`\`\`
+
+Releasing \`good first issue\` / \`help wanted\` is deliberate and one-way: they invite a human contributor, and every path out of this flow either closes the issue or returns it to the AUTONOMOUS queue, where those labels mean nothing. Do NOT restore them when Phase 3 or Phase 7 releases the claim — re-advertising the issue to humans is a call for the human who wants it re-advertised.
 
 **If \`git worktree add\` fails because the \`claim/issue-<num>\` branch already exists** (a concurrent run won the race), do NOT force or reuse it — that branch IS another run's claim. Treat the issue as in-flight, return to Phase 1, and pick the next eligible issue; if nothing else is eligible, exit cleanly. Stash \`WORKTREE\` — you'll need it for Phase 7 cleanup.
 

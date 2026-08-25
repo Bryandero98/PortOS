@@ -10,6 +10,9 @@ import {
 } from './taskPromptDefaults.js';
 import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
 import { EPIC_DECOMPOSED_LABEL } from './perpetualWork.js';
+// The claim prompts build their contributor-label release from this helper, so the
+// test asserts against the same source rather than re-typing the command text.
+import { formatContributorLabelReleaseCommands } from '../lib/dispatchLabels.js';
 
 // Hash snapshot of every exported prompt body and version. This pins the
 // cross-install prompt-upgrade contract (see AGENTS.md "Distribution model"):
@@ -660,13 +663,15 @@ describe('taskPromptDefaults integrity snapshot', () => {
       expect(current).not.toContain('Leave epics for a human to split');
       expect(current).not.toContain("don't claim it wholesale here");
 
-      // The outgoing body stays recognizable so an install storing it auto-upgrades
-      // rather than being pinned to the skip-the-epic flow forever. One entry per
-      // shipped version, in ship order, is what makes .at(-1) the outgoing one.
+      // The body outgoing at THIS revision stays recognizable so an install
+      // storing it auto-upgrades rather than being pinned to the skip-the-epic
+      // flow forever. One entry per shipped version, in ship order, so the body
+      // the epic bump replaced is index `floor - 2` — addressed positionally
+      // rather than as .at(-1), which moves to a newer body on every later bump.
       const previous = PREVIOUS_DEFAULT_PROMPTS[key];
       expect(previous).toHaveLength(PROMPT_VERSIONS[key] - 1);
-      expect(previous.at(-1)).not.toBe(current);
-      expect(previous.at(-1)).not.toContain('Phase 1b');
+      expect(previous[floors[key] - 2]).not.toBe(current);
+      expect(previous[floors[key] - 2]).not.toContain('Phase 1b');
     }
 
     // A slice references its parent without closing it, and the parent keeps the
@@ -676,6 +681,51 @@ describe('taskPromptDefaults integrity snapshot', () => {
     // The JIRA flow keeps its human-split behavior, and names the API gap that forces it.
     expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).not.toContain('Phase 1b');
     expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).toContain('Leave epics for a human to split');
+  });
+
+  // Contributor labels advertise work to a HUMAN who might pick it up. Once a
+  // claim run holds the issue that invitation is stale, so Phase 2 releases both
+  // where it stamps the assignee + `in-progress` markers. Pinned here because two
+  // details are load-bearing and easy to "tidy" into a break: the commands must
+  // stay SEPARATE (a forge fails the whole edit when any named label is absent,
+  // so a combined call on an issue carrying only one would remove neither) and
+  // best-effort (an issue carrying neither is the common case and must never
+  // abort a claim). The literals come from the shared registry, so the labels the
+  // claim releases are by construction the ones the filing flows apply.
+  //
+  // JIRA is deliberately absent: its reads expose no labels at all
+  // (jira.js#getIssue / #fetchMyCurrentSprintTickets), and its update replaces the
+  // WHOLE label array — so a release there could only be a blind write that erased
+  // every other label on the ticket. Same API gap as the epic skip, tracked in #5042.
+  it('claim flows release the contributor invitations at claim time, preserving the outgoing defaults', () => {
+    const floors = { 'claim-issue': 22, 'claim-issue-gitlab': 20 };
+    const releases = {
+      'claim-issue': formatContributorLabelReleaseCommands('"${NUM}"'),
+      'claim-issue-gitlab': formatContributorLabelReleaseCommands('"${NUM}"', { cli: 'glab' }),
+    };
+
+    for (const [key, floor] of Object.entries(floors)) {
+      const current = DEFAULT_TASK_PROMPTS[key];
+      expect(PROMPT_VERSIONS[key]).toBeGreaterThanOrEqual(floor);
+      expect(releases[key]).toHaveLength(2);
+      for (const command of releases[key]) expect(current).toContain(command);
+      // Both labels released in one command would silently no-op on the common
+      // single-label issue, so ban the combined spellings outright.
+      expect(current).not.toContain("--remove-label 'good first issue' --remove-label");
+      expect(current).not.toContain("--unlabel 'good first issue' --unlabel");
+      expect(current).toContain('Do NOT restore them when Phase 3 or Phase 7 releases the claim');
+
+      // The outgoing body stays recognizable so an install storing it auto-upgrades
+      // instead of being flagged promptCustomized and pinned to the old flow.
+      const previous = PREVIOUS_DEFAULT_PROMPTS[key];
+      expect(previous).toHaveLength(PROMPT_VERSIONS[key] - 1);
+      expect(previous.at(-1)).not.toBe(current);
+      for (const command of releases[key]) expect(previous.at(-1)).not.toContain(command);
+      // …and it is the body that ONLY lacks the release: everything else the
+      // outgoing version shipped (Phase 1b) is still there, which is what makes it
+      // the immediately-previous body rather than some older one.
+      expect(previous.at(-1)).toContain('Phase 1b');
+    }
   });
 
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
