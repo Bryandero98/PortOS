@@ -1,9 +1,12 @@
 import { request, API_BASE, maybeRedirectToLogin } from './apiCore.js';
+import { filterHardwareCompatibleModels } from '../utils/systemCapabilities.js';
 
 // Image gen — local backend extras (gallery, models, LoRAs, cancel, delete).
 // generateImage / getImageGenStatus / generateAvatar live in apiSystem.js for
 // backward compatibility with existing call sites.
-export const listImageModels = (options) => request('/image-gen/models', options);
+export const listImageModels = ({ includeUnavailable = false, ...options } = {}) =>
+  request('/image-gen/models', options)
+    .then((models) => filterHardwareCompatibleModels(models, { includeUnavailable }));
 export const listAgyImageModels = (options) => request('/image-gen/agy/models', options);
 // Per-model download status: `[{ id, repo, cached, sizeBytes }]`. Drives the
 // inline Available/Download badge on the image gen form.
@@ -155,8 +158,14 @@ export async function createImageGenVenv() {
 }
 
 // Video gen
-export const getVideoGenStatus = (options = {}) => request('/video-gen/status', options);
-export const listVideoModels = (options) => request('/video-gen/models', options);
+export const getVideoGenStatus = (options = {}) => request('/video-gen/status', options)
+  .then((status) => ({
+    ...status,
+    models: filterHardwareCompatibleModels(status?.models),
+  }));
+export const listVideoModels = ({ includeUnavailable = false, ...options } = {}) =>
+  request('/video-gen/models', options)
+    .then((models) => filterHardwareCompatibleModels(models, { includeUnavailable }));
 // Install-wide acknowledgement of a restricted model's reviewed license, keyed
 // by the exact `termsGate.id`. Persisted server-side so accepting once (on any
 // render surface) authorizes every other one, including background producers.

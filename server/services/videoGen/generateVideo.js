@@ -24,6 +24,12 @@ import {
 import { videoGenEvents } from './events.js';
 import { broadcastSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
+import {
+  captureSystemCapabilities,
+  detectSystemCapabilities,
+  isHardwareCompatible,
+  withHardwareCompatibility,
+} from '../../lib/systemCapabilities.js';
 import { findFfmpeg } from '../../lib/ffmpeg.js';
 import { inspectModelCache, findCachedRepoFile, findCachedRepoFiles } from '../../lib/hfCache.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
@@ -97,7 +103,8 @@ export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id
 // Attach the runtime capabilities a model entry can't express on its own:
 // whether an FFLF last frame is a real anchor, and whether the *installed* BYOV
 // runner can apply user LoRAs (H3's DiT is quantized, so that depends on the
-// pinned checkout — see runtimes.js `loraProbeArgs`). Both are declared in
+// pinned checkout plus PortOS's activation-space adapter — see runtimes.js
+// `loraProbeArgs`). Both are declared in
 // runtimes.js and surfaced here so the Video Gen form and videoLoraFamily() read
 // them off the model instead of keeping their own lists. Applied by BOTH model
 // resolvers, so the render path and the API payload can never disagree about
@@ -119,9 +126,9 @@ export const resolveVideoModel = (modelId) =>
 
 export const listVideoModels = () => getVideoModels().map(decorateVideoModel);
 
-export const defaultVideoModelId = () => getDefaultVideoModelId();
+export const defaultVideoModelId = (capabilities) => getDefaultVideoModelId(capabilities);
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, speedProfileId = null, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId, width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, speedProfileId = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -129,8 +136,34 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // callers (legacy / tests) bypass the queue and would clobber the shared active process
   // on concurrent calls; that's an explicit "don't do that" contract.
 
-  const model = resolveVideoModel(modelId);
+  const needsCuda = (requirements) => requirements?.requiresNvidiaGpu
+    || requirements?.minVramGb != null
+    || requirements?.minCudaComputeCapability != null;
+  let capabilities = captureSystemCapabilities();
+  // `undefined`/empty means the caller omitted the field and may use the
+  // configured default. Explicit null is a routed-job sentinel and must remain
+  // an unknown model so an older dispatcher cannot render a remote job locally.
+  const modelWasOmitted = modelId === undefined || modelId === '';
+  let selectedModelId = modelWasOmitted ? defaultVideoModelId(capabilities) : modelId;
+  let resolvedModel = resolveVideoModel(selectedModelId);
+  if (needsCuda(resolvedModel?.hardwareRequirements)) {
+    capabilities = await detectSystemCapabilities();
+    if (modelWasOmitted) selectedModelId = defaultVideoModelId(capabilities);
+    resolvedModel = resolveVideoModel(selectedModelId);
+  }
+  modelId = selectedModelId;
+  const model = resolvedModel && withHardwareCompatibility(
+    resolvedModel,
+    capabilities,
+    resolvedModel.hardwareRequirements,
+  );
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  if (!isHardwareCompatible(model.hardwareCompatibility)) {
+    throw new ServerError(
+      `Video model "${modelId}" is unavailable on this machine: ${model.hardwareCompatibility.reasons.join(' · ')}`,
+      { status: 400, code: 'MODEL_HARDWARE_UNAVAILABLE' },
+    );
+  }
   // Validate the mode contract before cache lookups, image resize, or staging
   // work. Internal producers and persisted/retried jobs bypass route
   // preparation, so silently dropping one of these inputs here would render a
@@ -271,9 +304,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   // Resolve LoRA basenames → absolute { path, strength } pairs up-front so a
   // missing/typo'd LoRA fails with a clean 400 before any GPU work. buildArgs
-  // rejects LoRAs on non-ltx2 runtimes (the route also guards), so this is a
-  // no-op there.
-  const resolvedLoras = await resolveVideoLoras(loras, { probeEffect: true });
+  // rejects LoRAs on runtimes without a compatible loader (the route also
+  // guards), so this remains a no-op for those doomed jobs.
+  const resolvedLoras = await resolveVideoLoras(loras, { probeEffect: true, runtime: model.runtime });
   // `model` was decorated from a SYNC cache read, which is false on a cold
   // cache. Resolve the probe and re-decorate from the settled verdict before
   // buildArgs reads it off the snapshot — otherwise the first LoRA render after

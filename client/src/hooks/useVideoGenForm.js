@@ -510,8 +510,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   // model's runtime would use, silently hiding it reads as a bug — say why, and
   // say the right why. The two cases need different advice, so the hint carries
   // its own copy: a quantized mlx_video LTX-2.x model is fixed by switching
-  // models, while H3 is blocked by its pinned runner and switching models is
-  // wrong advice. `null` when there is nothing useful to explain.
+  // models, while H3 is blocked by its installed runtime plus adapter probe and
+  // switching models is wrong advice. `null` when there is nothing useful to explain.
   const loraUnavailableHint = useMemo(() => {
     if (loraFamily) return null;
     const ltxCount = installedVideoLorasByFamily.get(VIDEO_LORA_FAMILIES.LTX_VIDEO) || 0;

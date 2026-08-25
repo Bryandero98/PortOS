@@ -22,7 +22,8 @@ import {
   registerWorkDetector,
   getWorkDetector,
   hasWorkDetector,
-  NON_ACTIONABLE_ISSUE_LABELS
+  NON_ACTIONABLE_ISSUE_LABELS,
+  EPIC_DECOMPOSED_LABEL
 } from './perpetualWork.js';
 
 // A fake child process that emits canned stdout then closes — enough for the
@@ -43,7 +44,7 @@ function fakeChild(stdout, code = 0) {
 function routeSpawn(routes) {
   spawn.mockImplementation((cmd, args = []) => {
     const key = `${cmd} ${args[0] || ''}`;
-    const r = routes[key];
+    const r = routes[key] ?? (key === 'gh api' ? { stdout: 'alice\n' } : undefined);
     return fakeChild(r?.stdout ?? '', r?.code ?? 0);
   });
 }
@@ -60,6 +61,12 @@ describe('perpetualWork', () => {
       expect(isActionableIssue({ ...base, assignees: [{ login: 'someone' }] })).toBe(false);
     });
 
+    it('accepts an issue assigned to the authenticated account', () => {
+      expect(isActionableIssue({ ...base, assignees: [{ login: 'Alice' }] }, new Set(), null, 'alice')).toBe(true);
+      expect(isActionableIssue({ ...base, assignees: [{ username: 'ALICE' }] }, new Set(), null, 'alice')).toBe(true);
+      expect(isActionableIssue({ ...base, assignees: [{ login: 'bob' }] }, new Set(), null, 'alice')).toBe(false);
+    });
+
     it('rejects an in-flight issue number', () => {
       expect(isActionableIssue(base, new Set([7]))).toBe(false);
     });
@@ -72,17 +79,41 @@ describe('perpetualWork', () => {
       expect(isActionableIssue({ ...base, labels: [{ name: 'needs-input' }] })).toBe(false);
     });
 
-    it('rejects an epic by label, by "(epic)" title suffix, or by "[epic]" title prefix', () => {
-      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }] })).toBe(false);
-      expect(isActionableIssue({ ...base, title: 'Big rollup (epic)' })).toBe(false);
-      // The non-convergence case: an epic titled "[Epic] …" with NO `epic`
-      // label kept reading as actionable, so the drain re-spawned a claim agent
-      // that always skips it — never parking.
+    it('rejects an epic ONLY once it is decomposed — by label, by "(epic)" title suffix, or by "[epic]" title prefix', () => {
+      const decomposed = { name: EPIC_DECOMPOSED_LABEL };
+      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }, decomposed] })).toBe(false);
+      expect(isActionableIssue({ ...base, title: 'Big rollup (epic)', labels: [decomposed] })).toBe(false);
+      // An epic titled "[Epic] …" with NO `epic` label is still an epic: the
+      // title convention alone has to reach the decomposed skip, or the drain
+      // re-splits it every tick.
       expect(isActionableIssue({
         ...base,
-        labels: [{ name: 'enhancement' }, { name: 'roadmap' }],
+        labels: [{ name: 'enhancement' }, decomposed],
         title: '[Epic] Redesign the billing dashboard'
       })).toBe(false);
+    });
+
+    it('accepts an UNdecomposed epic — decomposing it is the claim agent\'s Phase 1b work', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }] })).toBe(true);
+      expect(isActionableIssue({ ...base, title: 'Big rollup (epic)' })).toBe(true);
+      expect(isActionableIssue({
+        ...base,
+        labels: [{ name: 'enhancement' }],
+        title: '[Epic] Redesign the billing dashboard'
+      })).toBe(true);
+    });
+
+    it('still rejects an undecomposed epic that carries a blocking label', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: 'epic' }, { name: 'blocked' }] })).toBe(false);
+      expect(isActionableIssue(
+        { ...base, labels: [{ name: 'epic' }] },
+        new Set(),
+        new Set(['epic'])
+      )).toBe(false);
+    });
+
+    it('does not let the decomposed label block an ordinary (non-epic) issue', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: EPIC_DECOMPOSED_LABEL }] })).toBe(true);
     });
 
     it('accepts a plan-labelled issue (plan is the claimable queue, not a skip)', () => {
@@ -221,14 +252,32 @@ describe('perpetualWork', () => {
       ]);
     });
 
-    it('converges (0 actionable) on a queue whose only unblocked issue is a "[Epic]"-prefixed one with no epic label', async () => {
-      // Regression for the perpetual-swarm churn: every open issue is either
-      // needs-input/blocked OR a "[Epic] …" umbrella with no `epic` label. The
-      // claim agent skips the epic; the detector MUST too, or the drain
-      // re-spawns a no-op agent every tick and never parks.
+    it('reports the "[Epic]"-prefixed issue as actionable while it is still undecomposed', async () => {
+      // The queue holds nothing but needs-input/blocked issues plus one "[Epic]
+      // …" umbrella with no `epic` label. Parking here is what left epics to rot
+      // and reported an empty queue: decomposing that epic IS work, so the
+      // detector must dispatch a claim agent (which runs Phase 1b) for it.
       routeSpawn({
         'gh issue': { stdout: JSON.stringify([
-          { number: 1, title: '[Epic] Redesign the billing dashboard', assignees: [], labels: [{ name: 'enhancement' }, { name: 'roadmap' }] },
+          { number: 1, title: '[Epic] Redesign the billing dashboard', assignees: [], labels: [{ name: 'enhancement' }] },
+          { number: 2, title: 'Add a dark-mode toggle', assignees: [], labels: [{ name: 'needs-input' }] },
+          { number: 3, title: 'Document the export API', assignees: [], labels: [{ name: 'blocked' }] }
+        ]) },
+        'git branch': { stdout: 'main\n' },
+        'gh pr': { stdout: '' }
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: true, count: 1, reason: 'actionable-issues', sample: [1] });
+      expect(out.filteredCount).toBe(2);
+    });
+
+    it('converges (0 actionable) once that epic carries the decomposed label', async () => {
+      // The convergence marker: the claim agent stamps `decomposed` on an epic
+      // after filing its slices, so the drain stops re-picking the parent and
+      // works the children instead. Without it the drain would re-split forever.
+      routeSpawn({
+        'gh issue': { stdout: JSON.stringify([
+          { number: 1, title: '[Epic] Redesign the billing dashboard', assignees: [], labels: [{ name: 'enhancement' }, { name: EPIC_DECOMPOSED_LABEL }] },
           { number: 2, title: 'Add a dark-mode toggle', assignees: [], labels: [{ name: 'needs-input' }] },
           { number: 3, title: 'Document the export API', assignees: [], labels: [{ name: 'needs-input' }] },
           { number: 4, title: 'Record the onboarding walkthrough', assignees: [], labels: [{ name: 'needs-input' }] },
@@ -244,6 +293,38 @@ describe('perpetualWork', () => {
       expect(out.total).toBe(7);
       expect(out.inFlightCount).toBe(0);
       expect(out.filteredCount).toBe(7); // the epic (#1) + 6 needs-input/blocked
+    });
+
+    it('keeps an issue assigned to the authenticated account claimable', async () => {
+      spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'git' && args[0] === 'remote') return fakeChild('git@ghe.example.com:acme/widget.git\n');
+        if (cmd === 'gh' && args[0] === 'api' && args.includes('user')) return fakeChild('alice\n');
+        if (cmd === 'gh' && args[0] === 'issue') return fakeChild(JSON.stringify([{
+          number: 3, title: 'retry my claim', assignees: [{ login: 'alice' }], labels: []
+        }]));
+        if (cmd === 'git' && args[0] === 'branch') return fakeChild('main\n');
+        if (cmd === 'gh' && args[0] === 'pr') return fakeChild('');
+        return fakeChild('');
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: true, count: 1, sample: [3] });
+      const loginCall = spawn.mock.calls.find(([cmd, args]) => cmd === 'gh' && args[0] === 'api' && args.includes('user'));
+      expect(loginCall[1]).toEqual(expect.arrayContaining(['--hostname', 'ghe.example.com']));
+    });
+
+    it('keeps an assigned-only queue transient when the GitHub identity probe fails', async () => {
+      spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'git' && args[0] === 'remote') return fakeChild('git@ghe.example.com:acme/widget.git\n');
+        if (cmd === 'gh' && args[0] === 'api' && args.includes('user')) return fakeChild('', 1);
+        if (cmd === 'gh' && args[0] === 'issue') return fakeChild(JSON.stringify([
+          { number: 3, title: 'retry my claim', assignees: [{ login: 'alice' }], labels: [] }
+        ]));
+        if (cmd === 'git' && args[0] === 'branch') return fakeChild('main\n');
+        if (cmd === 'gh' && args[0] === 'pr') return fakeChild('');
+        return fakeChild('');
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: false, reason: 'gh-unavailable', transient: true });
     });
 
     it('reports the open/in-flight breakdown when nothing is claimable (the "40 open but parked" case)', async () => {
@@ -443,6 +524,8 @@ describe('perpetualWork', () => {
         expect(out.sample).toEqual([1, 2]);
         expect(out.total).toBe(2);
         expect(authorListCalls()).toEqual(['alice', 'bob', 'carol']);
+        const memberCall = spawn.mock.calls.find(([cmd, args]) => cmd === 'gh' && args[0] === 'api' && args.includes('--paginate'));
+        expect(memberCall[1]).toEqual(expect.arrayContaining(['--hostname', 'github.com']));
       });
 
       it('de-duplicates an issue returned by more than one author query', async () => {
@@ -542,6 +625,28 @@ describe('perpetualWork', () => {
       expect(out.actionable).toBe(true);
       expect(out.count).toBe(1); // only #10 (#11 blocked label, #12 in-flight MR)
       expect(out.sample).toEqual([10]);
+    });
+
+    it('keeps an issue assigned to the authenticated account claimable', async () => {
+      routeSpawn({
+        'glab api': { stdout: 'octo\n' }, // glab api user -q .username
+        'glab issue': { stdout: JSON.stringify([{ iid: 10, title: 'retry my claim', assignees: [{ username: 'octo' }], labels: [] }]) },
+        'git branch': { stdout: 'main\n' },
+        'glab mr': { stdout: '[]' }
+      });
+      const out = await detectGitlabIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: true, count: 1, sample: [10] });
+    });
+
+    it('keeps an assigned-only queue transient when the GitLab identity probe fails', async () => {
+      routeSpawn({
+        'glab api': { stdout: '', code: 1 },
+        'glab issue': { stdout: JSON.stringify([{ iid: 10, title: 'retry my claim', assignees: [{ username: 'octo' }], labels: [] }]) },
+        'git branch': { stdout: 'main\n' },
+        'glab mr': { stdout: '[]' }
+      });
+      const out = await detectGitlabIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: false, reason: 'glab-unavailable', transient: true });
     });
 
     it('reports a transient failure when glab exits non-zero', async () => {

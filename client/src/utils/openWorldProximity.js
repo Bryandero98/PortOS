@@ -52,6 +52,12 @@ export function detectProximity({
     return null;
   }
 
+  // Validate collection-shaped inputs before iterating: this runs inside the r3f frame
+  // loop, where a thrown TypeError kills rendering for the whole scene (the canvas would
+  // show only its clear color). A wrong-shaped payload degrades to "no targets" instead.
+  const pads = Array.isArray(warpPads) ? warpPads : [];
+  const eggs = Array.isArray(easterEggs) ? easterEggs : [];
+
   const px = playerPos.x;
   const pz = playerPos.z;
 
@@ -59,7 +65,7 @@ export function detectProximity({
   let closestDist = Infinity;
 
   // 1. Warp pads (highest priority for fast travel nodes)
-  for (const pad of warpPads) {
+  for (const pad of pads) {
     if (!pad) continue;
     const pos = pad.position || (pad.region ? [pad.region.anchor[0], 0, pad.region.anchor[2]] : null);
     if (!pos) continue;
@@ -103,7 +109,7 @@ export function detectProximity({
   }
 
   // 3. Easter eggs
-  for (const egg of easterEggs) {
+  for (const egg of eggs) {
     if (!egg || !egg.position) continue;
     const dx = px - egg.position[0];
     const dz = pz - egg.position[2];

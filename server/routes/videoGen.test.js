@@ -141,7 +141,6 @@ const sseDownload = vi.hoisted(() => ({
   }),
 }));
 vi.mock('../lib/sseDownload.js', () => ({
-  startHfDownloadStream: sseDownload.start,
   openSseStream: (res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     return {
@@ -149,6 +148,9 @@ vi.mock('../lib/sseDownload.js', () => ({
       safeEnd: () => { if (!res.writableEnded) res.end(); },
     };
   },
+}));
+vi.mock('../services/hfDownloadStream.js', () => ({
+  startHfDownloadStream: sseDownload.start,
 }));
 
 // Render submissions go through the mediaJobQueue. Mock its surface so the
@@ -912,10 +914,10 @@ describe('videoGen routes', () => {
       expect(r.body.code).toBe('LORAS_REQUIRE_LTX2');
     });
 
-    // H3 CAN take LoRAs — it's the pinned runner that can't apply them to the
-    // quantized DiT. "Use an LTX-2.x model" would be wrong advice, so the
-    // rejection carries its own code and reason.
-    it('rejects LoRAs on an H3 model whose runtime has no applicator, with an H3-specific code', async () => {
+    // H3 CAN take LoRAs — it is the installed runner plus adapter capability
+    // that is unavailable in this case. "Use an LTX-2.x model" would be wrong
+    // advice, so the rejection carries its own code and reason.
+    it('rejects LoRAs on an H3 model whose adapter probe fails, with an H3-specific code', async () => {
       videoGenService.listVideoModels.mockReturnValueOnce([
         { id: 'minimax_h3_8bit', name: 'MiniMax H3', runtime: 'minimax_h3', defaultFrames: 141, frameOptions: [141], fpsOptions: [24], runtimeLoraCapable: false },
       ]);

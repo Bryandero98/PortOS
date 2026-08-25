@@ -22,6 +22,7 @@ export const LI_SOURCE_FIELDS = [
   { key: 'planMd', label: 'PLAN.md', hint: 'The app\'s open work-plan items' },
   { key: 'openIssues', label: 'Open issues', hint: 'Currently open tracker issues' },
   { key: 'plannedWork', label: 'Planned work', hint: 'The backlog you\'ve already committed to (plan-labeled issues / prioritized Jira backlog / unchecked PLAN.md items), so the loop won\'t propose work that\'s already in scope' },
+  { key: 'productMetrics', label: 'PortOS product engagement', hint: 'Daily POST activity and creative commission feedback coverage', portosOnly: true },
   { key: 'outcomes', label: 'Proposal outcomes', hint: 'Past LI proposals + how they fared (merge rate), fed back so the loop calibrates on its own results' },
   { key: 'selfEval', label: 'Self-evaluation', hint: 'A deterministic check of the loop\'s own record — merge rate, proposals it has already filed, and whether its own runs are succeeding — so it can judge proposal quality before filing instead of only learning from rejections' }
 ];
@@ -315,7 +316,7 @@ export default function LayeredIntelligenceTab({ appId, li, onChange, providers,
       <div>
         <span className="block text-sm text-gray-400 mb-2">Telemetry sources</span>
         <div className="space-y-2">
-          {LI_SOURCE_FIELDS.map(f => (
+          {LI_SOURCE_FIELDS.filter(f => !f.portosOnly || isPortos).map(f => (
             <label key={f.key} className="flex items-start gap-2 cursor-pointer">
               <input
                 type="checkbox"

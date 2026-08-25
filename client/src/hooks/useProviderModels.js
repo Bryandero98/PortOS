@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as api from '../services/api';
-import { filterSelectableModels, selectableModelsForProvider, withStaleAntigravityPin } from '../utils/providers';
+import {
+  filterHardwareCompatibleProviderModels,
+  filterSelectableModels,
+  isProviderHardwareCompatible,
+  isProviderModelHardwareCompatible,
+  selectableModelsForProvider,
+  withStaleAntigravityPin,
+} from '../utils/providers';
 
 // The provider's selectable model source: its `models` list, or — when that
 // list is empty (a cloud/manual provider configured with only a defaultModel,
@@ -71,10 +78,22 @@ export default function useProviderModels({ filter, allowDefault = false, silent
   // picker on a local backend whose default is a text model), so pick the first
   // model that passes the filter instead.
   const pickInitialModel = useCallback((provider) => {
-    if (!modelFilter) return provider?.defaultModel || '';
-    const models = filterSelectableModels(sourceModels(provider, withEffort))
-      .filter((m) => modelFilter(m, provider));
-    return models[0] || '';
+    const models = filterHardwareCompatibleProviderModels(
+      filterSelectableModels(sourceModels(provider, withEffort)),
+      provider,
+    );
+    if (!modelFilter) {
+      // Configured-default sentinels are intentionally removed from the option
+      // list, but remain a valid selected value when the provider/model gate
+      // says they can run. A model-specific hardware mismatch should instead
+      // fall through to the first compatible real model.
+      if (provider?.defaultModel && isProviderModelHardwareCompatible(provider, provider.defaultModel)) {
+        return provider.defaultModel;
+      }
+      return models[0] || '';
+    }
+    const filtered = models.filter((m) => modelFilter(m, provider));
+    return filtered[0] || '';
   }, [modelFilter, withEffort]);
 
   // `load` must NOT depend on `pickInitialModel` (and so on `modelFilter`): a
@@ -96,7 +115,9 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       return { providers: [] };
     });
     const filterFn = filter || (p => p.enabled);
-    const filtered = (data.providers || []).filter(filterFn);
+    const filtered = (data.providers || [])
+      .filter(isProviderHardwareCompatible)
+      .filter(filterFn);
     setProviders(filtered);
     if (!allowDefault && filtered.length > 0 && !hasSetInitialRef.current) {
       hasSetInitialRef.current = true;
@@ -123,7 +144,10 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       // sourceModels falls back to [defaultModel] when `models` is empty (an
       // `[]` is truthy, so a bare `||` would leave the dropdown empty for a
       // cloud/manual provider configured with only a defaultModel).
-      const models = filterSelectableModels(sourceModels(currentProvider, withEffort));
+      const models = filterHardwareCompatibleProviderModels(
+        filterSelectableModels(sourceModels(currentProvider, withEffort)),
+        currentProvider,
+      );
       const filtered = modelFilter ? models.filter((m) => modelFilter(m, currentProvider)) : models;
       // Legacy-pin escape hatch (see `withStaleAntigravityPin`): only relevant
       // once the list has been collapsed to base models, so it rides `withEffort`.

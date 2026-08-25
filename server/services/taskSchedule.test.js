@@ -70,8 +70,10 @@ vi.mock('../lib/ports.js', () => ({
 }))
 
 vi.mock('../lib/timezone.js', () => ({
+  getLocalParts: vi.fn(() => ({ dayOfWeek: 3 })),
+}))
+vi.mock('./userTimezone.js', () => ({
   getUserTimezone: vi.fn().mockResolvedValue('America/Los_Angeles'),
-  getLocalParts: vi.fn(() => ({ dayOfWeek: 3 }))
 }))
 
 vi.mock('./eventScheduler.js', () => ({
@@ -1160,6 +1162,14 @@ describe('taskSchedule', () => {
       // Issues mode ships GitHub issues only — it explicitly does not touch PLAN.md.
       expect(prompt).toContain('does NOT touch PLAN.md')
     })
+
+    it('release-check delegates to slashdo release and has no hardcoded reviewer', async () => {
+      const prompt = await getTaskPrompt('release-check')
+      expect(prompt).toContain('/do:release')
+      expect(prompt).toContain('{reviewers}')
+      expect(prompt.toLowerCase()).not.toContain('copilot')
+      expect(prompt).not.toContain('reviewThreads')
+    })
   })
 
   // The gh/git coordinator types deliver their work as a SIDE EFFECT (a deleted
@@ -1190,7 +1200,12 @@ describe('taskSchedule', () => {
         expect(meta.worktreeChangesExpected).toBe(false)
         // Locked, so a per-app override can't re-attach what the defaults cleared.
         // worktreeChangesExpected is managed too — see MANAGED_AGENT_OPTIONS.
-        expect(MANAGED_AGENT_OPTIONS[taskType]).toEqual(['useWorktree', 'openPR', 'worktreeChangesExpected'])
+        const managed = ['useWorktree', 'openPR', 'worktreeChangesExpected']
+        if (taskType === 'release-check') {
+          managed.push('slashdoCommand')
+          expect(meta.slashdoCommand).toBe('release')
+        }
+        expect(MANAGED_AGENT_OPTIONS[taskType]).toEqual(managed)
       }
     )
 
@@ -1212,6 +1227,7 @@ describe('taskSchedule', () => {
         expect(meta.useWorktree).toBe(false)
         expect(meta.openPR).toBe(false)
         expect(meta.worktreeChangesExpected).toBe(false)
+        if (taskType === 'release-check') expect(meta.slashdoCommand).toBe('release')
         if (taskType === 'branch-reconcile') expect(meta.branchesPerAgent).toBe(3)
       }
     )

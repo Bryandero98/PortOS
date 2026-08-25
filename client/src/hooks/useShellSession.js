@@ -9,7 +9,12 @@ import { useSocket } from './useSocket';
 import { useThemeContext } from '../components/ThemeContext';
 import { buildTerminalTheme, parseCssColorToHex } from '../lib/terminalTheme';
 import { attachDictationBridge } from '../lib/terminalDictation';
-import { attachTerminalTouchScroll, scrollTerminalPage } from '../lib/terminalScroll';
+import {
+  attachTerminalTouchScroll,
+  attachTerminalWheelScroll,
+  resetTerminalWheelScroll,
+  scrollTerminalPage,
+} from '../lib/terminalScroll';
 import { readFileAsBase64 } from '../utils/fileUpload';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
@@ -271,10 +276,14 @@ export function useShellSession({ isFullscreen } = {}) {
     term.open(terminalRef.current);
 
     // xterm binds no touch handlers of its own, so without this a swipe over the
-    // terminal does nothing — see lib/terminalScroll.js. Attached here rather than in
-    // its own effect: it has no reactive deps, so its lifetime is exactly the
-    // terminal instance's (unlike the dictation bridge, which needs emitShellInput).
+    // terminal does nothing. Alternate-screen TUIs need the matching wheel capture so
+    // OpenCode's supported PageUp/PageDown bindings receive scroll gestures instead
+    // of unsupported mouse reports. See lib/terminalScroll.js. Attached here rather
+    // than in its own effect: neither handler has reactive deps, so both lifetimes are
+    // exactly the terminal instance's (unlike the dictation bridge, which needs
+    // emitShellInput).
     const detachTouchScroll = attachTerminalTouchScroll(term);
+    const detachWheelScroll = attachTerminalWheelScroll(term);
 
     requestAnimationFrame(() => {
       fitAddon.fit();
@@ -285,6 +294,7 @@ export function useShellSession({ isFullscreen } = {}) {
 
     return () => {
       detachTouchScroll();
+      detachWheelScroll();
       term.dispose();
       termInstanceRef.current = null;
       fitAddonRef.current = null;
@@ -447,6 +457,7 @@ export function useShellSession({ isFullscreen } = {}) {
       // persist into this fresh shell and make xterm inject escape-sequence
       // reports (mouse/focus events) as INPUT, echoing as accumulating garbage
       // at the prompt. reset() restores the terminal to a clean initial state.
+      resetTerminalWheelScroll(termInstanceRef.current);
       termInstanceRef.current.reset();
       termInstanceRef.current.writeln('\x1b[36mStarting shell session...\x1b[0m');
     }
@@ -468,6 +479,7 @@ export function useShellSession({ isFullscreen } = {}) {
       // reset() not clear() — drop any DEC private modes (mouse/focus tracking,
       // alt-screen) the previously-viewed session left active so they can't
       // bleed into this one as injected escape-sequence input. See startSession.
+      resetTerminalWheelScroll(termInstanceRef.current);
       termInstanceRef.current.reset();
       termInstanceRef.current.writeln('\x1b[36mAttaching to session...\x1b[0m');
     }
@@ -698,6 +710,7 @@ export function useShellSession({ isFullscreen } = {}) {
         // TUI's lingering mouse/focus tracking can't inject garbage here. The
         // freshly-painted bufferedOutput re-establishes whatever modes THIS
         // session legitimately uses. See startSession for the full rationale.
+        resetTerminalWheelScroll(termInstanceRef.current);
         termInstanceRef.current.reset();
         if (bufferedOutput) {
           termInstanceRef.current.write(bufferedOutput);

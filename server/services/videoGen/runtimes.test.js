@@ -162,16 +162,17 @@ describe('venv probe diagnostics', () => {
 
   it('attributes the line to the LoRA probe without calling its verdict a fault', async () => {
     runtimeMocks.spawn.mockImplementationOnce(() => exitChild(
-      1, 'ModuleNotFoundError: No module named "minimax_h3_mlx.lora"\n',
+      1, 'ImportError: PortOS MiniMax H3 LoRA adapter is unavailable\n',
     ));
 
     const { result, lines } = await captureProbeLogs(() => resolveByovRuntimeLoraCapable('minimax_h3'));
 
-    // A checkout with no applicator is the documented normal answer, not a
-    // broken install — so the reason is surfaced, but not under the failure icon.
+    // A runtime that fails the optional applicator probe is the documented
+    // normal answer, not a broken install — so the reason is surfaced, but not
+    // under the failure icon.
     expect(result).toBe(false);
     expect(lines[0]).toContain('minimax_h3 LoRA-capability');
-    expect(lines[0]).toContain('No module named "minimax_h3_mlx.lora"');
+    expect(lines[0]).toContain('PortOS MiniMax H3 LoRA adapter is unavailable');
     expect(lines[0].startsWith('❌')).toBe(false);
   });
 });
@@ -180,13 +181,13 @@ describe('venv probe diagnostics', () => {
 // installed checkout, not the model entry — hence a probe rather than a
 // hardcoded predicate. The gate must fail CLOSED until that probe has answered.
 describe('MiniMax H3 LoRA capability', () => {
-  it('reports capable when the runner exposes a quant-aware applicator', async () => {
+  it('reports capable when the runtime plus adapter pass the quant-aware probe', async () => {
     runtimeMocks.spawn.mockImplementationOnce(() => exitChild(0));
     await expect(resolveByovRuntimeLoraCapable('minimax_h3')).resolves.toBe(true);
     expect(byovRuntimeLoraCapable('minimax_h3')).toBe(true);
   });
 
-  it('reports not capable when the pinned checkout has no LoRA applicator', async () => {
+  it('reports not capable when the runtime fails the LoRA applicator probe', async () => {
     runtimeMocks.spawn.mockImplementationOnce(() => exitChild(1));
     // Captured, not asserted on: the verdict now writes a line, and letting it
     // through would print a scary-looking probe log during an unrelated test.

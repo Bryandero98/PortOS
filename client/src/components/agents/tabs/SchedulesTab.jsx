@@ -4,12 +4,14 @@ import BrailleSpinner from '../../BrailleSpinner';
 import { FormField } from '../../ui/FormField';
 import { ACTION_TYPES, SCHEDULE_TYPES, CRON_PRESETS, INTERVAL_PRESETS } from '../constants';
 import { formatDateTime } from '../../../utils/formatters';
+import CronSchedulePicker from '../../CronSchedulePicker';
 
 export default function SchedulesTab({ agentId }) {
   const [schedules, setSchedules] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     agentId: agentId,
@@ -22,15 +24,21 @@ export default function SchedulesTab({ agentId }) {
   const [runningId, setRunningId] = useState(null);
 
   const fetchData = useCallback(async () => {
-    const [schedulesData, accountsData, statsData] = await Promise.all([
-      api.getAutomationSchedules(agentId),
-      api.getPlatformAccounts(agentId),
-      api.getScheduleStats()
-    ]);
-    setSchedules(schedulesData);
-    setAccounts(accountsData);
-    setStats(statsData);
-    setLoading(false);
+    setLoading(true);
+    setLoadError(false);
+    await Promise.all([
+      api.getAutomationSchedules(agentId, null, { silent: true }),
+      api.getPlatformAccounts(agentId, null, { silent: true }),
+      api.getScheduleStats({ silent: true })
+    ]).then(([nextSchedules, nextAccounts, nextStats]) => {
+      setSchedules(nextSchedules);
+      setAccounts(nextAccounts);
+      setStats(nextStats);
+    }).catch(() => {
+      setLoadError(true);
+    }).finally(() => {
+      setLoading(false);
+    });
   }, [agentId]);
 
   useEffect(() => {
@@ -120,6 +128,23 @@ export default function SchedulesTab({ agentId }) {
     return <div className="p-4"><BrailleSpinner text="Loading schedules" /></div>;
   }
 
+  if (loadError) {
+    return (
+      <div className="p-4">
+        <div role="alert" className="rounded border border-port-error/40 bg-port-error/10 p-4 text-sm text-port-error">
+          <p>Could not load automation schedules.</p>
+          <button
+            type="button"
+            onClick={fetchData}
+            className="mt-3 rounded bg-port-error/20 px-3 py-1.5 text-xs font-medium hover:bg-port-error/30"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4">
       <div className="flex justify-between items-center mb-4">
@@ -204,18 +229,11 @@ export default function SchedulesTab({ agentId }) {
           </FormField>
 
           {formData.schedule.type === 'cron' && (
-            <FormField label="Cron Expression" className="mb-4">
-              <select
+            <FormField label="Cron schedule" className="mb-4">
+              <CronSchedulePicker
                 value={formData.schedule.cron}
-                onChange={(e) => setFormData({ ...formData, schedule: { ...formData.schedule, cron: e.target.value } })}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white"
-              >
-                {CRON_PRESETS.map(preset => (
-                  <option key={preset.value} value={preset.value}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
+                onChange={cron => setFormData({ ...formData, schedule: { ...formData.schedule, cron } })}
+              />
             </FormField>
           )}
 

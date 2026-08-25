@@ -33,11 +33,14 @@ vi.mock('./meatspaceLoggingStats.js', () => ({ getLoggingStats: vi.fn(async () =
 vi.mock('./identity/goals.js', () => ({ getGoals: vi.fn(async () => stats.goals) }));
 vi.mock('./memoryBackend.js', () => ({ countMemories: vi.fn(async () => stats.memories) }));
 vi.mock('./mediaAssetIndex/db.js', () => ({ countAssets: vi.fn(async () => stats.assets) }));
+vi.mock('./instanceFeatures.js', () => ({
+  isInstanceFeatureEnabled: vi.fn(async () => true),
+}));
 // PARTIAL mock: only the two settings-backed reads are stubbed. `todayInTimezone` must stay
 // REAL — `lib/activeDays.js` (behind the daysActive tile) derives its day keys through it, and
 // a factory that dropped it would leave that tile throwing on an undefined import and reading
 // `unavailable` for reasons that have nothing to do with the behavior under test.
-vi.mock('../lib/timezone.js', async (importOriginal) => ({
+vi.mock('./userTimezone.js', async (importOriginal) => ({
   ...(await importOriginal()),
   userLocalToday: vi.fn(async () => stats.today),
   getUserTimezone: vi.fn(async () => stats.timezone),
@@ -55,7 +58,8 @@ import { countAssets } from './mediaAssetIndex/db.js';
 import { countWorks } from './writersRoom/local.js';
 import { getPostSessions } from './meatspacePost.js';
 import { getAllTrainingEntries } from './meatspacePostTraining.js';
-import { userLocalToday, getUserTimezone } from '../lib/timezone.js';
+import { userLocalToday, getUserTimezone } from './userTimezone.js';
+import { isInstanceFeatureEnabled } from './instanceFeatures.js';
 
 const goal = (status) => ({ status });
 
@@ -84,6 +88,7 @@ beforeEach(() => {
   vi.mocked(getAllTrainingEntries).mockImplementation(async () => stats.training);
   vi.mocked(userLocalToday).mockImplementation(async () => stats.today);
   vi.mocked(getUserTimezone).mockImplementation(async () => stats.timezone);
+  vi.mocked(isInstanceFeatureEnabled).mockResolvedValue(true);
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -92,6 +97,18 @@ afterEach(() => {
 });
 
 const byId = (metrics, id) => metrics.find((m) => m.id === id);
+
+describe('getCharacterMetrics — disabled features', () => {
+  it('omits POST metrics and POST activity reads when POST is disabled on this instance', async () => {
+    isInstanceFeatureEnabled.mockResolvedValue(false);
+
+    const metrics = await getCharacterMetrics();
+
+    expect(byId(metrics, 'postStreakDays')).toBeUndefined();
+    expect(getPostSessions).not.toHaveBeenCalled();
+    expect(getAllTrainingEntries).not.toHaveBeenCalled();
+  });
+});
 
 describe('the registry', () => {
   it('declares a unique id, label, unit, hint and compute for each metric', () => {

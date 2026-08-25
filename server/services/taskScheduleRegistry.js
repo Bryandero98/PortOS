@@ -103,6 +103,10 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
 // A guard test in taskSchedule.test.js asserts every member of that set carries
 // this posture, so a new coordinator type can't be added to one list only.
 const NON_COMMITTING_COORDINATOR_METADATA = { useWorktree: false, openPR: false, worktreeChangesExpected: false };
+// Release-check delegates its release lifecycle to the bundled slashdo workflow.
+// Keep the command in managed metadata so a customized prompt or app override
+// cannot silently fall back to a second, drifting release implementation.
+const RELEASE_CHECK_METADATA = { ...NON_COMMITTING_COORDINATOR_METADATA, slashdoCommand: 'release' };
 // Migration 274 removes branch-cleanup from new schedules, but a partially
 // upgraded install may still load its stored task before the migration runs.
 // Keep its safety posture available without making it a newly-shipped task.
@@ -251,7 +255,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // release PR) rather than producing source commits. It must run from the app's
   // live main checkout so its branch/ref checks describe the real release flow;
   // a CoS worktree hides that checkout and creates an irrelevant task branch.
-  'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
+  'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...RELEASE_CHECK_METADATA } },
   // stash-cleanup triages `git stash list` and drops what's superseded/stale,
   // leaving real unlanded work in place for the user to recover by hand. It
   // runs in the app's live checkout (never a CoS worktree — a stash is a
@@ -363,7 +367,7 @@ export const MANAGED_AGENT_OPTIONS = {
   // claim-work delegates to one of the above prompt bodies, each of which
   // creates its own worktree + PR — so the same lock applies to the router.
   'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
-  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected'],
+  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected', 'slashdoCommand'],
   'stash-cleanup': ['useWorktree', 'openPR', 'worktreeChangesExpected']
 };
 

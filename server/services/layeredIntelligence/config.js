@@ -46,6 +46,9 @@ export function defaultLayeredIntelligenceConfig(isPortos = false) {
       // default for every app: cross-referencing against committed work is only
       // useful if it is there by default.
       plannedWork: true,
+      // PortOS's own product-success signals (POST activity and creative
+      // commission feedback). Managed apps use appMetrics/custom sources.
+      productMetrics: isPortos,
       // The self-feedback signal (#2428): past LI proposals + their tracker
       // outcomes, fed back so the reasoner calibrates on its own merge rate.
       // Default ON for the PortOS install (it improves itself), OFF for managed

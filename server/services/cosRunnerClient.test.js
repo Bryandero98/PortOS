@@ -257,6 +257,17 @@ describe('cosRunnerClient', () => {
       expect(callBody.cliArgs).toEqual(['--model', 'opus']);
     });
 
+    it('should pass the non-secret provider auth descriptor to the runner', async () => {
+      fetchWithTimeout.mockResolvedValue(mockResponse(true, { agentId: 'a1' }));
+      await spawnAgentViaRunner({
+        agentId: 'a1',
+        providerAuth: { id: 'codex', command: 'codex' },
+      });
+
+      const callBody = JSON.parse(fetchWithTimeout.mock.calls[0][1].body);
+      expect(callBody.providerAuth).toEqual({ id: 'codex', command: 'codex' });
+    });
+
     it('surfaces a non-JSON error body instead of crashing on "Unexpected token <"', async () => {
       // Simulates the runner returning an HTML 500 page (e.g. PM2 restarting it
       // mid-request) rather than JSON. Parsing it as JSON used to throw.

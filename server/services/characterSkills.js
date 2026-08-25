@@ -203,5 +203,7 @@ async function readSkill(skill, read) {
  * context so a skills-only caller stays a one-liner.
  */
 export async function getCharacterSkills(read = createSignalContext()) {
-  return Promise.all(SKILLS.map((skill) => readSkill(skill, read)));
+  const postEnabled = await read('postEnabled');
+  const skills = postEnabled ? SKILLS : SKILLS.filter((skill) => skill.domain !== 'post');
+  return Promise.all(skills.map((skill) => readSkill(skill, read)));
 }

@@ -119,6 +119,22 @@ describe('ProviderModelSelector', () => {
     expect(labels).toEqual(['Provider One', 'Provider Two']);
   });
 
+  it('hides incompatible providers and models while preserving selected pins', () => {
+    renderSelector({
+      providers: [
+        { id: 'p1', name: 'Provider One', modelHardwareCompatibility: { 'too-large': { state: 'unavailable' } } },
+        { id: 'p2', name: 'Provider Two', hardwareCompatibility: { state: 'unavailable' } },
+        { id: 'p3', name: 'Provider Three' },
+      ],
+      selectedModel: 'too-large',
+      availableModels: ['too-large', 'small'],
+    });
+    const [providerSelect, modelSelect] = screen.getAllByRole('combobox');
+    expect([...providerSelect.querySelectorAll('option')].map((option) => option.value)).toEqual(['p1', 'p3']);
+    expect([...modelSelect.querySelectorAll('option')].map((option) => option.value)).toEqual(['too-large', 'small']);
+    expect(modelSelect.querySelector('option[value="too-large"]').disabled).toBe(true);
+  });
+
   it('stacks the selects vertically when layout="stacked"', () => {
     const { container } = renderSelector({ layout: 'stacked' });
     expect(container.firstChild.className).toContain('flex-col');

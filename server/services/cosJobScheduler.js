@@ -21,8 +21,9 @@
  * (job:spawned/job:spawn-failed → clearSpawningJob + re-register) back to these.
  */
 
-import { schedule as scheduleEvent, cancel as cancelEvent, parseCronToNextRun } from './eventScheduler.js';
-import { getUserTimezone, getLocalParts, nextLocalTime } from '../lib/timezone.js';
+import { schedule as scheduleEvent, cancel as cancelEvent, parseCronToNextRun, parseRecurrenceToNextRun } from './eventScheduler.js';
+import { getLocalParts, nextLocalTime } from '../lib/timezone.js';
+import { getUserTimezone } from './userTimezone.js';
 import { formatDuration } from '../lib/fileUtils.js';
 import { loadState, isDaemonRunning, canQueueImprovementTasks } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
@@ -52,6 +53,14 @@ function computeNextJobFireTime(job, timezone) {
   // which correctly computes lastRun + intervalMs without scheduling them every day.
   // e.g. { interval: 'daily', scheduledTime: '04:30' } → '30 4 * * *'
   let cronExpr = job.cronExpression;
+  if (job.cronSchedule) {
+    const from = job.lastRun ? new Date(job.lastRun) : new Date();
+    const next = parseRecurrenceToNextRun(job.cronSchedule, from, timezone);
+    if (!next) {
+      throw new Error(`Invalid calendar recurrence for autonomous job${job.id ? ` "${job.id}"` : ''}`);
+    }
+    return next.getTime();
+  }
   const isDailyCronCandidate = job.interval === 'daily' || job.weekdaysOnly;
   if (!cronExpr && job.scheduledTime && isDailyCronCandidate) {
     const match = String(job.scheduledTime).match(/^([01]\d|2[0-3]):([0-5]\d)$/);

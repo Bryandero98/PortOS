@@ -58,6 +58,7 @@ import { isOllamaClaudeProvider, isClaudeCommand, providerSuppliesGithubToken } 
 import { canTypeSlashCommands } from '../lib/slashdoInvocation.js';
 import { prClaimWasVerified } from '../lib/prDisposition.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
+import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
@@ -881,6 +882,7 @@ export async function spawnViaRunner(agentId, task, opts) {
       prompt,
       workspacePath,
       model,
+      providerAuth: cliProviderAuthDescriptor(provider),
       // A DELTA, not a full env — the cos-runner bases it on its own process.env
       // and does the PWD pin / CLAUDECODE strip. composeProviderEnv owns the layer
       // order: forgeTokenEnv before provider.envVars so an explicit provider

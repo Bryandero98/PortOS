@@ -27,6 +27,11 @@ import { getProviderPrerequisiteMap } from '../services/providerPrerequisites.js
 import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
 import { localEndpointPort, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
+import {
+  captureSystemCapabilities,
+  detectSystemCapabilities,
+  withProviderHardwareCompatibility,
+} from '../lib/systemCapabilities.js';
 
 /**
  * The CoS Agent Runner's exec allowlist, published read-only so the AI
@@ -121,7 +126,9 @@ const withTuiLaunchCommand = (provider) => {
  * the toolkit keeps its copy so it stays correct standalone. Both decorate on
  * the way out only — the field is never persisted.
  */
-const presentProvider = (provider) => sanitizeProvider(withTuiLaunchCommand(withRefreshCapability(provider)));
+const presentProvider = (provider, capabilities = captureSystemCapabilities()) => sanitizeProvider(
+  withProviderHardwareCompatibility(withTuiLaunchCommand(withRefreshCapability(provider)), capabilities),
+);
 
 /**
  * Create PortOS-specific provider routes
@@ -144,19 +151,19 @@ export function createPortOSProviderRoutes(aiToolkit) {
    * Computed on the RAW providers, before sanitization: the API-key check reads
    * `apiKey`, which `sanitizeProvider` replaces with a boolean.
    *
-   * Synchronous by design — this endpoint is fetched by half the app, so it
-   * reads the runtime probe's cache and lets a cold one refresh in the
-   * background rather than putting a `--version` sweep of every CLI on that
-   * critical path. An unprobed runtime simply publishes no finding, and the
-   * page's own `/runtimes` fetch fills that gap on the card.
+   * The capability probe is cached and performed once per response, so every
+   * provider shares one host snapshot instead of triggering its own hardware
+   * checks. An unreadable probe remains `unknown`, which keeps the provider
+   * visible until the runtime can make a confirmed decision.
    */
   router.get('/', asyncHandler(async (req, res) => {
     const data = await providerService.getAllProviders();
     const prerequisites = getProviderPrerequisiteMap(data.providers);
+    const capabilities = await detectSystemCapabilities();
     res.json({
       activeProvider: data.activeProvider,
       providers: data.providers.map((provider) => ({
-        ...presentProvider(provider),
+        ...presentProvider(provider, capabilities),
         prerequisitesMet: prerequisites[provider.id]?.met ?? true,
         missingPrerequisites: prerequisites[provider.id]?.missing ?? [],
       })),
@@ -166,7 +173,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
 
   router.get('/active', asyncHandler(async (req, res) => {
     const provider = await providerService.getActiveProvider();
-    res.json(presentProvider(provider));
+    res.json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
   // PUT /active must be defined before PUT /:id to avoid the wildcard
@@ -181,12 +188,13 @@ export function createPortOSProviderRoutes(aiToolkit) {
     if (!provider) {
       throw new ServerError('Provider not found', { status: 404 });
     }
-    res.json(presentProvider(provider));
+    res.json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
   router.get('/samples', asyncHandler(async (req, res) => {
     const providers = await providerService.getSampleProviders();
-    res.json({ providers: providers.map(presentProvider) });
+    const capabilities = await detectSystemCapabilities();
+    res.json({ providers: providers.map((provider) => presentProvider(provider, capabilities)) });
   }));
 
   // A CLI/TUI provider is only usable if its runtime binary is on PortOS's
@@ -616,7 +624,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
   router.get('/:id', asyncHandler(async (req, res) => {
     const provider = await providerService.getProviderById(req.params.id);
     if (!provider) throw new ServerError('Provider not found', { status: 404 });
-    res.json(presentProvider(provider));
+    res.json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
   // PUT /:id — intercept to (a) validate the body via a partial provider
@@ -651,7 +659,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
     }
 
     const provider = await providerService.updateProvider(req.params.id, updates);
-    res.json(presentProvider(provider));
+    res.json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
   // POST / — intercept to (a) validate the body against providerSchema so
@@ -665,7 +673,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
       throw new ServerError('Invalid provider data', { status: 400, code: 'VALIDATION_ERROR', context: { details: validation.errors } });
     }
     const provider = await providerService.createProvider(validation.data);
-    res.status(201).json(presentProvider(provider));
+    res.status(201).json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
   // Mount base toolkit routes last (GET/PUT /:id and POST / are now shadowed

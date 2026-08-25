@@ -24,7 +24,7 @@ import setupRouter from './imageGenSetup.js';
 import { enqueueJob, attachSseClient as attachQueueSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { getImageModels, requiredReposForModel } from '../lib/mediaModels.js';
 import { inspectModelCache, verifyModelCache, repairModelCache, aggregateVerifies } from '../lib/hfCache.js';
-import { startHfDownloadStream } from '../lib/sseDownload.js';
+import { startHfDownloadStream } from '../services/hfDownloadStream.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../lib/fileUtils.js';
 import { prepareGenerateParams, resolveLocalImageModel } from '../services/imageGen/prepareParams.js';
 import { applyImageClean, applyWatermarkRemoval, applyLightRegenVariant } from '../services/imageGen/variants.js';
@@ -524,7 +524,11 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
     const { pythonPath: py, selectedModel } = resolveLocalImageModel(settings, params);
     const queued = enqueueJob({
       kind: 'image',
-      params: { pythonPath: py, ...params },
+      params: {
+        ...params,
+        pythonPath: py,
+        ...(selectedModel?.id ? { modelId: selectedModel.id } : {}),
+      },
     });
     // selectedModel reflects the actual fallback chain resolveLocalImageModel
     // applied (caller modelId → 'dev' → allModels[0]) rather than just the

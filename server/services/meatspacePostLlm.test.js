@@ -9,7 +9,7 @@ vi.mock('./providers.js', () => ({
 // Mock the central LLM handler — meatspacePostLlm used to spawn child_process
 // + fetch directly, but now delegates to runPromptThroughProvider. Runner
 // internals (spawn args, --model flag injection) are covered by runner.test.js.
-vi.mock('../lib/promptRunner.js', () => ({
+vi.mock('./promptRunner.js', () => ({
 assertProvider: (provider, { message, code, status = 503 } = {}) => {
     if (provider) return;
     const err = new Error(message || 'No AI provider available');
@@ -20,7 +20,7 @@ assertProvider: (provider, { message, code, status = 503 } = {}) => {
 }));
 
 import { getActiveProvider, getProviderById } from './providers.js';
-import { runPromptThroughProvider } from '../lib/promptRunner.js';
+import { runPromptThroughProvider } from './promptRunner.js';
 import {
   LLM_DRILL_TYPES,
   generateLlmDrill,
@@ -38,7 +38,8 @@ import {
   generateStoryPrompt,
   generateInventionPitch,
   generateReframe,
-  scoreLlmDrill
+  scoreLlmDrill,
+  callAI,
 } from './meatspacePostLlm.js';
 
 // Helper: mock an API provider that returns a given JSON string. Sets the
@@ -103,6 +104,17 @@ describe('LLM_DRILL_TYPES', () => {
       'invention-pitch',
       'reframe',
     ]);
+  });
+});
+
+describe('callAI', () => {
+  it('passes an explicit effort and source through the shared runner', async () => {
+    mockApiProvider({ ok: true });
+    await callAI('Evaluate this attempt.', 'test-provider', 'test-model', 'high', 'meatspace-post-rhetoric-evaluator');
+    expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({
+      effort: 'high',
+      source: 'meatspace-post-rhetoric-evaluator',
+    }));
   });
 });
 

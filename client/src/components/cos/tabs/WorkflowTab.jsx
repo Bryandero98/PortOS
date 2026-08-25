@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router';
 import { AlertTriangle, ArrowRight, Bot, CalendarDays, ChevronRight, Clock3, GitBranch, Infinity as InfinityIcon, RefreshCw, RotateCcw, TimerReset, Workflow } from 'lucide-react';
 import * as api from '../../../services/api';
 import { useAppOverrideActions } from '../../../hooks/useAppOverrideActions';
-import { describeCron } from '../../../utils/cronHelpers';
+import { describeCron, describeRecurrence } from '../../../utils/cronHelpers';
 import ScheduleEditor from './workflow/ScheduleEditor';
 import PerAppOverrideList from './schedule/PerAppOverrideList';
 import { formatWeekdayShort, formatWeekdayTime, formatTimeOfDay } from '../../../utils/formatters';
@@ -17,7 +17,7 @@ const TRACK_COLORS = {
 
 function trackPalette(node) {
   if (node.schedule?.type === 'perpetual') return TRACK_COLORS.perpetual;
-  if (node.schedule?.cronExpression) return TRACK_COLORS.cron;
+  if (node.schedule?.cronSchedule || node.schedule?.cronExpression) return TRACK_COLORS.cron;
   return TRACK_COLORS[node.kind] || TRACK_COLORS.task;
 }
 
@@ -27,6 +27,7 @@ function describeSchedule(node) {
     const reset = schedule.recheckCron ? describeCron(schedule.recheckCron) : 'daily reset';
     return `perpetual · ${reset}`;
   }
+  if (schedule.cronSchedule) return describeRecurrence(schedule.cronSchedule);
   if (schedule.cronExpression) return describeCron(schedule.cronExpression) || schedule.cronExpression;
   if (node.kind === 'job' && schedule.scheduledTime) return `${schedule.type} at ${schedule.scheduledTime}`;
   if (schedule.type === 'custom' && schedule.intervalMs) {

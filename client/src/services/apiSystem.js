@@ -24,6 +24,7 @@ export const getCharacter = ({ skills = true, metrics = true, ...options } = {})
 // Health
 export const checkHealth = (options) => request('/system/health', options);
 export const getSystemHealth = (options) => request('/system/health/details', options);
+export const getSystemCapabilities = (options) => request('/system/capabilities', options);
 // Its own route, not a field on health/details — peers scrape that payload and
 // persist it verbatim, and the build stamp must stay machine-local (#4694).
 export const getSystemBuild = (options) => request('/system/build', options);
@@ -65,6 +66,12 @@ export const syncPortosFork = (opts = {}, requestOpts = {}) => request('/update/
 
 // Settings
 export const getSettings = (options) => request('/settings', options);
+export const getInstanceFeatures = (options) => request('/settings/features', options);
+export const updateInstanceFeature = (featureId, enabled, options = {}) => request(`/settings/features/${encodeURIComponent(featureId)}`, {
+  method: 'PUT',
+  body: JSON.stringify({ enabled }),
+  ...options,
+});
 export const updateSettings = (data, options) => request('/settings', {
   method: 'PUT',
   body: JSON.stringify(data),

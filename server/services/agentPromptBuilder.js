@@ -75,6 +75,29 @@ const CLAIM_FLOW_TASK_TYPES = new Set([
   'plan-task', 'claim-issue', 'claim-issue-gitlab', 'claim-issue-jira', 'claim-work'
 ]);
 
+// These scheduled audits inspect a running web UI. Keep their runtime contract
+// in the builder rather than only in the default prompt bodies so customized
+// prompts and tasks queued before a prompt revision get the same guidance.
+export const UI_AUDIT_TASK_TYPES = Object.freeze([
+  'accessibility', 'console-errors', 'ui-bugs', 'mobile-responsive', 'ux'
+]);
+const UI_AUDIT_TASK_TYPE_SET = new Set(UI_AUDIT_TASK_TYPES);
+
+export const UI_AUDIT_RUNTIME_RULE = `## UI Audit Runtime (PortOS local system)
+This is an unattended run, but it is not browserless when the target has a web UI. PortOS provides a managed Chromium browser for CoS agents over Chrome DevTools Protocol (CDP). Use the available Playwright/browser tools with that PortOS-managed browser, or connect to its CDP endpoint from the local shell when this provider has no browser MCP configured; do not skip live UI verification or assume the browser is unavailable because no human is present.
+
+- Reuse the PortOS-managed browser over CDP instead of launching a separate browser. Check the browser status/configuration when needed; the CDP endpoint is local and its port is configurable (the shipped default is 127.0.0.1:5556). A direct fallback is to query the CDP health endpoint and /json/version or /json/list, then attach to a page target's webSocketDebuggerUrl with Node's WebSocket or another installed CDP client; if /json/list is empty, create an about:blank page target with PUT /json/new?about:blank and navigate that page with Page.navigate. Do not send Page or Runtime commands to the browser-level socket from /json/version; use Page, Runtime, Log, and Network domains on the page socket for live evidence.
+- Treat the target as a running local system: discover its actual UI/API URL and ports from the app configuration, PortOS app/process state, and health endpoints, then inspect scoped server logs when diagnosing console or request failures. Do not guess a URL or treat source-only speculation as a UI finding.
+- Capture live evidence (snapshots, console/request results, and observed runtime state) before changing code. If the managed browser or target app is genuinely unavailable, record the concrete health/process error and stop the web-UI portion cleanly. For a native or source-only target with no web surface, continue the relevant audit without inventing a browser target and record that limitation.`;
+
+export function isUiAuditTask(task) {
+  const taskType = task?.metadata?.analysisType
+    || task?.metadata?.taskAnalysisType
+    || task?.metadata?.selfImprovementType
+    || task?.taskType;
+  return UI_AUDIT_TASK_TYPE_SET.has(taskType);
+}
+
 export function isClaimFlowTask(task, isTruthyMetaFn = (value) => value === true || value === 'true') {
   return isTruthyMetaFn(task?.metadata?.claimFlow)
     || CLAIM_FLOW_TASK_TYPES.has(task?.metadata?.analysisType);
@@ -531,6 +554,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   // template on every install. `metadata.prompt` still travels untouched for a
   // custom template that wants to address it directly.
   const contextBlock = taskContextBlock(task);
+  const uiAuditRuntimeSection = isUiAuditTask(task) ? UI_AUDIT_RUNTIME_RULE : '';
   const briefingTask = contextBlock === (task.metadata?.[TASK_CONTEXT_KEY] ?? null)
     ? task
     : { ...task, metadata: { ...task.metadata, [TASK_CONTEXT_KEY]: contextBlock } };
@@ -558,7 +582,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   }).catch(() => null);
 
   if (promptData?.prompt) {
-    return `${promptData.prompt}\n\n${UNATTENDED_RUN_RULE}\n\n${PM2_SAFETY_RULE}`;
+    return `${promptData.prompt}\n\n${UNATTENDED_RUN_RULE}${uiAuditRuntimeSection ? `\n\n${uiAuditRuntimeSection}` : ''}\n\n${PM2_SAFETY_RULE}`;
   }
 
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: false });
@@ -644,6 +668,7 @@ ${discardWorktree || noCodeOutput || claimFlow ? '' : worktreeInfo ? `- **Your P
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
 
 ${UNATTENDED_RUN_RULE}
+${uiAuditRuntimeSection ? `\n${uiAuditRuntimeSection}` : ''}
 
 ${PM2_SAFETY_RULE}
 
@@ -792,6 +817,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // actually stalled on an approval gate, and "no human will answer you" is not
   // something the agent can infer from AGENTS.md or its cwd.
   contractSections.push(UNATTENDED_RUN_RULE);
+  if (isUiAuditTask(task)) contractSections.push(UI_AUDIT_RUNTIME_RULE);
 
   // --- Worktree ----------------------------------------------------------
   if (worktreeInfo) {

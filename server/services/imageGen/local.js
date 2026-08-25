@@ -26,7 +26,7 @@ import { rejectDegenerateFrame } from './frameGuard.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { resolveFlux2Python, FLUX2_VENV_DEFAULT } from '../../lib/pythonSetup.js';
-import { hfChildEnv } from '../../lib/hfToken.js';
+import { hfChildEnv } from '../hfToken.js';
 import { extractGatedRepo, isGatedRepoError } from '../../lib/hfErrors.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { createLineReader } from '../../lib/streamLines.js';
@@ -40,6 +40,7 @@ import { parseByteProgress, formatDownloadMessage } from '../videoGen/generateVi
 const IS_WIN = process.platform === 'win32';
 
 import { getImageModels, isFlux2, isErnie, isHiDream, isQwen } from '../../lib/mediaModels.js';
+import { isHardwareCompatible } from '../../lib/systemCapabilities.js';
 import { usesDiffusersRunner, flux2Bf16BaseRepo } from '../../lib/runners.js';
 import { weaveLoraTriggers } from '../../lib/loraTriggers.js';
 import { readTriggerWordsByFilename } from '../loras.js';
@@ -503,6 +504,12 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   // 'windows' on a macOS box).
   const model = getImageModels().find((m) => m.id === modelId);
   if (!model) throw new ServerError(`Unknown or unsupported model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  if (!isHardwareCompatible(model.hardwareCompatibility)) {
+    throw new ServerError(
+      `Image model "${modelId}" is unavailable on this machine: ${model.hardwareCompatibility.reasons.join(' · ')}`,
+      { status: 400, code: 'MODEL_HARDWARE_UNAVAILABLE' },
+    );
+  }
   // Both flux2 and z-image runners resolve their own Python via the FLUX.2
   // venv — only the legacy mflux/imagine_win path needs the user-configured
   // Settings > Image Gen pythonPath.

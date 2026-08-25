@@ -1,4 +1,5 @@
 import { formatContextLength } from './formatters.js';
+import { isHardwareCompatible } from './systemCapabilities.js';
 
 /**
  * Sentinel value used by the Codex provider to indicate the model is configured
@@ -174,6 +175,26 @@ export const PROVIDER_TYPES = Object.freeze({
   API: 'api'
 });
 
+// Agent jobs need the CLI/TUI file-writing harnesses. Keep this allowlist in
+// lockstep with the api-provider rejection in server/services/agentProviderResolution.js.
+export const AGENT_HARNESS_PROVIDER_TYPES = Object.freeze([
+  PROVIDER_TYPES.CLI,
+  PROVIDER_TYPES.TUI
+]);
+
+/**
+ * Retain an existing non-runnable pin so a saved job can still be edited and
+ * cleared, while limiting new agent-job selections to runnable providers.
+ */
+export const filterRunnableProviders = (providers, selectedProviderIds = []) => {
+  const preservedIds = new Set(
+    (Array.isArray(selectedProviderIds) ? selectedProviderIds : [selectedProviderIds]).filter(Boolean)
+  );
+  return (Array.isArray(providers) ? providers : []).filter(provider =>
+    AGENT_HARNESS_PROVIDER_TYPES.includes(provider?.type) || preservedIds.has(provider?.id)
+  );
+};
+
 /**
  * Returns the provider's model list with internal sentinel values removed.
  * Use this anywhere a list of user-selectable models is needed.
@@ -182,6 +203,24 @@ export const PROVIDER_TYPES = Object.freeze({
  */
 export const filterSelectableModels = (models) =>
   (models || []).filter(m => !isConfiguredDefaultModel(m));
+
+/**
+ * Server-side hardware metadata is advisory for unknown probe results and
+ * definitive only when `state` is `unavailable`. Keep this helper fail-open so
+ * older servers and custom providers remain selectable.
+ */
+export const isProviderHardwareCompatible = (provider) =>
+  isHardwareCompatible(provider?.hardwareCompatibility);
+
+export const isProviderModelHardwareCompatible = (provider, model) =>
+  isProviderHardwareCompatible(provider)
+  && isHardwareCompatible(provider?.modelHardwareCompatibility?.[model]);
+
+export const filterHardwareCompatibleProviderModels = (models, provider) =>
+  (models || []).filter((model) => {
+    const modelId = typeof model === 'string' ? model : model?.id;
+    return isProviderModelHardwareCompatible(provider, modelId);
+  });
 
 /**
  * Reasoning-effort levels per effort-capable CLI — MIRROR of

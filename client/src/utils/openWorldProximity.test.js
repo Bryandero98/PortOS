@@ -83,4 +83,17 @@ describe('openWorldProximity', () => {
     });
     expect(target).toBeNull();
   });
+
+  it('degrades non-iterable collection payloads to "no targets" instead of throwing', () => {
+    // Regression: OpenWorldScene once passed computeEasterEggs' wrapper object
+    // ({ base, eggs, total, hasData }) as easterEggs. detectProximity runs inside
+    // the r3f frame loop, so the resulting TypeError killed rendering every frame —
+    // the world never painted and no interaction worked. A bad shape must degrade.
+    const target = detectProximity({
+      playerPos: { x: -45.5, y: 1.6, z: 40.5 },
+      easterEggs: { eggs: [], total: 0, hasData: false },
+      warpPads: { warpPadList: [] },
+    });
+    expect(target).toBeNull();
+  });
 });

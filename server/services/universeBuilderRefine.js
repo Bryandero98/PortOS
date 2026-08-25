@@ -13,8 +13,8 @@
 
 import { ServerError } from "../lib/errorHandler.js";
 import { findBalancedBlocks, tryParseWithRepair } from "../lib/jsonExtract.js";
-import { assertProvider, resolveProviderAndModel, resolveEffectiveModel, runPromptThroughProvider, assertVisionRunUsedImages } from "../lib/promptRunner.js";
-import { resolveAPIProvider } from "../lib/aiProvider.js";
+import { assertProvider, resolveProviderAndModel, resolveEffectiveModel, runPromptThroughProvider, assertVisionRunUsedImages } from "./promptRunner.js";
+import { resolveAPIProvider } from './aiProvider.js';
 import {
   renderCategoriesForPrompt as renderCategoriesShared,
   renderCompositesForPrompt as renderCompositesShared,

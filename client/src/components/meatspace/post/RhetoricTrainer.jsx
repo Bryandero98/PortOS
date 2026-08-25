@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CheckCircle, ChevronRight, Feather, Lightbulb, Repeat2, RotateCcw, Timer } from 'lucide-react';
-import { submitTrainingEntry } from '../../../services/api';
+import { ArrowLeft, CheckCircle, ChevronRight, Feather, Lightbulb, Repeat2, RotateCcw, Save, Sparkles, Timer } from 'lucide-react';
+import { evaluateRhetoricAttempt, submitTrainingEntry, updatePostConfig } from '../../../services/api';
+import useProviderModels from '../../../hooks/useProviderModels';
+import ProviderModelSelector from '../../ProviderModelSelector';
+import toast from '../../ui/Toast';
+import { uuidv4 } from '../../../lib/uuid';
 
 const TRAINING_MODULE = 'rhetoric';
 const ROUND_SIZE = 5;
@@ -81,23 +85,181 @@ export const RHETORIC_MODES = [
 ];
 
 const modeFor = (id) => RHETORIC_MODES.find((mode) => mode.id === id) || null;
+const newRoundId = () => uuidv4();
+const evaluatorProviderFilter = (provider) => provider?.enabled !== false;
 
-export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack, onContinue }) {
+function EvaluatorReport({ results, enabled }) {
+  if (!enabled) return null;
+  const evaluated = results.filter((result) => result.evaluation);
+  const pending = results.filter((result) => !result.evaluation && !result.evaluationError).length;
+  const average = evaluated.length
+    ? Math.round(evaluated.reduce((sum, result) => sum + result.evaluation.overallScore, 0) / evaluated.length)
+    : null;
+  return (
+    <div className="mt-6 text-left border-t border-port-border pt-5 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Sparkles size={16} className="text-port-accent" />
+          <h4 className="font-medium text-white">Evaluator report</h4>
+        </div>
+        <span className="text-xs text-gray-500">
+          {pending > 0 ? `${pending} still evaluating…` : `${evaluated.length}/${results.length} evaluated`}
+          {average != null ? ` · ${average}% average` : ''}
+        </span>
+      </div>
+      <p className="text-xs text-gray-500">
+        The evaluator ran after each save, while the next prompt was available. Its score is separate from your self-score.
+      </p>
+      <div className="space-y-2">
+        {results.map((result, index) => (
+          <div key={result.id} className="rounded-lg bg-port-bg border border-port-border p-3">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-gray-500">Attempt {index + 1}</span>
+              <span className="text-gray-500">self {result.rating}/5</span>
+              {result.evaluation && <span className="ml-auto text-port-accent">AI {result.evaluation.overallScore}%</span>}
+              {!result.evaluation && !result.evaluationError && <span className="ml-auto text-gray-500">working…</span>}
+            </div>
+            {result.evaluation
+              ? <>
+                <p className="mt-2 text-sm text-gray-300">{result.evaluation.summary}</p>
+                <div className="mt-2 grid gap-1 sm:grid-cols-3">
+                  {result.evaluation.dimensions.map((dimension) => (
+                    <div key={dimension.id} className="text-[11px] text-gray-500">
+                      <span className="text-gray-400">{dimension.id}</span> · {dimension.score}%
+                      <span className="block text-gray-600">{dimension.feedback}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+              : result.evaluationError && <p className="mt-2 text-xs text-amber-400">Evaluation unavailable: {result.evaluationError}</p>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RhetoricEvaluatorConfig({
+  config,
+  providers,
+  providerId,
+  model,
+  effort,
+  availableModels,
+  enabled,
+  onProviderChange,
+  onModelChange,
+  onEffortChange,
+  onEnabledChange,
+  saving,
+  error,
+  onSave,
+}) {
+  const saved = config?.rhetoricEvaluator?.enabled === true;
+  return (
+    <section className="bg-port-card border border-port-border rounded-xl p-5 space-y-4">
+      <div className="flex items-start gap-3">
+        <span className="rounded-lg p-2 bg-port-accent/15"><Sparkles size={18} className="text-port-accent" /></span>
+        <div>
+          <h3 className="font-semibold text-white">Optional AI evaluator</h3>
+          <p className="mt-1 text-sm text-gray-400">
+            Score each attempt in the background while you answer the next prompt. The completed round keeps the report and provider/model/effort provenance in POST training history.
+          </p>
+        </div>
+      </div>
+      <label htmlFor="rhetoric-evaluator-enabled" className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+        <input
+          id="rhetoric-evaluator-enabled"
+          type="checkbox"
+          checked={enabled}
+          onChange={(event) => onEnabledChange(event.target.checked)}
+          className="mt-0.5 accent-port-accent"
+        />
+        <span>
+          Evaluate rhetoric attempts after save
+          <span className="block text-xs text-gray-500 mt-0.5">Off by default. Saving this setting is the consent gate for background provider calls.</span>
+        </span>
+      </label>
+      <ProviderModelSelector
+        providers={providers}
+        selectedProviderId={providerId}
+        selectedModel={model}
+        availableModels={availableModels}
+        onProviderChange={onProviderChange}
+        onModelChange={onModelChange}
+        onEffortChange={onEffortChange}
+        effort={effort}
+        emptyProviderOption="Use active provider"
+        emptyModelOption="Provider default"
+        alwaysShowModel
+        layout="stacked"
+        disabled={saving}
+      />
+      {providers.length === 0 && <p className="text-xs text-gray-500">No enabled providers are available yet. You can save the active-provider choice and configure one later.</p>}
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
+        >
+          <Save size={15} /> {saving ? 'Saving…' : 'Save evaluator'}
+        </button>
+        {saved && !saving && <span className="text-xs text-emerald-400">Enabled for the next round</span>}
+        {error && <span className="text-xs text-amber-400" role="alert">{error}</span>}
+      </div>
+    </section>
+  );
+}
+
+export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack, onContinue, config, onConfigUpdate }) {
   const selectedMode = modeFor(mode);
   const [promptIndex, setPromptIndex] = useState(0);
   const [response, setResponse] = useState('');
   const [rating, setRating] = useState(null);
   const [results, setResults] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [evaluatorSaving, setEvaluatorSaving] = useState(false);
+  const [evaluatorSaveError, setEvaluatorSaveError] = useState('');
+  const savedEvaluator = config?.rhetoricEvaluator || {};
+  const [evaluatorEnabled, setEvaluatorEnabled] = useState(savedEvaluator.enabled === true);
+  const [evaluatorEffort, setEvaluatorEffort] = useState(savedEvaluator.effort || '');
+  const {
+    providers,
+    selectedProviderId: evaluatorProviderId,
+    selectedModel: evaluatorModel,
+    availableModels: evaluatorModels,
+    setSelectedProviderId: setEvaluatorProviderId,
+    setSelectedModel: setEvaluatorModel,
+  } = useProviderModels({ filter: evaluatorProviderFilter, allowDefault: true, silent: true, withEffort: true });
   const roundStart = useRef(Date.now());
+  const promptStart = useRef(Date.now());
+  const roundIdRef = useRef(newRoundId());
+  const resultsByRoundRef = useRef(new Map([[roundIdRef.current, []]]));
+  const evaluatorTailRef = useRef(Promise.resolve());
+  const roundEvaluationPromisesRef = useRef([]);
 
   useEffect(() => {
+    const nextRoundId = newRoundId();
+    roundIdRef.current = nextRoundId;
+    resultsByRoundRef.current.set(nextRoundId, []);
+    roundEvaluationPromisesRef.current = [];
     setPromptIndex(0);
     setResponse('');
     setRating(null);
     setResults([]);
+    setSaving(false);
+    setEvaluatorSaveError('');
     roundStart.current = Date.now();
+    promptStart.current = Date.now();
   }, [selectedMode?.id]);
+
+  useEffect(() => {
+    setEvaluatorEnabled(savedEvaluator.enabled === true);
+    setEvaluatorProviderId(savedEvaluator.providerId || '');
+    setEvaluatorModel(savedEvaluator.model || '');
+    setEvaluatorEffort(savedEvaluator.effort || '');
+  }, [savedEvaluator.enabled, savedEvaluator.providerId, savedEvaluator.model, savedEvaluator.effort]);
 
   const prompt = selectedMode?.prompts[promptIndex];
   const completed = results.length;
@@ -105,29 +267,136 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
     ? Math.round(results.reduce((sum, result) => sum + result.rating, 0) / completed * 20)
     : 0, [completed, results]);
 
-  function resetRound() {
-    setPromptIndex(0); setResponse(''); setRating(null); setResults([]); roundStart.current = Date.now();
+  function replaceRoundResults(roundId, nextResults) {
+    resultsByRoundRef.current.set(roundId, nextResults);
+    if (roundId === roundIdRef.current) {
+      setResults(nextResults);
+    }
   }
 
-  function finishRound(nextResults) {
+  function enqueueEvaluation(attempt, roundId) {
+    const evaluator = config?.rhetoricEvaluator;
+    if (evaluator?.enabled !== true) return null;
+    const request = {
+      attemptId: attempt.id,
+      mode: selectedMode.id,
+      prompt: attempt.prompt,
+      response: attempt.response,
+      ...(evaluator.providerId && { providerId: evaluator.providerId }),
+      ...(evaluator.model && { model: evaluator.model }),
+      ...(evaluator.effort && { effort: evaluator.effort }),
+    };
+    const queued = evaluatorTailRef.current.then(() => evaluateRhetoricAttempt(request, { silent: true }));
+    // Keep the serial queue alive after one provider failure. The failed request
+    // is shown on its own attempt, while the next answer still gets evaluated.
+    evaluatorTailRef.current = queued.catch(() => null);
+    roundEvaluationPromisesRef.current.push(queued);
+    queued.then((result) => {
+      const current = resultsByRoundRef.current.get(roundId) || [];
+      replaceRoundResults(roundId, current.map((item) => item.id === attempt.id
+        ? { ...item, evaluation: result.evaluation }
+        : item));
+    }).catch((error) => {
+      const message = String(error?.message || error || 'Unknown evaluator error').slice(0, 500);
+      const current = resultsByRoundRef.current.get(roundId) || [];
+      replaceRoundResults(roundId, current.map((item) => item.id === attempt.id
+        ? { ...item, evaluationError: message }
+        : item));
+    });
+    return queued;
+  }
+
+  function resetRound() {
+    const nextRoundId = newRoundId();
+    roundIdRef.current = nextRoundId;
+    resultsByRoundRef.current.set(nextRoundId, []);
+    roundEvaluationPromisesRef.current = [];
+    setPromptIndex(0);
+    setResponse('');
+    setRating(null);
+    setResults([]);
+    setSaving(false);
+    setEvaluatorSaveError('');
+    roundStart.current = Date.now();
+    promptStart.current = Date.now();
+  }
+
+  function finishRound(roundId, nextResults, roundStartedAt) {
+    const pendingEvaluations = roundEvaluationPromisesRef.current.slice();
+    const roundTotalMs = Math.max(0, Date.now() - roundStartedAt);
     setSaving(true);
-    submitTrainingEntry({
-      module: TRAINING_MODULE,
-      drillType: TRAINING_TYPES[selectedMode.id],
-      score: Math.round(nextResults.reduce((sum, result) => sum + result.rating, 0) / nextResults.length * 20),
-      questionCount: nextResults.length,
-      correctCount: nextResults.filter((result) => result.rating >= 4).length,
-      totalMs: Date.now() - roundStart.current,
-    }, { silent: true }).catch(() => {}).finally(() => setSaving(false));
+    Promise.allSettled(pendingEvaluations)
+      .then(() => {
+        const finalResults = resultsByRoundRef.current.get(roundId) || nextResults;
+        return submitTrainingEntry({
+          module: TRAINING_MODULE,
+          drillType: TRAINING_TYPES[selectedMode.id],
+          score: Math.round(finalResults.reduce((sum, result) => sum + result.rating, 0) / finalResults.length * 20),
+          questionCount: finalResults.length,
+          correctCount: finalResults.filter((result) => result.rating >= 4).length,
+          totalMs: roundTotalMs,
+          scorerProvenance: config?.rhetoricEvaluator?.enabled === true
+            ? 'post-rhetoric-self+ai'
+            : 'post-rhetoric-self',
+          questions: finalResults.map((result) => ({
+            id: result.id,
+            prompt: result.prompt,
+            response: result.response,
+            responseMs: result.responseMs,
+            selfRating: result.rating,
+            score: result.rating * 20,
+            correct: result.rating >= 4,
+            ...(result.evaluation && { evaluation: result.evaluation }),
+            ...(result.evaluationError && { evaluationError: result.evaluationError }),
+          })),
+        }, { silent: true });
+      })
+      .catch((error) => {
+        if (roundId === roundIdRef.current) setEvaluatorSaveError(String(error?.message || error || 'Could not save this round').slice(0, 500));
+      })
+      .finally(() => {
+        if (roundId === roundIdRef.current) setSaving(false);
+      });
   }
 
   function submitResponse() {
     if (!response.trim() || rating == null) return;
-    const nextResults = [...results, { response: response.trim(), rating }];
-    setResults(nextResults);
+    const roundId = roundIdRef.current;
+    const attempt = {
+      id: `${roundId}:${results.length + 1}`,
+      prompt,
+      response: response.trim(),
+      rating,
+      responseMs: Math.max(0, Date.now() - promptStart.current),
+    };
+    const nextResults = [...results, attempt];
+    replaceRoundResults(roundId, nextResults);
+    enqueueEvaluation(attempt, roundId);
     setResponse(''); setRating(null);
-    if (nextResults.length >= ROUND_SIZE) finishRound(nextResults);
-    else setPromptIndex((index) => index + 1);
+    if (nextResults.length >= ROUND_SIZE) finishRound(roundId, nextResults, roundStart.current);
+    else {
+      setPromptIndex((index) => index + 1);
+      promptStart.current = Date.now();
+    }
+  }
+
+  function saveEvaluator() {
+    setEvaluatorSaving(true);
+    setEvaluatorSaveError('');
+    updatePostConfig({
+      rhetoricEvaluator: {
+        enabled: evaluatorEnabled,
+        providerId: evaluatorProviderId || null,
+        model: evaluatorModel || null,
+        effort: evaluatorEffort || null,
+      },
+    }, { silent: true })
+      .then((updated) => {
+        onConfigUpdate?.(updated);
+        toast.success('Rhetoric evaluator settings saved');
+      })
+      .catch((error) => setEvaluatorSaveError(String(error?.message || error || 'Could not save evaluator settings').slice(0, 500)))
+      .finally(() => setEvaluatorSaving(false));
   }
 
   if (!selectedMode) {
@@ -138,6 +407,22 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
           <div className="flex items-center gap-3"><Feather className="text-port-accent" size={28} /><h2 className="text-2xl font-bold text-white">Rhetoric practice</h2></div>
           <p className="mt-2 text-gray-400 max-w-2xl">Train the small structures that make language memorable. Each round gives you five prompts, a compact craft checklist, and space to make the attempt your own.</p>
         </div>
+        <RhetoricEvaluatorConfig
+          config={config}
+          providers={providers}
+          providerId={evaluatorProviderId}
+          model={evaluatorModel}
+          effort={evaluatorEffort}
+          availableModels={evaluatorModels}
+          enabled={evaluatorEnabled}
+          onProviderChange={(value) => { setEvaluatorProviderId(value); setEvaluatorEffort(''); }}
+          onModelChange={setEvaluatorModel}
+          onEffortChange={setEvaluatorEffort}
+          onEnabledChange={setEvaluatorEnabled}
+          saving={evaluatorSaving}
+          error={evaluatorSaveError}
+          onSave={saveEvaluator}
+        />
         <div className="grid gap-4 sm:grid-cols-2">
           {RHETORIC_MODES.map((entry) => {
             const Icon = entry.icon;
@@ -164,11 +449,21 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
       {!roundComplete ? <>
         <div className="mt-6 rounded-lg bg-port-bg border border-port-border p-4"><div className="text-xs uppercase tracking-wide text-port-accent mb-2">Prompt {promptIndex + 1}</div><p className="text-lg text-white">{prompt}</p></div>
         <label htmlFor="rhetoric-response" className="block mt-5 text-sm text-gray-300">Your attempt</label>
-        <textarea id="rhetoric-response" value={response} onChange={(event) => setResponse(event.target.value)} rows={5} autoFocus placeholder="Write without over-editing. The first live version is useful data." className="mt-2 w-full bg-port-bg border border-port-border rounded-lg px-3 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-port-accent resize-y" />
+        <textarea id="rhetoric-response" value={response} onChange={(event) => setResponse(event.target.value)} maxLength={10000} rows={5} autoFocus placeholder="Write without over-editing. The first live version is useful data." className="mt-2 w-full bg-port-bg border border-port-border rounded-lg px-3 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-port-accent resize-y" />
         <div className="mt-4"><p className="text-sm text-gray-400 mb-2">How well did it meet the craft goal?</p><div className="flex flex-wrap gap-2">{[1, 2, 3, 4, 5].map((value) => <button key={value} type="button" onClick={() => setRating(value)} aria-label={`Rate ${value} out of 5`} className={`px-4 py-2 rounded border text-sm ${rating === value ? 'border-port-accent bg-port-accent/20 text-white' : 'border-port-border text-gray-400 hover:text-white'}`}>{value}</button>)}</div></div>
         <div className="mt-5 border-t border-port-border pt-4"><p className="text-xs text-gray-500 mb-2">Quick check</p><ul className="grid gap-1 sm:grid-cols-3 text-xs text-gray-400">{selectedMode.checklist.map((item) => <li key={item}>· {item}</li>)}</ul></div>
         <button type="button" onClick={submitResponse} disabled={!response.trim() || rating == null} className="mt-5 w-full rounded-lg bg-port-accent hover:bg-port-accent/80 disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 font-medium">Save attempt &amp; next</button>
-      </> : <div className="mt-6 text-center py-8"><CheckCircle size={42} className="mx-auto text-port-success" /><h3 className="mt-3 text-xl font-semibold text-white">Round complete</h3><p className="mt-2 text-gray-400">You rated this round {average}%. Notice which structure felt easiest to reach for.</p><div className="flex gap-3 justify-center mt-6"><button type="button" onClick={resetRound} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-port-border text-gray-300 hover:text-white"><RotateCcw size={16} /> New round</button><button type="button" onClick={onContinue} disabled={saving} className="px-4 py-2 rounded-lg bg-port-accent text-white disabled:opacity-50">{saving ? 'Logging…' : 'Continue POST'}</button></div></div>}
+      </> : <div className="mt-6 text-center py-8">
+        <CheckCircle size={42} className="mx-auto text-port-success" />
+        <h3 className="mt-3 text-xl font-semibold text-white">Round complete</h3>
+        <p className="mt-2 text-gray-400">You rated this round {average}%. Notice which structure felt easiest to reach for.</p>
+        <EvaluatorReport results={results} enabled={savedEvaluator.enabled === true} />
+        {evaluatorSaveError && <p className="mt-3 text-xs text-amber-400" role="alert">{evaluatorSaveError}</p>}
+        <div className="flex gap-3 justify-center mt-6 flex-wrap">
+          <button type="button" onClick={resetRound} className="flex items-center gap-2 min-h-[44px] px-4 py-2 rounded-lg border border-port-border text-gray-300 hover:text-white"><RotateCcw size={16} /> New round</button>
+          <button type="button" onClick={onContinue} disabled={saving} className="min-h-[44px] px-4 py-2 rounded-lg bg-port-accent text-white disabled:opacity-50">{saving ? 'Saving report…' : 'Continue POST'}</button>
+        </div>
+      </div>}
     </div>
   </div>;
 }

@@ -33,13 +33,24 @@ vi.mock('../services/jobGates.js', () => ({
 }));
 
 vi.mock('../services/eventScheduler.js', () => ({
-  parseCronToNextRun: vi.fn()
+  parseCronToNextRun: vi.fn(),
+  isValidRecurrence: vi.fn(() => true),
+}));
+
+vi.mock('../services/autonomousJobs/scheduler.js', () => ({
+  computeNextJobRun: vi.fn(),
+}));
+
+vi.mock('../services/userTimezone.js', () => ({
+  getUserTimezone: vi.fn(),
 }));
 
 import * as cos from '../services/cos.js';
 import * as autonomousJobs from '../services/autonomousJobs.js';
 import { checkJobGate, hasGate, getRegisteredGates } from '../services/jobGates.js';
 import { parseCronToNextRun } from '../services/eventScheduler.js';
+import { computeNextJobRun } from '../services/autonomousJobs/scheduler.js';
+import { getUserTimezone } from '../services/userTimezone.js';
 
 describe('CoS Job Routes', () => {
   let app;
@@ -55,9 +66,9 @@ describe('CoS Job Routes', () => {
   describe('GET /api/cos/jobs', () => {
     it('should return all jobs with gates and stats', async () => {
       autonomousJobs.getAllJobs.mockResolvedValue([{ id: 'j1', name: 'Review' }]);
-      autonomousJobs.getJobStats.mockResolvedValue({ total: 1 });
-      hasGate.mockReturnValue(false);
-      getRegisteredGates.mockReturnValue([]);
+    autonomousJobs.getJobStats.mockResolvedValue({ total: 1 });
+    hasGate.mockReturnValue(false);
+    getRegisteredGates.mockReturnValue([]);
 
       const response = await request(app).get('/api/cos/jobs');
 
@@ -65,6 +76,22 @@ describe('CoS Job Routes', () => {
       expect(response.body.jobs).toHaveLength(1);
       expect(response.body.jobs[0].hasGate).toBe(false);
       expect(response.body.stats).toHaveProperty('total');
+    });
+
+    it('projects the next run for rich recurrence jobs', async () => {
+      const cronSchedule = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+      autonomousJobs.getAllJobs.mockResolvedValue([{ id: 'j1', name: 'Biweekly', cronSchedule }]);
+      autonomousJobs.getJobStats.mockResolvedValue({ total: 1 });
+      getUserTimezone.mockResolvedValue('UTC');
+      computeNextJobRun.mockReturnValue(Date.parse('2026-08-31T02:00:00.000Z'));
+      hasGate.mockReturnValue(false);
+      getRegisteredGates.mockReturnValue([]);
+
+      const response = await request(app).get('/api/cos/jobs');
+
+      expect(response.status).toBe(200);
+      expect(computeNextJobRun).toHaveBeenCalledWith(expect.objectContaining({ id: 'j1' }), 'UTC');
+      expect(response.body.jobs[0].nextRunAt).toBe('2026-08-31T02:00:00.000Z');
     });
   });
 
@@ -197,6 +224,19 @@ describe('CoS Job Routes', () => {
         .send({ name: 'Cron Job', promptTemplate: 'test', cronExpression: '0 9 * * 1' });
 
       expect(response.status).toBe(200);
+    });
+
+    it('accepts and forwards an anchored calendar recurrence', async () => {
+      parseCronToNextRun.mockReturnValue(new Date());
+      autonomousJobs.createJob.mockResolvedValue({ id: 'j1' });
+
+      const cronSchedule = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+      const response = await request(app)
+        .post('/api/cos/jobs')
+        .send({ name: 'Biweekly Job', promptTemplate: 'test', cronExpression: '0 2 * * 1', cronSchedule });
+
+      expect(response.status).toBe(200);
+      expect(autonomousJobs.createJob).toHaveBeenCalledWith(expect.objectContaining({ cronSchedule }));
     });
 
     it('should return 400 for invalid cron expression format', async () => {
@@ -427,7 +467,17 @@ describe('CoS Job Routes', () => {
       autonomousJobs.generateTaskFromJob.mockResolvedValue({
         description: 'Review',
         priority: 'MEDIUM',
-        metadata: { app: 'app-xyz', useWorktree: true, openPR: true, simplify: false }
+        metadata: {
+          autonomousJob: true,
+          jobId: 'j1',
+          app: 'app-xyz',
+          useWorktree: true,
+          openPR: true,
+          simplify: false,
+          provider: 'anthropic',
+          model: 'claude-opus-4-8',
+          effort: 'high'
+        }
       });
       cos.addTask.mockResolvedValue({ id: 'task-2' });
 
@@ -435,7 +485,17 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(cos.addTask).toHaveBeenCalledWith(
-        expect.objectContaining({ app: 'app-xyz', useWorktree: true, openPR: true, simplify: false }),
+        expect.objectContaining({
+          app: 'app-xyz',
+          useWorktree: true,
+          openPR: true,
+          simplify: false,
+          provider: 'anthropic',
+          model: 'claude-opus-4-8',
+          effort: 'high',
+          autonomousJob: true,
+          jobId: 'j1'
+        }),
         'internal'
       );
     });
@@ -447,7 +507,7 @@ describe('CoS Job Routes', () => {
       autonomousJobs.generateTaskFromJob.mockResolvedValue({
         description: 'Review',
         priority: 'MEDIUM',
-        metadata: { provider: 'anthropic', model: 'claude-opus-4-8' }
+        metadata: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }
       });
       cos.addTask.mockResolvedValue({ id: 'task-3' });
 
@@ -455,7 +515,7 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(cos.addTask).toHaveBeenCalledWith(
-        expect.objectContaining({ provider: 'anthropic', model: 'claude-opus-4-8' }),
+        expect.objectContaining({ provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }),
         'internal'
       );
     });

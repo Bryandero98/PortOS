@@ -411,6 +411,7 @@ export async function spawnAgentViaRunner(options) {
     workspacePath,
     model,
     envVars,
+    providerAuth,
     // New: CLI-agnostic parameters
     cliCommand,
     cliArgs,
@@ -425,6 +426,7 @@ export async function spawnAgentViaRunner(options) {
     workspacePath,
     model,
     envVars,
+    providerAuth,
     cliCommand,
     cliArgs,
     claudePath

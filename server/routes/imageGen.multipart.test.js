@@ -22,6 +22,31 @@ vi.mock('../lib/fileUtils.js', async () => {
   };
 });
 
+// These tests exercise multipart packing and edit-only validation, not host
+// admission. Keep the fixture deterministic across macOS, Linux, and Windows
+// runners by giving the media registry a synthetic capable host.
+vi.mock('../lib/systemCapabilities.js', async () => {
+  const actual = await vi.importActual('../lib/systemCapabilities.js');
+  return {
+    ...actual,
+    captureSystemCapabilities: vi.fn(() => ({
+      version: actual.SYSTEM_CAPABILITIES_VERSION,
+      platform: 'darwin',
+      arch: 'arm64',
+      appleSilicon: true,
+      cpuCount: 8,
+      totalMemoryGb: 128,
+      cuda: {
+        status: 'absent',
+        gpus: [],
+        maxVramGb: null,
+        primaryComputeCap: null,
+        error: null,
+      },
+    })),
+  };
+});
+
 vi.mock('../services/imageGen/index.js', async () => {
   const actual = await vi.importActual('../services/imageGen/index.js');
   return {

@@ -1,15 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, Play, Trash2, Edit3, Save, X, Clock } from 'lucide-react';
 import toast from '../../ui/Toast';
 import ToggleSwitch from '../../ToggleSwitch';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import * as api from '../../../services/api';
 import { timeAgo } from '../../../utils/formatters';
-import { CRON_PRESETS, DEFAULT_CRON, describeCron } from '../../../utils/cronHelpers';
-import WeekdayTimePicker from '../../WeekdayTimePicker';
+import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence } from '../../../utils/cronHelpers';
+import CronSchedulePicker from '../../CronSchedulePicker';
 import { AGENT_OPTIONS, agentOptionButtonClass } from '../../cos/constants';
+import AgentJobProviderFields from '../../cos/AgentJobProviderFields';
+import { filterRunnableProviders } from '../../../utils/providers';
 
 const INTERVAL_OPTIONS = [
   { value: 'hourly', label: 'Every Hour' },
@@ -34,7 +37,7 @@ const AUTONOMY_OPTIONS = [
 // toggles below mirror the per-app built-in task overrides for visual consistency.
 const TASK_META_FIELDS = AGENT_OPTIONS.filter(o => ['useWorktree', 'openPR', 'simplify'].includes(o.field));
 
-function emptyForm() {
+export function emptyForm() {
   return {
     name: '',
     description: '',
@@ -43,29 +46,37 @@ function emptyForm() {
     interval: 'weekly',
     scheduledTime: '',
     cronExpression: '',
+    cronSchedule: null,
     priority: 'MEDIUM',
     autonomyLevel: 'manager',
+    providerId: '',
+    model: '',
+    effort: '',
     taskMetadata: { useWorktree: true, openPR: true, simplify: true }
   };
 }
 
-function formFromJob(job) {
+export function formFromJob(job) {
   return {
     name: job.name || '',
     description: job.description || '',
     promptTemplate: job.promptTemplate || '',
-    scheduleMode: job.cronExpression ? 'cron' : 'interval',
+    scheduleMode: job.cronExpression || job.cronSchedule ? 'cron' : 'interval',
     interval: job.interval || 'weekly',
     scheduledTime: job.scheduledTime || '',
     cronExpression: job.cronExpression || '',
+    cronSchedule: job.cronSchedule || (job.cronExpression ? parseCronToRecurrence(job.cronExpression) : null),
     priority: job.priority || 'MEDIUM',
     autonomyLevel: job.autonomyLevel || 'manager',
+    providerId: job.providerId || '',
+    model: job.model || '',
+    effort: job.effort || '',
     taskMetadata: { useWorktree: false, openPR: false, simplify: false, ...(job.taskMetadata || {}) }
   };
 }
 
 // Build the API payload from form state, scoped to this app as an agent job.
-function toPayload(form, appId) {
+export function toPayload(form, appId) {
   const payload = {
     name: form.name.trim(),
     description: form.description.trim(),
@@ -74,13 +85,18 @@ function toPayload(form, appId) {
     promptTemplate: form.promptTemplate,
     priority: form.priority,
     autonomyLevel: form.autonomyLevel,
+    providerId: form.providerId || null,
+    model: form.model || null,
+    effort: form.effort || null,
     taskMetadata: form.taskMetadata
   };
   if (form.scheduleMode === 'cron') {
-    payload.cronExpression = form.cronExpression?.trim() || null;
+    payload.cronExpression = buildCronFromRecurrence(form.cronSchedule) || form.cronExpression?.trim() || null;
+    payload.cronSchedule = form.cronSchedule || null;
     payload.scheduledTime = null;
   } else {
     payload.cronExpression = null;
+    payload.cronSchedule = null;
     payload.interval = form.interval;
     payload.scheduledTime = form.scheduledTime || null;
   }
@@ -88,18 +104,19 @@ function toPayload(form, appId) {
 }
 
 function scheduleSummary(job) {
+  if (job.cronSchedule) return describeRecurrence(job.cronSchedule);
   if (job.cronExpression) return describeCron(job.cronExpression);
   const label = INTERVAL_OPTIONS.find(i => i.value === job.interval)?.label || job.interval;
   return job.scheduledTime ? `${label} at ${job.scheduledTime}` : label;
 }
 
-function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
+function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone, providers, activeProviderId }) {
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
   // Switching to cron seeds the expression with the default the picker displays
   // (07:00 daily) so an untouched picker is actually saveable — otherwise the
   // form shows a schedule while cronExpression stays empty and Save is blocked.
   const setScheduleMode = (mode) =>
-    setForm(f => ({ ...f, scheduleMode: mode, cronExpression: mode === 'cron' && !f.cronExpression ? DEFAULT_CRON : f.cronExpression }));
+    setForm(f => ({ ...f, scheduleMode: mode, cronExpression: mode === 'cron' && !f.cronExpression && !f.cronSchedule ? DEFAULT_CRON : f.cronExpression }));
   // Toggle a git-workflow flag while preserving the system-wide invariant that
   // openPR implies useWorktree (matches toggleAppMetadataOverride used elsewhere):
   // turning openPR on forces useWorktree on; turning useWorktree off forces openPR off.
@@ -159,32 +176,21 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
         </div>
         {form.scheduleMode === 'cron' ? (
           <div className="space-y-2">
-            <WeekdayTimePicker value={form.cronExpression || DEFAULT_CRON} onChange={value => update('cronExpression', value)} />
-            <div className="flex gap-2 items-center flex-wrap">
-              <input
-                type="text"
-                value={form.cronExpression || ''}
-                onChange={e => update('cronExpression', e.target.value)}
-                className="flex-1 min-w-[10rem] px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm font-mono"
-                placeholder="0 7 * * *"
-                aria-label="Cron expression"
-                title="Cron expression: minute hour dayOfMonth month dayOfWeek"
-              />
-              <select
-                value=""
-                onChange={e => { if (e.target.value) update('cronExpression', e.target.value); }}
-                className="px-2 py-2 bg-port-bg border border-port-border rounded-lg text-gray-400 text-xs"
-                aria-label="Cron presets"
-              >
-                <option value="">Presets</option>
-                {CRON_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-              </select>
-            </div>
-            {form.cronExpression && <span className="text-xs text-gray-500">{describeCron(form.cronExpression)}</span>}
+            <CronSchedulePicker
+              value={form.cronSchedule || form.cronExpression || DEFAULT_CRON}
+              valueShape="recurrence"
+              timezone={timezone}
+              onChange={rule => {
+                update('cronSchedule', rule);
+                const cron = buildCronFromRecurrence(rule);
+                update('cronExpression', cron || null);
+              }}
+            />
           </div>
         ) : (
           <div className="flex gap-3">
             <select
+              aria-label="Interval"
               value={form.interval}
               onChange={e => update('interval', e.target.value)}
               className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
@@ -206,6 +212,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
       {/* Priority + autonomy */}
       <div className="flex gap-3">
         <select
+          aria-label="Priority"
           value={form.priority}
           onChange={e => update('priority', e.target.value)}
           className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
@@ -213,6 +220,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
           {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
         <select
+          aria-label="Autonomy level"
           value={form.autonomyLevel}
           onChange={e => update('autonomyLevel', e.target.value)}
           className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
@@ -220,6 +228,13 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
           {AUTONOMY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
         </select>
       </div>
+
+      <AgentJobProviderFields
+        data={form}
+        providers={providers}
+        activeProviderId={activeProviderId}
+        onChange={patch => setForm(f => ({ ...f, ...patch }))}
+      />
 
       {/* Git-workflow options */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -254,29 +269,50 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
   );
 }
 
-export default function CustomTasksSection({ appId, appName }) {
+export default function CustomTasksSection({ appId, appName, providerCatalog, activeProviderId: inheritedActiveProviderId = '' }) {
+  const timezone = useUserTimezone();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyForm);
+  const [rawProviders, setRawProviders] = useState(providerCatalog || []);
+  const [activeProviderId, setActiveProviderId] = useState(inheritedActiveProviderId);
   const [triggering, setTriggering] = useState(null);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
+  const providers = useMemo(
+    () => filterRunnableProviders(rawProviders, tasks.map(job => job.providerId)),
+    [rawProviders, tasks]
+  );
+
   const fetchTasks = useCallback(async () => {
-    const data = await api.getCosJobs().catch(() => null);
-    setTasks((data?.jobs || []).filter(j => j.appId === appId));
+    const data = await api.getCosJobs({ silent: true }).catch(() => null);
+    const appTasks = (data?.jobs || []).filter(j => j.appId === appId);
+    setTasks(appTasks);
     setLoading(false);
   }, [appId]);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
+  useEffect(() => {
+    if (providerCatalog) {
+      setRawProviders(providerCatalog);
+      setActiveProviderId(inheritedActiveProviderId || '');
+      return;
+    }
+    api.getProviders({ silent: true }).then(data => {
+      setRawProviders(data?.providers || []);
+      setActiveProviderId(data?.activeProvider || '');
+    }).catch(() => {});
+  }, [providerCatalog, inheritedActiveProviderId]);
+
   const validate = (form) => {
     if (!form.name.trim()) { toast.error('Name is required'); return false; }
     if (!form.promptTemplate.trim()) { toast.error('Prompt is required'); return false; }
-    if (form.scheduleMode === 'cron' && (!form.cronExpression?.trim() || form.cronExpression.trim().split(/\s+/).length !== 5)) {
-      toast.error('A valid 5-field cron expression is required'); return false;
+    if (form.scheduleMode === 'cron' && !form.cronSchedule && (!form.cronExpression?.trim() || form.cronExpression.trim().split(/\s+/).length !== 5)) {
+      toast.error('A valid recurrence or 5-field cron expression is required'); return false;
     }
     return true;
   };
@@ -351,7 +387,16 @@ export default function CustomTasksSection({ appId, appName }) {
       </div>
 
       {showCreate && (
-        <TaskForm form={createForm} setForm={setCreateForm} onSave={handleCreate} onCancel={() => setShowCreate(false)} saveLabel="Create" />
+        <TaskForm
+          form={createForm}
+          setForm={setCreateForm}
+          onSave={handleCreate}
+          onCancel={() => setShowCreate(false)}
+          saveLabel="Create"
+          timezone={timezone}
+          providers={providers}
+          activeProviderId={activeProviderId}
+        />
       )}
 
       {loading ? (
@@ -368,7 +413,16 @@ export default function CustomTasksSection({ appId, appName }) {
             <div key={job.id} className={`bg-port-card border rounded-lg ${job.enabled ? 'border-port-border' : 'border-port-border/50 opacity-70'}`}>
               {editingId === job.id ? (
                 <div className="p-3">
-                  <TaskForm form={editForm} setForm={setEditForm} onSave={handleEditSave} onCancel={() => setEditingId(null)} saveLabel="Save" />
+                  <TaskForm
+                    form={editForm}
+                    setForm={setEditForm}
+                    onSave={handleEditSave}
+                    onCancel={() => setEditingId(null)}
+                    saveLabel="Save"
+                    timezone={timezone}
+                    providers={providers}
+                    activeProviderId={activeProviderId}
+                  />
                 </div>
               ) : (
                 <div className="p-3 space-y-1">
@@ -383,7 +437,7 @@ export default function CustomTasksSection({ appId, appName }) {
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      <button onClick={() => handleTrigger(job)} disabled={triggering === job.id || !job.enabled} className="p-1.5 text-gray-500 hover:text-port-accent transition-colors disabled:opacity-40" title="Run now" aria-label="Run now">
+                      <button onClick={() => handleTrigger(job)} disabled={triggering === job.id} className="p-1.5 text-gray-500 hover:text-port-accent transition-colors disabled:opacity-40" title="Run now" aria-label="Run now">
                         <Play size={14} />
                       </button>
                       <button onClick={() => startEdit(job)} className="p-1.5 text-gray-500 hover:text-white transition-colors" title="Edit" aria-label="Edit">

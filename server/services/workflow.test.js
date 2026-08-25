@@ -161,6 +161,18 @@ describe('getWorkflowGraph', () => {
     expect(health.stage).toBe('ambient');
   });
 
+  it('forwards rich recurrence rules onto job nodes', async () => {
+    const cronSchedule = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+    getScheduleStatus.mockResolvedValue({ tasks: {} });
+    getAllJobs.mockResolvedValue([
+      { id: 'job-biweekly', name: 'Biweekly', enabled: true, cronSchedule, cronExpression: '0 2 * * 1' }
+    ]);
+
+    const graph = await getWorkflowGraph();
+
+    expect(graph.nodes.find(n => n.id === 'job:job-biweekly').schedule.cronSchedule).toEqual(cronSchedule);
+  });
+
   it('falls back to ambient stage for unknown task types and jobs', async () => {
     getScheduleStatus.mockResolvedValue({
       tasks: {
@@ -253,6 +265,44 @@ describe('projectWorkflowTimeline', () => {
 
     expect(timeline.occurrences).toEqual([
       expect.objectContaining({ nodeId: 'task:morning', at: '2026-07-09T16:30:00.000Z', kind: 'launch' })
+    ]);
+  });
+
+  it('projects anchored biweekly recurrence without collapsing it to weekly', () => {
+    const timeline = projectWorkflowTimeline([{
+      id: 'job:biweekly', kind: 'job', enabled: true,
+      schedule: {
+        type: 'cron',
+        cronExpression: '0 2 * * 1',
+        cronSchedule: { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' }
+      }
+    }], {
+      start: new Date('2026-09-07T00:00:00.000Z'),
+      end: new Date('2026-09-30T00:00:00.000Z'),
+      timezone: 'UTC'
+    });
+
+    expect(timeline.occurrences.map(item => item.at)).toEqual([
+      '2026-09-14T02:00:00.000Z',
+      '2026-09-28T02:00:00.000Z'
+    ]);
+  });
+
+  it('projects the last weekday of a month through the recurrence parser', () => {
+    const timeline = projectWorkflowTimeline([{
+      id: 'job:last-thursday', kind: 'job', enabled: true,
+      schedule: {
+        type: 'cron',
+        cronSchedule: { frequency: 'monthly-weekday', interval: 1, ordinal: 'last', weekday: 4, time: '19:00', anchorDate: '2026-01-01' }
+      }
+    }], {
+      start: new Date('2026-08-01T00:00:00.000Z'),
+      end: new Date('2026-09-01T00:00:00.000Z'),
+      timezone: 'UTC'
+    });
+
+    expect(timeline.occurrences).toEqual([
+      expect.objectContaining({ nodeId: 'job:last-thursday', at: '2026-08-27T19:00:00.000Z', kind: 'launch' })
     ]);
   });
 

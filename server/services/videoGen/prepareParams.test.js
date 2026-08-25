@@ -53,7 +53,12 @@ import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
 import { getSettings } from '../settings.js';
 import { listVideoModels, defaultVideoModelId, loadHistory } from './local.js';
-import { prepareVideoGenParams, withStagedRollback, cleanupMultipartTemp } from './prepareParams.js';
+import {
+  prepareVideoGenParams,
+  validateVideoRetryParams,
+  withStagedRollback,
+  cleanupMultipartTemp,
+} from './prepareParams.js';
 
 // Field names the route owns Zod schemas for; the service only needs the keys
 // to decide grok eligibility. Mirrors LOCAL_ONLY_VIDEO_PARAMS in the route.
@@ -397,6 +402,15 @@ describe('prepareVideoGenParams', () => {
       await expect(prepare({ modelId: 'wan_t2v', mode: 'text', numFrames: 121, chunks: 2 }))
         .rejects.toMatchObject({ status: 400, code: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE' });
       expect(unlinkedDurablePaths()).toEqual([]);
+    });
+  });
+});
+
+describe('validateVideoRetryParams', () => {
+  it('keeps an explicit null model sentinel unknown instead of selecting the default', async () => {
+    await expect(validateVideoRetryParams({ modelId: null })).rejects.toMatchObject({
+      status: 400,
+      code: 'VIDEO_GEN_UNKNOWN_MODEL',
     });
   });
 });

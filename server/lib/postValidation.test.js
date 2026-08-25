@@ -16,7 +16,9 @@ import {
   postQuickSessionPlanSchema,
   postBenchmarkSchema,
   postConditionsSchema,
+  postRhetoricEvaluationRequestSchema,
 } from './postValidation.js';
+import { RHETORIC_RUBRICS } from './postRhetoric.js';
 import { getTopic, POST_TOPICS } from './postTopics.js';
 
 describe('postBenchmarkSchema', () => {
@@ -166,6 +168,36 @@ describe('postConfigUpdateSchema llmDrills', () => {
   });
 });
 
+describe('rhetoric evaluator configuration', () => {
+  it('accepts an explicit provider, model, and effort without making the block required', () => {
+    const parsed = postConfigUpdateSchema.parse({
+      rhetoricEvaluator: { enabled: true, providerId: 'example-provider', model: 'example-model', effort: 'high' },
+    });
+    expect(parsed.rhetoricEvaluator).toEqual({
+      enabled: true, providerId: 'example-provider', model: 'example-model', effort: 'high',
+    });
+    expect(postConfigUpdateSchema.parse({}).rhetoricEvaluator).toBeUndefined();
+  });
+
+  it('accepts an empty effort sentinel as absent', () => {
+    expect(postConfigUpdateSchema.parse({ rhetoricEvaluator: { effort: '' } }).rhetoricEvaluator).toEqual({});
+  });
+
+  it('bounds one background evaluation request', () => {
+    const parsed = postRhetoricEvaluationRequestSchema.parse({
+      attemptId: 'round-1:1',
+      mode: 'meter',
+      prompt: 'Write a line about an empty station.',
+      response: 'The last train sighs softly through the rain.',
+      providerId: 'example-provider',
+      model: 'example-model',
+      effort: 'high',
+    });
+    expect(parsed.mode).toBe('meter');
+    expect(() => postRhetoricEvaluationRequestSchema.parse({ ...parsed, mode: 'not-a-mode' })).toThrow();
+  });
+});
+
 describe('postConfigUpdateSchema cognitive compatibility', () => {
   it('accepts a legacy six-drill map after newer cognitive types are added', () => {
     const legacyTypes = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
@@ -296,6 +328,32 @@ describe('trainingEntrySchema per-question breakdown (issue #2114)', () => {
       module: 'llm-drills', drillType: 'bridge-word', questionCount: 1, correctCount: 0, totalMs: 1000,
       questions: [{ prompt: 'x', score: 150 }],
     })).toThrow();
+  });
+
+  it('accepts a rhetoric question with a validated evaluator report', () => {
+    const parsed = trainingEntrySchema.parse({
+      module: 'rhetoric',
+      drillType: 'rhetoric-meter',
+      questionCount: 1,
+      correctCount: 1,
+      totalMs: 1000,
+      questions: [{
+        id: 'round-1:1',
+        prompt: 'Write a line about an empty station.',
+        response: 'The last train sighs softly through the rain.',
+        responseMs: 900,
+        selfRating: 5,
+        score: 100,
+        correct: true,
+        evaluation: {
+          overallScore: 84,
+          dimensions: RHETORIC_RUBRICS.meter.map(({ id }) => ({ id, score: 84, feedback: 'Specific evidence.' })),
+          summary: 'A strong attempt.',
+          provenance: { rubricVersion: 'rhetoric-evaluator-v1', providerId: 'example-provider', model: 'example-model', effort: 'high' },
+        },
+      }],
+    });
+    expect(parsed.questions[0].evaluation.provenance.model).toBe('example-model');
   });
 });
 

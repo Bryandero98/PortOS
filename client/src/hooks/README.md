@@ -24,6 +24,7 @@ grep -i "what you want to do" client/src/hooks/README.md
 | `useAIStatusNotifications` | Subscribes to AI operation status events. | Wire once to surface AI run lifecycle as toasts. |
 | `useAgentFeedbackToast` | Agent completion toast with thumbs-up/down UI. | Show actionable agent-run completion feedback. |
 | `useOnDemandTaskToast` | Toasts when a user-triggered on-demand task run found no work (parked). | Wire once high in the tree so an explicit "Run" that parks isn't a silent no-op. |
+| `useEngagementReminderToast` | Polls deterministic POST/creative-feedback actions and shows each reminder once per browser tab/day with a deep link. | Wire once high in the tree so daily actions remain visible outside the dashboard. |
 | `useSharingNotifications` | Subscriber for share-bucket notifications. | Wire once to surface federation/sync events. |
 
 ## Pipeline / Story Builder wiring

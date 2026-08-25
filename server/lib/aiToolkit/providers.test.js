@@ -136,6 +136,8 @@ describe('Provider Service', () => {
       endpoint: 'https://api.example.com/v1',
       apiKey: 'sk-test-secret',
       models: ['model-a', 'model-b', 'model-c'],
+      hardwareRequirements: { platforms: ['darwin'], minMemoryGb: 32 },
+      modelHardwareRequirements: { 'model-c': { minMemoryGb: 64 } },
       defaultModel: 'model-a',
       effort: 'xhigh',
       lightModel: 'model-b',

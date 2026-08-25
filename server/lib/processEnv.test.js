@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { basename, dirname } from 'path';
-import { findCommandOnPath, safeChildProcessEnv, stripDebugMallocEnv, whichFirst } from './processEnv.js';
+import { buildSafeCliBaseEnv, findCommandOnPath, safeChildProcessEnv, stripDebugMallocEnv, whichFirst } from './processEnv.js';
 
 describe('stripDebugMallocEnv', () => {
   it('drops every key that starts with "Malloc"', () => {
@@ -61,6 +61,51 @@ describe('safeChildProcessEnv', () => {
       if (oldPortosTest === undefined) delete process.env.PORTOS_PROCESS_ENV_TEST;
       else process.env.PORTOS_PROCESS_ENV_TEST = oldPortosTest;
     }
+  });
+});
+
+describe('buildSafeCliBaseEnv', () => {
+  it('keeps CLI essentials and provider auth while dropping unrelated app variables', () => {
+    const env = buildSafeCliBaseEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/example',
+      CODEX_HOME: '/tmp/example-codex',
+      SSH_AUTH_SOCK: '/tmp/example-agent.sock',
+      GH_TOKEN: 'owner-token',
+      GITHUB_TOKEN: 'owner-token-alias',
+      ANTHROPIC_API_KEY: 'unselected-provider-key',
+      PRIVATE_APP_AUTH_KEYS: 'sidecar-secret',
+      PRIVATE_APP_TOKEN: 'sidecar-token',
+    });
+
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/example',
+      CODEX_HOME: '/tmp/example-codex',
+      SSH_AUTH_SOCK: '/tmp/example-agent.sock',
+      GH_TOKEN: 'owner-token',
+      GITHUB_TOKEN: 'owner-token-alias',
+    });
+  });
+
+  it('keeps only the selected provider auth and drops paid keys for local providers', () => {
+    const source = {
+      ANTHROPIC_API_KEY: 'claude-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
+      OPENAI_API_KEY: 'openai-key',
+    };
+
+    expect(buildSafeCliBaseEnv(source, { id: 'claude-code', command: 'claude' })).toEqual({
+      ANTHROPIC_API_KEY: 'claude-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
+    });
+    expect(buildSafeCliBaseEnv(source, { id: 'opencode-ollama', command: 'opencode', ollamaBacked: true })).toEqual({});
+  });
+
+  it('does not mutate the source environment', () => {
+    const source = { PATH: '/usr/bin', PRIVATE_APP_AUTH_KEYS: 'sidecar-secret' };
+    buildSafeCliBaseEnv(source);
+    expect(source).toEqual({ PATH: '/usr/bin', PRIVATE_APP_AUTH_KEYS: 'sidecar-secret' });
   });
 });
 

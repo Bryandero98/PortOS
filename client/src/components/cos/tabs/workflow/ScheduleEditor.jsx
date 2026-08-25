@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bot, GitBranch, Loader2, Plus, Save, X } from 'lucide-react';
 import toast from '../../../ui/Toast';
 import * as api from '../../../../services/api';
-import { describeCron, parseSimpleCron, buildWeeklyCron, DEFAULT_CRON } from '../../../../utils/cronHelpers';
-import WeekdayTimePicker from '../../../WeekdayTimePicker';
+import { DEFAULT_CRON, buildCronFromRecurrence, parseCronToRecurrence } from '../../../../utils/cronHelpers';
+import CronSchedulePicker from '../../../CronSchedulePicker';
 
 const TASK_MODES = [
   ['cron', 'Pinned time (cron)'],
@@ -39,8 +39,9 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
     }
     setForm({
       enabled: node.enabled,
-      mode: node.kind === 'job' ? (schedule.cronExpression ? 'cron' : 'interval') : schedule.type,
+      mode: node.kind === 'job' ? (schedule.cronSchedule || schedule.cronExpression ? 'cron' : 'interval') : schedule.type,
       cronExpression: schedule.cronExpression || '',
+      cronSchedule: schedule.cronSchedule || (schedule.cronExpression ? parseCronToRecurrence(schedule.cronExpression) : null),
       // Empty means "no recheck cron": the task keeps its interval-based
       // recheck cadence (recheckIntervalMs, default daily). Prefilling a cron
       // here would silently override that cadence on any unrelated save,
@@ -52,7 +53,7 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
       weekdaysOnly: !!schedule.weekdaysOnly,
       runAfter: [...(node.runAfter || [])]
     });
-  }, [node, schedule.cronExpression, schedule.intervalMs, schedule.recheckCron, schedule.scheduledTime, schedule.type, schedule.weekdaysOnly]);
+  }, [node, schedule.cronExpression, schedule.cronSchedule, schedule.intervalMs, schedule.recheckCron, schedule.scheduledTime, schedule.type, schedule.weekdaysOnly]);
 
   const dependencyOptions = useMemo(() => {
     if (!node) return [];
@@ -82,7 +83,8 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
   const validateCron = (value) => String(value || '').trim().split(/\s+/).length === 5;
 
   const handleSave = async () => {
-    if (form.mode === 'cron' && !validateCron(form.cronExpression)) {
+    const hasValidJobRecurrence = node.kind === 'job' && form.cronSchedule;
+    if (form.mode === 'cron' && !hasValidJobRecurrence && !validateCron(form.cronExpression)) {
       toast.error('Cron schedules need five fields');
       return;
     }
@@ -102,7 +104,7 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
       const payload = {
         enabled: form.enabled,
         type: form.mode,
-        cronExpression: form.mode === 'cron' ? form.cronExpression.trim() : null,
+        cronExpression: form.mode === 'cron' ? String(form.cronExpression || '').trim() || null : null,
         runAfter: form.runAfter
       };
       if (form.mode === 'custom') payload.intervalMs = intervalHours * 3_600_000;
@@ -115,7 +117,8 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
       const payload = {
         enabled: form.enabled,
         weekdaysOnly: form.weekdaysOnly,
-        cronExpression: form.mode === 'cron' ? form.cronExpression.trim() : null,
+        cronExpression: form.mode === 'cron' ? (buildCronFromRecurrence(form.cronSchedule) || String(form.cronExpression || '').trim() || null) : null,
+        cronSchedule: form.mode === 'cron' ? form.cronSchedule : null,
         scheduledTime: form.mode === 'interval' ? (form.scheduledTime || null) : null
       };
       if (form.mode === 'interval') payload.interval = form.interval;
@@ -187,16 +190,21 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
 
         {form.mode === 'cron' && (
           <div className="space-y-2">
-            <div>
-              <span className="block text-xs text-gray-400">Run on</span>
-              <WeekdayTimePicker value={form.cronExpression || DEFAULT_CRON} onChange={value => set('cronExpression', value)} className="mt-1.5" />
-              <p className="mt-1 text-[11px] text-gray-600">No days selected runs every day.</p>
-            </div>
-            <label className="block text-xs text-gray-400">
-              Advanced cron
-              <input value={form.cronExpression} onChange={event => set('cronExpression', event.target.value)} placeholder="0 9 * * *" className="mt-1.5 w-full rounded border border-port-border bg-port-bg px-3 py-2 font-mono text-sm text-white" />
-            </label>
-            {validateCron(form.cronExpression) && <p className="text-xs text-gray-500">{describeCron(form.cronExpression)}</p>}
+            <span className="block text-xs text-gray-400">Run on</span>
+            <CronSchedulePicker
+              value={node.kind === 'job' ? (form.cronSchedule || form.cronExpression) : form.cronExpression}
+              valueShape={node.kind === 'job' ? 'recurrence' : 'cron'}
+              timezone={node.kind === 'job' ? timezone : undefined}
+              onChange={value => {
+                if (node.kind === 'job') {
+                  set('cronSchedule', value);
+                  set('cronExpression', buildCronFromRecurrence(value) || null);
+                } else {
+                  set('cronExpression', value);
+                }
+              }}
+            />
+            {node.kind === 'job' && <p className="text-[11px] text-gray-600">No days selected runs every day.</p>}
           </div>
         )}
 
@@ -205,14 +213,7 @@ export default function ScheduleEditor({ node, allNodes, timezone, onClose, onSa
             <p className="text-xs text-gray-400">
               Drains work back-to-back. Once parked, this is its reset/recheck time — leave blank to keep the default interval-based recheck cadence.
             </p>
-            <input
-              type="time"
-              value={parseSimpleCron(form.recheckCron)?.time ?? ''}
-              aria-label="Perpetual recheck time"
-              onChange={event => set('recheckCron', buildWeeklyCron(parseSimpleCron(form.recheckCron)?.days ?? [], event.target.value))}
-              className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-white"
-            />
-            <input value={form.recheckCron} onChange={event => set('recheckCron', event.target.value)} placeholder="0 9 * * *" className="w-full rounded border border-port-border bg-port-bg px-3 py-2 font-mono text-xs text-gray-300" aria-label="Perpetual recheck cron" />
+            <CronSchedulePicker value={form.recheckCron} onChange={value => set('recheckCron', value)} />
           </div>
         )}
 

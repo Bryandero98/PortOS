@@ -1,11 +1,37 @@
 import { describe, it, expect } from 'vitest';
 import {
-  THIRD_PERSON, clampPitch, thirdPersonCamera, resolveBoom,
+  THIRD_PERSON, BOOM_ZOOM, clampPitch, thirdPersonCamera, nextBoomZoom, resolveBoom,
   dampFactor, dampAngle, moveFacing, avatarState, bankAngle, stepVehicle,
   moveWithCollisions, VEHICLE_COLLISION,
 } from './openWorldPlayerRig';
 
 const pos = { x: 0, y: 1.6, z: 0 };
+
+describe('nextBoomZoom', () => {
+  it('zooms in for an upward wheel scroll and out for a downward one', () => {
+    const zoomIn = nextBoomZoom(1, -120);
+    const zoomOut = nextBoomZoom(1, 120);
+    expect(zoomIn).toBeLessThan(1);
+    expect(zoomOut).toBeGreaterThan(1);
+  });
+
+  it('is symmetric per notch — equal deltas move the multiplier equally in log space', () => {
+    const zoomIn = nextBoomZoom(1, -120);
+    const zoomOut = nextBoomZoom(1, 120);
+    expect(Math.log(zoomIn)).toBeCloseTo(-Math.log(zoomOut), 6);
+  });
+
+  it('clamps both ends so the boom never vanishes nor leaves the world scale', () => {
+    expect(nextBoomZoom(1, -1e9)).toBe(BOOM_ZOOM.min);
+    expect(nextBoomZoom(1, 1e9)).toBe(BOOM_ZOOM.max);
+  });
+
+  it('feeds thirdPersonCamera as a boom multiplier', () => {
+    const base = thirdPersonCamera({ pos, yaw: 0, pitch: 0 });
+    const close = thirdPersonCamera({ pos, yaw: 0, pitch: 0, boom: THIRD_PERSON.boom * BOOM_ZOOM.min });
+    expect(Math.abs(close.camera.z - pos.z)).toBeLessThan(Math.abs(base.camera.z - pos.z));
+  });
+});
 
 describe('thirdPersonCamera', () => {
   it('hangs the camera behind the character at yaw 0 (facing -Z → camera at +Z)', () => {

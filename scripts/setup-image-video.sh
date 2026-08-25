@@ -484,15 +484,6 @@ if [[ "$INSTALL_MINIMAX_H3_CUDA" == "1" ]]; then
   # Windows and Linux both reach this model: since #4142 the catalog picks
   # video.cuda[] vs video.mlx[] on `process.platform === 'darwin'`, so a Linux
   # install is served the same CUDA list a Windows one is.
-  # diffusers is pinned to a git commit until a release carries the MiniMax-H3
-  # integration (see the note in requirements-minimax-h3-cuda.txt), so pip needs
-  # git to build that wheel. Say so up front rather than failing several minutes
-  # into a torch download.
-  if ! have git; then
-    echo "❌ INSTALL_MINIMAX_H3_CUDA=1 requires git (the diffusers pin is a git commit)." >&2
-    exit 1
-  fi
-
   MINIMAX_H3_CUDA_DIR="${HOME}/.portos/minimax-h3-cuda"
   MINIMAX_H3_CUDA_VENV="${MINIMAX_H3_CUDA_DIR}/.venv"
   MINIMAX_H3_CUDA_REQS="${SCRIPT_DIR}/requirements-minimax-h3-cuda.txt"

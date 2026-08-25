@@ -2,7 +2,7 @@
  * Open-issue listing for a managed app's Issues tab.
  *
  * Distinct from `workItems.js`, which answers "what could `/do:next` CLAIM?" —
- * that list is deliberately narrowed (assigned / blocked / in-flight / epic
+ * that list is deliberately narrowed (assigned / blocked / in-flight / decomposed-epic
  * issues are filtered out) and carries only `{ ref, title }`. The Issues tab
  * shows the tracker as it actually is: EVERY open issue, with the labels,
  * assignees, and body the user reads before deciding to claim one.

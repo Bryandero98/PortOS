@@ -13,6 +13,7 @@ import {
   postConfigUpdateSchema,
   postDrillRequestSchema,
   postLlmScoreRequestSchema,
+  postRhetoricEvaluationRequestSchema,
   postDrillCacheFillSchema,
   memoryItemCreateSchema,
   memoryItemUpdateSchema,
@@ -30,6 +31,7 @@ import {
 import * as postService from '../services/meatspacePost.js';
 import * as memoryService from '../services/meatspacePostMemory.js';
 import { generateLlmDrill, scoreLlmDrill } from '../services/meatspacePostLlm.js';
+import { evaluateRhetoricAttempt } from '../services/meatspacePostRhetoric.js';
 import { getCachedDrill, triggerReplenish, getCacheStats, requestCacheFill } from '../services/meatspacePostDrillCache.js';
 import * as trainingService from '../services/meatspacePostTraining.js';
 import * as morseService from '../services/meatspacePostMorse.js';
@@ -274,6 +276,24 @@ router.post('/post/score-llm', asyncHandler(async (req, res) => {
     data.type, data.drillData, data.responses,
     data.timeLimitMs, data.providerId, data.model
   );
+  res.json(result);
+}));
+
+/**
+ * POST /api/meatspace/post/rhetoric/evaluate
+ * Evaluate one rhetoric attempt. The client advances before awaiting this
+ * response, and serializes its own requests so a local provider is not flooded.
+ */
+router.post('/post/rhetoric/evaluate', asyncHandler(async (req, res) => {
+  const data = validateRequest(postRhetoricEvaluationRequestSchema, req.body);
+  const config = await postService.getPostConfig();
+  if (config?.rhetoricEvaluator?.enabled !== true) {
+    throw new ServerError(
+      'Rhetoric evaluator is disabled — enable it in the POST configuration before evaluating an attempt',
+      { status: 409, code: 'POST_RHETORIC_EVALUATOR_DISABLED' },
+    );
+  }
+  const result = await evaluateRhetoricAttempt(data);
   res.json(result);
 }));
 

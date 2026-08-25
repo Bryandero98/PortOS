@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
-import { VIDEO_GEN_MODES } from '../services/videoGen/modes.js';
+import { QUEUEABLE_IMAGE_MODES, VIDEO_GEN_MODES } from './generationModes.js';
 import { RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
+import { recurrenceRuleSchema } from './recurrenceValidation.js';
 
 // =============================================================================
 // CREATIVE COMMISSION SCHEMAS (Autonomous Creation Engine — #2657, Phase 1)
@@ -29,8 +29,9 @@ import { RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
 export const CREATIVE_COMMISSION_ABILITIES = Object.freeze(['video', 'image', 'music', 'music-video', 'series']);
 
 // Schedule cadence kinds. DAILY/WEEKLY are composed into a cron by the service;
-// CUSTOM carries a raw 5-field cron the service validates via isValidCron.
-export const CREATIVE_COMMISSION_SCHEDULE_KINDS = Object.freeze(['DAILY', 'WEEKLY', 'CUSTOM']);
+// CUSTOM carries a raw 5-field cron; RECURRENCE carries the richer calendar rule
+// used for anchored intervals such as every two weeks or the last Thursday.
+export const CREATIVE_COMMISSION_SCHEDULE_KINDS = Object.freeze(['DAILY', 'WEEKLY', 'CUSTOM', 'RECURRENCE']);
 
 export const CREATIVE_COMMISSION_QUALITIES = Object.freeze(['draft', 'standard', 'high']);
 export const CREATIVE_COMMISSION_ASPECT_RATIOS = Object.freeze(['16:9', '9:16', '1:1']);
@@ -226,6 +227,7 @@ export const creativeCommissionScheduleSchema = z.object({
   // CUSTOM only: a raw 5-field cron. Loosely bounded here; isValidCron is the
   // authority (service layer).
   cron: z.string().trim().max(120).optional(),
+  recurrence: recurrenceRuleSchema.optional(),
   // IANA tz; null/absent falls back to the user's configured timezone at fire.
   timezone: z.string().max(64).nullable().optional(),
 }).superRefine((val, ctx) => {
@@ -238,6 +240,9 @@ export const creativeCommissionScheduleSchema = z.object({
   }
   if (val.kind === 'CUSTOM' && !val.cron) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['cron'], message: 'CUSTOM schedule requires a cron expression' });
+  }
+  if (val.kind === 'RECURRENCE' && !val.recurrence) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['recurrence'], message: 'RECURRENCE schedule requires a recurrence rule' });
   }
   // Reject an invalid IANA timezone at the request boundary — eventScheduler
   // passes it to Intl.DateTimeFormat, which throws RangeError on a bad zone; a

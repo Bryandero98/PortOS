@@ -4,8 +4,7 @@ import { partialWithoutDefaults, emptyToUndefined, emptyToNull, optionalBooleanM
 import { WORK_TRACKERS } from './workTracker.js';
 import { PROVIDER_FAMILY_IDS } from './providerFamilies.js';
 import { MAX_MONTHLY_COST } from './subscriptionSavings.js';
-import { QUEUEABLE_IMAGE_MODES } from '../services/imageGen/modes.js';
-import { VIDEO_GEN_MODES } from '../services/videoGen/modes.js';
+import { QUEUEABLE_IMAGE_MODES, VIDEO_GEN_MODES } from './generationModes.js';
 import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
 import {
   grokVideoDurationSchema, cloudModelIdString, recordRenderPinFields, isSafeSubdirFilter,
@@ -180,6 +179,9 @@ export const layeredIntelligenceConfigSchema = z.object({
     // prioritized Jira backlog / PLAN.md's unchecked items, fed in so the reasoner
     // can suppress a proposal that overlaps work already in scope. Default on.
     plannedWork: z.boolean().optional(),
+    // PortOS-only product-success signals (POST engagement and creative
+    // commission feedback). Managed apps use appMetrics/custom sources.
+    productMetrics: z.boolean().optional(),
     // Feedback loop (#2428): feed past LI proposals + their tracker outcomes back
     // into the reasoning prompt. Default on for PortOS, off for managed apps.
     outcomes: z.boolean().optional(),
@@ -467,6 +469,16 @@ export const gameFeedbackSchema = z.object({
 }).strict();
 
 // Provider schema
+const providerHardwareRequirementsSchema = z.object({
+  platforms: z.array(z.string().trim().min(1).max(32)).min(1).max(8).optional(),
+  architectures: z.array(z.string().trim().min(1).max(32)).min(1).max(8).optional(),
+  requiresAppleSilicon: z.boolean().optional(),
+  requiresNvidiaGpu: z.boolean().optional(),
+  minMemoryGb: z.number().positive().max(4096).optional(),
+  minVramGb: z.number().positive().max(4096).optional(),
+  minCudaComputeCapability: z.number().positive().max(20).optional(),
+}).strict();
+
 export const providerSchema = z.object({
   name: z.string().min(1).max(100),
   type: z.enum(['cli', 'api', 'tui']),
@@ -475,6 +487,8 @@ export const providerSchema = z.object({
   endpoint: z.string().url().optional(),
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
+  hardwareRequirements: providerHardwareRequirementsSchema.optional(),
+  modelHardwareRequirements: z.record(providerHardwareRequirementsSchema).optional(),
   defaultModel: z.string().nullable().optional(),
   timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional(),
   enabled: z.boolean().optional(),
@@ -751,6 +765,21 @@ export const apiAccessEntrySchema = z.object({
 export const apiAccessSettingsSchema = z.object({
   voice: apiAccessEntrySchema.optional(),
   sdapi: apiAccessEntrySchema.optional(),
+}).strict();
+
+// Install-local feature participation flags. The registry owns the available
+// feature ids; this schema keeps generic settings saves from persisting an
+// unknown or malformed feature state.
+export const instanceFeatureSettingsSchema = z.object({
+  post: z.object({
+    enabled: z.boolean().optional(),
+  }).strict().optional(),
+}).strict();
+
+export const instanceFeatureIdSchema = z.enum(['post']);
+
+export const instanceFeatureUpdateSchema = z.object({
+  enabled: z.boolean(),
 }).strict();
 
 export const subdirFilterSchema = z.string()

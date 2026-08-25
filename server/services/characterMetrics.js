@@ -123,13 +123,19 @@ export const METRICS = [
     // array and a throw here lands in `readMetric`'s `unavailable`, so a shape mismatch can
     // never render as a confident "0 days active" for someone with years of history.
     compute: async (read) => {
-      const [logging, sessions, training, timezone] = await Promise.all([
+      const [logging, postEnabled, timezone] = await Promise.all([
         read('loggingStats'),
-        read('postSessions'),
-        read('postTraining'),
+        read('postEnabled'),
         read('userTimezone'),
       ]);
       if (!Array.isArray(logging?.activeDayKeys)) throw new Error('logging stats reported no activeDayKeys');
+
+      if (!postEnabled) return unionActiveDayKeys([logging.activeDayKeys], timezone).length;
+
+      const [sessions, training] = await Promise.all([
+        read('postSessions'),
+        read('postTraining'),
+      ]);
       if (!Array.isArray(sessions)) throw new Error('POST sessions unreadable');
       if (!Array.isArray(training)) throw new Error('POST training log unreadable');
 
@@ -273,5 +279,7 @@ async function readMetric(metric, read) {
  * `getCharacterSkills`) or the six signals the two registries share get read twice.
  */
 export async function getCharacterMetrics(read = createSignalContext()) {
-  return Promise.all(METRICS.map((metric) => readMetric(metric, read)));
+  const postEnabled = await read('postEnabled');
+  const metrics = postEnabled ? METRICS : METRICS.filter((metric) => metric.id !== 'postStreakDays');
+  return Promise.all(metrics.map((metric) => readMetric(metric, read)));
 }

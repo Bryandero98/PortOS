@@ -229,6 +229,15 @@ export const scorePostLlmDrill = (type, drillData, responses, timeLimitMs, provi
     body: JSON.stringify({ type, drillData, responses, timeLimitMs, ...(providerId && { providerId }), ...(model && { model }) }),
     ...options
   });
+// Standalone rhetoric attempts are evaluated one at a time in the trainer's
+// background queue. Callers own the inline failure state, so they should pass
+// `{ silent: true }` here rather than making a provider hiccup interrupt the
+// next prompt.
+export const evaluateRhetoricAttempt = (data, options = {}) => request('/meatspace/post/rhetoric/evaluate', {
+  method: 'POST',
+  body: JSON.stringify(data),
+  ...options
+});
 export const getPostDrillCacheStatus = () => request('/meatspace/post/drill-cache/status');
 export const fillPostDrillCache = (types, providerId, model) => request('/meatspace/post/drill-cache/fill', {
   method: 'POST',

@@ -9,6 +9,7 @@ import {
   PREVIOUS_DEFAULT_PROMPTS,
 } from './taskPromptDefaults.js';
 import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
+import { EPIC_DECOMPOSED_LABEL } from './perpetualWork.js';
 
 // Hash snapshot of every exported prompt body and version. This pins the
 // cross-install prompt-upgrade contract (see AGENTS.md "Distribution model"):
@@ -49,6 +50,21 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(gitlab).toContain('ascii_downcase');
     expect(gitlab).toContain('--squash --remove-source-branch');
     expect(gitlab).toContain('Never force-delete with `-D`');
+  });
+
+  it('plan-task v18 scheduled default omits review while preserving CI and v17', () => {
+    const current = DEFAULT_TASK_PROMPTS['plan-task'];
+    const previous = PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1);
+
+    expect(PROMPT_VERSIONS['plan-task']).toBe(18);
+    expect(current).not.toContain('## Phase 6 — Review locally');
+    expect(current).not.toContain('{reviewers}');
+    expect(current).not.toContain('LOCAL reviewers');
+    expect(current).not.toContain('PR-SIDE reviewers');
+    expect(current).toContain('gh pr checks <num> --required --watch --fail-fast');
+    expect(previous).toContain('## Phase 6 — Review locally');
+    expect(previous).toContain('{reviewers}');
+    expect(previous).not.toBe(current);
   });
 
   afterEach(() => {
@@ -275,9 +291,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // executable is `agy`, and no `antigravity` command exists on any PATH. A claim
   // agent handed the bare slug probed `command -v antigravity`, found nothing,
   // declared the reviewer unavailable, and merged its PR on a self-review. Every
-  // claim/plan prompt that enumerates the CLI reviewers must name the binary.
+  // claim prompt that enumerates the CLI reviewers must name the binary.
   it.each([
-    ['plan-task', 16],
     ['claim-issue', 16],
     ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
@@ -313,7 +328,6 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // every reviewer finding a follow-up commit on an already-public PR, and it
   // pointed the local-LLM reviewers at a `gh pr diff` that could not exist yet.
   it.each([
-    ['plan-task', 16],
     ['claim-issue', 16],
     ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
@@ -329,8 +343,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toMatch(/BRANCH diff, not an? (PR|MR|MR\/PR) diff/);
 
     // Ordering is the whole point: inside the ship phase, the local review step
-    // precedes the create command. Sliced from the review heading because
-    // plan-task's Phase 3b opens an unrelated clarification PR much earlier.
+    // precedes the create command. Sliced from the review heading because a
+    // clarification path can open an unrelated PR much earlier.
     const shipSection = current.slice(current.indexOf('Review locally'));
     const localIdx = shipSection.indexOf('Run each LOCAL reviewer');
     const createIdx = shipSection.search(/gh pr create|glab mr create/);
@@ -500,9 +514,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // release-check READS the changelog rather than writing it, so its fix is the
   // mirror image: an unreleased set that lives in uncollected fragments must not
   // read as "not enough work accumulated for a release".
-  it('release-check v9 reconciles missing releases before evaluating readiness, preserving the v8 default', () => {
+  it('release-check v11 delegates release mechanics and configured reviews, preserving v10', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
-    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(9);
+    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(11);
     expect(current).toContain('Reconcile Missing Releases');
     expect(current).toContain('Unpublished release detected');
     expect(current).toContain('--latest=false');
@@ -516,6 +530,11 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('database-backed test suite');
     expect(current).toContain('test-database provisioning/setup command');
     expect(current).toContain('never substitute a production database');
+    expect(current).toContain('{reviewers}');
+    expect(current).toContain('/do:release');
+    expect(current).not.toMatch(/copilot/i);
+    expect(current).not.toContain('reviewThreads');
+    expect(current).not.toContain('copilot-pull-request-reviewer');
 
     // v8 is identified by content, not by position: later revisions append
     // their own outgoing bodies after it, so `last` stops meaning v8.
@@ -525,6 +544,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
     );
     expect(v8Candidates).toHaveLength(1);
     expect(v8Candidates[0]).not.toBe(current);
+    const v10 = previous.find((prompt) => prompt.includes('copilot-pull-request-reviewer') && prompt.includes('AGENTS.md'));
+    expect(v10).toBeDefined();
+    expect(v10).not.toBe(current);
   });
 
   // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it
@@ -590,6 +612,72 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('--limit 500');
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).not.toContain('--limit 100');
   });
+
+  it('claim flows retry self-assigned issues and release every open-claim marker', () => {
+    const github = DEFAULT_TASK_PROMPTS['claim-issue'];
+    const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
+
+    // Floors, not equalities: this pins that the assignee-retry revision shipped
+    // WITH its version bump, and later revisions keep bumping past it.
+    expect(PROMPT_VERSIONS['claim-issue']).toBeGreaterThanOrEqual(20);
+    expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBeGreaterThanOrEqual(18);
+    expect(github).toContain('gh api --hostname "$GH_HOST" user -q .login');
+    expect(github).toContain('git remote get-url origin');
+    expect(github).toContain('if [ "$GH_HOST" = "ssh.github.com" ]');
+    expect(github).toContain('GH_HOST="github.com"');
+    expect(github).toContain('authenticated account remains eligible for a retry');
+    expect(github).toContain('at least one assignee\'s login matches `$ME`');
+    expect(github).toContain('--remove-assignee "${ASSIGNEES:-@me}"');
+    expect(gitlab).toContain('authenticated account remains eligible for a retry');
+    expect(gitlab).toContain('at least one assignee\'s username matches `$ME`');
+    expect(gitlab).toContain('--unassign --unlabel in-progress');
+    expect(gitlab).toContain('clears every current assignee');
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
+  });
+
+  // Epic decomposition. Every claim flow used to skip an epic outright ("leave
+  // it for a human to split"), so a tracker whose remaining work was all epics
+  // ended each run with nothing done and reported an empty queue. Phase 1b makes
+  // splitting the epic the work: file per-slice children, stamp the parent
+  // `decomposed`, claim the first slice. The marker label is the convergence
+  // signal perpetualWork.js#isActionableIssue reads, so the live agent and the
+  // drain agree on when an epic stops being claimable.
+  it('claim flows decompose an undecomposed epic instead of skipping it, preserving the outgoing defaults', () => {
+    // JIRA is deliberately NOT in this list: its reads expose neither labels nor
+    // epic links (jira.js#getIssue / #fetchMyCurrentSprintTickets), so a decomposition
+    // marker is invisible there and an epic's children unfindable — that flow still
+    // leaves an epic for a human, and says so. Tracked in #5042.
+    const keys = ['claim-issue', 'claim-issue-gitlab'];
+    const floors = { 'claim-issue': 21, 'claim-issue-gitlab': 19 };
+
+    for (const key of keys) {
+      const current = DEFAULT_TASK_PROMPTS[key];
+      expect(PROMPT_VERSIONS[key]).toBeGreaterThanOrEqual(floors[key]);
+      expect(current).toContain('Phase 1b');
+      // The literal the prompt stamps must be the label the detector reads.
+      expect(current).toContain(EPIC_DECOMPOSED_LABEL);
+      expect(current).not.toContain('Leave epics for a human to split');
+      expect(current).not.toContain("don't claim it wholesale here");
+
+      // The outgoing body stays recognizable so an install storing it auto-upgrades
+      // rather than being pinned to the skip-the-epic flow forever. One entry per
+      // shipped version, in ship order, is what makes .at(-1) the outgoing one.
+      const previous = PREVIOUS_DEFAULT_PROMPTS[key];
+      expect(previous).toHaveLength(PROMPT_VERSIONS[key] - 1);
+      expect(previous.at(-1)).not.toBe(current);
+      expect(previous.at(-1)).not.toContain('Phase 1b');
+    }
+
+    // A slice references its parent without closing it, and the parent keeps the
+    // checklist a later claim follows to the next available child.
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('Part of #${EPIC}');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('## Decomposed into');
+    // The JIRA flow keeps its human-split behavior, and names the API gap that forces it.
+    expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).not.toContain('Phase 1b');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue-jira']).toContain('Leave epics for a human to split');
+  });
+
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
   // human table at exit 0 (`-F` is `--output-format` there, a different flag from
   // `--output`), and `glab mr list --state <x>` does not exist at all. The tree
@@ -618,9 +706,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
       (prompt) => prompt.includes('glab issue list --per-page 100 -F json') && prompt.includes('{issueExcludeLabels}'),
     );
     expect(withBoth).toHaveLength(1);
-    // …and it was appended after every body that predates v15, so it sits in the
-    // newest third of the list even once later revisions append behind it.
-    expect(previous.indexOf(withBoth[0])).toBeGreaterThan(previous.length - 4);
+    // …at the position its version number implies. PREVIOUS_DEFAULT_PROMPTS holds
+    // exactly one entry per shipped version in ship order, so the v15 body lives at
+    // index 14 forever — later revisions append behind it and cannot move it.
+    expect(previous.indexOf(withBoth[0])).toBe(14);
     expect(withBoth[0]).not.toBe(current);
   });
 

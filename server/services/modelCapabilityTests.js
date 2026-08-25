@@ -3,7 +3,7 @@
  *
  * The assessments panel next door answers "how fast is this model here". This
  * one answers the question speed cannot: **can it actually do what its badges
- * claim?** Four tests, each bound to the capability badges the install catalog
+ * claim?** Five tests, each bound to the capability badges the install catalog
  * already shows, each keeping the model's full output:
  *
  *   - `sandbox-repair` (`tools`) — a broken module and its failing test are
@@ -59,6 +59,7 @@ import {
   applicableTests, getCapabilityTest,
   scoreKeywords, scoreFictionScene, scoreStoryBeats, scoreSandboxRepair, rollUpVerdict,
 } from '../lib/modelCapabilityTests.js';
+import { parseRhetoricJson, scoreRhetoricReference } from '../lib/postRhetoric.js';
 import { listRuntimeModels, runtimeEndpoint, runtimeApiKey } from './localModelAssessments.js';
 import { runLocalLlmTest, runEndpointLlmTest } from './localLlmPlayground.js';
 import { listProviders } from './providers.js';
@@ -242,6 +243,14 @@ const CHAT_TESTS = {
     images: async () => undefined,
     score: (text) => scoreFictionScene(text, FICTION_SCENE_KEYWORDS),
   },
+  'rhetoric-reference': {
+    // Forty compact reference attempts plus one JSON score per item fit within
+    // this budget while leaving room for short evidence-free score output.
+    maxTokens: 5000,
+    message: (modelId) => `Scoring the rhetoric reference set with ${modelId}…`,
+    images: async () => undefined,
+    score: (text) => scoreRhetoricReference(parseRhetoricJson(text)),
+  },
 };
 
 async function runChatTest({ backend, modelId, testId, signal, emit }) {
@@ -396,6 +405,7 @@ const RUNNERS = {
   'image-analysis': runChatTest,
   'story-outline': runChatTest,
   'fiction-scene': runChatTest,
+  'rhetoric-reference': runChatTest,
   'sandbox-repair': runSandboxRepair,
 };
 

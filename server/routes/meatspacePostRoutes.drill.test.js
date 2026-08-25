@@ -25,6 +25,10 @@ vi.mock('../services/meatspacePostMemory.js', () => ({
   generateMemoryDrill: vi.fn(),
 }));
 
+vi.mock('../services/meatspacePostRhetoric.js', () => ({
+  evaluateRhetoricAttempt: vi.fn(),
+}));
+
 vi.mock('../services/meatspacePost.js', () => ({
   resolveDrillConfig: vi.fn(),
   generateDrill: vi.fn(),
@@ -37,6 +41,7 @@ vi.mock('../services/meatspacePost.js', () => ({
 import { getCachedDrill, triggerReplenish } from '../services/meatspacePostDrillCache.js';
 import { generateLlmDrill } from '../services/meatspacePostLlm.js';
 import { generateMemoryDrill } from '../services/meatspacePostMemory.js';
+import { evaluateRhetoricAttempt } from '../services/meatspacePostRhetoric.js';
 import { resolveDrillConfig, generateDrill, getPostReviewReps, getPostConfig } from '../services/meatspacePost.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import meatspacePostRoutes from './meatspacePostRoutes.js';
@@ -262,5 +267,42 @@ describe('GET /api/meatspace/post/review/reps', () => {
     getPostReviewReps.mockResolvedValue([]);
     await request(app).get('/api/meatspace/post/review/reps?limit=99');
     expect(getPostReviewReps).toHaveBeenCalledWith(expect.any(Date), 5);
+  });
+});
+
+describe('POST /api/meatspace/post/rhetoric/evaluate', () => {
+  let app;
+  beforeEach(() => {
+    app = makeApp();
+    vi.clearAllMocks();
+  });
+
+  const payload = {
+    attemptId: 'attempt-1',
+    mode: 'meter',
+    prompt: 'State the claim clearly.',
+    response: 'The claim is clear.',
+  };
+
+  it('rejects evaluation while the saved evaluator consent is disabled', async () => {
+    getPostConfig.mockResolvedValue({ rhetoricEvaluator: { enabled: false } });
+
+    const r = await request(app).post('/api/meatspace/post/rhetoric/evaluate').send(payload);
+
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('POST_RHETORIC_EVALUATOR_DISABLED');
+    expect(evaluateRhetoricAttempt).not.toHaveBeenCalled();
+  });
+
+  it('evaluates only after the saved evaluator consent is enabled', async () => {
+    const result = { score: 0.9, feedback: 'Strong.' };
+    getPostConfig.mockResolvedValue({ rhetoricEvaluator: { enabled: true } });
+    evaluateRhetoricAttempt.mockResolvedValue(result);
+
+    const r = await request(app).post('/api/meatspace/post/rhetoric/evaluate').send(payload);
+
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(result);
+    expect(evaluateRhetoricAttempt).toHaveBeenCalledWith(payload);
   });
 });

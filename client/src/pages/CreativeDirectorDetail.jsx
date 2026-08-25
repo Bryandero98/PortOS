@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router';
-import { ArrowLeft, Play, Pause, RefreshCw, SlidersHorizontal, Square } from 'lucide-react';
+import { ArrowLeft, Play, Pause, RefreshCw, SlidersHorizontal, Square, Trash2 } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import {
   getCreativeDirectorProject,
+  deleteCreativeDirectorProject,
   startCreativeDirectorProject,
   pauseCreativeDirectorProject,
   stopCreativeDirectorProject,
@@ -158,7 +159,19 @@ export default function CreativeDirectorDetail() {
   // Stop is destructive and irreversible (SIGKILLs a live agent, cancels queued
   // GPU renders) and sits beside Pause, so it takes the same two-step confirm
   // every other destructive action in the app uses.
-  const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
+  const {
+    isConfirming: isConfirmingStop,
+    requestDelete: requestStop,
+    cancelDelete: cancelStop,
+    confirmDelete: confirmStop,
+  } = useConfirmDelete();
+  const {
+    isConfirming: isConfirmingDelete,
+    requestDelete,
+    cancelDelete,
+    confirmDelete,
+  } = useConfirmDelete();
+  const [deleting, setDeleting] = useState(false);
 
   const handleAction = async (kind) => {
     // Map action → past-tense label and optimistic status up-front.
@@ -182,6 +195,18 @@ export default function CreativeDirectorDetail() {
       if (optimisticStatus) setProject((p) => p ? { ...p, status: optimisticStatus } : p);
     } catch (err) {
       toast.error(err.message || `Failed to ${kind}`);
+    }
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await deleteCreativeDirectorProject(id, { silent: true });
+      toast.success('Creative Director project deleted');
+      navigate('/creative-director');
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete project');
+      setDeleting(false);
     }
   };
 
@@ -221,7 +246,7 @@ export default function CreativeDirectorDetail() {
               </div>
             </div>
           </div>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap justify-end gap-1">
             <button onClick={fetchProject} className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs">
               <RefreshCw className="w-3 h-3" /> Refresh
             </button>
@@ -244,18 +269,18 @@ export default function CreativeDirectorDetail() {
               </button>
             )}
             {!['complete', 'failed', 'draft'].includes(project.status) && (
-              isConfirming(project.id) ? (
+              isConfirmingStop(project.id) ? (
                 <ConfirmButtonPair
                   prompt="Stop?"
                   confirmText="Stop"
                   ariaLabel={`Confirm stop project ${project.name}`}
-                  onConfirm={() => confirmDelete(() => handleAction('stop'))}
-                  onCancel={cancelDelete}
+                  onConfirm={() => confirmStop(() => handleAction('stop'))}
+                  onCancel={cancelStop}
                 />
               ) : (
                 <button
                   type="button"
-                  onClick={() => requestDelete(project.id)}
+                  onClick={() => requestStop(project.id)}
                   title="Stop: kill the running agent, retire its queued tasks, and cancel pending renders. Pause only stops NEW work being queued."
                   aria-label={`Stop project ${project.name}`}
                   className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs hover:text-port-error"
@@ -263,6 +288,27 @@ export default function CreativeDirectorDetail() {
                   <Square className="w-3 h-3" /> Stop
                 </button>
               )
+            )}
+            {isConfirmingDelete(project.id) ? (
+              <ConfirmButtonPair
+                prompt="Delete?"
+                confirmText="Delete"
+                ariaLabel={`Confirm delete project ${project.name}`}
+                onConfirm={() => confirmDelete(handleDelete)}
+                onCancel={cancelDelete}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => requestDelete(project.id)}
+                disabled={deleting}
+                title={deleting ? 'Deleting Creative Director project…' : 'Delete this Creative Director project'}
+                aria-label={`${deleting ? 'Deleting' : 'Delete'} project ${project.name}`}
+                aria-busy={deleting}
+                className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs hover:bg-port-error/20 hover:text-port-error disabled:opacity-50"
+              >
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
             )}
           </div>
         </div>

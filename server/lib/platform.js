@@ -1,7 +1,10 @@
 import { exec, execSync } from './childProcess.js';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+// Keep promisification lazy so pure platform consumers can be imported from
+// tests that intentionally mock only the child-process methods they exercise.
+// The call path still uses the same shared `exec` wrapper when a port probe runs.
+const execAsync = (...args) => promisify(exec)(...args);
 
 const platform = process.platform;
 

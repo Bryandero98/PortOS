@@ -11,7 +11,20 @@
 
 // PORTOS_API_URL is interpolated into the jira-status-report default prompt below.
 import { PORTOS_API_URL } from '../../lib/ports.js';
-import { ISSUE_QUALITY_GUIDANCE } from '../../lib/dispatchLabels.js';
+import { EPIC_DECOMPOSED_LABEL, EPIC_LABEL, ISSUE_QUALITY_GUIDANCE, formatLabelCreateCommand } from '../../lib/dispatchLabels.js';
+
+// The epic marker and its idempotent `label create` line come from the shared
+// label registry, so the label the claim agent stamps is by construction the one
+// perpetualWork.js#isActionableIssue reads, and the create is `|| true` — a
+// second decomposition must not abort Phase 1b just because the label exists.
+const EPIC_LABEL_CREATE_GH = formatLabelCreateCommand(EPIC_DECOMPOSED_LABEL);
+const EPIC_LABEL_CREATE_GLAB = formatLabelCreateCommand(EPIC_DECOMPOSED_LABEL, { cli: 'glab' });
+// Promoting an oversized issue to an epic needs the umbrella label to EXIST: the
+// queue skips a parent only when it is both epic-shaped and marked, so an
+// `--add-label epic` that fails on a repo without the label leaves the parent
+// actionable and it gets re-split every pass.
+const UMBRELLA_LABEL_CREATE_GH = formatLabelCreateCommand(EPIC_LABEL);
+const UMBRELLA_LABEL_CREATE_GLAB = formatLabelCreateCommand(EPIC_LABEL, { cli: 'glab' });
 
 const SCHEDULED_ISSUE_QUALITY_GATE = `## Scheduled issue-quality gate
 
@@ -21,6 +34,12 @@ Apply this gate to every new issue created by the scheduled replan, including
 items migrated from PLAN.md or GOALS.md and opportunity-scan suggestions. A
 proposal is valid only when it is useful to do now. A refactor is valid when current evidence shows it pays off now; a deferred possibility is not an issue.
 Return/drop it and let a later audit rediscover it when the evidence changes.`;
+
+// gh api defaults to github.com, even when the checked-out repository lives on
+// GitHub Enterprise. Resolve the origin host before identity probes so an
+// enterprise login cannot be mistaken for an unrelated github.com account.
+const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"
+if [ "$GH_HOST" = "ssh.github.com" ]; then GH_HOST="github.com"; fi`;
 
 // ============================================================
 // Unified DEFAULT_TASK_PROMPTS — one entry per scheduled task type / pipeline stage
@@ -800,17 +819,12 @@ Use \`feat:\` / \`fix:\` / \`refactor:\` / \`chore:\` / etc. (The bracketed-scop
    git commit -m "docs([<slug>]): remove from PLAN.md and log to changelog"
    \`\`\`
 
-## Phase 6 — Review locally, then open the PR and ship
+## Phase 6 — Open the PR and ship
 
-The configured reviewers for this task, in order, are \`{reviewers}\`. Split them by where they can run, preserving order: **LOCAL reviewers** — every token that is NOT an \`@<login>\` (\`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` / \`cursor\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure) read the working tree and need no PR, so they run BEFORE the PR is opened. **PR-SIDE reviewers** — every \`@<login>\` token, plus any review bot the repo requests automatically on open — review cloud-side, so they can only run once the PR exists. Open the PR only when the branch is already review-clean and all that remains is CI plus those PR-side reviewers.
-
-1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff — BEFORE opening the PR, not retroactively. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
-2. **Run each LOCAL reviewer in order against the BRANCH diff, not a PR diff.** No PR exists yet, so use the CLI's own base-diff mode or \`git diff origin/main...HEAD\` (substitute the repo's default branch when it isn't \`main\`); local LLM reviewers go through the appended endpoint procedure. Apply the fixes, run the tests, and commit them — capped at 3 rounds per reviewer — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review, and never open the PR on the strength of it. If a local reviewer is still unsatisfied after 3 rounds, or its fixes leave the build/tests red, do NOT open a PR — leave the branch and worktree in place, report the reviewer and the failure, and stop.
-3. Push the branch: \`git push -u origin claim/<slug>\`, then confirm \`git log --oneline @{u}..HEAD\` is empty so every review fix from step 2 is in the PR's diff.
-4. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
-5. **Satisfy the PR-SIDE reviewers and CI before merging.** Request each \`@<login>\` (\`gh pr edit <num> --add-reviewer <login>\`, drop the \`@\`), poll every 5–15s, and address the findings — push fixes, capped at 3 rounds each; their approval gates the merge. Wait out any auto-requested review bot the same way, then let required CI finish (\`gh pr checks <num> --required --watch --fail-fast\` — REQUIRED checks only, so an optional job can't stall the merge). If a reviewer stays unsatisfied or a required check stays red, comment on the PR naming the failure, remove only the worktree, and leave the branch and PR for reconciliation.
-
-6. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
+1. Push the branch: \`git push -u origin claim/<slug>\`.
+2. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
+3. **Wait for required CI before merging.** Run \`gh pr checks <num> --required --watch --fail-fast\` — REQUIRED checks only, so optional jobs cannot stall the merge. If a required check stays red, comment on the PR naming the failure, remove only the worktree, and leave the branch and PR for reconciliation.
+4. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
    \`\`\`bash
    PR_URL=$(gh pr view --json url -q .url)   # no number: resolves the PR from the checked-out branch
    gh pr merge "$PR_URL" --merge --delete-branch || {
@@ -847,7 +861,7 @@ Pick the next available unclaimed open GitHub issue, **create your own worktree 
 
 {issueAuthorFilter}
 
-**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open PR head refs — OR the issue is already assigned to someone OR carries an \`in-progress\` label. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines) and to the human running \`/claim --issues\` in a TUI.
+**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open PR head refs — OR the issue is assigned to another account OR carries an \`in-progress\` label. An issue already assigned to the authenticated account remains eligible for a retry. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines) and to the human running \`/claim --issues\` in a TUI.
 
 ## Phase 1 — Pick the target issue
 
@@ -864,6 +878,10 @@ Run steps 1–5 in order.
    #   --limit 500 (not 100): the blocking-label filter below runs on this
    #   fetched page, so a small cap risks missing eligible work further down
    #   a busy queue when the first page is full of excluded/in-flight issues.
+   # Keep an issue assigned to this authenticated account eligible for retry;
+   # if this lookup fails, leave ME empty and skip all assigned issues.
+   ${GITHUB_HOST_SETUP}
+   ME="$(gh api --hostname "$GH_HOST" user -q .login 2>/dev/null || true)"
    OWNER="$(gh repo view --json owner -q .owner.login)"
    gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 500
    #   Any-author mode: run the SAME command WITHOUT the --author "$OWNER" flag.
@@ -874,14 +892,60 @@ Run steps 1–5 in order.
    gh pr list --state open --json headRefName -q '.[].headRefName' 2>/dev/null
    \`\`\`
    For each ref (after stripping any leading \`origin/\` / \`upstream/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
-4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
+4. **Pick the target issue:** walk the candidate list oldest-first in TWO passes. First pass, consider only NON-epic issues and take the first that satisfies every rule below — atomic work always outranks an epic, whatever their relative age. Only if that pass finds nothing do you make a second pass for an undecomposed epic (same rules), and an epic you pick goes to **Phase 1b**, not Phase 2. A single oldest-first pass would enter a decomposition the moment an epic happened to be older than claimable work, which is exactly backwards. The rules:
    - Its number is NOT in the in-flight set.
-   - It has NO assignees (an assignee means another machine/human already claimed it).
+   - It has no assignees, or at least one assignee's login matches \`$ME\` (an issue assigned only to another account is already claimed). If \`$ME\` is empty, skip every assigned issue.
    - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
-   - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). An epic needs per-slice partial-ship (each slice its own PR, \`Refs\` not \`Closes\`), so leave it for a human or \`/claim --issues\` to split — don't claim it wholesale here. **The bare \`plan\` label is NOT a skip signal.** \`do-replan --issues\` (and \`/do:replan --issues\`) labels EVERY migrated backlog item \`plan\` — atomic bug-fixes included — so \`plan\` marks the *claimable* queue exactly as \`/do:next --issues\` treats it (it is that flow's required candidate label). Skipping all \`plan\` issues would discard the entire actionable backlog and falsely report an empty queue.
-5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
+   - It is NOT an ALREADY-DECOMPOSED tracking/umbrella **epic**. An epic is recognized by an \`${EPIC_LABEL}\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive); it counts as decomposed once it ALSO carries the \`${EPIC_DECOMPOSED_LABEL}\` label. Skip a decomposed epic — its child slices are ordinary claimable issues in this very list, so claiming the parent would duplicate them. An undecomposed epic is eligible only in the second pass above. **The bare \`plan\` label is NOT a skip signal.** \`do-replan --issues\` (and \`/do:replan --issues\`) labels EVERY migrated backlog item \`plan\` — atomic bug-fixes included — so \`plan\` marks the *claimable* queue exactly as \`/do:next --issues\` treats it (it is that flow's required candidate label). Skipping all \`plan\` issues would discard the entire actionable backlog and falsely report an empty queue.
+5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. **But an open, undecomposed epic is NOT an empty queue**: never report "no work available" while one is unclaimed. Splitting it is the work — go to Phase 1b.
 
 Capture the issue number as \`NUM\`, its title, and its full body — you'll reuse them in the PR and the \`Closes #<num>\` trailer.
+
+## Phase 1b — Decompose an epic (only when Phase 1 landed on one)
+
+You reach this phase two ways: Phase 1 found no eligible atomic issue and fell through to an undecomposed epic, or the user pinned this run to an epic. **Never end a run reporting "nothing to do" while an undecomposed epic is open** — turning it into shippable slices IS this round's work, and it is what refills the queue for every later run.
+
+Capture the epic's number as \`EPIC\`. This phase writes ONLY to the issue tracker: no worktree, no branch, no PR, no edits in the source repo.
+
+1. Read it in full, comments included: \`gh issue view "\${EPIC}" --comments\`.
+2. **Find the children it already has** — an epic a human (or an earlier run) already split must never be re-split:
+   \`\`\`bash
+   gh issue view "\${EPIC}" --json body -q .body
+   gh issue list --state all --search "in:body \\"Part of #\${EPIC}\\"" --json number,title,state,labels,assignees --limit 200
+   \`\`\`
+   Union that with every \`#<num>\` the epic's own body checklist references.
+3. **If children already exist, do NOT file more.**
+   - **Some child still OPEN** → the epic is already decomposed. Make sure it carries the \`${EPIC_DECOMPOSED_LABEL}\` label and that its body checklist lists every child (step 6), then set \`NUM\` to the FIRST open child that passes Phase 1 step 4's eligibility rules (oldest-first) and continue at **Phase 2** with that child. If every open child is in flight, assigned elsewhere, or blocked, exit cleanly — that queue is busy, not empty.
+   - **Every child CLOSED** → the epic's work is done. Post a comment naming the children that delivered it, close it (\`gh issue close "\${EPIC}" --reason completed\`), and return to Phase 1 to look for other work.
+   - **Labeled \`${EPIC_DECOMPOSED_LABEL}\` but NO children exist** → an earlier split claimed the epic and died before filing anything. Treat it as undecomposed and continue at step 4; the marker is already in place, so nothing needs re-claiming. (Auto-pick can't reach this state — the marker is exactly what makes Phase 1 skip the epic — so it is recovered only when a human or the work-item picker aims a claim straight at that epic. That is the deliberate trade: a stalled split waits for a human, rather than every marker-write failure re-splitting the same epic on every drain tick.)
+4. **Otherwise, plan the split.** Read the code the epic actually names before slicing — a split that never met the repo is worthless. Produce 2–8 slices, each of them independently shippable in ONE PR, valuable on its own, and written with concrete scope + acceptance criteria + the files/areas involved. Slice by user-visible behavior or subsystem; never one-issue-per-file, and never invent scope the epic doesn't ask for. Decide the boundaries yourself — an ambiguous epic is decided, not deferred (same rule as Phase 3). Only an epic so vague that no split survives contact with the code is a \`needs-input\` case: comment what is missing, \`gh issue edit "\${EPIC}" --add-label needs-input\`, and exit.
+5. **Claim the epic, THEN file the slices.** Stamp the marker before the first \`gh issue create\` — the label IS this phase's claim (Phase 1 skips a \`${EPIC_DECOMPOSED_LABEL}\` epic). Like every other marker in this flow it **narrows** the window for two concurrent runs to collide — it does NOT eliminate it, since a label edit is an idempotent write, not a compare-and-set — so re-run step 2's child query immediately before the first create and abandon the split if children now exist. Marking last instead of first would leave the epic actionable forever whenever that final edit failed, and let a crashed run be re-split from scratch on the next tick:
+   \`\`\`bash
+   ${EPIC_LABEL_CREATE_GH}
+   gh issue edit "\${EPIC}" --add-label ${EPIC_DECOMPOSED_LABEL}
+   gh issue comment "\${EPIC}" --body "Decomposing into per-slice issues — <one line on how you sliced it>"
+   # The queue label the slices carry must exist before the first create, or every
+   # \`gh issue create\` below fails on a repo that has never used it.
+   gh label create plan --color 0E8A16 --description "Claimable backlog item" 2>/dev/null || true
+   \`\`\`
+   Then file each slice, in the order you want them worked:
+   \`\`\`bash
+   gh issue create --title "<specific, human-readable>" --label plan \\
+     --body "<what + why + acceptance criteria + files/areas>
+
+Part of #\${EPIC}"
+   \`\`\`
+   Use \`Part of #\${EPIC}\` — NEVER \`Closes #\${EPIC}\`, which would close the whole epic on the first slice that merges. **Give every slice body the epic-closure instruction too** — a line telling the agent that ships it to check its box in #\${EPIC} and, when it was the LAST open child, close #\${EPIC} with a summarizing comment. That is what closes the epic: once it carries the marker, Phase 1 and the work detector both skip it, so no later claim run will revisit the parent on its own. Carry over the epic's \`area:*\` labels, and add dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) or contributor labels (\`good first issue\`, \`help wanted\`) only where that slice genuinely justifies them; create a missing label immediately before applying it.
+6. **Write the checklist back to the epic** so the next run can follow it — keep the original body and append a \`## Decomposed into\` list naming every child:
+   \`\`\`bash
+   EPIC_BODY=$(mktemp)
+   gh issue view "\${EPIC}" --json body -q .body > "\${EPIC_BODY}"
+   printf '\\n\\n## Decomposed into\\n\\n- [ ] #<a> — <title>\\n- [ ] #<b> — <title>\\n' >> "\${EPIC_BODY}"
+   gh issue edit "\${EPIC}" --body-file "\${EPIC_BODY}"
+   rm -f "\${EPIC_BODY}"
+   \`\`\`
+   The marker from step 5 is what stops the next run from splitting the same epic again; this checklist is what lets a claim aimed at the epic resolve the next available child. Leave the epic OPEN, unassigned, and WITHOUT \`in-progress\` — it closes when its last child closes.
+7. **Then claim the first slice you filed** — set \`NUM\` to it and continue at **Phase 2**, shipping that ONE slice normally (its PR closes the slice, never the epic). If claiming it fails because another run won the race, exit cleanly: the decomposition alone is a successful round, and the next claim run picks up the next linked child.
 
 ## Phase 2 — Claim (worktree + markers)
 
@@ -912,7 +976,12 @@ Read the full issue (\`gh issue view "\${NUM}" --comments\`) before writing any 
 
 (A too-large scope is NOT in this list — it has its own park path below.)
 
-**A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, post a brief comment naming the split you'd suggest, **tag it \`needs-input\`** (\`gh issue edit "\${NUM}" --add-label needs-input\`), release the claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it is what stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
+**A genuinely too-large issue gets SPLIT, not parked.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, promote it to an epic and decompose it: file the slices and rewrite the parent exactly as **Phase 1b** steps 4–6 describe (each slice carrying \`Part of #\${NUM}\`). **Promote it on BOTH axes, creating the umbrella label first** — the queue skips a parent only when it is epic-shaped AND marked, so an issue left carrying only \`${EPIC_DECOMPOSED_LABEL}\` stays claimable and gets re-split every pass:
+\`\`\`bash
+${UMBRELLA_LABEL_CREATE_GH}
+gh issue edit "\${NUM}" --add-label ${EPIC_LABEL} --add-label ${EPIC_DECOMPOSED_LABEL}
+\`\`\`
+Verify BOTH labels are actually on the issue afterwards (\`gh issue view "\${NUM}" --json labels\`); if the \`${EPIC_LABEL}\` label still won't stick, append " (epic)" to the title instead (\`gh issue edit "\${NUM}" --title "… (epic)"\`) — the title convention marks an epic with no label at all. Then release its claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and continue at Phase 2 with the first slice you filed. Splitting an omnibus issue is work you do, not a hand-off. Park to \`needs-input\` (\`gh issue edit "\${NUM}" --add-label needs-input\`, release the markers, remove the worktree, exit) ONLY when the issue is too vague to slice against the code at all — that park is what stops a perpetual drain from re-picking an un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
 
 **Ambiguity is NOT a release trigger — decide, don't defer.** If the issue is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to \`needs-input\`. Pick the most reasonable interpretation, record the approach you chose in a brief issue comment (\`gh issue comment "\${NUM}" --body "..."\`) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the issue parked waiting on a decision they didn't ask to make. Reserve \`needs-input\` — which pulls the issue out of the autonomous queue — for the narrow cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, post the explaining comment, **tag it \`needs-input\`** (\`gh issue edit "\${NUM}" --add-label needs-input\`), release the claim markers (\`gh issue edit "\${NUM}" --remove-assignee @me --remove-label in-progress\`), remove the worktree, and exit cleanly. **That label is what lets an autonomous drain converge** — Phase 1 step 4 skips \`needs-input\` issues. Never leave a half-claimed issue.
 
@@ -980,7 +1049,9 @@ If \`git branch -d\` refuses, fetch the default branch and re-check the PR's rem
 **Reconcile the issue — did this PR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` trailer already auto-closed it; if it's somehow still open, close it (\`gh issue close "\${NUM}"\`) and remove the label (\`gh issue edit "\${NUM}" --remove-label in-progress\`).
 - **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing comment (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`gh issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --body "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
-- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` comment, and release the claim so the queue re-picks it: \`gh issue edit "\${NUM}" --remove-label in-progress --remove-assignee @me\`.
+- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` comment, and release the claim so the queue re-picks it. Remove the label and every current assignee, not only the authenticated account:
+  \`ASSIGNEES="$(gh issue view "\${NUM}" --json assignees -q '[.assignees[].login] | join(",")')"\`
+  \`gh issue edit "\${NUM}" --remove-label in-progress --remove-assignee "\${ASSIGNEES:-@me}"\`.
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitHub via \`gh pr merge\`; leave the user's working tree alone.`,
 
@@ -997,7 +1068,7 @@ Pick the next available unclaimed open GitLab issue, **create your own worktree 
 
 {issueAuthorFilter}
 
-**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open MR source-branch refs — OR the issue is already assigned to someone OR carries an \`in-progress\` label. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines).
+**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open MR source-branch refs — OR the issue is assigned to another account OR carries an \`in-progress\` label. An issue already assigned to the authenticated account remains eligible for a retry. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines).
 
 ## Phase 1 — Pick the target issue
 
@@ -1008,6 +1079,9 @@ Run steps 1–5 in order.
    \`\`\`bash
    git fetch --prune 2>/dev/null
    # Owner-only mode (default): add  --author <owner>  (resolve <owner> from the project namespace).
+   # Keep an issue assigned to this authenticated account eligible for retry;
+   # if this lookup fails, leave ME empty and skip all assigned issues.
+   ME="$(glab api user -q .username 2>/dev/null || true)"
    glab issue list --per-page 100 --output json
    # Any-author mode: run the SAME command WITHOUT --author.
    \`\`\`
@@ -1017,14 +1091,28 @@ Run steps 1–5 in order.
    glab mr list --per-page 100 --output json   # read each MR's source_branch
    \`\`\`
    For each ref (after stripping any leading \`origin/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
-4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
+4. **Pick the target issue:** walk the candidate list oldest-first in TWO passes. First pass, consider only NON-epic issues and take the first that satisfies every rule below — atomic work always outranks an epic, whatever their relative age. Only if that pass finds nothing do you make a second pass for an undecomposed epic (same rules), and an epic you pick goes to **Phase 1b**, not Phase 2. A single oldest-first pass would enter a decomposition the moment an epic happened to be older than claimable work, which is exactly backwards. The rules:
    - Its number (\`iid\`) is NOT in the in-flight set.
-   - It has NO assignees (an assignee means another machine/human already claimed it).
+   - It has no assignees, or at least one assignee's username matches \`$ME\` (an issue assigned only to another account is already claimed). If \`$ME\` is empty, skip every assigned issue.
    - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
-   - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). Leave epics for a human to split. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
-5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
+   - It is NOT an ALREADY-DECOMPOSED tracking/umbrella **epic**. An epic is recognized by an \`${EPIC_LABEL}\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive); it counts as decomposed once it ALSO carries the \`${EPIC_DECOMPOSED_LABEL}\` label. Skip a decomposed epic — its child slices are ordinary claimable issues in this very list. An undecomposed epic is eligible only in the second pass above. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
+5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. **But an open, undecomposed epic is NOT an empty queue** — go to Phase 1b instead of reporting "no work available".
 
 Capture the issue number (GitLab \`iid\`) as \`NUM\`, its title, and its full description — you'll reuse them in the MR and the \`Closes #<num>\` line.
+
+## Phase 1b — Decompose an epic (only when Phase 1 landed on one)
+
+Same contract as the GitHub flow: an undecomposed epic is work, not a dead end. Capture its \`iid\` as \`EPIC\`. This phase writes ONLY to the issue tracker — no worktree, no branch, no MR.
+
+1. Read it in full: \`glab issue view "\${EPIC}" --comments\`.
+2. **Find the children it already has** — never re-split an epic somebody already split. Union the \`#<num>\` refs in its own description checklist with \`glab issue list --all --search "Part of #\${EPIC}" --output json --per-page 100\`.
+3. **If children already exist, do NOT file more.** Some child still OPEN → make sure the epic carries the \`decomposed\` label and a complete checklist (step 6), set \`NUM\` to the FIRST open child passing Phase 1 step 4's rules (oldest-first), and continue at **Phase 2** with that child; if every open child is in flight/assigned/blocked, exit cleanly. Every child CLOSED → comment naming what delivered it, \`glab issue close "\${EPIC}"\`, and return to Phase 1.
+4. **Otherwise, plan the split** against the actual code the epic names: 2–8 slices, each independently shippable in ONE MR, valuable on its own, each with concrete scope + acceptance criteria + the files/areas involved. Slice by user-visible behavior, never one-issue-per-file, never invent scope. Decide the boundaries yourself; only an epic too vague to slice against the code is a \`needs-input\` case (comment why, \`glab issue update "\${EPIC}" --label needs-input\`, exit).
+5. **Claim the epic, THEN file the slices.** Stamp the marker before the first create — the label IS this phase's claim. Like every other marker in this flow it **narrows** the concurrent-collision window rather than closing it (a label write is idempotent, not a compare-and-set), so re-run step 2's child query immediately before the first create and abandon the split if children now exist. Marking last would instead leave the epic actionable forever whenever that final write failed: \`${EPIC_LABEL_CREATE_GLAB}\`, then \`glab issue update "\${EPIC}" --label ${EPIC_DECOMPOSED_LABEL}\`, then post a comment saying a split is under way. Create the \`plan\` queue label the same way if the project lacks it, or every create below fails. Then file each slice in the order you want them worked: \`glab issue create --title "<specific>" --label plan --description "<what + why + acceptance criteria + files/areas>
+
+Part of #\${EPIC}"\`. Use \`Part of #\${EPIC}\`, NEVER \`Closes #\${EPIC}\`. Give every slice the epic-closure instruction too — check its box in #\${EPIC}, and close #\${EPIC} when it was the LAST open child; once the parent carries the marker, nothing else will revisit it. Carry over the epic's \`area:*\` labels; add \`model:*\`/\`effort:*\` or contributor labels only where justified.
+6. **Write the checklist back to the epic**: keep its description and append a \`## Decomposed into\` checklist (\`- [ ] #<num> — <title>\`) via \`glab issue update "\${EPIC}" --description "<full text>"\`. Leave the epic OPEN, unassigned, and without \`in-progress\` — it closes when its last child closes. The step-5 marker is what stops the next run from re-splitting it; the checklist is what lets a claim aimed at the epic resolve the next available child. An epic already labeled \`${EPIC_DECOMPOSED_LABEL}\` with NO children is a split that died before filing — treat it as undecomposed and resume at step 4.
+7. **Then claim the first slice you filed** — set \`NUM\` to it and continue at **Phase 2**. If another run won the race, exit cleanly: the decomposition itself is a successful round.
 
 ## Phase 2 — Claim (worktree + markers)
 
@@ -1058,7 +1146,7 @@ Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **E
 
 (A too-large scope is NOT in this list — it has its own park path below.)
 
-**A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, post a brief note naming the split you'd suggest, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
+**A genuinely too-large issue gets SPLIT, not parked.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 6's \`Refs\` path, promote it to an epic and decompose it exactly as **Phase 1b** steps 4–6 describe (each slice carrying \`Part of #\${NUM}\`). **Promote it on BOTH axes, creating the umbrella label first** — the queue skips a parent only when it is epic-shaped AND marked, so an issue left carrying only \`${EPIC_DECOMPOSED_LABEL}\` stays claimable and gets re-split every pass: \`${UMBRELLA_LABEL_CREATE_GLAB}\`, then \`glab issue update "\${NUM}" --label ${EPIC_LABEL} --label ${EPIC_DECOMPOSED_LABEL}\`. Confirm both landed (\`glab issue view "\${NUM}" --output json\`); if the \`${EPIC_LABEL}\` label won't stick, append " (epic)" to the title instead — the title convention marks an epic with no label at all. Then release its claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and continue at Phase 2 with the first slice you filed. Splitting an omnibus issue is work you do, not a hand-off. Park to \`needs-input\` (\`glab issue update "\${NUM}" --label needs-input\`, release the markers, remove the worktree, exit) ONLY when the issue is too vague to slice against the code at all — that park stops a perpetual drain from re-picking an un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
 
 **Ambiguity is NOT a release trigger — decide, don't defer.** If the issue is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to \`needs-input\`. Pick the most reasonable interpretation, record the approach you chose in a brief issue note (\`glab issue note "\${NUM}" -m "..."\`) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the issue parked waiting on a decision they didn't ask to make. Reserve \`needs-input\` — which pulls the issue out of the autonomous queue — for the narrow cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, post the explaining note, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit cleanly. **That label is what lets an autonomous drain converge** — Phase 1 step 4 skips \`needs-input\` issues. Never leave a half-claimed issue.
 
@@ -1124,7 +1212,7 @@ If \`git branch -d\` refuses, fetch the default branch and re-check the MR's mer
 **Reconcile the issue — did this MR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` line already auto-closed it on merge to the default branch; if it's somehow still open, close it (\`glab issue close "\${NUM}"\`) and remove the label (\`glab issue update "\${NUM}" --unlabel in-progress\`).
 - **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing note (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`glab issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --description "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
-- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\`.
++ **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\` (\`--unassign\` clears every current assignee).
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitLab via \`glab mr merge\`; leave the user's working tree alone.`,
 
@@ -1164,7 +1252,7 @@ Run steps 1–5 in order.
    - Its status is a not-started status (e.g. "To Do", "Open", "Backlog", "Selected for Development", "Ready"). Skip tickets already "In Progress", "In Review", "Done", or any closed/resolved status — those are claimed or finished.
    - Its KEY is NOT in the in-flight set from step 3.
    - It has enough of a summary/description to act on. A ticket that merely leaves a design choice unstated is still eligible — you'll decide the reading in Phase 3, not skip it here. Skip only a ticket with essentially no actionable content (bare title, no description or acceptance criteria).
-   - It is NOT an Epic (issue type "Epic", or a title ending in "(epic)"). Leave epics for a human to split.
+   - It is NOT an Epic (issue type "Epic", or a title ending in "(epic)"). Leave epics for a human to split. Unlike the GitHub/GitLab claim flows, this one cannot decompose one: the JIRA reads PortOS exposes return neither a ticket's labels nor its epic links, so an agent here can see no decomposition marker and cannot find an epic's existing children.
 5. **If no eligible ticket exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. If a ticket is in the sprint but too vague or blocked to start, create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" or "[<KEY>] Blocked" and a description of what's missing) instead of claiming it.
 
 Capture the ticket KEY as \`KEY\`, its summary, and its full description — you'll reuse them in the branch, the MR/PR, and the commit trailer.
@@ -1421,140 +1509,39 @@ Repository: {repoPath}
 
 Repository: {repoPath}
 
-Check if {appName} has accumulated enough work for a release, following the project's own documented release process.
+This scheduled task is a thin coordinator for {appName}'s release. The bundled slashdo \`release\` workflow is the single source of truth for release mechanics. Do not duplicate its branch, version, changelog, readiness, test/build, PR, review, CI, merge, tag, or report steps here.
 
-## Step 0: Discover the Release Process
+## Step 0: Reconcile Missing Releases
 
-You need to determine these values (use angle-bracket names as placeholders in subsequent steps):
-- \`<SOURCE_BRANCH>\` — where development happens
-- \`<TARGET_BRANCH>\` — where releases go
-- Changelog format and location
-- Pre-release checks (tests, builds)
-- Push/rebase conventions
-
-First, extract \`<OWNER>\` and \`<REPO>\`:
+Before evaluating unreleased work, determine \`<OWNER>\`, \`<REPO>\`, and \`<TARGET_BRANCH>\` from the repository's AGENTS.md (or CLAUDE.md) and release documentation. If the project does not document a release flow, use the repository's default branch. Extract the GitHub project identity with:
 \`\`\`bash
 cd {repoPath} && gh repo view --json owner,name --jq '"OWNER=" + .owner.login + " REPO=" + .name'
 \`\`\`
 
-Then search for release documentation. Check your AGENTS.md (or CLAUDE.md) context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from those instructions, check these files in order (use whichever exist):
-1. \`cat {repoPath}/README.md\` — look for release/deployment/workflow sections
-2. \`cat {repoPath}/.changelog/README.md\` — changelog format and release conventions
-3. \`cat {repoPath}/CONTRIBUTING.md\` — contributing/release guidelines
-4. \`ls {repoPath}/docs/\` — look for release process docs (e.g., RELEASE.md, DEPLOY.md)
-5. \`ls {repoPath}/.github/workflows/\` — infer branch flow from CI workflow triggers
-6. \`gh api repos/<OWNER>/<REPO>/branches --jq '.[].name'\` — list branches to identify the flow
-
-If no documentation specifies a release flow, fall back to: source=dev, target=main.
-
-## Step 1: Reconcile Missing Releases
-
-BEFORE evaluating unreleased work, check for existing release tags that lack a corresponding GitHub Release:
+Check for existing release tags that lack a corresponding GitHub Release:
 1. \`git -C {repoPath} fetch --tags origin\`
-2. List all version tags (e.g., \`v*\`) on \`<TARGET_BRANCH>\` / \`origin\` and list published GitHub Releases:
+2. List version tags on \`<TARGET_BRANCH>\` / \`origin\` and published releases:
    \`\`\`bash
    gh release list --repo <OWNER>/<REPO> --limit 100
    \`\`\`
-3. Compare every release tag \`vX.Y.Z\` against published GitHub Releases. If a tag \`vX.Y.Z\` exists but has no corresponding GitHub Release:
-   - Report the missing release version explicitly: "Unpublished release detected: vX.Y.Z".
-   - Locate the changelog body for \`vX.Y.Z\` (e.g., \`.changelog/vX.Y.Z.md\` or \`.changelog/vX.Y.x.md\`).
-   - Check if a newer version tag or release exists.
-   - Publish the missing release using \`gh release create "vX.Y.Z"\`:
-     - Use \`.changelog/vX.Y.Z.md\` (or the assembled changelog for that version) as the release body (\`--notes-file\` or \`--body-file\`).
-     - Pass \`--latest=false\` if a newer version tag or release is already published, so backfilling an old version never displaces the current Latest release. Pass \`--latest\` only if \`vX.Y.Z\` is the newest version.
-4. Report any missing releases reconciled before proceeding to Step 2.
+3. Compare every \`vX.Y.Z\` tag with published releases. For each missing release:
+   - Report it explicitly as "Unpublished release detected: vX.Y.Z".
+   - Find its changelog body (for example, \`.changelog/vX.Y.Z.md\` or \`.changelog/vX.Y.x.md\`).
+   - Check whether a newer version exists.
+   - Publish it with \`gh release create "vX.Y.Z"\`, using \`--notes-file\` or \`--body-file\`; pass \`--latest=false\` when a newer release exists, and \`--latest\` only for the newest version.
+4. Report missing releases reconciled before continuing.
 
-## Step 2: Evaluate Readiness
+The canonical workflow owns readiness and should count both the current changelog and any uncollected per-branch fragments (for example, \`.changelog/next/\`) across the assembled notes. If the changelog README documents a preview/collect command, use only that documented command — Do NOT guess a command name. If fewer than two substantive entries remain, stop without creating a release PR.
 
-Using the changelog location discovered in Step 0:
-- Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
-- **Also read the entries not yet folded into that file.** Repos that collect per-branch fragments (e.g. \`.changelog/next/\`, so parallel agents don't conflict on a shared file) keep unreleased entries there until the release collects them, so the staged file alone under-counts the work. Read the fragment directory directly, and if the repo's changelog README documents a preview/collect command, use that to assemble the unreleased notes in one call. Do NOT guess a command name — only run one this repo actually documents.
-- Read the current version: \`node -p "require('{repoPath}/package.json').version"\` or equivalent
+If the release docs identify a separate database-backed test suite, the canonical workflow must first use the documented test-database provisioning/setup command and then run that suite against an isolated test database. The workflow must never substitute a production database; if the isolated setup cannot reach its documented service, report the environmental blocker and stop.
 
-Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections) across the **assembled** unreleased notes — the staged file plus any uncollected fragments. If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+## Step 1: Run the canonical release workflow
 
-## Step 3: Verify Clean State
+The PortOS Code Review Defaults rendered into \`{reviewers}\` are authoritative for this run. Use exactly that reviewer list and no other. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. PortOS-only configured reviewers still run through the Local Reviewer Procedure appended to this prompt. If the reviewer list is empty or unavailable, stop before creating or updating a release PR.
 
-Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
-1. \`git -C {repoPath} fetch origin\` and ensure \`<SOURCE_BRANCH>\` is up to date
-2. Run the project's test suite (use the command from release docs). If the
-   release docs identify a separate database-backed test suite, first run the
-   documented test-database provisioning/setup command, then run that database
-   test command as well. Keep the database test target isolated from any real
-   user database; never substitute a production database just to make tests
-   pass. If setup cannot reach the documented database service, report the
-   environmental blocker and stop before creating the release PR.
-3. Run the project's build (use the command from release docs)
+Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, local review, PR creation, the configured reviewer loop, CI, merge, tagging, and the final report. If it cannot run or a configured reviewer is unavailable or inconclusive, stop and report instead of substituting another reviewer.
 
-## Step 4: Create or Find PR
-
-Check for existing PR: \`gh pr list --repo <OWNER>/<REPO> --base <TARGET_BRANCH> --head <SOURCE_BRANCH> --state open --json number,url\`
-
-If a PR exists, use it. If not, create one following the project's documented release PR conventions.
-
-Capture the PR number as \`<PR_NUM>\` and URL.
-
-## Step 5: Wait for Copilot Review
-
-Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
-\`\`\`bash
-gh api repos/<OWNER>/<REPO>/pulls/<PR_NUM>/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer") | .state'
-\`\`\`
-
-Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
-
-## Step 6: Address Feedback Loop (max 5 iterations)
-
-### 6a. Fetch unresolved review threads
-
-Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
-
-\`\`\`bash
-echo '{"query":"query{repository(owner:\\"<OWNER>\\",name:\\"<REPO>\\"){pullRequest(number:<PR_NUM>){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
-\`\`\`
-
-### 6b. If no unresolved threads: skip to Step 7 (Merge).
-
-### 6c. If unresolved threads exist, evaluate each one:
-
-For each comment, read the referenced file and critically evaluate the suggestion:
-- **If the suggestion is valid and improves the code**: apply the fix
-- **If the suggestion is a false positive, overly pedantic, or would make the code worse**: do NOT change the code
-
-Either way, resolve every thread — the goal is zero unresolved threads before merge.
-
-After evaluating all threads:
-- If any code changes were made: run the project's test suite to verify, then commit and push using \`/do:push\` (or manually: stage specific files, conventional commit prefix, \`git pull --rebase && git push\`)
-
-### 6d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
-
-For each thread, use the thread node id from 5a:
-\`\`\`bash
-echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
-\`\`\`
-
-### 6e. Wait for new Copilot review if code was pushed (repeat Step 5)
-
-If you pushed changes in 6c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 6a. If no code changes were made (all threads were false positives), skip straight to Step 7.
-
-If after 5 iterations there are still unresolved threads, stop and report what remains.
-
-## Step 7: Merge
-
-Only merge when Copilot's most recent review has NO unresolved threads:
-\`\`\`bash
-gh pr merge <PR_NUM> --merge
-\`\`\`
-
-If merge fails (e.g., branch protections), try: \`gh pr merge <PR_NUM> --merge --admin\`
-
-## Step 8: Report
-
-Summarize:
-- Version released
-- Key changes (from changelog)
-- Number of review iterations needed
-- Any unresolved issues`,
+The release workflow is attached to this task by metadata so every provider receives the same bundled body and reviewer pin. Do not reimplement any of its phases in this scheduled prompt.`,
 
   'stash-cleanup': `[Improvement: {appName}] Git Stash Cleanup
 

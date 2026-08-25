@@ -27,6 +27,9 @@ vi.mock('./tribeOutreach.js', () => ({ findUnansweredTribeThreads: vi.fn(async (
 vi.mock('../lib/memoryStats.js', () => ({
   getMemoryStats: vi.fn(async () => ({ used: 1, total: 100 }))
 }));
+vi.mock('./portosProductMetrics.js', () => ({
+  getProductEngagement: vi.fn(async () => ({ actions: [] }))
+}));
 
 import { generateAlerts } from './proactiveAlerts.js';
 

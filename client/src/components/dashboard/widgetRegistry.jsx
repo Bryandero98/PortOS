@@ -29,6 +29,11 @@ const MeatSpaceStreakWidget = lazyWithReload(() => import('./builtins/MeatSpaceS
 const AutoFixMetricsWidget  = lazyWithReload(() => import('./builtins/AutoFixMetricsWidget'));
 const DailyDriverWidget     = lazyWithReload(() => import('./builtins/DailyDriverWidget'));
 const ActiveProcessingWidget = lazyWithReload(() => import('./ActiveProcessingWidget'));
+const DailyActionsWidget   = lazyWithReload(() => import('../DailyActionsWidget'));
+
+const postFeatureEnabled = (state) => state?.instanceFeatures?.features?.some(
+  (feature) => feature.id === 'post' && feature.enabled === true
+) === true;
 
 // Each entry: { id, label, Component, width, defaultH?, gate? }.
 // `gate(state) => bool` skips the widget when it has nothing useful to show.
@@ -40,6 +45,7 @@ const ActiveProcessingWidget = lazyWithReload(() => import('./ActiveProcessingWi
 // dashboard cells measure their content and float up (see DashboardGrid), so
 // this only has to be in the right ballpark for the first paint.
 export const WIDGETS = [
+  { id: 'daily-actions',      label: 'Today\'s Actions',        Component: DailyActionsWidget,      width: 'full',    defaultH: 4, gate: (s) => (s.dailyActions?.actions?.length ?? 0) > 0 },
   // Daily Driver self-hides once the day is handled — gated on the per-day
   // first-visit/handled state so a handled day reserves no grid cell (#2666).
   { id: 'daily-driver',      label: 'Daily Driver',          Component: DailyDriverWidget,      width: 'third',   defaultH: 6, gate: (s) => !!s.dailyDriver && !s.dailyDriver.handledToday },
@@ -58,7 +64,7 @@ export const WIDGETS = [
   { id: 'network-exposure',  label: 'Network Exposure',      Component: NetworkExposureWidget,  width: 'quarter', defaultH: 5 },
   { id: 'backup',            label: 'Backup',                Component: BackupWidget,           width: 'quarter', defaultH: 5 },
   { id: 'death-clock',       label: 'Death Clock',           Component: DeathClockWidget,       width: 'quarter', defaultH: 4 },
-  { id: 'daily-post',        label: 'Daily POST',            Component: DailyPostWidget,        width: 'quarter', defaultH: 3 },
+  { id: 'daily-post',        label: 'Daily POST',            Component: DailyPostWidget,        width: 'quarter', defaultH: 3, gate: postFeatureEnabled },
   { id: 'tribe-care',        label: 'Tribe Care',            Component: TribeCareWidget,        width: 'quarter', defaultH: 4, gate: (s) => !!s.tribeCare?.hasPeople },
   { id: 'quick-stats',       label: 'Quick Stats',           Component: QuickStatsWidget,       width: 'quarter', defaultH: 3, gate: (s) => s.apps.length > 0 },
   { id: 'decision-log',      label: 'Decision Log',          Component: DecisionLogWidget,      width: 'quarter', defaultH: 4 },

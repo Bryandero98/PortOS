@@ -24,8 +24,10 @@
  */
 
 import { schedule, cancel, parseCronToPrevRun } from './eventScheduler.js';
-import { getUserTimezone, getTimezoneUpdatedAt, getLocalParts, todayInTimezone, HHMM_STRICT_RE } from '../lib/timezone.js';
+import { getLocalParts, todayInTimezone, HHMM_STRICT_RE } from '../lib/timezone.js';
+import { getUserTimezone, getTimezoneUpdatedAt } from './userTimezone.js';
 import { getPostConfig, getPostSessions, postConfigEvents } from './meatspacePost.js';
+import { isInstanceFeatureEnabled } from './instanceFeatures.js';
 import { addNotification, getNotifications, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifications.js';
 import { settingsEvents } from './settings.js';
 
@@ -68,6 +70,11 @@ function isOnLocalDay(timestamp, timezone, dayStr) {
  * scheduled minute is respected instead of nagging once more.
  */
 export async function firePostReminderIfIncomplete() {
+  if (!await isInstanceFeatureEnabled('post')) {
+    console.log(`🔔 POST reminder: feature disabled on this instance — skipping`);
+    return;
+  }
+
   const config = await getPostConfig();
   if (config.reminder?.enabled !== true) {
     console.log(`🔔 POST reminder: disabled since registration — skipping`);
@@ -200,6 +207,12 @@ async function catchUpMissedSlot(cron, timezone, reminderUpdatedAt, timezoneUpda
  *   config/timezone save should NOT replay a slot the user didn't miss.
  */
 export async function registerPostReminderSchedule({ catchUpMissedSlot: shouldCatchUp = false } = {}) {
+  if (!await isInstanceFeatureEnabled('post')) {
+    cancel(POST_REMINDER_EVENT_ID);
+    lastAppliedTimezone = null;
+    return;
+  }
+
   const config = await getPostConfig();
   const { enabled, time, updatedAt } = config.reminder || {};
 
@@ -244,6 +257,12 @@ export async function registerPostReminderSchedule({ catchUpMissedSlot: shouldCa
  * changed, so tweaking an unrelated setting doesn't spam a reschedule.
  */
 async function refreshTimezoneIfChanged() {
+  if (!await isInstanceFeatureEnabled('post')) {
+    cancel(POST_REMINDER_EVENT_ID);
+    lastAppliedTimezone = null;
+    return;
+  }
+
   const config = await getPostConfig();
   if (config.reminder?.enabled !== true) return; // nothing scheduled to refresh
 

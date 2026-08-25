@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { posixPath } from './testHelper.js';
 
 import { buildCliChildEnv, composeProviderEnv } from './cliChildEnv.js';
+import { cliProviderAuthDescriptor } from './processEnv.js';
 import { AGENT_GUARD_BIN } from './agentGuard/index.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
 import { readFileSync } from 'node:fs';
@@ -26,14 +27,18 @@ const declaredMtplxModels = (env) => Object.keys(JSON.parse(env.OPENCODE_CONFIG_
 describe('buildCliChildEnv — layering', () => {
   it('layers baseEnv < before < provider.envVars < extra', () => {
     const env = buildCliChildEnv({
-      baseEnv: { WHO: 'base', FROM_BASE: '1' },
-      before: { WHO: 'before', FROM_BEFORE: '1' },
-      provider: { envVars: { WHO: 'provider', FROM_PROVIDER: '1' } },
-      extra: { WHO: 'extra', FROM_EXTRA: '1' },
+      baseEnv: { PATH: '/base/bin', HOME: '/home/example' },
+      before: { HOME: '/before', TZ: 'before', XDG_CONFIG_HOME: '/before-config' },
+      provider: { envVars: { HOME: '/provider', TZ: 'provider', ANTHROPIC_BASE_URL: 'https://provider.example' } },
+      extra: { TZ: 'extra', LANG: 'extra' },
     });
-    expect(env.WHO).toBe('extra');
+    expect(env.HOME).toBe('/provider');
+    expect(env.TZ).toBe('extra');
+    expect(env.LANG).toBe('extra');
     // Every layer still contributes its own non-conflicting keys.
-    expect(env).toMatchObject({ FROM_BASE: '1', FROM_BEFORE: '1', FROM_PROVIDER: '1', FROM_EXTRA: '1' });
+    expect(env.PATH).toBe('/base/bin');
+    expect(env.XDG_CONFIG_HOME).toBe('/before-config');
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://provider.example');
   });
 
   // The `before` slot exists specifically so agentCliSpawning's forgeTokenEnv
@@ -79,7 +84,22 @@ describe('buildCliChildEnv — layering', () => {
   });
 
   it('tolerates an absent provider / before / extra', () => {
-    expect(buildCliChildEnv({ baseEnv: { A: '1' }, provider: null, before: null, extra: null })).toEqual({ A: '1' });
+    expect(buildCliChildEnv({ baseEnv: { PATH: '/usr/bin' }, provider: null, before: null, extra: null })).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('filters unrelated inherited app variables before applying explicit overlays', () => {
+    const env = buildCliChildEnv({
+      baseEnv: {
+        PATH: '/usr/bin',
+        GH_TOKEN: 'ambient-owner-token',
+        PRIVATE_APP_AUTH_KEYS: 'must-not-forward',
+      },
+      before: { GH_TOKEN: 'owner-token' },
+      provider: { envVars: { PRIVATE_PROVIDER_TOKEN: 'explicit-provider-token' } },
+    });
+    expect(env.PRIVATE_APP_AUTH_KEYS).toBeUndefined();
+    expect(env.GH_TOKEN).toBe('owner-token');
+    expect(env.PRIVATE_PROVIDER_TOKEN).toBe('explicit-provider-token');
   });
 
   it('defaults baseEnv to process.env', () => {
@@ -263,7 +283,7 @@ describe('composeProviderEnv — delta for sites that do not spawn directly', ()
 // have silently changed two of them — these pin the actual contracts.
 describe('buildCliChildEnv — per-call-site composition', () => {
   it('runner.js / cliProviderRun.js: provider.envVars over baseEnv, guarded only for the runner', () => {
-    const args = { baseEnv: { A: 'base', PATH: '/usr/bin' }, provider: { envVars: { A: 'provider' } }, cwd: '/w' };
+    const args = { baseEnv: { PATH: '/usr/bin' }, provider: { envVars: { A: 'provider' } }, cwd: '/w' };
     expect(buildCliChildEnv({ ...args, guard: true }).A).toBe('provider');
     expect(buildCliChildEnv({ ...args, guard: true }).PATH).toContain(AGENT_GUARD_BIN);
     // The fire-and-collect path is not an agent — it must stay unguarded.
@@ -322,6 +342,17 @@ describe('buildCliChildEnv — per-call-site composition', () => {
       PATH: '/usr/bin',
       PWD: '/workspace',
     });
+  });
+
+  it('retains ambient auth for the selected provider when the runner supplies its descriptor', () => {
+    const provider = { id: 'codex', command: 'codex', envVars: { OPENAI_API_KEY: 'not serialized' } };
+    const env = buildCliChildEnv({
+      baseEnv: { PATH: '/usr/bin', OPENAI_API_KEY: 'ambient-key' },
+      provider: cliProviderAuthDescriptor(provider),
+      cwd: '/workspace',
+    });
+
+    expect(env.OPENAI_API_KEY).toBe('ambient-key');
   });
 
   it('askService.js: no cwd means no PWD is invented', () => {

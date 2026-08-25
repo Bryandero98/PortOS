@@ -220,7 +220,7 @@ vi.mock('../../lib/ffmpeg.js', async () => ({
 // hfChildEnv() carries the resolved token over the inherited child env; mocking here
 // avoids touching the real settings layer (which would await an unmocked
 // `getSettings()` chain and hang the spawn-mock-driven tests).
-vi.mock('../../lib/hfToken.js', () => ({
+vi.mock('../hfToken.js', () => ({
   hfChildEnv: vi.fn(async () => ({})),
   getHfToken: vi.fn(async () => null),
 }));
@@ -2974,7 +2974,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
 
   it('uses the pinned cache-only helper, locked sampler and credential-free environment', async () => {
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
-    const { hfChildEnv } = await import('../../lib/hfToken.js');
+    const { hfChildEnv } = await import('../hfToken.js');
     const spawnMock = vi.mocked(spawnDetached);
     spawnMock.mockClear();
     vi.mocked(hfChildEnv).mockClear();
@@ -3267,8 +3267,9 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
 
 // H3's DiT is quantized, so LoRAs ride along only if the installed runner
 // applies them at render time from quantization metadata. That is a property of
-// the pinned checkout, so the verdict comes from a probe — and the render path
-// must honor it in both directions rather than blanket-rejecting the runtime.
+// the installed runtime plus adapter, so the verdict comes from a probe — and
+// the render path must honor it in both directions rather than blanket-rejecting
+// the runtime.
 describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
   const h3Render = (jobId) => generateVideo({
     jobId,
@@ -3300,7 +3301,7 @@ describe.skipIf(process.platform === 'win32')('MiniMax H3 user LoRAs', () => {
     expect(args).toContain('--lora');
   });
 
-  it('rejects LoRAs with an H3-specific reason when the runner has no applicator', async () => {
+  it('rejects LoRAs with an H3-specific reason when the adapter probe fails', async () => {
     h3LoraState.capable = false;
     await expect(h3Render('h3-lora-blocked')).rejects.toMatchObject({
       code: 'MINIMAX_H3_LORA_UNSUPPORTED',
@@ -4317,6 +4318,26 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
         { path: join(MOCK_PATHS.loras, 'style.safetensors'), strength: 0.7, filename: 'style.safetensors' },
       ]);
     }
+  });
+
+  it('lets the MiniMax H3 adapter handle Diffusers and kohya layouts', async () => {
+    for (const layout of ['diffusers', 'kohya']) {
+      loraLayoutState.layout = layout;
+      expect(await resolveVideoLoras(
+        [{ filename: 'style.safetensors', scale: 0.7 }],
+        { runtime: 'minimax_h3' },
+      )).toEqual([
+        { path: join(MOCK_PATHS.loras, 'style.safetensors'), strength: 0.7, filename: 'style.safetensors' },
+      ]);
+    }
+  });
+
+  it('still rejects a known non-LoRA file for MiniMax H3 before rendering', async () => {
+    loraLayoutState.layout = 'not_a_lora';
+    await expect(resolveVideoLoras(
+      [{ filename: 'checkpoint.safetensors' }],
+      { runtime: 'minimax_h3' },
+    )).rejects.toMatchObject({ status: 400, code: 'LORA_LAYOUT_UNSUPPORTED' });
   });
 
   it('rejects a kohya-layout LoRA with an actionable 400 naming the layout', async () => {

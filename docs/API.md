@@ -31,6 +31,12 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 
 ## REST Endpoints
 
+### System
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/system/capabilities` | Host-local platform, architecture, Apple Silicon, memory, CPU, and cached CUDA capability snapshot used to filter model/provider selections. Probe failures remain `unknown`; this payload is intentionally not included in federation health records. |
+
 ### Federated peer-probe contract
 
 PortOS peers running independently upgraded installs use the following existing
@@ -528,6 +534,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/alerts` | System alerts |
 | `/api/avatar` | Avatar rendering/config |
 | `/api/system` | System health metrics |
+| `/api/system/capabilities` | Local hardware capabilities for model/provider selection |
 | `/api/capabilities` | Feature capability flags |
 | `/api/agent-context` | Opt-in, loopback-only read-only MCP context and runtime manifest |
 | `/api/workspace-contexts` | Workspace context management |

@@ -1,15 +1,15 @@
 import { request } from './apiCore.js';
 
 // Automation Schedules
-export const getAutomationSchedules = (agentId = null, accountId = null) => {
+export const getAutomationSchedules = (agentId = null, accountId = null, options = {}) => {
   const params = new URLSearchParams();
   if (agentId) params.set('agentId', agentId);
   if (accountId) params.set('accountId', accountId);
   const query = params.toString();
-  return request(`/agents/schedules${query ? `?${query}` : ''}`);
+  return request(`/agents/schedules${query ? `?${query}` : ''}`, options);
 };
 export const getAutomationSchedule = (id) => request(`/agents/schedules/${id}`);
-export const getScheduleStats = () => request('/agents/schedules/stats');
+export const getScheduleStats = (options = {}) => request('/agents/schedules/stats', options);
 export const createAutomationSchedule = (data) => request('/agents/schedules', {
   method: 'POST',
   body: JSON.stringify(data)

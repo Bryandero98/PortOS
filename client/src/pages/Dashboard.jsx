@@ -8,7 +8,7 @@ import WidgetSuggestions from '../components/dashboard/WidgetSuggestions';
 import DashboardGrid, { readingOrderIds, reconcileGrid, synthesizeGrid } from '../components/dashboard/DashboardGrid.jsx';
 import { WIDGETS_BY_ID, FALLBACK_LAYOUT } from '../components/dashboard/widgetRegistry.jsx';
 import WidgetSkeleton from '../components/dashboard/WidgetSkeleton';
-import { DASHBOARD_LAYOUT_CHANGED } from '../constants/events.js';
+import { DASHBOARD_LAYOUT_CHANGED, INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 import { ChevronsDownUp, GripHorizontal, Monitor, Move, Save, X } from 'lucide-react';
 import * as api from '../services/api';
 import socket from '../services/socket';
@@ -23,6 +23,8 @@ export default function Dashboard() {
   const [feeds, setFeeds] = useState(null);
   const [meatspaceLogging, setMeatspaceLogging] = useState(null);
   const [dailyDriver, setDailyDriver] = useState(null);
+  const [dailyActions, setDailyActions] = useState(null);
+  const [instanceFeatures, setInstanceFeatures] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState(null);
   const [layoutsError, setLayoutsError] = useState(null);
@@ -76,6 +78,7 @@ export default function Dashboard() {
   // closure captured a possibly-stale activeLayout — lets it skip arming the
   // scroll when the user switched layouts while the add was still saving.
   const activeLayoutIdRef = useRef(null);
+  const instanceFeatureGenerationRef = useRef(0);
 
   const refreshHealth = useCallback(async () => {
     // Keep the last good snapshot visible when a manual refresh hits a
@@ -86,9 +89,17 @@ export default function Dashboard() {
     return data;
   }, []);
 
+  const refreshInstanceFeatures = useCallback(async () => {
+    const generation = ++instanceFeatureGenerationRef.current;
+    const data = await api.getInstanceFeatures({ silent: true }).catch(() => null);
+    if (generation !== instanceFeatureGenerationRef.current) return null;
+    setInstanceFeatures(data);
+    return data;
+  }, []);
+
   const fetchData = useCallback(async () => {
     setDataError(null);
-    const [appsData, , usageData, tribeCareData, feedsData, meatspaceLoggingData, dailyDriverData] = await Promise.all([
+    const [appsData, , usageData, tribeCareData, feedsData, meatspaceLoggingData, dailyDriverData, dailyActionsData] = await Promise.all([
       api.getApps().catch((err) => { setDataError(err.message); return []; }),
       refreshHealth(),
       api.getUsage().catch(() => null),
@@ -98,6 +109,8 @@ export default function Dashboard() {
       // GET records the first-visit-of-day signal (issue #2666); a failure just
       // hides the Daily Driver card via its gate. No LLM calls here.
       api.getDailyDriverState().catch(() => null),
+      api.getDailyActions({ silent: true }).catch(() => null),
+      refreshInstanceFeatures(),
     ]);
     setApps(appsData);
     setUsage(usageData);
@@ -105,14 +118,33 @@ export default function Dashboard() {
     setFeeds(feedsData);
     setMeatspaceLogging(meatspaceLoggingData);
     setDailyDriver(dailyDriverData);
+    setDailyActions(dailyActionsData);
     setLoading(false);
-  }, [refreshHealth]);
+  }, [refreshHealth, refreshInstanceFeatures]);
 
   useEffect(() => {
     fetchData();
     const handleAppsChanged = () => fetchData();
+    const handleFeatureChange = (event) => {
+      if (event.detail?.featureId !== 'post') return;
+      const enabled = event.detail.enabled === true;
+      setInstanceFeatures((current) => {
+        const features = Array.isArray(current?.features) ? current.features : [];
+        const hasPost = features.some((feature) => feature.id === 'post');
+        const nextFeatures = hasPost
+          ? features.map((feature) => feature.id === 'post' ? { ...feature, enabled } : feature)
+          : [...features, { id: 'post', enabled }];
+        return { ...(current || {}), features: nextFeatures };
+      });
+      fetchData();
+    };
     socket.on('apps:changed', handleAppsChanged);
-    return () => socket.off('apps:changed', handleAppsChanged);
+    window.addEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    return () => {
+      instanceFeatureGenerationRef.current += 1;
+      socket.off('apps:changed', handleAppsChanged);
+      window.removeEventListener(INSTANCE_FEATURES_CHANGED, handleFeatureChange);
+    };
   }, [fetchData]);
 
   // One-shot per mount — guards against re-evaluation stomping manual picks.
@@ -201,8 +233,8 @@ export default function Dashboard() {
   }), [activeApps]);
 
   const dashboardState = useMemo(
-    () => ({ apps, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, dailyDriver, refetch: fetchData, refetchHealth: refreshHealth }),
-    [apps, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, dailyDriver, fetchData, refreshHealth]
+    () => ({ apps, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, dailyDriver, dailyActions, instanceFeatures, refetch: fetchData, refetchHealth: refreshHealth }),
+    [apps, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, dailyDriver, dailyActions, instanceFeatures, fetchData, refreshHealth]
   );
 
   // Falls back to a local minimal layout only AFTER the initial fetch has

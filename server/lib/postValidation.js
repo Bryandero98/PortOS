@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { CACHEABLE_TYPES } from '../services/meatspacePostDrillCache.js';
-import { COGNITIVE_DRILL_TYPES } from '../services/meatspacePostCognitive.js';
+import { CACHEABLE_TYPES, COGNITIVE_DRILL_TYPES } from './postDrillTypes.js';
 import { TOPIC_IDS } from './postTopics.js';
 import { HHMM_STRICT_RE } from './timezone.js';
 import { POST_LLM_MAX_SEMANTIC_CANDIDATES, postLlmEvaluationSchema } from './postLlmContracts.js';
+import { EFFORT_LEVELS } from './providerModels.js';
+import { RHETORIC_DRILL_TYPES, RHETORIC_MODE_IDS, rhetoricEvaluationSchema } from './postRhetoric.js';
 
 // =============================================================================
 // POST (Power On Self Test) VALIDATION SCHEMAS
@@ -126,10 +127,9 @@ const DRILL_TYPES = [...MATH_DRILL_TYPES, ...LLM_DRILL_TYPES, ...MEMORY_DRILL_TY
 // of being rejected. Morse and rhetoric only ever post through
 // trainingEntrySchema below.
 const MORSE_DRILL_TYPES = ['morse-copy', 'morse-head-copy', 'morse-send'];
-// Rhetoric is a standalone, self-assessed training surface. It never enters a
-// scored POST session or calls an LLM, but its rounds still use the shared
-// training log endpoint for streaks and progress reporting.
-const RHETORIC_DRILL_TYPES = ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-chiasmus', 'rhetoric-progressia', 'rhetoric-brainstorm'];
+// Rhetoric is a standalone training surface. It never enters a scored POST
+// session; its self-score and optional evaluator report use the shared training
+// log endpoint for streaks and progress reporting.
 
 const drillTypeConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -336,6 +336,20 @@ const llmDrillTypeConfigSchema = z.object({
   model: z.string().optional()
 });
 
+// The evaluator is deliberately a separate opt-in block. Saving a provider or
+// effort here must never make an existing POST screen start spending tokens:
+// callers still have to set `enabled: true`, and the default config keeps it
+// false.
+export const postRhetoricEvaluatorConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  providerId: z.string().trim().max(300).nullable().optional(),
+  model: z.string().trim().max(300).nullable().optional(),
+  effort: z.preprocess(
+    value => (value === '' ? undefined : value),
+    z.enum(EFFORT_LEVELS).nullable().optional(),
+  ),
+});
+
 // Optional practice goals (issue #2100). Every field is optional so a config
 // with no goals — or a legacy config that predates this block entirely — stays
 // valid; bounds keep a hand-edited config from persisting a nonsensical target.
@@ -359,6 +373,7 @@ export const postConfigUpdateSchema = z.object({
     model: z.string().nullable().optional(),
     drillTypes: z.record(z.enum(LLM_DRILL_TYPES), llmDrillTypeConfigSchema).optional()
   }).optional(),
+  rhetoricEvaluator: postRhetoricEvaluatorConfigSchema.optional(),
   // Deterministic cognitive drills — no provider, so no provider/model fields.
   // Partial so an older browser's complete pre-executive-control map remains a
   // valid patch after newer drill types are added to the enum (Zod 4 records
@@ -451,6 +466,22 @@ export const postLlmScoreRequestSchema = z.object({
       message: `semantic drill responses support at most ${POST_LLM_MAX_SEMANTIC_CANDIDATES} items per scoring batch`,
     });
   }
+});
+
+// One attempt is sent at a time by the trainer. The browser deliberately does
+// not await this request before advancing to the next prompt, so this is a
+// bounded single-item contract rather than a batch evaluator endpoint.
+export const postRhetoricEvaluationRequestSchema = z.object({
+  attemptId: z.string().trim().min(1).max(200),
+  mode: z.enum(RHETORIC_MODE_IDS),
+  prompt: z.string().trim().min(1).max(1000),
+  response: z.string().trim().min(1).max(10000),
+  providerId: z.string().trim().min(1).max(300).optional(),
+  model: z.string().trim().min(1).max(300).optional(),
+  effort: z.preprocess(
+    value => (value === '' ? undefined : value),
+    z.enum(EFFORT_LEVELS).nullable().optional(),
+  ),
 });
 
 // Explicit, user-consented request to warm the wordplay drill cache
@@ -646,13 +677,17 @@ export const postProgressQuerySchema = z.object({
 // future progress dashboard can render training-log and scored-session
 // breakdowns with the same renderer rather than inventing a training-only shape.
 const trainingQuestionSchema = z.object({
+  id: z.string().min(1).max(200).optional(),
   prompt: z.string().optional(),
   response: z.string().optional(),
   items: z.array(z.string()).optional(),
   responseMs: z.number().min(0).optional(),
+  selfRating: z.number().int().min(1).max(5).optional(),
   score: z.number().min(0).max(100).optional(),
   feedback: z.string().optional(),
   correct: z.boolean().optional(),
+  evaluation: rhetoricEvaluationSchema.optional(),
+  evaluationError: z.string().max(500).optional(),
 });
 
 // Training log entry submission

@@ -8,7 +8,7 @@
  * panel modules.
  */
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import {
   ArrowLeft, BookOpen, FolderTree, ImagePlus, Layers, Loader2,
@@ -16,7 +16,11 @@ import {
 } from 'lucide-react';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import toast from '../ui/Toast';
-import { WORLD_CATEGORY_KEY_MAX } from '../../services/api';
+import {
+  exportUniverseMarkdown,
+  waitForUniverseWrites,
+  WORLD_CATEGORY_KEY_MAX,
+} from '../../services/api';
 import useUniverseBucketActions from '../../hooks/useUniverseBucketActions';
 import useUniverseDraft from '../../hooks/useUniverseDraft';
 import useUniverseExpand from '../../hooks/useUniverseExpand';
@@ -35,7 +39,9 @@ import RenderTab from './RenderTab';
 import UniverseBibleTab from './UniverseBibleTab';
 import { OtherTab, TrunkView } from './UniverseTrunkPanels';
 import { appendImageRefById } from '../../lib/bibleLimits';
+import { downloadBlob } from '../../lib/downloadBlob';
 import { totalVariationCount } from '../../lib/universeBuilderCounts';
+import { universeMarkdownFilename } from '../../lib/universeMarkdownFilename';
 import {
   TAB_BIBLE,
   TAB_CAST,
@@ -50,7 +56,6 @@ import {
 
 export { CategoryEditor } from './UniverseCategoryEditor';
 export { OtherTab, TrunkView };
-
 
 // Universe autocomplete combobox: search existing universes or create one when
 // the trimmed query doesn't exactly match any. `onCreate` is wired to a
@@ -103,6 +108,10 @@ export default function UniverseBuilder() {
   // treat the `new` sentinel as "no id" (blank draft). Real universe ids are
   // UUIDs, so this can never shadow an actual record.
   const selectedId = params.universeId && params.universeId !== 'new' ? params.universeId : null;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const [exporting, setExporting] = useState(false);
+  const [waitingForWrites, setWaitingForWrites] = useState(false);
   // `goToWorld` preserves `location.search` (e.g. `?tab=&bucket=&series=`) so
   // the auto-save → create path doesn't snap the user back to the Bible tab
   // after they triggered Generate From Idea from inside Cast/Places/Objects.
@@ -212,6 +221,59 @@ export default function UniverseBuilder() {
     mountedRef,
     flushDraftIfDirty,
   });
+
+  const handleExportMarkdown = useCallback(async () => {
+    const exportIsReady = () => mountedRef.current
+      && selectedIdRef.current === selectedId
+      && draftRef.current?.id === selectedId;
+    if (!selectedId || exporting || saving || !exportIsReady()) return;
+    setExporting(true);
+    setWaitingForWrites(true);
+    const writesReady = await waitForUniverseWrites(selectedId);
+    setWaitingForWrites(false);
+    if (!writesReady) {
+      setExporting(false);
+      toast.error('Changes are still saving — try the export again in a moment');
+      return;
+    }
+    if (!exportIsReady()) {
+      setExporting(false);
+      return;
+    }
+    const flushed = await flushDraftIfDirty();
+    if (!flushed) {
+      setExporting(false);
+      return;
+    }
+    setWaitingForWrites(true);
+    const flushedWritesReady = await waitForUniverseWrites(selectedId);
+    setWaitingForWrites(false);
+    if (!flushedWritesReady) {
+      setExporting(false);
+      toast.error('Changes are still saving — try the export again in a moment');
+      return;
+    }
+    if (!exportIsReady()) {
+      setExporting(false);
+      return;
+    }
+    const markdown = await exportUniverseMarkdown(selectedId, { silent: true }).catch((error) => {
+      toast.error(error?.message || 'Failed to export universe');
+      return null;
+    });
+    if (markdown === null) {
+      setExporting(false);
+      return;
+    }
+    if (!exportIsReady()) {
+      setExporting(false);
+      return;
+    }
+    setExporting(false);
+    const filename = universeMarkdownFilename(draftRef.current?.name || draft.name);
+    downloadBlob(markdown, filename, 'text/markdown');
+    toast.success(`Downloaded ${filename}`);
+  }, [draft.name, draftRef, exporting, flushDraftIfDirty, saving, selectedId]);
 
   // Page-level lightbox + gallery-metadata concern. A single MediaPreview at
   // this level covers EVERY thumb on the page: variations, composite sheets,
@@ -348,6 +410,15 @@ export default function UniverseBuilder() {
           </button>
           {selectedId && (
             <>
+              <button
+                onClick={handleExportMarkdown}
+                disabled={exporting || saving || draft.id !== selectedId}
+                className="px-3 py-2 rounded flex items-center gap-2 min-h-[40px] border border-port-border hover:bg-port-card-hover disabled:opacity-50"
+                title="Export universe as Markdown"
+              >
+                {exporting ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
+                {waitingForWrites ? 'Saving changes…' : exporting ? 'Exporting…' : 'Export .md'}
+              </button>
               <ShareToButton kind="universe" ids={[selectedId]} label="Share" />
               <SyncToPeerButton recordKind="universe" recordId={selectedId} label="Sync" />
               {draft.origin ? <OriginBadge origin={draft.origin} /> : null}

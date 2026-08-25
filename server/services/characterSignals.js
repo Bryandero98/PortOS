@@ -42,7 +42,8 @@ import { getLoggingStats } from './meatspaceLoggingStats.js';
 import { getGoals } from './identity/goals.js';
 import { countMemories } from './memoryBackend.js';
 import { countAssets } from './mediaAssetIndex/db.js';
-import { getUserTimezone, userLocalToday } from '../lib/timezone.js';
+import { isInstanceFeatureEnabled } from './instanceFeatures.js';
+import { getUserTimezone, userLocalToday } from './userTimezone.js';
 
 /**
  * Every domain stat the derived Character surfaces are allowed to read, keyed by signal id.
@@ -65,6 +66,7 @@ export const SIGNAL_READERS = {
   catalogStats: () => getCatalogStats(),
   postSessions: () => getPostSessions(undefined, undefined, { strict: true }),
   postTraining: () => getAllTrainingEntries({ strict: true }),
+  postEnabled: () => isInstanceFeatureEnabled('post'),
   // Today's `YYYY-MM-DD` in the USER's configured timezone — the same day boundary
   // meatspacePost.js anchors its streaks to. Deriving "today" from the server's local clock
   // instead would let the Character sheet's POST streak disagree with the Progress page's by

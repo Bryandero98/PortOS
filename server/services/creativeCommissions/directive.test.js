@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  commissionToCron, renderFeedbackDigest, composeDirectiveGoal,
+  commissionToCron, commissionToRecurrence, renderFeedbackDigest, composeDirectiveGoal,
   MAX_DIRECTIVE_GOAL_LEN, MAX_SYSTEM_PREFIX_LEN,
 } from './directive.js';
 import { CREATIVE_DIRECTOR_GOAL_MAX } from '../../lib/creativeDirectorValidation.js';
@@ -61,6 +61,20 @@ describe('commissionToCron', () => {
 
   it('passes through a CUSTOM cron (trimmed)', () => {
     expect(commissionToCron({ kind: 'CUSTOM', cron: '  */15 * * * *  ' })).toBe('*/15 * * * *');
+  });
+
+  it('keeps rich calendar recurrence separate from its compatibility cron', () => {
+    const recurrence = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+    const schedule = { kind: 'RECURRENCE', recurrence };
+    expect(commissionToRecurrence(schedule)).toEqual(recurrence);
+    expect(commissionToCron(schedule)).toBe('0 2 * * 1');
+  });
+
+  it('keeps weekday restrictions in the daily compatibility preview', () => {
+    expect(commissionToCron({
+      kind: 'RECURRENCE',
+      recurrence: { frequency: 'daily', interval: 1, weekdays: [1, 3], time: '09:00' },
+    })).toBe('0 9 * * 1,3');
   });
 
   it('returns null when required fields are missing', () => {

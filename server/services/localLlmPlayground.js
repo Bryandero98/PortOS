@@ -198,6 +198,7 @@ export async function runLocalLlmTest({
   let usage = null;
   let streamChunks = 0;
   const onStats = (stats) => { usage = stats; };
+  const timeoutController = new AbortController();
 
   try {
     const run = await createRun({
@@ -217,7 +218,6 @@ export async function runLocalLlmTest({
     // Cancel, closing the browser fetch — aborts `clientSignal`; `anyAbortSignal`
     // composes both so whichever fires first tears down the upstream reader instead
     // of running on to the full timeout with no one listening.
-    const timeoutController = new AbortController();
     const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
     const signal = anyAbortSignal([clientSignal, timeoutController.signal]);
     const text = await streamChatCompletion({
@@ -261,7 +261,17 @@ export async function runLocalLlmTest({
     };
   } catch (err) {
     const endedAt = Date.now();
-    const error = err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
+    // The response-derived signal is a caller cancellation, not evidence that
+    // the provider hit its wall-clock deadline. `AbortError` is the same error
+    // Undici raises for both signals, so inspect the source controllers before
+    // labeling the run. Misclassifying a browser disconnect as a provider
+    // timeout fires the provider-failure hook and can create a spurious
+    // investigation task (the run still has partial model output).
+    const timedOut = timeoutController.signal.aborted;
+    const canceled = clientSignal?.aborted === true && !timedOut;
+    const error = canceled
+      ? 'Local LLM test canceled by client'
+      : err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
     // A timeout/abort mid-stream still has tokens worth keeping — surface what the
     // model already streamed (attached to the error by streamChatCompletion) instead
     // of discarding it. Persist it on the failed run record too so /runs replay shows it.
@@ -272,10 +282,11 @@ export async function runLocalLlmTest({
       await finalizeRunRecord({
         runId,
         output: partialText,
-        exitCode: 1,
+        exitCode: canceled ? null : 1,
         success: false,
         error,
         startTime: startedAt,
+        ...(canceled ? { extras: { canceled: true, completionReason: 'client-disconnect' } } : {}),
       }).catch(() => {});
     }
     return {
@@ -285,6 +296,7 @@ export async function runLocalLlmTest({
       runId,
       error,
       text: partialText,
+      ...(canceled ? { canceled: true } : {}),
       timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText, usage, streamChunks }),
       options: { temperature, maxTokens, timeoutMs, nativeOllamaUsage },
     };
@@ -359,7 +371,11 @@ export async function runEndpointLlmTest({
     };
   } catch (err) {
     clearTimeout(timeoutHandle);
-    const error = err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
+    const timedOut = timeoutController.signal.aborted;
+    const canceled = clientSignal?.aborted === true && !timedOut;
+    const error = canceled
+      ? 'Local LLM test canceled by client'
+      : err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
     const partialText = typeof err?.partialOutput === 'string' ? err.partialOutput : '';
     return {
       backend: runtime,
@@ -367,6 +383,7 @@ export async function runEndpointLlmTest({
       endpoint,
       error,
       text: partialText,
+      ...(canceled ? { canceled: true } : {}),
       timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text: partialText, usage, streamChunks }),
       options: { temperature, maxTokens, timeoutMs },
     };

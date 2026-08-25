@@ -6,9 +6,12 @@ import { installVoiceHotkeySpy } from '../../test/voiceHotkeySpy';
 // PlayerController is an r3f component, but its Space handling is plain DOM wiring. The
 // fiber hooks are stubbed so it can mount in jsdom without a WebGL canvas; rendering in
 // first-person camera mode returns null, so nothing three.js-specific ever paints.
+// The useFrame stub CAPTURES the per-frame callback so tests can drive the frame loop
+// (the path where a thrown TypeError would kill scene rendering) without WebGL.
+const frameCallbacks = [];
 vi.mock('@react-three/fiber', () => ({
   useThree: () => ({ camera: new THREE.PerspectiveCamera(), gl: { domElement: document.createElement('canvas') } }),
-  useFrame: () => {},
+  useFrame: (cb) => { frameCallbacks.push(cb); },
 }));
 
 const PlayerController = (await import('./PlayerController')).default;
@@ -17,7 +20,7 @@ describe('PlayerController Space (jump) capture', () => {
   const voiceHotkey = installVoiceHotkeySpy();
   let keysRef;
 
-  beforeEach(() => { keysRef = { current: new Set() }; });
+  beforeEach(() => { keysRef = { current: new Set() }; frameCallbacks.length = 0; });
 
   const renderRig = (props = {}) => render(
     <PlayerController keysRef={keysRef} active cameraView="first" positions={new Map()} apps={[]} {...props} />,
@@ -77,5 +80,26 @@ describe('PlayerController Space (jump) capture', () => {
 
     expect(keysRef.current.has(' ')).toBe(false);
     expect(voiceHotkey()).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a frame without throwing on a non-iterable easterEggs payload', () => {
+    // Regression (#4702): the scene passed computeEasterEggs' wrapper object as
+    // easterEggs; the per-frame detectProximity loop then threw "not iterable"
+    // every frame, halting the render loop — on a default install the world never
+    // painted at all (mobile: "all I see is sky"). The frame path must survive.
+    renderRig({ easterEggs: { eggs: [], total: 0, hasData: false } });
+    const runFrame = frameCallbacks.at(-1);
+    expect(typeof runFrame).toBe('function');
+
+    expect(() => act(() => runFrame({}, 1 / 60))).not.toThrow();
+  });
+
+  it('runs a frame with a well-formed easterEggs array without throwing', () => {
+    renderRig({
+      easterEggs: [{ id: 'leet', label: '1337', hint: 'LEET', position: [0, 1.2, 52] }],
+    });
+    const runFrame = frameCallbacks.at(-1);
+
+    expect(() => act(() => runFrame({}, 1 / 60))).not.toThrow();
   });
 });

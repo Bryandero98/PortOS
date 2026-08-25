@@ -18,6 +18,9 @@ vi.mock('../components/settings/CodeReviewersTab', () => ({
 vi.mock('../components/settings/GeneralTab', () => ({
   GeneralTab: () => <div data-testid="general-tab" />,
 }));
+vi.mock('../components/settings/InstanceFeaturesTab', () => ({
+  default: () => <div data-testid="instance-features-tab" />,
+}));
 
 const Settings = (await import('./Settings')).default;
 
@@ -38,6 +41,19 @@ describe('Settings — Code Reviewers tab', () => {
   it('routes /settings/code-reviewers to the Code Reviewers panel', () => {
     renderTab('/settings/code-reviewers');
     expect(screen.getByTestId('code-reviewers-tab')).toBeTruthy();
+    expect(screen.queryByTestId('general-tab')).toBeNull();
+  });
+});
+
+describe('Settings — Instance Features tab', () => {
+  it('is listed in the settings sub-nav', () => {
+    const tab = TABS.find(t => t.id === 'features');
+    expect(tab?.to).toBe('/settings/features');
+  });
+
+  it('routes /settings/features to the feature participation panel', () => {
+    renderTab('/settings/features');
+    expect(screen.getByTestId('instance-features-tab')).toBeTruthy();
     expect(screen.queryByTestId('general-tab')).toBeNull();
   });
 });

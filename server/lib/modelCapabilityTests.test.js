@@ -17,6 +17,7 @@ import {
 
 const visionTest = getCapabilityTest('image-analysis');
 const sandboxTest = getCapabilityTest('sandbox-repair');
+const rhetoricTest = getCapabilityTest('rhetoric-reference');
 
 describe('applicabilityFor', () => {
   it('applies a test only where the model claims the capability', () => {
@@ -47,6 +48,15 @@ describe('applicabilityFor', () => {
   it('covers every shipped test for one model', () => {
     expect(applicableTests(['chat', 'tools', 'vision']).map((t) => t.state))
       .toEqual(CAPABILITY_TESTS.map(() => 'applicable'));
+  });
+
+  it('offers the rhetoric reference benchmark to chat-capable models', () => {
+    expect(rhetoricTest).toMatchObject({
+      kind: 'text',
+      capabilities: ['chat'],
+      driver: 'chat',
+    });
+    expect(applicabilityFor(rhetoricTest, ['chat']).state).toBe('applicable');
   });
 });
 

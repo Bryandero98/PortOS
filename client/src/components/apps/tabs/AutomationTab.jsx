@@ -29,6 +29,8 @@ export default function AutomationTab({ appId, appName }) {
   const [overrides, setOverrides] = useState({});
   const [schedule, setSchedule] = useState(null);
   const [providers, setProviders] = useState([]);
+  const [providerCatalog, setProviderCatalog] = useState([]);
+  const [activeProviderId, setActiveProviderId] = useState('');
   const [paused, setPaused] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -51,6 +53,8 @@ export default function AutomationTab({ appId, appName }) {
     setPaused(statusData?.paused === true);
     // Every ENABLED provider of a runnable type (cli/tui/api) — handler-backed
     // tasks dispatch on provider.type, so any of them is a valid override.
+    setProviderCatalog(providersData?.providers || []);
+    setActiveProviderId(providersData?.activeProvider || '');
     setProviders((providersData?.providers || []).filter(
       p => RUNNABLE_PROVIDER_TYPES.includes(p.type) && p.enabled !== false
     ));
@@ -280,6 +284,7 @@ export default function AutomationTab({ appId, appName }) {
                 {/* Row 2: interval + cron + agent options */}
                 <div className="flex flex-wrap items-center gap-2">
                   <select
+                    aria-label="Override interval"
                     value={cronEditing[taskType] !== undefined || isCronExpression(overrideInterval) ? 'cron' : (overrideInterval ?? 'null')}
                     onChange={e => handleIntervalChange(taskType, e.target.value)}
                     className="px-2 py-1 bg-port-bg border border-port-border rounded text-xs text-white focus:border-port-accent focus:outline-hidden"
@@ -386,7 +391,12 @@ export default function AutomationTab({ appId, appName }) {
       )}
 
       <div className="border-t border-port-border pt-4">
-        <CustomTasksSection appId={appId} appName={appName} />
+        <CustomTasksSection
+          appId={appId}
+          appName={appName}
+          providerCatalog={providerCatalog}
+          activeProviderId={activeProviderId}
+        />
       </div>
     </div>
   );

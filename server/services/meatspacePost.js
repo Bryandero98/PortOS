@@ -51,7 +51,8 @@ import { applySessionToReviewSchedule, getDueReviews, getRetentionReport } from 
 import { getAllTrainingEntries } from './postTrainingLogStore.js';
 import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
 import { computePostStreaks, computeUnifiedStreak, normalizeYmd, recordDayKey, withDerivedDayKeys, ymdToUTC, ymdShift } from '../lib/postStreak.js';
-import { getUserTimezone, todayInTimezone, userLocalToday as localToday } from '../lib/timezone.js';
+import { todayInTimezone } from '../lib/timezone.js';
+import { getUserTimezone, userLocalToday as localToday } from './userTimezone.js';
 import { getStoredPostSession, listPostSessions, saveStoredPostSession } from './postRunStore.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { getPostStats } from './meatspacePostStats.js';
@@ -230,6 +231,15 @@ const DEFAULT_CONFIG = {
       'wit-comeback': { enabled: true, count: 5, timeLimitSec: 120 },
       'pun-wordplay': { enabled: true, count: 5, timeLimitSec: 120 }
     }
+  },
+  // Optional AI judging for the standalone rhetoric trainer. It is explicitly
+  // off by default so loading POST or opening the practice page never queues a
+  // provider call without a user opting in and saving this block.
+  rhetoricEvaluator: {
+    enabled: false,
+    providerId: null,
+    model: null,
+    effort: null,
   },
   // Deterministic cognitive drills (working-memory / attention / inhibition).
   // No provider calls — enabled by default since they're free to run. No

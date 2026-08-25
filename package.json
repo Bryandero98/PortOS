@@ -1,6 +1,6 @@
 {
   "name": "portos",
-  "version": "2.49.0",
+  "version": "2.50.0",
   "private": true,
   "description": "Local dev machine App OS portal",
   "author": "Adam Eivy (@antic|@atomantic)",
@@ -42,7 +42,7 @@
     "smoke": "node scripts/smoke-boot.js"
   },
   "dependencies": {
-    "pm2": "7.0.3"
+    "pm2": "7.0.4"
   },
   "overrides": {
     "lodash": "4.18.1",

@@ -37,6 +37,7 @@ import { RENDER_TARGET, recordRenderPin } from '../../lib/renderTargets.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getUniverseRenderPin } from '../universeBuilder/crud.js';
 import { getImageModels, isFlux2, isEditOnly } from '../../lib/mediaModels.js';
+import { isHardwareCompatible } from '../../lib/systemCapabilities.js';
 import { usesDiffusersRunner } from '../../lib/runners.js';
 
 // The job tags that name the record owning a render, each mapped to the record
@@ -68,6 +69,23 @@ const RECORD_PIN_SOURCES = Object.freeze([
 // Only the formats mflux can decode — mirrors the route's MIME_TO_EXT map
 // so the route never silently relabels (e.g. HEIC) bytes as ".png".
 const MIME_TO_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
+
+/**
+ * Select the model a local render will actually use. An omitted model keeps
+ * the historical `dev` preference only when that model can run on this host;
+ * otherwise it falls through to the first compatible catalog entry.
+ *
+ * @param {string|null|undefined} modelId
+ * @param {object[]} [allModels]
+ * @returns {object|undefined}
+ */
+export function selectLocalImageModel(modelId, allModels = getImageModels()) {
+  const requestedModel = allModels.find((model) => model.id === modelId);
+  return requestedModel || [
+    allModels.find((model) => model.id === 'dev'),
+    ...allModels,
+  ].filter(Boolean).find((model) => isHardwareCompatible(model.hardwareCompatibility)) || allModels[0];
+}
 
 /**
  * @param {object} opts
@@ -192,9 +210,7 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // downstream — that would orphan files on disk and produce metadata sidecars
   // that lie about how the render was conditioned.
   if (referenceUploads.length && mode === IMAGE_GEN_MODE.LOCAL) {
-    const candidate = getImageModels().find((m) => m.id === data.modelId)
-      ?? getImageModels().find((m) => m.id === 'dev')
-      ?? getImageModels()[0];
+    const candidate = selectLocalImageModel(data.modelId);
     if (!isFlux2(candidate)) {
       cleanupReqFilesTemp();
       throw new ServerError(
@@ -303,8 +319,8 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
  * called from the route right before it enqueues a local job.
  *
  * Resolves the effective model via the same fallback chain the local worker
- * uses (`params.modelId` → `'dev'` → the first registered model) and
- * validates it can actually run: an edit-only model (e.g. Qwen-Image-Edit)
+ * uses (`params.modelId` → compatible `'dev'` → the first compatible model)
+ * and validates it can actually run: an edit-only model (e.g. Qwen-Image-Edit)
  * requires a source image, and any model that isn't FLUX.2 or diffusers-run
  * needs a configured pythonPath. Throws the identical `ServerError`s (same
  * status/code/message, same order) the route used to throw inline — these
@@ -329,9 +345,17 @@ export function resolveLocalImageModel(settings, params) {
       { status: 400, code: 'IMAGE_GEN_UNKNOWN_MODEL' },
     );
   }
-  const selectedModel = allModels.find((m) => m.id === params.modelId)
-    ?? allModels.find((m) => m.id === 'dev')
-    ?? allModels[0];
+  // An explicit pin must fail clearly when the host cannot run it. For an
+  // omitted pin, prefer the historical `dev` default only when it is actually
+  // compatible, then choose the first known-compatible model. This keeps a
+  // Windows/Linux install from silently queueing the Apple-only default.
+  const selectedModel = selectLocalImageModel(params.modelId, allModels);
+  if (selectedModel && !isHardwareCompatible(selectedModel.hardwareCompatibility)) {
+    throw new ServerError(
+      `Image model "${selectedModel.id}" is unavailable on this machine: ${selectedModel.hardwareCompatibility.reasons.join(' · ')}`,
+      { status: 400, code: 'MODEL_HARDWARE_UNAVAILABLE' },
+    );
+  }
   // Edit-only models (Qwen-Image-Edit) load a pipeline that REQUIRES a
   // source image. Reject a text-only submission up-front rather than
   // enqueueing a job that crashes deep inside diffusers. `params.initImagePath`
