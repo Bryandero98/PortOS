@@ -100,6 +100,22 @@ export const WORK_TRACKER_LABELS = Object.fromEntries(
 export const workItemNoun = (tracker) =>
   tracker === 'jira' ? 'ticket' : (tracker === 'github' || tracker === 'gitlab') ? 'issue' : 'item';
 
+/**
+ * Whether an app has been configured for a JIRA workflow.
+ *
+ * Either opt-in counts on its own:
+ *   - `jira.enabled` — the integration is switched on (the JIRA tab's own config panel)
+ *   - `workTracker === 'jira'` — the app's work items live in JIRA (Edit App → Workflow)
+ *
+ * The second clause is the bootstrap path: JIRA's config panel lives ON the JIRA
+ * tab, so gating the tab on `jira.enabled` alone would make a never-configured app
+ * unable to ever reach it. Picking JIRA as the work tracker in the Edit App drawer
+ * reveals the tab, and the panel there does the rest. `'auto'` never resolves to
+ * JIRA (it classifies the git origin host → github/gitlab/plan), so an app only
+ * lands here by an explicit choice.
+ */
+export const appUsesJira = (app) => !!app?.jira?.enabled || app?.workTracker === 'jira';
+
 // Overview first, then alphabetical. Every id is a real route segment
 // (`/apps/:appId/:tab`) so each tab is linkable, bookmarkable, and reachable
 // from ⌘K — see the routing rules in client/src/AGENTS.md.
@@ -115,7 +131,8 @@ export const APP_DETAIL_TABS = [
   { id: 'git', label: 'Git' },
   { id: 'gsd', label: 'GSD' },
   { id: 'issues', label: 'Issues' },
-  { id: 'jira', label: 'JIRA' },
+  // JIRA config is only meaningful for an app wired to JIRA — see appUsesJira.
+  { id: 'jira', label: 'JIRA', visibleWhen: appUsesJira },
   { id: 'processes', label: 'Processes' },
   { id: 'references', label: 'References' },
   // Only repos that declare submodules (a .gitmodules file) get the tab — most
