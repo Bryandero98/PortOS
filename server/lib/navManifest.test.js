@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NAV_COMMANDS, getNavAliasMap, resolveNavCommand } from './navManifest.js';
+import { NAV_COMMANDS, NAV_FEATURE_IDS, SECTION_FEATURE, getNavAliasMap, resolveNavCommand } from './navManifest.js';
+import { INSTANCE_FEATURE_IDS } from './instanceFeatureRegistry.js';
 import { PORTOS_APP_ID } from './appIdentity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -140,6 +141,74 @@ describe('navManifest — shape invariants', () => {
     ]);
     const bad = NAV_COMMANDS.filter((c) => !ALLOWED_SECTIONS.has(c.section));
     expect(bad.map((c) => `${c.id}:${c.section}`)).toEqual([]);
+  });
+});
+
+// Feature gating hides a page from the ⌘K palette and the sidebar. A typo in a
+// `feature` tag would silently gate on a flag nothing can ever turn on, hiding
+// the page on every install with no other symptom.
+describe('nav contract — instance-feature gating', () => {
+  it('every gated entry names a registered instance feature', () => {
+    const unknown = NAV_FEATURE_IDS.filter((id) => !INSTANCE_FEATURE_IDS.includes(id));
+    expect(unknown).toEqual([]);
+  });
+
+  // SECTION_FEATURE keys on the DISPLAY label, so renaming a section would
+  // un-gate it silently — and every other assertion here would still pass,
+  // because they filter on that same label and would simply match nothing.
+  it('every SECTION_FEATURE key is a live section carrying that gate', () => {
+    for (const [section, featureId] of SECTION_FEATURE) {
+      const inSection = NAV_COMMANDS.filter((c) => c.section === section);
+      expect(inSection.length, `no commands in section "${section}"`).toBeGreaterThan(0);
+      expect(INSTANCE_FEATURE_IDS, `unregistered feature "${featureId}"`).toContain(featureId);
+      expect(inSection.every((c) => c.feature === featureId)).toBe(true);
+    }
+  });
+
+  it('gates the DataDog and JIRA Dev Tools pages', () => {
+    const byId = Object.fromEntries(NAV_COMMANDS.map((c) => [c.id, c.feature]));
+    expect(byId['nav.devtools.datadog']).toBe('datadog');
+    expect(byId['nav.devtools.jira']).toBe('jira');
+    expect(byId['nav.devtools.jira-reports']).toBe('jira');
+  });
+
+  it('leaves ungated pages untagged', () => {
+    const gated = NAV_COMMANDS.filter((c) => c.feature).map((c) => c.id);
+    expect(gated).toContain('nav.devtools.jira');
+    expect(gated).not.toContain('nav.dashboard');
+    expect(gated).not.toContain('nav.devtools.flows');
+  });
+
+  // The sidebar is a SEPARATE list from this manifest, so the two can drift: a
+  // page gated here but untagged there stays visible in the sidebar while ⌘K
+  // hides it, and vice versa. Scrape Layout's own path→feature pairs and require
+  // them to agree with the manifest in BOTH directions.
+  it('the sidebar tags exactly the paths this manifest gates', () => {
+    const layout = fs.readFileSync(path.join(REPO_ROOT, 'client/src/components/Layout.jsx'), 'utf8');
+    // Rows are one-liners: { to: '/devtools/jira', label: …, feature: 'jira' }.
+    const layoutRows = [...layout.matchAll(/\{[^{}\n]*\bto:\s*'([^']+)'[^{}\n]*\}/g)]
+      .map((m) => ({ path: m[1], feature: /\bfeature:\s*'([^']+)'/.exec(m[0])?.[1] || null }));
+    expect(layoutRows.length).toBeGreaterThan(50);
+
+    // A SECTION-level gate is carried by the sidebar's parent row, not repeated
+    // on each child, so those paths are expected to be untagged here — the
+    // section-level check below covers them.
+    const sectionGated = new Set(SECTION_FEATURE.values());
+    const expectedFeature = (cmd) => (cmd.feature && !sectionGated.has(cmd.feature) ? cmd.feature : null);
+    const manifestFeatureByPath = new Map(NAV_COMMANDS.map((c) => [c.path, expectedFeature(c)]));
+    const drift = layoutRows
+      .filter((row) => manifestFeatureByPath.has(row.path))
+      .filter((row) => manifestFeatureByPath.get(row.path) !== row.feature)
+      .map((row) => `${row.path}: sidebar=${row.feature} manifest=${manifestFeatureByPath.get(row.path)}`);
+    expect(drift).toEqual([]);
+  });
+
+  // A whole gated SECTION carries the tag on its parent row instead of on each
+  // child, so the per-path check above can't see it.
+  it('the sidebar gates each section-level feature on its parent row', () => {
+    const layout = fs.readFileSync(path.join(REPO_ROOT, 'client/src/components/Layout.jsx'), 'utf8');
+    const missing = [...SECTION_FEATURE.values()].filter((id) => !layout.includes(`feature: '${id}'`));
+    expect(missing).toEqual([]);
   });
 });
 

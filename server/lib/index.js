@@ -321,6 +321,7 @@ export * from './mediaItemKey.js';
 export * from './migrationMarker.js';
 export * from './modelPricing.js';
 export * from './navManifest.js';
+export * from './instanceFeatureRegistry.js';
 export * from './usageRange.js';
 export * from './subscriptionSavings.js';
 export * from './providerFamilies.js';

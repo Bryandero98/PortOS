@@ -3,6 +3,7 @@ import { ServerError } from './errorHandler.js';
 import { partialWithoutDefaults, emptyToUndefined, emptyToNull, optionalBooleanMap } from './zodCompat.js';
 import { WORK_TRACKERS } from './workTracker.js';
 import { PROVIDER_FAMILY_IDS } from './providerFamilies.js';
+import { INSTANCE_FEATURE_IDS } from './instanceFeatureRegistry.js';
 import { MAX_MONTHLY_COST } from './subscriptionSavings.js';
 import { QUEUEABLE_IMAGE_MODES, VIDEO_GEN_MODES } from './generationModes.js';
 import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
@@ -772,16 +773,18 @@ export const apiAccessSettingsSchema = z.object({
   sdapi: apiAccessEntrySchema.optional(),
 }).strict();
 
-// Install-local feature participation flags. The registry owns the available
-// feature ids; this schema keeps generic settings saves from persisting an
-// unknown or malformed feature state.
-export const instanceFeatureSettingsSchema = z.object({
-  post: z.object({
-    enabled: z.boolean().optional(),
-  }).strict().optional(),
-}).strict();
+// Install-local feature participation flags. `instanceFeatureRegistry.js` owns
+// the available feature ids and both schemas derive from it, so registering a
+// feature there needs no edit here; the schemas keep generic settings saves from
+// persisting an unknown or malformed feature state.
+export const instanceFeatureSettingsSchema = z.object(
+  Object.fromEntries(INSTANCE_FEATURE_IDS.map((id) => [
+    id,
+    z.object({ enabled: z.boolean().optional() }).strict().optional(),
+  ]))
+).strict();
 
-export const instanceFeatureIdSchema = z.enum(['post']);
+export const instanceFeatureIdSchema = z.enum([...INSTANCE_FEATURE_IDS]);
 
 export const instanceFeatureUpdateSchema = z.object({
   enabled: z.boolean(),
