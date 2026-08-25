@@ -30,6 +30,9 @@ describe('localModelHeuristics', () => {
         'north-mini-code-1.0',
         'olmo-3.1:32b-instruct',
         'nemotron-3-nano:4b',
+        'phi4',
+        'deepseek-r1:8b',
+        'qwen2.5-coder:7b',
       ]) {
         expect(isToolUseModel(id), id).toBe(true);
       }

@@ -409,6 +409,33 @@ export const LOCAL_LLM_CATALOG = [
     lmstudio: 'lmstudio-community/Olmo-3.1-32B-Instruct-GGUF'
   },
   {
+    key: 'deepseek-r1-8b',
+    name: 'DeepSeek-R1 8B',
+    category: 'reasoning',
+    recommendedFor: ['reasoning', 'lightweight'],
+    params: '8B',
+    size: '4.9 GB',
+    family: 'deepseek',
+    description: "DeepSeek's open reasoning model distilled into an 8B Llama architecture — explicit chain-of-thought thinking for math, logic, and complex reasoning.",
+    capabilities: ['chat', 'reasoning'],
+    ollama: 'deepseek-r1:8b',
+    lmstudio: 'lmstudio-community/DeepSeek-R1-Distill-Llama-8B-GGUF'
+  },
+  {
+    key: 'phi-4-14b',
+    name: 'Phi-4 14B',
+    category: 'reasoning',
+    recommendedFor: ['reasoning', 'general'],
+    params: '14B',
+    size: '9.1 GB',
+    family: 'phi',
+    description: "Microsoft's 14B open model with strong reasoning, math, and synthetic data quality — fits easily on 16GB machines.",
+    capabilities: ['chat', 'reasoning', 'tools'],
+    context: 16384,
+    ollama: 'phi4',
+    lmstudio: 'lmstudio-community/phi-4-GGUF'
+  },
+  {
     key: 'gemma4-31b',
     name: 'Gemma 4 31B',
     category: 'general',
@@ -468,6 +495,20 @@ export const LOCAL_LLM_CATALOG = [
     context: 262144,
     repository: 'Qwen/Qwen3-Coder-30B-A3B-Instruct',
     ollama: 'qwen3-coder:30b'
+  },
+  {
+    key: 'qwen2.5-coder-7b',
+    name: 'Qwen2.5-Coder 7B',
+    category: 'coding',
+    recommendedFor: ['coding'],
+    params: '7B',
+    size: '4.7 GB',
+    family: 'qwen',
+    description: "Alibaba's 7B open coding model — excellent code generation, multi-file editing, and tool use for 8–16GB laptops.",
+    capabilities: ['chat', 'code', 'tools'],
+    context: 131072,
+    ollama: 'qwen2.5-coder:7b',
+    lmstudio: 'lmstudio-community/Qwen2.5-Coder-7B-Instruct-GGUF'
   },
   {
     key: 'ornith-9b',
@@ -637,6 +678,20 @@ export const LOCAL_LLM_CATALOG = [
     context: 262144,
     ollama: 'qwen3-vl:30b',
     lmstudio: 'lmstudio-community/Qwen3-VL-30B-A3B-Instruct-GGUF'
+  },
+  // ── Multilingual tier ──
+  {
+    key: 'aya-expanse-8b',
+    name: 'Aya Expanse 8B',
+    category: 'multilingual',
+    recommendedFor: ['multilingual', 'chat'],
+    params: '8B',
+    size: '5.1 GB',
+    family: 'aya',
+    description: "Cohere For AI's flagship open multilingual model covering 23 languages with high-fidelity translation and localized dialogue.",
+    capabilities: ['chat', 'multilingual'],
+    ollama: 'aya-expanse:8b',
+    lmstudio: 'lmstudio-community/Aya-Expanse-8B-GGUF'
   },
   // ── Text embeddings ──
   // PortOS's memory/recall pipeline expects 768-dimension vectors
