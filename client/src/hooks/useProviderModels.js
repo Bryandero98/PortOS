@@ -68,6 +68,7 @@ export default function useProviderModels({ filter, allowDefault = false, silent
   const [selectedProviderId, setSelectedProviderId] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(enabled);
+  const loadGenerationRef = useRef(0);
   const hasSetInitialRef = useRef(false);
   // Latched once the model is chosen deliberately — a picker change, or a
   // caller restoring a saved pin. The auto re-pick below then stands down for
@@ -110,6 +111,7 @@ export default function useProviderModels({ filter, allowDefault = false, silent
   useEffect(() => { pickInitialModelRef.current = pickInitialModel; }, [pickInitialModel]);
 
   const load = useCallback(async () => {
+    const loadGeneration = ++loadGenerationRef.current;
     setLoading(true);
     const data = await api.getProviders(silent ? { silent: true } : undefined).catch((err) => {
       // Log even when `silent` suppresses the toast, so a failed fetch leaves
@@ -117,6 +119,7 @@ export default function useProviderModels({ filter, allowDefault = false, silent
       console.warn(`⚠️ Provider list fetch failed: ${err?.message || err}`);
       return { activeProvider: '', providers: [] };
     });
+    if (loadGeneration !== loadGenerationRef.current) return;
     setActiveProviderId(typeof data?.activeProvider === 'string' ? data.activeProvider : '');
     const filterFn = filter || (p => p.enabled);
     const filtered = (data.providers || [])
@@ -133,12 +136,14 @@ export default function useProviderModels({ filter, allowDefault = false, silent
 
   useEffect(() => {
     if (!enabled) {
+      loadGenerationRef.current += 1;
       setProviders([]);
       setActiveProviderId('');
       setLoading(false);
       return;
     }
     load();
+    return () => { loadGenerationRef.current += 1; };
   }, [enabled, load]);
 
   const currentProvider = useMemo(

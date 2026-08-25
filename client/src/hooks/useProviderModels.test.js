@@ -120,6 +120,34 @@ describe('useProviderModels — lazy loading', () => {
     expect(api.getProviders).toHaveBeenCalledTimes(1);
     expect(hook.result.current.providers).toEqual([CODEX]);
   });
+
+  it('ignores a provider response from a load invalidated by disable and re-enable', async () => {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((res) => { resolve = res; });
+      return { promise, resolve };
+    };
+    const first = deferred();
+    const second = deferred();
+    api.getProviders.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const replacement = { ...CODEX, id: 'replacement', name: 'Replacement' };
+    const hook = renderHook(
+      ({ enabled }) => useProviderModels({ allowDefault: true, enabled }),
+      { initialProps: { enabled: true } },
+    );
+
+    await waitFor(() => expect(api.getProviders).toHaveBeenCalledTimes(1));
+    hook.rerender({ enabled: false });
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    hook.rerender({ enabled: true });
+    await waitFor(() => expect(api.getProviders).toHaveBeenCalledTimes(2));
+
+    await act(async () => { first.resolve({ providers: [CODEX] }); });
+    expect(hook.result.current.providers).toEqual([]);
+
+    await act(async () => { second.resolve({ providers: [replacement] }); });
+    await waitFor(() => expect(hook.result.current.providers).toEqual([replacement]));
+  });
 });
 
 // A capability-scoped picker (vision) starts on the client-side id regex and
