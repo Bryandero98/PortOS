@@ -6,7 +6,7 @@ import useKeyCapture from '../../hooks/useKeyCapture';
 import ErrorBoundary from '../ErrorBoundary';
 import {
   THIRD_PERSON, EYE_HEIGHT, DEFAULT_SPAWN_Z,
-  thirdPersonCamera, resolveBoom,
+  thirdPersonCamera, resolveBoom, nextBoomZoom,
   dampFactor, dampAngle, moveFacing, avatarState, bankAngle, stepVehicle,
   moveWithCollisions, PLAYER_COLLISION_RADIUS, VEHICLE_COLLISION,
 } from '../../utils/openWorldPlayerRig';
@@ -43,7 +43,8 @@ const _lookTarget = new THREE.Vector3();
 //     arcade vehicle handling, building-aware boom shortening, and speed-weighted steering.
 //   - 'first' (V to toggle): the classic invisible first-person camera.
 // WASD/arrows, shift boost, E/Q vertical, F interact, R respawn, H horn, pointer-lock mouselook,
-// speed boost pads, cyber shards collection, landmark discovery, and world boundaries.
+// scroll-wheel camera zoom, speed boost pads, cyber shards collection, landmark discovery, and
+// world boundaries.
 export default function PlayerController({
   keysRef,
   positions,
@@ -128,6 +129,10 @@ export default function PlayerController({
   const poseTickRef = useRef(0);
   const lastSpawnRef = useRef(null);
   const pointerLockedRef = useRef(false);
+  // Camera boom zoom: `boomZoomTargetRef` is the player's chosen multiplier, `boomZoomRef`
+  // the smoothed value the camera actually uses this frame.
+  const boomZoomTargetRef = useRef(1);
+  const boomZoomRef = useRef(1);
 
   useEffect(() => {
     localCollectedSetRef.current = new Set(collectedShardIds);
@@ -232,6 +237,14 @@ export default function PlayerController({
     rig.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, rig.pitch));
   }, [active]);
 
+  // Wheel zooms the third-person boom. Bound on the canvas (not window) so HUD panels
+  // and dialogs keep their own scroll; preventDefault stops any residual page scroll.
+  const handleWheel = useCallback((e) => {
+    if (!active) return;
+    e.preventDefault();
+    boomZoomTargetRef.current = nextBoomZoom(boomZoomTargetRef.current, e.deltaY);
+  }, [active]);
+
   useEffect(() => {
     if (!active) {
       // Release pointer lock when leaving exploration mode
@@ -247,16 +260,18 @@ export default function PlayerController({
     canvas.addEventListener('click', handleClick);
     document.addEventListener('pointerlockchange', handlePointerLockChange);
     document.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
 
     return () => {
       canvas.removeEventListener('click', handleClick);
       document.removeEventListener('pointerlockchange', handlePointerLockChange);
       document.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('wheel', handleWheel);
       if (document.pointerLockElement === canvas) {
         document.exitPointerLock?.();
       }
     };
-  }, [active, gl.domElement, handleClick, handlePointerLockChange, handleMouseMove]);
+  }, [active, gl.domElement, handleClick, handlePointerLockChange, handleMouseMove, handleWheel]);
 
   // F interacts with the nearby target; V swaps first/third person; H plays horn; R returns to drop-in.
   const interact = useCallback(() => {
@@ -564,12 +579,15 @@ export default function PlayerController({
       return;
     }
 
-    // Third person: boom behind camera yaw
+    // Third person: boom behind camera yaw. The wheel multiplier eases toward its
+    // target so a fast scroll produces a smooth dolly instead of a jump cut.
+    boomZoomRef.current += (boomZoomTargetRef.current - boomZoomRef.current) * dampFactor(9, delta);
     const desired = thirdPersonCamera({
       pos: rig.position,
       yaw: rig.yaw,
       pitch: rig.pitch,
       pitchOffset: THIRD_PERSON.isometricPitch,
+      boom: THIRD_PERSON.boom * boomZoomRef.current,
     });
     const anchor = { x: rig.position.x, y: rig.position.y + THIRD_PERSON.lookHeight, z: rig.position.z };
     const { point: resolvedCam } = resolveBoom({ anchor, camera: desired.camera, buildings: buildingList });

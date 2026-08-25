@@ -318,6 +318,7 @@ export default function OpenWorldSettingsDrawer({ open, onClose }) {
               <ControlRow keys={['TAB']} label="Drop in / fly out" />
               <ControlRow keys={['M']} label="World map" />
               <ControlRow keys={['DRAG']} label="Look around" hint="Click the scene to capture the mouse" />
+              <ControlRow keys={['SCROLL']} label="Camera zoom" hint="Mouse wheel pulls the camera in / out" />
             </div>
           </div>
           <button
