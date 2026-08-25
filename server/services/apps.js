@@ -158,8 +158,12 @@ export function invalidateCache() {
  * Notify clients that apps data has changed
  * Call this after any operation that modifies app state
  */
-export function notifyAppsChanged(action = 'update') {
-  appsEvents.emit('changed', { action, timestamp: Date.now() });
+export function notifyAppsChanged(action = 'update', appId) {
+  appsEvents.emit('changed', {
+    action,
+    ...(appId ? { appId } : {}),
+    timestamp: Date.now()
+  });
 }
 
 /**
@@ -470,7 +474,8 @@ export async function updateApp(id, updates) {
 }
 
 /**
- * Delete an app (PortOS baseline app cannot be deleted)
+ * Remove an app from PortOS's registry (the repository on disk is untouched).
+ * The PortOS baseline app cannot be removed.
  */
 export async function deleteApp(id) {
   if (id === PORTOS_APP_ID) return false;

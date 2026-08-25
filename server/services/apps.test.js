@@ -37,7 +37,7 @@ vi.mock('./pm2.js', () => ({
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
 import { listProcessesStrict } from './pm2.js';
 import { resetExecutionHistory } from './taskSchedule.js';
-import { annotateExpectedExit, createApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, resolvePm2HomeForProcess, updateAppTaskTypeOverride } from './apps.js';
+import { annotateExpectedExit, createApp, deleteApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, resolvePm2HomeForProcess, updateAppTaskTypeOverride } from './apps.js';
 
 describe('pr-watcher cooldown reset', () => {
   beforeEach(() => {
@@ -475,6 +475,34 @@ describe('resolvePm2HomeForProcess', () => {
     });
 
     await expect(resolvePm2HomeForProcess('example-api')).resolves.toBeNull();
+  });
+});
+
+describe('deleteApp', () => {
+  beforeEach(() => {
+    invalidateCache();
+    vi.clearAllMocks();
+  });
+
+  it('removes only the PortOS registry record and preserves the app path data', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS' },
+        'app-1': { name: 'Example App', repoPath: '/mock/example-app' },
+      },
+    });
+
+    await expect(deleteApp('app-1')).resolves.toBe(true);
+
+    const persisted = atomicWrite.mock.calls.at(-1)[1];
+    expect(persisted.apps['app-1']).toBeUndefined();
+    expect(persisted.apps[PORTOS_APP_ID]).toMatchObject({ name: 'PortOS' });
+  });
+
+  it('protects the PortOS baseline record', async () => {
+    await expect(deleteApp(PORTOS_APP_ID)).resolves.toBe(false);
+    expect(readJSONFile).not.toHaveBeenCalled();
+    expect(atomicWrite).not.toHaveBeenCalled();
   });
 });
 

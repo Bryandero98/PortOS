@@ -85,10 +85,19 @@ export default function AppDetailView() {
 
   // Real-time updates
   useEffect(() => {
-    const handleAppsChanged = () => fetchApp();
+    const handleAppsChanged = (change) => {
+      // The delete event reaches this mounted detail view before the DELETE
+      // response can navigate it away. Avoid refetching the known-deleted app,
+      // which would turn the expected 404 into an error toast beside success.
+      if (change?.action === 'delete' && change.appId === appId) {
+        navigate('/apps');
+        return;
+      }
+      fetchApp();
+    };
     socket.on('apps:changed', handleAppsChanged);
     return () => socket.off('apps:changed', handleAppsChanged);
-  }, [fetchApp]);
+  }, [appId, fetchApp, navigate]);
 
   const handleStart = async () => {
     setActionLoading('start');
