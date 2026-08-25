@@ -806,17 +806,11 @@ Use \`feat:\` / \`fix:\` / \`refactor:\` / \`chore:\` / etc. (The bracketed-scop
    git commit -m "docs([<slug>]): remove from PLAN.md and log to changelog"
    \`\`\`
 
-## Phase 6 — Review locally, then open the PR and ship
+## Phase 6 — Open the PR and ship
 
-The configured reviewers for this task, in order, are \`{reviewers}\`. Split them by where they can run, preserving order: **LOCAL reviewers** — every token that is NOT an \`@<login>\` (\`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` / \`cursor\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure) read the working tree and need no PR, so they run BEFORE the PR is opened. **PR-SIDE reviewers** — every \`@<login>\` token, plus any review bot the repo requests automatically on open — review cloud-side, so they can only run once the PR exists. Open the PR only when the branch is already review-clean and all that remains is CI plus those PR-side reviewers.
-
-1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff — BEFORE opening the PR, not retroactively. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
-2. **Run each LOCAL reviewer in order against the BRANCH diff, not a PR diff.** No PR exists yet, so use the CLI's own base-diff mode or \`git diff origin/main...HEAD\` (substitute the repo's default branch when it isn't \`main\`); local LLM reviewers go through the appended endpoint procedure. Apply the fixes, run the tests, and commit them — capped at 3 rounds per reviewer — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review, and never open the PR on the strength of it. If a local reviewer is still unsatisfied after 3 rounds, or its fixes leave the build/tests red, do NOT open a PR — leave the branch and worktree in place, report the reviewer and the failure, and stop.
-3. Push the branch: \`git push -u origin claim/<slug>\`, then confirm \`git log --oneline @{u}..HEAD\` is empty so every review fix from step 2 is in the PR's diff.
-4. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
-5. **Satisfy the PR-SIDE reviewers and CI before merging.** Request each \`@<login>\` (\`gh pr edit <num> --add-reviewer <login>\`, drop the \`@\`), poll every 5–15s, and address the findings — push fixes, capped at 3 rounds each; their approval gates the merge. Wait out any auto-requested review bot the same way, then let required CI finish (\`gh pr checks <num> --required --watch --fail-fast\` — REQUIRED checks only, so an optional job can't stall the merge). If a reviewer stays unsatisfied or a required check stays red, comment on the PR naming the failure, remove only the worktree, and leave the branch and PR for reconciliation.
-
-6. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
+1. Push the branch: \`git push -u origin claim/<slug>\`.
+2. Open the PR with \`gh pr create\` — title MUST encode the slug: \`<type>([<slug>]): <description>\`. Body should summarize what shipped + test plan.
+3. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
    \`\`\`bash
    PR_URL=$(gh pr view --json url -q .url)   # no number: resolves the PR from the checked-out branch
    gh pr merge "$PR_URL" --merge --delete-branch || {

@@ -11013,3 +11013,18 @@ Run \`git stash list\`. For each \`stash@{N}\`:
 Summarize: how many stashes were reviewed, how many were dropped (grouped by reason: superseded vs. stale/abandoned), and — for anything classified REAL UNLANDED WORK — what it is, which files it touches, and a recommendation (recover as a branch, cherry-pick specific hunks, or leave it for the user to decide). When in doubt about whether a stash is safe to drop, leave it in the stash and say so in the report rather than dropping it.`,
   ],
 };
+
+// v17 only changed the repo-conventions filename in the final v16 plan-task
+// body. Preserve that shipped prompt without duplicating its large literal.
+const planTaskV16 = PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1);
+const planTaskV17 = planTaskV16
+  .replace('Follow the repo conventions in CLAUDE.md', 'Follow the repo conventions in AGENTS.md / CLAUDE.md')
+  .replace('read its `CLAUDE.md`', 'read its `AGENTS.md` (or `CLAUDE.md`)');
+if (
+  planTaskV17 === planTaskV16
+  || planTaskV17.includes('Follow the repo conventions in CLAUDE.md')
+  || planTaskV17.includes('read its `CLAUDE.md`')
+) {
+  throw new Error('plan-task v17 history could not be derived from v16');
+}
+PREVIOUS_DEFAULT_PROMPTS['plan-task'].push(planTaskV17);
