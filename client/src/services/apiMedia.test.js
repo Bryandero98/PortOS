@@ -8,6 +8,17 @@ vi.mock('./apiCore.js', () => ({
   request: (...a) => request(...a),
   API_BASE: '/api',
   maybeRedirectToLogin: vi.fn(),
+  // Mirrors the real apiCore.throwApiError (minus the redirect side effect,
+  // already covered by the maybeRedirectToLogin mock above) so assertions
+  // against `.code`/`.status`/`.context`/message keep working unchanged.
+  throwApiError: vi.fn(async (response) => {
+    const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    const err = new Error(error.error || `HTTP ${response.status}`);
+    err.code = error?.code;
+    err.status = response.status;
+    if (error?.context) err.context = error.context;
+    throw err;
+  }),
 }));
 
 let cleanImage;
