@@ -650,18 +650,19 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                   {prCompletionOption(formData.defaultPrCompletion)?.description}
                 </p>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label htmlFor="edit-app-verify-repo-state" className="flex items-center gap-2 cursor-pointer">
                 <input
+                  id="edit-app-verify-repo-state"
                   type="checkbox"
                   checked={formData.verifyRepoStateOnCompletion}
                   onChange={e => setFormData(prev => ({ ...prev, verifyRepoStateOnCompletion: e.target.checked }))}
                   className="rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent"
                 />
                 <ShieldCheck size={14} className="text-amber-400" />
-                <span className="text-sm text-white" title="After each agent finishes, check that its worktree was removed, its branch deleted, and its PR merged. When the repo diverges, PortOS files a recovery task for an agent to finish the cleanup.">Verify repo state after each agent</span>
+                <span className="text-sm text-white">Verify repo state after each agent</span>
               </label>
               <p className="ml-6 text-xs text-gray-500">
-                Audits git and the forge once the agent completes. A leftover worktree, an undeleted branch, or an unmerged PR files a recovery task instead of being silently left behind.
+                Audits git and the forge once an agent completes. A leftover worktree, an undeleted branch, or an unmerged PR files a recovery task instead of being silently left behind.
               </p>
             </div>
           )}

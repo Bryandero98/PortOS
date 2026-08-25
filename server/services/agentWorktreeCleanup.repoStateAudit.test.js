@@ -1,6 +1,6 @@
 /**
  * Wiring guard: every completion path that cleans a worktree must also audit the
- * repo state afterwards.
+ * repo state afterwards, and must not WAIT on that audit.
  *
  * The audit hangs off `cleanupAgentWorktree` — the coalescing wrapper — rather
  * than off any single completion path, because the runner, the TUI `finish()`,
@@ -42,6 +42,7 @@ vi.mock('./agentRepoStateVerification.js', () => ({
 import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
 import { verifyAgentRepoState } from './agentRepoStateVerification.js';
 import { getAgent, getAgentRecord } from './cos.js';
+import { removeWorktree } from './worktreeManager.js';
 
 const worktreeAgent = {
   metadata: {
@@ -52,12 +53,16 @@ const worktreeAgent = {
   },
 };
 
+/** The audit is fired detached, so it lands a microtask after cleanup resolves. */
+const auditRan = () => vi.waitFor(() => expect(verifyAgentRepoState).toHaveBeenCalled());
+
 beforeEach(() => {
   vi.clearAllMocks();
-  // A non-worktree agent makes the cleanup itself a no-op, so this exercises the
+  // A non-worktree agent makes the cleanup itself a no-op, so these exercise the
   // wrapper's hook rather than the teardown.
   getAgent.mockResolvedValue({ metadata: { isWorktree: false } });
   getAgentRecord.mockResolvedValue(worktreeAgent);
+  removeWorktree.mockResolvedValue({ removed: true, warnings: [] });
   verifyAgentRepoState.mockResolvedValue({ verified: true, issues: [] });
 });
 
@@ -66,6 +71,7 @@ describe('cleanupAgentWorktree → repo-state audit', () => {
     const originalTask = { id: 'task-1', metadata: { app: 'demo-app', openPR: true } };
 
     await cleanupAgentWorktree('agent-1', true, { originalTask });
+    await auditRan();
 
     expect(verifyAgentRepoState).toHaveBeenCalledTimes(1);
     expect(verifyAgentRepoState).toHaveBeenCalledWith({
@@ -88,26 +94,41 @@ describe('cleanupAgentWorktree → repo-state audit', () => {
       cleanupAgentWorktree('agent-1', true, { originalTask }),
       cleanupAgentWorktree('agent-1', true, { originalTask }),
     ]);
+    await auditRan();
 
     expect(a).toEqual(b);
     expect(verifyAgentRepoState).toHaveBeenCalledTimes(1);
     expect(verifyAgentRepoState.mock.calls[0][0].prExpected).toBe(false);
   });
 
-  it('still returns cleanup warnings when the audit itself throws', async () => {
+  it('does not make callers wait on the audit', async () => {
+    // The audit makes two network calls; the callers awaiting cleanup still owe
+    // the run a retry-hold release, a lane release and a shell-session kill.
+    let releaseAudit;
+    verifyAgentRepoState.mockReturnValue(new Promise(resolve => { releaseAudit = resolve; }));
+
+    await cleanupAgentWorktree('agent-1', true, { originalTask: { id: 'task-1', metadata: {} } });
+
+    // Reaching here at all is the assertion — an awaited audit would deadlock the
+    // test until the timeout.
+    await auditRan();
+    releaseAudit({ verified: true, issues: [] });
+  });
+
+  it('returns the cleanup warnings unchanged, and survives an audit that throws', async () => {
     // The audit is an observer. A failure in it must never swallow the warnings
     // the caller uses to notify the user and spawn a merge recovery task.
-    getAgent.mockResolvedValue({
-      ...worktreeAgent,
-      metadata: { ...worktreeAgent.metadata, isPersistentWorktree: false },
-    });
+    getAgent.mockResolvedValue(worktreeAgent);
+    removeWorktree.mockResolvedValue({ removed: false, warnings: ['Worktree preserved — uncommitted changes detected'] });
     verifyAgentRepoState.mockRejectedValue(new Error('probe exploded'));
 
     const warnings = await cleanupAgentWorktree('agent-1', true, {
       originalTask: { id: 'task-1', metadata: {} },
     });
+    await auditRan();
 
-    expect(Array.isArray(warnings)).toBe(true);
-    expect(verifyAgentRepoState).toHaveBeenCalled();
+    expect(warnings).toEqual(['Worktree preserved — uncommitted changes detected']);
+    expect(verifyAgentRepoState.mock.calls[0][0].cleanupWarnings)
+      .toEqual(['Worktree preserved — uncommitted changes detected']);
   });
 });

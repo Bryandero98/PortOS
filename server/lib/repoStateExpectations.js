@@ -1,28 +1,30 @@
 /**
- * Post-completion repo-state expectations for CoS worktree agents.
+ * Post-completion repo-state expectations for CoS worktree agents — the pure half.
  *
- * Cleanup (`agentWorktreeCleanup.js`) reports a warning only when a step it
- * *attempted* failed. It says nothing when a step was never attempted — an agent
- * that owned its own PR workflow and exited before `gh pr merge`, a `removeWorktree`
- * that reported success while the directory survived, a branch whose PR merged on
- * the forge while the local ref stayed behind. Those runs finish "clean" and leave
- * a branch and a worktree on disk forever.
+ * Cleanup (`services/agentWorktreeCleanup.js`) reports only the steps it TRIED
+ * and failed. A run whose steps were never attempted finishes with zero warnings
+ * and still leaves debris: an agent that owns its own PR workflow merges the PR
+ * itself, so cleanup stands down (`skipMerge`, `PR_CREATION.NEVER`) and nothing
+ * checks whether the branch and worktree actually went away.
  *
- * This module is the pure half of the audit that closes that gap: given what the
- * task ASKED for, what should the repository look like now, and which of the
- * observed facts contradict it. No git, no forge, no I/O — the probing lives in
- * `services/agentRepoStateVerification.js`, which is what makes both halves
- * testable without a repository.
+ * This module answers "what should the repo look like now" and "which observed
+ * facts contradict that". No I/O — the probing and remediation live in
+ * `services/agentRepoStateVerification.js`.
  *
- * Deliberately narrow: it judges ONE agent's branch and worktree, right after that
- * agent completed. The periodic whole-repo sweep is `services/branchReconcile.js`.
+ * Deliberately narrow: ONE agent's branch, right after that agent completed. The
+ * periodic whole-repo sweep is `services/branchReconcile.js`.
  */
 
 import { PR_COMPLETIONS } from './prDisposition.js';
 
 /**
- * Issue codes, in the order they are reported. Each names a concrete divergence
- * from the expected end state, and each is actionable by the investigation agent.
+ * Divergences worth reporting, in the order they are reported.
+ *
+ * There is deliberately no "the agent never opened a PR" code: `verifyPrClaim`
+ * (services/agentFinalization.js) already owns that question on every completion
+ * path, is forge-agnostic, and carries the `noChangesToShip` carve-out (#3358) —
+ * a run that found the work already done ships nothing and must not be told to
+ * open a PR for an empty branch.
  */
 export const REPO_STATE_ISSUES = Object.freeze({
   WORKTREE_PRESENT: 'worktree-present',
@@ -30,12 +32,11 @@ export const REPO_STATE_ISSUES = Object.freeze({
   REMOTE_BRANCH_PRESENT: 'remote-branch-present',
   BRANCH_UNMERGED: 'branch-unmerged',
   PR_UNMERGED: 'pr-unmerged',
-  PR_MISSING: 'pr-missing',
 });
 
 /**
- * Why a run was not audited. Returned rather than logged so the caller can emit
- * one line and tests can assert the decision instead of the side effect.
+ * Why a run was not audited. Returned rather than logged, so "nothing happened"
+ * is never ambiguous between "checked and clean" and "never checked".
  */
 export const REPO_STATE_SKIPS = Object.freeze({
   DISABLED: 'verification-disabled',
@@ -46,42 +47,43 @@ export const REPO_STATE_SKIPS = Object.freeze({
   CLEANUP_WARNED: 'cleanup-already-warned',
   FOLLOW_UP_PENDING: 'follow-up-pending',
   MISSING_CONTEXT: 'missing-branch-or-workspace',
-  // Set by the service half when every probe came back unreadable.
+  // Set by the service half when not one probe could be read.
   PROBE_FAILED: 'probe-failed',
 });
 
 /**
- * What the repository should look like now that this agent is done.
+ * Should this run be audited, and under which of the two end-state shapes?
  *
- * `verify: false` carries a `skipReason` from `REPO_STATE_SKIPS` — every
- * not-audited path is named, so "nothing happened" is never ambiguous between
- * "checked and clean" and "never checked".
+ * Returns two facts rather than one flag per check: `staysOpen` (the PR is a
+ * human's to land, so its branch must survive) and `prExpected`. Every check is
+ * derived from those in `classifyRepoStateIssues` — an earlier version carried
+ * six `expect*` booleans, three of which were the same expression.
  *
- * The two states worth spelling out:
+ * The two skips worth spelling out:
  *
  * - **A failed run is never audited.** Its branch and worktree are PRESERVED on
  *   purpose (`preserveBranchWithCommits`, `resolveResumePointer`) so the task's
  *   retry resumes rather than restarts. Auditing it would report the resume
- *   pointer as a leak and spawn an agent to delete the work.
- * - **A pending review-loop / merge follow-up defers the audit.** The follow-up
- *   is the terminal actor for this branch — it merges the PR and deletes the
- *   branch — so the branch is *supposed* to still exist right now. The follow-up
- *   is itself a worktree agent, so its own completion gets audited instead.
+ *   pointer as a leak.
+ * - **A pending owner defers the audit.** A review-loop follow-up or a pr-watcher
+ *   pending merge lands this branch next, so it is *supposed* to still exist.
+ *   `FOLLOW_UP_PENDING` is tested last because answering it costs two file reads;
+ *   every free gate above it runs first.
  *
  * @param {object} params
  * @param {boolean} params.enabled - the app's `verifyRepoStateOnCompletion` setting
  * @param {boolean} params.success - the run's effective success
- * @param {boolean} params.isWorktree - agent ran in a worktree
- * @param {boolean} [params.isPersistentWorktree] - long-lived feature worktree (never torn down)
- * @param {boolean} [params.discardWorktree] - reasoning agent whose tree is thrown away unmerged
- * @param {boolean} [params.followUpPending] - a review-loop/merge follow-up owns this branch next
- * @param {number} [params.cleanupWarningCount] - warnings cleanup already raised (it spawns its own recovery)
+ * @param {boolean} params.isWorktree
+ * @param {boolean} [params.isPersistentWorktree] - long-lived feature worktree
+ * @param {boolean} [params.discardWorktree] - reasoning agent whose tree is thrown away
+ * @param {boolean} [params.followUpPending] - something is already queued to land this branch
+ * @param {number} [params.cleanupWarningCount] - cleanup spawns its own recovery when it warned
  * @param {string} [params.prCompletion] - resolved `PR_COMPLETIONS` policy
  * @param {boolean} [params.leaveOpen] - the PR is a human's to land (JIRA hand-off)
- * @param {boolean} [params.prExpected] - a PR was requested for this branch
+ * @param {boolean} [params.prExpected] - the task asked for a PR
  * @param {string|null} [params.branchName]
  * @param {string|null} [params.sourceWorkspace]
- * @returns {{verify: boolean, skipReason: string|null, expectWorktreeGone: boolean, expectLocalBranchGone: boolean, expectRemoteBranchGone: boolean, expectBranchMerged: boolean, expectPrMerged: boolean, expectPrExists: boolean}}
+ * @returns {{verify: boolean, skipReason: string|null, staysOpen: boolean, prExpected: boolean}}
  */
 export function resolveRepoStateExpectation({
   enabled,
@@ -97,16 +99,7 @@ export function resolveRepoStateExpectation({
   branchName = null,
   sourceWorkspace = null,
 } = {}) {
-  const skip = (skipReason) => ({
-    verify: false,
-    skipReason,
-    expectWorktreeGone: false,
-    expectLocalBranchGone: false,
-    expectRemoteBranchGone: false,
-    expectBranchMerged: false,
-    expectPrMerged: false,
-    expectPrExists: false,
-  });
+  const skip = (skipReason) => ({ verify: false, skipReason, staysOpen: false, prExpected: false });
 
   if (enabled === false) return skip(REPO_STATE_SKIPS.DISABLED);
   if (!isWorktree) return skip(REPO_STATE_SKIPS.NOT_WORKTREE);
@@ -114,35 +107,27 @@ export function resolveRepoStateExpectation({
   if (discardWorktree) return skip(REPO_STATE_SKIPS.DISCARDED_WORKTREE);
   if (!success) return skip(REPO_STATE_SKIPS.FAILED_RUN);
   if (cleanupWarningCount > 0) return skip(REPO_STATE_SKIPS.CLEANUP_WARNED);
-  if (followUpPending) return skip(REPO_STATE_SKIPS.FOLLOW_UP_PENDING);
   if (!branchName || !sourceWorkspace) return skip(REPO_STATE_SKIPS.MISSING_CONTEXT);
-
-  // `leave-open` is a deliberate hand-off: the PR stays open and its branch must
-  // stay with it, on both the local and the remote side. The worktree is still
-  // expected to be gone — nothing about handing a PR to a human needs a checkout.
-  const staysOpen = leaveOpen || prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
+  if (followUpPending) return skip(REPO_STATE_SKIPS.FOLLOW_UP_PENDING);
 
   return {
     verify: true,
     skipReason: null,
-    expectWorktreeGone: true,
-    expectLocalBranchGone: !staysOpen,
-    expectRemoteBranchGone: !staysOpen,
-    expectBranchMerged: !staysOpen,
-    expectPrMerged: !staysOpen && prExpected,
-    // A requested PR that the forge has never heard of is a leak in its own right,
-    // whatever the completion policy — the work has nowhere to land.
-    expectPrExists: prExpected,
+    // `leave-open` is a deliberate hand-off: the PR stays open and its branch must
+    // stay with it, local and remote. The worktree is still expected to be gone —
+    // nothing about handing a PR to a human needs a checkout.
+    staysOpen: leaveOpen || prCompletion === PR_COMPLETIONS.LEAVE_OPEN,
+    prExpected,
   };
 }
 
 /**
  * Which observed facts contradict the expectation.
  *
- * Every observation is tri-state on purpose (`true` / `false` / `null`): `null`
- * means "could not determine" — git unreachable, `gh` firewalled, a non-GitHub
- * forge. A `null` NEVER produces an issue. Reading "we could not ask" as "it's
- * still there" would spawn an investigation agent every time the network hiccups.
+ * Every observation is tri-state (`true` / `false` / `null`): `null` means "could
+ * not determine" — git unreachable, `gh` firewalled, a non-GitHub forge. A `null`
+ * NEVER produces an issue, because reading "we could not ask" as "it's still
+ * there" would file a recovery task on every network hiccup.
  *
  * @param {ReturnType<typeof resolveRepoStateExpectation>} expectation
  * @param {object} observed
@@ -150,47 +135,41 @@ export function resolveRepoStateExpectation({
  * @param {boolean|null} [observed.localBranchPresent]
  * @param {boolean|null} [observed.remoteBranchPresent]
  * @param {boolean|null} [observed.branchMerged]
- * @param {string|null} [observed.prState] - upper-cased `MERGED` / `OPEN` / `CLOSED`, or null
- * @param {boolean|null} [observed.prExists]
+ * @param {string|null} [observed.prState] - upper-cased `MERGED` / `OPEN` / `CLOSED`
  * @param {string|null} [observed.branchName]
  * @returns {Array<{code: string, message: string}>}
  */
 export function classifyRepoStateIssues(expectation, observed = {}) {
   if (!expectation?.verify) return [];
-  const branch = observed.branchName || expectation.branchName || 'the agent branch';
+  const branch = observed.branchName || 'the agent branch';
+  const branchShouldBeGone = !expectation.staysOpen;
   const issues = [];
 
-  if (expectation.expectWorktreeGone && observed.worktreePresent === true) {
+  if (observed.worktreePresent === true) {
     issues.push({
       code: REPO_STATE_ISSUES.WORKTREE_PRESENT,
       message: `Worktree for ${branch} still exists after cleanup reported success`,
     });
   }
-  if (expectation.expectLocalBranchGone && observed.localBranchPresent === true) {
+  if (branchShouldBeGone && observed.localBranchPresent === true) {
     issues.push({
       code: REPO_STATE_ISSUES.LOCAL_BRANCH_PRESENT,
       message: `Local branch ${branch} still exists after the run completed`,
     });
   }
-  if (expectation.expectRemoteBranchGone && observed.remoteBranchPresent === true) {
+  if (branchShouldBeGone && observed.remoteBranchPresent === true) {
     issues.push({
       code: REPO_STATE_ISSUES.REMOTE_BRANCH_PRESENT,
       message: `Remote branch origin/${branch} was never deleted`,
     });
   }
-  if (expectation.expectBranchMerged && observed.branchMerged === false) {
+  if (branchShouldBeGone && observed.branchMerged === false) {
     issues.push({
       code: REPO_STATE_ISSUES.BRANCH_UNMERGED,
       message: `Branch ${branch} carries commits that are not on the default branch`,
     });
   }
-  if (expectation.expectPrExists && observed.prExists === false) {
-    issues.push({
-      code: REPO_STATE_ISSUES.PR_MISSING,
-      message: `No pull request was ever opened for ${branch}, but the task asked for one`,
-    });
-  }
-  if (expectation.expectPrMerged && observed.prState && observed.prState !== 'MERGED') {
+  if (branchShouldBeGone && expectation.prExpected && observed.prState && observed.prState !== 'MERGED') {
     issues.push({
       code: REPO_STATE_ISSUES.PR_UNMERGED,
       message: `Pull request for ${branch} is ${observed.prState}, not MERGED`,
@@ -202,11 +181,10 @@ export function classifyRepoStateIssues(expectation, observed = {}) {
 
 /**
  * True when the app's per-app setting leaves the audit on. Unset means ON: the
- * audit only ever *reports* on a run the completion path already believed was
- * finished, and an install that never hears about a leaked branch accumulates
- * them silently — the failure this exists to catch.
+ * audit only reports on a run the completion path already believed was finished,
+ * and an install that never hears about a leaked branch accumulates them silently.
  *
- * @param {object|null} app - managed app record (null for a PortOS-local task)
+ * @param {object|null} app - managed app record (null for a task with no app)
  * @returns {boolean}
  */
 export function repoStateVerificationEnabled(app) {

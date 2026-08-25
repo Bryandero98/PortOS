@@ -1,30 +1,32 @@
 /**
  * Agent Repo-State Verification
  *
- * The programmatic audit that runs AFTER `cleanupAgentWorktree` and asks a
+ * The programmatic audit that runs after `cleanupAgentWorktree` and asks the
  * question cleanup cannot: is the repository actually in the state this task
  * asked for?
  *
- * Cleanup only reports what it *tried and failed* to do. A run whose steps were
- * never attempted finishes with zero warnings and still leaves debris — the case
- * this exists for is an agent that owns its own PR workflow (`ownsPrWorkflow`),
- * merges the PR itself, and exits before deleting the branch, or exits with the
- * PR still open. Cleanup stands down for exactly those runs (`skipMerge`,
- * `PR_CREATION.NEVER`), so nothing checked, and the branch plus its worktree
- * persist through every later sweep that treats "an agent owns it" as a reason
- * to skip.
+ * Cleanup reports only what it TRIED and failed to do. The case this exists for
+ * is an agent that owns its own PR workflow (`ownsPrWorkflow`), merges the PR
+ * itself, and exits before deleting the branch — or exits with the PR still open.
+ * Cleanup stands down for exactly those runs, so nothing checked, and the branch
+ * plus its worktree persist through every later sweep that treats "an agent owns
+ * it" as a reason to skip. (`removeWorktree` also only `console.log`s a failed
+ * `git branch -D`, so even the attempted delete can fail silently.)
  *
  * What it does NOT do: touch anything. It probes, classifies (via the pure
- * `lib/repoStateExpectations.js`), and — when the state diverges — files ONE
- * investigation task so an agent can finish the work. Deleting a branch from
- * here would be a destructive action taken on the basis of a heuristic, which is
- * precisely what `branchReconcile.js` is careful not to do either.
+ * `lib/repoStateExpectations.js`), and files ONE recovery task. Deleting a branch
+ * from here would be a destructive action on the basis of a heuristic, which is
+ * what `branchReconcile.js` is careful not to do either.
+ *
+ * Detection is what this adds over `branchReconcile.js`: that reconciler is an
+ * opt-in scheduled task on a recheck cadence, and it parks on no-progress. This
+ * is immediate, per-agent, and attributed to the run that caused it.
  *
  * Gated per managed app by `verifyRepoStateOnCompletion` (default ON).
  *
- * Concurrency: other agents legitimately hold their own worktrees and branches
- * at the same time. Every probe here is scoped to ONE branch — the one this
- * agent owned — so a live sibling agent is structurally invisible to it.
+ * Concurrency: other agents legitimately hold their own worktrees and branches at
+ * the same time. Every probe is scoped to ONE branch — the one this agent owned —
+ * so a live sibling agent is structurally invisible to it.
  */
 
 import { existsSync } from 'fs';
@@ -33,10 +35,13 @@ import { emitLog } from './cosEvents.js';
 import { addTask } from './cos.js';
 import * as git from './git.js';
 import { listWorktrees } from './worktreeManager.js';
+import { listRemoteHeads, driveToMerge } from './branchReconcile.js';
+import { readAllTasksFlat } from './investigationTaskProducer.js';
 import { execGit } from '../lib/execGit.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { isTruthyMeta } from './agentState.js';
 import { RECOVERY_TASK_PREFIX } from './recoveryTasks.js';
+import { resolveTaskTargetBranch } from '../lib/taskTargetBranch.js';
 import { leavesPrForHuman, resolvePrCompletion } from '../lib/prDisposition.js';
 import {
   REPO_STATE_ISSUES,
@@ -46,42 +51,47 @@ import {
   resolveRepoStateExpectation,
 } from '../lib/repoStateExpectations.js';
 
-// `git ls-remote` is a network round trip on a path that must never delay
-// completion handling. Short and its own knob so a slow remote degrades to
-// "unknown" (no issue reported) instead of stalling the cleanup chain.
-const REMOTE_PROBE_TIMEOUT_MS = 10000;
+// `resolveForgeForRepo` spawns `git remote get-url` + `gh auth status` + `gh auth
+// token` with no internal timeout; git.js races the same call on the agent-SPAWN
+// path for exactly this reason. The completion path has the same property — a
+// stalled gh (network / keychain hang) must not hold an agent lane open.
+const FORGE_RESOLVE_TIMEOUT_MS = 10000;
+
+const withTimeout = (promise, ms, fallback) => Promise.race([
+  promise,
+  new Promise(resolve => setTimeout(() => resolve(fallback), ms)),
+]);
 
 /**
  * Is something ALREADY queued to land this branch?
  *
  * Two owners can hold a branch after cleanup returns, and neither is a leak:
  *
- *   1. a review-loop / merge follow-up TASK (`reviewLoopPRBranch`), which checks
- *      the branch out, drives the reviewers, and merges; and
- *   2. a pr-watcher PENDING MERGE (`pendingMergePrs` on the app record), the
- *      model-free path a merge-on-green GitHub PR takes — the next watcher tick
- *      merges it when CI is green.
+ *   1. a review-loop / merge follow-up TASK, which checks the branch out, drives
+ *      the reviewers, and merges; and
+ *   2. a pr-watcher PENDING MERGE (`pendingMergePrs` on the app record) — the
+ *      model-free path a merge-on-green GitHub PR takes, merged by the next
+ *      watcher tick once CI is green.
  *
- * In both cases the branch is *supposed* to still exist right now. Auditing it
- * would report the thing that is about to land it as debris. The follow-up is
- * itself a worktree agent, so its own completion is what gets audited; a
- * pr-watcher merge is audited by nothing here, deliberately — pr-watcher owns
- * that PR's outcome end to end.
+ * In both cases the branch is *supposed* to still exist right now, so auditing it
+ * would report the thing about to land it as debris. The follow-up is itself a
+ * worktree agent, so its own completion gets audited; a pr-watcher merge is
+ * audited by nothing here, deliberately — pr-watcher owns that PR end to end.
  *
  * @param {string} branchName
  * @param {object|null} app - the managed app record (carries `pendingMergePrs`)
  * @returns {Promise<boolean>}
  */
-export async function branchHasPendingOwner(branchName, app = null) {
-  if (!branchName) return false;
-
-  const { getAllTasks } = await import('./cos.js');
-  const tasks = await getAllTasks().catch(() => []);
-  const claimedByFollowUp = tasks.some(t =>
+async function branchHasPendingOwner(branchName, app) {
+  // `resolveTaskTargetBranch` is the canonical "which branch does this task own"
+  // reader — matching `reviewLoopPRBranch` by hand here would miss a retry holding
+  // the same branch through `existingBranch`.
+  const tasks = await readAllTasksFlat().catch(() => []);
+  const claimedByTask = tasks.some(t =>
     (t.status === 'pending' || t.status === 'in_progress' || t.status === 'blocked') &&
-    t.metadata?.reviewLoopPRBranch === branchName
+    resolveTaskTargetBranch(t.metadata) === branchName
   );
-  if (claimedByFollowUp) return true;
+  if (claimedByTask) return true;
 
   if (!app) return false;
   const { readPendingMergePrs } = await import('./prWatcher.js');
@@ -94,97 +104,104 @@ export async function branchHasPendingOwner(branchName, app = null) {
  *
  * Every field is tri-state: `true` / `false` / `null` for "could not determine".
  * A probe that throws yields `null`, never `false` — see `classifyRepoStateIssues`
- * for why collapsing the two would spawn an investigation agent on every network
- * hiccup.
+ * for why collapsing the two would file a recovery task on every network hiccup.
+ *
+ * The four probe groups are independent and run concurrently, so latency is the
+ * slowest one rather than their sum; only `branchMerged` (needs the local branch
+ * and the default branch) is sequenced after its inputs.
  *
  * @param {object} params
  * @param {string} params.sourceWorkspace - the parent repository
  * @param {string} params.branchName
- * @param {string|null} [params.worktreePath]
- * @param {boolean} [params.probeRemote] - run the `ls-remote` round trip
- * @param {boolean} [params.probePr] - ask the forge about this branch's PR
- * @returns {Promise<{worktreePresent: boolean|null, localBranchPresent: boolean|null, remoteBranchPresent: boolean|null, branchMerged: boolean|null, prExists: boolean|null, prState: string|null, prUrl: string|null, defaultBranch: string|null}>}
+ * @param {string} params.worktreePath
+ * @param {boolean} params.branchShouldBeGone - gates the remote + merged probes
+ * @param {boolean} params.prExpected - gates the forge lookup
+ * @returns {Promise<{worktreePresent: boolean|null, localBranchPresent: boolean|null, remoteBranchPresent: boolean|null, branchMerged: boolean|null, prState: string|null, prUrl: string|null, defaultBranch: string|null}>}
  */
-export async function probeRepoState({ sourceWorkspace, branchName, worktreePath = null, probeRemote = true, probePr = true }) {
-  const observed = {
-    worktreePresent: null,
-    localBranchPresent: null,
-    remoteBranchPresent: null,
-    branchMerged: null,
-    prExists: null,
-    prState: null,
-    prUrl: null,
-    defaultBranch: null,
+async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branchShouldBeGone, prExpected }) {
+  // A worktree counts as present if the directory survived on disk OR git still
+  // tracks it. Either alone is a leak: an unregistered directory is the full
+  // checkout `removeWorktree` believed it deleted, and a registered-but-deleted
+  // tree wedges the next `git worktree add` for that path. The cheap disk check
+  // first, so the common leaked-directory case skips the `git worktree list` spawn.
+  const probeWorktree = async () => {
+    if (existsSync(worktreePath)) return true;
+    const worktrees = await listWorktrees(sourceWorkspace).catch(() => null);
+    if (!worktrees) return null;
+    return worktrees.some(wt =>
+      wt.branch?.replace(/^refs\/heads\//, '') === branchName || wt.path === worktreePath
+    );
   };
 
-  // A worktree counts as present if git still tracks it OR the directory survived
-  // on disk. Either alone is a leak: a registered-but-deleted tree wedges the next
-  // `git worktree add` for that path, and an unregistered directory is the full
-  // checkout `removeWorktree` believed it deleted.
-  const worktrees = await listWorktrees(sourceWorkspace).catch(() => null);
-  if (worktrees) {
-    observed.worktreePresent = worktrees.some(wt =>
-      wt.branch?.replace(/^refs\/heads\//, '') === branchName ||
-      (worktreePath && wt.path === worktreePath)
-    );
-  }
-  if (worktreePath && existsSync(worktreePath)) observed.worktreePresent = true;
-
-  observed.localBranchPresent = await execGit(
+  const probeLocalBranch = () => execGit(
     ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`],
     sourceWorkspace,
     { ignoreExitCode: true }
   ).then(r => r.exitCode === 0).catch(() => null);
 
-  observed.defaultBranch = await git.getDefaultBranch(sourceWorkspace).catch(() => null);
+  // `listRemoteHeads` is branch-reconcile's single answer to "what is on origin
+  // right now", already carrying the null-means-could-not-ask contract. It reads
+  // `ls-remote` rather than the `refs/remotes/*` mirror, which nothing here fetches.
+  const probeRemoteBranch = async () => {
+    if (!branchShouldBeGone) return null;
+    const heads = await listRemoteHeads(sourceWorkspace).catch(() => null);
+    return heads ? heads.has(branchName) : null;
+  };
 
-  // Only meaningful while the branch still exists locally — a deleted branch has
-  // no ref to compare, and `isBranchMergedInto` answers `false` for a missing ref,
-  // which would read as "unmerged work" for the successful case.
-  if (observed.localBranchPresent === true && observed.defaultBranch) {
-    observed.branchMerged = await git
-      .isBranchMergedInto(sourceWorkspace, branchName, observed.defaultBranch)
-      .catch(() => null);
-  }
+  // GitHub only. `gh pr view` against a GitLab MR answers nothing useful, and a
+  // wrong answer is worse than none — leave `prState` null so the PR check simply
+  // does not fire on a GitLab remote. `findPullRequestForBranch` already returns
+  // the state in `detail`, so no second round trip is needed to read it.
+  const probePr = async () => {
+    if (!prExpected || !branchShouldBeGone) return { prState: null, prUrl: null };
+    const { cli, env } = await withTimeout(
+      git.resolveForgeForRepo(sourceWorkspace).catch(() => null),
+      FORGE_RESOLVE_TIMEOUT_MS,
+      null
+    ) || {};
+    if (cli !== 'gh') return { prState: null, prUrl: null };
+    const { findPullRequestForBranch } = await import('./github.js');
+    const found = await findPullRequestForBranch(branchName, { cwd: sourceWorkspace, env: env || null })
+      .catch(() => ({ status: 'unavailable' }));
+    if (found.status !== 'found') return { prState: null, prUrl: null };
+    return { prState: found.detail ? String(found.detail).toUpperCase() : null, prUrl: found.url || null };
+  };
 
-  if (probeRemote) {
-    observed.remoteBranchPresent = await execGit(
-      ['ls-remote', '--heads', 'origin', `refs/heads/${branchName}`],
-      sourceWorkspace,
-      { ignoreExitCode: true, timeout: REMOTE_PROBE_TIMEOUT_MS }
-    ).then(r => (r.exitCode === 0 ? r.stdout.trim() !== '' : null)).catch(() => null);
-  }
+  // `allowRemote: false` — a bookkeeping question must not block on `git remote
+  // set-head origin --auto`, the network call the default path can trigger.
+  const probeDefaultBranch = () => (branchShouldBeGone
+    ? git.getDefaultBranch(sourceWorkspace, { allowRemote: false }).catch(() => null)
+    : Promise.resolve(null));
 
-  if (probePr) {
-    const { findPullRequestForBranch, getPullRequestState } = await import('./github.js');
-    const { cli, env } = await git.resolveForgeForRepo(sourceWorkspace).catch(() => ({ cli: 'gh', env: null }));
-    // GitHub only. `gh pr view` against a GitLab MR answers nothing useful, and a
-    // wrong answer here is worse than no answer — leave both fields `null` so the
-    // PR expectations simply do not fire on a GitLab remote.
-    if (cli === 'gh') {
-      const found = await findPullRequestForBranch(branchName, { cwd: sourceWorkspace, env: env || null })
-        .catch(() => ({ status: 'unavailable' }));
-      if (found.status === 'found') {
-        observed.prExists = true;
-        observed.prUrl = found.url || null;
-        const state = await getPullRequestState(found.url || found.number, { cwd: sourceWorkspace, env: env || null })
-          .catch(() => ({ status: 'unavailable' }));
-        if (state.status === 'known') observed.prState = state.state;
-      } else if (found.status === 'none') {
-        observed.prExists = false;
-      }
-    }
-  }
+  const [worktreePresent, localBranchPresent, remoteBranchPresent, defaultBranch, pr] = await Promise.all([
+    probeWorktree().catch(() => null),
+    probeLocalBranch(),
+    probeRemoteBranch(),
+    probeDefaultBranch(),
+    probePr().catch(() => ({ prState: null, prUrl: null })),
+  ]);
 
-  return observed;
+  // Only meaningful while the branch still exists locally — `isBranchMergedInto`
+  // answers `false` for a missing ref, which would read as "unmerged work" for
+  // the successful case.
+  const branchMerged = localBranchPresent === true && defaultBranch
+    ? await git.isBranchMergedInto(sourceWorkspace, branchName, defaultBranch).catch(() => null)
+    : null;
+
+  return {
+    worktreePresent,
+    localBranchPresent,
+    remoteBranchPresent,
+    branchMerged,
+    prState: pr.prState,
+    prUrl: pr.prUrl,
+    defaultBranch,
+  };
 }
 
 /**
  * Verify one completed worktree agent left the repository as its task asked, and
- * file an investigation task when it did not.
- *
- * Never throws: this runs at the tail of completion handling, where a throw would
- * strand the very cleanup it is auditing. Failures are logged and swallowed.
+ * file a recovery task when it did not.
  *
  * @param {object} params
  * @param {string} params.agentId
@@ -200,54 +217,52 @@ export async function verifyAgentRepoState({ agentId, task, agentState, success,
   const branchName = metadata.worktreeBranch || null;
   const sourceWorkspace = metadata.sourceWorkspace || null;
   const appId = task?.metadata?.app || null;
+  const skipped = (skipReason) => ({ verified: false, skipReason, issues: [], observed: null, recoveryTaskId: null });
 
-  // Read the app record BEFORE the cheap structural gates so a disabled app is
-  // reported as `verification-disabled` rather than as whatever gate happens to
-  // fire first — the setting is the answer the operator is looking for. The record
-  // is also what carries pr-watcher's pending-merge queue.
-  const app = appId ? await (await import('./apps.js')).getAppById(appId).catch(() => null) : null;
-  const enabled = repoStateVerificationEnabled(app);
-
-  // Only worth asking for a run that could actually be audited — this reads the
-  // whole task list plus the app's pending-merge queue.
-  const followUpPending = enabled && success && branchName && metadata.isWorktree === true
-    ? await branchHasPendingOwner(branchName, app).catch(() => false)
-    : false;
-
-  const expectation = resolveRepoStateExpectation({
-    enabled,
+  // Resolved twice on purpose. The first pass applies every FREE gate; only a run
+  // that survives all of them pays for the pending-owner answer (two task-file
+  // reads plus the app record) that the second pass needs. One gate ladder, in
+  // one place, still decides.
+  const structural = {
+    enabled: true,
     success,
     isWorktree: metadata.isWorktree === true,
     isPersistentWorktree: metadata.isPersistentWorktree === true,
     discardWorktree: isTruthyMeta(task?.metadata?.discardWorktree),
-    followUpPending,
     cleanupWarningCount: cleanupWarnings?.length || 0,
     prCompletion: resolvePrCompletion(task?.metadata),
     leaveOpen: leavesPrForHuman(task),
     prExpected,
     branchName,
     sourceWorkspace,
-  });
+  };
+  const preflight = resolveRepoStateExpectation(structural);
+  if (!preflight.verify) return skipped(preflight.skipReason);
 
-  if (!expectation.verify) {
-    return { verified: false, skipReason: expectation.skipReason, issues: [], observed: null, recoveryTaskId: null };
-  }
+  const app = appId ? await (await import('./apps.js')).getAppById(appId).catch(() => null) : null;
+  const enabled = repoStateVerificationEnabled(app);
+  const followUpPending = enabled ? await branchHasPendingOwner(branchName, app).catch(() => false) : false;
+
+  const expectation = resolveRepoStateExpectation({ ...structural, enabled, followUpPending });
+  if (!expectation.verify) return skipped(expectation.skipReason);
 
   const worktreePath = metadata.workspacePath || join(PATHS.worktrees, agentId);
   const observed = await probeRepoState({
     sourceWorkspace,
     branchName,
     worktreePath,
-    probeRemote: expectation.expectRemoteBranchGone,
-    probePr: expectation.expectPrExists || expectation.expectPrMerged,
+    branchShouldBeGone: !expectation.staysOpen,
+    prExpected: expectation.prExpected,
   }).catch(err => {
     emitLog('warn', `🔎 Repo-state probe failed for ${agentId}: ${err.message}`, { agentId, branchName });
     return null;
   });
 
-  if (!observed) {
-    return { verified: false, skipReason: REPO_STATE_SKIPS.PROBE_FAILED, issues: [], observed: null, recoveryTaskId: null };
-  }
+  // Not one probe answered — a firewalled host or an unreadable repo. Reporting
+  // this as "verified clean" would conflate could-not-ask with nothing-wrong.
+  const readNothing = !observed
+    || [observed.worktreePresent, observed.localBranchPresent, observed.remoteBranchPresent].every(v => v === null);
+  if (readNothing) return skipped(REPO_STATE_SKIPS.PROBE_FAILED);
 
   const issues = classifyRepoStateIssues(expectation, { ...observed, branchName });
   if (issues.length === 0) {
@@ -257,10 +272,10 @@ export async function verifyAgentRepoState({ agentId, task, agentState, success,
 
   emitLog('warn', `🔎 Repo state diverged after ${agentId}: ${issues.map(i => i.code).join(', ')}`, { agentId, branchName, taskId: task?.id });
 
-  const recoveryTaskId = await fileRepoStateInvestigation({
+  const recoveryTaskId = await fileRepoStateRecoveryTask({
     agentId, task, branchName, sourceWorkspace, worktreePath, issues, observed, appId,
   }).catch(err => {
-    emitLog('warn', `Failed to file repo-state investigation for ${agentId}: ${err.message}`, { agentId, branchName });
+    emitLog('warn', `Failed to file repo-state recovery task for ${agentId}: ${err.message}`, { agentId, branchName });
     return null;
   });
 
@@ -270,60 +285,59 @@ export async function verifyAgentRepoState({ agentId, task, agentState, success,
 }
 
 /**
- * The remediation step for each issue code, as an instruction the investigation
- * agent can follow without re-deriving the diagnosis. Kept beside the codes so a
- * new check cannot ship without saying what to do about it.
+ * The remediation step for each issue code, as an instruction the recovery agent
+ * can follow without re-deriving the diagnosis.
+ *
+ * A map rather than a switch with a `default`, so a new code cannot ship without
+ * one — `repoStateExpectations.test.js` asserts the two key sets match.
+ * `PR_UNMERGED` delegates to branch-reconcile's `driveToMerge`, which carries the
+ * caveats a hand-written line loses: merge from the repo ROOT (gh cannot delete a
+ * branch checked out elsewhere), retry `--squash`/`--rebase` on "not allowed",
+ * never `--auto`, and remove the worktree before deleting the branch.
  */
-function remediationFor(code, { branchName, defaultBranch, prUrl, worktreePath }) {
-  const base = defaultBranch || 'the default branch';
-  switch (code) {
-    case REPO_STATE_ISSUES.WORKTREE_PRESENT:
-      return `Remove the leftover worktree: confirm it is clean ("git -C ${worktreePath} status --porcelain"), commit or discard anything found, then "git worktree remove ${worktreePath}" and "git worktree prune".`;
-    case REPO_STATE_ISSUES.LOCAL_BRANCH_PRESENT:
-      return `Delete the local branch once its work is on ${base}: "git branch -d ${branchName}" (use -D only after confirming the commits landed).`;
-    case REPO_STATE_ISSUES.REMOTE_BRANCH_PRESENT:
-      return `Delete the remote branch after confirming its work merged: "git push origin --delete ${branchName}".`;
-    case REPO_STATE_ISSUES.BRANCH_UNMERGED:
-      return `The branch has commits that are NOT on ${base}. Decide whether they are wanted: land them (open/merge a PR, or merge locally and resolve conflicts) before deleting anything. Do NOT delete this branch until its work is on ${base}.`;
-    case REPO_STATE_ISSUES.PR_MISSING:
-      return `The task asked for a pull request but the forge has none for ${branchName}. Open one against ${base}, then drive it to merge.`;
-    case REPO_STATE_ISSUES.PR_UNMERGED:
-      return `Finish the pull request${prUrl ? ` ${prUrl}` : ''}: fix failing checks, resolve review threads, then merge it ("gh pr merge --merge --delete-branch").`;
-    default:
-      return `Investigate and resolve: ${code}.`;
-  }
-}
+export const REPO_STATE_REMEDIATIONS = Object.freeze({
+  [REPO_STATE_ISSUES.WORKTREE_PRESENT]: ({ worktreePath }) =>
+    `Remove the leftover worktree: confirm it is clean ("git -C ${worktreePath} status --porcelain"), commit or discard anything found, then "git worktree remove ${worktreePath}" and "git worktree prune".`,
+  [REPO_STATE_ISSUES.LOCAL_BRANCH_PRESENT]: ({ branchName, base }) =>
+    `Delete the local branch once its work is on ${base}: "git branch -d ${branchName}" (use -D only after confirming the commits landed). Remove its worktree first — the delete fails while a worktree still has it checked out.`,
+  [REPO_STATE_ISSUES.REMOTE_BRANCH_PRESENT]: ({ branchName }) =>
+    `Delete the remote branch after confirming its work merged: "git push origin --delete ${branchName}".`,
+  [REPO_STATE_ISSUES.BRANCH_UNMERGED]: ({ base }) =>
+    `The branch has commits that are NOT on ${base}. Decide whether they are still wanted: land them (open or merge a PR, or merge locally and resolve conflicts) before deleting anything. Do NOT delete this branch until its work is on ${base}.`,
+  [REPO_STATE_ISSUES.PR_UNMERGED]: ({ prUrl }) => `Finish the pull request${prUrl ? ` ${prUrl}` : ''}. ${driveToMerge(prUrl || '<num>')}`,
+});
 
 /**
- * File ONE investigation task covering every issue found for this branch.
+ * File ONE recovery task covering every issue found for this branch.
  *
  * Dedup rides on `addTask`'s first-line + app matching: the description names the
  * branch, so a re-run of the same audit joins the existing task rather than
  * stacking a second one.
  *
- * @returns {Promise<string|null>} the task id, or null when the task was a duplicate
+ * @returns {Promise<string|null>} the task id, or null when it was a duplicate
  */
-async function fileRepoStateInvestigation({ agentId, task, branchName, sourceWorkspace, worktreePath, issues, observed, appId }) {
+async function fileRepoStateRecoveryTask({ agentId, task, branchName, sourceWorkspace, worktreePath, issues, observed, appId }) {
   const appName = task?.metadata?.appName || appId || 'PortOS';
-  const base = observed.defaultBranch || 'main';
+  const base = observed.defaultBranch || 'the default branch';
+  const ctx = { branchName, base, prUrl: observed.prUrl, worktreePath };
 
   const context = [
-    `An agent finished successfully but the repository did not end up in the expected state.`,
-    ``,
+    'An agent finished successfully but the repository did not end up in the expected state.',
+    '',
     `Repository: ${sourceWorkspace}`,
     `Branch: ${branchName}`,
     `Worktree: ${worktreePath}`,
     `Default branch: ${base}`,
-    observed.prUrl ? `Pull request: ${observed.prUrl} (${observed.prState || 'state unknown'})` : `Pull request: none found`,
+    observed.prUrl ? `Pull request: ${observed.prUrl} (${observed.prState || 'state unknown'})` : 'Pull request: none found',
     `Original agent: ${agentId}`,
     `Original task: ${task?.description || 'unknown'}`,
-    ``,
-    `What diverged:`,
+    '',
+    'What diverged:',
     ...issues.map((i, n) => `${n + 1}. ${i.message}`),
-    ``,
-    `Finish the work, in this order:`,
-    ...issues.map((i, n) => `${n + 1}. ${remediationFor(i.code, { branchName, defaultBranch: base, prUrl: observed.prUrl, worktreePath })}`),
-    ``,
+    '',
+    'Finish the work, in this order:',
+    ...issues.map((i, n) => `${n + 1}. ${REPO_STATE_REMEDIATIONS[i.code](ctx)}`),
+    '',
     `Rules: never delete a branch whose commits are not already on ${base} — land the work first. `
       + `Other agents are running concurrently with their own worktrees and branches; touch ONLY ${branchName} and its worktree. `
       + `Do not switch branches in ${sourceWorkspace} itself.`,
@@ -339,20 +353,24 @@ async function fileRepoStateInvestigation({ agentId, task, branchName, sourceWor
   }, 'user');
 
   if (created?.duplicate) {
-    emitLog('info', `🔎 Repo-state investigation for ${branchName} already queued as ${created.id}`, { agentId, branchName });
+    emitLog('info', `🔎 Repo-state recovery for ${branchName} already queued as ${created.id}`, { agentId, branchName });
     return null;
   }
-  emitLog('info', `🔧 Filed repo-state investigation task for ${branchName} (${issues.length} issue(s))`, { agentId, branchName, appName });
+  emitLog('info', `🔧 Filed repo-state recovery task for ${branchName} (${issues.length} issue(s))`, { agentId, branchName, appName });
   return created?.id || null;
 }
 
 /**
- * Surface the divergence to the user alongside the auto-filed task, so a
- * repeatedly-diverging app is visible rather than only inferable from a growing
- * recovery queue.
+ * Surface the divergence alongside the auto-filed task, so a repeatedly-diverging
+ * app is visible rather than only inferable from a growing recovery queue.
+ *
+ * Deduped on the branch (the way `orphanedPrNotifier` dedupes on the PR url) —
+ * `addTask` collapses repeats on its side, and a notification card per audit
+ * would otherwise stack for a branch nothing manages to fix.
  */
 async function notifyRepoStateDivergence({ agentId, task, branchName, issues, appId }) {
-  const { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } = await import('./notifications.js');
+  const { addNotification, exists, NOTIFICATION_TYPES, PRIORITY_LEVELS } = await import('./notifications.js');
+  if (await exists(NOTIFICATION_TYPES.AGENT_WARNING, 'branchName', branchName)) return;
   const appName = task?.metadata?.appName || appId || 'PortOS';
   await addNotification({
     type: NOTIFICATION_TYPES.AGENT_WARNING,
