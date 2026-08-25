@@ -158,8 +158,12 @@ export function invalidateCache() {
  * Notify clients that apps data has changed
  * Call this after any operation that modifies app state
  */
-export function notifyAppsChanged(action = 'update') {
-  appsEvents.emit('changed', { action, timestamp: Date.now() });
+export function notifyAppsChanged(action = 'update', appId) {
+  appsEvents.emit('changed', {
+    action,
+    ...(appId ? { appId } : {}),
+    timestamp: Date.now()
+  });
 }
 
 /**

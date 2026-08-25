@@ -183,7 +183,7 @@ router.delete('/:id', asyncHandler(async (req, res, next) => {
   // Keep the dashboard, sidebar, OpenWorld, and any open detail view in sync
   // with the registry removal. This only removes PortOS's association; the
   // app's repository is not touched by appsService.deleteApp().
-  notifyAppsChanged('delete');
+  notifyAppsChanged('delete', req.params.id);
   res.status(204).send();
 }));
 
