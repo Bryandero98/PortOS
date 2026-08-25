@@ -12,13 +12,17 @@ import { copyToClipboard } from '../../lib/clipboard';
 import LayeredIntelligenceTab, { buildLayeredIntelligenceUpdate, buildLayeredIntelligenceScheduleUpdate } from './LayeredIntelligenceTab';
 import { PROVIDER_TYPES } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, PR_COMPLETION_OPTIONS, prCompletionOption } from '../cos/constants';
-import { WORK_TRACKER_OPTIONS, WORK_TRACKER_LABELS } from './constants';
+import { WORK_TRACKER_OPTIONS, WORK_TRACKER_LABELS, appUsesJira } from './constants';
 
 // JIRA is deliberately absent: its config moved to the app detail page's JIRA
 // tab (/apps/:id/jira), where it sits next to the sprint board it drives and has
 // the width the instance/project/board pickers need. This drawer therefore never
 // sends a `jira` key — the PUT shallow-merges server-side, so the stored config
 // is preserved untouched.
+// The Workflow tab's work-tracker picker is the ONLY entry point into that tab
+// for an app that has never had JIRA turned on — the tab itself is hidden until
+// `appUsesJira(app)` holds (see constants.js), so choosing JIRA here is what
+// reveals it.
 const TABS = [
   { id: 'general', label: 'General' },
   { id: 'ports', label: 'Ports & TLS' },
@@ -586,6 +590,19 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                     </p>
                   );
                 })()}
+                {formData.workTracker === 'jira' && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {appUsesJira(app) ? (
+                      // Closing is load-bearing, not politeness: AppDetailView only
+                      // clears `editing` when the appId CHANGES, so a same-app tab
+                      // link would leave this portaled drawer sitting over the JIRA
+                      // tab it just navigated to.
+                      <>Instance, project, and board live on the app’s <Link to={`/apps/${app.id}/jira`} onClick={onClose} className="underline hover:text-white">JIRA tab</Link>.</>
+                    ) : (
+                      <>Save to reveal the app’s JIRA tab, where the instance, project, and board are configured.</>
+                    )}
+                  </p>
+                )}
               </div>
 
               <label className="flex items-center gap-2 cursor-pointer">
