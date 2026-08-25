@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router';
-import { GitBranch, GitPullRequest, Lock, Copy } from 'lucide-react';
+import { GitBranch, GitPullRequest, Lock, Copy, ShieldCheck } from 'lucide-react';
 import IconPicker from '../IconPicker';
 import * as api from '../../services/api';
 import { PORTOS_APP_ID } from '../../services/apiCore';
@@ -63,6 +63,8 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
     defaultOpenPR: app.defaultOpenPR || false,
     defaultPrCompletion: app.defaultPrCompletion || DEFAULT_PR_COMPLETION,
     defaultUseWorktree: app.defaultUseWorktree || app.defaultOpenPR || false,
+    // Unset means ON server-side, so an app that has never been saved shows checked.
+    verifyRepoStateOnCompletion: app.verifyRepoStateOnCompletion !== false,
     datadogEnabled: app.datadog?.enabled || false,
     datadogInstanceId: app.datadog?.instanceId || '',
     datadogServiceName: app.datadog?.serviceName || '',
@@ -254,6 +256,7 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
       defaultUseWorktree: formData.defaultUseWorktree || formData.defaultOpenPR,
       defaultOpenPR: formData.defaultOpenPR,
       defaultPrCompletion: formData.defaultPrCompletion,
+      verifyRepoStateOnCompletion: formData.verifyRepoStateOnCompletion,
       datadog: formData.datadogEnabled ? {
         enabled: true,
         instanceId: formData.datadogInstanceId || undefined,
@@ -647,6 +650,19 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
                   {prCompletionOption(formData.defaultPrCompletion)?.description}
                 </p>
               </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.verifyRepoStateOnCompletion}
+                  onChange={e => setFormData(prev => ({ ...prev, verifyRepoStateOnCompletion: e.target.checked }))}
+                  className="rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent"
+                />
+                <ShieldCheck size={14} className="text-amber-400" />
+                <span className="text-sm text-white" title="After each agent finishes, check that its worktree was removed, its branch deleted, and its PR merged. When the repo diverges, PortOS files a recovery task for an agent to finish the cleanup.">Verify repo state after each agent</span>
+              </label>
+              <p className="ml-6 text-xs text-gray-500">
+                Audits git and the forge once the agent completes. A leftover worktree, an undeleted branch, or an unmerged PR files a recovery task instead of being silently left behind.
+              </p>
             </div>
           )}
 

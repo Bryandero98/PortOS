@@ -79,9 +79,43 @@ export async function cleanupAgentWorktree(agentId, success, options = {}) {
   // duplicate caller must not re-derive them from a half-removed worktree.
   if (existing) return existing;
   const run = runCleanupAgentWorktree(agentId, success, options)
+    // The audit hangs off THIS wrapper, not off `runCleanupAgentWorktree`, for two
+    // reasons: the inner function returns from a dozen branches (no-commits, PR
+    // failure, push failure, …) and would need the call repeated at each, and every
+    // completion path — runner, TUI `finish()`, direct-CLI, the manual stop in
+    // agentManagement — funnels through here. One hook, behind the same
+    // per-agent coalescing guard, so a duplicate completion callback audits once.
+    .then(warnings => auditRepoState(agentId, success, options, warnings)
+      .catch(err => emitLog('warn', `🔎 Repo-state audit failed for ${agentId}: ${err.message}`, { agentId }))
+      .then(() => warnings))
     .finally(() => { inFlightCleanups.delete(agentId); });
   inFlightCleanups.set(agentId, run);
   return run;
+}
+
+/**
+ * Post-cleanup repo-state audit — did this run actually leave the repository the
+ * way its task asked? Never throws and never blocks the warnings it follows;
+ * `verifyAgentRepoState` itself decides whether the run is even auditable.
+ *
+ * Imported lazily so the cleanup graph doesn't pull the verification module (and
+ * its apps/prWatcher/github reach) into every consumer's module-init.
+ */
+async function auditRepoState(agentId, success, options, warnings) {
+  const { verifyAgentRepoState } = await import('./agentRepoStateVerification.js');
+  // `getAgentRecord`, not `getAgent` — the audit reads three worktree metadata
+  // fields and has no use for the run's whole output.txt.
+  const { getAgentRecord } = await import('./cos.js');
+  const originalTask = options?.originalTask || null;
+  const agentState = await getAgentRecord(agentId).catch(() => null);
+  await verifyAgentRepoState({
+    agentId,
+    task: originalTask,
+    agentState,
+    success,
+    prExpected: isTruthyMeta(originalTask?.metadata?.openPR),
+    cleanupWarnings: warnings || [],
+  });
 }
 
 async function runCleanupAgentWorktree(agentId, success, { prCreation = PR_CREATION.NEVER, prCompletion = null, requestCopilotReview: legacyRequestCopilotReview = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, reviewerModels = null, reviewerEfforts = null, skipMerge = false, description = null, agentOutput = null, originalTask = null } = {}) {

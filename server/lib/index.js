@@ -390,6 +390,7 @@ export * from './mirrorParity.js';
 export * from './objects.js';
 export * from './openapiSpec.js';
 export * from './prDisposition.js';
+export * from './repoStateExpectations.js';
 export * from './shellCd.js';
 export * from './shellExit.js';
 export * from './shellLivenessProbe.js';

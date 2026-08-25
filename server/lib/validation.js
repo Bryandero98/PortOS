@@ -286,6 +286,11 @@ export const appSchema = z.object({
   defaultUseWorktree: z.boolean().optional(),
   defaultOpenPR: z.boolean().optional(),
   defaultPrCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
+  // After a CoS agent completes against this app, audit the repo for the state the
+  // task asked for (worktree removed, branch deleted, PR merged) and file a recovery
+  // task when it diverges. See lib/repoStateExpectations.js. Unset = ON: an install
+  // that never hears about a leaked branch just accumulates them.
+  verifyRepoStateOnCompletion: z.boolean().optional(),
   jira: jiraConfigSchema.optional().nullable(),
   datadog: datadogConfigSchema.optional().nullable(),
   // Where this app's autonomous work items live (single source per app).
