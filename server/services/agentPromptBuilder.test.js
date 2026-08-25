@@ -381,17 +381,28 @@ describe('buildLightContextPrompt', () => {
 
       expect(prompt).toContain(UI_AUDIT_RUNTIME_RULE);
       expect(prompt).toContain('not browserless');
+      expect(prompt).toContain('agent.browsers.list()');
+      expect(prompt).toContain('getForUrl()');
+      expect(prompt).toContain('No browser is available');
+      expect(prompt).toContain('provider-bridge failure');
+      expect(prompt).toContain('/api/browser/health');
       expect(prompt).toContain('127.0.0.1:5556');
+      expect(prompt).toContain('type: "page"');
       expect(prompt).toContain('webSocketDebuggerUrl');
       expect(prompt).toContain('about:blank');
+      expect(prompt).toContain('Page.navigate');
+      expect(prompt).toContain('Runtime.evaluate');
+      expect(prompt).toContain('browser-level socket');
       expect(prompt).toContain('page socket');
+      expect(prompt).toContain('only after the PortOS health/CDP probes fail');
+      expect(prompt).toContain('source-only UX finding');
       expect(prompt).toContain('running local system');
       expect(prompt).toContain('native or source-only target');
     });
 
-    it('adds the same guidance on the full API prompt path', async () => {
+    it.each(UI_AUDIT_TASK_TYPES)('adds the same guidance on the full API prompt path for %s', async (analysisType) => {
       const prompt = await buildAgentPrompt(
-        makeTask({ metadata: { analysisType: 'ui-bugs' } }),
+        makeTask({ metadata: { analysisType } }),
         {},
         '/repo',
         null,
