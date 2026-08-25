@@ -387,7 +387,13 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toContain('getForUrl()');
       expect(prompt).toContain('No browser is available');
       expect(prompt).toContain('provider-bridge failure');
+      expect(prompt).toContain('Playwright/browser tools');
+      expect(prompt).toContain('working browser bridge');
       expect(prompt).toContain('/api/browser/health');
+      expect(prompt).toContain('127.0.0.1:5557/health');
+      expect(prompt).toContain('configured healthPort');
+      expect(prompt).toContain('401');
+      expect(prompt).toContain('authentication response');
       expect(prompt).toContain('127.0.0.1:5556');
       expect(prompt).toContain('type: "page"');
       expect(prompt).toContain('webSocketDebuggerUrl');
