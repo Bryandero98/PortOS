@@ -142,8 +142,8 @@ async function ensureHistoryDir() {
 }
 
 async function loadIndex() {
-  const data = await readFile(INDEX_FILE, 'utf8').catch(() => '[]');
-  return JSON.parse(data);
+  const index = await readJsonSafe(INDEX_FILE, null);
+  return index ?? [];
 }
 
 async function saveIndex(index) {
