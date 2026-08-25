@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { asyncHandler, sendErrorResponse, ServerError } from '../lib/errorHandler.js';
+import { asyncHandler, ServerError } from '../lib/errorHandler.js';
+import { streamAttachment } from '../lib/streamAttachment.js';
 import { validateRequest, restoreRequestSchema, restoreDbRequestSchema } from '../lib/validation.js';
 import * as backup from '../services/backup.js';
 import { getSettings } from '../services/settings.js';
@@ -40,30 +41,6 @@ router.get('/snapshots', asyncHandler(async (req, res) => {
   res.json(snapshots);
 }));
 
-function streamSnapshotDownload(res, stream, snapshotId) {
-  const filename = `portos-snapshot-${snapshotId}.tar.gz`;
-  res.setHeader('Content-Type', 'application/gzip');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  stream.on('error', (err) => {
-    if (res.destroyed) return;
-    console.error(`❌ Backup snapshot download failed for ${snapshotId}: ${err.message}`);
-    if (res.headersSent) {
-      res.destroy(err);
-      return;
-    }
-    res.removeHeader('Content-Type');
-    res.removeHeader('Content-Disposition');
-    sendErrorResponse(res, new ServerError('Snapshot download failed', {
-      status: 500,
-      code: 'BACKUP_DOWNLOAD_FAILED',
-    }));
-  });
-  res.once('close', () => {
-    if (!res.writableEnded) stream.abort?.();
-  });
-  stream.pipe(res);
-}
-
 // GET /api/backup/snapshots/:snapshotId/download
 router.get('/snapshots/:snapshotId/download', asyncHandler(async (req, res) => {
   const settings = await getSettings();
@@ -71,8 +48,14 @@ router.get('/snapshots/:snapshotId/download', asyncHandler(async (req, res) => {
   if (!destPath) {
     throw new ServerError('No backup destination configured in settings', { status: 400, code: 'BACKUP_NOT_CONFIGURED' });
   }
-  const stream = await backup.openSnapshotStream(destPath, req.params.snapshotId);
-  streamSnapshotDownload(res, stream, req.params.snapshotId);
+  const { snapshotId } = req.params;
+  const stream = await backup.openSnapshotStream(destPath, snapshotId);
+  streamAttachment(res, stream, {
+    filename: `portos-snapshot-${snapshotId}.tar.gz`,
+    contentType: 'application/gzip',
+    failure: new ServerError('Snapshot download failed', { status: 500, code: 'BACKUP_DOWNLOAD_FAILED' }),
+    label: `Backup snapshot ${snapshotId}`,
+  });
 }));
 
 // POST /api/backup/restore

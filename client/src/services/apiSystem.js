@@ -195,7 +195,13 @@ export async function downloadBackupSnapshot(snapshotId) {
       const handle = await window.showSaveFilePicker({ suggestedName: filename });
       writable = await handle.createWritable();
     } catch (error) {
-      if (error?.name === 'AbortError') throw error;
+      // Dismissing the picker must also release the request: nothing will read
+      // response.body, so tar stays alive on the server blocked on a full send
+      // buffer until the browser eventually GCs the response.
+      if (error?.name === 'AbortError') {
+        await response.body.cancel().catch(() => {});
+        throw error;
+      }
     }
   }
   if (writable) {

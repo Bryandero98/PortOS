@@ -238,6 +238,9 @@ function SnapshotList() {
             <div className="flex shrink-0 items-center gap-1">
               <button
                 onClick={() => handleDownload(snap.id)}
+                // Deliberately disabled across every row, not just this one:
+                // each download spawns a tar over the whole snapshot on the
+                // same external drive, so two at once only thrash the disk.
                 disabled={downloadingId !== null}
                 aria-label={`Download snapshot ${snap.id}`}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-port-accent hover:text-port-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[32px]"

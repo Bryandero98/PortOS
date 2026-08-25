@@ -43,7 +43,6 @@ beforeEach(() => {
     destPath: '/backup/example',
   });
   mockGetBackupSnapshots.mockResolvedValue([{ id: '2026-08-25T11-00-00', fileCount: 3 }]);
-  mockTriggerBackup.mockResolvedValue({ snapshotId: 'new-snapshot' });
   mockDownloadBackupSnapshot.mockResolvedValue({ filename: 'portos-snapshot.tar.gz' });
 });
 
@@ -64,7 +63,7 @@ describe('BackupWidget snapshots', () => {
     renderWidget();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Snapshots' }));
-    await fireEvent.click(await screen.findByRole('button', { name: /Download snapshot 2026-08-25T11-00-00/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Download snapshot 2026-08-25T11-00-00/ }));
 
     await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('Download failed: Connection lost'));
   });

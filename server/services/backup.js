@@ -7,7 +7,8 @@
  */
 
 import { spawn } from '../lib/childProcess.js';
-import { access, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
+import { killWithEscalation } from '../lib/killWithEscalation.js';
+import { access, readdir, readFile, stat, unlink } from 'fs/promises';
 import { PassThrough } from 'node:stream';
 import { hostname } from 'os';
 import { join, resolve, relative, isAbsolute } from 'path';
@@ -26,7 +27,11 @@ import { reloadSettings } from './settings.js';
 let isRunning = false;
 
 const STATE_PATH = join(PATHS.data, 'backup', 'state.json');
-const SNAPSHOT_IN_PROGRESS_MARKER = '.in-progress';
+// The id of the snapshot currently being assembled, or null. One server
+// process per install (see AGENTS.md trust model), so in-process state is the
+// whole truth here — and unlike a marker file on the backup volume it cannot
+// survive a crash and strand a snapshot as permanently un-downloadable.
+let activeSnapshotId = null;
 
 // Serialize state read-merge-write so two saveState() calls (e.g. a run
 // completing while the scheduler stamps a status) can't each read the same
@@ -237,18 +242,19 @@ export async function runBackup(destPath, io = null, { excludePaths = [], disabl
   if (io) io.emit('backup:started', { snapshotId });
 
   await ensureDir(dataDestDir);
-  await writeFile(join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER), '');
+  activeSnapshotId = snapshotId;
 
   let changedFiles = [];
   let manifest;
 
   const complete = async (result) => {
-    await unlink(join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER)).catch(() => {});
+    activeSnapshotId = null;
     isRunning = false;
     return result;
   };
 
   const fail = async (err) => {
+    activeSnapshotId = null;
     isRunning = false;
     await saveState({ lastRun: new Date().toISOString(), status: 'error', error: err.message, pgBackup: null });
     if (io) io.emit('backup:failed', { snapshotId, error: err.message });
@@ -512,7 +518,7 @@ function resolveSnapshotPath(destPath, snapshotId) {
     });
   }
 
-  return { snapshotsRoot, snapshotDir, archivePath: rel };
+  return { snapshotsRoot, snapshotDir };
 }
 
 /**
@@ -522,22 +528,28 @@ function resolveSnapshotPath(destPath, snapshotId) {
  * @returns {Promise<import('stream').Readable>}
  */
 export async function openSnapshotStream(destPath, snapshotId) {
-  const { snapshotsRoot, snapshotDir, archivePath } = resolveSnapshotPath(destPath, snapshotId);
+  const { snapshotsRoot, snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
+  // A snapshot still being assembled would tar up as a truncated tree that
+  // looks like a complete backup. One server process per install, so the
+  // in-process id is authoritative and self-clears on crash or restart.
+  if (snapshotId === activeSnapshotId) {
+    throw new ServerError(`Snapshot is still being written: ${snapshotId}`, { status: 409, code: 'SNAPSHOT_INCOMPLETE' });
+  }
   const info = await stat(snapshotDir).catch(() => null);
   if (!info?.isDirectory?.()) {
     throw new ServerError(`Snapshot not found: ${snapshotId}`, { status: 404, code: 'NOT_FOUND' });
   }
 
-  // New backups carry an explicit marker while they are being assembled. Do
-  // not use manifest.json as the marker: listSnapshots intentionally preserves
-  // legacy pre-manifest snapshots, and those must remain downloadable.
-  const inProgressInfo = await stat(join(snapshotDir, SNAPSHOT_IN_PROGRESS_MARKER)).catch(() => null);
-  if (inProgressInfo?.isFile?.()) {
-    throw new ServerError(`Snapshot is incomplete: ${snapshotId}`, { status: 409, code: 'SNAPSHOT_INCOMPLETE' });
-  }
-
-  const proc = spawn('tar', ['-czf', '-', '-C', snapshotsRoot, archivePath], { shell: false });
+  // tar's stderr is a pipe (spawn's default) and MUST be drained: left unread
+  // it fills its ~64KB buffer on a tree that warns a lot — files changing under
+  // the archiver, unreadable modes — and tar then blocks on the write forever,
+  // hanging the download with the process still alive. Keep the tail so a
+  // non-zero exit can say why rather than just reporting the code.
+  const proc = spawn('tar', ['-czf', '-', '-C', snapshotsRoot, snapshotId], { shell: false });
   const archive = new PassThrough();
+  let stderrTail = '';
+  proc.stderr?.on('data', (chunk) => { stderrTail = (stderrTail + chunk).slice(-500); });
+
   let finished = false;
   const finish = (error = null) => {
     if (finished) return;
@@ -551,19 +563,22 @@ export async function openSnapshotStream(destPath, snapshotId) {
   // non-zero exit into a failed download instead of a false 200 success.
   proc.stdout.on('error', finish);
   proc.stdout.pipe(archive, { end: false });
-  proc.on('error', (err) => {
-    finish(err);
-  });
+  proc.on('error', finish);
   proc.on('close', (code, signal) => {
     if (code === 0) {
       finish();
       return;
     }
     const detail = code == null ? `signal ${signal || 'unknown'}` : `code ${code}`;
-    finish(new Error(`tar exited with ${detail}`));
+    finish(new Error(`tar exited with ${detail}${stderrTail ? `: ${stderrTail.trim()}` : ''}`));
   });
   archive.abort = () => {
-    if (proc.exitCode == null && !proc.killed) proc.kill?.('SIGTERM');
+    // Escalate like every other spawn-based job: the backup destination is an
+    // external/network mount, so a tar wedged on stalled I/O is the exact case
+    // SIGTERM alone does not clear.
+    if (proc.exitCode === null && proc.signalCode === null) {
+      killWithEscalation(proc, { label: `snapshot download ${snapshotId}`, stillRunning: () => !finished });
+    }
     finish(new Error(`Snapshot download aborted: ${snapshotId}`));
   };
   return archive;
@@ -579,6 +594,9 @@ export async function openSnapshotStream(destPath, snapshotId) {
  */
 export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, subdirFilter = null } = {}) {
   const { snapshotsRoot, snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
+  if (snapshotId === activeSnapshotId) {
+    throw new ServerError(`Snapshot is still being written: ${snapshotId}`, { status: 409, code: 'SNAPSHOT_INCOMPLETE' });
+  }
   const srcDir = join(snapshotDir, 'data');
 
   // Defense-in-depth for non-route callers (the route already validates via
@@ -620,15 +638,8 @@ export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, sub
  * @param {{dryRun?: boolean}} [options]
  */
 export async function restorePostgres(destPath, snapshotId, { dryRun = true } = {}) {
-  if (!snapshotId || !/^[\w\-.:T]+$/.test(snapshotId)) {
-    throw new Error(`Invalid snapshotId: ${snapshotId}`);
-  }
-  const snapshotsRoot = resolve(join(destPath, 'snapshots', MACHINE_HOST));
-  const sqlPath = join(snapshotsRoot, snapshotId, 'portos-db.sql');
-  const rel = relative(snapshotsRoot, resolve(sqlPath));
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`Path traversal detected for snapshotId: ${snapshotId}`);
-  }
+  const { snapshotDir } = resolveSnapshotPath(destPath, snapshotId);
+  const sqlPath = join(snapshotDir, 'portos-db.sql');
 
   const info = await stat(sqlPath).catch(() => null);
   // An empty/0-byte dump is as good as absent — restoring it is a silent no-op.
@@ -644,7 +655,7 @@ export async function restorePostgres(destPath, snapshotId, { dryRun = true } = 
   // the dump key — have nothing to verify against, so we SKIP verification and
   // proceed rather than hard-failing. Only a manifest that IS present AND
   // carries a mismatching hash refuses the restore.
-  const manifestPath = join(snapshotsRoot, snapshotId, 'manifest.json');
+  const manifestPath = join(snapshotDir, 'manifest.json');
   const manifest = await readJSONFile(manifestPath, null);
   const expectedHash = manifest?.files?.['../portos-db.sql'];
   if (expectedHash) {
