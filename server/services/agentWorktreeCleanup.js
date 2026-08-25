@@ -100,7 +100,9 @@ export async function cleanupAgentWorktree(agentId, success, options = {}) {
       .catch(err => emitLog('warn', `🔎 Repo-state audit failed for ${agentId}: ${err.message}`, { agentId })),
     // A cleanup that threw has no end state to audit; `settled` still rejects.
     () => {}
-  );
+  // Nothing awaits this chain, so a throw from the reporting itself would surface
+  // as an unhandled rejection and take the process down outside any request.
+  ).catch(() => {});
 
   return settled;
 }
