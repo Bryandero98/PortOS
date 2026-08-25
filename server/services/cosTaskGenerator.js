@@ -1813,6 +1813,21 @@ export async function generateSelfImprovementTaskForType(taskType, state) {
     metadata.effort = interval.effort;
   }
 
+  // repo-sync's install-wide sweep. This lane is what a global "Run Now" (no
+  // app) hits, and sweeping EVERY managed app in one run is the shape the task
+  // exists for — so the pre-step runs here, not only in the per-app lane. It
+  // returns `skip` when the sweep left nothing for an agent to do, which is the
+  // common case on an already-clean machine and costs no provider call.
+  const repoSync = await resolveRepoSyncBlock(null, taskType, metadata);
+  if (repoSync.skip) return null;
+  if (repoSync.block) {
+    // Function form — the report embeds branch names, git error text, and stash
+    // subjects, any of which may contain a dollar-sign backreference token that a
+    // replacement STRING would expand instead of inserting literally (same reason
+    // as {referenceData}/{prData}).
+    description = description.replace(/\{repoSyncReport\}/g, () => repoSync.block);
+  }
+
   const approval = await resolveConfidenceApproval(state, `self-improve:${taskType}`, `Task self-improve:${taskType}`, metadata);
   stampApprovalReason(metadata, approval);
 
@@ -2433,7 +2448,7 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
   if (taskType !== 'branch-reconcile') return { skip: false, block: '' };
   const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature, describeIdleReconcilePark } = await import('./branchReconcile.js');
   const { formatSupersededForPrompt } = await import('./supersededLedger.js');
-  const { getActiveAgentIds } = await import('./agentState.js');
+  const { getActiveAgentIds, isTruthyMeta } = await import('./agentState.js');
   // Action toggles were merged (global → per-app override) + value-constrained
   // by sanitizeTaskMetadata into `metadata`; each is ON unless explicitly false.
   const actions = {
@@ -2530,6 +2545,89 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     : '';
   emitLog('info', `🔀 branch-reconcile dispatching for ${app.name}: ${actionable.length} in-flight branch(es)${batchSuffix}${heldLiveSuffix}${supersededSuffix}`, { appId: app.id, analysisType: taskType });
   return { skip: false, block };
+}
+
+/**
+ * repo-sync deterministic pre-step: run the Tier-1 sync sweep (services/repoSync.js)
+ * over every managed app's checkout — or, in the per-app lane, over just that
+ * app's — and decide whether the coordinator agent is needed at all.
+ *
+ * This is the whole point of the task type: the sweep is what actually gets the
+ * machine back in sync (push/fast-forward/return-to-default/prune/drop-redundant
+ * -stashes), and it runs with NO provider call. The agent is dispatched only for
+ * what the sweep refused to do — a mid-flight merge or rebase, uncommitted work,
+ * a diverged branch, unpushed commits with no PR, a stash it could not prove
+ * redundant — or, under `verifyMode: 'when-changed'` (the default), to
+ * double-check a run that actually mutated something. A sweep that finds every
+ * repo already in the target state dispatches nothing.
+ *
+ * Returns `{ skip: true }` for every no-dispatch path (the sweep still ran and is
+ * logged), or `{ skip: false, block }` carrying `{repoSyncReport}`. Empty block
+ * for every non-repo-sync type.
+ */
+async function resolveRepoSyncBlock(app, taskType, metadata) {
+  if (taskType !== 'repo-sync') return { skip: false, block: '' };
+  const {
+    REPO_SYNC_ACTION_KEYS, syncRepos, resolveSyncTargets, summarizeSync,
+    shouldDispatchVerifier, formatRepoSyncReport, formatWithheldSweepReport
+  } = await import('./repoSync.js');
+  const { getActiveAgentIds } = await import('./agentState.js');
+
+  // Action toggles were merged (global → per-app override) + value-constrained by
+  // sanitizeTaskMetadata into `metadata`. Only keys actually present are carried,
+  // so an absent one keeps repoSync's own opt-out default rather than becoming
+  // `undefined` (which `actionOn` reads as ON — right answer, wrong reason).
+  const actions = Object.fromEntries(
+    REPO_SYNC_ACTION_KEYS.filter((key) => metadata[key] !== undefined).map((key) => [key, metadata[key]])
+  );
+
+  // `null` means the registry read FAILED, which is not "no apps" — sweeping
+  // nothing and reporting a clean machine would be a lie. Skip and let the next
+  // run retry (same treatment the on-demand engine gives an unreadable registry).
+  const apps = app ? [app] : await getActiveApps().catch(() => null);
+  if (!apps) {
+    emitLog('warn', `🔄 repo-sync skipped — the app registry could not be read`, { analysisType: taskType });
+    return { skip: true };
+  }
+  // Both lanes resolve through the same helper, so a repo-less app, an opt-out,
+  // and the per-app action overrides behave identically whether the run named an
+  // app or swept the install.
+  const targets = resolveSyncTargets(apps, actions);
+  if (!targets.length) {
+    emitLog('info', `🔄 repo-sync: no managed repositories to sweep`, { analysisType: taskType });
+    return { skip: true };
+  }
+
+  // `requireApproval` means "no unattended action until a human says go" — and
+  // this sweep IS action: it pushes, checks out, fast-forwards, drops stashes,
+  // and deletes worktrees. Running it here to build the agent's report would
+  // perform every one of those BEFORE the approval gate downstream ever sees the
+  // task. So withhold it and hand the agent the job instead; it runs only once
+  // the task has been approved and dispatched.
+  if (isTruthyMeta(metadata.requireApproval)) {
+    emitLog('info', `🔄 repo-sync: deterministic sweep withheld — this task requires approval`, { analysisType: taskType });
+    return { skip: false, block: formatWithheldSweepReport(targets) };
+  }
+
+  const results = await syncRepos(targets, { activeAgentIds: new Set(getActiveAgentIds()) })
+    .catch((err) => {
+      emitLog('warn', `repo-sync sweep failed: ${err.message}`, { analysisType: taskType });
+      return null;
+    });
+  // A sweep that threw outright is transient (a git/gh blip) — skip so the next
+  // run retries, rather than dispatching an agent against a report we don't have.
+  if (!results) return { skip: true };
+
+  const summary = summarizeSync(results);
+  emitLog('info', `🔄 repo-sync swept ${summary.repos} repo(s): ${summary.actionCount} action(s) applied, ${summary.escalationCount} item(s) need judgment`, { analysisType: taskType });
+
+  const verdict = shouldDispatchVerifier(summary, metadata.verifyMode);
+  if (!verdict.dispatch) {
+    emitLog('info', `🔄 repo-sync: ${verdict.reason} — no agent dispatched`, { analysisType: taskType });
+    return { skip: true };
+  }
+  emitLog('info', `🔄 repo-sync dispatching coordinator: ${verdict.reason}`, { analysisType: taskType });
+  return { skip: false, block: formatRepoSyncReport(results, { verifyReason: verdict.reason }) };
 }
 
 /**
@@ -2761,6 +2859,7 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     .replace(/\{prData\}/g, () => blocks.prData)
     .replace(/\{inFlightBranches\}/g, () => blocks.inFlightBranches)
     .replace(/\{zombieIssues\}/g, () => blocks.zombieIssues)
+    .replace(/\{repoSyncReport\}/g, () => blocks.repoSyncReport || '')
     .replace(/\{repoFullName\}/g, () => blocks.repoFullName)
     .replace(/\{defaultBranch\}/g, () => blocks.defaultBranch)
     .replace(/\{planConstraint\}/g, () => blocks.planConstraint)
@@ -2912,6 +3011,15 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   if (branchReconcile.skip) return null;
   const inFlightBranchesBlock = branchReconcile.block;
 
+  // repo-sync: deterministic git pre-step that syncs this app's checkout with
+  // origin and carries whatever it refused to do into the prompt via
+  // {repoSyncReport}. (The install-wide sweep runs from the global lane —
+  // generateSelfImprovementTaskForType — which is what "Run Now" with no app
+  // triggers; this branch covers a run scoped to one app.)
+  const repoSync = await resolveRepoSyncBlock(app, taskType, metadata);
+  if (repoSync.skip) return null;
+  const repoSyncReportBlock = repoSync.block;
+
   // issue-reconcile: deterministic forge pre-step that carries the zombie-issue
   // set into the prompt via {zombieIssues}.
   const issueReconcile = await resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule);
@@ -2989,6 +3097,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
       prData: prDataBlock,
       inFlightBranches: inFlightBranchesBlock,
       zombieIssues: zombieIssuesBlock,
+      repoSyncReport: repoSyncReportBlock,
       repoFullName: prRepoFullName,
       defaultBranch: prDefaultBranch,
       planConstraint: planConstraintBlock

@@ -39,6 +39,7 @@ import {
 } from './taskScheduleConstants.js';
 import {
   DEFAULT_TASK_INTERVALS,
+  INSTALL_WIDE_TASK_TYPES,
   MANAGED_AGENT_OPTIONS,
   getTaskTypeDescription,
   enforceBranchReconcileBatch,
@@ -57,9 +58,9 @@ export {
   INTERVAL_TYPES, ON_DEMAND_ORIGINS, isRefillRequest
 } from './taskScheduleConstants.js';
 export {
-  DEFAULT_BRANCHES_PER_AGENT, DEFAULT_TASK_INTERVALS, MANAGED_AGENT_OPTIONS,
-  PERPETUAL_DRAIN_DISPATCH_CAP, SELF_IMPROVEMENT_TASK_TYPES, TASK_TYPE_DESCRIPTIONS,
-  stripManagedAgentOptionsFromOverride
+  DEFAULT_BRANCHES_PER_AGENT, DEFAULT_TASK_INTERVALS, INSTALL_WIDE_TASK_TYPES,
+  MANAGED_AGENT_OPTIONS, PERPETUAL_DRAIN_DISPATCH_CAP, SELF_IMPROVEMENT_TASK_TYPES,
+  TASK_TYPE_DESCRIPTIONS, stripManagedAgentOptionsFromOverride
 } from './taskScheduleRegistry.js';
 export { loadSchedule } from './taskScheduleStore.js';
 export {
@@ -1216,7 +1217,12 @@ export async function getScheduleStatus() {
       successRate: learningInfo.successRate,
       dataPoints: learningInfo.dataPoints,
       adjustedIntervalMs: learningInfo.adjustedIntervalMs,
-      recommendation: learningInfo.recommendation
+      recommendation: learningInfo.recommendation,
+      // Whether a "Run Now" with NO app is this type's real run (it sweeps every
+      // managed app in one dispatch). Served from the server registry rather than
+      // mirrored in client constants, so the UI cannot drift from the set the
+      // dispatch engines actually treat as install-wide.
+      installWide: INSTALL_WIDE_TASK_TYPES.has(taskType)
     };
 
     // Include default stage prompts for pipeline tasks so UI can display them

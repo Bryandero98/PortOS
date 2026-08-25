@@ -1607,6 +1607,48 @@ Run \`git stash list\`. For each \`stash@{N}\`:
 
 Summarize: how many stashes were reviewed, how many were dropped (grouped by reason: superseded vs. stale/abandoned), and — for anything classified REAL UNLANDED WORK — what it is, which files it touches, and a recommendation (recover as a branch, cherry-pick specific hunks, or leave it for the user to decide). When in doubt about whether a stash is safe to drop, leave it in the stash and say so in the report rather than dropping it.`,
 
+  'repo-sync': `[Improvement] Repo Sync — verify and finish the origin sync sweep
+
+A deterministic sweep has ALREADY run across every managed repository on this machine. It did everything it could prove safe: fetched, pushed branches strictly ahead of their upstream, fast-forwarded default branches, returned checkouts to their default branch where the current branch was clean and already merged, deleted merged branches + worktrees, and dropped stash entries whose content is byte-identical to the default branch.
+
+Your job is the part it refused to do: **finish what needs judgment, then verify the end state.** The target for every repo is — on the default branch, level with origin, no leftover local branches or worktrees, an empty stash list — **without losing any work.**
+
+{repoSyncReport}
+
+## Rules
+
+- **Never lose work.** No \`--force\` push, no \`reset --hard\`, no \`checkout -f\`, no \`stash clear\`, no \`clean -fd\`. If the only way forward would discard something unrecoverable, STOP and report it instead.
+- **Work in each repo's live checkout** (\`cd\` to the path listed for it). Do not create a worktree, do not commit application code, and do not open a PR for this task — its whole deliverable is repo state.
+- **Leave a checkout alone** when the report says an agent is running in it.
+- Re-run \`git status\`, \`git stash list\`, and \`git branch -vv\` yourself before acting — the report is a snapshot, and the sweep already changed things.
+
+## Handle each escalation kind
+
+- \`operation-in-progress\` — a merge/rebase/cherry-pick is half-finished. Read the conflicts. Resolve only the ones where one side is demonstrably a superset of the other (grep the file for the added identifiers and read the surrounding code — do not eyeball the diff). Where two live versions genuinely differ, run \`git rebase --abort\` / \`git merge --abort\` to return to the pre-operation state and report it — that is recoverable; a bad hand-merge is not.
+- \`uncommitted-changes\` — work the sweep found in the tree. Decide what it IS before touching it: \`git diff\` it, then check whether the default branch already contains the same change or a superset (this is common — work popped from a stash and redone on the default branch, or already merged under another branch). If it is already on the default branch, \`git checkout -- <file>\` those paths. If it is real unlanded work, commit it on a properly named branch and ship it (push + PR) rather than leaving it loose. If you cannot tell, LEAVE IT and report it.
+- \`off-default-branch\` — resolve whatever is blocking the return (the dirty tree, or the branch not being merged yet), then \`git checkout <default>\`.
+- \`diverged-branch\` / \`diverged-default\` — the local branch and its upstream both moved. Prefer \`git pull --rebase\` on a work branch. On the DEFAULT branch, inspect the local-only commits first (\`git log origin/<default>..<default>\`) — they are usually work that landed upstream under different SHAs, in which case moving the branch onto origin is correct, but confirm with \`git cherry origin/<default> <default>\` before assuming, and never discard a commit that has no patch-equivalent upstream.
+- \`unpushed-branch\` — local commits that were never pushed and have no PR. Push the branch and open a PR if the work is coherent; if it is already on the default branch under other commits, delete the branch. Anything ambiguous stays and gets reported.
+- \`in-flight-branch\` — a branch that needs a PR opened, a conflict resolved, or a review driven. **Report these; do not drive them here.** The \`branch-reconcile\` task owns that work and wraps it in machinery this task has none of — the per-app openPr / resolveConflicts / autoMerge toggles, per-agent batching, the drain convergence guards, and the superseded ledger — so finishing them here bypasses all of it. Name each one and recommend running \`branch-reconcile\`.
+- \`stash-entries\` — triage each one the way the stash-cleanup task does: \`git stash show -p stash@{N}\`, then check whether the default branch already has the same change or a superset. Drop only what is superseded or clearly stale/abandoned scratch (indices shift after every drop, so re-read \`git stash list\` each time). Leave real unlanded work in the stash and say what it is.
+- \`orphan-remote\` — a branch on origin with nothing local pointing at it. Report it rather than deleting it: it may belong to another machine, and \`branch-reconcile\` reaps the provably-merged ones under its own gates.
+- \`action-failed\` — the deterministic step hit something it could not handle. Read the error and finish it by hand, within the rules above.
+- \`scan-failed\` — investigate why (missing path, no origin, auth), and report.
+
+## Verify
+
+Once every escalation is handled, walk EVERY repository named above and confirm the end state, reporting the actual values:
+
+1. \`git status\` — on the default branch, clean tree (untracked build/env files are fine; name them).
+2. \`git log origin/<default>..<default>\` and \`git log <default>..origin/<default>\` — both empty.
+3. \`git branch -vv\` — no leftover local branches beyond the default and any long-lived ones.
+4. \`git worktree list\` — no stale worktrees.
+5. \`git stash list\` — empty, or only entries you deliberately kept.
+
+## Report
+
+Per repository: what you changed, what you deliberately left and why, and the five verification results above. End with a one-line verdict per repo — CLEAN, or what is still outstanding. If you left anything unresolved, say exactly what a human needs to decide.`,
+
   'jira-sprint-manager': `[Improvement: {appName}] JIRA Sprint Manager
 
 Triage and implement JIRA tickets for {appName}:
