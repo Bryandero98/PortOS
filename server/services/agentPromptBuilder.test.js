@@ -382,6 +382,8 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toContain(UI_AUDIT_RUNTIME_RULE);
       expect(prompt).toContain('not browserless');
       expect(prompt).toContain('agent.browsers.list()');
+      expect(prompt).toContain('empty array returned by agent.browsers.list() ([])');
+      expect(prompt).not.toContain('agent.browsers.list() === []');
       expect(prompt).toContain('getForUrl()');
       expect(prompt).toContain('No browser is available');
       expect(prompt).toContain('provider-bridge failure');
