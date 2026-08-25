@@ -162,6 +162,9 @@ const CODE_REVIEWER_INTERVAL = { type: INTERVAL_TYPES.WEEKLY, enabled: false, we
  * ship without the key at all (absent/`null` ⇒ unbounded, their work-detector's
  * idle park remains the only brake) and only the reconcile scans carry a number.
  */
+export const PERPETUAL_DRAIN_DISPATCH_CAP = 5;
+export const DEFAULT_BRANCHES_PER_AGENT = 3;
+
 /**
  * Task types whose "Run Now" with NO app is the REAL run — they sweep every
  * managed app in one dispatch rather than acting on one. Surfaced per task on
@@ -170,9 +173,6 @@ const CODE_REVIEWER_INTERVAL = { type: INTERVAL_TYPES.WEEKLY, enabled: false, we
  * install-wide lane unreachable on any install that has apps).
  */
 export const INSTALL_WIDE_TASK_TYPES = new Set(['repo-sync']);
-
-export const PERPETUAL_DRAIN_DISPATCH_CAP = 5;
-export const DEFAULT_BRANCHES_PER_AGENT = 3;
 
 export const DEFAULT_TASK_INTERVALS = {
   'security':            { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },

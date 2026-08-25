@@ -1644,6 +1644,7 @@ export const MAX_TOTAL_SPAWNS = 5;
 // allowlist — like `prAuthorFilter` / `issueAuthorFilter` — so a per-app
 // override can disable an individual rectification behavior and survive
 // sanitizeTaskMetadata.
+
 // repo-sync's per-app / per-schedule action toggles. Each is ON unless
 // explicitly `false` (branch-reconcile's opt-out convention), EXCEPT
 // `reapRemotes`, which mutates `origin` and is therefore opt-IN. Lives here so
@@ -1708,7 +1709,6 @@ export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
 // vocabulary.
 export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 
-
 // repo-sync verify-mode vocabulary — when the coordinator agent is dispatched
 // after the deterministic sweep. 'always' verifies every run; 'when-changed'
 // (the default) verifies only a run that actually mutated a checkout, so a sweep
@@ -1719,6 +1719,7 @@ export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 // importing the git-heavy service (it is deliberately dependency-light).
 export const REPO_SYNC_VERIFY_MODES = ['always', 'when-changed', 'never'];
 export const DEFAULT_REPO_SYNC_VERIFY_MODE = 'when-changed';
+
 // `issueExcludeLabels` — extra labels a user wants left for human contributors
 // (e.g. `good first issue`) rather than auto-claimed by claim-issue/claim-work.
 // Unioned with the fixed NON_ACTIONABLE_ISSUE_LABELS set at read time

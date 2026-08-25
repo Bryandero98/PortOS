@@ -1822,8 +1822,9 @@ export async function generateSelfImprovementTaskForType(taskType, state) {
   if (repoSync.skip) return null;
   if (repoSync.block) {
     // Function form — the report embeds branch names, git error text, and stash
-    // subjects, any of which may contain a dollar-sign backreference token, which a replacement STRING
-    // would read as a backreference (same reason as {referenceData}/{prData}).
+    // subjects, any of which may contain a dollar-sign backreference token that a
+    // replacement STRING would expand instead of inserting literally (same reason
+    // as {referenceData}/{prData}).
     description = description.replace(/\{repoSyncReport\}/g, () => repoSync.block);
   }
 
