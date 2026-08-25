@@ -462,7 +462,7 @@ export default function OpenWorldScene({
           teleport={playerTeleport}
           warpPads={warpRegions}
           onWarpPadInteract={onTravelToRegion}
-          easterEggs={easterEggsList}
+          easterEggs={easterEggsList.eggs}
           collectedShardIds={collectedShardIds}
           onCollectShard={onCollectShard}
           onPlayerPoseChange={onPlayerPoseChange}
