@@ -27,7 +27,12 @@ export function maybeRedirectToLogin(response, error) {
 // own (with `silent` support); the streaming/blob callers that bypass request()
 // to read a raw Response deliberately surface their own errors instead.
 export async function throwApiError(response) {
-  const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+  // A valid JSON body that isn't an object (e.g. a bare `null`) parses
+  // successfully but has no `.error`/`.code`/`.context` to read — fall back
+  // to the same HTTP-status shape used when the body isn't JSON at all.
+  const parsedError = await response.json().catch(() => null);
+  const error =
+    parsedError && typeof parsedError === 'object' ? parsedError : { error: `HTTP ${response.status}` };
   // Auth gate (server: services/authGate.js) returns 401 with code AUTH_REQUIRED
   // for any /api request without a valid session. Bounce to /login so the
   // user can re-authenticate; skip if we're already there.

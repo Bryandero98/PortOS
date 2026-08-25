@@ -4,31 +4,40 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // header, which the JSON-oriented request() helper can't surface). saveCleanResult
 // goes through request(). Mock both layers.
 const request = vi.fn();
-vi.mock('./apiCore.js', () => ({
-  request: (...a) => request(...a),
-  API_BASE: '/api',
-  maybeRedirectToLogin: vi.fn(),
-  // Mirrors the real apiCore.throwApiError (minus the redirect side effect,
-  // already covered by the maybeRedirectToLogin mock above) so assertions
-  // against `.code`/`.status`/`.context`/message keep working unchanged.
-  throwApiError: vi.fn(async (response) => {
+vi.mock('./apiCore.js', () => {
+  // Mirrors the real apiCore.throwApiError, including the maybeRedirectToLogin
+  // call — routing through the SAME mock the test file asserts against, so a
+  // regression in the consumer-side auth-redirect contract actually fails
+  // these tests instead of a mock that silently drops the side effect.
+  const maybeRedirectToLogin = vi.fn();
+  const throwApiError = vi.fn(async (response) => {
     const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    maybeRedirectToLogin(response, error);
     const err = new Error(error.error || `HTTP ${response.status}`);
     err.code = error?.code;
     err.status = response.status;
     if (error?.context) err.context = error.context;
     throw err;
-  }),
-}));
+  });
+  return {
+    request: (...a) => request(...a),
+    API_BASE: '/api',
+    maybeRedirectToLogin,
+    throwApiError,
+  };
+});
 
 let cleanImage;
 let fetchCleanResult;
 let saveCleanResult;
+let maybeRedirectToLogin;
 
 beforeEach(async () => {
   vi.resetModules();
   request.mockReset();
   ({ cleanImage, fetchCleanResult, saveCleanResult } = await import('./apiMedia.js'));
+  ({ maybeRedirectToLogin } = await import('./apiCore.js'));
+  maybeRedirectToLogin.mockClear();
   global.fetch = vi.fn();
 });
 
@@ -76,6 +85,13 @@ describe('cleanImage', () => {
   it('throws with the server code on an error response', async () => {
     global.fetch.mockResolvedValue(makeResponse({ status: 400, ok: false, json: { error: 'No FLUX', code: 'REGEN_BACKEND_UNAVAILABLE' } }));
     await expect(cleanImage(fakeFile, { diffusion: 'gpu' })).rejects.toMatchObject({ code: 'REGEN_BACKEND_UNAVAILABLE' });
+  });
+
+  it('honors session expiry the same way request() does (401 AUTH_REQUIRED)', async () => {
+    const response = makeResponse({ status: 401, ok: false, json: { error: 'auth required', code: 'AUTH_REQUIRED' } });
+    global.fetch.mockResolvedValue(response);
+    await expect(cleanImage(fakeFile, { diffusion: 'gpu' })).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    expect(maybeRedirectToLogin).toHaveBeenCalledWith(response, expect.objectContaining({ code: 'AUTH_REQUIRED' }));
   });
 });
 

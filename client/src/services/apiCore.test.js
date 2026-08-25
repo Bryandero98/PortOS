@@ -50,17 +50,22 @@ describe('throwApiError', () => {
 
   it('omits context when the server did not send any', async () => {
     const response = makeResponse({ status: 500, json: { error: 'boom' } });
-    try {
-      await throwApiError(response);
-      throw new Error('expected throwApiError to throw');
-    } catch (err) {
-      expect(err.context).toBeUndefined();
-    }
+    const err = await throwApiError(response).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.context).toBeUndefined();
   });
 
   it('falls back to an HTTP-status message when the body is not JSON', async () => {
     const response = makeResponse({ status: 502 }); // json:null → makeResponse's json() rejects
     await expect(throwApiError(response)).rejects.toMatchObject({ message: 'HTTP 502' });
+  });
+
+  it('falls back to an HTTP-status message when the body is valid JSON but not an object', async () => {
+    // response.json() resolves successfully with `null` here — a real case
+    // (an endpoint that responds 500 with a bare `null` body) distinct from
+    // "body isn't JSON at all" above, which rejects instead of resolving.
+    const response = { status: 500, ok: false, json: async () => null };
+    await expect(throwApiError(response)).rejects.toMatchObject({ message: 'HTTP 500' });
   });
 });
 
@@ -74,11 +79,12 @@ describe('request() error path (now delegating to throwApiError)', () => {
     expect(toast.error).toHaveBeenCalledWith('bad input');
   });
 
-  it('does not toast for PLATFORM_UNAVAILABLE errors (warns instead)', async () => {
+  it('warns instead of toasting an error for PLATFORM_UNAVAILABLE', async () => {
     global.fetch.mockResolvedValue(
       makeResponse({ status: 503, json: { error: 'offline', code: 'PLATFORM_UNAVAILABLE' } }),
     );
     await expect(request('/x')).rejects.toMatchObject({ code: 'PLATFORM_UNAVAILABLE' });
+    expect(toast).toHaveBeenCalledWith('offline', { icon: '⚠️' });
     expect(toast.error).not.toHaveBeenCalled();
   });
 
