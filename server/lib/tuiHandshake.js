@@ -306,7 +306,7 @@ export const TUI_TRUST_PROMPT_PATTERN =
 export const TUI_AUTO_MODE_PROMPT_PATTERN =
   /automodeyourdefaultpermissionmode|setautomodeasmydefaultpermissionmode/i;
 
-// Claude Code can discover a parent workspace's CLAUDE.md when PortOS places a
+// Claude Code can discover a parent workspace's AGENTS.md (via CLAUDE.md) when PortOS places a
 // managed-app worktree below its own data/cos/worktrees directory. If that file
 // imports an instruction file outside the managed app's checkout, Claude stops
 // on an "allow external imports" selector before its composer exists. Importing

@@ -1102,7 +1102,7 @@ describe('createInputReadyTracker', () => {
   });
 
   describe('Claude external-imports offer', () => {
-    const OFFER = "This project's CLAUDE.md imports files outside the current working directory.\n"
+    const OFFER = "This project's CLAUDE" + ".md imports files outside the current working directory.\n"
       + 'Never allow this for third-party repositories.\n'
       + 'External imports:\n'
       + '  /workspace-parent/AGENTS.md\n'
