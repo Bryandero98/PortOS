@@ -35,6 +35,9 @@ vi.mock('./git.js', () => ({
 vi.mock('./github.js', () => ({
   findPullRequestForBranch: vi.fn().mockResolvedValue({ status: 'none', url: null, detail: null }),
 }));
+vi.mock('./gitlab.js', () => ({
+  findMergeRequestForBranch: vi.fn().mockResolvedValue({ status: 'none', url: null, detail: null }),
+}));
 vi.mock('./apps.js', () => ({ getAppById: vi.fn().mockResolvedValue({ id: 'demo-app', name: 'Demo App' }) }));
 vi.mock('./notifications.js', () => ({
   addNotification: vi.fn().mockResolvedValue({}),
@@ -51,6 +54,7 @@ import { listWorktrees } from './worktreeManager.js';
 import { listRemoteHeads } from './branchReconcile.js';
 import { isBranchMergedInto, resolveForgeForRepo } from './git.js';
 import { findPullRequestForBranch } from './github.js';
+import { findMergeRequestForBranch } from './gitlab.js';
 import { getAppById } from './apps.js';
 import { addNotification, exists as notificationExists } from './notifications.js';
 import { readPendingMergePrs } from './prWatcher.js';
@@ -103,6 +107,7 @@ beforeEach(() => {
   readPendingMergePrs.mockReturnValue([]);
   resolveForgeForRepo.mockResolvedValue({ cli: 'gh', env: null });
   findPullRequestForBranch.mockResolvedValue({ status: 'none', url: null, detail: null });
+  findMergeRequestForBranch.mockResolvedValue({ status: 'none', url: null, detail: null });
   notificationExists.mockResolvedValue(false);
   addTask.mockResolvedValue({ id: 'task-recovery-1' });
   localBranch(false);
@@ -270,7 +275,7 @@ describe('verifyAgentRepoState — never fires', () => {
     expect(getAllTasks).not.toHaveBeenCalled();
   });
 
-  it('reports probe-failed, not "clean", when git could not be asked at all', async () => {
+  it('reports probe-incomplete, not "clean", when git could not be asked at all', async () => {
     // A firewalled host must not manufacture a recovery agent per run — and must
     // not be logged as a verified-clean repo either.
     listWorktrees.mockRejectedValue(new Error('not a git repository'));
@@ -280,18 +285,90 @@ describe('verifyAgentRepoState — never fires', () => {
 
     const result = await run();
 
-    expect(result.skipReason).toBe(REPO_STATE_SKIPS.PROBE_FAILED);
+    expect(result.skipReason).toBe(REPO_STATE_SKIPS.PROBE_INCOMPLETE);
     expect(result.verified).toBe(false);
     expect(addTask).not.toHaveBeenCalled();
   });
 
-  it('does not treat a GitLab remote as an unmerged PR', async () => {
+  it('reports probe-incomplete when only SOME probes were unreadable', async () => {
+    // The partial case is the dangerous one: worktree and branch both read clean,
+    // so nothing diverged — but the forge never answered, so the PR could be
+    // sitting open. Calling that "verified" is the absent-vs-empty conflation.
+    findPullRequestForBranch.mockResolvedValue({ status: 'unavailable', url: null, detail: null });
+
+    const result = await run();
+
+    expect(result.skipReason).toBe(REPO_STATE_SKIPS.PROBE_INCOMPLETE);
+    expect(result.observed.unreadable).toContain('pull-request');
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('still reports a divergence it COULD read alongside one it could not', async () => {
+    // Partial knowledge does not suppress a finding — what was readable is fact.
+    existsSync.mockReturnValue(true);
+    findPullRequestForBranch.mockResolvedValue({ status: 'unavailable', url: null, detail: null });
+
+    const result = await run();
+
+    expect(result.issues.map(i => i.code)).toContain(REPO_STATE_ISSUES.WORKTREE_PRESENT);
+    expect(addTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when the app record cannot be read', async () => {
+    // A transient apps.json failure must not override an explicit per-app opt-out.
+    getAppById.mockRejectedValue(new Error('apps.json unreadable'));
+    existsSync.mockReturnValue(true);
+
+    const result = await run();
+
+    expect(result.skipReason).toBe(REPO_STATE_SKIPS.GATE_UNREADABLE);
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the task queue cannot be read', async () => {
+    // "Could not read the queue" must never become "nobody owns this branch" — a
+    // follow-up queued to land it would get a recovery task filed against it.
+    getAllTasks.mockRejectedValue(new Error('tasks file unreadable'));
+    existsSync.mockReturnValue(true);
+
+    const result = await run();
+
+    expect(result.skipReason).toBe(REPO_STATE_SKIPS.GATE_UNREADABLE);
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('defers while a CHALLENGED task still holds the branch', async () => {
+    // `challenged` is a parked-for-dispute status, not a terminal one: the task
+    // keeps its branch and resumes on it.
+    queuedTasks([{ status: 'challenged', metadata: { existingBranch: BRANCH } }]);
+    existsSync.mockReturnValue(true);
+
+    const result = await run();
+
+    expect(result.skipReason).toBe(REPO_STATE_SKIPS.FOLLOW_UP_PENDING);
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('reports an unmerged GitLab merge request', async () => {
+    // GitLab is probed too — leaving it unasked would silently pass an open MR as
+    // a clean repo. States come back lowercase from glab.
     resolveForgeForRepo.mockResolvedValue({ cli: 'glab', env: null });
+    findMergeRequestForBranch.mockResolvedValue({ status: 'found', url: 'https://gitlab.example.com/mr/4', detail: 'opened' });
 
     const result = await run();
 
     expect(findPullRequestForBranch).not.toHaveBeenCalled();
-    expect(result.issues).toEqual([]);
+    expect(result.issues.map(i => i.code)).toEqual([REPO_STATE_ISSUES.PR_UNMERGED]);
+    // The remediation must speak glab — a `gh pr merge` line is unrunnable there.
+    expect(addTask.mock.calls[0][0].context).toContain('glab mr merge');
+    expect(addTask.mock.calls[0][0].context).not.toContain('gh pr merge');
+  });
+
+  it('does not report a MERGED GitLab merge request', async () => {
+    resolveForgeForRepo.mockResolvedValue({ cli: 'glab', env: null });
+    findMergeRequestForBranch.mockResolvedValue({ status: 'found', url: 'https://gitlab.example.com/mr/4', detail: 'merged' });
+    const result = await run();
+    expect(result.verified).toBe(true);
   });
 });
 

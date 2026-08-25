@@ -57,6 +57,12 @@ import {
 // stalled gh (network / keychain hang) must not hold an agent lane open.
 const FORGE_RESOLVE_TIMEOUT_MS = 10000;
 
+// A task in any of these still HOLDS its branch and will resume on it, so a
+// branch one of them targets is owned, not leaked. `challenged` is the easy one
+// to miss: it is a parked-for-dispute status, not a terminal one, and its task
+// keeps its resume pointer (`cosTaskStore.js` `challengeTask`).
+const PENDING_OWNER_STATUSES = new Set(['pending', 'in_progress', 'blocked', 'challenged']);
+
 const withTimeout = (promise, ms, fallback) => Promise.race([
   promise,
   new Promise(resolve => setTimeout(() => resolve(fallback), ms)),
@@ -86,17 +92,23 @@ async function branchHasPendingOwner(branchName, app) {
   // `resolveTaskTargetBranch` is the canonical "which branch does this task own"
   // reader — matching `reviewLoopPRBranch` by hand here would miss a retry holding
   // the same branch through `existingBranch`.
-  const tasks = await readAllTasksFlat().catch(() => []);
+  //
+  // `null` on an unreadable queue, never `false`: the caller fails closed on it.
+  // Collapsing "we could not read the task file" into "nobody owns this branch" is
+  // how a transient read failure files recovery work against a branch a follow-up
+  // is queued to land.
+  const tasks = await readAllTasksFlat().catch(() => null);
+  if (!tasks) return null;
   const claimedByTask = tasks.some(t =>
-    (t.status === 'pending' || t.status === 'in_progress' || t.status === 'blocked') &&
-    resolveTaskTargetBranch(t.metadata) === branchName
+    PENDING_OWNER_STATUSES.has(t.status) && resolveTaskTargetBranch(t.metadata) === branchName
   );
   if (claimedByTask) return true;
 
   if (!app) return false;
   const { readPendingMergePrs } = await import('./prWatcher.js');
   const pending = readPendingMergePrs(app);
-  return Array.isArray(pending) && pending.some(entry => entry?.prBranch === branchName);
+  if (!Array.isArray(pending)) return null;
+  return pending.some(entry => entry?.prBranch === branchName);
 }
 
 /**
@@ -148,23 +160,33 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
     return heads ? heads.has(branchName) : null;
   };
 
-  // GitHub only. `gh pr view` against a GitLab MR answers nothing useful, and a
-  // wrong answer is worse than none — leave `prState` null so the PR check simply
-  // does not fire on a GitLab remote. `findPullRequestForBranch` already returns
-  // the state in `detail`, so no second round trip is needed to read it.
+  // Ask whichever forge this remote actually lives on. Both lookups share the
+  // same tri-state contract and both return the change request's state in
+  // `detail`, so no second round trip is needed to read it.
   const probePr = async () => {
-    if (!prExpected || !branchShouldBeGone) return { prState: null, prUrl: null };
-    const { cli, env } = await withTimeout(
+    if (!prExpected || !branchShouldBeGone) return { prState: null, prUrl: null, cli: null, readable: true };
+    const forge = await withTimeout(
       git.resolveForgeForRepo(sourceWorkspace).catch(() => null),
       FORGE_RESOLVE_TIMEOUT_MS,
       null
-    ) || {};
-    if (cli !== 'gh') return { prState: null, prUrl: null };
-    const { findPullRequestForBranch } = await import('./github.js');
-    const found = await findPullRequestForBranch(branchName, { cwd: sourceWorkspace, env: env || null })
-      .catch(() => ({ status: 'unavailable' }));
-    if (found.status !== 'found') return { prState: null, prUrl: null };
-    return { prState: found.detail ? String(found.detail).toUpperCase() : null, prUrl: found.url || null };
+    );
+    if (!forge?.cli) return { prState: null, prUrl: null, cli: null, readable: false };
+    const { cli, env } = forge;
+    const found = cli === 'glab'
+      ? await (await import('./gitlab.js')).findMergeRequestForBranch(branchName, sourceWorkspace)
+        .catch(() => ({ status: 'unavailable' }))
+      : await (await import('./github.js')).findPullRequestForBranch(branchName, { cwd: sourceWorkspace, env: env || null })
+        .catch(() => ({ status: 'unavailable' }));
+    if (found.status === 'unavailable') return { prState: null, prUrl: null, cli, readable: false };
+    // `none` is a real answer, not a gap — `verifyPrClaim` already owns "the agent
+    // never opened one", so there is nothing here to report and nothing missing.
+    if (found.status !== 'found') return { prState: null, prUrl: null, cli, readable: true };
+    return {
+      prState: found.detail ? String(found.detail).toUpperCase() : null,
+      prUrl: found.url || null,
+      cli,
+      readable: !!found.detail,
+    };
   };
 
   // `allowRemote: false` — a bookkeeping question must not block on `git remote
@@ -178,7 +200,7 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
     probeLocalBranch(),
     probeRemoteBranch(),
     probeDefaultBranch(),
-    probePr().catch(() => ({ prState: null, prUrl: null })),
+    probePr().catch(() => ({ prState: null, prUrl: null, cli: null, readable: false })),
   ]);
 
   // Only meaningful while the branch still exists locally — `isBranchMergedInto`
@@ -188,6 +210,23 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
     ? await git.isBranchMergedInto(sourceWorkspace, branchName, defaultBranch).catch(() => null)
     : null;
 
+  // Which probes that COULD have produced a finding came back unreadable. The
+  // caller reports a run with any of these as `probe-incomplete` rather than
+  // clean — a probe we never got an answer from has not verified anything, and
+  // logging it as a verified repo is the absent-vs-empty conflation this module
+  // exists to avoid. A probe that was deliberately skipped (not applicable to
+  // this run's end-state shape) is NOT unreadable.
+  const unreadable = [];
+  if (worktreePresent === null) unreadable.push('worktree');
+  if (localBranchPresent === null) unreadable.push('local-branch');
+  if (branchShouldBeGone) {
+    if (remoteBranchPresent === null) unreadable.push('remote-branch');
+    // Merge state is only in question while the branch is still there; once it is
+    // gone there is nothing left to be unmerged.
+    if (localBranchPresent === true && branchMerged === null) unreadable.push('branch-merged');
+    if (prExpected && !pr.readable) unreadable.push('pull-request');
+  }
+
   return {
     worktreePresent,
     localBranchPresent,
@@ -195,7 +234,9 @@ async function probeRepoState({ sourceWorkspace, branchName, worktreePath, branc
     branchMerged,
     prState: pr.prState,
     prUrl: pr.prUrl,
+    forgeCli: pr.cli,
     defaultBranch,
+    unreadable,
   };
 }
 
@@ -239,11 +280,21 @@ export async function verifyAgentRepoState({ agentId, task, agentState, success,
   const preflight = resolveRepoStateExpectation(structural);
   if (!preflight.verify) return skipped(preflight.skipReason);
 
-  const app = appId ? await (await import('./apps.js')).getAppById(appId).catch(() => null) : null;
-  const enabled = repoStateVerificationEnabled(app);
-  const followUpPending = enabled ? await branchHasPendingOwner(branchName, app).catch(() => false) : false;
+  // Both reads below fail CLOSED. `getAppById` answers `null` for "no such app"
+  // AND throws for "could not read apps.json", and collapsing those would let a
+  // transient read failure override an explicit per-app opt-out; likewise an
+  // unreadable task queue must not read as "nobody owns this branch".
+  const UNREADABLE = Symbol('unreadable');
+  const app = appId
+    ? await (await import('./apps.js')).getAppById(appId).catch(() => UNREADABLE)
+    : null;
+  if (app === UNREADABLE) return skipped(REPO_STATE_SKIPS.GATE_UNREADABLE);
 
-  const expectation = resolveRepoStateExpectation({ ...structural, enabled, followUpPending });
+  const enabled = repoStateVerificationEnabled(app);
+  const owned = enabled ? await branchHasPendingOwner(branchName, app).catch(() => null) : false;
+  if (owned === null) return skipped(REPO_STATE_SKIPS.GATE_UNREADABLE);
+
+  const expectation = resolveRepoStateExpectation({ ...structural, enabled, followUpPending: owned });
   if (!expectation.verify) return skipped(expectation.skipReason);
 
   const worktreePath = metadata.workspacePath || join(PATHS.worktrees, agentId);
@@ -258,14 +309,18 @@ export async function verifyAgentRepoState({ agentId, task, agentState, success,
     return null;
   });
 
-  // Not one probe answered — a firewalled host or an unreadable repo. Reporting
-  // this as "verified clean" would conflate could-not-ask with nothing-wrong.
-  const readNothing = !observed
-    || [observed.worktreePresent, observed.localBranchPresent, observed.remoteBranchPresent].every(v => v === null);
-  if (readNothing) return skipped(REPO_STATE_SKIPS.PROBE_FAILED);
+  if (!observed) return skipped(REPO_STATE_SKIPS.PROBE_INCOMPLETE);
 
   const issues = classifyRepoStateIssues(expectation, { ...observed, branchName });
   if (issues.length === 0) {
+    // A run where some probe could not be read has not been verified — it has been
+    // partially checked. Say so rather than logging a firewalled host as a clean
+    // repo. Findings still stand on their own: what WAS readable is fact, so a
+    // divergence below is reported even alongside an unreadable probe.
+    if (observed.unreadable.length > 0) {
+      emitLog('info', `🔎 Repo state only partly readable for ${agentId} (${branchName}) — could not check: ${observed.unreadable.join(', ')}`, { agentId, branchName });
+      return { verified: false, skipReason: REPO_STATE_SKIPS.PROBE_INCOMPLETE, issues: [], observed, recoveryTaskId: null };
+    }
     emitLog('info', `🔎 Repo state verified clean for ${agentId} (${branchName})`, { agentId, branchName });
     return { verified: true, skipReason: null, issues: [], observed, recoveryTaskId: null };
   }
@@ -304,7 +359,12 @@ export const REPO_STATE_REMEDIATIONS = Object.freeze({
     `Delete the remote branch after confirming its work merged: "git push origin --delete ${branchName}".`,
   [REPO_STATE_ISSUES.BRANCH_UNMERGED]: ({ base }) =>
     `The branch has commits that are NOT on ${base}. Decide whether they are still wanted: land them (open or merge a PR, or merge locally and resolve conflicts) before deleting anything. Do NOT delete this branch until its work is on ${base}.`,
-  [REPO_STATE_ISSUES.PR_UNMERGED]: ({ prUrl }) => `Finish the pull request${prUrl ? ` ${prUrl}` : ''}. ${driveToMerge(prUrl || '<num>')}`,
+  // Forge-aware: `driveToMerge` emits a `gh pr merge` procedure, which a GitLab
+  // recovery agent cannot run. Its non-gh caveats still apply on either forge —
+  // merge from the repo ROOT, and remove the worktree before deleting the branch.
+  [REPO_STATE_ISSUES.PR_UNMERGED]: ({ prUrl, forgeCli }) => (forgeCli === 'glab'
+    ? `Finish the merge request${prUrl ? ` ${prUrl}` : ''}: fix failing pipeline jobs, resolve threads, then merge it from the repo ROOT (not inside the branch's worktree) with "glab mr merge <iid> --remove-source-branch". Remove the worktree before deleting the local branch — the delete fails while a worktree still has it checked out.`
+    : `Finish the pull request${prUrl ? ` ${prUrl}` : ''}. ${driveToMerge(prUrl || '<num>')}`),
 });
 
 /**
@@ -319,7 +379,7 @@ export const REPO_STATE_REMEDIATIONS = Object.freeze({
 async function fileRepoStateRecoveryTask({ agentId, task, branchName, sourceWorkspace, worktreePath, issues, observed, appId }) {
   const appName = task?.metadata?.appName || appId || 'PortOS';
   const base = observed.defaultBranch || 'the default branch';
-  const ctx = { branchName, base, prUrl: observed.prUrl, worktreePath };
+  const ctx = { branchName, base, prUrl: observed.prUrl, worktreePath, forgeCli: observed.forgeCli };
 
   const context = [
     'An agent finished successfully but the repository did not end up in the expected state.',
@@ -328,7 +388,7 @@ async function fileRepoStateRecoveryTask({ agentId, task, branchName, sourceWork
     `Branch: ${branchName}`,
     `Worktree: ${worktreePath}`,
     `Default branch: ${base}`,
-    observed.prUrl ? `Pull request: ${observed.prUrl} (${observed.prState || 'state unknown'})` : 'Pull request: none found',
+    observed.prUrl ? `Change request: ${observed.prUrl} (${observed.prState || 'state unknown'})` : 'Change request: none found',
     `Original agent: ${agentId}`,
     `Original task: ${task?.description || 'unknown'}`,
     '',

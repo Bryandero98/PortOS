@@ -115,6 +115,34 @@ describe('cleanupAgentWorktree → repo-state audit', () => {
     releaseAudit({ verified: true, issues: [] });
   });
 
+  it('audits only after the teardown it is auditing has finished', async () => {
+    // The audit's whole job is to check what cleanup LEFT BEHIND, so it must not
+    // observe a half-removed worktree. Every other case here uses a non-worktree
+    // agent (cleanup exits before `removeWorktree`), which cannot prove ordering —
+    // this one runs the real teardown and holds it open.
+    getAgent.mockResolvedValue(worktreeAgent);
+    const order = [];
+    let finishRemoval;
+    removeWorktree.mockReturnValue(new Promise(resolve => {
+      finishRemoval = () => { order.push('removeWorktree'); resolve({ removed: true, warnings: [] }); };
+    }));
+    verifyAgentRepoState.mockImplementation(async () => {
+      order.push('audit');
+      return { verified: true, issues: [] };
+    });
+
+    const cleanup = cleanupAgentWorktree('agent-1', true, { originalTask: { id: 'task-1', metadata: {} } });
+    // The audit must not have fired while the teardown is still in flight.
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    finishRemoval();
+    await cleanup;
+    await auditRan();
+
+    expect(order).toEqual(['removeWorktree', 'audit']);
+  });
+
   it('returns the cleanup warnings unchanged, and survives an audit that throws', async () => {
     // The audit is an observer. A failure in it must never swallow the warnings
     // the caller uses to notify the user and spawn a merge recovery task.

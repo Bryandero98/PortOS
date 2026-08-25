@@ -47,8 +47,16 @@ export const REPO_STATE_SKIPS = Object.freeze({
   CLEANUP_WARNED: 'cleanup-already-warned',
   FOLLOW_UP_PENDING: 'follow-up-pending',
   MISSING_CONTEXT: 'missing-branch-or-workspace',
-  // Set by the service half when not one probe could be read.
-  PROBE_FAILED: 'probe-failed',
+  // Both set by the service half. A gate this audit depends on could not be read
+  // (the app record, the task queue) — fail CLOSED, because reading "we could not
+  // ask" as "nobody owns this branch" or as "the app left the audit on" is how a
+  // transient file-read failure files recovery work against a branch a follow-up
+  // owns, or against an app that opted out.
+  GATE_UNREADABLE: 'gate-unreadable',
+  // At least one probe that could have produced a finding was unreadable, and
+  // nothing diverged in what WAS readable. Not the same as clean: a firewalled
+  // host must not be logged as a verified repo.
+  PROBE_INCOMPLETE: 'probe-incomplete',
 });
 
 /**

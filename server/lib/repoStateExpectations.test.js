@@ -60,13 +60,22 @@ describe('resolveRepoStateExpectation', () => {
   it('answers every free gate before the one the caller pays for', () => {
     // `followUpPending` costs two task-file reads plus the app record, so the
     // service resolves once WITHOUT it to short-circuit. That only works while
-    // every other skip outranks it.
-    for (const override of [
-      { isWorktree: false }, { isPersistentWorktree: true }, { discardWorktree: true },
-      { success: false }, { cleanupWarningCount: 1 }, { branchName: null }, { sourceWorkspace: null },
-    ]) {
+    // every other skip outranks it. Assert the EXACT reason each gate gives, not
+    // merely that it isn't FOLLOW_UP_PENDING — a regression returning
+    // `verify: true`, or the wrong reason, would sail past the weaker check.
+    const cases = [
+      [{ isWorktree: false }, REPO_STATE_SKIPS.NOT_WORKTREE],
+      [{ isPersistentWorktree: true }, REPO_STATE_SKIPS.PERSISTENT_WORKTREE],
+      [{ discardWorktree: true }, REPO_STATE_SKIPS.DISCARDED_WORKTREE],
+      [{ success: false }, REPO_STATE_SKIPS.FAILED_RUN],
+      [{ cleanupWarningCount: 1 }, REPO_STATE_SKIPS.CLEANUP_WARNED],
+      [{ branchName: null }, REPO_STATE_SKIPS.MISSING_CONTEXT],
+      [{ sourceWorkspace: null }, REPO_STATE_SKIPS.MISSING_CONTEXT],
+    ];
+    for (const [override, reason] of cases) {
       const e = resolveRepoStateExpectation({ ...auditable, ...override, followUpPending: true });
-      expect(e.skipReason).not.toBe(REPO_STATE_SKIPS.FOLLOW_UP_PENDING);
+      expect(e.verify, JSON.stringify(override)).toBe(false);
+      expect(e.skipReason, JSON.stringify(override)).toBe(reason);
     }
   });
 });
