@@ -524,7 +524,11 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
     const { pythonPath: py, selectedModel } = resolveLocalImageModel(settings, params);
     const queued = enqueueJob({
       kind: 'image',
-      params: { pythonPath: py, ...params },
+      params: {
+        ...params,
+        pythonPath: py,
+        ...(selectedModel?.id ? { modelId: selectedModel.id } : {}),
+      },
     });
     // selectedModel reflects the actual fallback chain resolveLocalImageModel
     // applied (caller modelId → 'dev' → allModels[0]) rather than just the

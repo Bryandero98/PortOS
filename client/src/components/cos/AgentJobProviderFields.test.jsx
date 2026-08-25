@@ -122,4 +122,28 @@ describe('AgentJobProviderFields', () => {
 
     expect(screen.queryByRole('option', { name: 'claude-sonnet' })).not.toBeInTheDocument();
   });
+
+  it('requires an explicit coding provider when the active provider is an API', async () => {
+    const apiProvider = {
+      id: 'ollama',
+      name: 'Ollama API',
+      type: 'api',
+      enabled: true,
+      defaultModel: 'qwen3.6:35b',
+      models: ['qwen3.6:35b']
+    };
+
+    render(
+      <AgentJobProviderFields
+        data={{ providerId: '', model: '', effort: '' }}
+        providers={[apiProvider, ...PROVIDERS]}
+        activeProviderId="ollama"
+        onChange={vi.fn()}
+      />
+    );
+    await act(async () => {});
+
+    expect(screen.getByRole('option', { name: 'Select a CLI/TUI provider' })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Select a CLI/TUI provider before saving');
+  });
 });

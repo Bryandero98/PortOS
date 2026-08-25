@@ -5,7 +5,7 @@ import * as api from '../../../services/api';
 import { timeAgo, timeUntil, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence, JOB_INTERVAL_OPTIONS as INTERVAL_OPTIONS } from '../../../utils/cronHelpers';
 import CronSchedulePicker from '../../CronSchedulePicker';
-import AgentJobProviderFields from '../AgentJobProviderFields';
+import AgentJobProviderFields, { hasRunnableAgentProvider } from '../AgentJobProviderFields';
 import { filterRunnableProviders } from '../../../utils/providers';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FormField from '../../ui/FormField';
@@ -269,6 +269,12 @@ function JobCard({ job, apps, providers, activeProviderId, timezone, onToggle, o
   };
 
   const handleSave = async () => {
+    const providerResolutionKnown = Boolean(editData.providerId || activeProviderId || providers.length);
+    if (isAgentJobType(editData.type) && providerResolutionKnown
+      && !hasRunnableAgentProvider(providers, editData.providerId, activeProviderId)) {
+      toast.error('Select a CLI/TUI provider before saving an agent job');
+      return;
+    }
     const payload = normalizeJobPayload(editData);
     const result = await api.updateCosJob(job.id, payload, { silent: true }).catch(err => {
       toast.error(err.message);
@@ -642,6 +648,12 @@ export default function JobsTab() {
     }
     if (newJob.type !== 'shell' && !newJob.promptTemplate.trim()) {
       toast.error('Prompt template is required for AI jobs');
+      return;
+    }
+    const providerResolutionKnown = Boolean(newJob.providerId || activeProviderId || providers.length);
+    if (isAgentJobType(newJob.type) && providerResolutionKnown
+      && !hasRunnableAgentProvider(providers, newJob.providerId, activeProviderId)) {
+      toast.error('Select a CLI/TUI provider before saving an agent job');
       return;
     }
     if (newJob.scheduleMode === 'cron' && !newJob.cronSchedule && (!newJob.cronExpression?.trim() || newJob.cronExpression.trim().split(/\s+/).length !== 5)) {

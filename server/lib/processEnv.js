@@ -67,6 +67,23 @@ const CLI_PROVIDER_AUTH_RULES = Object.freeze({
 
 const LOCAL_PROVIDER_MARKERS = ['ollamaBacked', 'mtplxBacked', 'llamaBacked', 'vllmBacked', 'sglangBacked'];
 
+/**
+ * Build the non-secret provider metadata needed to classify ambient CLI auth
+ * in another process. Provider envVars are deliberately excluded: those may
+ * contain credentials and are already carried separately when explicitly
+ * configured.
+ */
+export function cliProviderAuthDescriptor(provider) {
+  if (!provider || typeof provider !== 'object') return null;
+  const descriptor = {};
+  if (typeof provider.id === 'string' && provider.id) descriptor.id = provider.id;
+  if (typeof provider.command === 'string' && provider.command) descriptor.command = provider.command;
+  for (const marker of LOCAL_PROVIDER_MARKERS) {
+    if (provider[marker] === true) descriptor[marker] = true;
+  }
+  return Object.keys(descriptor).length ? descriptor : null;
+}
+
 function cliProviderAuthRule(provider) {
   const command = typeof provider?.command === 'string'
     ? provider.command.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '')

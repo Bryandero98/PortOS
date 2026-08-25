@@ -286,6 +286,13 @@ router.post('/post/score-llm', asyncHandler(async (req, res) => {
  */
 router.post('/post/rhetoric/evaluate', asyncHandler(async (req, res) => {
   const data = validateRequest(postRhetoricEvaluationRequestSchema, req.body);
+  const config = await postService.getPostConfig();
+  if (config?.rhetoricEvaluator?.enabled !== true) {
+    throw new ServerError(
+      'Rhetoric evaluator is disabled — enable it in the POST configuration before evaluating an attempt',
+      { status: 409, code: 'POST_RHETORIC_EVALUATOR_DISABLED' },
+    );
+  }
   const result = await evaluateRhetoricAttempt(data);
   res.json(result);
 }));

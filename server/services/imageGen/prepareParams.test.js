@@ -20,10 +20,28 @@ vi.mock('../musicVideo/projects.js', () => ({ getProject: (...a) => getProject(.
 const getUniverseRenderPin = vi.fn(async () => null);
 vi.mock('../universeBuilder/crud.js', () => ({ getUniverseRenderPin: (...a) => getUniverseRenderPin(...a) }));
 
-const { prepareGenerateParams } = await import('./prepareParams.js');
+const { prepareGenerateParams, selectLocalImageModel } = await import('./prepareParams.js');
 
 const CODEX_ON = { codex: { enabled: true, codexPath: '/bin/codex' } };
 const run = (data) => prepareGenerateParams({ data, files: undefined, referenceImageFields: [] });
+
+describe('selectLocalImageModel', () => {
+  it('keeps an explicit model pin', () => {
+    const models = [
+      { id: 'dev', hardwareCompatibility: { state: 'unavailable' } },
+      { id: 'custom', hardwareCompatibility: { state: 'available' } },
+    ];
+    expect(selectLocalImageModel('custom', models).id).toBe('custom');
+  });
+
+  it('falls back from an unavailable dev default to a compatible model', () => {
+    const models = [
+      { id: 'dev', hardwareCompatibility: { state: 'unavailable' } },
+      { id: 'custom', hardwareCompatibility: { state: 'available' } },
+    ];
+    expect(selectLocalImageModel(undefined, models).id).toBe('custom');
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

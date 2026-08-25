@@ -311,7 +311,7 @@ describe('Image Gen Routes', () => {
       expect(response.body.path).toBe('/data/images/queued-job-001.png');
       expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
         kind: 'image',
-        params: expect.objectContaining({ prompt: 'a fox in a forest', pythonPath: '/usr/bin/python3' }),
+        params: expect.objectContaining({ prompt: 'a fox in a forest', pythonPath: '/usr/bin/python3', modelId: 'dev' }),
       }));
       // Synchronous generateImage MUST NOT be called in local mode — the
       // queue takes ownership of the job lifecycle.

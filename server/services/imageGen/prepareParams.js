@@ -71,6 +71,23 @@ const RECORD_PIN_SOURCES = Object.freeze([
 const MIME_TO_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
 
 /**
+ * Select the model a local render will actually use. An omitted model keeps
+ * the historical `dev` preference only when that model can run on this host;
+ * otherwise it falls through to the first compatible catalog entry.
+ *
+ * @param {string|null|undefined} modelId
+ * @param {object[]} [allModels]
+ * @returns {object|undefined}
+ */
+export function selectLocalImageModel(modelId, allModels = getImageModels()) {
+  const requestedModel = allModels.find((model) => model.id === modelId);
+  return requestedModel || [
+    allModels.find((model) => model.id === 'dev'),
+    ...allModels,
+  ].filter(Boolean).find((model) => isHardwareCompatible(model.hardwareCompatibility)) || allModels[0];
+}
+
+/**
  * @param {object} opts
  * @param {object} opts.data    - validated + coerced body from Zod (mutated in place)
  * @param {object} opts.files   - req.files from multer (may be undefined)
@@ -193,9 +210,7 @@ export async function prepareGenerateParams({ data, files, referenceImageFields 
   // downstream — that would orphan files on disk and produce metadata sidecars
   // that lie about how the render was conditioned.
   if (referenceUploads.length && mode === IMAGE_GEN_MODE.LOCAL) {
-    const candidate = getImageModels().find((m) => m.id === data.modelId)
-      ?? getImageModels().find((m) => m.id === 'dev')
-      ?? getImageModels()[0];
+    const candidate = selectLocalImageModel(data.modelId);
     if (!isFlux2(candidate)) {
       cleanupReqFilesTemp();
       throw new ServerError(
@@ -330,15 +345,11 @@ export function resolveLocalImageModel(settings, params) {
       { status: 400, code: 'IMAGE_GEN_UNKNOWN_MODEL' },
     );
   }
-  const requestedModel = allModels.find((m) => m.id === params.modelId);
   // An explicit pin must fail clearly when the host cannot run it. For an
   // omitted pin, prefer the historical `dev` default only when it is actually
   // compatible, then choose the first known-compatible model. This keeps a
   // Windows/Linux install from silently queueing the Apple-only default.
-  const selectedModel = requestedModel || [
-    allModels.find((m) => m.id === 'dev'),
-    ...allModels,
-  ].filter(Boolean).find((model) => isHardwareCompatible(model.hardwareCompatibility)) || allModels[0];
+  const selectedModel = selectLocalImageModel(params.modelId, allModels);
   if (selectedModel && !isHardwareCompatible(selectedModel.hardwareCompatibility)) {
     throw new ServerError(
       `Image model "${selectedModel.id}" is unavailable on this machine: ${selectedModel.hardwareCompatibility.reasons.join(' · ')}`,

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { posixPath } from './testHelper.js';
 
 import { buildCliChildEnv, composeProviderEnv } from './cliChildEnv.js';
+import { cliProviderAuthDescriptor } from './processEnv.js';
 import { AGENT_GUARD_BIN } from './agentGuard/index.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
 import { readFileSync } from 'node:fs';
@@ -341,6 +342,17 @@ describe('buildCliChildEnv — per-call-site composition', () => {
       PATH: '/usr/bin',
       PWD: '/workspace',
     });
+  });
+
+  it('retains ambient auth for the selected provider when the runner supplies its descriptor', () => {
+    const provider = { id: 'codex', command: 'codex', envVars: { OPENAI_API_KEY: 'not serialized' } };
+    const env = buildCliChildEnv({
+      baseEnv: { PATH: '/usr/bin', OPENAI_API_KEY: 'ambient-key' },
+      provider: cliProviderAuthDescriptor(provider),
+      cwd: '/workspace',
+    });
+
+    expect(env.OPENAI_API_KEY).toBe('ambient-key');
   });
 
   it('askService.js: no cwd means no PWD is invented', () => {

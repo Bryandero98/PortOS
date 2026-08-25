@@ -153,6 +153,9 @@ app.post('/spawn-tui', async (req, res) => {
     args = [],
     workspacePath,
     envVars = {},
+    // Non-secret provider identity used to retain that provider's ambient auth
+    // allowlist when the runner builds the child environment.
+    providerAuth = null,
     cols = 80,
     rows = 24,
     doneSentinelPath = null,
@@ -180,7 +183,7 @@ app.post('/spawn-tui', async (req, res) => {
   }
 
   const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
-  const childEnv = buildCliChildEnv({ before: envVars, cwd });
+  const childEnv = buildCliChildEnv({ before: envVars, provider: providerAuth, cwd });
   // node-pty reports a missing executable as an immediate exit with no data.
   // Check the exact child PATH first so the caller gets a usable configuration
   // error instead of a generic startup-failure after a blank PTY transcript.
@@ -344,6 +347,9 @@ app.post('/spawn', async (req, res) => {
     workspacePath,
     model,
     envVars = {},
+    // Non-secret provider identity used to retain that provider's ambient auth
+    // allowlist when the runner builds the child environment.
+    providerAuth = null,
     // New: CLI-agnostic parameters
     cliCommand,
     cliArgs,
@@ -403,7 +409,7 @@ app.post('/spawn', async (req, res) => {
   // The pin is the path #3193 was reported through: the log line above named the
   // app's workspace correctly while every OpenCode agent still ran in the PortOS
   // folder. No `guard` — this separate process has never carried the pm2 shim.
-  const childEnv = buildCliChildEnv({ before: envVars, cwd });
+  const childEnv = buildCliChildEnv({ before: envVars, provider: providerAuth, cwd });
 
   // Resolve a bare npm-installed CLI (opencode/codex/claude/… — a .cmd/.bat
   // shim on Windows) to its real path and wrap a shim as `cmd.exe /c <path>` so

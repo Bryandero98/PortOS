@@ -330,6 +330,15 @@ function parseRecurrenceToNextRun(rule, from = new Date(), timezone = 'UTC', unt
   }
   const boundary = new Date(from)
   boundary.setFullYear(boundary.getFullYear() + 2)
+  // The two-year search horizon is relative to `from`, but a persisted anchor
+  // may intentionally begin farther in the future. Extend the horizon through
+  // that anchor so a valid recurrence is not rejected merely because its first
+  // occurrence lies beyond the runtime look-ahead window.
+  if (parsedAnchor) {
+    const anchorBoundary = new Date(Date.UTC(parsedAnchor.year, parsedAnchor.month - 1, parsedAnchor.day))
+    anchorBoundary.setUTCFullYear(anchorBoundary.getUTCFullYear() + 2)
+    if (anchorBoundary > boundary) boundary.setTime(anchorBoundary.getTime())
+  }
   const maxDate = until instanceof Date && until < boundary ? until : boundary
   return findNextRecurrenceCandidate(normalized, anchor, from, timezone, maxDate)
 }

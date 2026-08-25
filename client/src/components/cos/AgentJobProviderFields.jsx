@@ -1,5 +1,21 @@
-import { effortAwareModelOptions, filterRunnableProviders, resolveEffectiveProvider } from '../../utils/providers.js';
+import {
+  AGENT_HARNESS_PROVIDER_TYPES,
+  effortAwareModelOptions,
+  filterRunnableProviders,
+  resolveEffectiveProvider,
+} from '../../utils/providers.js';
 import ProviderModelSelector from '../ProviderModelSelector.jsx';
+
+/**
+ * Whether an agent job's saved provider choice resolves to a file-writing
+ * CLI/TUI harness at save time. HTTP API providers can generate text, but they
+ * cannot perform the filesystem work an agent job promises to do.
+ */
+export const hasRunnableAgentProvider = (providers, providerId, activeProviderId) => {
+  const selectableProviders = filterRunnableProviders(providers, providerId);
+  const { provider } = resolveEffectiveProvider(selectableProviders, providerId, activeProviderId);
+  return AGENT_HARNESS_PROVIDER_TYPES.includes(provider?.type);
+};
 
 /**
  * Shared provider/model/effort controls for persisted CoS agent jobs.
@@ -30,6 +46,9 @@ export default function AgentJobProviderFields({
   const effectiveProviderId = usingActive ? (activeProviderId || undefined) : undefined;
   const patchWithActiveProvider = (patch) =>
     data.providerId || !activeProviderId ? patch : { providerId: activeProviderId, ...patch };
+  const canInheritActiveProvider = AGENT_HARNESS_PROVIDER_TYPES.includes(
+    selectableProviders.find(provider => provider.id === activeProviderId)?.type
+  );
 
   return (
     <div>
@@ -45,11 +64,16 @@ export default function AgentJobProviderFields({
         effort={data.effort || ''}
         onEffortChange={effort => onChange(patchWithActiveProvider({ effort }))}
         compact
-        emptyProviderOption="Default (active provider)"
+        emptyProviderOption={canInheritActiveProvider ? 'Default (active provider)' : 'Select a CLI/TUI provider'}
         emptyModelOption="Default model"
         alwaysShowModel
         highlightToolUse
       />
+      {!data.providerId && !canInheritActiveProvider && (
+        <p role="alert" className="mt-1 text-xs text-port-warning">
+          Select a CLI/TUI provider before saving this agent job.
+        </p>
+      )}
     </div>
   );
 }

@@ -68,6 +68,7 @@ import {
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
+import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
 import { shellHasLiveChild } from '../lib/shellLivenessProbe.js';
@@ -126,6 +127,7 @@ export async function createAgentTuiSession({
       args: tuiConfig.args,
       workspacePath: cwd,
       envVars: env,
+      providerAuth: cliProviderAuthDescriptor(provider),
       doneSentinelPath,
       onData,
       onExit,

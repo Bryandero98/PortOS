@@ -100,7 +100,7 @@ describe('cos-runner durable TUI ownership (#3202)', () => {
     expect(RUNNER_SRC).toMatch(
       /import\s*\{[^}]*\bcommandExists\b[^}]*\}\s*from\s*'\.\.\/lib\/commandExists\.js';/
     );
-    const childEnvIdx = RUNNER_SRC.indexOf('const childEnv = buildCliChildEnv({ before: envVars, cwd });');
+    const childEnvIdx = RUNNER_SRC.indexOf('const childEnv = buildCliChildEnv({ before: envVars, provider: providerAuth, cwd });');
     const resolveIdx = RUNNER_SRC.indexOf('const executable = findCommandOnPath(command, { env: childEnv, cwd });');
     const prepareProbeIdx = RUNNER_SRC.indexOf("const versionProbe = prepareCliSpawn(executable, ['--version'], childEnv);");
     const probeIdx = RUNNER_SRC.indexOf('const runnable = await commandExists(versionProbe.command, versionProbe.args, {');
