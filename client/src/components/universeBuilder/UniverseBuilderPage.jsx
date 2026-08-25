@@ -251,8 +251,15 @@ export default function UniverseBuilder() {
       toast.error(error?.message || 'Failed to export universe');
       return null;
     });
+    if (markdown === null) {
+      setExporting(false);
+      return;
+    }
+    if (!exportIsReady()) {
+      setExporting(false);
+      return;
+    }
     setExporting(false);
-    if (markdown === null) return;
     const filename = `${downloadSlug(draftRef.current?.name || draft.name)}.md`;
     downloadBlob(markdown, filename, 'text/markdown');
     toast.success(`Downloaded ${filename}`);

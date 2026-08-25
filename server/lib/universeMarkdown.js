@@ -74,6 +74,7 @@ const formatInlineValue = (value) => {
   }
   if (typeof value === 'object') {
     return Object.entries(value)
+      .filter(([key]) => !ENTRY_METADATA_FIELDS.has(key))
       .sort(([a], [b]) => compareNames(a, b))
       .map(([key, nested]) => {
         const rendered = formatInlineValue(nested);

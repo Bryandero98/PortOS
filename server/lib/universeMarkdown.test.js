@@ -60,6 +60,27 @@ describe('universeToMarkdown', () => {
     expect(universeToMarkdown({ name: 'Safe', characters: [null, { name: 'One' }] }))
       .toContain('### One');
   });
+
+  it('omits generated nested metadata so legacy reads stay deterministic', () => {
+    const first = universeToMarkdown({
+      name: 'Stable World',
+      characters: [{
+        name: 'Aster',
+        props: [{ id: 'prop-old', createdAt: '2020-01-01', name: 'Compass', updatedAt: '2020-02-01' }],
+      }],
+    });
+    const second = universeToMarkdown({
+      name: 'Stable World',
+      characters: [{
+        name: 'Aster',
+        props: [{ id: 'prop-new', createdAt: '2030-01-01', name: 'Compass', updatedAt: '2030-02-01' }],
+      }],
+    });
+    expect(first).toBe(second);
+    expect(first).toContain('Compass');
+    expect(first).not.toContain('prop-old');
+    expect(first).not.toContain('2020-01-01');
+  });
 });
 
 describe('universe markdown filenames', () => {
