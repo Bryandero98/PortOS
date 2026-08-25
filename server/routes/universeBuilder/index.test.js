@@ -318,6 +318,32 @@ describe('universe-builder routes', () => {
     errSpy.mockRestore();
   });
 
+  it('GET /:id/export/markdown returns a Markdown attachment and 404s when missing', async () => {
+    const app = buildApp();
+    const created = await request(app)
+      .post('/api/universe-builder')
+      .send({
+        name: 'The Bright World',
+        logline: 'A world beneath two suns.',
+        characters: [{ name: 'Mira', physicalDescription: 'A patient cartographer.' }],
+      });
+    expect(created.status).toBe(201);
+
+    const exported = await request(app)
+      .get(`/api/universe-builder/${created.body.id}/export/markdown`);
+    expect(exported.status).toBe(200);
+    expect(exported.headers['content-type']).toMatch(/^text\/markdown; charset=utf-8/);
+    expect(exported.headers['content-disposition']).toBe('attachment; filename="the-bright-world.md"');
+    expect(exported.text).toContain('# The Bright World');
+    expect(exported.text).toContain('### Mira');
+    expect(exported.text).not.toMatch(/\{"id"/);
+
+    const missing = await request(app)
+      .get('/api/universe-builder/does-not-exist/export/markdown');
+    expect(missing.status).toBe(404);
+    expect(missing.body.code).toBe('NOT_FOUND');
+  });
+
   it('POST / creates a universe', async () => {
     const res = await request(buildApp())
       .post('/api/universe-builder')

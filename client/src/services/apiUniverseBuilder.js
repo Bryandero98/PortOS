@@ -19,6 +19,10 @@ export const WORLD_STYLE_REFERENCES_MAX = 20;
 // so request() doesn't also toast — see AGENTS.md "Custom catch ⇒ silent: true".
 export const listUniverses = (options = {}) => request('/universe-builder', options);
 export const getUniverse = (id, options = {}) => request(`/universe-builder/${encodeURIComponent(id)}`, options);
+export const exportUniverseMarkdown = (id, options = {}) => request(
+  `/universe-builder/${encodeURIComponent(id)}/export/markdown`,
+  { responseType: 'text', ...options },
+);
 
 // `[{ id, name, influences: { embrace[], avoid[] } }]` for every live universe
 // that has style tokens. Use this instead of `listUniverses()` whenever a

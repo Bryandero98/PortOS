@@ -8,7 +8,7 @@
  * panel modules.
  */
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import {
   ArrowLeft, BookOpen, FolderTree, ImagePlus, Layers, Loader2,
@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import toast from '../ui/Toast';
-import { WORLD_CATEGORY_KEY_MAX } from '../../services/api';
+import { exportUniverseMarkdown, WORLD_CATEGORY_KEY_MAX } from '../../services/api';
 import useUniverseBucketActions from '../../hooks/useUniverseBucketActions';
 import useUniverseDraft from '../../hooks/useUniverseDraft';
 import useUniverseExpand from '../../hooks/useUniverseExpand';
@@ -35,6 +35,7 @@ import RenderTab from './RenderTab';
 import UniverseBibleTab from './UniverseBibleTab';
 import { OtherTab, TrunkView } from './UniverseTrunkPanels';
 import { appendImageRefById } from '../../lib/bibleLimits';
+import { downloadBlob } from '../../lib/downloadBlob';
 import { totalVariationCount } from '../../lib/universeBuilderCounts';
 import {
   TAB_BIBLE,
@@ -50,6 +51,13 @@ import {
 
 export { CategoryEditor } from './UniverseCategoryEditor';
 export { OtherTab, TrunkView };
+
+const downloadSlug = (name) => String(name || 'universe')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '') || 'universe';
 
 
 // Universe autocomplete combobox: search existing universes or create one when
@@ -103,6 +111,7 @@ export default function UniverseBuilder() {
   // treat the `new` sentinel as "no id" (blank draft). Real universe ids are
   // UUIDs, so this can never shadow an actual record.
   const selectedId = params.universeId && params.universeId !== 'new' ? params.universeId : null;
+  const [exporting, setExporting] = useState(false);
   // `goToWorld` preserves `location.search` (e.g. `?tab=&bucket=&series=`) so
   // the auto-save → create path doesn't snap the user back to the Bible tab
   // after they triggered Generate From Idea from inside Cast/Places/Objects.
@@ -212,6 +221,20 @@ export default function UniverseBuilder() {
     mountedRef,
     flushDraftIfDirty,
   });
+
+  const handleExportMarkdown = useCallback(async () => {
+    if (!selectedId || exporting) return;
+    setExporting(true);
+    const markdown = await exportUniverseMarkdown(selectedId, { silent: true }).catch((error) => {
+      toast.error(error?.message || 'Failed to export universe');
+      return null;
+    });
+    setExporting(false);
+    if (markdown === null) return;
+    const filename = `${downloadSlug(draft.name)}.md`;
+    downloadBlob(markdown, filename, 'text/markdown');
+    toast.success(`Downloaded ${filename}`);
+  }, [draft.name, exporting, selectedId]);
 
   // Page-level lightbox + gallery-metadata concern. A single MediaPreview at
   // this level covers EVERY thumb on the page: variations, composite sheets,
@@ -348,6 +371,15 @@ export default function UniverseBuilder() {
           </button>
           {selectedId && (
             <>
+              <button
+                onClick={handleExportMarkdown}
+                disabled={exporting}
+                className="px-3 py-2 rounded flex items-center gap-2 min-h-[40px] border border-port-border hover:bg-port-card-hover disabled:opacity-50"
+                title="Export universe as Markdown"
+              >
+                {exporting ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
+                {exporting ? 'Exporting…' : 'Export .md'}
+              </button>
               <ShareToButton kind="universe" ids={[selectedId]} label="Share" />
               <SyncToPeerButton recordKind="universe" recordId={selectedId} label="Sync" />
               {draft.origin ? <OriginBadge origin={draft.origin} /> : null}
