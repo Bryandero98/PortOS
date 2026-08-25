@@ -129,31 +129,40 @@ describe('instance features', () => {
       expect(await isInstanceFeatureEnabled('datadog')).toBe(true);
     });
 
-    it('falls back to the default (not "unconfigured") when detection itself fails', async () => {
-      mock.datadogThrows = true;
-
-      expect(await detectFeatureConfiguration()).toMatchObject({ datadog: null });
-      const { features } = await getInstanceFeatures();
-      // defaultEnabled is false for DataDog, but the reason must be `default`,
-      // not a probe result that never came back.
-      expect(byId(features, 'datadog')).toMatchObject({ enabled: false, source: 'default' });
-      expect(await isInstanceFeatureEnabled('datadog')).toBe(false);
-    });
-
-    // A PRESENT-but-corrupt config file is the case that fails silently: the
-    // detector must throw so this resolves to the shipped default, NOT report a
-    // confident "no instances" that would hide the navigation.
-    it('treats a corrupt integration config as detection failure, not "unconfigured"', async () => {
+    // A PRESENT-but-corrupt config file is the case that fails silently. The
+    // detector throws, and the gate must then fail OPEN: the file exists, so the
+    // integration is probably configured, and /devtools/jira is itself where the
+    // user goes to fix it — hiding it there strands them.
+    it('fails OPEN when detection cannot answer, rather than hiding the page', async () => {
       mock.datadogThrows = true;
       mock.settings = {};
 
       expect((await detectFeatureConfiguration()).datadog).toBeNull();
-      expect(byId((await getInstanceFeatures()).features, 'datadog')).toMatchObject({ source: 'default' });
+      expect(byId((await getInstanceFeatures()).features, 'datadog')).toMatchObject({
+        enabled: true,
+        source: 'detect-failed',
+      });
+      expect(await isInstanceFeatureEnabled('datadog')).toBe(true);
     });
 
+    it('still lets an explicit disable win over a failed probe', async () => {
+      mock.datadogThrows = true;
+      mock.settings = { instanceFeatures: { datadog: { enabled: false } } };
+
+      expect(byId((await getInstanceFeatures()).features, 'datadog')).toMatchObject({
+        enabled: false,
+        source: 'explicit',
+      });
+    });
+
+    // A feature with NO detector reads null for a different reason — nothing was
+    // ever probed — so it must keep taking its shipped default, not fail open.
     it('reports no detection for a feature with no detector', async () => {
       expect(await detectFeatureConfiguration()).toMatchObject({ post: null });
-      expect(byId((await getInstanceFeatures()).features, 'post')).toMatchObject({ source: 'default' });
+      expect(byId((await getInstanceFeatures()).features, 'post')).toMatchObject({
+        enabled: true,
+        source: 'default',
+      });
     });
   });
 

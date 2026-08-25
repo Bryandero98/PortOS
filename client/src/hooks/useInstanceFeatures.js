@@ -18,9 +18,16 @@ import * as api from '../services/api';
 // means loaded and this version registers no optional features.
 let cached = null;
 let inFlight = null;
+// Bumped whenever something newer than an outstanding request lands (a toggle
+// publishing the server's fresh list, or an invalidation). A response that read
+// the OLD state must not overwrite it just because it resolved later — without
+// this, saving a JIRA instance while the initial fetch is still in flight leaves
+// the sidebar and ⌘K showing the pre-save answer until a reload.
+let generation = 0;
 
 const loadInstanceFeatures = () => {
   if (!inFlight) {
+    const requested = generation;
     inFlight = api.getInstanceFeatures({ silent: true })
       .then((data) => ({ features: Array.isArray(data?.features) ? data.features : [], error: null }))
       .catch((error) => {
@@ -29,8 +36,11 @@ const loadInstanceFeatures = () => {
         return { features: null, error };
       })
       .then((result) => {
-        cached = result;
         inFlight = null;
+        // Superseded while in flight — hand the caller what IS current instead
+        // of the answer it asked for, so no consumer renders the stale one.
+        if (requested !== generation) return cached || result;
+        cached = result;
         return result;
       });
   }
@@ -62,6 +72,7 @@ export function useInstanceFeatures() {
 
     const onFeaturesChanged = (event) => {
       const features = event?.detail?.features;
+      generation += 1;
       if (Array.isArray(features)) {
         cached = { features, error: null };
         sync(cached);
@@ -92,6 +103,7 @@ export function useInstanceFeatures() {
   // consumer is sitting in the fail-open error state, and a retry that updated
   // only the Settings tab would leave the sidebar and ⌘K stale until a reload.
   const reload = useCallback(() => {
+    generation += 1;
     cached = null;
     return loadInstanceFeatures().then((result) => {
       if (result.features) publishInstanceFeatures(result.features);
@@ -126,4 +138,5 @@ export const invalidateInstanceFeatures = (featureId) => {
 export const __resetInstanceFeatureCache = () => {
   cached = null;
   inFlight = null;
+  generation += 1;
 };

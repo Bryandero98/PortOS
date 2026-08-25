@@ -8,6 +8,7 @@ import { createHttpClient } from '../lib/httpClient.js';
 import path from 'path';
 import { ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { hostFromOriginUrl } from '../lib/workTracker.js';
+import { countConfiguredInstances } from '../lib/instanceFeatureRegistry.js';
 
 const JIRA_CONFIG_FILE = path.join(PATHS.data, 'jira.json');
 
@@ -23,7 +24,7 @@ const JIRA_CONFIG_FILE = path.join(PATHS.data, 'jira.json');
 // absent file still returns the empty default — absent is a trustworthy empty.
 export async function hasConfiguredInstances() {
   const config = await readJSONFile(JIRA_CONFIG_FILE, { instances: {} }, { logError: false, strict: true });
-  return Object.keys(config?.instances || {}).length > 0;
+  return countConfiguredInstances(config, 'jira.json') > 0;
 }
 
 export const escapeJql = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');

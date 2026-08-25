@@ -37,3 +37,26 @@ export const INSTANCE_FEATURES = Object.freeze([
 ]);
 
 export const INSTANCE_FEATURE_IDS = Object.freeze(INSTANCE_FEATURES.map((feature) => feature.id));
+
+/**
+ * How many instances an integration's config file declares — the signal every
+ * `detect` hook is built on.
+ *
+ * THROWS on a malformed shape rather than counting it, because every wrong
+ * answer here is silently wrong: `{"instances": "bad"}` would count its three
+ * CHARACTER keys as three configured instances, and `{"instances": []}` (or
+ * `null`) would report a confident zero. Both are "the file is not what we
+ * think", which the caller must treat as detection failure — not as a
+ * trustworthy count. An absent file never reaches here; it resolves to the
+ * empty default upstream, which is a trustworthy zero.
+ */
+export const countConfiguredInstances = (config, label = 'instance config') => {
+  const instances = config?.instances;
+  const isPlainObject = instances !== null
+    && typeof instances === 'object'
+    && !Array.isArray(instances);
+  if (!isPlainObject) {
+    throw new Error(`Malformed ${label}: "instances" must be an object`);
+  }
+  return Object.keys(instances).length;
+};

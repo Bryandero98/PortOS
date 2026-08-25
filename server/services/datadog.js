@@ -5,6 +5,7 @@
 
 import fs from 'fs/promises';
 import { createHttpClient } from '../lib/httpClient.js';
+import { countConfiguredInstances } from '../lib/instanceFeatureRegistry.js';
 import path from 'path';
 import { ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 
@@ -40,7 +41,7 @@ export async function getInstances() {
 // absent file still returns the empty default — absent is a trustworthy empty.
 export async function hasConfiguredInstances() {
   const config = await readJSONFile(DATADOG_CONFIG_FILE, { instances: {} }, { logError: false, strict: true });
-  return Object.keys(config?.instances || {}).length > 0;
+  return countConfiguredInstances(config, 'datadog.json') > 0;
 }
 
 /**

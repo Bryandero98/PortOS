@@ -57,6 +57,17 @@ const resolveOne = (feature, settings, detected) => {
 
   const configured = detected?.[feature.id];
   if (typeof configured === 'boolean') return { enabled: configured, source: 'auto' };
+
+  // Detection was supposed to answer and couldn't (unreadable or malformed
+  // config). FAIL OPEN — show the feature — rather than falling through to
+  // `defaultEnabled`, which is `false` for both integrations and would hide the
+  // page on exactly the install that needs it: the config file EXISTS, so the
+  // integration is probably set up, and /devtools/jira is itself where the user
+  // goes to fix it. Hiding it there strands them. Mirrors the client hook, which
+  // also fails open when it cannot read the feature list.
+  if (typeof DETECTORS[feature.id] === 'function') {
+    return { enabled: true, source: 'detect-failed' };
+  }
   return { enabled: feature.defaultEnabled, source: 'default' };
 };
 
