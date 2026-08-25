@@ -3,6 +3,8 @@
  *
  * This module is intentionally pure: it reads a universe-shaped record and
  * returns text without touching storage, the filesystem, or the network.
+ * Filename normalization mirrors client/src/lib/universeMarkdownFilename.js;
+ * change both helpers in the same commit and run their shared contract cases.
  */
 
 const CANON_ENTRY_FIELD_ORDER = Object.freeze({
@@ -93,7 +95,7 @@ const formatBlockValue = (value) => {
     .map((line) => {
       const leading = line.match(/^\s*/u)?.[0] || '';
       const content = line.slice(leading.length);
-      return /^(?:#{1,6}\s|>\s?|[-*_]{3,}\s*$|`{3,})/u.test(content)
+      return /^(?:#{1,6}\s|>\s?|[-*_]{3,}\s*$|=+\s*$|-+\s*$|`{3,})/u.test(content)
         ? `${leading}\\${content}`
         : line;
     })

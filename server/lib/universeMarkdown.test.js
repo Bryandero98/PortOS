@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { slugifyUniverseName, universeMarkdownFilename, universeToMarkdown } from './universeMarkdown.js';
+import { UNIVERSE_MARKDOWN_FILENAME_CASES } from '../../client/src/lib/universeMarkdownFilename.cases.js';
 
 describe('universeToMarkdown', () => {
   it('serializes the full world-bible shape in stored order', () => {
@@ -121,10 +122,8 @@ describe('universeToMarkdown', () => {
 });
 
 describe('universe markdown filenames', () => {
-  it('slugifies names safely and falls back when no slug remains', () => {
-    expect(slugifyUniverseName('The Bright World / V2!')).toBe('the-bright-world-v2');
-    expect(slugifyUniverseName('Café')).toBe('cafe');
-    expect(slugifyUniverseName('!!!')).toBe('universe');
-    expect(universeMarkdownFilename('The Bright World')).toBe('the-bright-world.md');
+  it.each(UNIVERSE_MARKDOWN_FILENAME_CASES)('matches the client-safe contract for %j', (name, slug, filename) => {
+    expect(slugifyUniverseName(name)).toBe(slug);
+    expect(universeMarkdownFilename(name)).toBe(filename);
   });
 });

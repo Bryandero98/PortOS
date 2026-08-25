@@ -199,4 +199,23 @@ describe('UniverseBuilderPage Markdown export', () => {
     ));
     expect(toastMock.success).toHaveBeenCalledWith('Downloaded first-world.md');
   });
+
+  it('refuses export when a pending universe write exceeds the wait bound', async () => {
+    apiMocks.waitForUniverseWrites.mockResolvedValueOnce(false);
+
+    render(
+      <MemoryRouter initialEntries={['/universes/u1']}>
+        <NavigationProbe />
+        <Routes>
+          <Route path="/universes/:universeId" element={<UniverseBuilderPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Export .md' }));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(
+      'Changes are still saving — try the export again in a moment',
+    ));
+    expect(apiMocks.exportUniverseMarkdown).not.toHaveBeenCalled();
+  });
 });

@@ -53,4 +53,21 @@ describe('Universe Builder write tracking', () => {
   it('resolves immediately when no universe id is supplied', async () => {
     await expect(waitForUniverseWrites()).resolves.toBe(true);
   });
+
+  it('gives up when a tracked write outlives the wait bound', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = deferred();
+      request.mockReturnValueOnce(pending.promise);
+      const write = updateUniverse('u-1', { name: 'Example World' });
+      const wait = waitForUniverseWrites('u-1', { timeoutMs: 50 });
+
+      await vi.advanceTimersByTimeAsync(60);
+      await expect(wait).resolves.toBe(false);
+      pending.resolve({ id: 'u-1' });
+      await expect(write).resolves.toEqual({ id: 'u-1' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

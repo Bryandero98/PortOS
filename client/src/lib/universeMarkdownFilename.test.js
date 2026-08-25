@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { slugifyUniverseName, universeMarkdownFilename } from './universeMarkdownFilename.js';
+import { UNIVERSE_MARKDOWN_FILENAME_CASES } from './universeMarkdownFilename.cases.js';
 
 describe('universeMarkdownFilename', () => {
-  it('matches the server-safe filename contract', () => {
-    expect(slugifyUniverseName('The Bright World / V2!')).toBe('the-bright-world-v2');
-    expect(slugifyUniverseName('Café')).toBe('cafe');
-    expect(universeMarkdownFilename('The Bright World')).toBe('the-bright-world.md');
-    expect(universeMarkdownFilename('!!!')).toBe('universe.md');
+  it.each(UNIVERSE_MARKDOWN_FILENAME_CASES)('matches the server-safe contract for %j', (name, slug, filename) => {
+    expect(slugifyUniverseName(name)).toBe(slug);
+    expect(universeMarkdownFilename(name)).toBe(filename);
   });
 });

@@ -15,6 +15,7 @@ export * from './shotGrammar.js';
 export * from './universeBuilderCounts.js';
 export * from './universeBuilderShared.js';
 export * from './universeMarkdownFilename.js';
+export * from './universeMarkdownFilename.cases.js';
 export * from './universeRunTag.js';
 export * from './universeStylePreset.js';
 
