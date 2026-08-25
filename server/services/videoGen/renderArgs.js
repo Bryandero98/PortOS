@@ -177,7 +177,9 @@ export const resolveVideoLoras = async (loras, { probeEffect = false, runtime = 
       throw new ServerError(`LoRA not found: ${l.filename}`, { status: 400, code: 'LORA_NOT_FOUND' });
     }
     const layout = await getLoraKeyLayout(l.filename);
-    const issue = runtime === 'minimax_h3' ? null : videoLoraLayoutIssue(layout);
+    const issue = runtime === 'minimax_h3' && layout !== 'not_a_lora'
+      ? null
+      : videoLoraLayoutIssue(layout);
     if (issue) {
       throw new ServerError(
         `LoRA "${l.filename}" can't be used for video: ${issue}.`,

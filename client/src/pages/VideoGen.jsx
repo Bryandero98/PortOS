@@ -1280,9 +1280,9 @@ export default function VideoGen() {
               </FormField>
             )}
 
-            {/* Video LoRAs — only on ltx2-runtime models (loraFamily non-null)
-                and only when at least one video-family LoRA is installed
-                (videoLoras is the strict ltx-video subset; see the hook). */}
+            {/* Video LoRAs — only on runtimes with a compatible video family
+                (loraFamily non-null) and when at least one matching LoRA is
+                installed (videoLoras is the strict family subset; see hook). */}
             {loraFamily && videoLoras.length > 0 && (
               <div className="col-span-2 sm:col-span-3">
                 <LoraPicker
@@ -1494,7 +1494,13 @@ export default function VideoGen() {
         label={byovStatus?.label}
         streamMethod="POST"
         onClose={() => setInstallModalOpen(false)}
-        onComplete={() => refreshByovStatus()}
+        onComplete={() => {
+          refreshByovStatus();
+          // The capability probe is part of /video-gen/status's model
+          // decoration. Refresh it after install/repair so H3's LoRA picker
+          // and warning react without a manual page reload.
+          refreshStatus();
+        }}
       />
     </div>
   );

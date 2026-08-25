@@ -147,4 +147,15 @@ describe.skipIf(!pyBin)('minimax_h3_lora.py', () => {
     ]);
     expect(output.trim()).toBe('ok');
   });
+
+  it('normalizes Diffusers attn1 and flattened kohya H3 targets', () => {
+    const output = runPython([
+      'from minimax_h3_lora import _normalize_target',
+      'expected = ("blocks.0.attn.qkv_proj", "split_k")',
+      'for target in ["transformer_blocks.0.attn1.to_k", "lora_unet_transformer_blocks_0_attn1_to_k"]:',
+      '    if _normalize_target(target) != expected: raise AssertionError(f"target was not normalized: {target}")',
+      'print("ok")',
+    ]);
+    expect(output.trim()).toBe('ok');
+  });
 });

@@ -4332,6 +4332,14 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
     }
   });
 
+  it('still rejects a known non-LoRA file for MiniMax H3 before rendering', async () => {
+    loraLayoutState.layout = 'not_a_lora';
+    await expect(resolveVideoLoras(
+      [{ filename: 'checkpoint.safetensors' }],
+      { runtime: 'minimax_h3' },
+    )).rejects.toMatchObject({ status: 400, code: 'LORA_LAYOUT_UNSUPPORTED' });
+  });
+
   it('rejects a kohya-layout LoRA with an actionable 400 naming the layout', async () => {
     loraLayoutState.layout = 'kohya';
     await expect(resolveVideoLoras([{ filename: 'style.safetensors', scale: 1.0 }]))

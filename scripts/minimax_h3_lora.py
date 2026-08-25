@@ -17,6 +17,7 @@ small integration layer owns the LoRA file-format and quantization contract.
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,17 @@ class LoRALinear(nn.Module):
 
 def _normalize_target(target: str) -> tuple[str, str]:
     """Map common diffusers/ComfyUI H3 prefixes to PortOS's DiT tree."""
+    if target.startswith("lora_unet_"):
+        # Kohya flattens the module path with underscores. Keep the terminal
+        # ``to_q``/``to_k``/``to_v`` token intact while restoring the separators
+        # that identify a Diffusers H3 attention projection.
+        target = target[len("lora_unet_"):]
+        flattened = re.match(r"^(transformer_blocks|single_transformer_blocks)_(\d+)_(.+)$", target)
+        if flattened:
+            target = f"{flattened.group(1)}.{flattened.group(2)}.{flattened.group(3)}"
+            target = target.replace("_to_out_", ".to_out.")
+            target = target.replace("_to_", ".to_")
+            target = target.replace(".ff_net_", ".ff.net.")
     prefixes = (
         "base_model.model.",
         "model.diffusion_model.",
@@ -132,6 +144,7 @@ def _normalize_target(target: str) -> tuple[str, str]:
     if target.startswith("token_refiner.refiner_blocks."):
         target = "token_refiner.blocks." + target[len("token_refiner.refiner_blocks."):]
     target = target.replace(".attention.", ".attn.")
+    target = target.replace(".attn1.", ".attn.")
     if target.endswith(".attn.to_q"):
         return target[:-len(".attn.to_q")] + ".attn.qkv_proj", "split_q"
     if target.endswith(".attn.to_k"):
