@@ -51,6 +51,21 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(gitlab).toContain('Never force-delete with `-D`');
   });
 
+  it('plan-task v18 scheduled default omits review while preserving CI and v17', () => {
+    const current = DEFAULT_TASK_PROMPTS['plan-task'];
+    const previous = PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1);
+
+    expect(PROMPT_VERSIONS['plan-task']).toBe(18);
+    expect(current).not.toContain('## Phase 6 — Review locally');
+    expect(current).not.toContain('{reviewers}');
+    expect(current).not.toContain('LOCAL reviewers');
+    expect(current).not.toContain('PR-SIDE reviewers');
+    expect(current).toContain('gh pr checks <num> --required --watch --fail-fast');
+    expect(previous).toContain('## Phase 6 — Review locally');
+    expect(previous).toContain('{reviewers}');
+    expect(previous).not.toBe(current);
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -275,9 +290,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // executable is `agy`, and no `antigravity` command exists on any PATH. A claim
   // agent handed the bare slug probed `command -v antigravity`, found nothing,
   // declared the reviewer unavailable, and merged its PR on a self-review. Every
-  // claim/plan prompt that enumerates the CLI reviewers must name the binary.
+  // claim prompt that enumerates the CLI reviewers must name the binary.
   it.each([
-    ['plan-task', 16],
     ['claim-issue', 16],
     ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
@@ -313,7 +327,6 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // every reviewer finding a follow-up commit on an already-public PR, and it
   // pointed the local-LLM reviewers at a `gh pr diff` that could not exist yet.
   it.each([
-    ['plan-task', 16],
     ['claim-issue', 16],
     ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
@@ -329,8 +342,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toMatch(/BRANCH diff, not an? (PR|MR|MR\/PR) diff/);
 
     // Ordering is the whole point: inside the ship phase, the local review step
-    // precedes the create command. Sliced from the review heading because
-    // plan-task's Phase 3b opens an unrelated clarification PR much earlier.
+    // precedes the create command. Sliced from the review heading because a
+    // clarification path can open an unrelated PR much earlier.
     const shipSection = current.slice(current.indexOf('Review locally'));
     const localIdx = shipSection.indexOf('Run each LOCAL reviewer');
     const createIdx = shipSection.search(/gh pr create|glab mr create/);

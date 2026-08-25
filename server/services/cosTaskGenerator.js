@@ -505,7 +505,10 @@ export async function buildClaimWorkTask(app, {
   // otherwise delegate to the resolved tracker's prompt body. Mirrors the
   // scheduled router's `promptKeyForBody` selection — a custom claim-work prompt
   // overrides the tracker-specific body for both paths.
-  const template = await getTaskPrompt(interval.prompt ? 'claim-work' : promptTaskType);
+  const template = await getTaskPrompt(
+    interval.prompt ? 'claim-work' : promptTaskType,
+    { claimFlow: true }
+  );
 
   const resolvedAuthorFilter = resolveClaimAuthorFilter(issueAuthorFilter, metadata);
 

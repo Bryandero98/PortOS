@@ -46,6 +46,20 @@ export {
   PREVIOUS_DEFAULT_PROMPTS
 };
 
+// The scheduled plan-task default intentionally omits the review loop, but the
+// manual /do:next PLAN claim still owns the complete claim lifecycle. Keep that
+// path on the last shipped review-capable body rather than silently handing it
+// a partial prompt just because both paths resolve the same task type.
+const CLAIM_FLOW_DEFAULT_PROMPTS = Object.freeze({
+  'plan-task': PREVIOUS_DEFAULT_PROMPTS['plan-task'].at(-1)
+});
+
+function isShippedDefaultPrompt(prompt, taskType) {
+  if (!prompt || !DEFAULT_TASK_PROMPTS[taskType]) return false;
+  return prompt === DEFAULT_TASK_PROMPTS[taskType]
+    || (PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(prompt);
+}
+
 // ============================================================
 // Prompt getters
 // ============================================================
@@ -84,9 +98,13 @@ async function resolvePromptPlaceholders(prompt) {
   return prompt;
 }
 
-export async function getTaskPrompt(taskType) {
+export async function getTaskPrompt(taskType, { claimFlow = false } = {}) {
   const interval = await getTaskInterval(taskType);
-  let prompt = interval.prompt || DEFAULT_TASK_PROMPTS[taskType] || `[Improvement] ${taskType} analysis
+  const storedDefault = claimFlow && isShippedDefaultPrompt(interval.prompt, taskType);
+  let prompt = (interval.prompt && !storedDefault ? interval.prompt : null)
+    || (claimFlow ? CLAIM_FLOW_DEFAULT_PROMPTS[taskType] : null)
+    || DEFAULT_TASK_PROMPTS[taskType]
+    || `[Improvement] ${taskType} analysis
 
 Repository: {repoPath}
 
