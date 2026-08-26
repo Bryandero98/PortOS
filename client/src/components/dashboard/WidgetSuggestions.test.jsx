@@ -22,6 +22,13 @@ describe('WidgetSuggestions', () => {
     expect(gate({})).toBe(false);
   });
 
+  it('keeps the Apps Grid hidden until its first read completes', () => {
+    const gate = WIDGETS_BY_ID.apps.gate;
+
+    expect(gate({ apps: [], appsLoading: true })).toBe(false);
+    expect(gate({ apps: [], appsLoading: false })).toBe(true);
+  });
+
   it('renders nothing when every gated widget is already present', () => {
     const { container } = render(
       <WidgetSuggestions
