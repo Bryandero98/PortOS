@@ -191,6 +191,10 @@ describe('resolveNavCommand — fuzzy matching', () => {
     expect(resolveNavCommand('goals')?.path).toBe('/goals/list');
   });
 
+  it('resolves the Catalog settings phrase to the feature-local drawer', () => {
+    expect(resolveNavCommand('catalog settings')?.path).toBe('/catalog?settings=1');
+  });
+
   it('resolves every canonical System Resources section name', () => {
     expect(resolveNavCommand('system resources')?.path).toBe('/system-resources/overview');
     expect(resolveNavCommand('active queues')?.path).toBe('/system-resources/queues');
@@ -601,9 +605,11 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   // Driven by each command's own `previousPaths`, NOT a list maintained here: the
   // declaration then lives beside the path that moved, and the next move is one
   // edit in navManifest.js instead of two files that can disagree.
+  // Compare the full destination, including any query that opens a feature-local
+  // drawer or selects a subview.
   it('keeps a redirect from every declared previous path to its current one', () => {
     const broken = NAV_COMMANDS
-      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path.split(/[?#]/)[0], id: c.id })))
+      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path, id: c.id })))
       .filter(({ from, to }) => byFrom.get(from)?.to !== to)
       .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from)?.to ?? 'NO REDIRECT'} (want ${to})`);
     expect(broken).toEqual([]);
@@ -647,6 +653,7 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
       '/devtools/submodules',
       '/devtools/runs',
       '/settings/contacts',
+      '/settings/catalog',
       '/imessage',
       '/system-health',
       '/datadog',
