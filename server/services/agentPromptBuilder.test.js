@@ -284,6 +284,28 @@ describe('claim-flow completion handoff', () => {
     expect(prompt).not.toMatch(/PortOS will merge it back after completion/);
   });
 
+  it('keeps the full API no-change prompt coupled to the normal change workflow', async () => {
+    const prompt = await buildAgentPrompt(
+      makeTask({ metadata: {
+        autonomousJob: true,
+        noChangeSuccess: true,
+        useWorktree: true,
+        openPR: true,
+        simplify: true,
+      } }),
+      {}, '/repo',
+      { branchName: 'b', worktreePath: '/tmp/wt', baseBranch: 'origin/main' },
+      isTruthyMeta,
+      { providerType: 'api' },
+    );
+
+    expect(prompt).toMatch(/leave the worktree clean/i);
+    expect(prompt).toMatch(/If a change is needed, continue through the normal workflow/i);
+    expect(prompt).toMatch(/## Simplify Step/);
+    expect(prompt).toMatch(/system will push and open/i);
+    expect(prompt).toMatch(/Only commit files YOU changed/);
+  });
+
   it('recognizes a queued legacy claim task by analysisType', () => {
     const prompt = buildLightContextPrompt(
       makeTask({ metadata: { analysisType: 'claim-issue', useWorktree: false, openPR: false } }),
@@ -1123,7 +1145,65 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/PortOS will push and open the PR/);
     });
 
-    // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'
+    it('gives a marked catalog audit an explicit no-change exit while retaining the change workflow', () => {
+      const task = makeTask({ metadata: {
+        autonomousJob: true,
+        noChangeSuccess: true,
+        useWorktree: true,
+        openPR: true,
+        simplify: true,
+      } });
+      const prompt = buildLightContextPrompt(
+        task,
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'codex', providerCommand: 'codex' });
+      expect(prompt).toMatch(/no change is needed/i);
+      expect(prompt).toMatch(/leave the worktree clean/i);
+      expect(prompt).toMatch(/exit without committing/i);
+    expect(prompt).toMatch(/If a change is needed, continue through the normal workflow/i);
+    expect(prompt).toMatch(/gh pr create/);
+  });
+
+  it('keeps the TUI no-change sentinel compatible with a real PR result', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: {
+        autonomousJob: true,
+        noChangeSuccess: true,
+        useWorktree: true,
+        openPR: true,
+        simplify: true,
+      } }),
+      '/r',
+      { branchName: 'b', worktreePath: '/tmp/wt' },
+      isTruthyMeta,
+      { isTui: true, providerId: 'claude-code-tui', providerCommand: 'claude' },
+    );
+
+      expect(prompt).toMatch(/`\/do:pr/);
+      expect(prompt).toMatch(/<PR URL, or "No change needed; no PR opened\." if the audit made no change>/);
+    });
+
+    it('keeps a lean TUI no-change handoff on the branch sentinel', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          autonomousJob: true,
+          noChangeSuccess: true,
+          useWorktree: true,
+          openPR: true,
+        } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'claude-ollama-tui', providerCommand: 'claude', leanMode: true },
+      );
+
+      expect(prompt).toMatch(/## Branch\n\s+<branch name>/);
+      expect(prompt).not.toMatch(/<PR URL/);
+    });
+
+  // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'
     // blank-command posture, so a CLI provider with NO id and NO command reads as
     // Claude: `buildCliSpawnConfig`'s default branch launches `claude`, and the
     // session that actually runs does have `/do:pr` / `/simplify`.
@@ -2138,6 +2218,17 @@ describe('buildCompletionGuidelineBullet', () => {
       worktreeInfo: null, willOpenPR: false, willReviewLoop: false,
     });
     expect(none).toBeNull();
+  });
+
+  it('marks a catalog audit no-op as a valid completion without weakening the change path', () => {
+    const bullet = buildCompletionGuidelineBullet({
+      isReadOnly: false, isTui: false, tuiCompletionCommand: '/do:pr',
+      worktreeInfo: { worktreePath: '/wt' }, willOpenPR: true, noChangeSuccess: true,
+    });
+    expect(bullet).toMatch(/no change is needed/i);
+    expect(bullet).toMatch(/leave the worktree clean/i);
+    expect(bullet).toMatch(/exit without committing/i);
+    expect(bullet).toMatch(/If a change is needed, continue/);
   });
 
   it('discardWorktree short-circuits to the reasoning-only bullet (wins over TUI/openPR)', () => {

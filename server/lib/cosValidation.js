@@ -1475,6 +1475,9 @@ export const createCosJobSchema = z.object({
     // deliverable is intentionally outside the worktree — see
     // ALLOWED_TASK_METADATA_KEYS below and agentTuiSpawning.js (#3102).
     worktreeChangesExpected: z.boolean().optional(),
+    // PortOS-owned audits may succeed after proving the branch is empty; the
+    // finalizer still requires the forge/no-commit proof before honoring this.
+    noChangeSuccess: z.boolean().optional(),
   }).optional(),
 });
 
@@ -1682,6 +1685,10 @@ const ALLOWED_TASK_METADATA_KEYS = [
   // against a GitHub/GitLab/JIRA work tracker files its proposals as issues and,
   // per the prompt, edits no application code, so a clean worktree is expected.
   'worktreeChangesExpected',
+  // Allows a PortOS-owned audit's verified-empty-branch contract to survive
+  // app task-type override sanitization. The finalizer also requires the
+  // autonomous-job marker and a live forge proof before honoring it.
+  'noChangeSuccess',
   // Audit-type toggle: file tracker issues (no code) vs implement the fix.
   // Dispatch stamps `noCodeOutput` when this is true. See server/lib/auditCatalog.js.
   'fileIssues',

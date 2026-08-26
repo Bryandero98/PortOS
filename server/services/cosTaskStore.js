@@ -340,6 +340,8 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.app) metadata.app = taskData.app;
     if (taskData.autonomousJob === true) metadata.autonomousJob = true;
     if (typeof taskData.jobId === 'string' && taskData.jobId) metadata.jobId = taskData.jobId;
+    if (taskData.noChangeSuccess === true) metadata.noChangeSuccess = true;
+    else if (taskData.noChangeSuccess === false) metadata.noChangeSuccess = false;
     // Pin this task to ONE federated instance (#4520): only that instance's CoS
     // evaluator claims and runs it, every other peer passes over it. Absent —
     // the default — leaves the opportunistic first-claim-wins behavior intact.

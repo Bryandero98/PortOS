@@ -34,6 +34,7 @@ import {
   buildCliCompletionSection,
   buildCompletionGuidelineBullet,
   buildInlineReviewLoopSection,
+  NO_CHANGE_AUDIT_GUIDANCE,
   buildProgrammaticOutputCompletionSection,
   buildReadOnlyCompletionSection,
   buildResumeSection,
@@ -314,7 +315,20 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // `pending` BEFORE this flag existed (persisted across an upgrade) are still
   // recognized without a metadata migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || isCreativeDirectorTask;
+  const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
+  const worktreeCommitNote = worktreeInfo
+    ? worktreeCommitGuidance({
+        isTui,
+        hasSlashdo: false,
+        ownsPrWorkflow: false,
+        isWorktreeOnExistingBranch,
+        willOpenPR,
+        discardWorktree,
+        claimFlow,
+        noChangeSuccess,
+      })
+    : '';
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
 You are working in an **isolated git worktree** to avoid conflicts with other agents working concurrently.
@@ -322,15 +336,7 @@ You are working in an **isolated git worktree** to avoid conflicts with other ag
 - **Worktree Path**: \`${worktreeInfo.worktreePath}\`
 ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (latest from origin)` : ''}
 
-**Important**: ${discardWorktree
-    ? DISCARD_WORKTREE_NOTE
-    : claimFlow
-      ? 'The claim workflow in the Completion section owns its claim branch, push, PR/MR, review, merge or human-handoff, and cleanup — do not hand those steps back to PortOS.'
-    : isTui
-      ? 'Commit your changes to this branch — see the **Completion Workflow** section below for the full push/PR/exit sequence.'
-      : isWorktreeOnExistingBranch
-        ? 'Commit and **push** any review-fix commits to this branch — the PR points at it, so pushed commits are how Copilot sees your fixes. Use `git pull --rebase` before pushing if needed.'
-        : `Commit your changes to this branch.${willOpenPR ? ' When your task completes, the system will push this branch and open a pull request against the default branch — do NOT push or open a PR yourself.' : ' Your commits will be automatically merged back to the main development branch when your task completes.'}`} Do NOT manually switch branches or modify the worktree configuration.
+**Important**: ${worktreeCommitNote} Do NOT manually switch branches or modify the worktree configuration.
 ${buildResumeSection(task, worktreeInfo)}` : '';
 
   // Build pipeline context section if this is a pipeline stage
@@ -422,7 +428,7 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
         ? buildClaimFlowCompletionSection({ isTui, sentinelPath, reviewersCsv: claimReviewersCsv(task, codeReviewDefaults, defaultReviewers) })
       : isTui
         ? buildTuiCompletionSection({
-            willOpenPR, prCompletion, simplifyEnabled,
+            willOpenPR, prCompletion, simplifyEnabled, noChangeSuccess,
             // Unreachable today — every `tui`/`cli` provider returns early at the
             // LIGHT_CONTEXT gate above, so `isTui` is always false on this path
             // (same situation as buildCompletionGuidelineBullet's `isTui` arm).
@@ -638,7 +644,7 @@ ${(() => {
   const bullet = buildCompletionGuidelineBullet({
     isReadOnly: isTruthyMetaFn(task.metadata?.readOnly),
     isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
-    worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput,
+    worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput, noChangeSuccess,
     leavePrOpen: leavesPrForHuman(task),
     isPrFollowUp: isReviewLoopFollowUp, claimFlow,
   });
@@ -649,6 +655,7 @@ ${(() => {
 - **Before starting work**, run \`git status\` to verify a clean working tree. Do NOT stash or discard uncommitted changes — other agents may be working concurrently and expecting those changes to be present. If the tree is dirty, only commit files YOU changed for this task.
 - **NEVER use \`git stash\`** in any form (\`git stash push\`, \`git stash pop\`, etc.). This is a multi-agent system — stashing can silently destroy or corrupt another agent's or the user's in-progress work. Work around uncommitted changes instead. (Note: the backend may use \`--autostash\` in user-triggered pull operations — that is safe because those are single-user UI actions, not concurrent agent operations.)
 - **Only commit files YOU changed** for this task. Never use \`git add -A\` or \`git add .\` — always stage specific files by name.
+${noChangeSuccess ? `- **No-change audits may exit cleanly.** ${NO_CHANGE_AUDIT_GUIDANCE}` : ''}
 ${noCodeOutput
   ? `- **Do NOT commit, push, or open a PR.** This task changes no code — its result is delivered by the API call or command described above. Without this, a no-worktree task of this shape was told to \`/do:push\` **directly to the branch it is standing on**, which for a task running in the app's live checkout is its default branch.`
   : discardWorktree
@@ -657,7 +664,7 @@ ${noCodeOutput
     ? `- **Follow the claim workflow prompt above.** It owns the claim worktree and the full PR/MR lifecycle; do not stop after committing or hand push/PR/merge/cleanup back to PortOS.`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
-    : isTui && tuiSlashdoFree
+  : isTui && tuiSlashdoFree
     ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations, then write the completion sentinel. PortOS will handle the branch after it closes the session.`
     : isTui
     ? `- **Use \`${tuiCompletionCommand}\` to ${willOpenPR ? 'commit, push, and open the PR' : 'commit and push the branch'}** — see the Completion Workflow section above. Stage specific files (no \`git add -A\`), use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations.`
@@ -734,6 +741,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // derive from a CD task's `creativeDirector` marker so pre-upgrade `pending`
   // tasks (queued before this flag existed) are recognized without a migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
+  const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   // Ordered reviewer list + flags for the Review Loop (task metadata wins; else
@@ -829,7 +837,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       `- **Path**: \`${worktreeInfo.worktreePath}\``,
       worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
       '',
-      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow }),
+      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow, noChangeSuccess }),
       'Do NOT manually switch branches or modify the worktree configuration.',
       // Resuming a previous failed agent's branch: establish what's already done
       // before writing code (see buildResumeSection). '' when not a resume.
@@ -905,7 +913,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     }
   } else if (isTui) {
     contractSections.push(buildTuiCompletionSection({
-      willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree, ownsPrWorkflow,
+      willOpenPR, prCompletion, simplifyEnabled, noChangeSuccess, slashdoFree: tuiSlashdoFree, ownsPrWorkflow,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
@@ -914,7 +922,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       forgeCli: resolvedForgeCli
     }));
   } else {
-    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, noChangeSuccess, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion

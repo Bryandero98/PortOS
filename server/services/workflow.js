@@ -78,7 +78,7 @@ export const WORKFLOW_STAGES = [
       'mobile-responsive',
       'ux'
     ],
-    jobIds: ['job-wiki-maintenance', 'job-refresh-local-llm-catalog']
+    jobIds: ['job-wiki-maintenance', 'job-refresh-local-llm-catalog', 'job-refresh-cli-provider-catalogs']
   },
   {
     id: 'build',
