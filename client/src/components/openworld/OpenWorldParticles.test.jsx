@@ -26,4 +26,12 @@ describe('OpenWorldParticles', () => {
     const sparkles = container.querySelectorAll('[data-testid="sparkles"]');
     expect(sparkles.length).toBeGreaterThan(1);
   });
+
+  it('keeps a single night sparkle system on the low render tier', () => {
+    const { container } = render(
+      <OpenWorldParticles settings={{ timeOfDay: 'sunset', effectiveTier: 'low' }} />
+    );
+    const sparkles = container.querySelectorAll('[data-testid="sparkles"]');
+    expect(sparkles.length).toBe(1);
+  });
 });

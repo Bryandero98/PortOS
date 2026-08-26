@@ -80,12 +80,16 @@ export default function OpenWorldGrass({ settings }) {
 
   useLayoutEffect(() => {
     writeMatrices(ref, blades);
+    if (typeof ref.current?.computeBoundingSphere === 'function') {
+      ref.current.computeBoundingSphere();
+    }
   }, [blades, lowPoly]);
 
   const onBeforeCompile = useMemo(() => (shader) => {
     shader.uniforms.uGrassTime = timeUniformRef.current;
     shader.vertexShader = `
       uniform float uGrassTime;
+      varying float vBladeHeight;
     ` + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
@@ -93,16 +97,27 @@ export default function OpenWorldGrass({ settings }) {
       #include <begin_vertex>
       // Cone geometry height 1 is centered at y=0, so base is at -0.5 and tip is at +0.5.
       float bladeHeightNorm = clamp(position.y + 0.5, 0.0, 1.0);
+      vBladeHeight = bladeHeightNorm;
       float sway = bladeHeightNorm * bladeHeightNorm;
-      
-      // Instance world position from 4th column of instanceMatrix
+
       vec3 instPos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-      
       float gust = sin(uGrassTime * 0.75 + instPos.x * 0.05 + instPos.z * 0.04) * 0.32
                  + sin(uGrassTime * 1.6 + instPos.x * 0.12) * 0.1;
-      
+
       transformed.x += gust * 0.38 * sway;
       transformed.z += gust * 0.62 * sway;
+      `
+    );
+    shader.fragmentShader = `
+      varying float vBladeHeight;
+    ` + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `
+      #include <color_fragment>
+      vec3 bladeBase = diffuseColor.rgb * 0.52;
+      vec3 bladeTip = diffuseColor.rgb * 1.28 + vec3(0.06, 0.10, 0.01);
+      diffuseColor.rgb = mix(bladeBase, bladeTip, vBladeHeight);
       `
     );
   }, []);
@@ -116,13 +131,14 @@ export default function OpenWorldGrass({ settings }) {
   if (!lowPoly || blades.length === 0) return null;
 
   return (
-    <instancedMesh key={blades.length} ref={ref} args={[undefined, undefined, blades.length]} frustumCulled={false}>
+    <instancedMesh key={blades.length} ref={ref} args={[undefined, undefined, blades.length]}>
       <coneGeometry args={[0.12, 1, 3]} />
       <meshStandardMaterial
         {...surface}
         color={grassColor}
         roughness={1}
         metalness={0}
+        side={THREE.DoubleSide}
         onBeforeCompile={onBeforeCompile}
       />
     </instancedMesh>

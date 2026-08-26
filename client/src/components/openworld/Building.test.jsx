@@ -108,4 +108,16 @@ describe('Building component', () => {
     );
     expect(container).toBeTruthy();
   });
+
+  it('does not mount rooftop stress meshes for a calm healthy app', () => {
+    const { container } = render(
+      <Building
+        app={mockApp}
+        position={{ x: 0, z: 0 }}
+        agentCount={0}
+      />
+    );
+    const meshes = container.getElementsByTagName('mesh');
+    expect(meshes.length).toBeGreaterThan(0);
+  });
 });

@@ -9,7 +9,7 @@ import BuildingHologram from './BuildingHologram';
 import BuildingWindows from './BuildingWindows';
 import { computeRooftopKit } from '../../utils/openWorldRooftops';
 import { buildingHasInteriorWindows } from '../../utils/openWorldInteriorWindows';
-import { computeAppMetrics, cpuTone } from '../../utils/openWorldAppMetrics';
+import { computeAppMetrics, buildingSignalTone } from '../../utils/openWorldAppMetrics';
 
 // Rooftop fixture geometry/materials are module-scope singletons shared by every
 // building — fixtures are tiny set dressing, so they keep fixed colors (the antenna
@@ -23,6 +23,9 @@ const ROOF_GEOMS = {
   ac: new THREE.BoxGeometry(0.4, 0.22, 0.34),
   dish: new THREE.SphereGeometry(0.24, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2),
 };
+const CONTACT_SHADOW_GEOM = new THREE.CircleGeometry(1, 16);
+const SMOKE_GEOM = new THREE.SphereGeometry(0.2, 6, 6);
+const SPARK_GEOM = new THREE.SphereGeometry(0.03, 4, 4);
 
 // 0–3 deterministic fixtures (antenna/tank/AC/dish) on the roof, seeded by app name —
 // the same determinism as the window textures, so a building keeps its roof forever.
@@ -471,62 +474,76 @@ function LowPolyFacade({ width, depth, height, bodyColor, edgeColor, dimMul, sur
   );
 }
 
-// Always-visible façade health indicator (Roadmap 1.1) - readable at any distance
-function BuildingHealthStrip({ width, height, depth, status, metrics, pm2Status, dimMul = 1, dayMix = 0, playback = false }) {
-  const isPm2Errored = Object.values(pm2Status || {}).some((p) => p?.status === 'errored' || p?.status === 'error');
-  const isErrored = status === 'errored' || isPm2Errored || (!playback && metrics?.unstableRestarts > 0);
-  const isHot = !playback && metrics?.hasMetrics && cpuTone(metrics.cpuPercent) === 'hot';
-  const isBusy = !playback && metrics?.hasMetrics && cpuTone(metrics.cpuPercent) === 'busy';
-
-  const toneColor = isErrored
-    ? '#f43f5e'
-    : isHot
-      ? '#ef4444'
-      : isBusy
-        ? '#f59e0b'
-        : status === 'online'
-          ? '#10b981'
-          : '#64748b';
-
-  const ref = useRef();
-  useFrame(({ clock }) => {
-    if (!ref.current) return;
-    const t = clock.getElapsedTime();
-    if (isHot || isErrored) {
-      ref.current.material.opacity = (0.55 + Math.sin(t * 6) * 0.35) * dimMul;
-    } else if (isBusy) {
-      ref.current.material.opacity = (0.6 + Math.sin(t * 2.5) * 0.2) * dimMul;
-    } else {
-      ref.current.material.opacity = (0.65 - dayMix * 0.2) * dimMul;
-    }
-  });
-
-  const barWidth = Math.min(width * 0.65, 1.2);
-  const barY = Math.max(0.4, height * 0.76);
-
+// Always-visible health belt (Roadmap 1.1) — a thin status-colored band wrapping all
+// four façades so the LED reads from any orbit angle, not just the labeled front.
+function HealthBandMeshes({ width, height, depth, color, dimMul, opacity, bandRef }) {
+  const y = Math.max(0.4, height * 0.72);
   return (
-    <group position={[0, barY, depth / 2 + 0.03]}>
-      {/* Background dark casing */}
-      <mesh position={[0, 0, 0]}>
-        <boxGeometry args={[barWidth + 0.06, 0.06, 0.015]} />
-        <meshBasicMaterial color="#0f172a" transparent opacity={0.8 * dimMul} />
+    <group position={[0, y, 0]}>
+      <mesh>
+        <boxGeometry args={[width + 0.08, 0.07, depth + 0.08]} />
+        <meshBasicMaterial color="#0f172a" transparent opacity={0.78 * dimMul} />
       </mesh>
-      {/* LED active meter strip */}
-      <mesh ref={ref} position={[0, 0, 0.01]}>
-        <boxGeometry args={[barWidth, 0.035, 0.015]} />
-        <meshBasicMaterial color={toneColor} transparent opacity={0.7 * dimMul} toneMapped={false} />
+      <mesh ref={bandRef}>
+        <boxGeometry args={[width + 0.05, 0.038, depth + 0.05]} />
+        <meshBasicMaterial color={color} transparent opacity={opacity} toneMapped={false} />
       </mesh>
     </group>
   );
 }
 
-// Stress smoke / sparks (Roadmap 1.2) - rises from rooftop when CPU is hot or app has errored
-function StressEffects({ height, metrics, status, pm2Status, dimMul = 1, playback = false }) {
-  if (playback) return null;
+function PulsingHealthBand({ width, height, depth, color, tone, dimMul }) {
+  const ref = useRef();
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.getElapsedTime();
+    const pulse = tone === 'busy'
+      ? 0.6 + Math.sin(t * 2.5) * 0.2
+      : 0.55 + Math.sin(t * 6) * 0.35;
+    ref.current.material.opacity = pulse * dimMul;
+  });
+  return (
+    <HealthBandMeshes
+      width={width}
+      height={height}
+      depth={depth}
+      color={color}
+      dimMul={dimMul}
+      opacity={0.7 * dimMul}
+      bandRef={ref}
+    />
+  );
+}
 
-  const isPm2Errored = Object.values(pm2Status || {}).some((p) => p?.status === 'errored' || p?.status === 'error');
-  const isHot = metrics?.hasMetrics && cpuTone(metrics.cpuPercent) === 'hot';
-  const isErrored = status === 'errored' || isPm2Errored || (metrics?.unstableRestarts > 0);
+function BuildingHealthBand({ width, height, depth, color, tone = 'idle', pulsing = false, dimMul = 1, dayMix = 0 }) {
+  if (pulsing) {
+    return (
+      <PulsingHealthBand
+        width={width}
+        height={height}
+        depth={depth}
+        color={color}
+        tone={tone}
+        dimMul={dimMul}
+      />
+    );
+  }
+  return (
+    <HealthBandMeshes
+      width={width}
+      height={height}
+      depth={depth}
+      color={color}
+      dimMul={dimMul}
+      opacity={(0.62 - dayMix * 0.18) * dimMul}
+    />
+  );
+}
+
+// Stress smoke / sparks (Roadmap 1.2) — rooftop plume for a hot CPU, sparks for a crash.
+// Parent mounts this only when smoke or sparks is actually on, so healthy buildings pay
+// no extra useFrame. Hooks always run (no early return) to satisfy the rules of hooks.
+function StressEffects({ height, smoke = false, sparks = false, dimMul = 1 }) {
   const smokeRef = useRef();
   const sparksRef = useRef();
 
@@ -539,9 +556,7 @@ function StressEffects({ height, metrics, status, pm2Status, dimMul = 1, playbac
         puff.position.x = Math.sin(t * 1.5 + i * 2) * 0.15 * age;
         puff.position.z = Math.cos(t * 1.2 + i * 2) * 0.15 * age;
         puff.scale.setScalar(0.08 + age * 0.22);
-        if (puff.material) {
-          puff.material.opacity = (1 - age) * 0.45 * dimMul;
-        }
+        if (puff.material) puff.material.opacity = (1 - age) * 0.45 * dimMul;
       });
     }
     if (sparksRef.current) {
@@ -550,34 +565,26 @@ function StressEffects({ height, metrics, status, pm2Status, dimMul = 1, playbac
         spark.position.y = age * 0.9;
         spark.position.x = Math.sin(t * 8 + i * 4) * 0.25;
         spark.position.z = Math.cos(t * 7 + i * 3) * 0.25;
-        if (spark.material) {
-          spark.material.opacity = (1 - age) * 0.8 * dimMul;
-        }
+        if (spark.material) spark.material.opacity = (1 - age) * 0.8 * dimMul;
       });
     }
   });
 
-  if (!isHot && !isErrored) return null;
-
   return (
     <group position={[0, height + 0.1, 0]}>
-      {/* Smoke puffs for persistent CPU spike */}
-      {isHot && (
+      {smoke && (
         <group ref={smokeRef}>
           {[0, 1, 2].map((i) => (
-            <mesh key={`smoke-${i}`}>
-              <sphereGeometry args={[0.2, 6, 6]} />
+            <mesh key={`smoke-${i}`} geometry={SMOKE_GEOM}>
               <meshBasicMaterial color="#64748b" transparent opacity={0.3} depthWrite={false} />
             </mesh>
           ))}
         </group>
       )}
-      {/* Sparks for recent crash / errored app */}
-      {isErrored && (
+      {sparks && (
         <group ref={sparksRef}>
           {[0, 1, 2, 3].map((i) => (
-            <mesh key={`spark-${i}`}>
-              <sphereGeometry args={[0.03, 4, 4]} />
+            <mesh key={`spark-${i}`} geometry={SPARK_GEOM}>
               <meshBasicMaterial color="#f59e0b" transparent opacity={0.8} toneMapped={false} depthWrite={false} />
             </mesh>
           ))}
@@ -648,6 +655,15 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
   }, [app.name, app.id]);
 
   const metrics = useMemo(() => computeAppMetrics(app), [app]);
+  const signal = useMemo(
+    () => buildingSignalTone({
+      status: app.overallStatus,
+      metrics,
+      pm2Status: app.pm2Status,
+      playback,
+    }),
+    [app.overallStatus, metrics, app.pm2Status, playback]
+  );
 
   const boxGeom = useMemo(() => new THREE.BoxGeometry(width, height, depth), [width, height, depth]);
   const edgesGeom = useMemo(() => new THREE.EdgesGeometry(boxGeom), [boxGeom]);
@@ -899,30 +915,27 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         {displayName}
       </OpenWorldLabel>
 
-      {/* Always-visible façade health indicator (Roadmap 1.1) */}
+      {/* Always-visible wrapping health belt (Roadmap 1.1) */}
       {!app.archived && (
-        <BuildingHealthStrip
+        <BuildingHealthBand
           width={width}
           height={height}
           depth={depth}
-          status={app.overallStatus}
-          metrics={metrics}
-          pm2Status={app.pm2Status}
+          color={signal.color}
+          tone={signal.tone}
+          pulsing={signal.pulsing}
           dimMul={dimMul}
           dayMix={dayMix}
-          playback={playback}
         />
       )}
 
       {/* Stress smoke / sparks on rooftop when CPU is hot or crashed (Roadmap 1.2) */}
-      {!app.archived && (
+      {!app.archived && (signal.smoke || signal.sparks) && (
         <StressEffects
           height={height}
-          metrics={metrics}
-          status={app.overallStatus}
-          pm2Status={app.pm2Status}
+          smoke={signal.smoke}
+          sparks={signal.sparks}
           dimMul={dimMul}
-          playback={playback}
         />
       )}
 
@@ -946,6 +959,18 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
             opacity={0.25 * dimMul}
             side={THREE.DoubleSide}
           />
+        </mesh>
+      )}
+
+      {/* Daytime contact shadow — grounds the tower on the meadow so it doesn't float. */}
+      {daytime && !app.archived && (
+        <mesh
+          geometry={CONTACT_SHADOW_GEOM}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, 0.008, 0]}
+          scale={[Math.max(width, depth) * 0.82, Math.max(width, depth) * 0.82, 1]}
+        >
+          <meshBasicMaterial color="#0b1220" transparent opacity={0.26 * dimMul} depthWrite={false} />
         </mesh>
       )}
 

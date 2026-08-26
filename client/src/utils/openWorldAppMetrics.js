@@ -52,3 +52,38 @@ export function cpuTone(cpuPercent) {
   if (cpuPercent >= 40) return 'busy';
   return 'calm';
 }
+
+const SIGNAL_COLORS = Object.freeze({
+  errored: '#f43f5e',
+  hot: '#ef4444',
+  busy: '#f59e0b',
+  online: '#10b981',
+  idle: '#64748b',
+});
+
+export function hasPm2Error(pm2Status) {
+  return Object.values(pm2Status || {}).some((p) => p?.status === 'errored' || p?.status === 'error');
+}
+
+/**
+ * Glanceable façade/rooftop signal for a building. Playback hides live CPU/restart
+ * atmosphere so a historical frame doesn't grow smoke from today's metrics; the
+ * snapshot's own `status` (and any PM2 error on that frame) still paints the LED.
+ */
+export function buildingSignalTone({ status, metrics, pm2Status, playback = false } = {}) {
+  const pm2Errored = hasPm2Error(pm2Status);
+  const errored = status === 'errored' || pm2Errored || (!playback && (metrics?.unstableRestarts || 0) > 0);
+  const cpu = !playback && metrics?.hasMetrics ? cpuTone(metrics.cpuPercent) : 'idle';
+  const hot = cpu === 'hot';
+  const busy = cpu === 'busy';
+  const tone = errored ? 'errored' : hot ? 'hot' : busy ? 'busy' : status === 'online' ? 'online' : 'idle';
+  // Playback keeps the snapshot LED color but drops live atmosphere (pulse/smoke/sparks)
+  // so a historical frame does not grow today's CPU plume.
+  return {
+    tone,
+    color: SIGNAL_COLORS[tone],
+    pulsing: !playback && (errored || hot || busy),
+    smoke: !playback && hot,
+    sparks: !playback && errored,
+  };
+}

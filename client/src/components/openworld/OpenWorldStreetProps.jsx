@@ -41,6 +41,9 @@ function writeMatrices(ref, placements, position, flat) {
   if (ref.current.instanceMatrix) {
     ref.current.instanceMatrix.needsUpdate = true;
   }
+  if (typeof ref.current.computeBoundingSphere === 'function') {
+    ref.current.computeBoundingSphere();
+  }
 }
 
 const onSwayCompile = (shader) => {
@@ -68,7 +71,7 @@ function Instances({ placements, geometry, geometryArgs, position, flat = false,
   }, [placements, position, flat]);
 
   return (
-    <instancedMesh ref={ref} args={[undefined, undefined, placements.length]} frustumCulled={false}>
+    <instancedMesh ref={ref} args={[undefined, undefined, placements.length]}>
       {geometry === 'cylinder' && <cylinderGeometry args={geometryArgs} />}
       {geometry === 'sphere' && <sphereGeometry args={geometryArgs} />}
       {geometry === 'circle' && <circleGeometry args={geometryArgs} />}
