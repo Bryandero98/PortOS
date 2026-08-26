@@ -180,11 +180,9 @@ describe('persistent mind rollups', () => {
 
   it('reports a retained-history gap instead of claiming complete rollup coverage', async () => {
     mock.history = [event(2), event(3), event(4)];
-    const summarize = vi.fn(async () => 'This must not be recorded as complete.');
 
-    const context = await preparePersistentMindContext({ recentEventLimit: 1, summarize });
+    const context = await preparePersistentMindContext({ recentEventLimit: 1 });
 
-    expect(summarize).not.toHaveBeenCalled();
     expect(await readPersistentMindRollups()).toEqual([]);
     expect(context).toMatchObject({
       summaryState: 'gap',

@@ -344,6 +344,12 @@ describe('retention / rotation bound', () => {
     writeFileSync(ACTIVE, `${JSON.stringify(ordinary)}\n${JSON.stringify(legacyMind)}\n`);
     restartServer();
 
+    expect(await getRunEventLedgerStats()).toMatchObject({
+      archivedEvents: 0,
+      activeEvents: 1,
+      mindArchivedEvents: 0,
+      mindActiveEvents: 1,
+    });
     expect((await readRunEvents()).map((event) => event.runId)).toEqual(['ordinary']);
     expect((await readPersistentMindHistory()).map((event) => event.eventId)).toEqual(['legacy-mind']);
     expect(countLines(ACTIVE)).toBe(1);
@@ -365,6 +371,7 @@ describe('retention / rotation bound', () => {
     restartServer();
 
     expect((await readPersistentMindHistory()).map((event) => event.kind)).toEqual(['mind.future-boundary']);
+    expect((await getRunEventLedgerStats()).mindActiveEvents).toBe(1);
   });
 });
 

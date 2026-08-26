@@ -113,7 +113,7 @@ export async function preparePersistentMindContext({
   const older = history.slice(0, Math.max(0, history.length - Math.max(1, recentEventLimit)));
   let coverageGap = null;
 
-  if (older.length > 0 && typeof summarize === 'function') {
+  if (older.length > 0) {
     const previous = latestReadyRollup(rollups, promptVersion);
     const coveredThrough = previous?.source.toSequence ?? -1;
     const rangeEvents = older.filter((event) => event.sequence > coveredThrough);
@@ -143,7 +143,7 @@ export async function preparePersistentMindContext({
       };
       const rollupId = `${mindId}:${source.fromSequence}-${source.toSequence}:v${promptVersion}`;
       const alreadyAttempted = rollups.some((rollup) => rollup.id === rollupId);
-      if (!coverageGap && (forceSummary || !alreadyAttempted)) {
+      if (!coverageGap && typeof summarize === 'function' && (forceSummary || !alreadyAttempted)) {
         const outcome = await summaryOutcome(summarize, {
           mindId,
           source,

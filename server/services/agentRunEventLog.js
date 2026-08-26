@@ -578,6 +578,7 @@ export async function getRunDiagnostic(id) {
  * are held to, so "why is this run missing" has an answer that isn't a guess.
  */
 export async function getRunEventLedgerStats() {
+  await hydrate();
   await schedulePrune();
   const [archive, active, mindArchive, mindActive] = await Promise.all([
     readJSONLFile(ARCHIVE_PATH),
@@ -588,8 +589,8 @@ export async function getRunEventLedgerStats() {
   // Counted through the SAME predicate the read path uses, so "stats say 40
   // events" and "the events endpoint returns 40" can never disagree.
   const cutoff = expiryCutoff();
-  const freshArchive = archive.filter((e) => isRetained(e, cutoff));
-  const freshActive = active.filter((e) => isRetained(e, cutoff));
+  const freshArchive = archive.filter((e) => isRetained(e, cutoff) && !isMindShapedEvent(e));
+  const freshActive = active.filter((e) => isRetained(e, cutoff) && !isMindShapedEvent(e));
   const oldest = freshArchive[0]?.at ?? freshActive[0]?.at ?? null;
   return {
     activeEvents: freshActive.length,
@@ -597,8 +598,8 @@ export async function getRunEventLedgerStats() {
     maxActiveEvents: MAX_ACTIVE_EVENTS,
     maxRetainedEvents: MAX_ACTIVE_EVENTS * 2,
     maxEventAgeDays: MAX_EVENT_AGE_DAYS,
-    mindActiveEvents: mindActive.filter((event) => isStoredRunEvent(event) && isPersistentMindEventKind(event.kind)).length,
-    mindArchivedEvents: mindArchive.filter((event) => isStoredRunEvent(event) && isPersistentMindEventKind(event.kind)).length,
+    mindActiveEvents: mindActive.filter(isMindShapedEvent).length,
+    mindArchivedEvents: mindArchive.filter(isMindShapedEvent).length,
     maxActiveMindEvents: MAX_ACTIVE_MIND_EVENTS,
     maxRetainedMindEvents: MAX_ACTIVE_MIND_EVENTS * 2,
     persistentMindAgeBounded: false,
