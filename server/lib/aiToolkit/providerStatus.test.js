@@ -146,6 +146,9 @@ describe('Provider Status Service', () => {
       });
       await svc.init();
       expect(benchMs(await svc.markUsageLimit('p'))).toBe(4000);
+      expect(benchMs(await svc.markUsageLimit('with-window', {
+        rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 4000 },
+      }))).toBe(4000);
     });
   });
 
@@ -242,12 +245,12 @@ describe('Provider Status Service', () => {
       });
 
       const cooldown = new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime();
-      expect(cooldown).toBe(1000);
+      expect(cooldown).toBe(500);
       expect(status.rateLimitWindow).toEqual({ observedAt, retryAfterMs: 250, remaining: 0, limit: 100 });
       expect(JSON.stringify(status)).not.toContain('must-not-persist');
     });
 
-    it('caps a provider-stated cooldown at the configured maximum', async () => {
+    it('never lets a provider-stated cooldown exceed the short default probe', async () => {
       const svc = createProviderStatusService({
         dataDir: TEST_DATA_DIR,
         statusFile: 'ps-rate-cap.json',
@@ -258,7 +261,16 @@ describe('Provider Status Service', () => {
       const status = await svc.markRateLimited('p', {
         rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 10000 },
       });
-      expect(new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime()).toBe(2000);
+      expect(new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime()).toBe(500);
+    });
+
+    it('ignores an invalid window when selecting the cooldown', async () => {
+      const observedAt = new Date(Date.now() - (6 * 60 * 60 * 1000)).toISOString();
+      const status = await statusService.markRateLimited('test-provider', {
+        rateLimitWindow: { observedAt, retryAfterMs: 1 },
+      });
+      expect(new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime()).toBe(500);
+      expect(status.rateLimitWindow).toBeUndefined();
     });
 
     it('clears rate-limit telemetry after a successful API request', async () => {

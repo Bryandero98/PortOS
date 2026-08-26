@@ -769,7 +769,10 @@ const readAllowedHeader = (headers, names) => {
     const value = typeof headers?.get === 'function'
       ? headers.get(name)
       : Object.entries(headers || {}).find(([key]) => key.toLowerCase() === name)?.[1];
-    if (value != null) return String(value).trim();
+    if (value != null) {
+      const normalized = String(value).trim();
+      if (normalized) return normalized;
+    }
   }
   return null;
 };

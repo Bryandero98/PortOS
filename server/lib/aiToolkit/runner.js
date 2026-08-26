@@ -227,7 +227,9 @@ export function createRunnerService(config = {}) {
     hooks.onProviderError?.(providerId, errorAnalysis, output);
 
     if (providerStatusService) {
-      if (errorAnalysis.category === ERROR_CATEGORIES.USAGE_LIMIT && errorAnalysis.requiresFallback) {
+      if (errorAnalysis.category === ERROR_CATEGORIES.USAGE_LIMIT &&
+          errorAnalysis.requiresFallback &&
+          typeof providerStatusService.markUsageLimit === 'function') {
         await providerStatusService.markUsageLimit(providerId, {
           message: errorAnalysis.message,
           waitTime: errorAnalysis.waitTime,
@@ -235,7 +237,8 @@ export function createRunnerService(config = {}) {
         }).catch(err => {
           console.error(`❌ Failed to mark provider usage limit: ${err.message}`);
         });
-      } else if (errorAnalysis.category === ERROR_CATEGORIES.RATE_LIMIT) {
+      } else if (errorAnalysis.category === ERROR_CATEGORIES.RATE_LIMIT &&
+                 typeof providerStatusService.markRateLimited === 'function') {
         await providerStatusService.markRateLimited(providerId, {
           rateLimitWindow: errorAnalysis.rateLimitWindow,
         }).catch(err => {

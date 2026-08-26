@@ -166,11 +166,12 @@ export function createProviderStatusService(config = {}) {
   function sanitizedRateLimitWindow(window) {
     if (!window || typeof window !== 'object') return null;
     const observed = new Date(window.observedAt).getTime();
-    if (!Number.isFinite(observed) || Date.now() - observed > maxRateLimitWait) return null;
+    const maxWindowWait = Math.max(maxRateLimitWait, maxUsageLimitWait);
+    if (!Number.isFinite(observed) || Date.now() - observed > maxWindowWait) return null;
     const clean = { observedAt: new Date(observed).toISOString() };
-    if (Number.isSafeInteger(window.retryAfterMs) && window.retryAfterMs >= 0) clean.retryAfterMs = Math.min(window.retryAfterMs, maxRateLimitWait);
+    if (Number.isSafeInteger(window.retryAfterMs) && window.retryAfterMs >= 0) clean.retryAfterMs = Math.min(window.retryAfterMs, maxWindowWait);
     const reset = new Date(window.resetAt).getTime();
-    if (Number.isFinite(reset) && reset >= observed) clean.resetAt = new Date(Math.min(reset, observed + maxRateLimitWait)).toISOString();
+    if (Number.isFinite(reset) && reset >= observed) clean.resetAt = new Date(Math.min(reset, observed + maxWindowWait)).toISOString();
     if (Number.isSafeInteger(window.remaining) && window.remaining >= 0 && window.remaining <= 1_000_000_000) clean.remaining = window.remaining;
     if (Number.isSafeInteger(window.limit) && window.limit >= 0 && window.limit <= 1_000_000_000) clean.limit = window.limit;
     return Object.keys(clean).length > 1 ? clean : null;
@@ -329,10 +330,11 @@ export function createProviderStatusService(config = {}) {
       // exceed the 5h reset-window ceiling. This keeps a "resets in 21h" estimate
       // from sidelining the primary for a day — it retries in 10m and re-benches
       // if still limited. The parsed value is still surfaced for DISPLAY.
-      const headerDelay = rateLimitDelay(errorInfo.rateLimitWindow);
+      const rateLimitWindow = sanitizedRateLimitWindow(errorInfo.rateLimitWindow);
+      const headerDelay = rateLimitDelay(rateLimitWindow);
       const boundedHeaderDelay = headerDelay == null
         ? null
-        : Math.min(Math.max(1000, headerDelay), maxRateLimitWait);
+        : Math.min(Math.max(1000, headerDelay), maxUsageLimitWait);
       const parsed = parseWaitTime(errorInfo.waitTime);
       const benchMs = Math.min(
         defaultUsageLimitWait,
@@ -349,25 +351,23 @@ export function createProviderStatusService(config = {}) {
         // status:changed event, not a follow-up second write.
         extras: {
           ...(errorInfo.waitTime ? { waitTime: errorInfo.waitTime } : {}),
-          ...(sanitizedRateLimitWindow(errorInfo.rateLimitWindow)
-            ? { rateLimitWindow: sanitizedRateLimitWindow(errorInfo.rateLimitWindow) }
-            : {}),
+          ...(rateLimitWindow ? { rateLimitWindow } : {}),
         }
       });
     },
 
     async markRateLimited(providerId, errorInfo = {}) {
-      const headerDelay = rateLimitDelay(errorInfo.rateLimitWindow);
+      const rateLimitWindow = sanitizedRateLimitWindow(errorInfo.rateLimitWindow);
+      const headerDelay = rateLimitDelay(rateLimitWindow);
       return this.markUnavailable(providerId, {
         reason: 'rate-limit',
         message: 'Rate limit exceeded - temporary',
         waitTimeMs: Math.min(
           headerDelay == null ? defaultRateLimitWait : Math.max(1000, headerDelay),
+          defaultRateLimitWait,
           maxRateLimitWait,
         ),
-        extras: sanitizedRateLimitWindow(errorInfo.rateLimitWindow)
-          ? { rateLimitWindow: sanitizedRateLimitWindow(errorInfo.rateLimitWindow) }
-          : null,
+        extras: rateLimitWindow ? { rateLimitWindow } : null,
       });
     },
 

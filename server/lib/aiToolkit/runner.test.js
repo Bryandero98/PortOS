@@ -169,6 +169,31 @@ describe('AI Toolkit runner service', () => {
     expect(await completed).toMatchObject({ success: true });
   });
 
+  it('keeps a rate-limit failure compatible with a partial provider status service', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      statusText: 'Too Many Requests',
+      headers: new Headers({ 'Retry-After': '5' }),
+      text: async () => 'rate limited',
+    })));
+    const runner = createRunnerService({
+      dataDir,
+      providerStatusService: { markApiSuccess: vi.fn() },
+      hooks: { ensureProviderReady: async () => ({ success: true }) },
+    });
+    const onComplete = vi.fn();
+
+    await runner.executeApiRun({
+      runId: 'run-partial-status-error', provider: runReady(), model: null, prompt: 'hi',
+      workspacePath: process.cwd(), screenshots: [], onData: undefined, onComplete,
+    });
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+  });
+
   it('sends num_ctx in the request body when the provider opts in', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     tempDirs.push(dataDir);

@@ -762,6 +762,17 @@ describe('Error Detection', () => {
       });
     });
 
+    it('continues past an empty alias to a populated allowed header', () => {
+      const now = Date.parse('2026-08-26T12:00:00.000Z');
+      expect(normalizeRateLimitHeaders({
+        'ratelimit-remaining': '',
+        'x-ratelimit-remaining': '5',
+      }, { now })).toEqual({
+        observedAt: '2026-08-26T12:00:00.000Z',
+        remaining: 5,
+      });
+    });
+
     it('ignores malformed, negative, oversized, and huge values', () => {
       const now = Date.parse('2026-08-26T12:00:00.000Z');
       expect(normalizeRateLimitHeaders({
