@@ -10,6 +10,7 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { atomicWrite } from './internal/atomicWrite.js';
+import { isOllamaBackedProvider } from './internal/ollamaBacked.js';
 
 /**
  * Gate a *configured* fallback-model pin against the fallback provider's own
@@ -45,6 +46,82 @@ export function usableFallbackModel(provider, pinnedModel) {
   if (models.includes(pinnedModel)) return pinnedModel;
   console.log(`⚠️ Fallback ${provider?.id || 'provider'} no longer lists pinned model ${pinnedModel} — using its own default instead`);
   return null;
+}
+
+// Mirrored from the host's generation-model classifier because aiToolkit must
+// stay self-contained. Fallback admission must inspect the model the executor
+// will actually run, not an embedding-only configured pin/default.
+const EMBEDDING_MODEL_RE =
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma|minilm|paraphrase-multilingual/i;
+
+function isGenerationModelId(model) {
+  return typeof model === 'string' && model.length > 0 && !EMBEDDING_MODEL_RE.test(model);
+}
+
+function extractBakedModel(args) {
+  if (!Array.isArray(args)) return null;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (typeof arg !== 'string') continue;
+    if (arg === '--model' || arg === '-m') {
+      const next = args[i + 1];
+      return typeof next === 'string' && next.length > 0 && !next.startsWith('-') ? next : null;
+    }
+    if (arg.startsWith('--model=')) return arg.slice('--model='.length) || null;
+    if (arg.startsWith('-m=')) return arg.slice('-m='.length) || null;
+  }
+  return null;
+}
+
+function resolvedFallbackModel(provider, correctedModel) {
+  const baked = provider?.type === 'cli' || provider?.type === 'tui'
+    ? extractBakedModel(provider?.args)
+    : null;
+  const candidates = baked
+    ? [baked, provider?.defaultModel]
+    : [correctedModel, provider?.defaultModel];
+  return candidates.find(isGenerationModelId)
+    || provider?.models?.find(isGenerationModelId)
+    || provider?.models?.[0]
+    || null;
+}
+
+function knownContextWindow(provider, model) {
+  const explicit = Number(provider?.contextWindow);
+  const catalog = Number(model && provider?.modelContextWindows?.[model]);
+  const runtime = Number(provider?.numCtx);
+  const planning = Number.isFinite(explicit) && explicit > 0
+    ? explicit
+    : (Number.isFinite(catalog) && catalog > 0 ? catalog : null);
+  // Only Ollama honors the runner's top-level num_ctx option. When configured,
+  // it is the real runtime ceiling and therefore constrains any wider planning
+  // or catalog window; other OpenAI-compatible endpoints ignore the field.
+  if (isOllamaBackedProvider(provider) && Number.isFinite(runtime) && runtime > 0) {
+    return planning ? Math.min(planning, runtime) : runtime;
+  }
+  return planning;
+}
+
+function capabilityRejection(provider, model, requestCapabilities) {
+  if (!requestCapabilities || typeof requestCapabilities !== 'object') return null;
+  if (requestCapabilities.hasImages === true && provider?.type !== 'api') {
+    return 'cannot transmit image input';
+  }
+
+  const required = Number(requestCapabilities.requiredContextTokens);
+  const available = knownContextWindow(provider, model);
+  if (Number.isFinite(required) && required > 0 && available && required > available) {
+    return `known ${available}-token context is below the ${required}-token request budget`;
+  }
+  return null;
+}
+
+function noEligibleFallbackError(rejections) {
+  const detail = rejections.map(({ provider, reason }) => `${provider}: ${reason}`).join('; ');
+  const error = new Error(`No eligible fallback can satisfy this request (${detail})`);
+  error.code = 'NO_ELIGIBLE_FALLBACK';
+  error.rejections = rejections;
+  return error;
 }
 
 export function createProviderStatusService(config = {}) {
@@ -405,12 +482,26 @@ export function createProviderStatusService(config = {}) {
     // and it hasn't failed lately — neither says its CLI is installed or its
     // key is stored. Skipping an un-runnable candidate here is what turns a
     // late `spawn <binary> ENOENT` into "try the next provider instead".
-    getFallbackProvider(primaryProviderId, providers, taskFallbackId = null, taskFallbackModelId = null) {
+    getFallbackProvider(primaryProviderId, providers, taskFallbackId = null, taskFallbackModelId = null, requestCapabilities = null) {
+      const capabilityRejections = [];
+      const acceptCandidate = (provider, source, pinnedModel = null) => {
+        if (!provider?.enabled || !this.isAvailable(provider.id) || !meetsPrerequisites(provider, providers)) return null;
+        // Correct stale pins before checking the selected model's window. A pin
+        // that no longer exists falls back to the provider default, and THAT
+        // model must still fit the request before the retry is admitted.
+        const model = usableFallbackModel(provider, pinnedModel);
+        const reason = capabilityRejection(provider, resolvedFallbackModel(provider, model), requestCapabilities);
+        if (reason) {
+          capabilityRejections.push({ provider: provider.name || provider.id, reason });
+          return null;
+        }
+        return { provider, source, model };
+      };
+
       if (taskFallbackId && taskFallbackId !== primaryProviderId) {
         const taskFallback = providers[taskFallbackId];
-        if (taskFallback?.enabled && this.isAvailable(taskFallback.id) && meetsPrerequisites(taskFallback, providers)) {
-          return { provider: taskFallback, source: 'task', model: usableFallbackModel(taskFallback, taskFallbackModelId) };
-        }
+        const accepted = acceptCandidate(taskFallback, 'task', taskFallbackModelId);
+        if (accepted) return accepted;
       }
 
       const primaryProvider = providers[primaryProviderId];
@@ -420,20 +511,19 @@ export function createProviderStatusService(config = {}) {
       // primaryProviderId; the configured-fallback path needs its own check.
       if (primaryProvider?.fallbackProvider && primaryProvider.fallbackProvider !== primaryProviderId) {
         const configuredFallback = providers[primaryProvider.fallbackProvider];
-        if (configuredFallback?.enabled && this.isAvailable(configuredFallback.id) && meetsPrerequisites(configuredFallback, providers)) {
-          return { provider: configuredFallback, source: 'provider', model: usableFallbackModel(configuredFallback, primaryProvider.fallbackModel) };
-        }
+        const accepted = acceptCandidate(configuredFallback, 'provider', primaryProvider.fallbackModel);
+        if (accepted) return accepted;
       }
 
       for (const providerId of defaultFallbackPriority) {
         if (providerId === primaryProviderId) continue;
 
         const provider = providers[providerId];
-        if (provider?.enabled && this.isAvailable(providerId) && meetsPrerequisites(provider, providers)) {
-          return { provider, source: 'system', model: null };
-        }
+        const accepted = acceptCandidate(provider, 'system');
+        if (accepted) return accepted;
       }
 
+      if (capabilityRejections.length > 0) throw noEligibleFallbackError(capabilityRejections);
       return null;
     },
 

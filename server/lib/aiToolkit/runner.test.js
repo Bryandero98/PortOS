@@ -22,6 +22,68 @@ describe('AI Toolkit runner service', () => {
     }
   });
 
+  it('passes request capability requirements to proactive fallback selection', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const primary = { id: 'primary', name: 'Primary', type: 'api', enabled: true };
+    const fallback = { id: 'fallback', name: 'Fallback', type: 'api', enabled: true, defaultModel: 'vision' };
+    const providerService = {
+      getAllProviders: vi.fn().mockResolvedValue({ providers: [primary, fallback] }),
+      getProviderById: vi.fn(async (id) => (id === fallback.id ? fallback : primary)),
+    };
+    const providerStatusService = {
+      isAvailable: vi.fn().mockReturnValue(false),
+      getFallbackProvider: vi.fn().mockReturnValue({ provider: fallback, source: 'system', model: null }),
+      getStatus: vi.fn().mockReturnValue({ reason: 'rate-limit' }),
+      getTimeUntilRecovery: vi.fn().mockReturnValue('1m'),
+    };
+    const runner = createRunnerService({ dataDir, providerService, providerStatusService });
+    const requestCapabilities = { hasImages: true, requiredContextTokens: 12_000 };
+
+    const result = await runner.createRun({
+      providerId: primary.id,
+      prompt: 'describe',
+      requestCapabilities,
+    });
+
+    expect(result.provider.id).toBe(fallback.id);
+    expect(providerStatusService.getFallbackProvider).toHaveBeenCalledWith(
+      primary.id, expect.any(Object), null, null, requestCapabilities,
+    );
+  });
+
+  it('derives request capabilities for direct and pre-created runs', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const primary = { id: 'primary', name: 'Primary', type: 'api', enabled: true };
+    const fallback = { id: 'fallback', name: 'Fallback', type: 'api', enabled: true };
+    const providerService = {
+      getAllProviders: vi.fn().mockResolvedValue({ providers: [primary, fallback] }),
+      getProviderById: vi.fn(async (id) => (id === fallback.id ? fallback : primary)),
+    };
+    const providerStatusService = {
+      isAvailable: vi.fn().mockReturnValue(false),
+      getFallbackProvider: vi.fn().mockReturnValue({ provider: fallback, source: 'system', model: null }),
+      getStatus: vi.fn().mockReturnValue({ reason: 'rate-limit' }),
+      getTimeUntilRecovery: vi.fn().mockReturnValue('1m'),
+    };
+    const runner = createRunnerService({ dataDir, providerService, providerStatusService });
+
+    await runner.createRun({
+      providerId: primary.id,
+      prompt: '12345678',
+      screenshots: ['image.png'],
+    });
+
+    expect(providerStatusService.getFallbackProvider).toHaveBeenCalledWith(
+      primary.id,
+      expect.any(Object),
+      null,
+      null,
+      { hasImages: true, requiredContextTokens: 8002 },
+    );
+  });
+
   it('checks provider readiness through the injected hook before API fetches', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     tempDirs.push(dataDir);

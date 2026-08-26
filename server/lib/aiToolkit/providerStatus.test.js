@@ -551,6 +551,104 @@ describe('Provider Status Service', () => {
     });
   });
 
+  describe('getFallbackProvider — request capability gate', () => {
+    const providers = {
+      primary: { id: 'primary', enabled: true, fallbackProvider: 'fallback-provider-1' },
+      'fallback-provider-1': {
+        id: 'fallback-provider-1', name: 'CLI fallback', type: 'cli', enabled: true,
+        defaultModel: 'small', contextWindow: 16_000,
+      },
+      'fallback-provider-2': {
+        id: 'fallback-provider-2', name: 'API fallback', type: 'api', enabled: true,
+        defaultModel: 'large', modelContextWindows: { large: 128_000 },
+      },
+    };
+
+    it('preserves explicit order while skipping a fallback that cannot carry images', () => {
+      const result = statusService.getFallbackProvider(
+        'primary', providers, null, null,
+        { hasImages: true, requiredContextTokens: 10_000 },
+      );
+
+      expect(result.provider.id).toBe('fallback-provider-2');
+      expect(result.source).toBe('system');
+    });
+
+    it('skips a known-too-small model window but retains unknown metadata', () => {
+      const result = statusService.getFallbackProvider(
+        'primary', providers, null, null,
+        { hasImages: false, requiredContextTokens: 32_000 },
+      );
+      expect(result.provider.id).toBe('fallback-provider-2');
+
+      const unknown = {
+        primary: { id: 'primary', enabled: true, fallbackProvider: 'fallback-provider-1' },
+        'fallback-provider-1': { id: 'fallback-provider-1', type: 'api', enabled: true },
+      };
+      expect(statusService.getFallbackProvider(
+        'primary', unknown, null, null,
+        { hasImages: false, requiredContextTokens: 1_000_000 },
+      ).provider.id).toBe('fallback-provider-1');
+    });
+
+    it('re-checks the default model after dropping a stale fallback pin', () => {
+      const stalePin = {
+        primary: {
+          id: 'primary', enabled: true, fallbackProvider: 'fallback-provider-1', fallbackModel: 'retired',
+        },
+        'fallback-provider-1': {
+          id: 'fallback-provider-1', type: 'api', enabled: true,
+          models: ['current'], defaultModel: 'current', modelContextWindows: { current: 4_096 },
+        },
+      };
+
+      expect(() => statusService.getFallbackProvider(
+        'primary', stalePin, null, null,
+        { hasImages: false, requiredContextTokens: 8_000 },
+      )).toThrow(expect.objectContaining({ code: 'NO_ELIGIBLE_FALLBACK' }));
+    });
+
+    it('checks the generation model that the executor resolves', () => {
+      const executableModel = {
+        primary: { id: 'primary', enabled: true, fallbackProvider: 'fallback-provider-1' },
+        'fallback-provider-1': {
+          id: 'fallback-provider-1', type: 'cli', enabled: true,
+          args: ['--model', 'baked-large'],
+          defaultModel: 'nomic-embed-text',
+          models: ['nomic-embed-text', 'baked-large'],
+          modelContextWindows: { 'nomic-embed-text': 2_048, 'baked-large': 64_000 },
+        },
+      };
+
+      expect(statusService.getFallbackProvider(
+        'primary', executableModel, null, null,
+        { hasImages: false, requiredContextTokens: 32_000 },
+      ).provider.id).toBe('fallback-provider-1');
+    });
+
+    it('uses Ollama numCtx as the effective runtime ceiling', () => {
+      const local = {
+        primary: { id: 'primary', enabled: true, fallbackProvider: 'ollama' },
+        ollama: {
+          id: 'ollama', type: 'api', enabled: true, defaultModel: 'large',
+          contextWindow: 128_000, numCtx: 16_000,
+        },
+      };
+
+      expect(() => statusService.getFallbackProvider(
+        'primary', local, null, null,
+        { hasImages: false, requiredContextTokens: 32_000 },
+      )).toThrow(expect.objectContaining({ code: 'NO_ELIGIBLE_FALLBACK' }));
+    });
+
+    it('surfaces why no candidate can satisfy the request', () => {
+      expect(() => statusService.getFallbackProvider(
+        'primary', providers, null, null,
+        { hasImages: true, requiredContextTokens: 256_000 },
+      )).toThrow(/No eligible fallback.*image input.*128000-token context/is);
+    });
+  });
+
   describe('getFallbackProvider — stale model pins', () => {
     // A `fallbackModel` is set on the PRIMARY but resolved against the
     // fallback, so a model bump on the fallback leaves the pin naming an id
