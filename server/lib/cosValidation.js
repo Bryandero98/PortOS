@@ -18,6 +18,9 @@ import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { AGENT_RUN_EVENT_KINDS, RUN_EVENT_READ_LIMITS } from './agentRunEvents.js';
 import { recurrenceRuleSchema } from './recurrenceValidation.js';
+import { TASK_DATA_INPUT_DEFINITIONS, TASK_DATA_INPUT_IDS } from './taskDataInputCatalog.js';
+
+export { TASK_DATA_INPUT_DEFINITIONS, TASK_DATA_INPUT_IDS } from './taskDataInputCatalog.js';
 
 // =============================================================================
 // COS TASK SCHEMAS
@@ -1427,6 +1430,15 @@ export const createLoopSchema = z.object({
 // COS JOB SCHEMAS
 // =============================================================================
 
+// Deterministic context sources that can be preloaded before a scheduled agent
+// starts. The ids are persisted on both built-in schedule entries and custom
+// agent jobs; taskDataInputs.js owns the I/O behind each id. Keep this catalog
+// descriptive and side-effect-free so APIs can expose it directly to every
+// configuration surface without duplicating labels or capabilities in clients.
+export const taskDataInputsSchema = z.array(z.enum(TASK_DATA_INPUT_IDS))
+  .max(TASK_DATA_INPUT_IDS.length)
+  .transform((ids) => [...new Set(ids)]);
+
 export const createCosJobSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
@@ -1447,6 +1459,10 @@ export const createCosJobSchema = z.object({
   priority: z.string().optional(),
   autonomyLevel: z.enum(['standby', 'assistant', 'manager', 'yolo']).optional(),
   promptTemplate: z.string().optional(),
+  // Deterministic repository/tracker context appended before the agent starts.
+  // An empty array actively clears every selection on update; absent preserves
+  // the stored selection.
+  dataInputs: taskDataInputsSchema.optional(),
   command: z.string().optional(),
   triggerAction: z.preprocess(v => v === '' ? undefined : v, z.string().optional()),
   // Optional AI provider + model override for agent jobs. Empty string from the

@@ -92,6 +92,7 @@ export * from './styleGuide.js';
 export * from './storyBuilderIntegrity.js';
 export * from './storyBuilderSteps.js';
 export * from './streamLines.js';
+export * from './taskDataInputCatalog.js';
 // `storyBible.js` re-exports `normalizeSlugline` from `scenePrompt.js` for
 // back-compat — namespace it so the canonical scenePrompt export wins flat.
 export * as storyBible from './storyBible.js';

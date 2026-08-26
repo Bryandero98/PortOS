@@ -17,6 +17,7 @@ import JobCard, {
   TRIGGER_ACTION_OPTIONS
 } from '../JobCard';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
+import TaskDataInputs from '../TaskDataInputs';
 
 // Blank create-form state — shared by the initial useState and the post-create
 // reset so the two can't drift (a field added to one but not the other would
@@ -40,6 +41,7 @@ const INITIAL_JOB = {
   providerId: '',
   model: '',
   effort: '',
+  dataInputs: [],
   enabled: false
 };
 
@@ -53,6 +55,7 @@ export default function JobsTab() {
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [newJob, setNewJob] = useState(INITIAL_JOB);
+  const [dataInputCatalog, setDataInputCatalog] = useState([]);
 
   const fetchJobs = useCallback(async () => {
     const data = await api.getCosJobs({ silent: true }).catch(err => {
@@ -62,6 +65,7 @@ export default function JobsTab() {
     if (data) {
       setJobs(data.jobs || []);
       setStats(data.stats || null);
+      setDataInputCatalog(data.dataInputCatalog || []);
     }
     setLoading(false);
   }, []);
@@ -290,6 +294,13 @@ export default function JobsTab() {
                 onChange={patch => setNewJob(j => ({ ...j, ...patch }))}
               />
             )}
+            {isAgentJobType(newJob.type) && (
+              <TaskDataInputs
+                catalog={dataInputCatalog}
+                value={newJob.dataInputs}
+                onChange={dataInputs => setNewJob(j => ({ ...j, dataInputs }))}
+              />
+            )}
             {newJob.type === 'shell' ? (
               <>
                 <textarea
@@ -353,6 +364,7 @@ export default function JobsTab() {
               providers={providers}
               activeProviderId={activeProviderId}
               timezone={timezone}
+              dataInputCatalog={dataInputCatalog}
               onToggle={handleToggle}
               onTrigger={handleTrigger}
               onDelete={handleDelete}

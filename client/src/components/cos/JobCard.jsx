@@ -10,6 +10,7 @@ import { AGENT_OPTIONS, agentOptionButtonClass } from './constants';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import FormField from '../ui/FormField';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
+import TaskDataInputs from './TaskDataInputs';
 
 const SCHEDULE_MODE_OPTIONS = [
   { value: 'interval', label: 'Interval' },
@@ -67,6 +68,7 @@ export function normalizeJobPayload(formData) {
     payload.providerId = null;
     payload.model = null;
     payload.effort = null;
+    payload.dataInputs = [];
   }
   // Empty app picker selection ('') → null so a PUT actively un-scopes the job
   // back to global (undefined would be dropped from JSON and updateJob would
@@ -254,7 +256,8 @@ export default function JobCard({
   fixedAppId = null,
   fixedType = null,
   showTaskMetadata = false,
-  triggering = false
+  triggering = false,
+  dataInputCatalog = []
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -282,6 +285,7 @@ export default function JobCard({
       providerId: job.providerId || '',
       model: job.model || '',
       effort: job.effort || '',
+      dataInputs: job.dataInputs || [],
       taskMetadata: showTaskMetadata
         ? { useWorktree: false, openPR: false, simplify: false, ...(job.taskMetadata || {}) }
         : job.taskMetadata || {}
@@ -481,6 +485,13 @@ export default function JobCard({
                   providers={providers}
                   activeProviderId={activeProviderId}
                   onChange={patch => setEditData(d => ({ ...d, ...patch }))}
+                />
+              )}
+              {isAgentJobType(editData.type) && (
+                <TaskDataInputs
+                  catalog={dataInputCatalog}
+                  value={editData.dataInputs}
+                  onChange={dataInputs => setEditData(d => ({ ...d, dataInputs }))}
                 />
               )}
               {showTaskMetadata && isAgentJobType(editData.type) && <TaskMetadataFields data={editData} onChange={patch => setEditData(d => ({ ...d, ...patch }))} />}

@@ -1372,6 +1372,13 @@ describe('taskSchedule', () => {
       expect(cfg.enabled).toBe(false)
       // Refresh the configured work tracker before filing a new proposal.
       expect(cfg.runAfter).toEqual(['do-replan'])
+      expect(cfg.dataInputs).toEqual([
+        'product-requirements',
+        'project-goals',
+        'open-issues',
+        'open-pull-requests',
+        'closed-unmerged-pull-requests',
+      ])
       expect(cfg.taskMetadata.useWorktree).toBe(false)
       expect(cfg.taskMetadata.openPR).toBe(false)
       // Writable: a file-based tracker path commits checklist items.
@@ -1403,7 +1410,7 @@ describe('taskSchedule', () => {
       expect(prompt).toContain('docs/README.md')
       expect(prompt).not.toContain('PLAN.md')
       expect(prompt).not.toContain('REJECTED.md')
-      expect(prompt).toContain('closed-unmerged')
+      expect(prompt).toContain('Closed unmerged pull requests')
       // Never implements — the plan IS the deliverable.
       expect(prompt).toContain('no branches, no PRs')
       expect(prompt).toContain('Acceptance criteria')

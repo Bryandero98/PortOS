@@ -46,6 +46,7 @@ import {
   enforceManagedAgentOptions
 } from './taskScheduleRegistry.js';
 import { loadSchedule, saveSchedule } from './taskScheduleStore.js';
+import { getTaskDataInputCatalog } from '../lib/taskDataInputCatalog.js';
 import {
   clearFailureLedgerFields,
   clearTaskTypeFailurePark,
@@ -1160,7 +1161,8 @@ export async function getScheduleStatus() {
     tasks: {},
     templates: schedule.templates,
     onDemandRequests: schedule.onDemandRequests || [],
-    learningAdjustmentsActive: 0
+    learningAdjustmentsActive: 0,
+    dataInputCatalog: getTaskDataInputCatalog()
   };
 
   // Fetch active apps once for per-app override aggregation

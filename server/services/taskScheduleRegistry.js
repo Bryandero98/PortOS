@@ -342,7 +342,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // enabled run doesn't flood the tracker with plans — one filed plan per run.
   // runAfter do-replan so proposals are checked against the freshest available
   // work tracker before a new feature plan is filed.
-  'plan-feature':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, runAfter: ['do-replan'], taskMetadata: { useWorktree: false, openPR: false, readOnly: false } },
+  'plan-feature':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, dataInputs: ['product-requirements', 'project-goals', 'open-issues', 'open-pull-requests', 'closed-unmerged-pull-requests'], runAfter: ['do-replan'], taskMetadata: { useWorktree: false, openPR: false, readOnly: false } },
   // layered-intelligence is a programmatic-I/O task (agent-backed, hooked). Daily
   // by default; per-app scheduling (enabled/interval/provider/model) is set in the
   // Intelligence tab and stored on the app's taskTypeOverrides['layered-intelligence'].

@@ -23,6 +23,7 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, resolveClaimReviewerConfig, reviewerConfigMetadata, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS } from '../lib/validation.js';
+import { PATHS } from '../lib/fileUtils.js';
 import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
@@ -64,6 +65,7 @@ import {
   buildTargetWorkItemBlock,
   normalizeWorkItemRef,
 } from './cosTaskPrompts.js';
+import { appendTaskDataInputs, resolveTaskDataInputs } from './taskDataInputs.js';
 
 export {
   buildClaimOverrideContextBlock,
@@ -1850,6 +1852,11 @@ export async function generateSelfImprovementTaskForType(taskType, state) {
       + buildLocalReviewerInstructions(reviewers.reviewers, reviewers.reviewerModels, reviewers.reviewerEfforts);
   }
 
+  const taskDataInputs = await resolveTaskDataInputs(interval.dataInputs, {
+    app: { id: null, name: 'PortOS', repoPath: PATHS.root }
+  });
+  description = appendTaskDataInputs(description, taskDataInputs);
+
   const task = {
     id: `self-improve-${taskType}-${Date.now().toString(36)}`,
     status: 'pending',
@@ -3092,7 +3099,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   const planConstraintBlock = buildPlanConstraintBlock(metadata.planId);
 
   const modeInstructions = isAuditTaskType(taskType) ? modeContractFor(fileIssues) : '';
-  const description = await buildImprovementTaskDescription({
+  const baseDescription = await buildImprovementTaskDescription({
     promptTemplate: applyAuditModeWrapper(promptTemplate, modeInstructions),
     app, promptTaskType, metadata,
     blocks: {
@@ -3108,6 +3115,8 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
       planConstraint: planConstraintBlock
     }
   });
+  const taskDataInputs = await resolveTaskDataInputs(interval.dataInputs, { app });
+  const description = appendTaskDataInputs(baseDescription, taskDataInputs);
 
   applyAppWorktreeDefault(metadata, app);
   // File-issues posture wins over app worktree/PR defaults — the deliverable

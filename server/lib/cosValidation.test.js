@@ -110,6 +110,21 @@ describe('cosValidation autonomous-job effort field', () => {
   });
 });
 
+describe('cosValidation autonomous-job data inputs', () => {
+  it('accepts registered ids, de-duplicates them, and preserves an explicit clear', () => {
+    expect(createCosJobSchema.parse({
+      name: 'j',
+      dataInputs: ['project-goals', 'open-issues', 'project-goals'],
+    }).dataInputs).toEqual(['project-goals', 'open-issues']);
+    expect(updateCosJobSchema.parse({ dataInputs: [] }).dataInputs).toEqual([]);
+    expect(updateCosJobSchema.parse({}).dataInputs).toBeUndefined();
+  });
+
+  it('rejects unknown input ids', () => {
+    expect(createCosJobSchema.safeParse({ name: 'j', dataInputs: ['unknown-source'] }).success).toBe(false);
+  });
+});
+
 describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () => {
   it('accepts the flag and preserves an explicit false (schema parity with the sanitizer)', () => {
     // Zod strips undeclared keys, so an unlisted flag would be silently dropped

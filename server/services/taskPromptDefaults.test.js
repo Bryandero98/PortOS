@@ -150,11 +150,16 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v9).not.toBe(current);
   });
 
-  // plan-feature v2: product intent is specific-first (PRD → GOALS → repository
-  // docs) and no longer depends on the retired roadmap/rejection-ledger files.
-  it('plan-feature v2 uses the PRD/docs fallback hierarchy and preserves v1', () => {
+  // plan-feature v5: omitted optional preloads fall back to direct inventory,
+  // while v4 through v1 remain recognizable for cross-install upgrades.
+  it('plan-feature v5 handles omitted preloads and preserves prior defaults', () => {
     const current = DEFAULT_TASK_PROMPTS['plan-feature'];
-    expect(PROMPT_VERSIONS['plan-feature']).toBe(2);
+    expect(PROMPT_VERSIONS['plan-feature']).toBe(5);
+    expect(current).toContain('Preloaded task data');
+    expect(current).toContain('do NOT list it again');
+    expect(current).toContain('corresponding section that is absent');
+    expect(current).toContain('If a section is absent, unavailable');
+    expect(current).toContain('Closed unmerged pull requests');
     expect(current).toContain('PRD.md');
     expect(current).toContain('GOALS.md');
     expect(current).toContain('README.md');
@@ -162,6 +167,21 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('AGENTS.md');
     expect(current).not.toContain('REJECTED.md');
     expect(current).not.toContain('ALSO read PLAN.md');
+
+    const v4 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('marked unavailable, unreadable, or'));
+    expect(v4).toBeDefined();
+    expect(v4).not.toContain('corresponding section that is absent');
+    expect(v4).not.toBe(current);
+
+    const v3 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('Preloaded task data') && !prompt.includes('marked unavailable, unreadable, or'));
+    expect(v3).toBeDefined();
+    expect(v3).not.toContain('marked unavailable, unreadable, or');
+    expect(v3).not.toBe(current);
+
+    const v2 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('specific available source of intent'));
+    expect(v2).toBeDefined();
+    expect(v2).not.toContain('Preloaded task data');
+    expect(v2).not.toBe(current);
 
     const v1 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('ALSO read PLAN.md'));
     expect(v1).toBeDefined();
