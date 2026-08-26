@@ -48,7 +48,6 @@ export * as spriteValidation from './spriteValidation.js';
 export * as storyBuilderValidation from './storyBuilderValidation.js';
 export * as telegramValidation from './telegramValidation.js';
 export * from './validation.js';
-export * from './persistentMindPublic.js';
 // Cross-domain Zod fragments both `validation.js` and the per-domain files
 // import (leaf module, no cycle). Flat because `validation.js` re-exports the
 // same objects — same identity, so the collision detector is satisfied.
@@ -219,6 +218,7 @@ export * from './agentRunReconcile.js';
 export * from './persistentMind.js';
 export * from './persistentMindTrajectory.js';
 export * from './persistentMindProfile.js';
+export * from './persistentMindPublic.js';
 export * from './agentSentinel.js';
 export * from './bareUrl.js';
 export * from './bashResolver.js';

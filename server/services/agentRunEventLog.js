@@ -444,6 +444,7 @@ export async function readPersistentMindEvents({
     cursor: persistentMindEventCursor(last),
     gap,
     hasMore: cursorIndex >= 0 && available.length > events.length,
+    truncated: cursorIndex < 0 && available.length > events.length,
     snapshot: projectPersistentMind(retained, mindId),
   };
 }

@@ -13,7 +13,7 @@ import {
 import { normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
 import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
 import { validateRequest } from '../lib/validation.js';
-import { readPersistentMindEvents } from '../services/agentRunEventLog.js';
+import { readPersistentMindEvents, readPersistentMindHistory } from '../services/agentRunEventLog.js';
 import { loadState } from '../services/cosState.js';
 import {
   appendPersistentMindAnnotation,
@@ -63,6 +63,13 @@ const requireSuccess = (result) => {
     throw new ServerError(result.error || 'Persistent mind request was refused', { status: 409, code: 'INVALID_STATE' });
   }
   return result;
+};
+
+const requireMindEvent = async (targetEventId) => {
+  const events = await readPersistentMindHistory(PERSISTENT_MIND_ID);
+  if (!events.some((event) => event.eventId === targetEventId)) {
+    throw new ServerError('Persistent mind event not found', { status: 404, code: 'NOT_FOUND' });
+  }
 };
 
 router.get('/mind', asyncHandler(async (req, res) => {
@@ -120,6 +127,7 @@ router.post('/mind/stop', asyncHandler(async (_req, res) => {
 router.post('/mind/events/:eventId/acknowledge', asyncHandler(async (req, res) => {
   const { eventId: targetEventId } = validateRequest(eventParamsSchema, req.params);
   const { id } = validateRequest(acknowledgementSchema, req.body);
+  await requireMindEvent(targetEventId);
   const result = await appendPersistentMindAnnotation({
     id,
     targetEventId,
@@ -131,7 +139,8 @@ router.post('/mind/events/:eventId/acknowledge', asyncHandler(async (req, res) =
 
 router.post('/mind/events/:eventId/promote', asyncHandler(async (req, res) => {
   const { eventId: sourceEventId } = validateRequest(eventParamsSchema, req.params);
-  const { id: _id, ...input } = validateRequest(promotionSchema, req.body);
+  const input = validateRequest(promotionSchema, req.body);
+  await requireMindEvent(sourceEventId);
   const result = requireSuccess(await promotePersistentMindMemory({ ...input, sourceEventId }));
   res.status(201).json({ success: true, memoryId: result.memory?.id || null });
 }));

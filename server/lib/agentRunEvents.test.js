@@ -187,6 +187,13 @@ describe('redactRunEventData — privacy', () => {
     expect(data.detail).toContain('[REDACTED]');
   });
 
+  it('drops free-form errors instead of exposing provider or record details', () => {
+    const data = redactRunEventData({ error: 'provider failed for alice@example.com with apiKey secret-value' });
+    expect(data.error).toEqual({ redacted: 'content', chars: expect.any(Number) });
+    expect(JSON.stringify(data)).not.toContain('alice@example.com');
+    expect(JSON.stringify(data)).not.toContain('secret-value');
+  });
+
   it('caps string length so a payload cannot smuggle a record body', () => {
     const data = redactRunEventData({ detail: 'x'.repeat(5000) });
     expect(data.detail.length).toBe(RUN_EVENT_LIMITS.maxStringChars + 1); // + the ellipsis

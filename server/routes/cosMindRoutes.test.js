@@ -5,6 +5,7 @@ import { errorMiddleware } from '../lib/errorHandler.js';
 
 const mocks = vi.hoisted(() => ({
   readPersistentMindEvents: vi.fn(),
+  readPersistentMindHistory: vi.fn(),
   loadState: vi.fn(),
   getPersistentMindState: vi.fn(),
   enqueuePersistentMindMessage: vi.fn(),
@@ -16,7 +17,10 @@ const mocks = vi.hoisted(() => ({
   stopPersistentMind: vi.fn(),
 }));
 
-vi.mock('../services/agentRunEventLog.js', () => ({ readPersistentMindEvents: mocks.readPersistentMindEvents }));
+vi.mock('../services/agentRunEventLog.js', () => ({
+  readPersistentMindEvents: mocks.readPersistentMindEvents,
+  readPersistentMindHistory: mocks.readPersistentMindHistory,
+}));
 vi.mock('../services/cosState.js', () => ({ loadState: mocks.loadState }));
 vi.mock('../services/persistentMindContext.js', () => ({
   appendPersistentMindAnnotation: mocks.appendPersistentMindAnnotation,
@@ -48,6 +52,7 @@ describe('persistent mind routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readPersistentMindEvents.mockResolvedValue({ events: [], cursor: null, gap: false, hasMore: false, snapshot: {} });
+    mocks.readPersistentMindHistory.mockResolvedValue([{ eventId: 'event-1' }]);
     mocks.getPersistentMindState.mockResolvedValue({
       enabled: true, status: 'idle', started: false, queuedMessages: [{ id: 'private', text: 'must not leak' }],
       activeTurn: null, lastCompletedTurnId: null, lastCompletedAt: null, nextEligibleWakeAt: null,
@@ -138,7 +143,17 @@ describe('persistent mind routes', () => {
     });
     expect(res.status).toBe(201);
     expect(mocks.promotePersistentMindMemory).toHaveBeenCalledWith(expect.objectContaining({
-      approved: true, content: 'Safe summary', sourceEventId: 'event-1',
+      id: 'promotion-1', approved: true, content: 'Safe summary', sourceEventId: 'event-1',
     }));
+  });
+
+  it('refuses action annotations for an event outside the retained mind ledger', async () => {
+    mocks.readPersistentMindHistory.mockResolvedValue([]);
+    expect((await post('/mind/events/missing/acknowledge', { id: 'ack-1' })).status).toBe(404);
+    expect((await post('/mind/events/missing/promote', {
+      id: 'promotion-1', approved: true, content: 'Safe summary',
+    })).status).toBe(404);
+    expect(mocks.appendPersistentMindAnnotation).not.toHaveBeenCalled();
+    expect(mocks.promotePersistentMindMemory).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,7 @@ import Banner from '../../ui/Banner';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
+const MAX_VISIBLE_EVENTS = PAGE_LIMIT * MAX_BACKFILL_PAGES;
 
 const EVENT_LABELS = {
   'mind.message.accepted': 'User input',
@@ -35,7 +36,7 @@ const eventText = (event) => {
 const mergeEvents = (previous, incoming) => {
   const byId = new Map(previous.map((event) => [event.eventId, event]));
   for (const event of incoming) byId.set(event.eventId, event);
-  return [...byId.values()].sort((a, b) => a.sequence - b.sequence);
+  return [...byId.values()].sort((a, b) => a.sequence - b.sequence).slice(-MAX_VISIBLE_EVENTS);
 };
 
 const mintId = (prefix) => `${prefix}-${uuidv4()}`;
@@ -48,12 +49,14 @@ export default function MindTab() {
   const [mind, setMind] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [gap, setGap] = useState(false);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [kind, setKind] = useState('message');
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [lifecyclePending, setLifecyclePending] = useState(null);
+  const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
   const cursorRef = useRef(null);
   const loadPendingRef = useRef(false);
@@ -71,13 +74,15 @@ export default function MindTab() {
     let page = 0;
     let accumulated = [];
     let sawGap = false;
+    let sawTruncation = false;
     let needsMore = false;
     try {
       do {
         const response = await api.getPersistentMind({ cursor, limit: PAGE_LIMIT }, { silent: true });
         accumulated = mergeEvents(accumulated, response.events || []);
         sawGap ||= response.gap === true;
-        cursor = response.cursor || cursor;
+        sawTruncation ||= response.truncated === true;
+        cursor = response.gap === true ? response.cursor : response.cursor || cursor;
         setMind({ state: response.state, profile: response.profile, autonomyMode: response.autonomyMode });
         page += 1;
         needsMore = response.hasMore === true && !sawGap;
@@ -86,6 +91,7 @@ export default function MindTab() {
       cursorRef.current = cursor;
       setEvents((previous) => reset || sawGap || previous === null ? accumulated : mergeEvents(previous, accumulated));
       setGap(sawGap);
+      setTruncated((current) => reset ? sawTruncation : current || sawTruncation);
       setLoadError(null);
       if (needsMore) deferredLoadRef.current = true;
     } catch (error) {
@@ -161,6 +167,14 @@ export default function MindTab() {
     setSubmitError(null);
   };
 
+  const changeText = (next) => {
+    if (submitError) {
+      draftIdRef.current = null;
+      setSubmitError(null);
+    }
+    setText(next);
+  };
+
   const runLifecycle = async (action) => {
     setLifecyclePending(action);
     setLifecycleError(null);
@@ -178,26 +192,33 @@ export default function MindTab() {
   };
 
   const acknowledge = async (event) => {
+    if (eventActionPending) return;
+    setEventActionPending(event.eventId);
     setLifecycleError(null);
     try {
-      await api.acknowledgePersistentMindEvent(event.eventId, mintId('ack'), { silent: true });
+      await api.acknowledgePersistentMindEvent(event.eventId, `ack-${event.eventId}`, { silent: true });
       await loadHistory();
     } catch (error) {
       setLifecycleError(error?.message || 'Could not acknowledge the action');
+    } finally {
+      setEventActionPending(null);
     }
   };
 
   const promote = async (event) => {
     const content = eventText(event);
-    if (!content) return;
+    if (!content || eventActionPending) return;
+    setEventActionPending(event.eventId);
     setLifecycleError(null);
     try {
       await api.promotePersistentMindEvent(event.eventId, {
-        id: mintId('promotion'), approved: true, content, summary: content.slice(0, 500), type: 'insight', category: 'other',
+        id: `promotion-${event.eventId}`, approved: true, content, summary: content.slice(0, 500), type: 'insight', category: 'other',
       }, { silent: true });
       await loadHistory();
     } catch (error) {
       setLifecycleError(error?.message || 'Could not promote the action');
+    } finally {
+      setEventActionPending(null);
     }
   };
 
@@ -217,7 +238,7 @@ export default function MindTab() {
             {mind ? `${mind.profile?.providerId || 'No provider'} · ${mind.profile?.model || 'No model'} · ${mind.profile?.effort || 'provider default'} · autonomy ${mind.autonomyMode}` : 'Profile unavailable'}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2" aria-label="Persistent mind lifecycle">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Persistent mind lifecycle">
           {!state?.started && <ActionButton label="Start" icon={CirclePlay} pending={lifecyclePending === 'start'} onClick={() => runLifecycle('start')} />}
           {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
           {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
@@ -227,6 +248,7 @@ export default function MindTab() {
       </header>
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
+      {truncated && <Banner tone="info" title="Showing recent history">The trace is bounded to the newest {MAX_VISIBLE_EVENTS} events; older retained events are not shown.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
@@ -279,9 +301,11 @@ export default function MindTab() {
               <p className="text-sm text-port-text">{eventLabel(selectedEvent.kind)}</p>
               {selectedEvent.kind === 'mind.capability.request' && (
                 <div className="flex flex-wrap gap-2">
-                  <ActionButton label="Acknowledge" icon={Check} onClick={() => acknowledge(selectedEvent)} />
-                  <ActionButton label="Promote" icon={Upload} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
+                  <ActionButton label="Acknowledge" icon={Check} pending={eventActionPending === selectedEvent.eventId} onClick={() => acknowledge(selectedEvent)} />
                 </div>
+              )}
+              {['mind.capability.request', 'mind.summary', 'mind.model.result'].includes(selectedEvent.kind) && (
+                <ActionButton label="Promote" icon={Upload} pending={eventActionPending === selectedEvent.eventId} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
               )}
             </>
           ) : <p className="text-sm text-port-text-muted">Choose an event to keep the selection in the URL and attach an annotation.</p>}
@@ -299,7 +323,7 @@ export default function MindTab() {
           </div>
           <div>
             <label htmlFor="mind-input-text" className="mb-1 block text-sm font-medium text-port-text">{kind === 'message' ? 'Message' : 'Comment or idea'}</label>
-            <textarea id="mind-input-text" value={text} onChange={(event) => setText(event.target.value)} maxLength={8000} rows={3} className="w-full resize-y rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text" placeholder={kind === 'message' ? 'What should the mind consider on its next eligible wake?' : 'Add context without turning it into an immediate task.'} />
+            <textarea id="mind-input-text" value={text} onChange={(event) => changeText(event.target.value)} maxLength={8000} rows={3} className="w-full resize-y rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text" placeholder={kind === 'message' ? 'What should the mind consider on its next eligible wake?' : 'Add context without turning it into an immediate task.'} />
           </div>
         </div>
         {kind === 'annotation' && selectedEventId && <p className="mt-2 text-xs text-port-text-muted">Attached to selected event {selectedEventId}</p>}

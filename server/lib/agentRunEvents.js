@@ -132,7 +132,8 @@ const DROPPED_KEY_PATTERNS = [
   /^result$/i,
   /^params$/i,
   /^payload$/i,
-  /^transcript/i
+  /^transcript/i,
+  /^error$/i
 ];
 
 /** Bounds. A ledger line must stay a diagnostic, not become a record copy. */

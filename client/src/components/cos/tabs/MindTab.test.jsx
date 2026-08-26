@@ -47,6 +47,7 @@ const response = (overrides = {}) => ({
   cursor: '1:mind-message:message-1',
   gap: false,
   hasMore: false,
+  truncated: false,
   snapshot: {},
   state: { enabled: true, started: true, status: 'waiting', pauseReason: null },
   profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
@@ -112,6 +113,25 @@ describe('MindTab', () => {
     expect(screen.getByText(/reloaded from the newest bounded snapshot/i)).toBeInTheDocument();
   });
 
+  it('adopts a null server cursor after a fully pruned gap', async () => {
+    renderTab();
+    await screen.findByText('Review the next bounded slice.');
+    api.getPersistentMind.mockResolvedValueOnce(response({ events: [], cursor: null, gap: true }));
+    await act(async () => { socket.emitServer('connect'); });
+    await waitFor(() => expect(api.getPersistentMind).toHaveBeenCalledTimes(2));
+
+    api.getPersistentMind.mockResolvedValueOnce(response());
+    await act(async () => { socket.emitServer('cos:mind:status'); });
+    await waitFor(() => expect(api.getPersistentMind).toHaveBeenCalledTimes(3));
+    expect(api.getPersistentMind.mock.calls[2][0].cursor).toBeNull();
+  });
+
+  it('labels a bounded initial snapshot as truncated', async () => {
+    api.getPersistentMind.mockResolvedValue(response({ truncated: true }));
+    renderTab();
+    expect(await screen.findByText('Showing recent history')).toBeInTheDocument();
+  });
+
   it('keeps a failed message for a visible idempotent retry', async () => {
     const user = userEvent.setup();
     api.sendPersistentMindMessage.mockRejectedValueOnce(new Error('Provider unavailable'));
@@ -127,6 +147,22 @@ describe('MindTab', () => {
     await waitFor(() => expect(api.sendPersistentMindMessage).toHaveBeenCalledTimes(2));
     const firstId = api.sendPersistentMindMessage.mock.calls[0][0].id;
     expect(api.sendPersistentMindMessage.mock.calls[1][0].id).toBe(firstId);
+  });
+
+  it('mints a new id when failed text is edited into a different submission', async () => {
+    const user = userEvent.setup();
+    api.sendPersistentMindMessage.mockRejectedValueOnce(new Error('Connection lost'));
+    renderTab();
+    await screen.findByText('Review the next bounded slice.');
+    await user.type(screen.getByLabelText('Message'), 'Original text');
+    await user.click(screen.getByRole('button', { name: 'Submit' }));
+    await screen.findByRole('alert');
+    const firstId = api.sendPersistentMindMessage.mock.calls[0][0].id;
+
+    await user.type(screen.getByLabelText('Message'), ' updated');
+    await user.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(api.sendPersistentMindMessage).toHaveBeenCalledTimes(2));
+    expect(api.sendPersistentMindMessage.mock.calls[1][0].id).not.toBe(firstId);
   });
 
   it('renders only redacted display fields, never hidden prompt payloads', async () => {
