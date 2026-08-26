@@ -72,7 +72,7 @@ export default function HolographicPanel({ app, agentCount, position, expanded =
             <span className="opacity-50">| {agentCount} AGENT{agentCount > 1 ? 'S' : ''}</span>
           )}
         </div>
-        {expanded && metrics.hasMetrics && metrics.onlineProcs > 0 && (
+        {metrics.hasMetrics && metrics.onlineProcs > 0 && (
           <div className="flex items-center gap-2 text-[9px] font-pixel tracking-wide mt-1">
             <span className={TONE_CLASSES[cpuTone(metrics.cpuPercent)]}>CPU {metrics.cpuPercent}%</span>
             <span className="opacity-50">|</span>
@@ -83,9 +83,15 @@ export default function HolographicPanel({ app, agentCount, position, expanded =
                 <span className="text-cyan-300/70">UP {formatDurationMs(metrics.uptimeMs)}</span>
               </>
             )}
+            {metrics.restarts > 0 && (
+              <>
+                <span className="opacity-50">|</span>
+                <span className="text-cyan-300/70" title={`${metrics.restarts} total PM2 restarts`}>{'\u21BB'}{metrics.restarts}</span>
+              </>
+            )}
           </div>
         )}
-        {expanded && metrics.unstableRestarts > 0 && (
+        {metrics.unstableRestarts > 0 && (
           <div className="font-pixel text-[8px] text-red-400 tracking-wider mt-1">
             {'\u21BB'} {metrics.unstableRestarts} UNSTABLE RESTART{metrics.unstableRestarts > 1 ? 'S' : ''}
           </div>
