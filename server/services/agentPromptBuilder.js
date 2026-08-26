@@ -14,7 +14,7 @@ import { buildPrompt } from './promptService.js';
 import { getToolsSummaryForPrompt } from './tools.js';
 import { PATHS, tryReadFile } from '../lib/fileUtils.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, isCliReviewer, resolveReviewerConfig } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, isCliReviewer, resolveReviewerConfig } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { doneSentinelName } from '../lib/agentSentinel.js';
 import { canTypeSlashCommands, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
@@ -45,7 +45,7 @@ import {
   isPrBranchWorktree,
   worktreeCommitGuidance,
 } from './promptSections/completion.js';
-import { buildReviewLoopFollowUpSection, isMergeOnlyFollowUp } from './promptSections/reviewLifecycle.js';
+import { buildLocalReviewLoopSection, buildReviewLoopFollowUpSection, isMergeOnlyFollowUp } from './promptSections/reviewLifecycle.js';
 
 export {
   detectDomainSkillTemplate,
@@ -796,6 +796,29 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     providerId, providerCommand, leanMode, worktreeInfo, isTruthyMetaFn,
   });
   const ownsPrWorkflow = inlineSection !== null;
+  // Slashdo already partitions reviewers. Plain-git completion prompts need the
+  // same split spelled out: local CLIs/local LLMs inspect the committed branch
+  // before it is public; Copilot and @login reviewers can only run after a PR.
+  const isLocalReviewer = reviewer => isCliReviewer(reviewer) || LOCAL_LLM_REVIEWERS.includes(reviewer);
+  const localReviewSection = inlineSection === 'review-loop'
+    ? buildLocalReviewLoopSection({
+      taskId: task.id,
+      branchName: worktreeInfo?.branchName || null,
+      baseBranch: worktreeInfo?.baseBranch || null,
+      localAgentLoopBody,
+      localAgentLoopBodyPath,
+      reviewers: lightReviewers,
+      optionalReviewers: lightOptionalReviewers,
+      reviewerMaxRounds: lightReviewerMaxRounds,
+      reviewerModels: lightReviewerModels,
+      reviewerEfforts: lightReviewerEfforts,
+      reviewStopMode: lightReviewStopMode,
+      reviewerApplies: lightReviewerApplies,
+    })
+    : '';
+  const prSideReviewers = lightReviewers.filter(reviewer => !isLocalReviewer(reviewer));
+  const runsPrSideReviewLoop = inlineSection === 'review-loop'
+    && (prSideReviewers.length > 0 || lightReviewerUsernames.length > 0);
 
   const taskSections = [];
   const contractSections = [];
@@ -919,10 +942,10 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
       reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies,
-      forgeCli: resolvedForgeCli
+      forgeCli: resolvedForgeCli, localReviewSection, postPrReview: ownsPrWorkflow ? runsPrSideReviewLoop : null
     }));
   } else {
-    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, noChangeSuccess, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, noChangeSuccess, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli, localReviewSection, postPrReview: ownsPrWorkflow ? runsPrSideReviewLoop : null }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion
@@ -933,14 +956,14 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     contractSections.push(buildInlineReviewLoopSection({
       taskId: task.id,
       branchName: worktreeInfo?.branchName || null,
-      runsReviewLoop: inlineSection === 'review-loop',
+      runsReviewLoop: runsPrSideReviewLoop,
       leaveOpen: false,
-      localAgentLoopBody,
-      localAgentLoopBodyPath,
+      localAgentLoopBody: null,
+      localAgentLoopBodyPath: null,
       // Only the TUI completion workflow ends on a sentinel write; a CLI run
       // signals completion by exiting.
       writesSentinel: isTui,
-      reviewers: lightReviewers,
+      reviewers: prSideReviewers,
       usernames: lightReviewerUsernames,
       optionalReviewers: lightOptionalReviewers,
       reviewerMaxRounds: lightReviewerMaxRounds,
@@ -949,6 +972,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       reviewStopMode: lightReviewStopMode,
       reviewerApplies: lightReviewerApplies,
       forgeCli: resolvedForgeCli,
+      workflowStep: localReviewSection ? 5 : 4,
     }));
   }
 

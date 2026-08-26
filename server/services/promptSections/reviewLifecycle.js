@@ -55,7 +55,7 @@ export function isMergeOnlyFollowUp(metadata = {}) {
  *   stay byte-identical so the two callers can't drift.
  * @returns {string}
  */
-export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false, rprBody = null, localAgentLoopBody = null, localAgentLoopBodyPath = null, inlineExitStep = null, forgeCli = null } = {}) {
+export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false, rprBody = null, localAgentLoopBody = null, localAgentLoopBodyPath = null, inlineExitStep = null, forgeCli = null, localOnly = false, baseBranch = '<base-branch>', inlineWorkflowStep = INLINE_REVIEW_LOOP_STEP } = {}) {
   // One parameter, not two: an `inline` boolean alongside it could disagree with
   // it, and the disagreement renders silently — `inline` with a blank exit step
   // emits a bare "6." and a truncated merge-gate hand-back.
@@ -75,7 +75,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     return buildMergeFollowUpSection({
       prUrl, prBranch, prNumber, prOwner, prRepo, sourceTaskId, verbose, inlineExitStep,
       prHost: metadata.reviewLoopPRHost ?? '',
-      forgeCli: reviewForgeCli,
+      forgeCli: reviewForgeCli, inlineWorkflowStep,
     });
   }
   // Arbitrary GitHub reviewer usernames (gate-only PR reviewers), appended to
@@ -191,7 +191,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // an agent whose reviewer binary was missing self-reviewed and merged anyway
   // — the exact regression this note blocks.
   const missingCliNote = hasCli
-    ? `**Missing reviewer CLI:** verify each reviewer's binary is on PATH (${cliBinaries.map(c => `\`command -v ${c.binary}\``).join(' / ')}) before concluding it is unavailable. If a configured reviewer's binary genuinely is not installed, that reviewer is UNSATISFIED — do NOT substitute your own self-review and do NOT merge. Post a PR comment naming the missing command and exit.`
+    ? `**Missing reviewer CLI:** verify each reviewer's binary is on PATH (${cliBinaries.map(c => `\`command -v ${c.binary}\``).join(' / ')}) before concluding it is unavailable. If a configured reviewer's binary genuinely is not installed, that reviewer is UNSATISFIED — do NOT substitute your own self-review and do NOT ${localOnly ? 'push or open a PR/MR' : 'merge'}. ${localOnly ? 'Exit without opening the PR/MR.' : 'Post a PR comment naming the missing command and exit.'}`
     : '';
   // "multi" reflects the TOTAL number of review sources (keyed reviewers +
   // username reviewers) so the ordered per-reviewer loop wording kicks in as
@@ -252,7 +252,9 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     ...(localLlmPins.some(p => p.effort) ? ['effort: "…"'] : []),
     'diff: .'
   ].join(', ');
-  const diffCommand = reviewForgeCli === 'glab'
+  const diffCommand = localOnly
+    ? `git diff ${baseBranch}...HEAD`
+    : reviewForgeCli === 'glab'
     ? `glab mr diff ${prNumber || '<MR_NUMBER>'}`
     : `gh pr diff ${prNumber || '<PR_NUMBER>'}`;
   const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
@@ -280,13 +282,13 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
       : 'request a Copilot review when you reach its turn'} (poll every 5–15s, max 5 min/round), then re-request on later rounds.` : null,
-    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works).${cliBinaryNote}${reviewerPinNote}${cliProcedurePointer}` : null,
+    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${baseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}).${cliBinaryNote}${reviewerPinNote}${cliProcedurePointer}` : null,
     hasLocalLlm ? `**lmstudio / ollama**: ${localLlmInvocation}` : null,
     hasGithubUser ? `**@github reviewers**: ${githubUsersInvocation}` : null,
   ].filter(Boolean).join(' ');
   // Name the BINARY, not the slug: `Invoke the \`antigravity\` CLI` sent a
   // follow-up agent hunting for a command that does not exist.
-  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.${reviewerPinNote}${cliProcedurePointer}`;
+  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${baseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}). Capture its findings as concrete issues to address.${reviewerPinNote}${cliProcedurePointer}`;
   // Resolved sequentially so a future reviewer kind only adds one branch
   // instead of deepening the nested ternary.
   let waitOrInvokeStep;
@@ -311,7 +313,9 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   // Inline runs opened the PR seconds ago inside their own completion workflow,
   // so nothing pre-requested anything — claiming otherwise would have the agent
   // poll forever for a Copilot review no one asked for.
-  const initialReviewState = inline
+  const initialReviewState = localOnly
+    ? `Run every configured local reviewer against the committed branch before any push or PR/MR creation.`
+    : inline
     ? 'Nothing has reviewed this PR yet — you must request/invoke each configured reviewer yourself against its diff.'
     : (hasCopilot && copilotIsFirst)
     ? 'The system has already requested the initial Copilot code review (Copilot leads the order).'
@@ -330,7 +334,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     '```bash',
     `curl -sS -X POST http://localhost:5555/api/cos/tasks/${sourceTaskId}/challenge -H 'Content-Type: application/json' -d '{"reason":"<why the finding is wrong>","evidence":"<file:line or diff quote>","reviewer":"<disputed reviewer>"}'`,
     '```',
-    'A `409` (`CHALLENGE_EXHAUSTED` = the one challenge is spent, or `CHALLENGE_BUDGET_EXHAUSTED` = the task is out of retry budget) means you can\'t dispute — then fix the finding or, if genuinely blocked, post a PR comment and stop. After filing, RE-CHECK: re-run the disputed reviewer (or another configured reviewer) against the current diff, then resolve — overturned → `POST .../challenge/resolve` with `{"outcome":"upheld"}` and continue to merge; confirmed → fix it, or send `{"outcome":"escalated"}` to hand the dispute to the user.' + (hasLocalLlm ? ' For a local reviewer you may instead POST `{"recheck":{"backend":"<lmstudio|ollama>","diff":"<unified diff>"}}` and let the server re-run it and auto-derive the outcome.' : ''),
+    `A \`409\` (\`CHALLENGE_EXHAUSTED\` = the one challenge is spent, or \`CHALLENGE_BUDGET_EXHAUSTED\` = the task is out of retry budget) means you can't dispute — then fix the finding or, if genuinely blocked, ${localOnly ? 'stop without pushing or opening a PR/MR' : 'post a PR comment and stop'}. After filing, RE-CHECK: re-run the disputed reviewer (or another configured reviewer) against the current diff, then resolve — overturned → \`POST .../challenge/resolve\` with \`{"outcome":"upheld"}\` and continue to ${localOnly ? 'the PR/MR creation step' : 'merge'}; confirmed → fix it, or send \`{"outcome":"escalated"}\` to hand the dispute to the user.` + (hasLocalLlm ? ' For a local reviewer you may instead POST `{"recheck":{"backend":"<lmstudio|ollama>","diff":"<unified diff>"}}` and let the server re-run it and auto-derive the outcome.' : ''),
   ].join('\n');
   // Per-reviewer round caps. This prompt drives the loop in PROSE (it isn't
   // slashdo parsing a `~max=<n>` suffix), so a configured cap only binds if it's
@@ -391,7 +395,11 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   const exitStep = inline
     ? `6. ${inlineExitStep}`
     : `6. Exit. Do **not** run \`/do:push\` or open a new PR${leaveOpen ? '' : ' — the merge handles everything'}. The system will clean up your worktree on exit.`;
-  const closingSteps = leaveOpen
+  const closingSteps = localOnly
+    ? [
+      '4. When the local reviewer list is exhausted (or the stop mode triggers), return to the Completion Workflow and continue with the push and PR/MR creation step. Do NOT push or open the PR/MR before this local loop is clean.',
+    ]
+    : leaveOpen
     ? [
       '4. When the reviewer list is exhausted (or the stop mode triggers), **leave the PR open** — do NOT merge it, and do NOT delete the branch. Its JIRA ticket is sitting in review and a human lands both together; merging here would leave the work merged and the ticket stuck in review.',
       // Forge-aware: `gh pr comment` fails outright on a GitLab MR URL.
@@ -416,12 +424,14 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     ].filter(Boolean);
 
   // Framing only — everything below it is identical for both callers.
-  const heading = inline ? '## Review Loop' : '## Review-Loop Follow-up (PRIMARY OBJECTIVE)';
-  const opening = inline
-    ? `This runs as **step ${INLINE_REVIEW_LOOP_STEP} of the Completion Workflow above**, against the PR you just opened on \`${prBranch}\` (\`${prUrl}\` / \`${prNumber}\` are the shell variables you captured there). ${initialReviewState} ${objective}`
+  const heading = localOnly ? '### Local Review Before Opening the PR/MR' : (inline ? '## Review Loop' : '## Review-Loop Follow-up (PRIMARY OBJECTIVE)');
+  const opening = localOnly
+    ? `This runs as **step 3 of the Completion Workflow above**, against the committed branch \`${prBranch}\` and its base \`${baseBranch}\`. ${initialReviewState}`
+    : inline
+    ? `This runs as **step ${inlineWorkflowStep} of the Completion Workflow above**, against the PR you just opened on \`${prBranch}\` (\`${prUrl}\` / \`${prNumber}\` are the shell variables you captured there). ${initialReviewState} ${objective}`
     : `A previous agent finished implementing the work for source task **${sourceTaskId}** and opened **PR ${prUrl}** on branch \`${prBranch}\`. ${initialReviewState} ${objective}`;
 
-  if (verbose) {
+  if (verbose && !localOnly) {
     return `
 ${heading}
 ${opening}
@@ -452,7 +462,9 @@ ${cliReviewerProcedure}${(rprBody && (hasCopilot || hasGithubUser)) ? `\n### /do
   }
 
   // Compact light-path variant.
-  const compactOpening = inline
+  const compactOpening = localOnly
+    ? opening
+    : inline
     ? opening
     : `A previous agent finished task **${sourceTaskId}** and opened **PR ${prUrl}** on \`${prBranch}\`. ${initialReviewState} ${leaveOpen ? 'Drive the review-and-fix loop to completion — do NOT merge (JIRA-tracked; a human lands it).' : 'Drive the review-and-fix loop to completion and merge.'}`;
   return [
@@ -463,16 +475,40 @@ ${cliReviewerProcedure}${(rprBody && (hasCopilot || hasGithubUser)) ? `\n### /do
     '',
     '**Loop UNTIL all reviewers are satisfied (or the stop mode triggers), capped at 10 iterations per reviewer:**',
     `1. ${waitOrInvokeStep}`,
-    '2. If unresolved findings: fix in this worktree, run tests, commit (`feat:`/`fix:` prefix, no Co-Authored-By), push' + (hasCopilot ? ', and (for Copilot) resolve the addressed threads.' : '.'),
+    '2. If unresolved findings: fix in this worktree, run tests, commit (`feat:`/`fix:` prefix, no Co-Authored-By)' + (localOnly ? ', then re-run the same local reviewer. Do NOT push or open a PR/MR yet.' : ', push' + (hasCopilot ? ', and (for Copilot) resolve the addressed threads.' : '.')),
     '3. Re-review with the same reviewer until clean, then advance to the next reviewer in the list.',
     ...closingSteps,
     '',
-    '**Hard stop:** if a reviewer is not converged after 10 rounds, post a PR comment summarising blockers and exit.',
+    `**Hard stop:** if a reviewer is not converged after 10 rounds, ${localOnly ? 'do NOT push or open a PR/MR; report the unresolved blocker and exit.' : 'post a PR comment summarising blockers and exit.'}`,
     repeatedCommentsNote,
     '',
     challengeProtocolNote,
     cliReviewerProcedure
   ].filter(Boolean).join('\n');
+}
+
+/**
+ * Build the local half of an inline review workflow. Local CLIs and local LLMs
+ * can inspect the worktree directly, so they must finish before the branch is
+ * pushed; forge-side reviewers remain in the post-PR section.
+ */
+export function buildLocalReviewLoopSection({
+  taskId, branchName, baseBranch, localAgentLoopBody, localAgentLoopBodyPath = null,
+  reviewers, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode, reviewerApplies,
+}) {
+  const localReviewers = (reviewers || []).filter(reviewer => isCliReviewer(reviewer) || LOCAL_LLM_REVIEWERS.includes(reviewer));
+  if (!localReviewers.length) return '';
+  return buildReviewLoopFollowUpSection({
+    reviewLoopPRBranch: branchName || '<branch>',
+    reviewLoopReviewers: localReviewers,
+    reviewLoopOptionalReviewers: optionalReviewers,
+    reviewLoopReviewerMaxRounds: reviewerMaxRounds,
+    reviewLoopReviewerModels: reviewerModels,
+    reviewLoopReviewerEfforts: reviewerEfforts,
+    reviewLoopStopMode: reviewStopMode,
+    reviewLoopReviewerApplies: reviewerApplies,
+    sourceTaskId: taskId || 'unknown',
+  }, { localAgentLoopBody, localAgentLoopBodyPath, localOnly: true, baseBranch: baseBranch || '<base-branch>' });
 }
 
 /**
@@ -554,7 +590,7 @@ export function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>',
  * @param {Object} opts - PR coordinates + `verbose` (full/api path) vs compact.
  * @returns {string}
  */
-function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false, inlineExitStep = null, forgeCli = null }) {
+function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '', prRepo = '', prHost = '', sourceTaskId = 'unknown', verbose = false, inlineExitStep = null, forgeCli = null, inlineWorkflowStep = INLINE_REVIEW_LOOP_STEP }) {
   const inline = inlineExitStep !== null;
   // PortOS opens GitLab MRs via `glab` too, so a GitLab host must not be handed
   // `gh` commands (the host is persisted by spawnReviewLoopFollowUp). Classify
@@ -594,7 +630,7 @@ function buildMergeFollowUpSection({ prUrl, prBranch, prNumber = '', prOwner = '
   return [
     inline ? '## Merge Gate' : '## Merge Follow-up (PRIMARY OBJECTIVE)',
     inline
-      ? `This runs as **step ${INLINE_REVIEW_LOOP_STEP} of the Completion Workflow above**, against the PR you just opened on \`${prBranch}\` (\`${prUrl}\` / \`${prNumber}\` are the shell variables you captured there). **No code review was requested for this task, so nothing else will merge this PR — land it yourself once CI is green.**`
+      ? `This runs as **step ${inlineWorkflowStep} of the Completion Workflow above**, against the PR you just opened on \`${prBranch}\` (\`${prUrl}\` / \`${prNumber}\` are the shell variables you captured there). **No code review was requested for this task, so nothing else will merge this PR — land it yourself once CI is green.**`
       : `A previous agent finished the work for source task **${sourceTaskId}** and opened **PR ${prUrl}** on \`${prBranch}\`. **No code review was requested for this task, so nothing else will merge this PR — your job is to land it once CI is green.**`,
     '',
     ...steps,
