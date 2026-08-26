@@ -285,6 +285,7 @@ export function assemblePersistentMindContext({
   maxChars = PERSISTENT_MIND_TRAJECTORY_LIMITS.maxContextChars,
   recentEventLimit = PERSISTENT_MIND_TRAJECTORY_LIMITS.recentContextEvents,
   promptVersion = PERSISTENT_MIND_ROLLUP_PROMPT_VERSION,
+  coverageGap = null,
 } = {}) {
   const cap = Math.max(1_000, Math.min(Number(maxChars) || PERSISTENT_MIND_TRAJECTORY_LIMITS.maxContextChars, 100_000));
   const ordered = orderedMindEvents(events, mindId);
@@ -314,7 +315,9 @@ export function assemblePersistentMindContext({
   let summaryState = !hasOmittedHistory
     ? (ordered.length === 0 ? 'empty' : 'not-needed')
     : 'unavailable';
-  if (hasOmittedHistory) {
+  if (coverageGap) {
+    summaryState = 'gap';
+  } else if (hasOmittedHistory) {
     const stale = selectedRollups.some((rollup) => rollup.provenance.promptVersion !== promptVersion);
     const failed = selectedRollups.some((rollup) => rollup.status === 'failed');
     const everyOlderEventCovered = older.every((event) => effectiveReadyRollups.some((rollup) => (
@@ -380,6 +383,7 @@ export function assemblePersistentMindContext({
     chars: text.length,
     approximateTokens: Math.ceil(text.length / 4),
     summaryState,
+    coverageGap,
     omittedRange: hasOmittedHistory ? {
       fromSequence: omittedStart,
       toSequence: omittedEnd,

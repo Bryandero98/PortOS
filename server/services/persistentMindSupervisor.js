@@ -485,6 +485,18 @@ async function runOnePersistentMindTurn() {
       await recordTurnProfile(turn.id, prepared);
       if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
 
+      const latestRoot = await loadState();
+      const slot = await acquireLocalEndpointProviderSlot(prepared.provider, latestRoot.agents, turn.id);
+      if (!slot.ok) {
+        await parkActiveTurn(turn.id, slot.reason, 'waiting');
+        return;
+      }
+      release = slot.release;
+      if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
+      // One accounted provider span covers both optional context summarization
+      // and the turn itself. A local adapter must not bypass endpoint capacity
+      // merely because its first inference happens while context is prepared.
+      runStartedAt = Date.now();
       const context = await preparePersistentMindContext({
         mindId: mind.mindId,
         identity: turnAdapter.identity || 'One supervised persistent Chief of Staff mind.',
@@ -500,6 +512,7 @@ async function runOnePersistentMindTurn() {
             })
           : null,
       });
+      if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
       await appendMindEvent({
         kind: 'mind.model.request',
         mindId: mind.mindId,
@@ -513,16 +526,8 @@ async function runOnePersistentMindTurn() {
           contextSummaryState: context.summaryState,
         },
       });
-
-      const latestRoot = await loadState();
-      const slot = await acquireLocalEndpointProviderSlot(prepared.provider, latestRoot.agents, turn.id);
-      if (!slot.ok) {
-        await parkActiveTurn(turn.id, slot.reason, 'waiting');
-        return;
-      }
-      release = slot.release;
       if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
-      runStartedAt = Date.now();
+
       const result = await turnAdapter.run({
         turnId: turn.id,
         wake: turn.wake,

@@ -366,9 +366,58 @@ describe('persistent mind supervisor', () => {
     await supervisor.drainPersistentMind();
 
     expect(run).not.toHaveBeenCalled();
+    expect(mock.prepareContext).not.toHaveBeenCalled();
     expect(mock.root.persistentMind.status).toBe('waiting');
     expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
     expect(mock.root.persistentMind.pauseReason).toContain('at capacity');
+  });
+
+  it('holds one local endpoint slot and one usage span across context summarization and the turn', async () => {
+    const contextReady = deferred();
+    const release = vi.fn();
+    mock.acquireSlot.mockResolvedValue({ ok: true, release });
+    mock.prepareContext.mockImplementationOnce(() => contextReady.promise);
+    const run = vi.fn(async () => ({}));
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-cloud' } })),
+      summarize: vi.fn(async () => 'summary'),
+      run,
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    const drain = supervisor.drainPersistentMind();
+    await vi.waitFor(() => expect(mock.prepareContext).toHaveBeenCalled());
+
+    expect(mock.acquireSlot).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+
+    contextReady.resolve({ text: 'bounded context', chars: 15, summaryState: 'ready' });
+    await drain;
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(mock.recordUsage).toHaveBeenCalledWith('cos', expect.objectContaining({ actions: 1 }));
+  });
+
+  it('does not run a turn canceled while context preparation is pending', async () => {
+    const contextReady = deferred();
+    mock.prepareContext.mockImplementationOnce(() => contextReady.promise);
+    const run = vi.fn(async () => ({}));
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-cloud' } })),
+      run,
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    const drain = supervisor.drainPersistentMind();
+    await vi.waitFor(() => expect(mock.prepareContext).toHaveBeenCalled());
+
+    await supervisor.pausePersistentMind();
+    contextReady.resolve({ text: 'bounded context', chars: 15, summaryState: 'ready' });
+    await drain;
+
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.status).toBe('paused');
   });
 
   it('does not schedule or run a wake while the CoS lifecycle gate is closed', async () => {
