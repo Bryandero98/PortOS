@@ -304,12 +304,18 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
     }
   }, [config?.embeddingProviderId, config?.embeddingModel, setProviderHook, setModelHook]);
 
+  // Only re-run when the persisted profile itself changes — not when the
+  // provider-model hook's setters are re-created. `useProviderModels`
+  // memoizes them, but a fresh object each render (as in a naive test
+  // mock) would otherwise turn this into an unconditional-setState loop,
+  // since `next` is a new object on every call.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const next = mindProfileFromConfig(config);
     setMindProfile(next);
     setMindProviderHook(next.providerId);
     setMindModelHook(next.model);
-  }, [config?.persistentMindProfile, setMindProviderHook, setMindModelHook]);
+  }, [config?.persistentMindProfile]);
 
   const [editing, setEditing] = useState(false);
   const [formData, setFormData] = useState(() => getDefaultFormData(config, avatarStyle));
