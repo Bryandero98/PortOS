@@ -111,12 +111,30 @@ export async function preparePersistentMindContext({
   const history = await readPersistentMindHistory(mindId);
   let rollups = await readPersistentMindRollups(mindId);
   const older = history.slice(0, Math.max(0, history.length - Math.max(1, recentEventLimit)));
+  let coverageGap = null;
 
-  if (older.length > 0 && typeof summarize === 'function') {
+  if (older.length > 0) {
     const previous = latestReadyRollup(rollups, promptVersion);
     const coveredThrough = previous?.source.toSequence ?? -1;
     const rangeEvents = older.filter((event) => event.sequence > coveredThrough);
     if (rangeEvents.length > 0) {
+      const expectedPredecessor = previous?.source.toSequence ?? null;
+      const brokenLinkIndex = rangeEvents.findIndex((event, index) => {
+        const expected = index === 0 ? expectedPredecessor : rangeEvents[index - 1].sequence;
+        return event.data?.previousSequence !== expected;
+      });
+      if (brokenLinkIndex >= 0) {
+        const brokenEvent = rangeEvents[brokenLinkIndex];
+        const expected = brokenLinkIndex === 0
+          ? expectedPredecessor
+          : rangeEvents[brokenLinkIndex - 1].sequence;
+        const actualPredecessor = brokenEvent.data?.previousSequence;
+        coverageGap = {
+          expectedAfterSequence: expected,
+          retainedFromSequence: brokenEvent.sequence,
+          recordedPredecessorSequence: Number.isSafeInteger(actualPredecessor) ? actualPredecessor : null,
+        };
+      }
       const source = {
         fromSequence: previous?.source.fromSequence ?? rangeEvents[0].sequence,
         toSequence: rangeEvents.at(-1).sequence,
@@ -125,7 +143,7 @@ export async function preparePersistentMindContext({
       };
       const rollupId = `${mindId}:${source.fromSequence}-${source.toSequence}:v${promptVersion}`;
       const alreadyAttempted = rollups.some((rollup) => rollup.id === rollupId);
-      if (forceSummary || !alreadyAttempted) {
+      if (!coverageGap && typeof summarize === 'function' && (forceSummary || !alreadyAttempted)) {
         const outcome = await summaryOutcome(summarize, {
           mindId,
           source,
@@ -180,6 +198,7 @@ export async function preparePersistentMindContext({
     maxChars,
     recentEventLimit,
     promptVersion,
+    coverageGap,
   });
 }
 

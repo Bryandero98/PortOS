@@ -45,7 +45,7 @@ const event = (sequence, kind = 'mind.message.accepted') => ({
   turnId: kind === 'mind.message.accepted' ? null : 'turn-1',
   sequence,
   at: `2026-08-25T12:00:0${sequence}.000Z`,
-  data: { displayText: `Visible event ${sequence}` },
+  data: { displayText: `Visible event ${sequence}`, previousSequence: sequence > 1 ? sequence - 1 : null },
 });
 
 beforeEach(() => {
@@ -176,6 +176,40 @@ describe('persistent mind rollups', () => {
     expect(context.summaryState).toBe('ready');
     expect(context.text).toContain('Updated cumulative summary.');
     expect(context.text).not.toContain('First cumulative summary.');
+  });
+
+  it('reports a retained-history gap instead of claiming complete rollup coverage', async () => {
+    mock.history = [event(2), event(3), event(4)];
+
+    const context = await preparePersistentMindContext({ recentEventLimit: 1 });
+
+    expect(await readPersistentMindRollups()).toEqual([]);
+    expect(context).toMatchObject({
+      summaryState: 'gap',
+      coverageGap: {
+        expectedAfterSequence: null,
+        retainedFromSequence: 2,
+        recordedPredecessorSequence: 1,
+      },
+    });
+    expect(context.text).toContain('summary-cache=gap');
+  });
+
+  it('detects a missing event inside the retained summary range', async () => {
+    mock.history = [event(1), event(2), event(4), event(5)];
+    const summarize = vi.fn(async () => 'This must not bridge the missing sequence.');
+
+    const context = await preparePersistentMindContext({ recentEventLimit: 1, summarize });
+
+    expect(summarize).not.toHaveBeenCalled();
+    expect(context).toMatchObject({
+      summaryState: 'gap',
+      coverageGap: {
+        expectedAfterSequence: 2,
+        retainedFromSequence: 4,
+        recordedPredecessorSequence: 3,
+      },
+    });
   });
 
   it('fails closed on a corrupt cache instead of replacing it with empty state', async () => {

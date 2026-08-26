@@ -31,6 +31,7 @@ const {
   flushRunEvents,
   __resetRunEventLogCache,
   MAX_ACTIVE_EVENTS,
+  MAX_ACTIVE_MIND_EVENTS,
   MAX_EVENT_AGE_DAYS
 } = await import('./agentRunEventLog.js');
 const { buildRunEvent } = await import('../lib/agentRunEvents.js');
@@ -38,11 +39,13 @@ const { persistentMindEventCursor } = await import('../lib/persistentMindTraject
 
 const ACTIVE = join(LEDGER_DIR, 'run-events.jsonl');
 const ARCHIVE = join(LEDGER_DIR, 'run-events.1.jsonl');
+const MIND_ACTIVE = join(LEDGER_DIR, 'mind-events.jsonl');
+const MIND_ARCHIVE = join(LEDGER_DIR, 'mind-events.1.jsonl');
 const MIND_SEQUENCES = join(LEDGER_DIR, 'persistent-mind-sequences.json');
 
 /** Wipe the on-disk ledger AND the in-process caches — i.e. a fresh install. */
 function resetLedger() {
-  for (const path of [ACTIVE, ARCHIVE, MIND_SEQUENCES]) if (existsSync(path)) rmSync(path);
+  for (const path of [ACTIVE, ARCHIVE, MIND_ACTIVE, MIND_ARCHIVE, MIND_SEQUENCES]) if (existsSync(path)) rmSync(path);
   __resetRunEventLogCache();
 }
 
@@ -167,6 +170,18 @@ describe('persistent-mind ordering, replay, and cursors', () => {
     expect(events.every((event, index) => index === 0 || event.sequence > events[index - 1].sequence)).toBe(true);
   });
 
+  it('keeps predecessor provenance when a capability payload fills the key budget', async () => {
+    const data = Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`k${index}`, index]));
+    const result = await appendMindEvent({
+      kind: 'mind.capability.request',
+      eventId: 'mind-capability:wide',
+      data,
+    });
+
+    expect(result.event.data.previousSequence).toBeNull();
+    expect(result.event.data.k39).toBe(39);
+  });
+
   it('deduplicates an explicit event id without consuming another sequence', async () => {
     const first = await appendMessage('one');
     const duplicate = await appendMessage('one');
@@ -200,7 +215,7 @@ describe('persistent-mind ordering, replay, and cursors', () => {
 
   it('keeps sequence order after all raw events expire and the wall clock moves backwards', async () => {
     const first = await appendMessage('one');
-    writeFileSync(ACTIVE, '');
+    writeFileSync(MIND_ACTIVE, '');
     restartServer();
     vi.setSystemTime(new Date('2026-08-17T13:00:00.000Z'));
 
@@ -238,7 +253,7 @@ describe('persistent-mind ordering, replay, and cursors', () => {
     expect(page.events.map((item) => item.data.messageId)).toEqual(['two']);
     expect(page.cursor).toBe(persistentMindEventCursor(history[1]));
 
-    writeFileSync(ACTIVE, history.slice(1).map((item) => `${JSON.stringify(item)}\n`).join(''));
+    writeFileSync(MIND_ACTIVE, history.slice(1).map((item) => `${JSON.stringify(item)}\n`).join(''));
     restartServer();
     const recovered = await readPersistentMindEvents({ cursor, limit: 2 });
     expect(recovered.gap).toBe(true);
@@ -287,6 +302,88 @@ describe('retention / rotation bound', () => {
     await appendRunEvent({ kind: 'run.spawned', runId: 'fresh', at: '2026-08-18T12:00:00.000Z' });
     expect(countLines(ARCHIVE)).toBe(MAX_ACTIVE_EVENTS);
     expect(countLines(ACTIVE)).toBe(1);
+  });
+
+  it('keeps persistent-mind chatter in its own larger rotation pool', async () => {
+    const mindSeed = Array.from({ length: MAX_ACTIVE_MIND_EVENTS }, (_, index) => `${JSON.stringify(buildRunEvent({
+      kind: 'mind.wake',
+      mindId: 'cos-persistent-mind',
+      sequence: index + 1,
+      eventId: `mind-${index}`,
+      at: '2026-08-18T10:00:00.000Z',
+      data: { previousSequence: index || null },
+    }))}\n`).join('');
+    writeFileSync(MIND_ACTIVE, mindSeed);
+    await appendRunEvent({ kind: 'run.spawned', runId: 'ordinary', at: '2026-08-18T12:00:00.000Z' });
+    restartServer();
+    await appendMindEvent({ kind: 'mind.wake', eventId: 'mind-fresh' });
+
+    expect(countLines(ACTIVE)).toBe(1);
+    expect(countLines(ARCHIVE)).toBe(0);
+    expect(countLines(MIND_ACTIVE)).toBe(1);
+    expect(countLines(MIND_ARCHIVE)).toBe(MAX_ACTIVE_MIND_EVENTS);
+    const stats = await getRunEventLedgerStats();
+    expect(stats.maxRetainedMindEvents).toBe(MAX_ACTIVE_MIND_EVENTS * 2);
+  });
+
+  it('does not let a full mind page crowd ordinary run diagnostics out of their read cap', async () => {
+    const ordinary = buildRunEvent({ kind: 'run.spawned', runId: 'ordinary', at: '2026-08-18T10:00:00.000Z' });
+    const minds = Array.from({ length: 1001 }, (_, index) => buildRunEvent({
+      kind: 'mind.wake',
+      mindId: 'cos-persistent-mind',
+      sequence: index + 1,
+      eventId: `mind-page-${index}`,
+      at: '2026-08-18T10:00:00.000Z',
+      data: { previousSequence: index || null },
+    }));
+    writeFileSync(ACTIVE, `${JSON.stringify(ordinary)}\n`);
+    writeFileSync(MIND_ACTIVE, minds.map((event) => `${JSON.stringify(event)}\n`).join(''));
+    restartServer();
+
+    expect((await readRunEvents()).map((event) => event.runId)).toEqual(['ordinary']);
+    expect((await getRunProjections()).map((state) => state.id)).toEqual(['ordinary']);
+  });
+
+  it('re-homes rollback-era mind events without counting them as ordinary diagnostics', async () => {
+    const ordinary = buildRunEvent({ kind: 'run.spawned', runId: 'ordinary', at: '2026-08-18T10:00:00.000Z' });
+    const legacyMind = buildRunEvent({
+      kind: 'mind.wake',
+      mindId: 'cos-persistent-mind',
+      sequence: 10,
+      eventId: 'legacy-mind',
+      at: '2026-08-18T10:00:01.000Z',
+    });
+    writeFileSync(ACTIVE, `${JSON.stringify(ordinary)}\n${JSON.stringify(legacyMind)}\n`);
+    restartServer();
+
+    expect(await getRunEventLedgerStats()).toMatchObject({
+      archivedEvents: 0,
+      activeEvents: 1,
+      mindArchivedEvents: 0,
+      mindActiveEvents: 1,
+    });
+    expect((await readRunEvents()).map((event) => event.runId)).toEqual(['ordinary']);
+    expect((await readPersistentMindHistory()).map((event) => event.eventId)).toEqual(['legacy-mind']);
+    expect(countLines(ACTIVE)).toBe(1);
+    expect(countLines(MIND_ACTIVE)).toBe(1);
+  });
+
+  it('preserves structurally valid future kinds from the physical mind ledger', async () => {
+    const future = {
+      ...buildRunEvent({
+        kind: 'mind.wake',
+        mindId: 'cos-persistent-mind',
+        sequence: 1,
+        eventId: 'future-mind-kind',
+        at: '2026-08-18T10:00:00.000Z',
+      }),
+      kind: 'mind.future-boundary',
+    };
+    writeFileSync(MIND_ACTIVE, `${JSON.stringify(future)}\n`);
+    restartServer();
+
+    expect((await readPersistentMindHistory()).map((event) => event.kind)).toEqual(['mind.future-boundary']);
+    expect((await getRunEventLedgerStats()).mindActiveEvents).toBe(1);
   });
 });
 
@@ -434,11 +531,11 @@ describe('retention — age bound (#4540)', () => {
       at: stale(),
       data: { messageId: 'ancient', displayText: 'Retain until it can be summarized.' },
     });
-    writeFileSync(ACTIVE, `${JSON.stringify(mindEvent)}\n`);
+    writeFileSync(MIND_ACTIVE, `${JSON.stringify(mindEvent)}\n`);
     restartServer();
 
     expect((await readPersistentMindHistory()).map((item) => item.eventId)).toEqual(['mind-message:ancient']);
-    expect(countLines(ACTIVE)).toBe(1);
+    expect(countLines(MIND_ACTIVE)).toBe(1);
     expect(await appendMindEvent({
       kind: 'mind.message.accepted',
       eventId: 'mind-message:ancient',
