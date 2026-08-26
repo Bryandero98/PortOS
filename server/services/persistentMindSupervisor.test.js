@@ -16,6 +16,13 @@ const mock = vi.hoisted(() => ({
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
   prepareContext: vi.fn(async () => ({ text: 'bounded context', chars: 15, summaryState: 'not-needed' })),
   daemonRunning: true,
+  profile: {
+    ok: true,
+    provider: { id: 'example-cloud' },
+    model: 'example-model',
+    effort: 'high',
+    thinkingInterface: 'text',
+  },
 }));
 
 vi.mock('./cosState.js', () => ({
@@ -55,11 +62,19 @@ vi.mock('./persistentMindContext.js', () => ({
   preparePersistentMindContext: (...args) => mock.prepareContext(...args),
 }));
 
+vi.mock('./persistentMindProfile.js', () => ({
+  resolvePersistentMindProfile: vi.fn(async () => mock.profile),
+}));
+
 const supervisor = await import('./persistentMindSupervisor.js');
 
 const makeRoot = () => ({
   paused: false,
-  config: { domainAutonomy: { cos: 'execute' }, maxConcurrentAgents: 3 },
+  config: {
+    domainAutonomy: { cos: 'execute' },
+    maxConcurrentAgents: 3,
+    persistentMindProfile: { enabled: true, providerId: 'example-cloud', model: 'example-model', effort: 'high', thinkingInterface: 'text' },
+  },
   agents: {},
   persistentMind: createDefaultPersistentMindState(),
 });
@@ -79,6 +94,13 @@ describe('persistent mind supervisor', () => {
     mock.budget = { withinBudget: true, exceeded: null };
     mock.daemonRunning = true;
     mock.recordUsage.mockClear();
+    mock.profile = {
+      ok: true,
+      provider: { id: 'example-cloud' },
+      model: 'example-model',
+      effort: 'high',
+      thinkingInterface: 'text',
+    };
     mock.acquireSlot.mockReset();
     mock.acquireSlot.mockResolvedValue({ ok: true, release: vi.fn() });
     mock.appendMindEvent.mockClear();
@@ -145,10 +167,25 @@ describe('persistent mind supervisor', () => {
     ]));
 
     expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
+      profile: expect.objectContaining({ provider: { id: 'example-cloud' }, model: 'example-model', effort: 'high' }),
+    }));
     expect(mock.acquireSlot).toHaveBeenCalledTimes(1);
     expect(mock.root.persistentMind.activeTurn).toBeNull();
     expect(mock.root.persistentMind.recentMessageIds).toContain('message-1');
     expect(mock.recordUsage).toHaveBeenCalledWith('cos', expect.objectContaining({ actions: 1 }));
+  });
+
+  it('pauses before adapter preparation when the pinned profile cannot resolve', async () => {
+    const prepare = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({ prepare, run: vi.fn() });
+    mock.profile = { ok: false, error: 'Pinned provider unavailable' };
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    await supervisor.drainPersistentMind();
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind).toMatchObject({ status: 'degraded', pauseReason: 'Pinned provider unavailable' });
   });
 
   it('recovers an orphaned turn without losing or duplicating its accepted message', async () => {
@@ -310,6 +347,13 @@ describe('persistent mind supervisor', () => {
 
   it('requeues a claimed message when the shared local endpoint has no slot', async () => {
     const run = vi.fn();
+    mock.profile = {
+      ok: true,
+      provider: { id: 'example-local', endpoint: 'http://127.0.0.1:1234' },
+      model: 'example-model',
+      effort: 'high',
+      thinkingInterface: 'text',
+    };
     await supervisor.registerPersistentMindTurnAdapter({
       prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-local', endpoint: 'http://127.0.0.1:1234' } })),
       run,

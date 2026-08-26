@@ -3,7 +3,7 @@ import { ServerError } from './errorHandler.js';
 import { partialWithoutDefaults, emptyToUndefined, emptyToNull, optionalBooleanMap } from './zodCompat.js';
 import { WORK_TRACKERS } from './workTracker.js';
 import { PROVIDER_FAMILY_IDS } from './providerFamilies.js';
-import { INSTANCE_FEATURE_IDS } from './instanceFeatureRegistry.js';
+import { APP_FEATURE_IDS, INSTANCE_FEATURE_IDS } from './instanceFeatureRegistry.js';
 import { MAX_MONTHLY_COST } from './subscriptionSavings.js';
 import { QUEUEABLE_IMAGE_MODES, VIDEO_GEN_MODES } from './generationModes.js';
 import { RENDER_TARGETS, RENDER_TARGET_BACKEND_AUTO } from './renderTargets.js';
@@ -91,6 +91,13 @@ export const datadogConfigSchema = z.object({
   serviceName: z.string().optional(),
   environment: z.string().optional()
 });
+
+// Per-managed-app feature participation. An absent key or null means inherit
+// the install-wide Settings > Features value; true/false is an app override.
+// The app-level list intentionally excludes POST, which has no managed-app tab.
+export const appFeatureOverridesSchema = z.object(
+  Object.fromEntries(APP_FEATURE_IDS.map((id) => [id, z.boolean().nullable().optional()]))
+).strict();
 
 // POST /api/datadog/instances. API keys may be empty when updating an
 // existing instance because the route preserves the stored secret in that
@@ -292,6 +299,7 @@ export const appSchema = z.object({
   // task when it diverges. See lib/repoStateExpectations.js. Unset = ON: an install
   // that never hears about a leaked branch just accumulates them.
   verifyRepoStateOnCompletion: z.boolean().optional(),
+  featureOverrides: appFeatureOverridesSchema.optional(),
   jira: jiraConfigSchema.optional().nullable(),
   datadog: datadogConfigSchema.optional().nullable(),
   // Where this app's autonomous work items live (single source per app).

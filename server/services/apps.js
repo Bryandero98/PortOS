@@ -7,6 +7,7 @@ import { NON_PM2_TYPES, usesPm2, isDesktopType } from './streamingDetect.js';
 import { listProcessesStrict } from './pm2.js';
 import { SELF_IMPROVEMENT_TASK_TYPES } from './taskScheduleRegistry.js';
 import { sanitizeTaskMetadata } from '../lib/validation.js';
+import { isPlainObject } from '../lib/objects.js';
 import { resolveAppWorkTracker } from '../lib/workTracker.js';
 import { PORTS } from '../lib/ports.js';
 import { hasTailscaleCert } from '../../lib/tailscale-https.js';
@@ -439,6 +440,13 @@ export async function createApp(appData) {
     app.layeredIntelligence = appData.layeredIntelligence;
   }
 
+  // An absent map means every managed-app feature inherits the install-wide
+  // setting. Preserve an explicitly supplied (possibly empty) map so create
+  // and update have the same override contract.
+  if (isPlainObject(appData.featureOverrides)) {
+    app.featureOverrides = appData.featureOverrides;
+  }
+
   data.apps[id] = app;
   await saveApps(data);
 
@@ -458,10 +466,19 @@ export async function updateApp(id, updates) {
 
   // Remove id and uiUrl from updates if present (id is key, uiUrl is derived)
   const { id: _id, uiUrl: _uiUrl, ...cleanUpdates } = updates;
+  // Feature overrides are a partial map: changing one app feature must not
+  // erase the other per-app choices that are already persisted.
+  const featureOverrides = isPlainObject(cleanUpdates.featureOverrides)
+    ? {
+      ...(isPlainObject(data.apps[id].featureOverrides) ? data.apps[id].featureOverrides : {}),
+      ...cleanUpdates.featureOverrides,
+    }
+    : null;
 
   const app = {
     ...data.apps[id],
     ...cleanUpdates,
+    ...(featureOverrides ? { featureOverrides } : {}),
     createdAt: data.apps[id].createdAt, // Preserve creation date
     updatedAt: new Date().toISOString()
   };

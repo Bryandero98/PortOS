@@ -337,6 +337,17 @@ describe('cosTaskStore.addTask', () => {
     expect(reloaded === true || reloaded === 'true').toBe(true);
   });
 
+  it('marks explicitly dispatched tasks so the scheduler does not race their spawn', async () => {
+    const task = await addTask({ description: 'run this now' }, 'internal', { suppressDequeue: true });
+    const change = mock.events.find(e => e.name === 'tasks:changed' && e.payload.task?.id === task.id);
+
+    expect(change.payload).toMatchObject({
+      type: 'internal',
+      action: 'added',
+      suppressDequeue: true
+    });
+  });
+
   describe('targeted instance pin (#4520)', () => {
     it('persists targetInstanceId and round-trips it through markdown', async () => {
       const created = await addTask({ description: 'gpu work', id: 'task-pin', targetInstanceId: 'instance-bbbb' }, 'user');

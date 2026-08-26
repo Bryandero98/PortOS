@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INSTANCE_FEATURES, INSTANCE_FEATURE_IDS, countConfiguredInstances } from './instanceFeatureRegistry.js';
+import { APP_FEATURE_IDS, INSTANCE_FEATURES, INSTANCE_FEATURE_IDS, countConfiguredInstances } from './instanceFeatureRegistry.js';
 
 describe('instance feature registry', () => {
   it('declares an id, label, description and default for every feature', () => {
@@ -11,6 +11,12 @@ describe('instance feature registry', () => {
     }
     expect(INSTANCE_FEATURE_IDS).toEqual(INSTANCE_FEATURES.map((f) => f.id));
     expect(new Set(INSTANCE_FEATURE_IDS).size).toBe(INSTANCE_FEATURE_IDS.length);
+  });
+
+  it('keeps managed-app feature overrides inside the registered catalog', () => {
+    expect(APP_FEATURE_IDS).toEqual(['datadog', 'jira', 'gsd']);
+    expect(APP_FEATURE_IDS.every((id) => INSTANCE_FEATURE_IDS.includes(id))).toBe(true);
+    expect(new Set(APP_FEATURE_IDS).size).toBe(APP_FEATURE_IDS.length);
   });
 });
 
