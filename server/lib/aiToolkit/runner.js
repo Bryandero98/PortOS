@@ -773,9 +773,11 @@ export function createRunnerService(config = {}) {
           metadata.usedReasoningAsFallback = usedReasoningAsFallback;
           await atomicWrite(metadataPath, metadata);
 
-          await providerStatusService?.markApiSuccess(provider.id).catch(err => {
-            console.error(`❌ Failed to clear provider rate-limit state: ${err.message}`);
-          });
+          if (typeof providerStatusService?.markApiSuccess === 'function') {
+            await providerStatusService.markApiSuccess(provider.id).catch(err => {
+              console.error(`❌ Failed to clear provider rate-limit state: ${err.message}`);
+            });
+          }
 
           safeSettle(() => hooks.onRunCompleted?.(metadata, output), `Run ${runId} onRunCompleted hook`);
           safeSettle(() => onComplete?.(metadata), `Run ${runId} onComplete`);

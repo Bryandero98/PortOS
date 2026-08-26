@@ -149,6 +149,26 @@ describe('AI Toolkit runner service', () => {
     expect(metadata.success).toBe(true);
   });
 
+  it('keeps a successful generation successful with a partial provider status service', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    stubStreamingFetch();
+    const runner = createRunnerService({
+      dataDir,
+      providerStatusService: { markRateLimited: vi.fn(async () => {}) },
+      hooks: { ensureProviderReady: async () => ({ success: true }) },
+    });
+    let complete;
+    const completed = new Promise(resolve => { complete = resolve; });
+
+    await runner.executeApiRun({
+      runId: 'run-partial-status-service', provider: runReady(), model: null, prompt: 'hi',
+      workspacePath: process.cwd(), screenshots: [], onData: undefined, onComplete: complete,
+    });
+
+    expect(await completed).toMatchObject({ success: true });
+  });
+
   it('sends num_ctx in the request body when the provider opts in', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     tempDirs.push(dataDir);
