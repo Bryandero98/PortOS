@@ -230,12 +230,15 @@ export function createRunnerService(config = {}) {
       if (errorAnalysis.category === ERROR_CATEGORIES.USAGE_LIMIT && errorAnalysis.requiresFallback) {
         await providerStatusService.markUsageLimit(providerId, {
           message: errorAnalysis.message,
-          waitTime: errorAnalysis.waitTime
+          waitTime: errorAnalysis.waitTime,
+          rateLimitWindow: errorAnalysis.rateLimitWindow,
         }).catch(err => {
           console.error(`❌ Failed to mark provider usage limit: ${err.message}`);
         });
       } else if (errorAnalysis.category === ERROR_CATEGORIES.RATE_LIMIT) {
-        await providerStatusService.markRateLimited(providerId).catch(err => {
+        await providerStatusService.markRateLimited(providerId, {
+          rateLimitWindow: errorAnalysis.rateLimitWindow,
+        }).catch(err => {
           console.error(`❌ Failed to mark provider rate limited: ${err.message}`);
         });
       }
@@ -685,7 +688,8 @@ export function createRunnerService(config = {}) {
         const errorAnalysis = analyzeHttpError({
           status: response.status || 0,
           statusText: response.statusText || '',
-          body: responseBody
+          body: responseBody,
+          headers: response.headers,
         });
 
         metadata.error = errorAnalysis.message || `API error: ${response.status}`;
@@ -768,6 +772,10 @@ export function createRunnerService(config = {}) {
           metadata.hadReasoning = reasoning.length > 0;
           metadata.usedReasoningAsFallback = usedReasoningAsFallback;
           await atomicWrite(metadataPath, metadata);
+
+          await providerStatusService?.markApiSuccess(provider.id).catch(err => {
+            console.error(`❌ Failed to clear provider rate-limit state: ${err.message}`);
+          });
 
           safeSettle(() => hooks.onRunCompleted?.(metadata, output), `Run ${runId} onRunCompleted hook`);
           safeSettle(() => onComplete?.(metadata), `Run ${runId} onComplete`);

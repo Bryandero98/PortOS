@@ -203,6 +203,58 @@ describe('Provider Status Service', () => {
       expect(status.reason).toBe('rate-limit');
       expect(status.message).toBe('Rate limit exceeded - temporary');
     });
+
+    it('uses a bounded provider window for cooldown and persists only normalized metadata', async () => {
+      const observedAt = new Date().toISOString();
+      const status = await statusService.markRateLimited('test-provider', {
+        rateLimitWindow: {
+          observedAt,
+          retryAfterMs: 250,
+          remaining: 0,
+          limit: 100,
+          secret: 'must-not-persist',
+        },
+      });
+
+      const cooldown = new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime();
+      expect(cooldown).toBe(1000);
+      expect(status.rateLimitWindow).toEqual({ observedAt, retryAfterMs: 250, remaining: 0, limit: 100 });
+      expect(JSON.stringify(status)).not.toContain('must-not-persist');
+    });
+
+    it('caps a provider-stated cooldown at the configured maximum', async () => {
+      const svc = createProviderStatusService({
+        dataDir: TEST_DATA_DIR,
+        statusFile: 'ps-rate-cap.json',
+        defaultRateLimitWait: 500,
+        maxRateLimitWait: 2000,
+      });
+      await svc.init();
+      const status = await svc.markRateLimited('p', {
+        rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 10000 },
+      });
+      expect(new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime()).toBe(2000);
+    });
+
+    it('clears rate-limit telemetry after a successful API request', async () => {
+      await statusService.markRateLimited('test-provider', {
+        rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 500 },
+      });
+      const status = await statusService.markApiSuccess('test-provider');
+      expect(status).toMatchObject({ available: true, reason: 'ok' });
+      expect(status.rateLimitWindow).toBeUndefined();
+    });
+
+    it('ages stale windows out of public status', async () => {
+      const observedAt = new Date(Date.now() - (6 * 60 * 60 * 1000)).toISOString();
+      await statusService.markUnavailable('test-provider', {
+        reason: 'network-error',
+        waitTimeMs: 30000,
+        extras: { rateLimitWindow: { observedAt, remaining: 2, secret: 'hidden' } },
+      });
+      expect(statusService.getStatus('test-provider').rateLimitWindow).toBeUndefined();
+      expect(JSON.stringify(statusService.getAllStatuses())).not.toContain('hidden');
+    });
   });
 
   describe('markAvailable', () => {

@@ -200,6 +200,16 @@ export default function ProviderStatusCard() {
                       <span>Estimated recovery: {status.timeUntilRecovery}</span>
                     </div>
                   )}
+
+                  {status?.rateLimitWindow && (
+                    <div className="mt-2 text-xs text-gray-500" data-testid={`rate-limit-window-${provider.id}`}>
+                      API window
+                      {status.rateLimitWindow.remaining != null && `: ${status.rateLimitWindow.remaining} remaining`}
+                      {status.rateLimitWindow.limit != null && ` of ${status.rateLimitWindow.limit}`}
+                      {status.rateLimitWindow.retryAfterMs != null && ` · retry after ${Math.ceil(status.rateLimitWindow.retryAfterMs / 1000)}s`}
+                      {status.rateLimitWindow.resetAt && ` · resets ${new Date(status.rateLimitWindow.resetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                    </div>
+                  )}
                 </div>
 
                 <button
