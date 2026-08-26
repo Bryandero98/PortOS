@@ -33,7 +33,15 @@ describe('persistent mind state', () => {
   });
 
   it('does not preserve a running status when the durable started flag is false', () => {
-    expect(normalizePersistentMindState({ enabled: true, started: false, status: 'thinking' }).status).toBe('idle');
+    const activeTurn = {
+      id: 't1',
+      wake: { kind: 'message', message: { id: 'm1', text: 'keep me', createdAt: iso(1) } },
+      startedAt: iso(1), heartbeatAt: iso(1), providerId: null, model: null, effort: null,
+    };
+    const stopped = normalizePersistentMindState({ enabled: true, started: false, status: 'thinking', activeTurn });
+    expect(stopped.status).toBe('idle');
+    expect(stopped.activeTurn).toBeNull();
+    expect(stopped.queuedMessages.map((message) => message.id)).toEqual(['m1']);
     expect(normalizePersistentMindState({ enabled: true, started: true, status: 'disabled' }).status).toBe('idle');
   });
 

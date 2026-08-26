@@ -26,6 +26,7 @@ import { cosEvents, emitLog } from './cosEvents.js';
 import { schedule, cancel } from './eventScheduler.js';
 import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
 import { acquireLocalEndpointProviderSlot } from './cosLocalEndpointSlots.js';
+import { acquireCosActionReservation, acquireCosGlobalSlot } from './cosAdmissionReservations.js';
 
 export const PERSISTENT_MIND_WAKE_EVENT_ID = 'cos-persistent-mind-wake';
 export const PERSISTENT_MIND_WATCHDOG_EVENT_ID = 'cos-persistent-mind-watchdog';
@@ -327,14 +328,20 @@ async function runOnePersistentMindTurn() {
   if (!mind.enabled || !mind.started || mind.status === 'paused') return;
   if (root.paused || getDomainMode(root.config, 'cos') !== 'execute') return;
 
-  const runningAgents = Object.values(root.agents || {}).filter((agent) => agent.status === 'running').length;
+  const runningAgentEntries = Object.values(root.agents || {}).filter((agent) => agent.status === 'running');
   const maxConcurrentAgents = Number(root.config?.maxConcurrentAgents);
-  if (Number.isSafeInteger(maxConcurrentAgents) && runningAgents >= maxConcurrentAgents) {
+  const admissionId = `persistent-mind:${randomUUID()}`;
+  const globalSlot = acquireCosGlobalSlot({
+    agents: root.agents,
+    limit: maxConcurrentAgents,
+    reservationId: admissionId,
+  });
+  if (!globalSlot.ok) {
     const updated = await mutateMindState((current) => ({
       mind: {
         ...current,
         status: 'waiting',
-        pauseReason: `CoS agent capacity exhausted (${runningAgents}/${maxConcurrentAgents})`,
+        pauseReason: globalSlot.reason,
         nextEligibleWakeAt: new Date(Date.now() + PERSISTENT_MIND_LIMITS.BACKOFF_BASE_MS).toISOString(),
       },
     }));
@@ -342,91 +349,119 @@ async function runOnePersistentMindTurn() {
     return;
   }
 
-  let budget;
+  let actionReservation = null;
   try {
-    budget = await getDomainBudgetStatus('cos');
-  } catch (error) {
-    const message = `Persistent mind budget check failed: ${errorMessage(error)}`;
-    const updated = await mutateMindState((current) => ({
-      mind: {
-        ...current,
-        status: 'degraded',
-        pauseReason: message,
-        lastError: message,
-        nextEligibleWakeAt: new Date(Date.now() + persistentMindBackoffMs(current.failureCount + 1)).toISOString(),
-        failureCount: current.failureCount + 1,
-      },
-    }));
-    emitMindStatus(updated.state);
-    return;
-  }
-  if (!budget.withinBudget) {
-    const updated = await mutateMindState((current) => ({
-      mind: {
-        ...current,
-        status: 'waiting',
-        pauseReason: `CoS ${budget.exceeded || 'daily'} budget exhausted`,
-        nextEligibleWakeAt: new Date(Date.now() + PERSISTENT_MIND_LIMITS.BACKOFF_MAX_MS).toISOString(),
-      },
-    }));
-    emitMindStatus(updated.state);
-    return;
-  }
-
-  const turn = await claimNextTurn();
-  if (!turn) return;
-
-  const generation = runtimeGeneration;
-  const controller = new AbortController();
-  activeAbortController = controller;
-  let release = () => {};
-  let runStartedAt = null;
-  try {
-    // `prepare` must resolve the exact configured provider. The supervisor never
-    // follows a fallback chain: an unavailable pin is a visible degraded state.
-    const prepared = await turnAdapter.prepare({ wake: turn.wake, signal: controller.signal });
-    if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
-    if (!prepared?.ok || !prepared.provider) {
-      await parkActiveTurn(turn.id, prepared?.error || 'Persistent mind provider is unavailable', 'degraded', prepared?.retryAt || null);
+    let budget;
+    try {
+      budget = await getDomainBudgetStatus('cos');
+    } catch (error) {
+      const message = `Persistent mind budget check failed: ${errorMessage(error)}`;
+      const updated = await mutateMindState((current) => ({
+        mind: {
+          ...current,
+          status: 'degraded',
+          pauseReason: message,
+          lastError: message,
+          nextEligibleWakeAt: new Date(Date.now() + persistentMindBackoffMs(current.failureCount + 1)).toISOString(),
+          failureCount: current.failureCount + 1,
+        },
+      }));
+      emitMindStatus(updated.state);
       return;
     }
-    await recordTurnProfile(turn.id, prepared);
-    if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
-
-    const latestRoot = await loadState();
-    const slot = await acquireLocalEndpointProviderSlot(prepared.provider, latestRoot.agents, turn.id);
-    if (!slot.ok) {
-      await parkActiveTurn(turn.id, slot.reason, 'waiting');
+    if (!budget.withinBudget) {
+      const updated = await mutateMindState((current) => ({
+        mind: {
+          ...current,
+          status: 'waiting',
+          pauseReason: `CoS ${budget.exceeded || 'daily'} budget exhausted`,
+          nextEligibleWakeAt: new Date(Date.now() + PERSISTENT_MIND_LIMITS.BACKOFF_MAX_MS).toISOString(),
+        },
+      }));
+      emitMindStatus(updated.state);
       return;
     }
-    release = slot.release;
-    if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
-    runStartedAt = Date.now();
-    const result = await turnAdapter.run({
-      turnId: turn.id,
-      wake: turn.wake,
-      provider: prepared.provider,
-      model: prepared.model || null,
-      effort: prepared.effort || null,
-      signal: controller.signal,
-      heartbeat: () => heartbeat(turn.id, generation),
+
+    const runningAutonomous = runningAgentEntries.filter(
+      (agent) => agent.metadata?.taskType && agent.metadata.taskType !== 'user'
+    ).length;
+    actionReservation = acquireCosActionReservation({
+      budget: budget.budget,
+      usage: budget.usage,
+      inFlight: runningAutonomous,
+      reservationId: admissionId,
     });
-    await completeTurn(turn.id, { ...result, providerId: prepared.provider.id }, generation);
-  } catch (error) {
-    if (generation === runtimeGeneration) {
-      const message = controller.signal.aborted
-        ? String(controller.signal.reason || 'Persistent mind turn interrupted')
-        : errorMessage(error);
-      await parkActiveTurn(turn.id, message, 'interrupted');
-      emitLog('warn', `Persistent mind turn interrupted: ${message}`, { turnId: turn.id });
+    if (!actionReservation.ok) {
+      const updated = await mutateMindState((current) => ({
+        mind: {
+          ...current,
+          status: 'waiting',
+          pauseReason: actionReservation.reason,
+          nextEligibleWakeAt: new Date(Date.now() + PERSISTENT_MIND_LIMITS.BACKOFF_MAX_MS).toISOString(),
+        },
+      }));
+      emitMindStatus(updated.state);
+      return;
+    }
+
+    const turn = await claimNextTurn();
+    if (!turn) return;
+
+    const generation = runtimeGeneration;
+    const controller = new AbortController();
+    activeAbortController = controller;
+    let release = () => {};
+    let runStartedAt = null;
+    try {
+      // `prepare` must resolve the exact configured provider. The supervisor never
+      // follows a fallback chain: an unavailable pin is a visible degraded state.
+      const prepared = await turnAdapter.prepare({ wake: turn.wake, signal: controller.signal });
+      if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
+      if (!prepared?.ok || !prepared.provider) {
+        await parkActiveTurn(turn.id, prepared?.error || 'Persistent mind provider is unavailable', 'degraded', prepared?.retryAt || null);
+        return;
+      }
+      await recordTurnProfile(turn.id, prepared);
+      if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
+
+      const latestRoot = await loadState();
+      const slot = await acquireLocalEndpointProviderSlot(prepared.provider, latestRoot.agents, turn.id);
+      if (!slot.ok) {
+        await parkActiveTurn(turn.id, slot.reason, 'waiting');
+        return;
+      }
+      release = slot.release;
+      if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
+      runStartedAt = Date.now();
+      const result = await turnAdapter.run({
+        turnId: turn.id,
+        wake: turn.wake,
+        provider: prepared.provider,
+        model: prepared.model || null,
+        effort: prepared.effort || null,
+        signal: controller.signal,
+        heartbeat: () => heartbeat(turn.id, generation),
+      });
+      await completeTurn(turn.id, { ...result, providerId: prepared.provider.id }, generation);
+    } catch (error) {
+      if (generation === runtimeGeneration) {
+        const message = controller.signal.aborted
+          ? String(controller.signal.reason || 'Persistent mind turn interrupted')
+          : errorMessage(error);
+        await parkActiveTurn(turn.id, message, 'interrupted');
+        emitLog('warn', `Persistent mind turn interrupted: ${message}`, { turnId: turn.id });
+      }
+    } finally {
+      release();
+      if (runStartedAt != null) {
+        await recordDomainUsage('cos', { actions: 1, ms: Date.now() - runStartedAt }).catch((error) => {
+          console.error(`❌ Failed to record persistent mind usage: ${error.message}`);
+        });
+      }
     }
   } finally {
-    release();
-    if (runStartedAt != null) {
-      await recordDomainUsage('cos', { actions: 1, ms: Date.now() - runStartedAt }).catch((error) => {
-        console.error(`❌ Failed to record persistent mind usage: ${error.message}`);
-      });
-    }
+    actionReservation?.release?.();
+    globalSlot.release();
   }
 }
 

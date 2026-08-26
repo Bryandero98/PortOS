@@ -143,6 +143,21 @@ export function normalizePersistentMindState(raw) {
   if (!enabled) status = 'disabled';
   else if (!started || status === 'disabled') status = 'idle';
 
+  let selfWake = sanitizeSelfWake(source.selfWake);
+  let activeTurn = sanitizeActiveTurn(source.activeTurn);
+  if (!started && activeTurn) {
+    if (activeTurn.wake.kind === 'message') {
+      const message = activeTurn.wake.message;
+      if (!seenQueued.has(message.id) && !recentMessageIds.includes(message.id)) {
+        queuedMessages.unshift(message);
+        if (queuedMessages.length > PERSISTENT_MIND_LIMITS.MAX_QUEUED_MESSAGES) queuedMessages.pop();
+      }
+    } else if (!selfWake) {
+      selfWake = activeTurn.wake;
+    }
+    activeTurn = null;
+  }
+
   return {
     ...defaults,
     schemaVersion: PERSISTENT_MIND_SCHEMA_VERSION,
@@ -151,8 +166,8 @@ export function normalizePersistentMindState(raw) {
     status,
     pauseReason: asBoundedString(source.pauseReason, PERSISTENT_MIND_LIMITS.MAX_REASON_CHARS) || null,
     queuedMessages,
-    selfWake: sanitizeSelfWake(source.selfWake),
-    activeTurn: sanitizeActiveTurn(source.activeTurn),
+    selfWake,
+    activeTurn,
     recentMessageIds: recentMessageIds.slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS),
     lastCompletedTurnId: asId(source.lastCompletedTurnId) || null,
     lastCompletedAt: asIso(source.lastCompletedAt),

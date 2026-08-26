@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultPersistentMindState, PERSISTENT_MIND_LIMITS } from '../lib/persistentMind.js';
+import {
+  __resetCosAdmissionReservations,
+  acquireCosActionReservation,
+  acquireCosGlobalSlot,
+} from './cosAdmissionReservations.js';
 
 const mock = vi.hoisted(() => ({
   root: null,
@@ -66,6 +71,7 @@ describe('persistent mind supervisor', () => {
     mock.recordUsage.mockClear();
     mock.acquireSlot.mockReset();
     mock.acquireSlot.mockResolvedValue({ ok: true, release: vi.fn() });
+    __resetCosAdmissionReservations();
     supervisor.__resetPersistentMindSupervisorForTests();
   });
 
@@ -197,6 +203,55 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
     expect(mock.root.persistentMind.pauseReason).toBe('CoS agent capacity exhausted (1/1)');
     expect(mock.root.persistentMind.nextEligibleWakeAt).not.toBeNull();
+  });
+
+  it('holds a shared global slot throughout provider preparation', async () => {
+    const prepared = deferred();
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(() => prepared.promise),
+      run: vi.fn(async () => ({})),
+    });
+    mock.root.config.maxConcurrentAgents = 1;
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    const drain = supervisor.drainPersistentMind();
+    await vi.waitFor(() => expect(mock.root.persistentMind.activeTurn).not.toBeNull());
+
+    expect(acquireCosGlobalSlot({ agents: {}, limit: 1, reservationId: 'ordinary-task' })).toMatchObject({ ok: false });
+    await supervisor.pausePersistentMind();
+    prepared.resolve({ ok: true, provider: { id: 'example-cloud' } });
+    await drain;
+    const released = acquireCosGlobalSlot({ agents: {}, limit: 1, reservationId: 'ordinary-task' });
+    expect(released.ok).toBe(true);
+    released.release();
+  });
+
+  it('does not claim a turn when another admission reserved the final daily action', async () => {
+    mock.budget = {
+      withinBudget: true,
+      exceeded: null,
+      budget: { maxActionsPerDay: 1, maxMinutesPerDay: null },
+      usage: { actions: 0, ms: 0 },
+    };
+    const existing = acquireCosActionReservation({
+      budget: mock.budget.budget,
+      usage: mock.budget.usage,
+      reservationId: 'ordinary-agent',
+    });
+    const run = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-cloud' } })),
+      run,
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+
+    await supervisor.drainPersistentMind();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.activeTurn).toBeNull();
+    expect(mock.root.persistentMind.pauseReason).toBe('CoS actions budget exhausted');
+    existing.release();
   });
 
   it('requeues a claimed message when the shared local endpoint has no slot', async () => {

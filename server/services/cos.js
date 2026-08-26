@@ -36,6 +36,7 @@ import { getUserTimezone } from './userTimezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
+import { pendingCosActionReservations } from './cosAdmissionReservations.js';
 // Dependency-free leaf holding the shared agent maps + the runner-mode flag,
 // read by `isRunnerHolding` below.
 import { useRunner } from './agentState.js';
@@ -1085,7 +1086,11 @@ async function spawnDequeuePriority2AutoApproved(ctx) {
       const runningAutonomous = Object.values(state.agents).filter(
         (a) => a.status === 'running' && a.metadata?.taskType && a.metadata.taskType !== 'user'
       ).length;
-      autonomousActionsRemaining = remainingActionBudget(cosBudget.budget, cosBudget.usage, runningAutonomous);
+      autonomousActionsRemaining = remainingActionBudget(
+        cosBudget.budget,
+        cosBudget.usage,
+        runningAutonomous + pendingCosActionReservations()
+      );
       if (autonomousActionsRemaining === 0) {
         emitLog('info', `CoS auto-run paused — daily actions budget reached`, { domainBudget: 'cos', exceeded: 'actions' });
         cosAutonomyMode = 'off';
