@@ -682,6 +682,32 @@ describe('llamaServerManager', () => {
       expect(startCall).toContain('example-model');
     });
 
+    it('restarts a managed server with the current saved idle window', async () => {
+      const binaryPath = homebrewBinaryPath;
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(binaryPath);
+      stubBrewInfo();
+      pm2State = {
+        name: LLAMA_APP,
+        status: 'online',
+        pid: 321,
+        args: ['-m', modelPath, '--port', String(PORTS.LLAMA_SERVER), '--sleep-idle-seconds', '0'],
+      };
+      openAiModelsProbe.probeOpenAiModels.mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+      vi.spyOn(childProcess, 'execFile').mockImplementation((_bin, _args, _opts, cb) => {
+        cb(null, '--sleep-idle-seconds SECONDS', '');
+        return fakeSpawnProcess();
+      });
+      vi.spyOn(streamingSpawnModule, 'runStreamingCommand').mockResolvedValue({ success: true });
+      _resetLlamaServerStateForTests({ sleepIdleMinutes: 30 });
+
+      const result = await upgradeLlamaServer();
+
+      expect(result).toMatchObject({ success: true });
+      const startCall = execPm2Calls.find((args) => args[0] === 'start');
+      const idleFlagIndex = startCall.indexOf('--sleep-idle-seconds');
+      expect(startCall[idleFlagIndex + 1]).toBe('1800');
+    });
+
     it('refuses to update when PM2 ownership cannot be determined', async () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(homebrewBinaryPath);
       stubBrewInfo();

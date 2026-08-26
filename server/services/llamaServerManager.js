@@ -728,7 +728,10 @@ const waitForPortRelease = daemon.waitForPortRelease;
  */
 async function restartManagedLlamaServer(config, baseline) {
   await waitForPortRelease(config.port ?? PORTS.LLAMA_SERVER);
-  const started = await startLlamaServer(config).catch((err) => {
+  // The recovered PM2 config carries the effective idle flag from the old
+  // process. Leave this field undefined so startLlamaServer reads the current
+  // saved setting when an upgrade is also the next launch.
+  const started = await startLlamaServer({ ...config, sleepIdleMinutes: undefined }).catch((err) => {
     console.error(`❌ llama-server: could not restore the previous configuration after update: ${err.message}`);
     return null;
   });
