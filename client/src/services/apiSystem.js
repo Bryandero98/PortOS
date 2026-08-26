@@ -1,4 +1,4 @@
-import { request, API_BASE, maybeRedirectToLogin } from './apiCore.js';
+import { request, API_BASE, throwApiError } from './apiCore.js';
 import { downloadBlob } from '../lib/downloadBlob.js';
 
 // Alerts
@@ -195,12 +195,7 @@ export async function downloadBackupSnapshot(snapshotId) {
     // Close the handle we opened before we knew the request would fail, so the
     // picker doesn't leave a 0-byte file behind.
     await writable?.abort?.().catch(() => {});
-    const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-    maybeRedirectToLogin(response, error);
-    const err = new Error(error.error || `HTTP ${response.status}`);
-    err.code = error.code;
-    err.status = response.status;
-    throw err;
+    await throwApiError(response);
   }
 
   if (writable && response.body?.pipeTo) {

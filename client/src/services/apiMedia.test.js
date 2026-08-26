@@ -11,7 +11,12 @@ vi.mock('./apiCore.js', () => {
   // these tests instead of a mock that silently drops the side effect.
   const maybeRedirectToLogin = vi.fn();
   const throwApiError = vi.fn(async (response) => {
-    const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    // Mirrors apiCore's own null-safety: a valid JSON body that isn't an
+    // object (e.g. a bare `null`) has no `.error`/`.code`/`.context` to read,
+    // so it falls back to the same HTTP-status shape as non-JSON bodies.
+    const parsedError = await response.json().catch(() => null);
+    const error =
+      parsedError && typeof parsedError === 'object' ? parsedError : { error: `HTTP ${response.status}` };
     maybeRedirectToLogin(response, error);
     const err = new Error(error.error || `HTTP ${response.status}`);
     err.code = error?.code;
@@ -85,6 +90,14 @@ describe('cleanImage', () => {
   it('throws with the server code on an error response', async () => {
     global.fetch.mockResolvedValue(makeResponse({ status: 400, ok: false, json: { error: 'No FLUX', code: 'REGEN_BACKEND_UNAVAILABLE' } }));
     await expect(cleanImage(fakeFile, { diffusion: 'gpu' })).rejects.toMatchObject({ code: 'REGEN_BACKEND_UNAVAILABLE' });
+  });
+
+  it('forwards structured error.context through the direct-fetch wrapper', async () => {
+    const context = { jobId: 'j1', retryable: false };
+    global.fetch.mockResolvedValue(
+      makeResponse({ status: 409, ok: false, json: { error: 'busy', code: 'ERR_BUSY', context } }),
+    );
+    await expect(cleanImage(fakeFile, { diffusion: 'gpu' })).rejects.toMatchObject({ context });
   });
 
   it('honors session expiry the same way request() does (401 AUTH_REQUIRED)', async () => {

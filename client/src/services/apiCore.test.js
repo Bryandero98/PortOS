@@ -93,4 +93,13 @@ describe('request() error path (now delegating to throwApiError)', () => {
     await expect(request('/x', { silent: true })).rejects.toMatchObject({ status: 500 });
     expect(toast.error).not.toHaveBeenCalled();
   });
+
+  it('suppresses the PLATFORM_UNAVAILABLE warning toast too when { silent: true } is passed', async () => {
+    global.fetch.mockResolvedValue(
+      makeResponse({ status: 503, json: { error: 'offline', code: 'PLATFORM_UNAVAILABLE' } }),
+    );
+    await expect(request('/x', { silent: true })).rejects.toMatchObject({ code: 'PLATFORM_UNAVAILABLE' });
+    expect(toast).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
 });
