@@ -70,7 +70,15 @@ describe('remote desktop broker', () => {
     expect(Buffer.from(await echoed).toString()).toBe('RFB 003.008\n');
     client.close();
     await new Promise((resolve) => client.once('close', resolve));
-    await vi.waitFor(() => expect(broker.hasSession(token)).toBe(false));
+    await vi.waitFor(() => expect(broker.hasSession(token)).toBe(true));
+
+    const reconnected = new WebSocket(`ws://127.0.0.1:${httpServer.address().port}/remote-desktop/ws?token=${token}`);
+    await new Promise((resolve, reject) => {
+      reconnected.once('open', resolve);
+      reconnected.once('error', reject);
+    });
+    reconnected.close();
+    await new Promise((resolve) => reconnected.once('close', resolve));
     await new Promise((resolve) => httpServer.close(resolve));
   });
 

@@ -66,7 +66,7 @@ export const createRemoteDesktopBroker = ({
     deleteExpiredSessions();
     const token = randomBytes(TOKEN_BYTES).toString('base64url');
     const expiresAt = now() + SESSION_TTL_MS;
-    sessions.set(token, { connected: false, expiresAt });
+    sessions.set(token, { activated: false, connected: false, expiresAt });
     return {
       viewerPath: `/remote-desktop?token=${encodeURIComponent(token)}`,
       expiresAt: new Date(expiresAt).toISOString(),
@@ -77,7 +77,7 @@ export const createRemoteDesktopBroker = ({
     if (typeof token !== 'string' || token.length < 32) return null;
     const session = sessions.get(token);
     if (!session) return null;
-    if (session.expiresAt <= now() && !session.connected) {
+    if (session.expiresAt <= now()) {
       sessions.delete(token);
       return null;
     }
@@ -89,13 +89,19 @@ export const createRemoteDesktopBroker = ({
   const claimSession = (token) => {
     const session = readSession(token);
     if (!session || session.connected) return null;
+    if (!session.activated) {
+      session.activated = true;
+      session.expiresAt = now() + connectedSessionTtlMs;
+    }
     session.connected = true;
-    session.expiresAt = now() + connectedSessionTtlMs;
     return session;
   };
 
   const releaseSession = (token) => {
-    sessions.delete(token);
+    const session = sessions.get(token);
+    if (!session) return;
+    session.connected = false;
+    if (session.expiresAt <= now()) sessions.delete(token);
   };
 
   const mountWebSocket = (httpServer) => {
@@ -114,23 +120,29 @@ export const createRemoteDesktopBroker = ({
         return;
       }
       const token = url.searchParams.get('token');
-      if (!claimSession(token)) {
+      const session = claimSession(token);
+      if (!session) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
-      wss.handleUpgrade(request, socket, head, (webSocket) => {
-        wss.emit('connection', webSocket, request, token);
-      });
+      try {
+        wss.handleUpgrade(request, socket, head, (webSocket) => {
+          wss.emit('connection', webSocket, request, token, session.expiresAt);
+        });
+      } catch {
+        releaseSession(token);
+        socket.destroy();
+      }
     });
 
-    wss.on('connection', (webSocket, _request, token) => {
+    wss.on('connection', (webSocket, _request, token, expiresAt) => {
       const vncSocket = connect({ host, port });
       const webSocketStream = createWebSocketStream(webSocket, { encoding: null });
       let cleanedUp = false;
       const expiryTimer = setTimeout(() => {
         webSocket.close(1000, 'Remote desktop session expired');
-      }, connectedSessionTtlMs);
+      }, Math.max(1, expiresAt - now()));
       expiryTimer.unref?.();
       const cleanup = () => {
         if (cleanedUp) return;
