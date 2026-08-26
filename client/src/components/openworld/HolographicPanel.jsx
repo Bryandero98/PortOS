@@ -19,7 +19,7 @@ const TONE_CLASSES = {
   hot: 'text-red-400',
 };
 
-export default function HolographicPanel({ app, agentCount, position, expanded = false }) {
+export default function HolographicPanel({ app, agentCount, position, expanded = false, playback = false }) {
   // Live per-process PM2 telemetry already riding the app payload (roadmap 1.1) —
   // aggregated once per payload change, rendered only when there is something to show.
   const metrics = useMemo(() => computeAppMetrics(app), [app]);
@@ -72,7 +72,10 @@ export default function HolographicPanel({ app, agentCount, position, expanded =
             <span className="opacity-50">| {agentCount} AGENT{agentCount > 1 ? 'S' : ''}</span>
           )}
         </div>
-        {metrics.hasMetrics && metrics.onlineProcs > 0 && (
+        {/* Live telemetry is suppressed during history playback: pm2Status is always
+            the live snapshot, and showing current CPU beside a historical building
+            status would contradict the playback contract. */}
+        {!playback && metrics.hasMetrics && metrics.onlineProcs > 0 && (
           <div className="flex items-center gap-2 text-[9px] font-pixel tracking-wide mt-1">
             <span className={TONE_CLASSES[cpuTone(metrics.cpuPercent)]}>CPU {metrics.cpuPercent}%</span>
             <span className="opacity-50">|</span>
@@ -91,7 +94,7 @@ export default function HolographicPanel({ app, agentCount, position, expanded =
             )}
           </div>
         )}
-        {metrics.unstableRestarts > 0 && (
+        {!playback && metrics.unstableRestarts > 0 && (
           <div className="font-pixel text-[8px] text-red-400 tracking-wider mt-1">
             {'\u21BB'} {metrics.unstableRestarts} UNSTABLE RESTART{metrics.unstableRestarts > 1 ? 'S' : ''}
           </div>

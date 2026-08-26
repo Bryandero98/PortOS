@@ -47,8 +47,10 @@ export const useOpenWorldData = () => {
   aiActivityRef.current = aiActivity;
 
   const fetchApps = useCallback(async () => {
-    const data = await api.getApps().catch(() => []);
-    setApps(data);
+    // Silent + last-good preservation: this now doubles as the 30s telemetry poll,
+    // so a transient /api/apps blip must blank neither the city nor toast repeatedly.
+    const data = await api.getApps({ silent: true }).catch(() => null);
+    if (data) setApps(data);
     return data;
   }, []);
 
