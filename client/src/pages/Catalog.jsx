@@ -523,6 +523,8 @@ export default function Catalog() {
       title="Catalog settings"
       subtitle="Configure the labels and fields used by Catalog ingredients"
       size="lg"
+      closeOnEsc={false}
+      closeOnBackdrop={false}
     >
       <CatalogTypesTab />
     </Drawer>

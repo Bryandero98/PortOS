@@ -191,6 +191,10 @@ describe('resolveNavCommand — fuzzy matching', () => {
     expect(resolveNavCommand('goals')?.path).toBe('/goals/list');
   });
 
+  it('resolves the Catalog settings phrase to the feature-local drawer', () => {
+    expect(resolveNavCommand('catalog settings')?.path).toBe('/catalog?settings=1');
+  });
+
   it('resolves every canonical System Resources section name', () => {
     expect(resolveNavCommand('system resources')?.path).toBe('/system-resources/overview');
     expect(resolveNavCommand('active queues')?.path).toBe('/system-resources/queues');
