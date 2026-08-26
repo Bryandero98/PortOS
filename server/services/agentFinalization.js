@@ -136,12 +136,7 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // proof. If either check was inconclusive, leave learning undeclared rather than
   // scoring a correct no-op as a commit miss. A non-empty branch remains a real
   // change path and still uses the ordinary commit criterion below.
-  if (success && isVerifiedNoChangeTask(task) && (
-    noChangeProof?.inconclusive === true
-    || noChangeProof?.category === FORGE_UNREACHABLE_CATEGORY
-    || noChangeProof?.commitsAhead === null
-    || noChangeProof?.branch === null
-  )) return null;
+  if (success && isVerifiedNoChangeTask(task) && noChangeProof?.inconclusive === true) return null;
   // Pipeline/media tasks deliver artifacts, not a commit — the
   // commit criterion doesn't apply, so don't mislabel a clean artifact run as a
   // validation miss (which would also pollute the correlation window). null =
@@ -330,6 +325,10 @@ async function countCommitsAhead(workspacePath) {
  *   - `ok: false, category: 'forge-unreachable'` — we could not ask
  *
  * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null, noChangesToShip?: boolean, commitsAhead?: number|null, inconclusive?: boolean }>}
+ * `inconclusive: true` is set for every requested check that cannot reach an
+ * unambiguous answer about an empty branch (no resolvable branch, unreachable
+ * forge, or unreadable commit count). It is omitted for a found PR, a proven
+ * empty branch, and a readable non-empty branch missing its PR.
  */
 export async function verifyPrClaim({ task, workspacePath, success, prExpected }) {
   // Only a run that CLAIMED success has a claim to verify; a failed run is
