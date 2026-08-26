@@ -10,7 +10,13 @@ import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../../lib
 import { LIGHT_CONTEXT_PROVIDER_TYPES, SIMPLIFY_INLINE_REVIEW } from './constants.js';
 import { buildCiMergeGateSteps, buildReviewLoopFollowUpSection, LEAVE_PR_OPEN_STEP } from './reviewLifecycle.js';
 
-export const NO_CHANGE_AUDIT_GUIDANCE = 'This audit may legitimately conclude that no change is needed. First verify the shipped catalogs against authoritative sources. If they are current, leave the worktree clean and do not run the commit, push, PR, or review steps below; write the completion sentinel when this provider uses one, or exit without committing when it does not. If a change is needed, continue through the normal workflow below.';
+export const NO_CHANGE_AUDIT_GUIDANCE = 'This audit may legitimately conclude that no change is needed. First verify the data this audit owns against authoritative sources. If the audited data is current, leave the worktree clean and do not run the commit, push, PR, or review steps below; write the completion sentinel when this provider uses one, or exit without committing when it does not. If a change is needed, continue through the normal workflow below.';
+
+function withNoChangeAuditGuidance(guidance, noChangeSuccess) {
+  return noChangeSuccess && guidance
+    ? `${NO_CHANGE_AUDIT_GUIDANCE}\n\n${guidance}`
+    : guidance;
+}
 
 /**
  * Build the single "## Guidelines" completion-handoff bullet for the full
@@ -68,9 +74,6 @@ export function buildCompletionGuidelineBullet({
   if (isReadOnly) {
     return '**This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.';
   }
-  if (noChangeSuccess) {
-    return `**This audit may legitimately produce no code changes.** ${NO_CHANGE_AUDIT_GUIDANCE}`;
-  }
   if (isTui) {
     // NOTE: in production this branch is only reachable from the full/api prompt
     // path, where `isTui` is currently always false (TUI providers route through
@@ -80,7 +83,7 @@ export function buildCompletionGuidelineBullet({
     const howTo = slashdoFree
       ? 'the Completion Workflow above (plain `git` commit + PortOS handoff — this provider has no slashdo commands)'
       : `the Completion Workflow above (\`${tuiCompletionCommand}\`)`;
-    return `On successful completion, YOU run ${howTo}, then write the sentinel and stop — PortOS closes the session once it sees the sentinel; do NOT run \`/quit\`.`;
+    return withNoChangeAuditGuidance(`On successful completion, YOU run ${howTo}, then write the sentinel and stop — PortOS closes the session once it sees the sentinel; do NOT run \`/quit\`.`, noChangeSuccess);
   }
   if (worktreeInfo && willOpenPR) {
     const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
@@ -92,10 +95,10 @@ export function buildCompletionGuidelineBullet({
       : runsReviewLoop
         ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run `/do:rpr` or attempt to address review comments yourself; you will have already exited.'
         : ' No review was requested for this task, so a follow-up agent merges the PR once CI is green — do NOT try to merge it yourself; you will have already exited.';
-    return `On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${reviewSuffix}`;
+    return withNoChangeAuditGuidance(`On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${reviewSuffix}`, noChangeSuccess);
   }
   if (worktreeInfo) {
-    return 'Your worktree branch will be automatically merged back to the source branch when your task completes — do NOT open a PR.';
+    return withNoChangeAuditGuidance('Your worktree branch will be automatically merged back to the source branch when your task completes — do NOT open a PR.', noChangeSuccess);
   }
   return null;
 }
@@ -301,24 +304,23 @@ export function buildClaimFlowCompletionSection({ isTui = false, sentinelPath = 
 export function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow = false, noChangeSuccess = false }) {
   if (discardWorktree) return DISCARD_WORKTREE_NOTE;
   if (claimFlow) return 'The claim workflow in the Completion section owns the push, PR/MR, review, merge or human-handoff, and cleanup steps.';
-  if (noChangeSuccess) return NO_CHANGE_AUDIT_GUIDANCE;
-  if (isTui) return 'Commit your changes to this branch — see **Completion Workflow** below.';
+  if (isTui) return withNoChangeAuditGuidance('Commit your changes to this branch — see **Completion Workflow** below.', noChangeSuccess);
   if (isWorktreeOnExistingBranch) {
-    return 'Commit and **push** any review-fix commits to this branch (the PR points at it). Use `git pull --rebase` before pushing if needed.';
+    return withNoChangeAuditGuidance('Commit and **push** any review-fix commits to this branch (the PR points at it). Use `git pull --rebase` before pushing if needed.', noChangeSuccess);
   }
   if (hasSlashdo && willOpenPR) {
-    return 'Commit your changes here — the **Completion** section below drives the push and PR.';
+    return withNoChangeAuditGuidance('Commit your changes here — the **Completion** section below drives the push and PR.', noChangeSuccess);
   }
   if (hasSlashdo) {
-    return 'Commit your changes here — the **Completion** section below drives the push.';
+    return withNoChangeAuditGuidance('Commit your changes here — the **Completion** section below drives the push.', noChangeSuccess);
   }
   if (ownsPrWorkflow && willOpenPR) {
-    return 'Commit your changes here — the **Completion** section below drives the push, the PR, the review loop, and the merge.';
+    return withNoChangeAuditGuidance('Commit your changes here — the **Completion** section below drives the push, the PR, the review loop, and the merge.', noChangeSuccess);
   }
   if (willOpenPR) {
-    return 'Commit your changes here. The system will push and open a PR after you exit — do NOT push or open a PR yourself.';
+    return withNoChangeAuditGuidance('Commit your changes here. The system will push and open a PR after you exit — do NOT push or open a PR yourself.', noChangeSuccess);
   }
-  return 'Commit your changes here. Your branch will be merged back automatically when the task completes.';
+  return withNoChangeAuditGuidance('Commit your changes here. Your branch will be merged back automatically when the task completes.', noChangeSuccess);
 }
 
 /**
@@ -465,9 +467,11 @@ export function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLE
   // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
   // above), so `/simplify` — a Claude Code built-in — is invokable here.
   const simplifyStep = simplifyEnabled ? '1. `/simplify`' : '1. (simplify disabled — skip)';
-  const sentinelTail = noChangeSuccess
-    ? '   ## PR\n   No change needed; no PR opened.'
-    : willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+  const sentinelTail = willOpenPR
+    ? (noChangeSuccess
+        ? '   ## PR\n   <PR URL, or "No change needed; no PR opened." if the audit made no change>'
+        : '   ## PR\n   <PR URL>')
+    : '   ## Branch\n   <branch name>';
   // A PR gets merge steps — gated on the review verdict when a loop runs, on CI
   // alone when it doesn't (nothing else merges a no-review-loop PR). The one
   // exception is a PR a human lands (JIRA-tracked; see lib/prDisposition.js).
@@ -570,9 +574,11 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
   const simplifyStep = simplifyEnabled
     ? `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`
     : '1. (simplify disabled — skip)';
-  const sentinelTail = noChangeSuccess
-    ? '   ## PR\n   No change needed; no PR opened.'
-    : drivesOwnPr ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+  const sentinelTail = (drivesOwnPr || willOpenPR)
+    ? (noChangeSuccess
+        ? '   ## PR\n   <PR URL, or "No change needed; no PR opened." if the audit made no change>'
+        : '   ## PR\n   <PR URL>')
+    : '   ## Branch\n   <branch name>';
 
   const lines = [
     '## Completion Workflow',

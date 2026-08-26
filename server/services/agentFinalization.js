@@ -103,7 +103,7 @@ export function releaseAgentLane({ agentId, success, duration, exitCode, executi
  *
  * @returns {Promise<boolean|null|'skip-learning'>}
  */
-export async function evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt = null, success = false, hookResult = null, noChangesToShip = false }) {
+export async function evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt = null, success = false, hookResult = null, noChangesToShip = false, noChangeProof = null }) {
   if (terminatedByUser) return null;
   const taskType = task?.taskType || 'user';
   // The SCHEDULED type (`metadata.analysisType`) if any, else the queue category —
@@ -132,6 +132,16 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // exception to an explicitly opted-in autonomous job. Do not use the marker
   // as a general no-commit exemption: a real change still needs the commit probe.
   if (success && noChangesToShip === true && isVerifiedNoChangeTask(task)) return true;
+  // A marked no-change audit needs a forge answer and an unambiguous empty-branch
+  // proof. If either check was inconclusive, leave learning undeclared rather than
+  // scoring a correct no-op as a commit miss. A non-empty branch remains a real
+  // change path and still uses the ordinary commit criterion below.
+  if (success && isVerifiedNoChangeTask(task) && (
+    noChangeProof?.inconclusive === true
+    || noChangeProof?.category === FORGE_UNREACHABLE_CATEGORY
+    || noChangeProof?.commitsAhead === null
+    || noChangeProof?.branch === null
+  )) return null;
   // Pipeline/media tasks deliver artifacts, not a commit — the
   // commit criterion doesn't apply, so don't mislabel a clean artifact run as a
   // validation miss (which would also pollute the correlation window). null =
@@ -319,7 +329,7 @@ async function countCommitsAhead(workspacePath) {
  *     branch that DOES hold commits
  *   - `ok: false, category: 'forge-unreachable'` — we could not ask
  *
- * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null, noChangesToShip?: boolean, commitsAhead?: number|null }>}
+ * @returns {Promise<{ ok: boolean, category?: string, message?: string, branch?: string|null, noChangesToShip?: boolean, commitsAhead?: number|null, inconclusive?: boolean }>}
  */
 export async function verifyPrClaim({ task, workspacePath, success, prExpected }) {
   // Only a run that CLAIMED success has a claim to verify; a failed run is
@@ -329,7 +339,7 @@ export async function verifyPrClaim({ task, workspacePath, success, prExpected }
   if (!branch) {
     // No branch to ask about (detached HEAD, non-repo workspace). Nothing was
     // verified — say nothing rather than invent a failure.
-    return { ok: true, branch: null };
+    return { ok: true, branch: null, inconclusive: true };
   }
 
   const { resolveForgeForRepo } = await import('./git.js');
@@ -363,6 +373,7 @@ export async function verifyPrClaim({ task, workspacePath, success, prExpected }
       ok: false,
       branch,
       commitsAhead: ahead,
+      inconclusive: ahead === null,
       category: PR_MISSING_CATEGORY,
       message: `Agent reported success but no ${noun} exists for branch ${branch}`
     };
@@ -371,7 +382,8 @@ export async function verifyPrClaim({ task, workspacePath, success, prExpected }
     ok: false,
     branch,
     category: FORGE_UNREACHABLE_CATEGORY,
-    message: `Could not confirm a ${noun} for branch ${branch} — the forge is unreachable${found.detail ? ` (${String(found.detail).split('\n')[0].slice(0, 120)})` : ''}`
+    message: `Could not confirm a ${noun} for branch ${branch} — the forge is unreachable${found.detail ? ` (${String(found.detail).split('\n')[0].slice(0, 120)})` : ''}`,
+    inconclusive: true,
   };
 }
 
@@ -660,6 +672,7 @@ export async function finalizeAgent({
   // A THROW here is not a verdict — fall back to the reported outcome rather
   // than manufacturing a failure out of a check that never ran.
   let prCheckThrew = false;
+  const noChangeAudit = !terminatedByUser && reportedSuccess && isVerifiedNoChangeTask(task);
   const prVerdict = terminatedByUser
     ? { ok: true }
     : await verifyPrClaim({ task, workspacePath, success: reportedSuccess, prExpected })
@@ -676,14 +689,21 @@ export async function finalizeAgent({
   // a clean exit can satisfy its no-change success criterion. Keep this
   // auxiliary verdict separate: a non-empty branch must remain eligible for
   // cleanup to open the PR after finalize rather than being downgraded here.
-  const noChangeProof = !terminatedByUser && !prExpected && reportedSuccess && isVerifiedNoChangeTask(task)
-    ? await verifyPrClaim({ task, workspacePath, success: reportedSuccess, prExpected: true })
-      .catch(err => {
-        emitLog('warn', `⚠️ No-change verification failed for ${agentId}: ${err.message}`, { agentId });
-        return { ok: false };
-      })
-    : { ok: true };
-  const noChangesToShip = prVerdict.noChangesToShip === true || noChangeProof.noChangesToShip === true;
+  const noChangeProof = noChangeAudit
+    ? prExpected
+      ? (prCheckThrew
+          ? { ok: false, category: FORGE_UNREACHABLE_CATEGORY, inconclusive: true }
+          : prVerdict)
+      : await verifyPrClaim({ task, workspacePath, success: reportedSuccess, prExpected: true })
+        .catch(err => {
+          emitLog('warn', `⚠️ No-change verification failed for ${agentId}: ${err.message}`, { agentId });
+          return { ok: false, category: FORGE_UNREACHABLE_CATEGORY, inconclusive: true };
+        })
+    : null;
+  const effectivePrVerdict = typeof prVerdict.branch === 'string'
+    ? prVerdict
+    : (noChangeProof || prVerdict);
+  const noChangesToShip = prVerdict.noChangesToShip === true || noChangeProof?.noChangesToShip === true;
 
   // Record the verdict in the lifecycle ledger (#4540) — but ONLY when the
   // check actually reached one. `verifyPrClaim` returns the same `{ ok: true }`
@@ -701,8 +721,8 @@ export async function finalizeAgent({
   // being down is not evidence about the PR. Recording it as `verified: false`
   // would put "this run shipped no PR" on the record for a run that may well
   // have shipped one.
-  if (!prCheckThrew && typeof prVerdict.branch === 'string' && prVerdict.category !== FORGE_UNREACHABLE_CATEGORY) {
-    const verified = prVerdict.ok === true;
+  if (!prCheckThrew && typeof effectivePrVerdict.branch === 'string' && effectivePrVerdict.category !== FORGE_UNREACHABLE_CATEGORY) {
+    const verified = effectivePrVerdict.ok === true;
     await appendRunEvent({
       kind: 'run.pr-verified',
       runId,
@@ -713,12 +733,12 @@ export async function finalizeAgent({
       // path) into one entry; the verdict part keeps a run whose SECOND check
       // found the PR its first check missed from being silently suppressed by
       // the miss — that transition is the whole reason to look at the ledger.
-      eventId: `pr-verify:${agentId}:${runId || 'no-run'}:${verified ? 'ok' : prVerdict.category || 'failed'}`,
+      eventId: `pr-verify:${agentId}:${runId || 'no-run'}:${verified ? 'ok' : effectivePrVerdict.category || 'failed'}`,
       data: {
         verified,
-        branch: prVerdict.branch ?? null,
-        category: prVerdict.category ?? null,
-        noChangesToShip: prVerdict.noChangesToShip === true,
+        branch: effectivePrVerdict.branch ?? null,
+        category: effectivePrVerdict.category ?? null,
+        noChangesToShip: effectivePrVerdict.noChangesToShip === true,
       },
     });
   }
@@ -769,7 +789,7 @@ export async function finalizeAgent({
   } else if (noChangesToShip) {
     // A no-op run is a legitimate completion, not a silent one — the human still
     // wants to know a task burned an agent and concluded there was nothing to do.
-    const noChangeBranch = prVerdict.branch || noChangeProof.branch;
+    const noChangeBranch = effectivePrVerdict.branch || noChangeProof?.branch;
     emitLog('info', `🫧 ${agentId} opened no change request and committed nothing to ${noChangeBranch} — recording the run as complete with no change warranted`, {
       agentId, taskId: task?.id, branch: noChangeBranch
     });
@@ -831,6 +851,7 @@ export async function finalizeAgent({
     success,
     hookResult,
     noChangesToShip,
+    noChangeProof,
   })
     .catch(err => {
       emitLog('warn', `⚠️ Success-criteria validation failed for ${agentId}: ${err.message}`, { agentId });
@@ -969,7 +990,7 @@ export async function finalizeAgent({
   // downgraded to `pr-missing` would still be cleaned up as a success — worktree
   // removed, local branch deleted, and no resume pointer recorded — destroying
   // the state the retry needs to open the PR that is missing.
-  return { success, prVerdict };
+  return { success, prVerdict: effectivePrVerdict };
 }
 
 // Tail of the agent's raw PTY spool scanned by the transcript rescue. The

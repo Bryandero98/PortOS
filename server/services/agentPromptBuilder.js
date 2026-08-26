@@ -317,6 +317,18 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || isCreativeDirectorTask;
   const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
+  const worktreeCommitNote = worktreeInfo
+    ? worktreeCommitGuidance({
+        isTui,
+        hasSlashdo: false,
+        ownsPrWorkflow: false,
+        isWorktreeOnExistingBranch,
+        willOpenPR,
+        discardWorktree,
+        claimFlow,
+        noChangeSuccess,
+      })
+    : '';
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
 You are working in an **isolated git worktree** to avoid conflicts with other agents working concurrently.
@@ -324,17 +336,7 @@ You are working in an **isolated git worktree** to avoid conflicts with other ag
 - **Worktree Path**: \`${worktreeInfo.worktreePath}\`
 ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (latest from origin)` : ''}
 
-**Important**: ${discardWorktree
-    ? DISCARD_WORKTREE_NOTE
-    : claimFlow
-      ? 'The claim workflow in the Completion section owns its claim branch, push, PR/MR, review, merge or human-handoff, and cleanup — do not hand those steps back to PortOS.'
-    : noChangeSuccess
-      ? NO_CHANGE_AUDIT_GUIDANCE
-    : isTui
-      ? 'Commit your changes to this branch — see the **Completion Workflow** section below for the full push/PR/exit sequence.'
-      : isWorktreeOnExistingBranch
-        ? 'Commit and **push** any review-fix commits to this branch — the PR points at it, so pushed commits are how Copilot sees your fixes. Use `git pull --rebase` before pushing if needed.'
-        : `Commit your changes to this branch.${willOpenPR ? ' When your task completes, the system will push this branch and open a pull request against the default branch — do NOT push or open a PR yourself.' : ' Your commits will be automatically merged back to the main development branch when your task completes.'}`} Do NOT manually switch branches or modify the worktree configuration.
+**Important**: ${worktreeCommitNote} Do NOT manually switch branches or modify the worktree configuration.
 ${buildResumeSection(task, worktreeInfo)}` : '';
 
   // Build pipeline context section if this is a pipeline stage
@@ -371,7 +373,7 @@ Use the findings from the previous stage to inform your work. If the previous st
     ? 'run `/simplify` to review the changed code for reuse, quality, and efficiency'
     : SIMPLIFY_INLINE_REVIEW;
   // Discard tasks don't commit, so the simplify-before-commit step is moot.
-  const simplifySection = simplifyEnabled && !isTui && !discardWorktree && !claimFlow && !noChangeSuccess ? `
+  const simplifySection = simplifyEnabled && !isTui && !discardWorktree && !claimFlow ? `
 ## Simplify Step
 After completing your work and before committing, ${simplifyInstruction}. Fix any issues found, then ${worktreeInfo && willOpenPR ? 'commit your changes (do NOT push — on a successful run the system will push and open the PR after you exit; if the run fails, no push or PR happens)' : 'commit and push using `/do:push`'}.
 ` : '';
@@ -424,9 +426,7 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
       ? buildProgrammaticOutputCompletionSection(sentinelPath)
       : claimFlow
         ? buildClaimFlowCompletionSection({ isTui, sentinelPath, reviewersCsv: claimReviewersCsv(task, codeReviewDefaults, defaultReviewers) })
-  : noChangeSuccess
-    ? `${NO_CHANGE_AUDIT_GUIDANCE} If the catalogs are current, leave the worktree clean and complete using the no-change path above; if they are stale, continue through the normal commit/PR workflow.`
-  : isTui
+      : isTui
         ? buildTuiCompletionSection({
             willOpenPR, prCompletion, simplifyEnabled, noChangeSuccess,
             // Unreachable today — every `tui`/`cli` provider returns early at the
@@ -655,6 +655,7 @@ ${(() => {
 - **Before starting work**, run \`git status\` to verify a clean working tree. Do NOT stash or discard uncommitted changes — other agents may be working concurrently and expecting those changes to be present. If the tree is dirty, only commit files YOU changed for this task.
 - **NEVER use \`git stash\`** in any form (\`git stash push\`, \`git stash pop\`, etc.). This is a multi-agent system — stashing can silently destroy or corrupt another agent's or the user's in-progress work. Work around uncommitted changes instead. (Note: the backend may use \`--autostash\` in user-triggered pull operations — that is safe because those are single-user UI actions, not concurrent agent operations.)
 - **Only commit files YOU changed** for this task. Never use \`git add -A\` or \`git add .\` — always stage specific files by name.
+${noChangeSuccess ? `- **No-change audits may exit cleanly.** ${NO_CHANGE_AUDIT_GUIDANCE}` : ''}
 ${noCodeOutput
   ? `- **Do NOT commit, push, or open a PR.** This task changes no code — its result is delivered by the API call or command described above. Without this, a no-worktree task of this shape was told to \`/do:push\` **directly to the branch it is standing on**, which for a task running in the app's live checkout is its default branch.`
   : discardWorktree
@@ -663,9 +664,7 @@ ${noCodeOutput
     ? `- **Follow the claim workflow prompt above.** It owns the claim worktree and the full PR/MR lifecycle; do not stop after committing or hand push/PR/merge/cleanup back to PortOS.`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
-  : noChangeSuccess
-    ? `- **No-change audits may exit cleanly.** ${NO_CHANGE_AUDIT_GUIDANCE}`
-    : isTui && tuiSlashdoFree
+  : isTui && tuiSlashdoFree
     ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations, then write the completion sentinel. PortOS will handle the branch after it closes the session.`
     : isTui
     ? `- **Use \`${tuiCompletionCommand}\` to ${willOpenPR ? 'commit, push, and open the PR' : 'commit and push the branch'}** — see the Completion Workflow section above. Stage specific files (no \`git add -A\`), use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations.`

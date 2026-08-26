@@ -290,6 +290,7 @@ describe('verifyPrClaim (#3358)', () => {
     const verdict = await verifyPrClaim({ task: prTask(), workspacePath: '/w', success: true, prExpected: true });
     expect(verdict.ok).toBe(true);
     expect(verdict.branch).toBeNull();
+    expect(verdict.inconclusive).toBe(true);
     expect(findPullRequestForBranchMock).not.toHaveBeenCalled();
   });
 });
@@ -349,7 +350,7 @@ describe('finalizeAgent — a PR-shaped run with no PR is not a success (#3358)'
     onBranch('cos/sys-1/agent-1');
     git.ahead = 0;
     findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
-    await finalize({
+    const finalized = await finalize({
       prExpected: false,
       task: {
         ...prTask(),
@@ -360,6 +361,38 @@ describe('finalizeAgent — a PR-shaped run with no PR is not a success (#3358)'
     expect(findPullRequestForBranchMock).toHaveBeenCalledWith('cos/sys-1/agent-1', { cwd: '/w', env: null });
     const [, result] = completeAgentMock.mock.calls[0];
     expect(result).toMatchObject({ success: true, validationPassed: true });
+    expect(finalized.prVerdict).toMatchObject({ ok: true, branch: 'cos/sys-1/agent-1', noChangesToShip: true });
+  });
+
+  it('leaves validation undeclared when a marked no-op audit cannot reach the forge', async () => {
+    onBranch('cos/sys-1/agent-1');
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'unavailable', number: null, url: null, detail: 'connection refused' });
+    await finalize({
+      prExpected: false,
+      task: {
+        ...prTask(),
+        metadata: { ...prTask().metadata, autonomousJob: true, noChangeSuccess: true }
+      }
+    });
+
+    const [, result] = completeAgentMock.mock.calls[0];
+    expect(result).toMatchObject({ success: true, validationPassed: null });
+  });
+
+  it('leaves validation undeclared when a marked no-op audit cannot prove its empty branch', async () => {
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = null;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await finalize({
+      prExpected: false,
+      task: {
+        ...prTask(),
+        metadata: { ...prTask().metadata, autonomousJob: true, noChangeSuccess: true }
+      }
+    });
+
+    const [, result] = completeAgentMock.mock.calls[0];
+    expect(result).toMatchObject({ success: true, validationPassed: null });
   });
 
   it('records validation success when the marked catalog audit has no change to ship', async () => {
@@ -493,6 +526,28 @@ describe('finalizeAgent — records the PR verdict in the lifecycle ledger', () 
     onBranch('claim/issue-1');
     await finalize({ prExpected: false });
     expect(prVerified()).toHaveLength(0);
+  });
+
+  it('records the auxiliary no-change proof and returns it to cleanup', async () => {
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = 0;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    const finalized = await finalize({
+      prExpected: false,
+      task: {
+        ...prTask(),
+        metadata: { ...prTask().metadata, autonomousJob: true, noChangeSuccess: true }
+      }
+    });
+
+    expect(prVerified()).toEqual([expect.objectContaining({
+      data: expect.objectContaining({
+        verified: true,
+        branch: 'cos/sys-1/agent-1',
+        noChangesToShip: true,
+      })
+    })]);
+    expect(finalized.prVerdict).toMatchObject({ branch: 'cos/sys-1/agent-1', noChangesToShip: true });
   });
 
   it('writes NOTHING when the check itself threw', async () => {

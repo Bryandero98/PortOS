@@ -37,8 +37,10 @@ fresh-install seed snapshots (server/lib/aiToolkit/defaults/providers.sample.jso
 and data.reference/providers.json), keeping those seeds synchronized. Update the
 compatibility recognition that protects independently upgraded installs. When a
 shipped default changes, preserve the old seeded Antigravity list in
-PRIOR_ANTIGRAVITY_MODEL_CATALOGS (and update any equivalent provider-specific
-prior-default recognition required by the migration). Preserve configured-default
+PRIOR_ANTIGRAVITY_MODEL_CATALOGS. Codex has no prior-catalog recognition today —
+changing CODEX_MODELS requires adding a PRIOR_CODEX_MODEL_CATALOGS list and an
+isPriorSeededList branch in migrateCodexProvider, mirroring
+migrateAntigravityModelCatalog. Preserve configured-default
 sentinels, user-selected provider records, live-refreshed model lists, and every
 user-selected default/light/medium/heavy pin. Never rewrite data/providers.json or
 replace a customized provider list merely because it differs from the shipped

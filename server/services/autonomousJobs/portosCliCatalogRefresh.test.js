@@ -32,6 +32,8 @@ describe('PortOS CLI provider catalog refresh custom task', () => {
     expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('CODEX_MODELS')
     expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('ANTIGRAVITY_MODELS')
     expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('PRIOR_ANTIGRAVITY_MODEL_CATALOGS')
+    expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('PRIOR_CODEX_MODEL_CATALOGS')
+    expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('migrateCodexProvider')
     expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('Do NOT create a commit, push a branch, or open a PR')
     expect(PORTOS_CLI_CATALOG_REFRESH_JOB.promptTemplate).toContain('data/providers.json')
   })
