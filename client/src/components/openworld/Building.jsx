@@ -845,6 +845,7 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
           agentCount={agentCount}
           position={[0, height + 1.8, 0]}
           expanded={isProximity || focused}
+          playback={playback}
         />
       )}
     </group>
