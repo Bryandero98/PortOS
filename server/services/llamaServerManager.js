@@ -6,7 +6,7 @@
  * managed as an optional PM2 process (`portos-llama-server`).
  */
 
-import { stat } from 'fs/promises';
+import { realpath, stat } from 'fs/promises';
 import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
@@ -132,19 +132,45 @@ async function readBrewLlamaCppInfo() {
 
   return Promise.resolve()
     .then(() => JSON.parse(result.stdout))
-    .then((payload) => {
+    .then(async (payload) => {
       const formula = payload?.formulae?.find((entry) => entry?.name === LLAMA_CPP_FORMULA);
       const installed = formula?.installed?.[0];
       if (!installed) return null;
+      const prefixResult = await readCommandOutput(
+        'brew',
+        ['--prefix', LLAMA_CPP_FORMULA],
+        BREW_INFO_TIMEOUT_MS,
+      );
       return {
         installedVersion: String(installed.version || ''),
         latestVersion: formula?.versions?.stable ? String(formula.versions.stable) : null,
         outdated: formula.outdated === true,
         pinned: formula.pinned === true,
         linked: Boolean(formula.linked_keg),
+        prefix: prefixResult.error ? null : prefixResult.stdout.trim().split(/\r?\n/)[0] || null,
       };
     })
     .catch(() => null);
+}
+
+/**
+ * Confirm that the binary found on PATH resolves to Homebrew's linked keg.
+ *
+ * `brew info` reports whether the formula is linked, not which executable the
+ * current PATH resolves. A source build earlier on PATH can therefore coexist
+ * with a linked Homebrew formula; upgrading the formula in that state would
+ * leave the serving process on the old source build. Canonicalize both paths so
+ * the normal `/opt/homebrew/bin` and `/opt/homebrew/opt` symlinks compare as the
+ * same Cellar executable.
+ */
+async function isHomebrewLlamaServer(binaryPath, brewInfo) {
+  if (!binaryPath || !brewInfo?.prefix) return false;
+  const expectedPath = `${brewInfo.prefix}/bin/llama-server`;
+  const [activePath, homebrewPath] = await Promise.all([
+    realpath(binaryPath).catch(() => null),
+    realpath(expectedPath).catch(() => null),
+  ]);
+  return Boolean(activePath && homebrewPath && activePath === homebrewPath);
 }
 
 /**
@@ -379,11 +405,12 @@ export async function getLlamaServerUpdateStatus() {
     readLlamaServerVersion(binaryPath),
     readBrewLlamaCppInfo(),
   ]);
+  const homebrewBinary = await isHomebrewLlamaServer(binaryPath, brewInfo);
   return {
     version: version || brewInfo?.installedVersion || null,
     latestVersion: brewInfo?.latestVersion || null,
     updateAvailable: Boolean(brewInfo?.outdated),
-    canUpgrade: Boolean(brewInfo?.linked && !brewInfo.pinned),
+    canUpgrade: Boolean(brewInfo?.linked && !brewInfo.pinned && homebrewBinary),
     downloadUrl: LLAMA_CPP_DOWNLOAD_URL,
   };
 }
@@ -705,7 +732,13 @@ async function restartManagedLlamaServer(config, baseline) {
     console.error(`❌ llama-server: could not restore the previous configuration after update: ${err.message}`);
     return null;
   });
-  if (started) preTuningConfig = baseline;
+  if (!started) return null;
+  if (!started.online && !(await waitForEndpoint(started.endpoint))) {
+    console.error('❌ llama-server: restored process never answered after update');
+    await stopLlamaServer().catch(() => {});
+    return null;
+  }
+  preTuningConfig = baseline;
   return started;
 }
 
@@ -749,6 +782,15 @@ export async function upgradeLlamaServer({ onProgress = () => {} } = {}) {
       success: false,
       manualUpdateRequired: true,
       error: 'Homebrew has llama.cpp installed, but its keg is not linked to the llama-server on PATH. Link the formula manually before asking PortOS to update it.',
+    };
+  }
+
+  const binaryPath = resolveLlamaServerBinary();
+  if (!(await isHomebrewLlamaServer(binaryPath, brewInfo))) {
+    return {
+      success: false,
+      manualUpdateRequired: true,
+      error: `The active llama-server is not the linked Homebrew llama.cpp binary, so PortOS left it untouched. Update that installation manually: ${LLAMA_CPP_DOWNLOAD_URL}`,
     };
   }
 

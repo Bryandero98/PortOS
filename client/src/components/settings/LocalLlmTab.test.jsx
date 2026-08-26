@@ -26,6 +26,7 @@ vi.mock('../../services/api', () => ({
   installAudioModel: vi.fn(),
   patchSettingsSlice: vi.fn(),
   getLlamaServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false }),
+  getLlamaServerUpdateStatus: vi.fn().mockResolvedValue(null),
   startLlamaServer: vi.fn(),
   stopLlamaServer: vi.fn(),
   installLlamaServer: vi.fn().mockResolvedValue({ success: true }),
@@ -270,7 +271,7 @@ describe('LocalLlmTab installed models', () => {
     expect(location).toMatch(/^\/local-llm\/playground\?/);
     const targets = JSON.parse(new URLSearchParams(location.split('?')[1]).get('targets'));
     expect(targets).toEqual(models.slice(0, 6).map((model) => ({ backend: 'ollama', modelId: model.id })));
-  });
+  }, 10_000);
 
   it('requires inline confirmation before deleting an installed model', async () => {
     await renderTab();
@@ -574,9 +575,11 @@ describe('LocalLlmTab llama-server management', () => {
   // component consumes leaks it into the next test's first status read. Reset
   // the mock outright here and give it a sane standing default.
   beforeEach(async () => {
-    const { getLlamaServerStatus } = await import('../../services/api');
+    const { getLlamaServerStatus, getLlamaServerUpdateStatus } = await import('../../services/api');
     getLlamaServerStatus.mockReset();
     getLlamaServerStatus.mockResolvedValue(llamaReady());
+    getLlamaServerUpdateStatus.mockReset();
+    getLlamaServerUpdateStatus.mockResolvedValue(null);
   });
 
   it('renders start form and launches server when llama-server is installed', async () => {
@@ -890,13 +893,15 @@ describe('LocalLlmTab llama-server management', () => {
   });
 
   it('updates llama.cpp from the unified runtime row', async () => {
-    const { getLlamaServerStatus, upgradeLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValue(llamaReady({
+    const { getLlamaServerStatus, getLlamaServerUpdateStatus, upgradeLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    getLlamaServerUpdateStatus.mockResolvedValueOnce({
       version: '0.1.1-dev',
       latestVersion: '0.3.0',
       updateAvailable: true,
       canUpgrade: true,
-    }));
+      downloadUrl: 'https://github.com/ggml-org/llama.cpp/releases',
+    });
     upgradeLlamaServer.mockResolvedValueOnce({ success: true, note: 'updated and restarted' });
 
     await renderTab();

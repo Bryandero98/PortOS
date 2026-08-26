@@ -641,16 +641,21 @@ router.post('/capability-tests/delete', asyncHandler(async (req, res) => {
 // logs, and the curated target/drafter presets with each GGUF's on-disk state.
 // The presets ride along on the status call the launcher already makes so the
 // card can render "not downloaded + Download" instead of making the user press
-// Start to discover a missing file. Disk-only: no Hugging Face call here.
+// Start to discover a missing file. Disk-only: no Homebrew or Hugging Face call
+// here.
 router.get('/llama-server/status', asyncHandler(async (_req, res) => {
-  const [status, update, presets] = await Promise.all([
-    getLlamaServerStatus(),
-    getLlamaServerUpdateStatus(),
-    getSpecDecodePresetStatus(),
-  ])
+  const [status, presets] = await Promise.all([getLlamaServerStatus(), getSpecDecodePresetStatus()])
   // Spec-type suggestions ride along for the same reason the presets do: the
   // card renders the server's list instead of keeping a copy that can rot.
-  res.json({ ...status, ...update, presets, specTypes: SPEC_TYPE_SUGGESTIONS })
+  res.json({ ...status, presets, specTypes: SPEC_TYPE_SUGGESTIONS })
+}))
+
+// GET /api/local-llm/llama-server/update-status — optional Homebrew/version
+// metadata for the Local LLMs page. Keep it out of the lifecycle status request:
+// a slow Homebrew installation or a backend-initializing `--version` probe must
+// not delay ordinary runtime status and preset rendering.
+router.get('/llama-server/update-status', asyncHandler(async (_req, res) => {
+  res.json(await getLlamaServerUpdateStatus())
 }))
 
 // POST /api/local-llm/llama-server/download-model — fetch one preset's GGUF from

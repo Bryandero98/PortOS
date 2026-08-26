@@ -101,6 +101,12 @@ export const saveRuntimeStartupList = () =>
 export const getLlamaServerStatus = (options) =>
   request('/local-llm/llama-server/status', options);
 
+// Optional version/Homebrew metadata for the Local LLMs runtime card. Kept
+// separate from lifecycle status because the provider version probe and Homebrew
+// query can be slow on a cold machine.
+export const getLlamaServerUpdateStatus = (options) =>
+  request('/local-llm/llama-server/update-status', options);
+
 export const startLlamaServer = (config) =>
   request('/local-llm/llama-server/start', { method: 'POST', body: JSON.stringify(config) });
 

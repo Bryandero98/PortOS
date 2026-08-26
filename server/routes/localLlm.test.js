@@ -680,7 +680,16 @@ describe('llama-server routes', () => {
     });
   });
 
-  it('GET /api/local-llm/llama-server/status includes llama.cpp update metadata', async () => {
+  it('GET /api/local-llm/llama-server/status keeps Homebrew probes out of lifecycle status', async () => {
+    const { getLlamaServerUpdateStatus } = await import('../services/llamaServerManager.js');
+    const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
+
+    expect(res.status).toBe(200);
+    expect(getLlamaServerUpdateStatus).not.toHaveBeenCalled();
+    expect(res.body).not.toHaveProperty('updateAvailable');
+  });
+
+  it('GET /api/local-llm/llama-server/update-status returns llama.cpp update metadata', async () => {
     const { getLlamaServerUpdateStatus } = await import('../services/llamaServerManager.js');
     getLlamaServerUpdateStatus.mockResolvedValueOnce({
       version: '0.1.1-dev',
@@ -690,7 +699,7 @@ describe('llama-server routes', () => {
       downloadUrl: 'https://github.com/ggml-org/llama.cpp/releases',
     });
 
-    const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
+    const res = await request(makeApp()).get('/api/local-llm/llama-server/update-status');
 
     expect(res.body).toMatchObject({
       version: '0.1.1-dev',
