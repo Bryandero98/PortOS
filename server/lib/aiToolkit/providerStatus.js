@@ -183,8 +183,15 @@ export function createProviderStatusService(config = {}) {
     return rateLimitWindow ? { ...rest, rateLimitWindow } : rest;
   }
 
+  function sanitizedExtras(extras) {
+    if (!extras || typeof extras !== 'object') return {};
+    const { rateLimitWindow, ...rest } = extras;
+    const cleanWindow = sanitizedRateLimitWindow(rateLimitWindow);
+    return cleanWindow ? { ...rest, rateLimitWindow: cleanWindow } : rest;
+  }
+
   function emitStatusChange(providerId, status, type) {
-    const eventData = { providerId, status, type };
+    const eventData = { providerId, status: presentStatus(status), type };
     events.emit('status:changed', eventData);
     onStatusChange?.(eventData);
   }
@@ -306,7 +313,7 @@ export function createProviderStatusService(config = {}) {
         estimatedRecovery,
         failureCount,
         lastChecked: now.toISOString(),
-        ...(extras && typeof extras === 'object' ? extras : {})
+        ...sanitizedExtras(extras)
       };
 
       await saveStatus(statusCache);
@@ -323,13 +330,15 @@ export function createProviderStatusService(config = {}) {
       // from sidelining the primary for a day — it retries in 10m and re-benches
       // if still limited. The parsed value is still surfaced for DISPLAY.
       const headerDelay = rateLimitDelay(errorInfo.rateLimitWindow);
+      const boundedHeaderDelay = headerDelay == null
+        ? null
+        : Math.min(Math.max(1000, headerDelay), maxRateLimitWait);
       const parsed = parseWaitTime(errorInfo.waitTime);
       const benchMs = Math.min(
-        headerDelay != null
-          ? Math.max(1000, headerDelay)
-          : parsed && parsed < defaultUsageLimitWait ? parsed : defaultUsageLimitWait,
+        defaultUsageLimitWait,
+        boundedHeaderDelay ?? defaultUsageLimitWait,
+        parsed && parsed < defaultUsageLimitWait ? parsed : defaultUsageLimitWait,
         maxUsageLimitWait,
-        maxRateLimitWait,
       );
       return this.markUnavailable(providerId, {
         reason: 'usage-limit',
@@ -364,7 +373,7 @@ export function createProviderStatusService(config = {}) {
 
     async markApiSuccess(providerId) {
       const status = statusCache.providers[providerId];
-      if (!status?.rateLimitWindow && status?.reason !== 'rate-limit') return status || null;
+      if (!['rate-limit', 'usage-limit'].includes(status?.reason)) return status || null;
       return this.markAvailable(providerId);
     },
 

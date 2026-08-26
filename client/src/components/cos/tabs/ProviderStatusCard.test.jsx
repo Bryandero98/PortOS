@@ -43,4 +43,21 @@ describe('ProviderStatusCard', () => {
     expect(screen.queryByText(/retry-after/i)).not.toBeInTheDocument();
     expect(socket.on).toHaveBeenCalledWith('provider:status:changed', expect.any(Function));
   });
+
+  it('labels a limit-only window without a dangling separator', async () => {
+    api.getProviderStatuses.mockResolvedValue({
+      providers: {
+        example: {
+          available: false,
+          reason: 'rate-limit',
+          message: 'Rate limited',
+          rateLimitWindow: { observedAt: '2026-08-26T12:00:00.000Z', limit: 100 },
+        },
+      },
+    });
+
+    render(<ProviderStatusCard />);
+
+    await waitFor(() => expect(screen.getByTestId('rate-limit-window-example')).toHaveTextContent('API window: limit 100'));
+  });
 });
