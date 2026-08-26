@@ -210,7 +210,7 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     // records the execution and re-registers the saved schedule.
     autonomousJob: task.metadata?.autonomousJob,
     jobId: task.metadata?.jobId
-  }, 'internal');
+  }, 'internal', { suppressDequeue: true });
 
   if (!taskResult?.id) {
     res.json({
@@ -240,7 +240,25 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     });
     return;
   }
-  res.json({ success: true, type: 'agent', status: 'queued', taskId: taskResult.id });
+
+  // A manual trigger is an explicit Run now action, so use the same force-spawn
+  // path as the task-list play button. The ordinary `tasks:changed` listener
+  // intentionally applies autonomous scheduling gates to internal tasks and can
+  // leave this freshly-created task pending until a later evaluation or manual
+  // start. Keep the task queued when the spawn cannot proceed (for example, no
+  // capacity), but report the actionable reason instead of claiming it started.
+  const spawnResult = await cos.forceSpawnTask(taskResult.id);
+  if (spawnResult?.error) {
+    res.json({
+      success: false,
+      type: 'agent',
+      status: 'skipped',
+      reason: spawnResult.error,
+      taskId: taskResult.id
+    });
+    return;
+  }
+  res.json({ success: true, type: 'agent', status: 'queued', started: true, taskId: taskResult.id });
 }));
 
 // DELETE /api/cos/jobs/:id - Delete a job
