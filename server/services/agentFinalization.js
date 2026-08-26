@@ -702,7 +702,7 @@ export async function finalizeAgent({
     : null;
   const effectivePrVerdict = typeof prVerdict.branch === 'string'
     ? prVerdict
-    : (noChangeProof || prVerdict);
+    : (noChangeProof?.noChangesToShip === true ? noChangeProof : prVerdict);
   const noChangesToShip = prVerdict.noChangesToShip === true || noChangeProof?.noChangesToShip === true;
 
   // Record the verdict in the lifecycle ledger (#4540) — but ONLY when the

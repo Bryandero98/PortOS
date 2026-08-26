@@ -550,6 +550,24 @@ describe('finalizeAgent — records the PR verdict in the lifecycle ledger', () 
     expect(finalized.prVerdict).toMatchObject({ branch: 'cos/sys-1/agent-1', noChangesToShip: true });
   });
 
+  it('does not record a premature miss while cleanup can still create a PR', async () => {
+    onBranch('cos/sys-1/agent-1');
+    git.ahead = 3;
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    const finalized = await finalize({
+      prExpected: false,
+      task: {
+        ...prTask(),
+        metadata: { ...prTask().metadata, autonomousJob: true, noChangeSuccess: true }
+      }
+    });
+
+    expect(prVerified()).toHaveLength(0);
+    // The auxiliary proof is deliberately not returned for a non-empty branch:
+    // cleanup still owns the backstop PR creation and must be free to ask again.
+    expect(finalized.prVerdict).toEqual({ ok: true });
+  });
+
   it('writes NOTHING when the check itself threw', async () => {
     // A throw is not a verdict — the finalize path already falls back to the
     // reported outcome, and the ledger must not claim a forge confirmed anything.

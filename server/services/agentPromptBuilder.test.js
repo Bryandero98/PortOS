@@ -1181,9 +1181,27 @@ describe('buildLightContextPrompt', () => {
       { isTui: true, providerId: 'claude-code-tui', providerCommand: 'claude' },
     );
 
-    expect(prompt).toMatch(/`\/do:pr/);
-    expect(prompt).toMatch(/<PR URL, or "No change needed; no PR opened\." if the audit made no change>/);
-  });
+      expect(prompt).toMatch(/`\/do:pr/);
+      expect(prompt).toMatch(/<PR URL, or "No change needed; no PR opened\." if the audit made no change>/);
+    });
+
+    it('keeps a lean TUI no-change handoff on the branch sentinel', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          autonomousJob: true,
+          noChangeSuccess: true,
+          useWorktree: true,
+          openPR: true,
+        } }),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'claude-ollama-tui', providerCommand: 'claude', leanMode: true },
+      );
+
+      expect(prompt).toMatch(/## Branch\n\s+<branch name>/);
+      expect(prompt).not.toMatch(/<PR URL/);
+    });
 
   // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'
     // blank-command posture, so a CLI provider with NO id and NO command reads as

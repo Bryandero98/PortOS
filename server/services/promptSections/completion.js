@@ -574,7 +574,7 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
   const simplifyStep = simplifyEnabled
     ? `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`
     : '1. (simplify disabled — skip)';
-  const sentinelTail = (drivesOwnPr || willOpenPR)
+  const sentinelTail = drivesOwnPr
     ? (noChangeSuccess
         ? '   ## PR\n   <PR URL, or "No change needed; no PR opened." if the audit made no change>'
         : '   ## PR\n   <PR URL>')
