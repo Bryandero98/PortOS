@@ -466,10 +466,19 @@ export async function updateApp(id, updates) {
 
   // Remove id and uiUrl from updates if present (id is key, uiUrl is derived)
   const { id: _id, uiUrl: _uiUrl, ...cleanUpdates } = updates;
+  // Feature overrides are a partial map: changing one app feature must not
+  // erase the other per-app choices that are already persisted.
+  const featureOverrides = isPlainObject(cleanUpdates.featureOverrides)
+    ? {
+      ...(isPlainObject(data.apps[id].featureOverrides) ? data.apps[id].featureOverrides : {}),
+      ...cleanUpdates.featureOverrides,
+    }
+    : null;
 
   const app = {
     ...data.apps[id],
     ...cleanUpdates,
+    ...(featureOverrides ? { featureOverrides } : {}),
     createdAt: data.apps[id].createdAt, // Preserve creation date
     updatedAt: new Date().toISOString()
   };

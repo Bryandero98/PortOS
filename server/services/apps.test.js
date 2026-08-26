@@ -37,7 +37,7 @@ vi.mock('./pm2.js', () => ({
 import { atomicWrite, readJSONFile } from '../lib/fileUtils.js';
 import { listProcessesStrict } from './pm2.js';
 import { resetExecutionHistory } from './taskSchedule.js';
-import { annotateExpectedExit, createApp, deleteApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, resolvePm2HomeForProcess, updateAppTaskTypeOverride } from './apps.js';
+import { annotateExpectedExit, createApp, deleteApp, getAppStatuses, getAppStatusSummary, getDesktopProcessNames, getReservedPorts, invalidateCache, PORTOS_APP_ID, resolvePm2HomeForProcess, updateApp, updateAppTaskTypeOverride } from './apps.js';
 
 describe('pr-watcher cooldown reset', () => {
   beforeEach(() => {
@@ -444,6 +444,34 @@ describe('portless / desktop apps (#2991)', () => {
       });
 
       expect(await getDesktopProcessNames()).toEqual(new Set(['the-game']));
+    });
+  });
+});
+
+describe('managed app feature overrides', () => {
+  beforeEach(() => {
+    invalidateCache();
+    vi.clearAllMocks();
+  });
+
+  it('merges partial updates without deleting sibling overrides', async () => {
+    readJSONFile.mockResolvedValue({
+      apps: {
+        [PORTOS_APP_ID]: { name: 'PortOS' },
+        'app-1': {
+          name: 'Feature App',
+          featureOverrides: { datadog: true, gsd: false },
+        },
+      },
+    });
+
+    const updated = await updateApp('app-1', { featureOverrides: { jira: false } });
+
+    expect(updated.featureOverrides).toEqual({ datadog: true, jira: false, gsd: false });
+    expect(atomicWrite.mock.calls.at(-1)[1].apps['app-1'].featureOverrides).toEqual({
+      datadog: true,
+      jira: false,
+      gsd: false,
     });
   });
 });
