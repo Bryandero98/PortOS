@@ -181,6 +181,7 @@ export const APP_DETAIL_TABS = [
   { id: 'git', label: 'Git' },
   { id: 'gsd', label: 'GSD', feature: 'gsd' },
   { id: 'issues', label: 'Issues' },
+  { id: 'pull-requests', label: 'PRs / MRs' },
   { id: 'jira', label: 'JIRA', feature: 'jira' },
   { id: 'processes', label: 'Processes' },
   { id: 'references', label: 'References' },

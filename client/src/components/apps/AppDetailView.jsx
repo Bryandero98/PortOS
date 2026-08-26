@@ -19,6 +19,7 @@ import DocumentsTab from './tabs/DocumentsTab';
 import GitTab from './tabs/GitTab';
 import GsdTab from './tabs/GsdTab';
 import IssuesTab from './tabs/IssuesTab';
+import PullRequestsTab from './tabs/PullRequestsTab';
 import JiraTab from './tabs/JiraTab';
 import ProcessesTab from './tabs/ProcessesTab';
 import ReferencesTab from './tabs/ReferencesTab';
@@ -276,6 +277,8 @@ export default function AppDetailView() {
         return <GsdTab appId={appId} repoPath={app.repoPath} />;
       case 'issues':
         return <IssuesTab appId={appId} appName={app.name} />;
+      case 'pull-requests':
+        return <PullRequestsTab appId={appId} appName={app.name} />;
       case 'jira':
         return <JiraTab app={app} onRefresh={fetchApp} />;
       case 'processes':
