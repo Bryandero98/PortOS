@@ -378,7 +378,7 @@ async function runInitSpawner() {
     const capacityState = await loadState();
     const globalSlot = acquireCosGlobalSlot({
       agents: capacityState.agents,
-      limit: capacityState.config.maxConcurrentAgents,
+      limit: capacityState.config?.maxConcurrentAgents,
       reservationId: task.id,
     });
     if (!globalSlot.ok) return holdTask(task, globalSlot.reason);
