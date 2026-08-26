@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeAppMetrics, cpuTone } from './openWorldAppMetrics';
+import { computeAppMetrics, cpuTone, hasPm2Error, buildingSignalTone } from './openWorldAppMetrics';
 
 describe('computeAppMetrics', () => {
   it('sums cpu/memory across online processes and takes the minimum uptime', () => {
@@ -72,5 +72,76 @@ describe('cpuTone', () => {
     expect(cpuTone(40)).toBe('busy');
     expect(cpuTone(84.9)).toBe('busy');
     expect(cpuTone(85)).toBe('hot');
+  });
+});
+
+describe('hasPm2Error', () => {
+  it('treats errored and error process statuses as a PM2 error', () => {
+    expect(hasPm2Error({ web: { status: 'online' } })).toBe(false);
+    expect(hasPm2Error({ web: { status: 'errored' } })).toBe(true);
+    expect(hasPm2Error({ web: { status: 'error' } })).toBe(true);
+    expect(hasPm2Error(null)).toBe(false);
+  });
+});
+
+describe('buildingSignalTone', () => {
+  const hotMetrics = { hasMetrics: true, cpuPercent: 92, unstableRestarts: 0 };
+  const calmMetrics = { hasMetrics: true, cpuPercent: 12, unstableRestarts: 0 };
+
+  it('maps a healthy online app to a calm green LED with no rooftop effects', () => {
+    expect(buildingSignalTone({
+      status: 'online',
+      metrics: calmMetrics,
+      pm2Status: { web: { status: 'online' } },
+    })).toMatchObject({
+      tone: 'online',
+      color: '#10b981',
+      pulsing: false,
+      smoke: false,
+      sparks: false,
+    });
+  });
+
+  it('raises smoke on a hot CPU and sparks on a PM2 error', () => {
+    expect(buildingSignalTone({
+      status: 'online',
+      metrics: hotMetrics,
+      pm2Status: { web: { status: 'online' } },
+    })).toMatchObject({ tone: 'hot', pulsing: true, smoke: true, sparks: false });
+
+    expect(buildingSignalTone({
+      status: 'online',
+      metrics: calmMetrics,
+      pm2Status: { web: { status: 'errored' } },
+    })).toMatchObject({ tone: 'errored', pulsing: true, smoke: false, sparks: true });
+  });
+
+  it('hides live CPU smoke during playback while keeping the snapshot status LED', () => {
+    expect(buildingSignalTone({
+      status: 'online',
+      metrics: hotMetrics,
+      pm2Status: { web: { status: 'online' } },
+      playback: true,
+    })).toMatchObject({
+      tone: 'online',
+      pulsing: false,
+      smoke: false,
+      sparks: false,
+    });
+  });
+
+  it('keeps a snapshot error LED during playback without live sparks or pulse', () => {
+    expect(buildingSignalTone({
+      status: 'online',
+      metrics: hotMetrics,
+      pm2Status: { web: { status: 'errored' } },
+      playback: true,
+    })).toMatchObject({
+      tone: 'errored',
+      color: '#f43f5e',
+      pulsing: false,
+      smoke: false,
+      sparks: false,
+    });
   });
 });
