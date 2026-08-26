@@ -29,6 +29,7 @@ import { acquireLocalEndpointProviderSlot } from './cosLocalEndpointSlots.js';
 import { acquireCosActionReservation, acquireCosGlobalSlot } from './cosAdmissionReservations.js';
 import { appendMindEvent } from './agentRunEventLog.js';
 import { preparePersistentMindContext } from './persistentMindContext.js';
+import { resolvePersistentMindProfile } from './persistentMindProfile.js';
 
 export const PERSISTENT_MIND_WAKE_EVENT_ID = 'cos-persistent-mind-wake';
 export const PERSISTENT_MIND_WATCHDOG_EVENT_ID = 'cos-persistent-mind-watchdog';
@@ -459,12 +460,34 @@ async function runOnePersistentMindTurn() {
     let release = () => {};
     let runStartedAt = null;
     try {
-      // `prepare` must resolve the exact configured provider. The supervisor never
-      // follows a fallback chain: an unavailable pin is a visible degraded state.
-      const prepared = await turnAdapter.prepare({ wake: turn.wake, signal: controller.signal });
+      // The profile is resolved before an adapter can run. This is a read-only
+      // catalog/status check: no alternate provider, model pull, or generation
+      // is allowed while deciding whether the pinned mind can wake.
+      const profile = await resolvePersistentMindProfile(root.config?.persistentMindProfile);
+      if (!profile.ok) {
+        await parkActiveTurn(turn.id, profile.error, 'degraded');
+        return;
+      }
+      // Adapters receive the exact profile. They may prepare their text
+      // transport, but cannot substitute a fallback provider/model/effort.
+      const adapterPrepared = await turnAdapter.prepare({ wake: turn.wake, signal: controller.signal, profile });
       if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
-      if (!prepared?.ok || !prepared.provider) {
-        await parkActiveTurn(turn.id, prepared?.error || 'Persistent mind provider is unavailable', 'degraded', prepared?.retryAt || null);
+      if (!adapterPrepared?.ok || !adapterPrepared.provider) {
+        await parkActiveTurn(turn.id, adapterPrepared?.error || 'Persistent mind provider is unavailable', 'degraded', adapterPrepared?.retryAt || null);
+        return;
+      }
+      // Existing adapters only named their transport provider; missing model or
+      // effort now means "use the supplied profile", while an explicit value
+      // still must match exactly and cannot become a fallback route.
+      const prepared = {
+        ...adapterPrepared,
+        model: adapterPrepared.model ?? profile.model,
+        effort: adapterPrepared.effort ?? profile.effort,
+      };
+      if (prepared.provider.id !== profile.provider.id
+          || prepared.model !== profile.model
+          || prepared.effort !== profile.effort) {
+        await parkActiveTurn(turn.id, 'Persistent mind adapter did not honor the pinned provider profile', 'degraded');
         return;
       }
       await recordTurnProfile(turn.id, prepared);

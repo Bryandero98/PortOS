@@ -35,6 +35,7 @@ import { todayInTimezone } from '../lib/timezone.js';
 import { getUserTimezone } from './userTimezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
+import { mergePersistentMindProfile } from '../lib/persistentMindProfile.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
 import { pendingCosActionReservations } from './cosAdmissionReservations.js';
 // Dependency-free leaf holding the shared agent maps + the runner-mode flag,
@@ -220,6 +221,7 @@ export async function updateConfig(updates) {
     // Same for domainBudgets — a PATCH naming one domain (or one cap on one
     // domain) must merge field-by-field over the rest, not replace the map.
     const priorDomainBudgets = state.config.domainBudgets;
+    const priorPersistentMindProfile = state.config.persistentMindProfile;
     state.config = { ...state.config, ...updates };
     if (updates.domainAutonomy !== undefined) {
       state.config.domainAutonomy = normalizeDomainAutonomy({
@@ -233,6 +235,12 @@ export async function updateConfig(updates) {
         mergedBudgets[id] = { ...(priorDomainBudgets?.[id] || {}), ...caps };
       }
       state.config.domainBudgets = normalizeDomainBudgets(mergedBudgets);
+    }
+    if (updates.persistentMindProfile !== undefined) {
+      state.config.persistentMindProfile = mergePersistentMindProfile(
+        priorPersistentMindProfile,
+        updates.persistentMindProfile,
+      );
     }
     await saveState(state);
     return state.config;
