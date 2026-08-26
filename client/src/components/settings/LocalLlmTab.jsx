@@ -10,7 +10,7 @@ import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
-  installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
+  installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer, upgradeLlamaServer,
   downloadSpecDecodeModel, cancelSpecDecodeModelDownload, controlLmStudioService, getMtplxServerStatus, stopMtplxServer, installMtplx,
   searchMtplxModels, pullMtplxModel, removeMtplxModel,
   saveRuntimeStartupList
@@ -478,6 +478,11 @@ export function LocalLlmTab() {
     () => installLlamaServer(),
     'llama.cpp installed'
   ).then(loadLlamaStatus);
+  const runtimeUpgradeLlama = () => runAction(
+    'runtime-upgrade-llama',
+    () => upgradeLlamaServer(),
+    (r) => r?.note || 'llama.cpp updated'
+  ).then(loadLlamaStatus);
   const runtimeStopLlama = () => runAction(
     'runtime-stop-llama',
     () => stopLlamaServer(),
@@ -916,6 +921,7 @@ export function LocalLlmTab() {
         onControlLmStudio={controlLmStudio}
         onInstallBackend={installRuntimeBackend}
         onInstallLlama={runtimeInstallLlama}
+        onUpgradeLlama={runtimeUpgradeLlama}
         onStopLlama={runtimeStopLlama}
         onConfigureLlama={() => scrollTo(llamaSectionRef)}
         onConfigureMtplx={() => scrollTo(mtplxSectionRef)}

@@ -29,6 +29,7 @@ vi.mock('../../services/api', () => ({
   startLlamaServer: vi.fn(),
   stopLlamaServer: vi.fn(),
   installLlamaServer: vi.fn().mockResolvedValue({ success: true }),
+  upgradeLlamaServer: vi.fn().mockResolvedValue({ success: true, note: 'updated' }),
   downloadSpecDecodeModel: vi.fn(),
   cancelSpecDecodeModelDownload: vi.fn(),
 }));
@@ -885,6 +886,25 @@ describe('LocalLlmTab llama-server management', () => {
 
     await waitFor(() => {
       expect(installLlamaServer).toHaveBeenCalled();
+    });
+  });
+
+  it('updates llama.cpp from the unified runtime row', async () => {
+    const { getLlamaServerStatus, upgradeLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady({
+      version: '0.1.1-dev',
+      latestVersion: '0.3.0',
+      updateAvailable: true,
+      canUpgrade: true,
+    }));
+    upgradeLlamaServer.mockResolvedValueOnce({ success: true, note: 'updated and restarted' });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Update to v0.3.0' }));
+
+    await waitFor(() => {
+      expect(upgradeLlamaServer).toHaveBeenCalledWith();
     });
   });
 

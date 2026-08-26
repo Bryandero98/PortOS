@@ -110,6 +110,11 @@ export const stopLlamaServer = () =>
 export const installLlamaServer = () =>
   request('/local-llm/llama-server/install', { method: 'POST' });
 
+// Upgrade a Homebrew-installed llama.cpp binary. A managed llama-server is
+// restarted by the server with its existing launch configuration.
+export const upgradeLlamaServer = () =>
+  request('/local-llm/llama-server/upgrade', { method: 'POST' });
+
 // Fetch one speculative-decoding preset's GGUF (role: 'model' | 'draftModel')
 // from Hugging Face into the path the launcher passes llama.cpp. Byte progress
 // arrives on the `llamaServer:download` socket event, not in this response —
