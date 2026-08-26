@@ -308,7 +308,13 @@ export const getTailnetInfo = () => request('/instances/tailnet-suffix');
 export const provisionTailnetCert = () => request('/instances/provision-cert', { method: 'POST' });
 
 // Image Generation
-export const getImageGenStatus = (mode) => request(`/image-gen/status${mode ? `?mode=${encodeURIComponent(mode)}` : ''}`);
+export const getImageGenStatus = (mode, modelId) => {
+  const params = new URLSearchParams();
+  if (mode) params.set('mode', mode);
+  if (modelId) params.set('modelId', modelId);
+  const query = params.toString();
+  return request(`/image-gen/status${query ? `?${query}` : ''}`);
+};
 export const generateImage = (data, options = {}) => request('/image-gen/generate', {
   method: 'POST',
   body: JSON.stringify(data),
