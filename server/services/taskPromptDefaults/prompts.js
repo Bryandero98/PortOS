@@ -619,23 +619,25 @@ Repository: {repoPath}
 
 ## What to do
 
-1. **Inventory so you don't duplicate.** Start with the **Preloaded task data**
-   appended below. Its Open issues and Open pull requests sections are current
-   snapshots collected immediately before dispatch, so do NOT list them again.
-   Follow the "Inventory" step under "Where to record the plan" only when the
-   corresponding preloaded section says it could not be collected or you need
-   a full issue body. Collect every existing \`[plan-feature-…]\` slug, then skim
+1. **Inventory so you don't duplicate.** Start with any **Preloaded task data**
+   appended below. When an Open issues or Open pull requests section is
+   present, that section is a current snapshot collected immediately before
+   dispatch, so do NOT list it again. Follow the "Inventory" step under "Where
+   to record the plan" for any corresponding section that is absent, says it
+   could not be collected, or when you need a full issue body. Collect every
+   existing \`[plan-feature-…]\` slug, then skim
    the last 50 \`git log\` entries plus recent \`.changelog/\` files: an idea
    that is already an open tracker item, in an open PR, or recently shipped work
    is NOT a candidate.
 
-2. **Build a product brief from the preloaded repository documents.** PortOS
-   searched the repository for PRD.md and GOALS.md immediately before dispatch
-   and appended their contents below. Use the most specific available source of
-   intent, and do NOT search for or re-read those files when their section has
-   complete content. If a section is marked unavailable, unreadable, or
-   truncated, read the named source directly before relying on it. Make a best
-   effort rather than assuming a missing document means the app has no direction:
+2. **Build a product brief from the preloaded repository documents.** For each
+   Product requirements or Project goals section that is present, PortOS
+   searched the repository immediately before dispatch. Use the most specific
+   available source of intent, and do NOT search for or re-read a file when its
+   section has complete content. If a section is absent, unavailable,
+   unreadable, or truncated, search for and read the source directly before
+   relying on it. Make a best effort rather than assuming a missing document
+   means the app has no direction:
 
    - If the Product requirements section contains a \`PRD.md\`, use it first.
      Treat its requirements, acceptance
@@ -659,7 +661,8 @@ Repository: {repoPath}
      and recent history and name the evidence in the plan.
    - Use the preloaded Closed unmerged pull requests section — a feature whose
      PR the user closed WITHOUT merging was rejected; treat those ideas as
-     rejected too. Query the forge only if that section says it was unavailable.
+     rejected too. Query the forge if that section is absent or says it was
+     unavailable.
    - Review the codebase structure and relevant source files so the plan names
      real files rather than imagined ones.
 

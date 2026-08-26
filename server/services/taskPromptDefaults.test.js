@@ -150,14 +150,15 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v9).not.toBe(current);
   });
 
-  // plan-feature v4: bounded preloads now name their direct-read recovery path
-  // while v3 through v1 remain recognizable for cross-install upgrades.
-  it('plan-feature v4 permits recovery from bounded preloads and preserves prior defaults', () => {
+  // plan-feature v5: omitted optional preloads fall back to direct inventory,
+  // while v4 through v1 remain recognizable for cross-install upgrades.
+  it('plan-feature v5 handles omitted preloads and preserves prior defaults', () => {
     const current = DEFAULT_TASK_PROMPTS['plan-feature'];
-    expect(PROMPT_VERSIONS['plan-feature']).toBe(4);
+    expect(PROMPT_VERSIONS['plan-feature']).toBe(5);
     expect(current).toContain('Preloaded task data');
-    expect(current).toContain('do NOT list them again');
-    expect(current).toContain('marked unavailable, unreadable, or');
+    expect(current).toContain('do NOT list it again');
+    expect(current).toContain('corresponding section that is absent');
+    expect(current).toContain('If a section is absent, unavailable');
     expect(current).toContain('Closed unmerged pull requests');
     expect(current).toContain('PRD.md');
     expect(current).toContain('GOALS.md');
@@ -167,7 +168,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).not.toContain('REJECTED.md');
     expect(current).not.toContain('ALSO read PLAN.md');
 
-    const v3 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('Preloaded task data'));
+    const v4 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('marked unavailable, unreadable, or'));
+    expect(v4).toBeDefined();
+    expect(v4).not.toContain('corresponding section that is absent');
+    expect(v4).not.toBe(current);
+
+    const v3 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('Preloaded task data') && !prompt.includes('marked unavailable, unreadable, or'));
     expect(v3).toBeDefined();
     expect(v3).not.toContain('marked unavailable, unreadable, or');
     expect(v3).not.toBe(current);
