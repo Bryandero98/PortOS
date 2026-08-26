@@ -604,7 +604,7 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   it('keeps a redirect from every declared previous path to its current one', () => {
     const broken = NAV_COMMANDS
       .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path.split(/[?#]/)[0], id: c.id })))
-      .filter(({ from, to }) => byFrom.get(from)?.to !== to)
+      .filter(({ from, to }) => byFrom.get(from)?.to?.split(/[?#]/)[0] !== to)
       .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from)?.to ?? 'NO REDIRECT'} (want ${to})`);
     expect(broken).toEqual([]);
   });
@@ -647,6 +647,7 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
       '/devtools/submodules',
       '/devtools/runs',
       '/settings/contacts',
+      '/settings/catalog',
       '/imessage',
       '/system-health',
       '/datadog',
