@@ -45,7 +45,7 @@ import {
   isPrBranchWorktree,
   worktreeCommitGuidance,
 } from './promptSections/completion.js';
-import { buildLocalReviewLoopSection, buildReviewLoopFollowUpSection, isMergeOnlyFollowUp } from './promptSections/reviewLifecycle.js';
+import { buildLocalReviewLoopSection, buildReviewLoopFollowUpSection, isMergeOnlyFollowUp, prepareLocalReviewLoopBody } from './promptSections/reviewLifecycle.js';
 
 export {
   detectDomainSkillTemplate,
@@ -248,14 +248,17 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   const localAgentLoopBody = (isFollowUpNeedingRecipes || isInlineNeedingRecipes)
     ? await loadSlashdoLib('local-agent-review-loop').catch(() => null)
     : null;
+  const localAgentLoopBodyForInline = (isInlineNeedingRecipes && !isFollowUpNeedingRecipes)
+    ? prepareLocalReviewLoopBody(localAgentLoopBody)
+    : localAgentLoopBody;
   // The recipe is ~40KB. A follow-up agent inlines it — driving the loop is that
   // agent's entire job, so it will read all of it anyway. An INLINE loop is a
   // later phase of a run whose context is already carrying the actual task, so an
   // over-budget recipe is staged on disk and pointed at instead (#3110's split,
   // applied to the same body). Every host that reaches here has file tools.
   const localAgentLoopBodyPath = (isInlineNeedingRecipes && !isFollowUpNeedingRecipes
-    && localAgentLoopBody && localAgentLoopBody.length > SLASHDO_INLINE_BUDGET_CHARS)
-    ? await writeResolvedSlashdoBody('local-agent-review-loop', localAgentLoopBody).catch((err) => {
+    && localAgentLoopBodyForInline && localAgentLoopBodyForInline.length > SLASHDO_INLINE_BUDGET_CHARS)
+    ? await writeResolvedSlashdoBody('local-agent-review-loop', localAgentLoopBodyForInline).catch((err) => {
         console.warn(`⚠️ Could not stage the CLI-reviewer recipe, inlining instead: ${err.message}`);
         return null;
       })
@@ -263,7 +266,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
     const forgeCli = await resolveManualForgeCli(workspaceDir, worktreeInfo, task);
-    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody, localAgentLoopBodyPath, forgeCli };
+    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody: localAgentLoopBodyForInline, localAgentLoopBodyPath, forgeCli };
     return options.split === true
       ? buildLightContextPromptParts(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions)
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);

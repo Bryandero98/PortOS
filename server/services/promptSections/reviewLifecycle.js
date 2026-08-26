@@ -5,6 +5,7 @@
 import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, reviewerEffortArgs, reviewerModelArg, resolveKeyedReviewers, buildReviewWithArgs } from '../../lib/validation.js';
 import { oversizedBodyPointer } from '../../lib/slashdoInvocation.js';
 import { detectForgeCli } from '../../lib/gitForge.js';
+import { shellQuote } from '../../lib/shellQuote.js';
 import { INLINE_REVIEW_LOOP_STEP } from './constants.js';
 import { normalizeForgeCli } from './forge.js';
 
@@ -19,6 +20,27 @@ import { normalizeForgeCli } from './forge.js';
  */
 export function isMergeOnlyFollowUp(metadata = {}) {
   return metadata?.reviewLoopMergeOnly === true || metadata?.reviewLoopMergeOnly === 'true';
+}
+
+/**
+ * Adapt slashdo's local-agent recipe for the pre-PR half of a manual workflow.
+ * The normal recipe pushes after each reviewer pass so a later PR-side reviewer
+ * sees the fixes. A local-only section must keep every fix on the branch until
+ * all local reviewers finish; the outer completion workflow performs the one
+ * push after that gate.
+ */
+export function prepareLocalReviewLoopBody(body) {
+  if (typeof body !== 'string' || !body) return body;
+  const withoutPushStep = body.replace(
+    /\r?\n[ \t]*5\. \*\*Push verified changes\*\*:[\s\S]*?(?=\r?\n[ \t]*6\. \*\*Re-loop or stop\*\*:)/,
+    '\n5. **Keep verified changes local**:\n   Skip the push step here. The outer Completion Workflow pushes the branch only after every local reviewer is clean.\n',
+  );
+  // Keep a future recipe revision fail-safe if it moves the push command out of
+  // the numbered step that the replacement above recognizes.
+  return withoutPushStep.replace(
+    /^[ \t]*(?:git pull --rebase --autostash && )?git push\b[^\r\n]*\r?$/gm,
+    '   # Push is deferred until every local reviewer is clean.',
+  );
 }
 
 /**
@@ -47,6 +69,12 @@ export function isMergeOnlyFollowUp(metadata = {}) {
  *   of that body. When set and the body is over `SLASHDO_INLINE_BUDGET_CHARS`,
  *   the section points at the file instead of pasting it. Only the inline caller
  *   passes this; a follow-up agent, whose whole job is the loop, still inlines.
+ * @param {boolean} [opts.localOnly=false] - Render the pre-PR local-review half
+ *   of a manual workflow, deferring pushes and PR/MR creation to the caller.
+ * @param {string} [opts.baseBranch='<base-branch>'] - Base ref used by local
+ *   review diff commands when `localOnly` is set.
+ * @param {number} [opts.inlineWorkflowStep=INLINE_REVIEW_LOOP_STEP] - Completion
+ *   workflow step referenced by an inline review or merge-gate section.
  * @param {boolean} [opts.inline=false] - Emit the SAME loop for an agent that
  *   opened the PR itself moments ago, rather than for a follow-up agent handed
  *   someone else's PR (`buildInlineReviewLoopSection`). Only the framing differs:
@@ -66,6 +94,10 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const prOwner = metadata.reviewLoopPROwner ?? '';
   const prRepo = metadata.reviewLoopPRRepo ?? '';
   const sourceTaskId = metadata.sourceTaskId || 'unknown';
+  const renderedBaseBranch = localOnly ? shellQuote(baseBranch) : baseBranch;
+  const preparedLocalAgentLoopBody = localOnly
+    ? prepareLocalReviewLoopBody(localAgentLoopBody)
+    : localAgentLoopBody;
   const reviewForgeCli = normalizeForgeCli(forgeCli)
     || (detectForgeCli(metadata.reviewLoopPRHost) === 'glab' ? 'glab' : 'gh');
   // Merge-only follow-up (Review Loop off): no reviewer to wait on or invoke —
@@ -165,7 +197,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // an invocation — the failure mode that had a codex CoS agent burn a dozen
   // exploratory `claude --help` / `claude -p 'hello'` / `--tools ''` probes
   // before it stumbled into a working review call.
-  const cliProcedurePointer = (hasCli && localAgentLoopBody)
+  const cliProcedurePointer = (hasCli && preparedLocalAgentLoopBody)
     ? ' Follow the **CLI Reviewer Procedure** section below for the exact headless invocation and review-only contract — do NOT probe the CLI or guess flags.'
     : '';
   // Each configured CLI reviewer paired with the command the agent must actually
@@ -253,7 +285,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     'diff: .'
   ].join(', ');
   const diffCommand = localOnly
-    ? `git diff ${baseBranch}...HEAD`
+    ? `git diff ${renderedBaseBranch}...HEAD`
     : reviewForgeCli === 'glab'
     ? `glab mr diff ${prNumber || '<MR_NUMBER>'}`
     : `gh pr diff ${prNumber || '<PR_NUMBER>'}`;
@@ -282,13 +314,13 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
       : 'request a Copilot review when you reach its turn'} (poll every 5–15s, max 5 min/round), then re-request on later rounds.` : null,
-    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${baseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}).${cliBinaryNote}${reviewerPinNote}${cliProcedurePointer}` : null,
+    hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${renderedBaseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}).${cliBinaryNote}${reviewerPinNote}${cliProcedurePointer}` : null,
     hasLocalLlm ? `**lmstudio / ollama**: ${localLlmInvocation}` : null,
     hasGithubUser ? `**@github reviewers**: ${githubUsersInvocation}` : null,
   ].filter(Boolean).join(' ');
   // Name the BINARY, not the slug: `Invoke the \`antigravity\` CLI` sent a
   // follow-up agent hunting for a command that does not exist.
-  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${baseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}). Capture its findings as concrete issues to address.${reviewerPinNote}${cliProcedurePointer}`;
+  const singleCliInvocation = `Invoke ${describeReviewerCli(cliReviewers[0])} to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${renderedBaseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}). Capture its findings as concrete issues to address.${reviewerPinNote}${cliProcedurePointer}`;
   // Resolved sequentially so a future reviewer kind only adds one branch
   // instead of deepening the nested ternary.
   let waitOrInvokeStep;
@@ -306,8 +338,12 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
 
   const applyNote = hasCli
     ? (reviewerApplies
-        ? '**Reviewer applies:** let each CLI reviewer apply its own fixes to the working tree, then verify, run tests, and push.'
-        : "**Reviewer applies (off):** read each CLI reviewer's findings and apply the fixes yourself (default).")
+        ? (localOnly
+          ? '**Reviewer applies:** let each CLI reviewer apply its own fixes to the working tree, then verify and run tests; keep fixes committed locally. Do NOT push or open the PR/MR from this loop.'
+          : '**Reviewer applies:** let each CLI reviewer apply its own fixes to the working tree, then verify, run tests, and push.')
+        : (localOnly
+          ? "**Reviewer applies (off):** read each CLI reviewer's findings and apply the fixes yourself (default); keep fixes committed locally. Do NOT push or open the PR/MR from this loop."
+          : "**Reviewer applies (off):** read each CLI reviewer's findings and apply the fixes yourself (default)."))
     : '';
 
   // Inline runs opened the PR seconds ago inside their own completion workflow,
@@ -350,35 +386,40 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
 
   const extraNotes = [stopModeNote, applyNote, maxRoundsNote, missingCliNote].filter(Boolean);
 
-  // Inline slashdo's local-agent review loop verbatim when a spawnable CLI
-  // reviewer is configured. This is the maintained, precise recipe — exact
-  // per-CLI headless invocation (`claude -p "$LOCAL_PROMPT" --dangerously-skip-permissions`,
+  // Inline slashdo's local-agent review loop when a spawnable CLI reviewer is
+  // configured. This is the maintained, precise recipe — exact per-CLI headless
+  // invocation (`claude -p "$LOCAL_PROMPT" --dangerously-skip-permissions`,
   // `codex --sandbox read-only review --base …`, etc.), the review-only /
   // no-sub-agent-fan-out `$LOCAL_PROMPT` contract, and the parse-and-apply
   // handling. Without it the agent only sees "invoke that CLI" and reverse-
-  // engineers the invocation, wasting calls. The inlined body AGREES with
-  // cliBinaryNote rather than contradicting the "follow it verbatim" order —
-  // slashdo's per-CLI invocation table names `agy` and normalizes the
-  // `gemini`/`antigravity` slugs onto it, so the note is a pointer into that
-  // table, not a correction layered over it. Conditionals were resolved to the
-  // subprocess (`else`) branch by loadSlashdoLib, so no in-process-Agent-tool
-  // branch leaks in to confuse a non-Claude-Code host.
+  // engineers the invocation, wasting calls. For the pre-PR local section,
+  // `preparedLocalAgentLoopBody` removes the recipe's push step so the agent
+  // keeps fixes local until every local reviewer is clean. The normal PR-side
+  // follow-up still receives the maintained body verbatim. Both variants agree
+  // with `cliBinaryNote`: slashdo's per-CLI invocation table names `agy` and
+  // normalizes the `gemini`/`antigravity` slugs onto it, so the note is a pointer
+  // into that table, not a correction layered over it. Conditionals were
+  // resolved to the subprocess (`else`) branch by loadSlashdoLib, so no
+  // in-process-Agent-tool branch leaks in to confuse a non-Claude-Code host.
   //
   // Over budget WITH a staged copy on disk (`localAgentLoopBodyPath`, only ever
   // passed for an inline loop — see buildAgentPrompt) the agent is pointed at the
   // file instead. Same trade `buildSlashdoSection` makes: an initial run is
   // already carrying the real task, and pasting 40KB of reviewer recipe up front
   // to be read at step 4 is the wrong place to spend that context.
-  const cliProcedureHeader = `\n### CLI Reviewer Procedure (${cliReviewerHeading})\n\nDrive each spawnable CLI reviewer EXACTLY as the slashdo local-agent review loop specifies — use its per-CLI invocation and review-only prompt contract verbatim; do NOT probe the CLI's \`--help\`, test it with throwaway prompts, or hand-roll flags. Run the reviewer once per round, capture its findings, and (unless reviewer-applies is set) apply the fixes yourself.\n\n`;
+  const localOnlyProcedureNote = localOnly
+    ? '**Pre-PR local-review rule:** keep every reviewer fix committed locally. Do NOT push or open a PR/MR from this procedure; the outer Completion Workflow performs the push after every local reviewer is clean.\n\n'
+    : '';
+  const cliProcedureHeader = `\n### CLI Reviewer Procedure (${cliReviewerHeading})\n\n${localOnlyProcedureNote}Drive each spawnable CLI reviewer EXACTLY as the slashdo local-agent review loop specifies — use its per-CLI invocation and review-only prompt contract verbatim; do NOT probe the CLI's \`--help\`, test it with throwaway prompts, or hand-roll flags. Run the reviewer once per round, capture its findings, and (unless reviewer-applies is set) apply the fixes yourself.\n\n`;
   //
   // The path IS the decision — it is non-null only when the caller already
   // measured the body over budget and staged it. Re-testing the length here
   // would give the two sites a way to disagree, and the disagreement is silent:
   // the file gets written AND the 40KB still gets pasted.
-  const cliReviewerProcedure = (hasCli && localAgentLoopBody)
+  const cliReviewerProcedure = (hasCli && preparedLocalAgentLoopBody)
     ? (localAgentLoopBodyPath
-      ? `${cliProcedureHeader}${oversizedBodyPointer(localAgentLoopBodyPath, localAgentLoopBody)}\n`
-      : `${cliProcedureHeader}${localAgentLoopBody}\n`)
+      ? `${cliProcedureHeader}${oversizedBodyPointer(localAgentLoopBodyPath, preparedLocalAgentLoopBody)}\n`
+      : `${cliProcedureHeader}${preparedLocalAgentLoopBody}\n`)
     : '';
 
   // A JIRA-tracked PR is a human's to land (its ticket is already "In Review" and

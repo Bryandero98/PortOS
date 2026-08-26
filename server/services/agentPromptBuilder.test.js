@@ -76,6 +76,7 @@ vi.mock('../lib/slashdoLoader.js', async (importOriginal) => {
   return {
     ...actual,
     loadSlashdoFile: vi.fn().mockResolvedValue(null),
+    loadSlashdoLib: vi.fn().mockResolvedValue(null),
     // #3110 — staging the resolved copy is real disk I/O; mocked so tests can
     // assert the pointer path without writing under data/.
     writeResolvedSlashdoBody: vi.fn().mockResolvedValue(null),
@@ -99,7 +100,7 @@ import { buildPrompt } from './promptService.js'; // mocked above — inspect ca
 import { getMemorySection } from './memoryRetriever.js';
 import { getDigitalTwinForPrompt } from './digital-twin.js';
 import { getToolsSummaryForPrompt } from './tools.js';
-import { loadSlashdoFile, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
+import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
 import { SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 // The heading a task-type hook's prompt points at to locate the sentinel path.
 import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
@@ -874,6 +875,64 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/\.agent-done/);
       expect(prompt).toMatch(/NOT run `\/quit`/);
       expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
+    });
+
+    it('defers the local CLI recipe push until after the local review gate', () => {
+      const localRecipe = [
+        '### Maintained local recipe',
+        '5. **Push verified changes**:',
+        '   git push origin {BRANCH_NAME}',
+        '   If the push fails: git pull --rebase --autostash && git push origin {BRANCH_NAME}',
+        '6. **Re-loop or stop**:',
+      ].join('\n');
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        {
+          isTui: true,
+          providerId: 'opencode-ollama-tui',
+          providerCommand: 'opencode',
+          localAgentLoopBody: localRecipe,
+        });
+      const localStart = prompt.indexOf('### Local Review Before Opening the PR/MR');
+      const prPush = prompt.indexOf('git push -u origin claim/issue-1');
+      const localSection = prompt.slice(localStart, prPush);
+
+      expect(localStart).toBeGreaterThanOrEqual(0);
+      expect(prPush).toBeGreaterThan(localStart);
+      expect(localSection).toContain('Keep verified changes local');
+      expect(localSection).not.toMatch(/^\s*(?:git pull --rebase --autostash && )?git push\b/m);
+      expect(localSection).not.toContain('git push origin');
+    });
+
+    it('keeps reviewer-applies local fixes off the remote branch', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'], reviewerApplies: true } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
+      const localStart = prompt.indexOf('### Local Review Before Opening the PR/MR');
+      const prPush = prompt.indexOf('git push -u origin claim/issue-1');
+      const localSection = prompt.slice(localStart, prPush);
+
+      expect(localSection).toContain('keep fixes committed locally');
+      expect(localSection).toContain('Do NOT push or open the PR/MR from this loop');
+      expect(localSection).not.toContain('then verify, run tests, and push');
+    });
+
+    it('quotes the base branch in local review diff commands', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'release; echo bad' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
+
+      expect(prompt).toContain("git diff 'release; echo bad'...HEAD");
+      expect(prompt).not.toContain('git diff release; echo bad...HEAD');
     });
 
     it('runs local review before GitLab MR creation and leaves @ reviewers after it', () => {
@@ -2880,6 +2939,8 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
   beforeEach(() => {
     // mockReset (not just a new return value): several tests here assert the
     // staging helper was NOT called, so a prior test's call must not leak in.
+    vi.mocked(loadSlashdoLib).mockReset();
+    vi.mocked(loadSlashdoLib).mockResolvedValue(null);
     vi.mocked(writeResolvedSlashdoBody).mockReset();
     vi.mocked(loadSlashdoFile).mockReset();
     vi.mocked(loadSlashdoFile).mockResolvedValue(OVER);
@@ -2935,6 +2996,32 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
     expect(prompt).toContain(OVER);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('stages a push-free local reviewer recipe for the inline workflow', async () => {
+    const body = [
+      'RECIPE HEADER',
+      '5. **Push verified changes**:',
+      '   git push origin {BRANCH_NAME}',
+      '   If the push fails: git pull --rebase --autostash && git push origin {BRANCH_NAME}',
+      '6. **Re-loop or stop**:',
+      '   continue',
+      'x'.repeat(SLASHDO_INLINE_BUDGET_CHARS + 500),
+    ].join('\n');
+    vi.mocked(loadSlashdoLib).mockResolvedValue(body);
+    vi.mocked(writeResolvedSlashdoBody).mockResolvedValue('/install/data/cos/slashdo-resolved/local-agent-review-loop.md');
+
+    const prompt = await buildAgentPrompt(
+      makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex'] } }),
+      {}, '/r',
+      { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+      isTruthyMeta,
+      { providerType: 'tui', providerId: 'opencode-tui', providerCommand: 'opencode' });
+    const [, stagedBody] = vi.mocked(writeResolvedSlashdoBody).mock.calls.at(-1);
+
+    expect(prompt).toContain('/install/data/cos/slashdo-resolved/local-agent-review-loop.md');
+    expect(stagedBody).toContain('Keep verified changes local');
+    expect(stagedBody).not.toMatch(/^\s*(?:git pull --rebase --autostash && )?git push\b/m);
   });
 
   // A pinned reviewer list carries the effort as slashdo's own `~effort=<level>`
