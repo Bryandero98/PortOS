@@ -359,6 +359,7 @@ describe('nav contract — OpenWorld regions match the registry labels and alias
       return {
         id: field('id'),
         label: field('label'),
+        feature: field('feature'),
         aliases: [...aliases.matchAll(/'([^']*)'/g)].map((a) => a[1]),
       };
     });
@@ -377,6 +378,14 @@ describe('nav contract — OpenWorld regions match the registry labels and alias
       .map((r) => ({ r, cmd: navByPath.get(`/openworld/region/${r.id}`) }))
       .filter(({ r, cmd }) => cmd && cmd.label !== r.label)
       .map(({ r, cmd }) => `${r.id}: nav "${cmd.label}" ≠ registry "${r.label}"`);
+    expect(wrong).toEqual([]);
+  });
+
+  it('keeps each region feature gate mirrored between the registry and nav command', () => {
+    const wrong = readRegistry()
+      .map((r) => ({ r, cmd: navByPath.get(`/openworld/region/${r.id}`) }))
+      .filter(({ r, cmd }) => (cmd?.feature || null) !== (r.feature || null))
+      .map(({ r, cmd }) => `${r.id}: nav "${cmd?.feature || 'none'}" ≠ registry "${r.feature || 'none'}"`);
     expect(wrong).toEqual([]);
   });
 

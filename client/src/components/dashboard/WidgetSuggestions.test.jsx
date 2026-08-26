@@ -20,6 +20,7 @@ describe('WidgetSuggestions', () => {
     expect(gate({ instanceFeatures: { features: [{ id: 'post', enabled: false }] } })).toBe(false);
     expect(gate({ instanceFeatures: { features: [{ id: 'post', enabled: true }] } })).toBe(true);
     expect(gate({})).toBe(false);
+    expect(gate({ instanceFeatures: null })).toBe(false);
   });
 
   it('keeps the Apps Grid hidden until its first read completes', () => {

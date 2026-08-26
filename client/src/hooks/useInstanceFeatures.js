@@ -18,6 +18,7 @@ import * as api from '../services/api';
 // means loaded and this version registers no optional features.
 let cached = null;
 let inFlight = null;
+let inFlightGeneration = null;
 // Bumped whenever something newer than an outstanding request lands (a toggle
 // publishing the server's fresh list, or an invalidation). A response that read
 // the OLD state must not overwrite it just because it resolved later — without
@@ -26,9 +27,9 @@ let inFlight = null;
 let generation = 0;
 
 const loadInstanceFeatures = () => {
-  if (!inFlight) {
+  if (!inFlight || inFlightGeneration !== generation) {
     const requested = generation;
-    inFlight = api.getInstanceFeatures({ silent: true })
+    const request = api.getInstanceFeatures({ silent: true })
       .then((data) => ({ features: Array.isArray(data?.features) ? data.features : [], error: null }))
       .catch((error) => {
         // Fail OPEN: an unreadable feature list must not blank out navigation.
@@ -36,13 +37,18 @@ const loadInstanceFeatures = () => {
         return { features: null, error };
       })
       .then((result) => {
-        inFlight = null;
+        if (inFlight === request) {
+          inFlight = null;
+          inFlightGeneration = null;
+        }
         // Superseded while in flight — hand the caller what IS current instead
         // of the answer it asked for, so no consumer renders the stale one.
         if (requested !== generation) return cached || result;
         cached = result;
         return result;
       });
+    inFlight = request;
+    inFlightGeneration = requested;
   }
   return inFlight;
 };
@@ -138,5 +144,6 @@ export const invalidateInstanceFeatures = (featureId) => {
 export const __resetInstanceFeatureCache = () => {
   cached = null;
   inFlight = null;
+  inFlightGeneration = null;
   generation += 1;
 };

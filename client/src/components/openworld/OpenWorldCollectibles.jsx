@@ -125,12 +125,13 @@ export default function OpenWorldCollectibles({
   collectedShardIds = new Set(),
   activeBursts = [],
   settings,
+  shards,
 }) {
-  const shards = useMemo(() => getCollectiblesList(), []);
+  const resolvedShards = useMemo(() => shards || getCollectiblesList(), [shards]);
   const animate = (settings?.particleDensity ?? 1) >= 0.5;
   const visibleShards = useMemo(
-    () => shards.filter((s) => !collectedShardIds.has(s.id)),
-    [shards, collectedShardIds]
+    () => resolvedShards.filter((s) => !collectedShardIds.has(s.id)),
+    [resolvedShards, collectedShardIds]
   );
 
   return (
