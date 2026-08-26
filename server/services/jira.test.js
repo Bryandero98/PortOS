@@ -1,5 +1,16 @@
+import fs from 'fs/promises';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildColumnsFromBoardConfig, buildColumnsFromStatuses, createJiraClient, isCloudInstance, jiraAuthHeader } from './jira.js';
+import {
+  buildColumnsFromBoardConfig,
+  buildColumnsFromStatuses,
+  clearCloudAssigneeCache,
+  createJiraClient,
+  createTicket,
+  deleteInstance,
+  isCloudInstance,
+  jiraAuthHeader,
+  upsertInstance
+} from './jira.js';
 
 describe('isCloudInstance', () => {
   it('treats *.atlassian.net hosts as Cloud', () => {
@@ -123,6 +134,301 @@ describe('createJiraClient search endpoint routing', () => {
     const [url] = fetchMock.mock.calls[0];
     expect(url).toContain('/rest/api/2/search?');
     expect(url).not.toContain('/search/jql');
+  });
+});
+
+describe('createTicket assignee resolution', () => {
+  const INSTANCE_ID = 'jira-example';
+
+  const stubInstance = (instance = {}) => {
+    stubInstances({
+      [INSTANCE_ID]: {
+        id: INSTANCE_ID,
+        name: 'Example JIRA',
+        baseUrl: 'https://jira.example.com',
+        apiToken: 'pat',
+        ...instance
+      }
+    });
+  };
+
+  const stubInstances = (instances) => {
+    vi.spyOn(fs, 'readFile').mockResolvedValue(JSON.stringify({
+      instances
+    }));
+  };
+
+  const stubFetchSequence = (responses) => {
+    const fetchMock = vi.fn();
+    for (const response of responses) {
+      fetchMock.mockResolvedValueOnce({
+        ok: response.ok !== false,
+        status: response.status || 200,
+        headers: { get: name => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
+        json: async () => response.body,
+        text: async () => JSON.stringify(response.body)
+      });
+    }
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    clearCloudAssigneeCache();
+  });
+
+  it('resolves a Cloud email to accountId and caches it for later tickets', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [{ accountId: 'acct-123', emailAddress: 'assignee@example.com' }] },
+      { body: { key: 'PROJ-1' } },
+      { body: { key: 'PROJ-2' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'First', assignee: 'assignee@example.com' });
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Second', assignee: 'assignee@example.com' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const searchUrl = new URL(fetchMock.mock.calls[0][0]);
+    expect(searchUrl.pathname).toBe('/rest/api/2/user/search');
+    expect(searchUrl.searchParams.get('query')).toBe('assignee@example.com');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields.assignee).toEqual({ accountId: 'acct-123' });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).fields.assignee).toEqual({ accountId: 'acct-123' });
+  });
+
+  it('resolves a Cloud display name to accountId', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [{ accountId: 'acct-456', displayName: 'Example Assignee' }] },
+      { body: { key: 'PROJ-3' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Display name', assignee: 'Example Assignee' });
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields.assignee).toEqual({ accountId: 'acct-456' });
+  });
+
+  it('resolves a privacy-redacted Cloud email result when it is unique', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [{ accountId: 'acct-567' }] },
+      { body: { key: 'PROJ-8' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Redacted email', assignee: 'private@example.com' });
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields.assignee).toEqual({ accountId: 'acct-567' });
+  });
+
+  it('keeps Server/DC assignees as name without a user-search request', async () => {
+    stubInstance();
+    const fetchMock = stubFetchSequence([{ body: { key: 'PROJ-4' } }]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Server ticket', assignee: 'jdoe' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).fields.assignee).toEqual({ name: 'jdoe' });
+  });
+
+  it('creates unassigned Cloud tickets and retries an unresolvable assignee', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [] },
+      { body: { key: 'PROJ-5' } },
+      { body: [] },
+      { body: { key: 'PROJ-6' } }
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Unassigned', assignee: 'missing@example.com' });
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Still unassigned', assignee: 'missing@example.com' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body).fields).not.toHaveProperty('assignee');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not be resolved'));
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not assign a Cloud ticket when the search result is ambiguous', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [
+        { accountId: 'acct-789', displayName: 'Example User' },
+        { accountId: 'acct-987', displayName: 'Example User' }
+      ] },
+      { body: { key: 'PROJ-7' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Ambiguous', assignee: 'Example User' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+  });
+
+  it('does not use the privacy fallback across multiple returned candidates', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [
+        { accountId: 'acct-789' },
+        { accountId: 'acct-987', displayName: 'Other User' }
+      ] },
+      { body: { key: 'PROJ-9' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Mixed candidates', assignee: 'private@example.com' });
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+  });
+
+  it('creates unassigned tickets for malformed Cloud search responses and retries', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: { users: [] } },
+      { body: { key: 'PROJ-10' } },
+      { body: [{ accountId: 'acct-999', emailAddress: 'retry@example.com' }] },
+      { body: { key: 'PROJ-11' } }
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Malformed response', assignee: 'retry@example.com' });
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Retry response', assignee: 'retry@example.com' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body).fields.assignee).toEqual({ accountId: 'acct-999' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lookup failed'));
+  });
+
+  it('creates unassigned tickets when Cloud user search fails and retries', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { ok: false, status: 503, body: { errorMessages: ['temporary failure'] } },
+      { body: { key: 'PROJ-12' } },
+      { body: [{ accountId: 'acct-1000', emailAddress: 'retry@example.com' }] },
+      { body: { key: 'PROJ-13' } }
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Failed lookup', assignee: 'retry@example.com' });
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Retry failed lookup', assignee: 'retry@example.com' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body).fields.assignee).toEqual({ accountId: 'acct-1000' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lookup failed'));
+  });
+
+  it('normalizes the Cloud cache key for case-only assignee changes', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [{ accountId: 'acct-case', emailAddress: 'assignee@example.com' }] },
+      { body: { key: 'PROJ-14' } },
+      { body: { key: 'PROJ-15' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Lowercase', assignee: 'assignee@example.com' });
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Uppercase', assignee: 'ASSIGNEE@EXAMPLE.COM' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields.assignee).toEqual({ accountId: 'acct-case' });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).fields.assignee).toEqual({ accountId: 'acct-case' });
+  });
+
+  it('ignores inactive and app accounts when resolving a Cloud assignee', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [
+        { accountId: 'acct-inactive', emailAddress: 'assignee@example.com', active: false },
+        { accountId: 'acct-app', emailAddress: 'assignee@example.com', accountType: 'app' }
+      ] },
+      { body: { key: 'PROJ-16' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Inactive', assignee: 'assignee@example.com' });
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+  });
+
+  it('does not use a filtered candidate as the privacy fallback', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [
+        { accountId: 'acct-inactive', displayName: 'Jane', active: false },
+        { accountId: 'acct-janet', displayName: 'Janet Roe' }
+      ] },
+      { body: { key: 'PROJ-18' } }
+    ]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Filtered candidate', assignee: 'Jane' });
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields).not.toHaveProperty('assignee');
+  });
+
+  it('omits whitespace-only assignees without a Cloud lookup', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([{ body: { key: 'PROJ-17' } }]);
+
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Blank assignee', assignee: '   ' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).fields).not.toHaveProperty('assignee');
+  });
+
+  it('isolates assignee caches per Jira instance', async () => {
+    stubInstances({
+      'jira-one': { id: 'jira-one', baseUrl: 'https://one.atlassian.net', email: 'one@example.com', apiToken: 'token' },
+      'jira-two': { id: 'jira-two', baseUrl: 'https://two.atlassian.net', email: 'two@example.com', apiToken: 'token' }
+    });
+    const fetchMock = stubFetchSequence([
+      { body: [{ accountId: 'acct-one', emailAddress: 'assignee@example.com' }] },
+      { body: { key: 'ONE-1' } },
+      { body: [{ accountId: 'acct-two', emailAddress: 'assignee@example.com' }] },
+      { body: { key: 'TWO-1' } }
+    ]);
+
+    await createTicket('jira-one', { projectKey: 'ONE', summary: 'One', assignee: 'assignee@example.com' });
+    await createTicket('jira-two', { projectKey: 'TWO', summary: 'Two', assignee: 'assignee@example.com' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields.assignee).toEqual({ accountId: 'acct-one' });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body).fields.assignee).toEqual({ accountId: 'acct-two' });
+  });
+
+  it('coalesces concurrent lookups and invalidates them on instance changes', async () => {
+    stubInstance({ baseUrl: 'https://example.atlassian.net', email: 'me@example.com', apiToken: 'token' });
+    const fetchMock = stubFetchSequence([
+      { body: [{ accountId: 'acct-first', emailAddress: 'concurrent@example.com' }] },
+      { body: { key: 'PROJ-11' } },
+      { body: { key: 'PROJ-12' } },
+      { body: [{ accountId: 'acct-updated', emailAddress: 'concurrent@example.com' }] },
+      { body: { key: 'PROJ-13' } },
+      { body: [{ accountId: 'acct-deleted', emailAddress: 'concurrent@example.com' }] },
+      { body: { key: 'PROJ-14' } }
+    ]);
+    vi.spyOn(fs, 'writeFile').mockResolvedValue();
+
+    await Promise.all([
+      createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Concurrent one', assignee: 'concurrent@example.com' }),
+      createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Concurrent two', assignee: 'concurrent@example.com' })
+    ]);
+    await upsertInstance(INSTANCE_ID, {
+      name: 'Example JIRA',
+      baseUrl: 'https://example.atlassian.net',
+      email: 'me@example.com',
+      apiToken: 'new-token'
+    });
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Updated', assignee: 'concurrent@example.com' });
+    await deleteInstance(INSTANCE_ID);
+    await createTicket(INSTANCE_ID, { projectKey: 'PROJ', summary: 'Deleted', assignee: 'concurrent@example.com' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).fields.assignee).toEqual({ accountId: 'acct-first' });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).fields.assignee).toEqual({ accountId: 'acct-first' });
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body).fields.assignee).toEqual({ accountId: 'acct-updated' });
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body).fields.assignee).toEqual({ accountId: 'acct-deleted' });
   });
 });
 
