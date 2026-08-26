@@ -1924,6 +1924,13 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(handler).toMatch(/data\.type\s*===\s*'user'/);
   });
 
+  it('tasks:changed listener leaves explicitly dispatched tasks to their caller', () => {
+    const onIdx = COS_SRC.indexOf("cosEvents.on('tasks:changed'");
+    const handler = COS_SRC.slice(onIdx, COS_SRC.indexOf('});', onIdx) + 3);
+
+    expect(handler).toMatch(/if\s*\(data\.suppressDequeue\)\s*return/);
+  });
+
   // The retry-hold release (#3373) and the orphan sweep both requeue via an
   // in_progress → pending flip, which cosTaskStore reports as 'requeued'. Without
   // a wake here the released retry idles until an unrelated event or timer.

@@ -501,7 +501,8 @@ describe('CoS Job Routes', () => {
           autonomousJob: true,
           jobId: 'j1'
         }),
-        'internal'
+        'internal',
+        { suppressDequeue: true }
       );
       expect(cos.forceSpawnTask).toHaveBeenCalledWith('task-2');
     });
@@ -523,7 +524,8 @@ describe('CoS Job Routes', () => {
       expect(response.status).toBe(200);
       expect(cos.addTask).toHaveBeenCalledWith(
         expect.objectContaining({ provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }),
-        'internal'
+        'internal',
+        { suppressDequeue: true }
       );
       expect(cos.forceSpawnTask).toHaveBeenCalledWith('task-3');
     });

@@ -125,7 +125,18 @@ describe('CustomTasksSection trigger outcomes', () => {
       providerId: 'codex',
       model: 'gpt-5',
       effort: 'high'
-    })));
+    }), { silent: true }));
+  });
+
+  it('keeps required prompt validation when editing the shared card', async () => {
+    render(<CustomTasksSection appId="app-1" appName="Example App" />);
+    await screen.findByText('Example Task');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Prompt template'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Prompt is required'));
+    expect(api.updateCosJob).not.toHaveBeenCalled();
   });
 
   it('reports a direct manual trigger as started', async () => {

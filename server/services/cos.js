@@ -1596,6 +1596,11 @@ export async function init() {
   cosEvents.on('tasks:changed', (data) => {
     if (!isDaemonRunning() || !data?.action) return;
     if (data.action === 'added') {
+      // An explicit dispatcher (for example a scheduled job's Run now route)
+      // owns the spawn and will call forceSpawnTask after persistence. Skipping
+      // the automatic wake here prevents that dispatcher from racing a normal
+      // internal-task dequeue and reporting a false in-progress failure.
+      if (data.suppressDequeue) return;
       // Order matters: dequeueNextTask is scheduled before the user-task
       // tryImmediateSpawn, matching the pre-extraction sequence (addTask emitted
       // tasks:changed — registering dequeue via this listener — before it called

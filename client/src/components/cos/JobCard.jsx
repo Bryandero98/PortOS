@@ -250,10 +250,10 @@ export default function JobCard({
   onTrigger,
   onDelete,
   onUpdate,
+  validateEdit = null,
   fixedAppId = null,
   fixedType = null,
   showTaskMetadata = false,
-  silentUpdate = true,
   triggering = false
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -298,6 +298,7 @@ export default function JobCard({
   };
 
   const handleSave = async () => {
+    if (validateEdit && !validateEdit(editData)) return;
     const providerResolutionKnown = Boolean(editData.providerId || activeProviderId || providers?.length);
     if (isAgentJobType(editData.type) && providerResolutionKnown
       && !hasRunnableAgentProvider(providers, editData.providerId, activeProviderId)) {
@@ -310,10 +311,7 @@ export default function JobCard({
       ...(fixedType ? { type: fixedType } : {})
     };
     const payload = normalizeJobPayload(constrained);
-    const update = silentUpdate
-      ? api.updateCosJob(job.id, payload, { silent: true })
-      : api.updateCosJob(job.id, payload);
-    const result = await update.catch(err => {
+    const result = await api.updateCosJob(job.id, payload, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });

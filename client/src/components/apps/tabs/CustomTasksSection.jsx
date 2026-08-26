@@ -286,10 +286,10 @@ export default function CustomTasksSection({ appId, appName, providerCatalog, ac
               onTrigger={handleTrigger}
               onDelete={handleDelete}
               onUpdate={fetchTasks}
+              validateEdit={validate}
               fixedAppId={appId}
               fixedType="agent"
               showTaskMetadata
-              silentUpdate={false}
               triggering={triggering === job.id}
             />
           ))}

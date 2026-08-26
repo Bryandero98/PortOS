@@ -253,9 +253,11 @@ export async function getTaskById(taskId) {
  * Emits `tasks:changed` with `action: 'added'` on success; cos.js's init
  * listener turns that into a `tryImmediateSpawn` for user tasks so a newly
  * submitted task starts instantly instead of waiting for the next evaluation
- * interval.
+ * interval. `suppressDequeue` is reserved for an explicit dispatcher that will
+ * force-spawn the returned task itself; the change event still reaches socket
+ * consumers, but the normal scheduler must not race that dispatch.
  */
-export async function addTask(taskData, taskType = 'user', { raw = false, ignoreTaskId = null, now = Date.now() } = {}) {
+export async function addTask(taskData, taskType = 'user', { raw = false, ignoreTaskId = null, now = Date.now(), suppressDequeue = false } = {}) {
   return withStateLock(async () => {
   const state = await loadState();
   const filePath = taskType === 'user'
@@ -582,7 +584,9 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
   // cos.js init listens for this event. For user tasks it fires
   // tryImmediateSpawn so the task starts instantly if slots are available,
   // bypassing the evaluation interval (which is meant for system task generation).
-  cosEvents.emit('tasks:changed', { type: taskType, action: 'added', task: newTask });
+  const change = { type: taskType, action: 'added', task: newTask };
+  if (suppressDequeue) change.suppressDequeue = true;
+  cosEvents.emit('tasks:changed', change);
 
   return newTask;
   });

@@ -210,7 +210,7 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     // records the execution and re-registers the saved schedule.
     autonomousJob: task.metadata?.autonomousJob,
     jobId: task.metadata?.jobId
-  }, 'internal');
+  }, 'internal', { suppressDequeue: true });
 
   if (!taskResult?.id) {
     res.json({
