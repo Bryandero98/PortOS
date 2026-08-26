@@ -29,6 +29,7 @@ import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunn
 import { getDomainMode } from '../lib/domainAutonomy.js';
 import { remainingActionBudget } from '../lib/domainBudgets.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
+import { pendingCosActionReservations } from './cosAdmissionReservations.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { addTask, updateTask, reviveBlockedTask, getAllTasks, getCosTasks, firstLine, PRIORITY_VALUES } from './cosTaskStore.js';
 import { recordDecision, DECISION_TYPES } from './decisionLog.js';
@@ -822,7 +823,11 @@ async function resolveAutonomyBudget(state, runningAgentEntries) {
       const runningAutonomous = runningAgentEntries.filter(
         (a) => a.metadata?.taskType && a.metadata.taskType !== 'user'
       ).length;
-      autonomousActionsRemaining = remainingActionBudget(cosBudget.budget, cosBudget.usage, runningAutonomous);
+      autonomousActionsRemaining = remainingActionBudget(
+        cosBudget.budget,
+        cosBudget.usage,
+        runningAutonomous + pendingCosActionReservations()
+      );
       if (autonomousActionsRemaining === 0) {
         emitLog('info', `CoS auto-run paused — daily actions budget reached`, { domainBudget: 'cos', exceeded: 'actions' });
         cosAutonomyMode = 'off';
