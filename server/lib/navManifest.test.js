@@ -605,10 +605,12 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   // Driven by each command's own `previousPaths`, NOT a list maintained here: the
   // declaration then lives beside the path that moved, and the next move is one
   // edit in navManifest.js instead of two files that can disagree.
+  // Compare the full destination, including any query that opens a feature-local
+  // drawer or selects a subview.
   it('keeps a redirect from every declared previous path to its current one', () => {
     const broken = NAV_COMMANDS
-      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path.split(/[?#]/)[0], id: c.id })))
-      .filter(({ from, to }) => byFrom.get(from)?.to?.split(/[?#]/)[0] !== to)
+      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path, id: c.id })))
+      .filter(({ from, to }) => byFrom.get(from)?.to !== to)
       .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from)?.to ?? 'NO REDIRECT'} (want ${to})`);
     expect(broken).toEqual([]);
   });
