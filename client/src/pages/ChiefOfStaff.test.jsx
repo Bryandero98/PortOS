@@ -114,6 +114,30 @@ describe('ChiefOfStaff loading skeleton', () => {
     // The old spinner shell — a fixed 16rem box centering its child.
     expect(container.querySelector('.h-64')).toBeNull();
   });
+
+  it('shows the queue before the slow ancillary reads settle', async () => {
+    let releaseInsights;
+    api.getCosTasks.mockResolvedValue({
+      user: { tasks: [{ id: 'task-1', description: 'Example queued task', status: 'pending', metadata: {} }] },
+      cos: { tasks: [] },
+    });
+    api.getCosActionableInsights.mockReturnValue(new Promise((resolve) => { releaseInsights = resolve; }));
+
+    render(
+      <MemoryRouter initialEntries={['/cos/tasks']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Example queued task')).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Loading Chief of Staff' })).toBeNull();
+
+    await act(async () => {
+      releaseInsights({ insights: [] });
+    });
+  });
 });
 
 describe('ChiefOfStaff handleForceEvaluate', () => {

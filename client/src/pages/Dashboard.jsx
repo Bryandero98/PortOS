@@ -99,8 +99,15 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     setDataError(null);
-    const [appsData, , usageData, tribeCareData, feedsData, meatspaceLoggingData, dailyDriverData, dailyActionsData] = await Promise.all([
-      api.getApps().catch((err) => { setDataError(err.message); return []; }),
+    // The shell and layout have their own loading states. Release the page
+    // immediately so a slow PM2/apps read cannot hold the entire dashboard
+    // behind a single network response.
+    setLoading(false);
+    // Apps and the remaining widgets are independent hydration streams. Health
+    // and daily-actions in particular can involve slow subsystem/database work
+    // that should not hold every widget behind one Promise.all barrier.
+    const appsRead = api.getApps().catch((err) => { setDataError(err.message); return []; });
+    const secondaryRead = Promise.all([
       refreshHealth(),
       api.getUsage().catch(() => null),
       api.getTribeCareSummary({ silent: true }).catch(() => null),
@@ -112,14 +119,16 @@ export default function Dashboard() {
       api.getDailyActions({ silent: true }).catch(() => null),
       refreshInstanceFeatures(),
     ]);
+    const appsData = await appsRead;
     setApps(appsData);
+
+    const [, usageData, tribeCareData, feedsData, meatspaceLoggingData, dailyDriverData, dailyActionsData] = await secondaryRead;
     setUsage(usageData);
     setTribeCare(tribeCareData);
     setFeeds(feedsData);
     setMeatspaceLogging(meatspaceLoggingData);
     setDailyDriver(dailyDriverData);
     setDailyActions(dailyActionsData);
-    setLoading(false);
   }, [refreshHealth, refreshInstanceFeatures]);
 
   useEffect(() => {
