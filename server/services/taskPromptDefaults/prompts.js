@@ -2166,11 +2166,9 @@ Default branch: {defaultBranch}
    Update catalog/picker tests when you intentionally add recommendation
    metadata; do not change existing cross-backend install-id mapping semantics.
 
-7. Log the refresh in the changelog with
-   \`cd {repoPath} && npm run changelog:add -- changed "<one line summarizing the catalog refresh>"\`.
-   That writes a per-branch fragment under \`.changelog/next/\`, which is what keeps
-   parallel agents from conflicting on the shared \`.changelog/NEXT.md\`. Do NOT
-   append to \`.changelog/NEXT.md\` by hand.
+7. Do NOT create or edit a changelog file or fragment. PortOS release notes are
+   synthesized from the commit log, so write a clear conventional commit subject
+   that names the catalog change and its user-visible effect.
 
 ## Output
 

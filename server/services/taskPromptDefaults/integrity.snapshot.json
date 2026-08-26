@@ -37,7 +37,7 @@
     "pr-reviewer-review": "ec67b91468cead9c16cfcffff06f8993",
     "reference-watch": "e0e20754700fb08d5159b8437d9c260b",
     "pr-watcher": "53ead8e26d396849bfa78f28550bd691",
-    "refresh-local-llm-catalog": "ca7324a0f2251a66b46ea534940c9da8"
+    "refresh-local-llm-catalog": "9741ca6a8419fcdea2743e3b64781a8b"
   },
   "PROMPT_VERSIONS": {
     "do-replan": 2,
@@ -53,7 +53,7 @@
     "pr-watcher": 1,
     "branch-reconcile": 3,
     "issue-reconcile": 4,
-    "refresh-local-llm-catalog": 3,
+    "refresh-local-llm-catalog": 4,
     "plan-feature": 2,
     "security": 2,
     "code-quality": 2,
@@ -227,7 +227,8 @@
     ],
     "refresh-local-llm-catalog": [
       "525bd0077672bf2f8beec9c0124740c8",
-      "a9dce67bb9f0837ba904f3412b03637f"
+      "a9dce67bb9f0837ba904f3412b03637f",
+      "ca7324a0f2251a66b46ea534940c9da8"
     ],
     "plan-feature": [
       "3df6f0a46f2a524af1dc4f83dfdf0647"

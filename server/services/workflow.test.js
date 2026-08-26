@@ -46,6 +46,12 @@ describe('WORKFLOW_STAGES contract', () => {
     expect(review.taskTypes).toContain('pr-reviewer');
   });
 
+  it('places the PortOS catalog refresh custom task in the audit stage', () => {
+    const audit = WORKFLOW_STAGES.find(s => s.id === 'audit');
+    expect(audit.taskTypes).not.toContain('refresh-local-llm-catalog');
+    expect(audit.jobIds).toContain('job-refresh-local-llm-catalog');
+  });
+
   it('does not place the same task type in two stages', () => {
     const seen = new Set();
     for (const stage of WORKFLOW_STAGES) {

@@ -61,12 +61,6 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // On-demand only, and GLOBAL: 'Run Now' with no app sweeps the whole install,
   // which is the shape the task exists for. Non-committing coordinator posture.
   'repo-sync',
-  // PortOS-only: researches the current best local LLMs per category and
-  // refreshes the bundled suggested-models catalog (server/lib/localLlmCatalog.js)
-  // + the editorial family ranking (server/lib/localModelHeuristics.js), opening a
-  // PR. No-ops on any repo lacking that catalog file, so enabling it on a
-  // non-PortOS app does nothing. See DEFAULT_TASK_PROMPTS['refresh-local-llm-catalog'].
-  'refresh-local-llm-catalog',
   // The planning-only sibling of `feature-ideas`: runs the same brainstorm
   // research (PRD.md/GOALS.md or repository docs, changelog/git log, and
   // closed-unmerged PRs)
@@ -342,12 +336,6 @@ export const DEFAULT_TASK_INTERVALS = {
   // customized prompt can make changes if the operator wants — the shipped
   // default prompt only reviews + comments.
   'pr-watcher':          { type: INTERVAL_TYPES.CUSTOM, intervalMs: 1800000, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { prAuthorFilter: 'any', readOnly: false } },
-  // refresh-local-llm-catalog maintains PortOS's own bundled suggested-models
-  // catalog. CoS manages the worktree + PR (like feature-ideas/do-replan) — the
-  // agent only edits the catalog file. Weekly is generous; the prompt only opens
-  // a PR when the catalog is actually stale, so most runs are no-ops. Off by
-  // default; the user enables it on the PortOS app.
-  'refresh-local-llm-catalog': { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
   // plan-feature files a plan, not code — tracker-filing posture mirrors
   // reference-watch: writable (a file-based tracker commits checklist items), no
   // managed worktree, no PR. Weekly (not daily like feature-ideas) so an
@@ -494,7 +482,6 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'simplify': 'Dead-code/duplication audit — file issues (default) or implement removals',
   'stash-cleanup': 'Triage git stash list — drop entries superseded by or stale relative to main, leave real unlanded work in place',
   'repo-sync': 'Sync every managed app with origin — back on the default branch, pushed and pulled, merged branches/worktrees and redundant stashes cleared',
-  'refresh-local-llm-catalog': "Refresh PortOS's bundled suggested local-model catalog + editorial ranking (PortOS repo only)",
   'plan-feature': "Brainstorm one feature and file its decision-complete plan to the app's work tracker (no code)",
   'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent"
 };
