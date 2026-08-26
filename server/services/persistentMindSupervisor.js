@@ -21,7 +21,7 @@ import {
   requeuePersistentMindWake,
   takeNextPersistentMindWake,
 } from '../lib/persistentMind.js';
-import { loadState, saveState, withStateLock } from './cosState.js';
+import { isDaemonRunning, loadState, saveState, withStateLock } from './cosState.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { schedule, cancel } from './eventScheduler.js';
 import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
@@ -35,6 +35,7 @@ let turnAdapter = null;
 let activeRun = null;
 let activeAbortController = null;
 let runtimeGeneration = 0;
+let supervisorStopping = false;
 
 const nowIso = () => new Date().toISOString();
 const errorMessage = (error) => String(error?.message || error || 'Persistent mind turn failed')
@@ -65,6 +66,7 @@ function emitMindStatus(state) {
 }
 
 function armWatchdog() {
+  if (supervisorStopping || !isDaemonRunning()) return;
   schedule({
     id: PERSISTENT_MIND_WATCHDOG_EVENT_ID,
     type: 'interval',
@@ -77,14 +79,26 @@ function armWatchdog() {
 async function scheduleNextWake() {
   const root = await loadState();
   const state = normalizePersistentMindState(root.persistentMind);
-  const dueAt = nextPersistentMindWakeAt(state);
   cancel(PERSISTENT_MIND_WAKE_EVENT_ID);
+  if (supervisorStopping || !isDaemonRunning() || root.paused || getDomainMode(root.config, 'cos') !== 'execute') return;
+  const dueAt = nextPersistentMindWakeAt(state);
   if (dueAt == null || activeRun) return;
   schedule({
     id: PERSISTENT_MIND_WAKE_EVENT_ID,
     type: 'once',
     delayMs: Math.max(1, dueAt - Date.now()),
-    handler: () => drainPersistentMind(),
+    handler: async () => {
+      await drainPersistentMind({ rearm: false });
+      // eventScheduler removes a one-shot's timer handle after its handler
+      // resolves. Replacing the same id inside the handler would make the new
+      // timer live but uncancellable, so defer the replacement one event-loop
+      // turn until that cleanup is complete.
+      setImmediate(() => {
+        scheduleNextWake().catch((error) => {
+          console.error(`❌ Failed to re-arm persistent mind wake: ${error.message}`);
+        });
+      });
+    },
     metadata: { description: 'Persistent CoS mind next eligible wake' },
   });
 }
@@ -112,10 +126,12 @@ function quietSelfWake(turnId, notBefore = Date.now() + PERSISTENT_MIND_LIMITS.M
   };
 }
 
-async function interruptActiveTurn(reason, status, { retry = false } = {}) {
-  runtimeGeneration += 1;
-  activeAbortController?.abort(reason);
+async function interruptActiveTurn(reason, status, { retry = false, expectedTurnId = null } = {}) {
   const result = await mutateMindState((mind) => {
+    if (expectedTurnId && mind.activeTurn?.id !== expectedTurnId) {
+      return { mind, value: false };
+    }
+    const interrupted = Boolean(mind.activeTurn);
     let next = mind;
     if (mind.activeTurn) next = requeuePersistentMindWake(next, mind.activeTurn.wake);
     const failureCount = retry ? next.failureCount + 1 : next.failureCount;
@@ -131,10 +147,15 @@ async function interruptActiveTurn(reason, status, { retry = false } = {}) {
           ? new Date(Date.now() + persistentMindBackoffMs(failureCount)).toISOString()
           : null,
       },
+      value: interrupted,
     };
   });
+  if (result.value) {
+    runtimeGeneration += 1;
+    activeAbortController?.abort(reason);
+  }
   emitMindStatus(result.state);
-  return result.state;
+  return { state: result.state, interrupted: result.value === true };
 }
 
 async function parkActiveTurn(turnId, reason, status = 'waiting', retryAt = null) {
@@ -160,6 +181,7 @@ async function parkActiveTurn(turnId, reason, status = 'waiting', retryAt = null
 
 async function claimNextTurn() {
   const result = await mutateMindState((mind, root) => {
+    if (supervisorStopping || !isDaemonRunning()) return { mind, value: null };
     if (!mind.enabled || !mind.started || mind.activeTurn || mind.status === 'paused') return { mind, value: null };
     if (root.paused || getDomainMode(root.config, 'cos') !== 'execute') return { mind, value: null };
     const selected = takeNextPersistentMindWake(mind);
@@ -188,6 +210,16 @@ async function claimNextTurn() {
   });
   if (result.value) emitMindStatus(result.state);
   return result.value;
+}
+
+async function turnCanContinue(turnId, generation, signal) {
+  if (supervisorStopping || !isDaemonRunning() || generation !== runtimeGeneration || signal.aborted) return false;
+  const state = await getPersistentMindState();
+  return !supervisorStopping
+    && isDaemonRunning()
+    && generation === runtimeGeneration
+    && !signal.aborted
+    && state.activeTurn?.id === turnId;
 }
 
 async function recordTurnProfile(turnId, prepared) {
@@ -226,7 +258,7 @@ async function completeTurn(turnId, result, generation) {
   if (generation !== runtimeGeneration) return;
   const completedAt = nowIso();
   const updated = await mutateMindState((mind) => {
-    if (mind.activeTurn?.id !== turnId) return { mind };
+    if (mind.activeTurn?.id !== turnId) return { mind, value: false };
     const messageId = mind.activeTurn.wake.kind === 'message'
       ? mind.activeTurn.wake.message.id
       : null;
@@ -260,8 +292,10 @@ async function completeTurn(turnId, result, generation) {
         status: hasQueuedMessages ? 'waiting' : 'idle',
         pauseReason: null,
       },
+      value: true,
     };
   });
+  if (!updated.value) return;
   emitMindStatus(updated.state);
   cosEvents.emit('persistent-mind:turn-completed', {
     turnId,
@@ -270,6 +304,7 @@ async function completeTurn(turnId, result, generation) {
 }
 
 async function runOnePersistentMindTurn() {
+  if (supervisorStopping || !isDaemonRunning()) return;
   if (!turnAdapter) {
     const updated = await mutateMindState((mind) => ({
       mind: mind.enabled && mind.started
@@ -288,8 +323,24 @@ async function runOnePersistentMindTurn() {
 
   const root = await loadState();
   const mind = normalizePersistentMindState(root.persistentMind);
+  if (supervisorStopping || !isDaemonRunning()) return;
   if (!mind.enabled || !mind.started || mind.status === 'paused') return;
   if (root.paused || getDomainMode(root.config, 'cos') !== 'execute') return;
+
+  const runningAgents = Object.values(root.agents || {}).filter((agent) => agent.status === 'running').length;
+  const maxConcurrentAgents = Number(root.config?.maxConcurrentAgents);
+  if (Number.isSafeInteger(maxConcurrentAgents) && runningAgents >= maxConcurrentAgents) {
+    const updated = await mutateMindState((current) => ({
+      mind: {
+        ...current,
+        status: 'waiting',
+        pauseReason: `CoS agent capacity exhausted (${runningAgents}/${maxConcurrentAgents})`,
+        nextEligibleWakeAt: new Date(Date.now() + PERSISTENT_MIND_LIMITS.BACKOFF_BASE_MS).toISOString(),
+      },
+    }));
+    emitMindStatus(updated.state);
+    return;
+  }
 
   let budget;
   try {
@@ -334,11 +385,13 @@ async function runOnePersistentMindTurn() {
     // `prepare` must resolve the exact configured provider. The supervisor never
     // follows a fallback chain: an unavailable pin is a visible degraded state.
     const prepared = await turnAdapter.prepare({ wake: turn.wake, signal: controller.signal });
+    if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
     if (!prepared?.ok || !prepared.provider) {
       await parkActiveTurn(turn.id, prepared?.error || 'Persistent mind provider is unavailable', 'degraded', prepared?.retryAt || null);
       return;
     }
     await recordTurnProfile(turn.id, prepared);
+    if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
 
     const latestRoot = await loadState();
     const slot = await acquireLocalEndpointProviderSlot(prepared.provider, latestRoot.agents, turn.id);
@@ -347,6 +400,7 @@ async function runOnePersistentMindTurn() {
       return;
     }
     release = slot.release;
+    if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
     runStartedAt = Date.now();
     const result = await turnAdapter.run({
       turnId: turn.id,
@@ -449,7 +503,7 @@ export async function startPersistentMind() {
 }
 
 export async function pausePersistentMind(reason = 'Paused by user') {
-  const state = await interruptActiveTurn(reason, 'paused');
+  const { state } = await interruptActiveTurn(reason, 'paused');
   cancel(PERSISTENT_MIND_WAKE_EVENT_ID);
   return { success: true, state };
 }
@@ -551,13 +605,13 @@ export async function requestPersistentMindWake({ sourceTurnId, reason, notBefor
   return result.value;
 }
 
-export async function drainPersistentMind() {
+export async function drainPersistentMind({ rearm = true } = {}) {
   if (activeRun) return activeRun;
   const run = runOnePersistentMindTurn();
   activeRun = run.finally(async () => {
     activeRun = null;
     activeAbortController = null;
-    await scheduleNextWake();
+    if (rearm) await scheduleNextWake();
   });
   return activeRun;
 }
@@ -565,12 +619,16 @@ export async function drainPersistentMind() {
 export async function checkPersistentMindWatchdog() {
   const state = await getPersistentMindState();
   if (!persistentMindTurnIsStale(state)) return { interrupted: false };
-  await interruptActiveTurn('Persistent mind turn heartbeat expired', 'interrupted', { retry: true });
-  await scheduleNextWake();
-  return { interrupted: true };
+  const result = await interruptActiveTurn('Persistent mind turn heartbeat expired', 'interrupted', {
+    retry: true,
+    expectedTurnId: state.activeTurn.id,
+  });
+  if (result.interrupted) await scheduleNextWake();
+  return { interrupted: result.interrupted };
 }
 
 export async function initializePersistentMindSupervisor() {
+  supervisorStopping = false;
   const recovered = await mutateMindState((mind) => {
     if (!mind.enabled || !mind.started) return { mind };
     let next = mind;
@@ -606,7 +664,7 @@ export async function handlePersistentMindGlobalPause(reason = 'Chief of Staff p
     cancel(PERSISTENT_MIND_WAKE_EVENT_ID);
     return state;
   }
-  return interruptActiveTurn(reason, 'waiting');
+  return (await interruptActiveTurn(reason, 'waiting')).state;
 }
 
 export async function handlePersistentMindGlobalResume() {
@@ -614,13 +672,14 @@ export async function handlePersistentMindGlobalResume() {
 }
 
 export async function shutdownPersistentMindSupervisor() {
+  supervisorStopping = true;
   runtimeGeneration += 1;
   activeAbortController?.abort('Chief of Staff daemon stopped');
   cancel(PERSISTENT_MIND_WAKE_EVENT_ID);
   cancel(PERSISTENT_MIND_WATCHDOG_EVENT_ID);
   const state = await getPersistentMindState();
   if (!state.activeTurn) return state;
-  return interruptActiveTurn('Chief of Staff daemon stopped', 'interrupted', { retry: true });
+  return (await interruptActiveTurn('Chief of Staff daemon stopped', 'interrupted', { retry: true })).state;
 }
 
 export function __resetPersistentMindSupervisorForTests() {
@@ -628,6 +687,7 @@ export function __resetPersistentMindSupervisorForTests() {
   activeRun = null;
   activeAbortController = null;
   runtimeGeneration = 0;
+  supervisorStopping = false;
   cancel(PERSISTENT_MIND_WAKE_EVENT_ID);
   cancel(PERSISTENT_MIND_WATCHDOG_EVENT_ID);
 }

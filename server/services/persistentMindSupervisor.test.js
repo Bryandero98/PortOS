@@ -8,12 +8,14 @@ const mock = vi.hoisted(() => ({
   budget: { withinBudget: true, exceeded: null },
   recordUsage: vi.fn(async () => {}),
   acquireSlot: vi.fn(async () => ({ ok: true, release: vi.fn() })),
+  daemonRunning: true,
 }));
 
 vi.mock('./cosState.js', () => ({
   loadState: vi.fn(async () => mock.root),
   saveState: vi.fn(async (state) => { mock.root = state; }),
   withStateLock: vi.fn(async (fn) => fn()),
+  isDaemonRunning: vi.fn(() => mock.daemonRunning),
 }));
 
 vi.mock('./cosEvents.js', () => ({
@@ -42,7 +44,7 @@ const supervisor = await import('./persistentMindSupervisor.js');
 
 const makeRoot = () => ({
   paused: false,
-  config: { domainAutonomy: { cos: 'execute' } },
+  config: { domainAutonomy: { cos: 'execute' }, maxConcurrentAgents: 3 },
   agents: {},
   persistentMind: createDefaultPersistentMindState(),
 });
@@ -60,6 +62,7 @@ describe('persistent mind supervisor', () => {
     mock.scheduled.clear();
     mock.emitted.length = 0;
     mock.budget = { withinBudget: true, exceeded: null };
+    mock.daemonRunning = true;
     mock.recordUsage.mockClear();
     mock.acquireSlot.mockReset();
     mock.acquireSlot.mockResolvedValue({ ok: true, release: vi.fn() });
@@ -177,6 +180,25 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind.nextEligibleWakeAt).not.toBeNull();
   });
 
+  it('holds queued work durably when ordinary CoS agents fill the global capacity', async () => {
+    const prepare = vi.fn();
+    const run = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({ prepare, run });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    await supervisor.enqueuePersistentMindMessage({ id: 'message-1', text: 'Wait for a global slot.' });
+    mock.root.config.maxConcurrentAgents = 1;
+    mock.root.agents = { 'agent-1': { status: 'running' } };
+
+    await supervisor.drainPersistentMind();
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
+    expect(mock.root.persistentMind.pauseReason).toBe('CoS agent capacity exhausted (1/1)');
+    expect(mock.root.persistentMind.nextEligibleWakeAt).not.toBeNull();
+  });
+
   it('requeues a claimed message when the shared local endpoint has no slot', async () => {
     const run = vi.fn();
     await supervisor.registerPersistentMindTurnAdapter({
@@ -194,6 +216,73 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind.status).toBe('waiting');
     expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
     expect(mock.root.persistentMind.pauseReason).toContain('at capacity');
+  });
+
+  it('does not schedule or run a wake while the CoS lifecycle gate is closed', async () => {
+    const run = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-cloud' } })),
+      run,
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    mock.scheduled.clear();
+    mock.root.paused = true;
+
+    await supervisor.enqueuePersistentMindMessage({ id: 'message-1', text: 'Wait for resume.' });
+    await supervisor.drainPersistentMind();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.scheduled.has(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID)).toBe(false);
+    expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
+
+    mock.root.paused = false;
+    mock.daemonRunning = false;
+    await supervisor.handlePersistentMindGlobalResume();
+    expect(mock.scheduled.has(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID)).toBe(false);
+  });
+
+  it('re-arms a fired one-shot only after the scheduler can finish cleaning it up', async () => {
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-cloud' } })),
+      run: vi.fn(async () => ({})),
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    const firstWake = mock.scheduled.get(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID);
+
+    await firstWake.handler();
+    // Mirrors eventScheduler's one-shot cleanup immediately after await handler().
+    mock.scheduled.delete(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID);
+    expect(mock.scheduled.has(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID)).toBe(false);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const replacement = mock.scheduled.get(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID);
+    expect(replacement).toBeDefined();
+    expect(replacement).not.toBe(firstWake);
+  });
+
+  it('does not start a turn when cancellation lands while provider preparation is pending', async () => {
+    const prepared = deferred();
+    const run = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(() => prepared.promise),
+      run,
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    await supervisor.enqueuePersistentMindMessage({ id: 'message-1', text: 'Cancel before inference.' });
+    const drain = supervisor.drainPersistentMind();
+    await vi.waitFor(() => expect(mock.root.persistentMind.activeTurn).not.toBeNull());
+
+    await supervisor.pausePersistentMind();
+    prepared.resolve({ ok: true, provider: { id: 'example-cloud' } });
+    await drain;
+
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.acquireSlot).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.status).toBe('paused');
+    expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
   });
 
   it('watchdog interruption aborts and requeues a stale turn without starting a second copy', async () => {
@@ -220,6 +309,41 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind.activeTurn).toBeNull();
     expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
     expect(mock.root.persistentMind.status).toBe('interrupted');
+  });
+
+  it('does not interrupt a replacement turn when a stale watchdog snapshot loses the race', async () => {
+    mock.root.persistentMind = {
+      ...createDefaultPersistentMindState(),
+      enabled: true,
+      started: true,
+      status: 'thinking',
+      activeTurn: {
+        id: 'turn-stale',
+        wake: { kind: 'self', id: 'wake-stale', reason: 'stale', sourceTurnId: 'turn-0', createdAt: new Date(1).toISOString(), notBefore: null },
+        startedAt: new Date(1).toISOString(),
+        heartbeatAt: new Date(1).toISOString(),
+        providerId: 'example-cloud',
+        model: null,
+        effort: null,
+      },
+    };
+    const originalWithStateLock = (await import('./cosState.js')).withStateLock;
+    let replaced = false;
+    originalWithStateLock.mockImplementationOnce(async (fn) => {
+      mock.root.persistentMind.activeTurn = {
+        ...mock.root.persistentMind.activeTurn,
+        id: 'turn-replacement',
+        heartbeatAt: new Date().toISOString(),
+      };
+      replaced = true;
+      return fn();
+    });
+
+    await expect(supervisor.checkPersistentMindWatchdog()).resolves.toEqual({ interrupted: false });
+
+    expect(replaced).toBe(true);
+    expect(mock.root.persistentMind.activeTurn.id).toBe('turn-replacement');
+    expect(mock.root.persistentMind.status).toBe('thinking');
   });
 
   it('coalesces self-wakes and rejects a recursive wake without a completed source turn', async () => {

@@ -2412,6 +2412,12 @@ describe('persistent mind — default-off CoS state integration (#5064)', () => 
       activeTurn: null,
     });
   });
+
+  it('suspends and re-arms the mind when the CoS autonomy mode changes', () => {
+    const updateFn = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function updateConfig'));
+    expect(updateFn).toMatch(/mode === 'execute'[\s\S]*handlePersistentMindGlobalResume\(\)/);
+    expect(updateFn).toMatch(/handlePersistentMindGlobalPause\(`CoS autonomy changed to \$\{mode\}`\)/);
+  });
 });
 
 describe('pending-merge sweep — own timer, not the evaluation cadence (#3630)', () => {

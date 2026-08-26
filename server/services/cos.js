@@ -237,6 +237,11 @@ export async function updateConfig(updates) {
     return state.config;
   });
   cosEvents.emit('config:changed', config);
+  if (isDaemonRunning() && updates.domainAutonomy !== undefined) {
+    const mode = getDomainMode(config, 'cos');
+    if (mode === 'execute') await handlePersistentMindGlobalResume();
+    else await handlePersistentMindGlobalPause(`CoS autonomy changed to ${mode}`);
+  }
   return config;
 }
 
