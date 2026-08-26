@@ -131,6 +131,51 @@ describe('migration 299 — local-LLM catalog refresh → PortOS custom task', (
     expect(readJson(legacySchedulePath).tasks).toEqual({})
   })
 
+  it('disables an invalid legacy cron instead of breaking autonomous-job registration', async () => {
+    writeJson(schedulePath, {
+      tasks: {
+        'refresh-local-llm-catalog': {
+          enabled: true,
+          type: 'cron',
+          cronExpression: '60 0 * * *'
+        }
+      },
+      executions: {}
+    })
+    writeJson(appsPath, {
+      apps: { [PORTOS_APP_ID]: { taskTypeOverrides: { 'refresh-local-llm-catalog': { enabled: true } } } }
+    })
+
+    await migration.up({ rootDir })
+    const job = readJson(jobsPath).jobs.find((candidate) => candidate.id === PORTOS_CATALOG_REFRESH_JOB_ID)
+    expect(job).toMatchObject({ enabled: false, interval: 'weekly' })
+    expect(job).not.toHaveProperty('cronExpression')
+  })
+
+  it('keeps a failure-parked PortOS schedule disabled', async () => {
+    writeJson(schedulePath, {
+      tasks: { 'refresh-local-llm-catalog': { enabled: true, type: 'weekly' } },
+      executions: {
+        'task:refresh-local-llm-catalog': {
+          perApp: {
+            [PORTOS_APP_ID]: {
+              count: 4,
+              failureParkedAt: '2026-08-25T00:00:00.000Z',
+              failureParkReason: 'auth-error'
+            }
+          }
+        }
+      }
+    })
+    writeJson(appsPath, {
+      apps: { [PORTOS_APP_ID]: { taskTypeOverrides: { 'refresh-local-llm-catalog': { enabled: true } } } }
+    })
+
+    await migration.up({ rootDir })
+    const job = readJson(jobsPath).jobs.find((candidate) => candidate.id === PORTOS_CATALOG_REFRESH_JOB_ID)
+    expect(job).toMatchObject({ enabled: false, runCount: 4 })
+  })
+
   it('preserves an existing destination job while completing a partial migration cleanup', async () => {
     writeJson(schedulePath, {
       tasks: { 'refresh-local-llm-catalog': { enabled: true, type: 'weekly' } },

@@ -8,6 +8,7 @@
 
 import { PORTOS_APP_ID } from '../../lib/appIdentity.js'
 import { DEFAULT_TASK_PROMPTS, PREVIOUS_DEFAULT_PROMPTS } from '../taskPromptDefaults.js'
+import { isValidCron } from '../eventScheduler.js'
 import { DAY, WEEK } from './constants.js'
 
 export const PORTOS_CATALOG_REFRESH_JOB_ID = 'job-refresh-local-llm-catalog'
@@ -58,8 +59,10 @@ export function catalogRefreshJobScheduleFields(task = {}, appOverride = {}) {
     ? type
     : (type === 'cron' && typeof task.cronExpression === 'string' ? task.cronExpression.trim() : '')
 
-  if (cronExpression.split(/\s+/).length === 5) {
-    return { interval: 'daily', intervalMs: DAY, cronExpression }
+  if (cronExpression) {
+    return isValidCron(cronExpression)
+      ? { interval: 'daily', intervalMs: DAY, cronExpression }
+      : { interval: 'weekly', intervalMs: WEEK, unsupportedScheduleType: 'invalid-cron' }
   }
   if (type === 'daily') return { interval: 'daily', intervalMs: DAY }
   if (type === 'weekly') return { interval: 'weekly', intervalMs: WEEK }
@@ -86,6 +89,7 @@ export function buildMigratedCatalogRefreshJob({ task = {}, appOverride = {}, ex
   const effectiveExecution = isObject(execution.perApp?.[PORTOS_APP_ID])
     ? execution.perApp[PORTOS_APP_ID]
     : execution
+  const failureParked = Boolean(effectiveExecution.failureParkedAt)
   const globalMetadata = isObject(task.taskMetadata) ? task.taskMetadata : {}
   const appMetadata = isObject(appOverride.taskMetadata) ? appOverride.taskMetadata : {}
   const storedPrompt = task.prompt || DEFAULT_TASK_PROMPTS[PORTOS_CATALOG_REFRESH_TASK_TYPE]
@@ -96,7 +100,7 @@ export function buildMigratedCatalogRefreshJob({ task = {}, appOverride = {}, ex
   return {
     ...PORTOS_CATALOG_REFRESH_JOB,
     ...persistedScheduleFields,
-    enabled: unsupportedScheduleType
+    enabled: unsupportedScheduleType || failureParked
       ? false
       : task.enabled === true && appOverride.enabled === true,
     promptTemplate: catalogRefreshPromptForCustomJob(prompt),

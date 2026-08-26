@@ -53,6 +53,18 @@ describe('PortOS local-LLM catalog refresh custom task', () => {
       .toEqual({ interval: 'daily', intervalMs: 86_400_000, cronExpression: '0 6 * * 1' })
   })
 
+  it('disables malformed cron schedules instead of persisting a startup-breaking expression', () => {
+    expect(catalogRefreshJobScheduleFields({ type: 'cron', cronExpression: '60 0 * * *' }))
+      .toEqual({ interval: 'weekly', intervalMs: 604_800_000, unsupportedScheduleType: 'invalid-cron' })
+
+    const job = buildMigratedCatalogRefreshJob({
+      task: { enabled: true, type: 'cron', cronExpression: '60 0 * * *' },
+      appOverride: { enabled: true }
+    })
+    expect(job).toMatchObject({ enabled: false, interval: 'weekly' })
+    expect(job).not.toHaveProperty('cronExpression')
+  })
+
   it('preserves effective pins, metadata, prompt, and PortOS execution history', () => {
     const job = buildMigratedCatalogRefreshJob({
       task: {
@@ -124,5 +136,23 @@ describe('PortOS local-LLM catalog refresh custom task', () => {
     })
     expect(once).toMatchObject({ enabled: false, interval: 'weekly' })
     expect(once).not.toHaveProperty('unsupportedScheduleType')
+  })
+
+  it('keeps a failure-parked PortOS schedule disabled after migration', () => {
+    const parked = buildMigratedCatalogRefreshJob({
+      task: { enabled: true, type: 'weekly' },
+      appOverride: { enabled: true },
+      execution: {
+        perApp: {
+          [PORTOS_APP_ID]: {
+            count: 3,
+            failureParkedAt: '2026-08-25T00:00:00.000Z',
+            failureParkReason: 'auth-error'
+          }
+        }
+      }
+    })
+
+    expect(parked).toMatchObject({ enabled: false, runCount: 3 })
   })
 })
