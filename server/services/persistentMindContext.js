@@ -33,6 +33,7 @@ import * as memoryBackend from './memoryBackend.js';
 const ROLLUP_PATH = join(PATHS.cos, 'persistent-mind-rollups.json');
 const ROLLUP_STORE_SCHEMA_VERSION = 1;
 const queueRollupWrite = createFileWriteQueue();
+const promotionRuns = new Map();
 
 const emptyStore = () => ({ schemaVersion: ROLLUP_STORE_SCHEMA_VERSION, rollups: [] });
 
@@ -213,7 +214,8 @@ export function appendPersistentMindAnnotation({
  * Promote one user-approved fact into the existing Brain backend. Absence of an
  * explicit `approved: true` is a refusal, not a pending or empty memory.
  */
-export async function promotePersistentMindMemory({
+async function performPersistentMindPromotion({
+  id,
   approved,
   mindId = PERSISTENT_MIND_ID,
   turnId = null,
@@ -226,7 +228,15 @@ export async function promotePersistentMindMemory({
   memoryApi = memoryBackend,
 } = {}) {
   if (approved !== true) return { success: false, error: 'Explicit user approval is required' };
+  if (typeof id !== 'string' || !id.trim()) return { success: false, error: 'Promotion id is required' };
   if (typeof content !== 'string' || !content.trim()) return { success: false, error: 'Memory content is required' };
+  const promotionId = id.trim();
+  const previous = (await readPersistentMindHistory(mindId)).find(
+    (event) => event.kind === 'mind.memory.promoted' && event.data?.promotionId === promotionId
+  );
+  if (previous) {
+    return { success: true, duplicate: true, memory: { id: previous.data.memoryId } };
+  }
   const memory = await memoryApi.createMemory({
     type,
     content: content.trim().slice(0, 10_240),
@@ -243,6 +253,7 @@ export async function promotePersistentMindMemory({
     turnId,
     eventId: `mind-memory:${memory.id}`,
     data: {
+      promotionId,
       memoryId: memory.id,
       sourceEventId,
       type,
@@ -251,4 +262,12 @@ export async function promotePersistentMindMemory({
     },
   });
   return { success: true, memory };
+}
+
+export function promotePersistentMindMemory(input = {}) {
+  const key = typeof input.id === 'string' ? input.id.trim() : '';
+  if (key && promotionRuns.has(key)) return promotionRuns.get(key);
+  const run = performPersistentMindPromotion(input).finally(() => promotionRuns.delete(key));
+  if (key) promotionRuns.set(key, run);
+  return run;
 }

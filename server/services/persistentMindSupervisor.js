@@ -30,6 +30,7 @@ import { acquireCosActionReservation, acquireCosGlobalSlot } from './cosAdmissio
 import { appendMindEvent } from './agentRunEventLog.js';
 import { preparePersistentMindContext } from './persistentMindContext.js';
 import { resolvePersistentMindProfile } from './persistentMindProfile.js';
+import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
 
 export const PERSISTENT_MIND_WAKE_EVENT_ID = 'cos-persistent-mind-wake';
 export const PERSISTENT_MIND_WATCHDOG_EVENT_ID = 'cos-persistent-mind-watchdog';
@@ -57,16 +58,7 @@ async function mutateMindState(mutator) {
 }
 
 function emitMindStatus(state) {
-  cosEvents.emit('persistent-mind:status', {
-    enabled: state.enabled,
-    started: state.started,
-    status: state.status,
-    pauseReason: state.pauseReason,
-    queuedMessages: state.queuedMessages.length,
-    activeTurnId: state.activeTurn?.id || null,
-    lastCompletedTurnId: state.lastCompletedTurnId,
-    nextEligibleWakeAt: state.nextEligibleWakeAt,
-  });
+  cosEvents.emit('persistent-mind:status', publicPersistentMindState(state));
 }
 
 function armWatchdog() {

@@ -245,6 +245,16 @@ describe('persistent-mind ordering, replay, and cursors', () => {
     expect(recovered.events.map((item) => item.data.messageId)).toEqual(['two', 'three']);
     expect(recovered.snapshot.messages.map((item) => item.messageId)).toEqual(['two', 'three']);
   });
+
+  it('marks a cursorless bounded tail as truncated', async () => {
+    await appendMessage('one');
+    await appendMessage('two');
+    await appendMessage('three');
+
+    const page = await readPersistentMindEvents({ limit: 2 });
+    expect(page).toMatchObject({ gap: false, hasMore: false, truncated: true });
+    expect(page.events.map((item) => item.data.messageId)).toEqual(['two', 'three']);
+  });
 });
 
 describe('retention / rotation bound', () => {

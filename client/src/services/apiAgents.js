@@ -60,6 +60,30 @@ export const getRunReconciliation = (filters = {}, options = {}) =>
 export const repairRunRecords = (body = {}, options = {}) =>
   request('/agents/activity/run-events/reconcile', { method: 'POST', body: JSON.stringify(body), ...options });
 
+// Persistent CoS mind — the cursor read is both the initial bounded snapshot
+// and the reconnect backfill path. Writes carry caller-minted ids so retrying a
+// timed-out request cannot duplicate a message or annotation.
+export const getPersistentMind = (filters = {}, options = {}) =>
+  request(`/cos/mind${runEventQuery(filters)}`, options);
+export const sendPersistentMindMessage = (body, options = {}) =>
+  request('/cos/mind/messages', { method: 'POST', body: JSON.stringify(body), ...options });
+export const addPersistentMindAnnotation = (body, options = {}) =>
+  request('/cos/mind/annotations', { method: 'POST', body: JSON.stringify(body), ...options });
+export const startPersistentMind = (options = {}) => request('/cos/mind/start', { method: 'POST', ...options });
+export const pausePersistentMind = (reason, options = {}) => request('/cos/mind/pause', {
+  method: 'POST', body: JSON.stringify({ reason }), ...options,
+});
+export const resumePersistentMind = (options = {}) => request('/cos/mind/resume', { method: 'POST', ...options });
+export const stopPersistentMind = (options = {}) => request('/cos/mind/stop', { method: 'POST', ...options });
+export const acknowledgePersistentMindEvent = (eventId, id, options = {}) =>
+  request(`/cos/mind/events/${encodeURIComponent(eventId)}/acknowledge`, {
+    method: 'POST', body: JSON.stringify({ id }), ...options,
+  });
+export const promotePersistentMindEvent = (eventId, body, options = {}) =>
+  request(`/cos/mind/events/${encodeURIComponent(eventId)}/promote`, {
+    method: 'POST', body: JSON.stringify(body), ...options,
+  });
+
 // Chief of Staff
 export const getCosStatus = () => request('/cos');
 export const startCos = (options = {}) => request('/cos/start', { method: 'POST', ...options });

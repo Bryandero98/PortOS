@@ -212,6 +212,7 @@ describe('trajectory annotations and Brain promotion', () => {
     const memoryApi = { createMemory: vi.fn(async (input) => ({ id: 'memory-1', ...input })) };
 
     await expect(promotePersistentMindMemory({
+      id: 'promotion-refused',
       approved: false,
       content: 'Remember this.',
       memoryApi,
@@ -220,6 +221,7 @@ describe('trajectory annotations and Brain promotion', () => {
     expect(mock.appendMindEvent).not.toHaveBeenCalled();
 
     const promoted = await promotePersistentMindMemory({
+      id: 'promotion-1',
       approved: true,
       turnId: 'turn-1',
       sourceEventId: 'event-2',
@@ -241,7 +243,21 @@ describe('trajectory annotations and Brain promotion', () => {
     expect(mock.appendMindEvent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'mind.memory.promoted',
       turnId: 'turn-1',
-      data: expect.objectContaining({ memoryId: 'memory-1', sourceEventId: 'event-2', approved: true }),
+      data: expect.objectContaining({
+        promotionId: 'promotion-1', memoryId: 'memory-1', sourceEventId: 'event-2', approved: true,
+      }),
     }));
+
+    mock.history = [{
+      kind: 'mind.memory.promoted',
+      data: { promotionId: 'promotion-1', memoryId: 'memory-1' },
+    }];
+    await expect(promotePersistentMindMemory({
+      id: 'promotion-1',
+      approved: true,
+      content: 'Remember this user-approved fact.',
+      memoryApi,
+    })).resolves.toMatchObject({ success: true, duplicate: true, memory: { id: 'memory-1' } });
+    expect(memoryApi.createMemory).toHaveBeenCalledTimes(1);
   });
 });

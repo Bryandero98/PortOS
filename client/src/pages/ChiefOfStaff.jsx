@@ -41,6 +41,7 @@ const RunsTab = lazy(() => import('../components/cos/tabs/RunsTab'));
 // post-mortem surface nobody opens on a normal day, and it pulls the whole
 // ledger read path with it.
 const RunEventsTab = lazy(() => import('../components/cos/tabs/RunEventsTab'));
+const MindTab = lazy(() => import('../components/cos/tabs/MindTab'));
 // The task and agent tabs are the default CoS landing surfaces and stay eager.
 // Every other tab is loaded only when selected so the common queue view does
 // not pay for charts, memory graphs, briefing readers, or configuration forms.
@@ -1104,6 +1105,13 @@ export default function ChiefOfStaff() {
           <div role="tabpanel" id="tabpanel-run-events" aria-labelledby="tab-run-events">
             <Suspense fallback={<TabLoadFallback label="run events" />}>
               <RunEventsTab />
+            </Suspense>
+          </div>
+        )}
+        {activeTab === 'mind' && (
+          <div role="tabpanel" id="tabpanel-mind" aria-labelledby="tab-mind">
+            <Suspense fallback={<TabLoadFallback label="mind" />}>
+              <MindTab />
             </Suspense>
           </div>
         )}
