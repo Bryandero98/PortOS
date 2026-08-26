@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { PORTOS_APP_ID } from '../../server/lib/appIdentity.js'
 import { PORTOS_CATALOG_REFRESH_JOB_ID } from '../../server/services/autonomousJobs/portosCatalogRefresh.js'
-import migration from './298-refresh-local-llm-catalog-custom-task.js'
+import migration from './299-refresh-local-llm-catalog-custom-task.js'
 
 const writeJson = (path, value) => {
   mkdirSync(dirname(path), { recursive: true })
@@ -12,7 +12,7 @@ const writeJson = (path, value) => {
 }
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
 
-describe('migration 298 — local-LLM catalog refresh → PortOS custom task', () => {
+describe('migration 299 — local-LLM catalog refresh → PortOS custom task', () => {
   let rootDir
   let schedulePath
   let legacySchedulePath
@@ -20,7 +20,7 @@ describe('migration 298 — local-LLM catalog refresh → PortOS custom task', (
   let appsPath
 
   beforeEach(() => {
-    rootDir = mkdtempSync(join(tmpdir(), 'migration-298-'))
+    rootDir = mkdtempSync(join(tmpdir(), 'migration-299-'))
     schedulePath = join(rootDir, 'data', 'cos', 'task-schedule.json')
     legacySchedulePath = join(rootDir, 'data', 'task-schedule.json')
     jobsPath = join(rootDir, 'data', 'cos', 'autonomous-jobs.json')

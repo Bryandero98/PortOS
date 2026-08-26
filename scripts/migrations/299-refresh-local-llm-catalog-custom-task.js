@@ -38,7 +38,7 @@ async function readOptionalJsonStrict(path, label) {
   try {
     return JSON.parse(raw)
   } catch (err) {
-    throw new Error(`${label} is unreadable; repair it before retrying migration 298: ${err.message}`)
+    throw new Error(`${label} is unreadable; repair it before retrying migration 299: ${err.message}`)
   }
 }
 
@@ -78,11 +78,11 @@ export default {
 
     for (const [label, schedule] of [[CURRENT_SCHEDULE_REL, currentSchedule], [LEGACY_SCHEDULE_REL, legacySchedule]]) {
       if (schedule != null && (!isObject(schedule) || !isObject(schedule.tasks))) {
-        throw new Error(`${label} has an invalid tasks collection; repair it before retrying migration 298`)
+        throw new Error(`${label} has an invalid tasks collection; repair it before retrying migration 299`)
       }
     }
     if (appsData != null && (!isObject(appsData) || !isObject(appsData.apps))) {
-      throw new Error(`${APPS_REL} has an invalid apps collection; repair it before retrying migration 298`)
+      throw new Error(`${APPS_REL} has an invalid apps collection; repair it before retrying migration 299`)
     }
 
     const schedules = [
@@ -112,7 +112,7 @@ export default {
       jobs: []
     }
     if (!isObject(jobsData) || !Array.isArray(jobsData.jobs)) {
-      throw new Error(`${JOBS_REL} has an invalid jobs collection; repair it before retrying migration 298`)
+      throw new Error(`${JOBS_REL} has an invalid jobs collection; repair it before retrying migration 299`)
     }
 
     let jobCreated = false
