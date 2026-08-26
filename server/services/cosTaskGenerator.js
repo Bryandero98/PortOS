@@ -64,6 +64,7 @@ import {
   buildTargetWorkItemBlock,
   normalizeWorkItemRef,
 } from './cosTaskPrompts.js';
+import { appendTaskDataInputs, resolveTaskDataInputs } from './taskDataInputs.js';
 
 export {
   buildClaimOverrideContextBlock,
@@ -3092,7 +3093,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   const planConstraintBlock = buildPlanConstraintBlock(metadata.planId);
 
   const modeInstructions = isAuditTaskType(taskType) ? modeContractFor(fileIssues) : '';
-  const description = await buildImprovementTaskDescription({
+  const baseDescription = await buildImprovementTaskDescription({
     promptTemplate: applyAuditModeWrapper(promptTemplate, modeInstructions),
     app, promptTaskType, metadata,
     blocks: {
@@ -3108,6 +3109,8 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
       planConstraint: planConstraintBlock
     }
   });
+  const taskDataInputs = await resolveTaskDataInputs(interval.dataInputs, { app });
+  const description = appendTaskDataInputs(baseDescription, taskDataInputs);
 
   applyAppWorktreeDefault(metadata, app);
   // File-issues posture wins over app worktree/PR defaults — the deliverable

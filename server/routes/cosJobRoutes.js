@@ -11,6 +11,7 @@ import { parseCronToNextRun, isValidRecurrence } from '../services/eventSchedule
 import { getUserTimezone } from '../services/userTimezone.js';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { createCosJobSchema, updateCosJobSchema } from '../lib/validation.js';
+import { getTaskDataInputCatalog } from '../lib/taskDataInputCatalog.js';
 
 const router = Router();
 
@@ -54,7 +55,7 @@ router.get('/jobs', asyncHandler(async (req, res) => {
       ...(j.cronSchedule ? { nextRunAt: Number.isFinite(nextRun) ? new Date(nextRun).toISOString() : null } : {})
     };
   });
-  res.json({ jobs: jobsWithGates, stats, registeredGates: getRegisteredGates() });
+  res.json({ jobs: jobsWithGates, stats, registeredGates: getRegisteredGates(), dataInputCatalog: getTaskDataInputCatalog() });
 }));
 
 // GET /api/cos/jobs/due - Get jobs that are due to run
@@ -109,7 +110,7 @@ router.get('/jobs/:id', asyncHandler(async (req, res) => {
 router.post('/jobs', asyncHandler(async (req, res) => {
   const parsedJob = createCosJobSchema.safeParse(req.body);
   if (!parsedJob.success) failValidation(parsedJob);
-  const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule, enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, appId, taskMetadata, providerId, model, effort } = parsedJob.data;
+  const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule, enabled, priority, autonomyLevel, promptTemplate, dataInputs, command, triggerAction, appId, taskMetadata, providerId, model, effort } = parsedJob.data;
 
   if (type === 'shell' && !command?.trim()) {
     throw new ServerError('command is required for shell jobs', { status: 400, code: 'VALIDATION_ERROR' });
@@ -126,7 +127,7 @@ router.post('/jobs', asyncHandler(async (req, res) => {
 
   const job = await autonomousJobs.createJob({
     name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule,
-    enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, appId, taskMetadata, providerId, model, effort
+    enabled, priority, autonomyLevel, promptTemplate, dataInputs, command, triggerAction, appId, taskMetadata, providerId, model, effort
   });
   res.json({ success: true, job });
 }));
@@ -136,14 +137,14 @@ router.put('/jobs/:id', asyncHandler(async (req, res) => {
   const parsedJobUpdate = updateCosJobSchema.safeParse(req.body);
   if (!parsedJobUpdate.success) failValidation(parsedJobUpdate);
   const { name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule,
-    enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, weekdaysOnly, appId, taskMetadata, providerId, model, effort } = parsedJobUpdate.data;
+    enabled, priority, autonomyLevel, promptTemplate, dataInputs, command, triggerAction, weekdaysOnly, appId, taskMetadata, providerId, model, effort } = parsedJobUpdate.data;
   if (cronExpression) {
     validateCronExpression(cronExpression);
   }
   if (cronSchedule) validateRecurrenceRule(cronSchedule);
   const job = await autonomousJobs.updateJob(req.params.id, {
     name, description, category, type, interval, intervalMs, scheduledTime, cronExpression, cronSchedule,
-    enabled, priority, autonomyLevel, promptTemplate, command, triggerAction, weekdaysOnly, appId, taskMetadata, providerId, model, effort
+    enabled, priority, autonomyLevel, promptTemplate, dataInputs, command, triggerAction, weekdaysOnly, appId, taskMetadata, providerId, model, effort
   });
   if (!job) {
     throw new ServerError('Job not found', { status: 404, code: 'NOT_FOUND' });

@@ -77,6 +77,7 @@ describe('CoS Job Routes', () => {
       expect(response.body.jobs).toHaveLength(1);
       expect(response.body.jobs[0].hasGate).toBe(false);
       expect(response.body.stats).toHaveProperty('total');
+      expect(response.body.dataInputCatalog.map(({ id }) => id)).toContain('project-goals');
     });
 
     it('projects the next run for rich recurrence jobs', async () => {
@@ -311,6 +312,28 @@ describe('CoS Job Routes', () => {
       expect(autonomousJobs.createJob).toHaveBeenCalledWith(
         expect.objectContaining({ effort: 'xhigh' })
       );
+    });
+
+    it('should accept registered data inputs and forward them to createJob', async () => {
+      autonomousJobs.createJob.mockResolvedValue({ id: 'j1' });
+
+      const response = await request(app)
+        .post('/api/cos/jobs')
+        .send({ name: 'Context Task', type: 'agent', promptTemplate: 'test', dataInputs: ['project-goals', 'open-issues'] });
+
+      expect(response.status).toBe(200);
+      expect(autonomousJobs.createJob).toHaveBeenCalledWith(
+        expect.objectContaining({ dataInputs: ['project-goals', 'open-issues'] })
+      );
+    });
+
+    it('should reject unknown data input ids', async () => {
+      const response = await request(app)
+        .post('/api/cos/jobs')
+        .send({ name: 'Bad Context Task', type: 'agent', promptTemplate: 'test', dataInputs: ['unknown'] });
+
+      expect(response.status).toBe(400);
+      expect(autonomousJobs.createJob).not.toHaveBeenCalled();
     });
 
     it('should reject an effort value outside EFFORT_LEVELS', async () => {

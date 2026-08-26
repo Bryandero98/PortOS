@@ -823,6 +823,18 @@ describe('autonomousJobs', () => {
       })
       expect(job.effort).toBe('xhigh')
     })
+
+    it('stores configured data input ids and defaults to an empty selection', async () => {
+      const configured = await createJob({
+        name: 'Context Job',
+        promptTemplate: 'do it',
+        dataInputs: ['project-goals', 'open-issues']
+      })
+      expect(configured.dataInputs).toEqual(['project-goals', 'open-issues'])
+
+      const plain = await createJob({ name: 'Plain Job', promptTemplate: 'do it' })
+      expect(plain.dataInputs).toEqual([])
+    })
   })
 
   describe('updateJob', () => {

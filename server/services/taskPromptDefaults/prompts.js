@@ -619,20 +619,28 @@ Repository: {repoPath}
 
 ## What to do
 
-1. **Inventory so you don't duplicate.** Follow the "Inventory" step under
-   "Where to record the plan" above for this app's tracker — collect every
-   existing \`[plan-feature-…]\` slug. Then skim the last 50 \`git log\` entries
-   plus recent \`.changelog/\` files: an idea that is already an open tracker
-   item or recently shipped work is NOT a candidate.
+1. **Inventory so you don't duplicate.** Start with the **Preloaded task data**
+   appended below. Its Open issues and Open pull requests sections are current
+   snapshots collected immediately before dispatch, so do NOT list them again.
+   Follow the "Inventory" step under "Where to record the plan" only when the
+   corresponding preloaded section says it could not be collected or you need
+   a full issue body. Collect every existing \`[plan-feature-…]\` slug, then skim
+   the last 50 \`git log\` entries plus recent \`.changelog/\` files: an idea
+   that is already an open tracker item, in an open PR, or recently shipped work
+   is NOT a candidate.
 
-2. **Build a product brief from the repository's documentation.** Use the most
-   specific available source of intent, and make a best effort rather than
-   assuming a missing document means the app has no direction:
+2. **Build a product brief from the preloaded repository documents.** PortOS
+   searched the repository for PRD.md and GOALS.md immediately before dispatch
+   and appended their contents below. Use the most specific available source of
+   intent, and do NOT search for or re-read those files when their section has
+   content. Make a best effort rather than assuming a missing document means the
+   app has no direction:
 
-   - If \`PRD.md\` exists, read it first. Treat its requirements, acceptance
+   - If the Product requirements section contains a \`PRD.md\`, use it first.
+     Treat its requirements, acceptance
      criteria, success metrics, constraints, and non-goals as the primary
      evaluation for what the feature should accomplish.
-   - If \`GOALS.md\` exists, read it for strategic context and to supplement
+   - If the Project goals section contains a \`GOALS.md\`, use it for strategic context and to supplement
      the PRD. If there is no PRD, use GOALS.md as the primary statement of
      desired direction.
    - If neither exists, start with the root \`README.md\`, \`docs/README.md\`
@@ -648,10 +656,9 @@ Repository: {repoPath}
      constraints, not as a substitute for product intent. When documentation
      is sparse, validate the inferred need against the current source, tests,
      and recent history and name the evidence in the plan.
-   - Check the repo's recently closed-unmerged PRs (\`gh pr list --state closed
-     --search "is:unmerged" --limit 20\`, or the forge's equivalent) — a feature
-     whose PR the user closed WITHOUT merging was rejected; treat those ideas as
-     rejected too.
+   - Use the preloaded Closed unmerged pull requests section — a feature whose
+     PR the user closed WITHOUT merging was rejected; treat those ideas as
+     rejected too. Query the forge only if that section says it was unavailable.
    - Review the codebase structure and relevant source files so the plan names
      real files rather than imagined ones.
 

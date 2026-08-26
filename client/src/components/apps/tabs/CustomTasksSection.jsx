@@ -8,6 +8,7 @@ import { parseCronToRecurrence, buildCronFromRecurrence } from '../../../utils/c
 import AgentJobProviderFields from '../../cos/AgentJobProviderFields';
 import JobCard, { AUTONOMY_OPTIONS, PRIORITY_OPTIONS, ScheduleFields, TaskMetadataFields } from '../../cos/JobCard';
 import { filterRunnableProviders } from '../../../utils/providers';
+import TaskDataInputs from '../../cos/TaskDataInputs';
 
 export function emptyForm() {
   return {
@@ -24,6 +25,7 @@ export function emptyForm() {
     providerId: '',
     model: '',
     effort: '',
+    dataInputs: [],
     taskMetadata: { useWorktree: true, openPR: true, simplify: true }
   };
 }
@@ -43,6 +45,7 @@ export function formFromJob(job) {
     providerId: job.providerId || '',
     model: job.model || '',
     effort: job.effort || '',
+    dataInputs: job.dataInputs || [],
     taskMetadata: { useWorktree: false, openPR: false, simplify: false, ...(job.taskMetadata || {}) }
   };
 }
@@ -60,6 +63,7 @@ export function toPayload(form, appId) {
     providerId: form.providerId || null,
     model: form.model || null,
     effort: form.effort || null,
+    dataInputs: form.dataInputs || [],
     taskMetadata: form.taskMetadata
   };
   if (form.scheduleMode === 'cron') {
@@ -75,7 +79,7 @@ export function toPayload(form, appId) {
   return payload;
 }
 
-function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone, providers, activeProviderId }) {
+function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone, providers, activeProviderId, dataInputCatalog }) {
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
 
   return (
@@ -136,6 +140,12 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone, provid
         onChange={patch => setForm(f => ({ ...f, ...patch }))}
       />
 
+      <TaskDataInputs
+        catalog={dataInputCatalog}
+        value={form.dataInputs}
+        onChange={dataInputs => update('dataInputs', dataInputs)}
+      />
+
       <TaskMetadataFields data={form} onChange={patch => setForm(f => ({ ...f, ...patch }))} />
 
       <div className="flex justify-end gap-2">
@@ -159,6 +169,7 @@ export default function CustomTasksSection({ appId, appName, providerCatalog, ac
   const [rawProviders, setRawProviders] = useState(providerCatalog || []);
   const [activeProviderId, setActiveProviderId] = useState(inheritedActiveProviderId);
   const [triggering, setTriggering] = useState(null);
+  const [dataInputCatalog, setDataInputCatalog] = useState([]);
 
   const providers = useMemo(
     () => filterRunnableProviders(rawProviders, tasks.map(job => job.providerId)),
@@ -169,6 +180,7 @@ export default function CustomTasksSection({ appId, appName, providerCatalog, ac
     const data = await api.getCosJobs({ silent: true }).catch(() => null);
     const appTasks = (data?.jobs || []).filter(j => j.appId === appId);
     setTasks(appTasks);
+    setDataInputCatalog(data?.dataInputCatalog || []);
     setLoading(false);
   }, [appId]);
 
@@ -262,6 +274,7 @@ export default function CustomTasksSection({ appId, appName, providerCatalog, ac
           timezone={timezone}
           providers={providers}
           activeProviderId={activeProviderId}
+          dataInputCatalog={dataInputCatalog}
         />
       )}
 
@@ -282,6 +295,7 @@ export default function CustomTasksSection({ appId, appName, providerCatalog, ac
               providers={providers}
               activeProviderId={activeProviderId}
               timezone={timezone}
+              dataInputCatalog={dataInputCatalog}
               onToggle={handleToggle}
               onTrigger={handleTrigger}
               onDelete={handleDelete}

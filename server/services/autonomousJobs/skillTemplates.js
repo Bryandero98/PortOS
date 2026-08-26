@@ -8,8 +8,10 @@
 
 import { writeFile } from 'fs/promises'
 import { join } from 'path'
-import { ensureDir, tryReadFile } from '../../lib/fileUtils.js'
+import { ensureDir, PATHS, tryReadFile } from '../../lib/fileUtils.js'
 import { JOBS_SKILLS_DIR, JOB_SKILL_MAP } from './constants.js'
+import { getAppById } from '../apps.js'
+import { appendTaskDataInputs, resolveTaskDataInputs } from '../taskDataInputs.js'
 
 /**
  * Load a job skill template from disk
@@ -142,7 +144,15 @@ async function getJobEffectivePrompt(job) {
  * @returns {Promise<Object>} Task data suitable for cos.addTask()
  */
 async function generateTaskFromJob(job) {
-  const description = await getJobEffectivePrompt(job)
+  const prompt = await getJobEffectivePrompt(job)
+  const selectedInputs = Array.isArray(job.dataInputs) ? job.dataInputs : []
+  const app = selectedInputs.length > 0
+    ? (job.appId ? await getAppById(job.appId) : { id: null, name: 'PortOS', repoPath: PATHS.root })
+    : null
+  const inputs = selectedInputs.length > 0
+    ? await resolveTaskDataInputs(selectedInputs, { app })
+    : []
+  const description = appendTaskDataInputs(prompt, inputs)
   const meta = job.taskMetadata || {}
   return {
     id: `${job.id}-${Date.now().toString(36)}`,

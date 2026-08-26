@@ -150,11 +150,14 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v9).not.toBe(current);
   });
 
-  // plan-feature v2: product intent is specific-first (PRD → GOALS → repository
-  // docs) and no longer depends on the retired roadmap/rejection-ledger files.
-  it('plan-feature v2 uses the PRD/docs fallback hierarchy and preserves v1', () => {
+  // plan-feature v3: reusable scheduled-task inputs replace redundant agent
+  // discovery calls while the v2 product-intent hierarchy remains intact.
+  it('plan-feature v3 consumes preloaded task data and preserves v2 and v1', () => {
     const current = DEFAULT_TASK_PROMPTS['plan-feature'];
-    expect(PROMPT_VERSIONS['plan-feature']).toBe(2);
+    expect(PROMPT_VERSIONS['plan-feature']).toBe(3);
+    expect(current).toContain('Preloaded task data');
+    expect(current).toContain('do NOT list them again');
+    expect(current).toContain('Closed unmerged pull requests');
     expect(current).toContain('PRD.md');
     expect(current).toContain('GOALS.md');
     expect(current).toContain('README.md');
@@ -162,6 +165,11 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('AGENTS.md');
     expect(current).not.toContain('REJECTED.md');
     expect(current).not.toContain('ALSO read PLAN.md');
+
+    const v2 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('specific available source of intent'));
+    expect(v2).toBeDefined();
+    expect(v2).not.toContain('Preloaded task data');
+    expect(v2).not.toBe(current);
 
     const v1 = PREVIOUS_DEFAULT_PROMPTS['plan-feature'].find((prompt) => prompt.includes('ALSO read PLAN.md'));
     expect(v1).toBeDefined();

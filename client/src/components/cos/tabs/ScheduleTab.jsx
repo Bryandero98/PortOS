@@ -188,6 +188,7 @@ export default function ScheduleTab({ apps, providers, activeProviderId }) {
         onBulkToggleOverride={handleBulkToggleOverride}
         allTaskTypes={allTaskTypes}
         improvementDisabled={improvementDisabled}
+        dataInputCatalog={schedule.dataInputCatalog || []}
       />
     </div>
     </CodeReviewDefaultsProvider>
