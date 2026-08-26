@@ -35,6 +35,8 @@ import { cleanupSocketStreams, registerLogHandlers } from '../sockets/logs.js';
 import { detachShellSocket, registerShellHandlers } from '../sockets/shell.js';
 import { getBuildId } from '../lib/buildId.js';
 import { authEvents, extractToken, isAuthEnabled, verifySession } from './auth.js';
+import { runEventLogEvents } from './agentRunEventLog.js';
+import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
 
 // Store CoS subscribers
 const cosSubscribers = new Set();
@@ -204,6 +206,14 @@ function setupEventForwarding() {
   setupWritersRoomEventForwarding();
   setupMusicVideoEventForwarding();
   setupProactiveSpeechForwarding();
+  setupPersistentMindEventForwarding();
+}
+
+let persistentMindEventForwardingSetup = false;
+function setupPersistentMindEventForwarding() {
+  if (persistentMindEventForwardingSetup) return;
+  persistentMindEventForwardingSetup = true;
+  runEventLogEvents.on('mind:event', (event) => broadcastToCos('cos:mind:event', event));
 }
 
 export function initSocket(io) {
@@ -322,6 +332,9 @@ function setupCosEventForwarding() {
   cosEvents.on('agent:completed', (data) => broadcastToCos('cos:agent:completed', data));
   cosEvents.on('agent:output', (data) => broadcastToCos('cos:agent:output', data));
   cosEvents.on('agent:btw', (data) => broadcastToCos('cos:agent:btw', data));
+  cosEvents.on('persistent-mind:status', (data) => {
+    broadcastToCos('cos:mind:status', publicPersistentMindState(data));
+  });
 
   // Memory events
   cosEvents.on('memory:created', (data) => broadcastToCos('cos:memory:created', data));

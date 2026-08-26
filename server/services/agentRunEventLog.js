@@ -39,6 +39,7 @@
 
 import { join } from 'path';
 import { rename, unlink } from 'fs/promises';
+import { EventEmitter } from 'events';
 import {
   PATHS,
   atomicWrite,
@@ -68,6 +69,10 @@ const ACTIVE_PATH = join(PATHS.cos, 'run-events.jsonl');
 const ARCHIVE_PATH = join(PATHS.cos, 'run-events.1.jsonl');
 const MIND_SEQUENCE_PATH = join(PATHS.cos, 'persistent-mind-sequences.json');
 const MIND_SEQUENCE_SCHEMA_VERSION = 1;
+
+// Live delivery is only a hint that a cursor-aware client should backfill from
+// the durable ledger. The event itself is already redacted at construction.
+export const runEventLogEvents = new EventEmitter();
 
 /**
  * Events per generation. 5000 covers weeks of a busy install's lifecycle
@@ -328,8 +333,10 @@ export function appendRunEvent(input) {
 }
 
 /** Append one persistent-mind trajectory event through the shared queue. */
-export function appendMindEvent(input) {
-  return appendRunEvent({ ...input, mindId: input?.mindId || PERSISTENT_MIND_ID });
+export async function appendMindEvent(input) {
+  const result = await appendRunEvent({ ...input, mindId: input?.mindId || PERSISTENT_MIND_ID });
+  if (result.appended && result.event) runEventLogEvents.emit('mind:event', result.event);
+  return result;
 }
 
 /** Resolve once every queued append has landed. Used by the read path + tests. */
