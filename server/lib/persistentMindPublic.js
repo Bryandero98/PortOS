@@ -3,7 +3,7 @@
 const publicReason = (state) => {
   if (!state.pauseReason) return null;
   if (state.status === 'paused') return 'Paused by user';
-  if (state.status === 'degraded' || state.status === 'failed') return 'Provider unavailable or wake failed';
+  if (state.status === 'degraded' || state.status === 'interrupted') return 'Provider unavailable or wake failed';
   return 'Waiting for the next eligible wake';
 };
 

@@ -78,6 +78,7 @@ describe('persistent mind routes', () => {
       autonomyMode: 'execute',
     });
     expect(res.body.profile).not.toHaveProperty('credential');
+    expect(res.body).not.toHaveProperty('snapshot');
     expect(res.body.state).not.toHaveProperty('queuedMessages');
     expect(res.body.state.queuedMessageCount).toBe(1);
     expect(JSON.stringify(res.body)).not.toContain('secret-value');
@@ -113,6 +114,15 @@ describe('persistent mind routes', () => {
     expect(mocks.appendPersistentMindAnnotation).toHaveBeenCalledWith({
       id: 'annotation-1', text: 'Keep this as context.', turnId: 'turn-1', targetEventId: 'event-1',
     });
+  });
+
+  it('rejects an annotation target outside the retained mind ledger', async () => {
+    mocks.readPersistentMindHistory.mockResolvedValue([]);
+    const res = await post('/mind/annotations', {
+      id: 'annotation-1', text: 'Dangling idea.', targetEventId: 'missing',
+    });
+    expect(res.status).toBe(404);
+    expect(mocks.appendPersistentMindAnnotation).not.toHaveBeenCalled();
   });
 
   it('projects lifecycle state instead of returning queued message bodies', async () => {

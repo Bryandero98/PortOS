@@ -80,8 +80,9 @@ router.get('/mind', asyncHandler(async (req, res) => {
     loadState(),
   ]);
   const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+  const { snapshot: _snapshot, ...publicHistory } = history;
   res.json({
-    ...history,
+    ...publicHistory,
     state: publicPersistentMindState(state),
     profile: {
       enabled: profile.enabled,
@@ -101,6 +102,7 @@ router.post('/mind/messages', asyncHandler(async (req, res) => {
 
 router.post('/mind/annotations', asyncHandler(async (req, res) => {
   const input = validateRequest(annotationSchema, req.body);
+  if (input.targetEventId) await requireMindEvent(input.targetEventId);
   const result = await appendPersistentMindAnnotation(input);
   if (result.error) throw new ServerError(result.error, { status: 409, code: 'INVALID_STATE' });
   res.status(202).json({ success: true, duplicate: result.duplicate === true, annotationId: input.id });

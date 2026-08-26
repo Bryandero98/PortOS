@@ -17,6 +17,7 @@ const EVENT_LABELS = {
   'mind.annotation.accepted': 'Annotation',
   'mind.summary': 'Mind summary',
   'mind.model.result': 'Mind summary',
+  'mind.turn.completed': 'Mind summary',
   'mind.capability.request': 'Action request',
   'mind.capability.result': 'Action outcome',
   'mind.memory.promoted': 'Memory promoted',
@@ -27,9 +28,16 @@ const eventText = (event) => {
   const data = event?.data || {};
   if (typeof data.displayText === 'string') return data.displayText;
   if (typeof data.summaryText === 'string') return data.summaryText;
-  if (typeof data.error === 'string') return data.error;
+  if (event?.kind === 'mind.failed') return data.status === 'interrupted'
+    ? 'The previous wake was interrupted'
+    : 'The provider was unavailable or the wake failed';
+  if (event?.kind === 'mind.paused') return data.status === 'idle'
+    ? 'The persistent mind was stopped'
+    : 'The persistent mind was paused';
+  if (event?.kind === 'mind.capability.request' && typeof data.capabilityId === 'string') {
+    return `Capability request ${data.capabilityId}`;
+  }
   if (typeof data.status === 'string') return data.status;
-  if (typeof data.capability === 'string') return data.capability;
   return null;
 };
 
@@ -248,7 +256,7 @@ export default function MindTab() {
       </header>
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
-      {truncated && <Banner tone="info" title="Showing recent history">The trace is bounded to the newest {MAX_VISIBLE_EVENTS} events; older retained events are not shown.</Banner>}
+      {truncated && <Banner tone="info" title="Showing recent history">The initial trace shows the newest {PAGE_LIMIT} events; older retained events are not shown.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
@@ -257,6 +265,9 @@ export default function MindTab() {
           <div className="border-b border-port-border px-4 py-3 text-sm text-port-text-muted">
             Status: <span className="font-medium text-port-text">{state?.status || 'unknown'}</span>
             {state?.pauseReason ? ` · ${state.pauseReason}` : ''}
+            {state?.failureCount > 0 ? ` · ${state.failureCount} failed wake${state.failureCount === 1 ? '' : 's'}` : ''}
+            {state?.nextEligibleWakeAt ? ` · retry after ${formatDateTime(state.nextEligibleWakeAt)}` : ''}
+            {state?.lastError ? ` · ${state.lastError}` : ''}
           </div>
           {loading && events === null ? (
             <div className="flex justify-center p-10"><BrailleSpinner text="Loading mind history" /></div>
@@ -304,7 +315,7 @@ export default function MindTab() {
                   <ActionButton label="Acknowledge" icon={Check} pending={eventActionPending === selectedEvent.eventId} onClick={() => acknowledge(selectedEvent)} />
                 </div>
               )}
-              {['mind.capability.request', 'mind.summary', 'mind.model.result'].includes(selectedEvent.kind) && (
+              {['mind.summary', 'mind.model.result', 'mind.turn.completed'].includes(selectedEvent.kind) && (
                 <ActionButton label="Promote" icon={Upload} pending={eventActionPending === selectedEvent.eventId} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
               )}
             </>
