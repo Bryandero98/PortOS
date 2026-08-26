@@ -529,7 +529,8 @@ describe('CoS Job Routes', () => {
       expect(response.status).toBe(200);
       expect(cos.addTask).toHaveBeenCalledWith(
         expect.objectContaining({ autonomousJob: true, jobId: 'j1', noChangeSuccess: true }),
-        'internal'
+        'internal',
+        { suppressDequeue: true }
       );
     });
 
