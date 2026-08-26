@@ -35,7 +35,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { firstLine, isPerpetualRefillCandidate, perpetualRefillPlan } from './cos.js';
-import { canQueueImprovementTasks } from './cosState.js';
+import { canQueueImprovementTasks, DEFAULT_STATE } from './cosState.js';
 import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
 import {
   createLocalEndpointSlotContext,
@@ -43,6 +43,7 @@ import {
   localEndpointOfProvider,
   providerBaseUrl,
   reserveLocalEndpointSpawn,
+  acquireLocalEndpointProviderSlot,
   pendingLocalEndpointSpawns,
   __resetLocalEndpointSpawnReservations,
   readEndpointCapacity,
@@ -911,6 +912,17 @@ describe('local-endpoint spawn reservations (#4834)', () => {
     const release = reserveLocalEndpointSpawn(null);
     expect(pendingLocalEndpointSpawns(null)).toBe(0);
     expect(() => release()).not.toThrow();
+  });
+
+  it('gives a direct cloud provider call a no-op shared-capacity release', async () => {
+    const claim = await acquireLocalEndpointProviderSlot(
+      { id: 'cloud-api', endpoint: 'https://api.example.com/v1' },
+      {},
+      'persistent-mind-turn'
+    );
+    expect(claim.ok).toBe(true);
+    expect(() => claim.release()).not.toThrow();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
   });
 
   it('keeps reservations per endpoint', () => {
@@ -2386,6 +2398,19 @@ describe('canQueueImprovementTasks — autonomous queuing gate', () => {
 
   it('coerces a falsy/undefined idleReviewEnabled to a boolean false', () => {
     expect(canQueueImprovementTasks(cfg(undefined, 'execute'))).toBe(false);
+  });
+});
+
+describe('persistent mind — default-off CoS state integration (#5064)', () => {
+  it('adds no cold-bootstrap provider work to a fresh CoS state', () => {
+    expect(DEFAULT_STATE.persistentMind).toMatchObject({
+      schemaVersion: 1,
+      enabled: false,
+      started: false,
+      status: 'disabled',
+      queuedMessages: [],
+      activeTurn: null,
+    });
   });
 });
 

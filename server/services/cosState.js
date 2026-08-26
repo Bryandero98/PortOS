@@ -11,6 +11,7 @@ import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { ensureDirs, safeJSONParse, PATHS, atomicWrite } from '../lib/fileUtils.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets } from '../lib/domainBudgets.js';
+import { createDefaultPersistentMindState, normalizePersistentMindState } from '../lib/persistentMind.js';
 import { DEFAULT_ALWAYS_APPROVE_KINDS } from './taskLearning/safetyKind.js';
 
 export const STATE_FILE = join(PATHS.cos, 'state.json');
@@ -113,6 +114,7 @@ export const DEFAULT_STATE = {
     lastEvaluation: null,
     lastIdleReview: null
   },
+  persistentMind: createDefaultPersistentMindState(),
   agents: {}
 };
 
@@ -219,6 +221,7 @@ export async function loadState() {
     ...state,
     config: { ...DEFAULT_CONFIG, ...persistedConfig },
     stats: { ...DEFAULT_STATE.stats, ...state.stats },
+    persistentMind: normalizePersistentMindState(state.persistentMind),
     agents: state.agents ?? {}
   };
   return stateCache;
