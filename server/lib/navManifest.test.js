@@ -179,37 +179,9 @@ describe('nav contract — instance-feature gating', () => {
     expect(gated).not.toContain('nav.devtools.flows');
   });
 
-  // The sidebar is a SEPARATE list from this manifest, so the two can drift: a
-  // page gated here but untagged there stays visible in the sidebar while ⌘K
-  // hides it, and vice versa. Scrape Layout's own path→feature pairs and require
-  // them to agree with the manifest in BOTH directions.
-  it('the sidebar tags exactly the paths this manifest gates', () => {
-    const layout = fs.readFileSync(path.join(REPO_ROOT, 'client/src/components/Layout.jsx'), 'utf8');
-    // Rows are one-liners: { to: '/devtools/jira', label: …, feature: 'jira' }.
-    const layoutRows = [...layout.matchAll(/\{[^{}\n]*\bto:\s*'([^']+)'[^{}\n]*\}/g)]
-      .map((m) => ({ path: m[1], feature: /\bfeature:\s*'([^']+)'/.exec(m[0])?.[1] || null }));
-    expect(layoutRows.length).toBeGreaterThan(50);
-
-    // A SECTION-level gate is carried by the sidebar's parent row, not repeated
-    // on each child, so those paths are expected to be untagged here — the
-    // section-level check below covers them.
-    const sectionGated = new Set(SECTION_FEATURE.values());
-    const expectedFeature = (cmd) => (cmd.feature && !sectionGated.has(cmd.feature) ? cmd.feature : null);
-    const manifestFeatureByPath = new Map(NAV_COMMANDS.map((c) => [c.path, expectedFeature(c)]));
-    const drift = layoutRows
-      .filter((row) => manifestFeatureByPath.has(row.path))
-      .filter((row) => manifestFeatureByPath.get(row.path) !== row.feature)
-      .map((row) => `${row.path}: sidebar=${row.feature} manifest=${manifestFeatureByPath.get(row.path)}`);
-    expect(drift).toEqual([]);
-  });
-
-  // A whole gated SECTION carries the tag on its parent row instead of on each
-  // child, so the per-path check above can't see it.
-  it('the sidebar gates each section-level feature on its parent row', () => {
-    const layout = fs.readFileSync(path.join(REPO_ROOT, 'client/src/components/Layout.jsx'), 'utf8');
-    const missing = [...SECTION_FEATURE.values()].filter((id) => !layout.includes(`feature: '${id}'`));
-    expect(missing).toEqual([]);
-  });
+  // Sidebar rows now derive path, label, section and feature directly from this
+  // array. The former Layout source-scrape parity guards are intentionally gone:
+  // there is no second structural declaration left for them to compare.
 });
 
 describe('resolveNavCommand — fuzzy matching', () => {
