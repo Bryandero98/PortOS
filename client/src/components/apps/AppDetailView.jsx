@@ -220,8 +220,11 @@ export default function AppDetailView() {
     setViteHostStatus((prev) => prev ? { ...prev, hostAllowed: true } : prev);
   };
 
-  const visibleTabs = useMemo(() => APP_DETAIL_TABS.filter((entry) => {
-    if (entry.visibleWhen && !entry.visibleWhen(app)) return false;
+  const availableTabs = useMemo(() => APP_DETAIL_TABS.filter((entry) => (
+    !entry.visibleWhen || entry.visibleWhen(app)
+  )), [app]);
+
+  const visibleTabs = useMemo(() => availableTabs.filter((entry) => {
     if (!entry.feature) return true;
     // A feature read is ancillary to the app detail request. Keep tabs visible
     // during loading or a failed read so a transient settings outage cannot
@@ -231,7 +234,7 @@ export default function AppDetailView() {
       ? undefined
       : globalFeature?.enabled;
     return isAppFeatureEnabled(app, entry.feature, globalEnabled);
-  }), [app, instanceFeatures, instanceFeaturesError]);
+  }), [app, availableTabs, instanceFeatures, instanceFeaturesError]);
 
   if (loading) {
     return (
@@ -250,7 +253,10 @@ export default function AppDetailView() {
     );
   }
 
-  const effectiveTab = visibleTabs.some(t => t.id === activeTab) ? activeTab : 'overview';
+  // Feature flags gate the tab bar, not routes. Keep an explicitly requested
+  // feature tab renderable for bookmarked/direct URLs even when it is hidden
+  // from browse navigation; structural availability still rejects stale tabs.
+  const effectiveTab = availableTabs.some(t => t.id === activeTab) ? activeTab : 'overview';
 
   const renderTab = () => {
     switch (effectiveTab) {
