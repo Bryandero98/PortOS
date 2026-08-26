@@ -256,6 +256,20 @@ describe('redactRunEventData — privacy', () => {
     expect(event.data.prompt).toEqual({ redacted: 'content', chars: 20 });
     expect(event.data.body).toEqual({ redacted: 'content', chars: null });
   });
+
+  it('reserves persistent-mind predecessor provenance outside the payload key cap', () => {
+    const callerData = Object.fromEntries(Array.from({ length: RUN_EVENT_LIMITS.maxObjectKeys }, (_, index) => [`k${index}`, index]));
+    const event = buildRunEvent({
+      kind: 'mind.capability.request',
+      mindId: 'cos-persistent-mind',
+      sequence: 42,
+      at: AT,
+      data: { ...callerData, previousSequence: 41 },
+    });
+
+    expect(event.data.previousSequence).toBe(41);
+    expect(event.data.k0).toBe(0);
+  });
 });
 
 describe('projectRunStates — replayable status', () => {

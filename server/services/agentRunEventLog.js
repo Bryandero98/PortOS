@@ -138,6 +138,11 @@ let lastPrunedAt = null;
 
 // Serializes appends; also the handle callers await.
 let appendQueue = Promise.resolve();
+// A read can be the first caller after a restart, while an append arrives in
+// the same event-loop turn. Keep all first-load callers on one snapshot so a
+// slower read cannot overwrite the append path's in-memory sequence/index
+// state with an older view of disk.
+let hydrationPromise = null;
 
 /** eventId → retention metadata, for the duplicate check. */
 function indexById(events, { persistentMind = false } = {}) {
@@ -194,60 +199,69 @@ function isStoredDuplicate(eventId, cutoff) {
 
 async function hydrate() {
   if (activeIds) return;
-  let [active, archive, mindActive, mindArchive, sequenceStore] = await Promise.all([
-    readJSONLFile(ACTIVE_PATH),
-    readJSONLFile(ARCHIVE_PATH),
-    readJSONLFile(MIND_ACTIVE_PATH),
-    readJSONLFile(MIND_ARCHIVE_PATH),
-    readJSONFileStrict(MIND_SEQUENCE_PATH, { schemaVersion: MIND_SEQUENCE_SCHEMA_VERSION, minds: {} }),
-  ]);
-  const legacyArchive = archive.filter((event) => isPersistentMindEventKind(event?.kind));
-  const legacyActive = active.filter((event) => isPersistentMindEventKind(event?.kind));
-  if (legacyArchive.length > 0 || legacyActive.length > 0) {
-    const recovered = normalizeMindGenerations([
-      ...mindArchive,
-      ...mindActive,
-      ...legacyArchive,
-      ...legacyActive,
+  if (hydrationPromise) return hydrationPromise;
+  const pending = (async () => {
+    let [active, archive, mindActive, mindArchive, sequenceStore] = await Promise.all([
+      readJSONLFile(ACTIVE_PATH),
+      readJSONLFile(ARCHIVE_PATH),
+      readJSONLFile(MIND_ACTIVE_PATH),
+      readJSONLFile(MIND_ARCHIVE_PATH),
+      readJSONFileStrict(MIND_SEQUENCE_PATH, { schemaVersion: MIND_SEQUENCE_SCHEMA_VERSION, minds: {} }),
     ]);
-    // Destination-first makes recovery retry-safe if a later source rewrite
-    // fails. This path handles upgrade -> rollback -> upgrade installs after
-    // migration 301 is already marked applied.
-    await writeJSONLines(MIND_ARCHIVE_PATH, recovered.archive);
-    await writeJSONLines(MIND_ACTIVE_PATH, recovered.active);
-    archive = archive.filter((event) => !isPersistentMindEventKind(event?.kind));
-    active = active.filter((event) => !isPersistentMindEventKind(event?.kind));
-    await writeJSONLines(ARCHIVE_PATH, archive);
-    await writeJSONLines(ACTIVE_PATH, active);
-    mindArchive = recovered.archive;
-    mindActive = recovered.active;
-    console.log(`🧠 Re-homed ${legacyArchive.length + legacyActive.length} rollback-era persistent mind event(s)`);
-  }
-  const invalidSequenceStore = !sequenceStore.ok || !sequenceStore.value
-      || typeof sequenceStore.value !== 'object' || Array.isArray(sequenceStore.value)
-      || sequenceStore.value.schemaVersion !== MIND_SEQUENCE_SCHEMA_VERSION
-      || !sequenceStore.value.minds || typeof sequenceStore.value.minds !== 'object'
-      || Array.isArray(sequenceStore.value.minds)
-      || Object.entries(sequenceStore.value.minds).some(([mindId, sequence]) => (
-        !mindId || mindId.length > 128 || !Number.isSafeInteger(sequence) || sequence < 0
-      ));
-  const validSequenceStore = !invalidSequenceStore;
-  activeIds = indexById(active);
-  archiveIds = indexById(archive);
-  mindActiveIds = indexById(mindActive, { persistentMind: true });
-  mindArchiveIds = indexById(mindArchive, { persistentMind: true });
-  activeCount = active.length;
-  mindActiveCount = mindActive.length;
-  mindSequenceCheckpointError = validSequenceStore
-    ? null
-    : 'Persistent mind sequence checkpoint is unreadable or invalid';
-  mindSequenceHighWater = new Map(validSequenceStore ? Object.entries(sequenceStore.value.minds) : []);
-  for (const event of [...mindArchive, ...mindActive]) {
-    if (!event?.mindId || !Number.isSafeInteger(event.sequence)) continue;
-    mindSequenceHighWater.set(
-      event.mindId,
-      Math.max(mindSequenceHighWater.get(event.mindId) ?? -1, event.sequence)
-    );
+    const legacyArchive = archive.filter((event) => isPersistentMindEventKind(event?.kind));
+    const legacyActive = active.filter((event) => isPersistentMindEventKind(event?.kind));
+    if (legacyArchive.length > 0 || legacyActive.length > 0) {
+      const recovered = normalizeMindGenerations([
+        ...mindArchive,
+        ...mindActive,
+        ...legacyArchive,
+        ...legacyActive,
+      ]);
+      // Destination-first makes recovery retry-safe if a later source rewrite
+      // fails. This path handles upgrade -> rollback -> upgrade installs after
+      // migration 301 is already marked applied.
+      await writeJSONLines(MIND_ARCHIVE_PATH, recovered.archive);
+      await writeJSONLines(MIND_ACTIVE_PATH, recovered.active);
+      archive = archive.filter((event) => !isPersistentMindEventKind(event?.kind));
+      active = active.filter((event) => !isPersistentMindEventKind(event?.kind));
+      await writeJSONLines(ARCHIVE_PATH, archive);
+      await writeJSONLines(ACTIVE_PATH, active);
+      mindArchive = recovered.archive;
+      mindActive = recovered.active;
+      console.log(`🧠 Re-homed ${legacyArchive.length + legacyActive.length} rollback-era persistent mind event(s)`);
+    }
+    const invalidSequenceStore = !sequenceStore.ok || !sequenceStore.value
+        || typeof sequenceStore.value !== 'object' || Array.isArray(sequenceStore.value)
+        || sequenceStore.value.schemaVersion !== MIND_SEQUENCE_SCHEMA_VERSION
+        || !sequenceStore.value.minds || typeof sequenceStore.value.minds !== 'object'
+        || Array.isArray(sequenceStore.value.minds)
+        || Object.entries(sequenceStore.value.minds).some(([mindId, sequence]) => (
+          !mindId || mindId.length > 128 || !Number.isSafeInteger(sequence) || sequence < 0
+        ));
+    const validSequenceStore = !invalidSequenceStore;
+    activeIds = indexById(active);
+    archiveIds = indexById(archive);
+    mindActiveIds = indexById(mindActive, { persistentMind: true });
+    mindArchiveIds = indexById(mindArchive, { persistentMind: true });
+    activeCount = active.length;
+    mindActiveCount = mindActive.length;
+    mindSequenceCheckpointError = validSequenceStore
+      ? null
+      : 'Persistent mind sequence checkpoint is unreadable or invalid';
+    mindSequenceHighWater = new Map(validSequenceStore ? Object.entries(sequenceStore.value.minds) : []);
+    for (const event of [...mindArchive, ...mindActive]) {
+      if (!event?.mindId || !Number.isSafeInteger(event.sequence)) continue;
+      mindSequenceHighWater.set(
+        event.mindId,
+        Math.max(mindSequenceHighWater.get(event.mindId) ?? -1, event.sequence)
+      );
+    }
+  })();
+  hydrationPromise = pending;
+  try {
+    await pending;
+  } finally {
+    if (hydrationPromise === pending) hydrationPromise = null;
   }
 }
 
@@ -624,5 +638,6 @@ export function __resetRunEventLogCache() {
   mindSequenceHighWater = null;
   mindSequenceCheckpointError = null;
   lastPrunedAt = null;
+  hydrationPromise = null;
   appendQueue = Promise.resolve();
 }

@@ -325,6 +325,21 @@ export function isStoredRunEvent(value) {
 
 const nullableId = (value) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, 128) : null);
 
+// Persistent-mind continuity is ledger metadata, not caller content. Keep it
+// outside the bounded payload walk so a full caller object cannot evict the
+// predecessor link that rollup coverage uses to detect a missing generation.
+function redactEventData(data, mindEvent) {
+  if (!mindEvent || !data || typeof data !== 'object' || Array.isArray(data)
+      || !Object.hasOwn(data, 'previousSequence')) {
+    return redactRunEventData(data);
+  }
+  const { previousSequence, ...callerData } = data;
+  return {
+    ...redactRunEventData(callerData),
+    previousSequence,
+  };
+}
+
 /**
  * Build a validated, redacted ledger envelope.
  *
@@ -368,7 +383,7 @@ export function buildRunEvent({ kind, runId, agentId, taskId, mindId, turnId, se
     agentId: nullableId(agentId),
     taskId: nullableId(taskId),
     at: timestamp,
-    data: redactRunEventData(data)
+    data: redactEventData(data, mindEvent)
   };
   if (mindEvent) {
     core.mindId = nullableId(mindId);

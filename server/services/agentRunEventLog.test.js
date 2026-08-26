@@ -170,6 +170,18 @@ describe('persistent-mind ordering, replay, and cursors', () => {
     expect(events.every((event, index) => index === 0 || event.sequence > events[index - 1].sequence)).toBe(true);
   });
 
+  it('keeps predecessor provenance when a capability payload fills the key budget', async () => {
+    const data = Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`k${index}`, index]));
+    const result = await appendMindEvent({
+      kind: 'mind.capability.request',
+      eventId: 'mind-capability:wide',
+      data,
+    });
+
+    expect(result.event.data.previousSequence).toBeNull();
+    expect(result.event.data.k39).toBe(39);
+  });
+
   it('deduplicates an explicit event id without consuming another sequence', async () => {
     const first = await appendMessage('one');
     const duplicate = await appendMessage('one');
