@@ -552,19 +552,20 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v10).not.toBe(current);
   });
 
-  // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it
-  // edits PortOS's own bundled catalog), so it may — and should — name the
-  // fragment helper directly instead of describing the convention.
-  it('refresh-local-llm-catalog uses the changelog:add fragment helper, preserving the outgoing default', () => {
+  // The PortOS custom catalog-refresh job still sources this versioned prompt:
+  // keeping its history here lets migration recognize old shipped copies while
+  // autonomous-job shipped-default snapshots handle future custom-job updates.
+  it('refresh-local-llm-catalog follows the no-per-branch-changelog contract and preserves v3', () => {
     const current = DEFAULT_TASK_PROMPTS['refresh-local-llm-catalog'];
-    expect(current).toContain('npm run changelog:add -- changed');
-    // Line-wrap-insensitive — the prompt body is hard-wrapped.
-    expect(current).toMatch(/Do NOT\s+append to `\.changelog\/NEXT\.md` by hand/);
+    expect(PROMPT_VERSIONS['refresh-local-llm-catalog']).toBe(4);
+    expect(current).toContain('Do NOT create or edit a changelog file or fragment');
+    expect(current).not.toContain('npm run changelog:add');
+    expect(current).not.toContain('.changelog/NEXT.md');
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['refresh-local-llm-catalog'];
     const outgoing = previous[previous.length - 1];
-    expect(outgoing).not.toContain('changelog:add');
-    expect(outgoing).toContain('Add a one-line entry to `{repoPath}/.changelog/NEXT.md`');
+    expect(outgoing).toContain('npm run changelog:add -- changed');
+    expect(outgoing).toMatch(/Do NOT\s+append to `\.changelog\/NEXT\.md` by hand/);
     expect(outgoing).not.toBe(current);
   });
 

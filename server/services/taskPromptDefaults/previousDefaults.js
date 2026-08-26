@@ -10884,6 +10884,85 @@ Default branch: {defaultBranch}
 - Otherwise commit your changes with a clear message (a PR will be opened for
   the branch). Finish with a 2–4 sentence summary listing exactly which models
   were added, updated, or removed and the sources you verified them against.`,
+    // v3 default prompt — outgoing scheduled-task body before PortOS adopted
+    // commit-derived release notes and moved this automation to a custom job.
+    `[Improvement: {appName}] Refresh the bundled local-LLM suggested-models catalog
+
+You maintain PortOS's curated catalog of suggested local models so the in-app
+install picker and the editorial-model recommendation keep pace with what's
+actually current. Models move fast (new Qwen / Llama / Gemma / Mistral releases,
+deprecations), and this catalog is shipped in the app — so it goes stale unless
+refreshed.
+
+Repository: {repoPath}
+Default branch: {defaultBranch}
+
+## Guard — PortOS only
+
+1. Check that \`{repoPath}/server/lib/localLlmCatalog.js\` exists. If it does NOT,
+   this repository is not PortOS — make NO changes, open NO PR, and finish with a
+   one-line summary saying the catalog file was not found so there was nothing to do.
+
+## What to do (only when the catalog file exists)
+
+2. Read the current catalog at \`server/lib/localLlmCatalog.js\` (the
+   \`LOCAL_LLM_CATALOG\` array; each entry is
+   \`{ key, name, category, recommendedFor?, featured?, params, size, family, description, capabilities, ollama?, lmstudio? }\`)
+   and the editorial ranking \`EDITORIAL_FAMILY_RANK\` in
+   \`server/lib/localModelHeuristics.js\`.
+
+3. Research the current best-in-class local models for EACH category in
+   \`LOCAL_LLM_CATEGORIES\` (general-purpose, coding/agents,
+   reasoning/analysis, vision/image-analysis, chat/voice,
+   lightweight/small-&-fast, multilingual, embedding). Prefer models that are:
+   - Pullable on Ollama (use the canonical \`ollama pull\` id) and/or available
+     as a well-known GGUF build on LM Studio / Hugging Face (use the canonical
+     repo id, e.g. \`lmstudio-community/<Model>-GGUF\`).
+   - Genuinely current and widely used — not every brand-new release. Verify the
+     pull id actually exists before adding it (cite your source in the PR body).
+   Use web search / fetch if the tools are available; otherwise rely on your
+   most current knowledge and clearly mark any entry you could not verify.
+
+4. Update \`LOCAL_LLM_CATALOG\`:
+   - Add newly-prominent models, refresh \`params\`/\`size\`/\`description\` on
+     existing entries, and remove models that are clearly deprecated/superseded.
+   - Treat \`category\` as the model's ONE primary recommendation lane. Use
+     \`recommendedFor\` only for additional user-facing filters where a genuinely
+     general model is a good choice; it must include the primary category. Keep
+     modality and tool facts in \`capabilities\`, not in arbitrary categories.
+     Reserve \`featured\` for a deliberate first-choice recommendation with a
+     concise user-facing reason — never set it merely because a model is newest.
+   - Keep the module's shape EXACTLY: do not change the exports
+     (\`BACKENDS\`, \`isBackend\`, \`LOCAL_LLM_CATEGORIES\`, \`LOCAL_LLM_CATALOG\`),
+     and keep \`category\` and every \`recommendedFor\` value within
+     \`LOCAL_LLM_CATEGORIES\` ids. A missing \`ollama\`/\`lmstudio\` id is fine
+     when no well-known build exists for that backend.
+
+5. Review \`EDITORIAL_FAMILY_RANK\` in \`server/lib/localModelHeuristics.js\` (used
+   to recommend a model for editorial review/editing — it favors tight
+   instruction-following over chatty/RAG-tuned families). Only adjust it if a new
+   family clearly belongs or an existing one should move; keep the
+   longest-match-first ordering (\`command-r-plus\` before \`command-r\` before
+   \`command\`). Do not change the function signatures or other exports.
+
+6. Run the affected tests and make sure they pass:
+   \`cd {repoPath}/server && npx vitest run lib/localLlmCatalog lib/localModelHeuristics lib/index.test.js\`.
+   Update catalog/picker tests when you intentionally add recommendation
+   metadata; do not change existing cross-backend install-id mapping semantics.
+
+7. Log the refresh in the changelog with
+   \`cd {repoPath} && npm run changelog:add -- changed "<one line summarizing the catalog refresh>"\`.
+   That writes a per-branch fragment under \`.changelog/next/\`, which is what keeps
+   parallel agents from conflicting on the shared \`.changelog/NEXT.md\`. Do NOT
+   append to \`.changelog/NEXT.md\` by hand.
+
+## Output
+
+- If the catalog is already current and accurate, make NO changes — do not open
+  an empty PR. Finish with a summary saying it was already up to date.
+- Otherwise commit your changes with a clear message (a PR will be opened for
+  the branch). Finish with a 2–4 sentence summary listing exactly which models
+  were added, updated, or removed and the sources you verified them against.`,
   ],
   'plan-feature': [
     // v1 default prompt — initial release; superseded by the PRD/docs-first
