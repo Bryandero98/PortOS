@@ -32,7 +32,9 @@ to compare against, not as sufficient proof for the shipped catalog. Do not make
 provider calls during PortOS startup and do not duplicate or bypass the live
 refresh path in server/services/providers.js.
 
-If a shipped fallback is stale, update only the PortOS static catalog and the
+If a shipped fallback is stale, update only the PortOS static catalog and both
+fresh-install seed snapshots (server/lib/aiToolkit/defaults/providers.sample.json
+and data.reference/providers.json), keeping those seeds synchronized. Update the
 compatibility recognition that protects independently upgraded installs. When a
 shipped default changes, preserve the old seeded Antigravity list in
 PRIOR_ANTIGRAVITY_MODEL_CATALOGS (and update any equivalent provider-specific
@@ -68,7 +70,10 @@ export const PORTOS_CLI_CATALOG_REFRESH_JOB = Object.freeze({
   autonomyLevel: 'manager',
   type: 'agent',
   promptTemplate: PORTOS_CLI_CATALOG_REFRESH_PROMPT,
-  taskMetadata: { useWorktree: true, openPR: true, simplify: true },
+  // A verified empty branch is a valid result for this audit. The finalizer
+  // consumes this marker only alongside verifyPrClaim's noChangesToShip proof;
+  // it is not a general commit-criterion exemption.
+  taskMetadata: { useWorktree: true, openPR: true, simplify: true, noChangeSuccess: true },
   providerId: null,
   model: null,
   effort: null,

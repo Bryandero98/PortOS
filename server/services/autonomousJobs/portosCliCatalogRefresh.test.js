@@ -21,7 +21,7 @@ describe('PortOS CLI provider catalog refresh custom task', () => {
       interval: 'monthly',
       intervalMs: 30 * DAY,
       enabled: false,
-      taskMetadata: { useWorktree: true, openPR: true, simplify: true }
+      taskMetadata: { useWorktree: true, openPR: true, simplify: true, noChangeSuccess: true }
     })
     expect(SELF_IMPROVEMENT_TASK_TYPES).not.toContain(PORTOS_CLI_CATALOG_REFRESH_TASK_TYPE)
     expect(DEFAULT_TASK_INTERVALS[PORTOS_CLI_CATALOG_REFRESH_TASK_TYPE]).toBeUndefined()
@@ -42,7 +42,7 @@ describe('PortOS CLI provider catalog refresh custom task', () => {
 
     expect(job).toMatchObject({
       appId: PORTOS_APP_ID,
-      taskMetadata: { useWorktree: true, openPR: true, simplify: true },
+      taskMetadata: { useWorktree: true, openPR: true, simplify: true, noChangeSuccess: true },
       providerId: null,
       model: null,
       effort: null,
@@ -104,6 +104,7 @@ describe('PortOS CLI provider catalog refresh custom task', () => {
       useWorktree: true,
       openPR: true,
       simplify: true,
+      noChangeSuccess: true,
       provider: 'codex-cli',
       model: 'gpt-example',
       effort: 'high'

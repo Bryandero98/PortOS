@@ -162,6 +162,10 @@ async function generateTaskFromJob(job) {
       ...(meta.useWorktree != null ? { useWorktree: meta.useWorktree } : {}),
       ...(meta.openPR != null ? { openPR: meta.openPR } : {}),
       ...(meta.simplify != null ? { simplify: meta.simplify } : {}),
+      // Some PortOS-owned audits can legitimately conclude that no change is
+      // needed. This is only a completion marker; agentFinalization still
+      // requires verifyPrClaim to prove the branch is empty before honoring it.
+      ...(meta.noChangeSuccess === true ? { noChangeSuccess: true } : {}),
       // Optional per-job AI provider + model override. resolveAgentProviderAndModel
       // reads metadata.provider to switch providers and selectModelForTask reads
       // metadata.model as the highest-priority model choice. Absent = active

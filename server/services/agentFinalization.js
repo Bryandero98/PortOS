@@ -103,7 +103,7 @@ export function releaseAgentLane({ agentId, success, duration, exitCode, executi
  *
  * @returns {Promise<boolean|null|'skip-learning'>}
  */
-export async function evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt = null, success = false, hookResult = null }) {
+export async function evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt = null, success = false, hookResult = null, noChangesToShip = false }) {
   if (terminatedByUser) return null;
   const taskType = task?.taskType || 'user';
   // The SCHEDULED type (`metadata.analysisType`) if any, else the queue category —
@@ -126,6 +126,14 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // Interactive/user tasks declare no machine-checkable criterion; neither does
   // a run missing the task id or workspace needed to validate.
   if (taskType === 'user' || !task?.id || !workspacePath) return null;
+  // A PortOS-owned audit can validly conclude that its shipped data is current.
+  // `noChangesToShip` is only set by verifyPrClaim after the forge answered that
+  // no PR exists AND the branch was proven empty; the task marker narrows this
+  // exception to an explicitly opted-in autonomous job. Do not use the marker
+  // as a general no-commit exemption: a real change still needs the commit probe.
+  if (success && noChangesToShip === true
+    && task?.metadata?.autonomousJob === true
+    && task?.metadata?.noChangeSuccess === true) return true;
   // Pipeline/media tasks deliver artifacts, not a commit — the
   // commit criterion doesn't apply, so don't mislabel a clean artifact run as a
   // validation miss (which would also pollute the correlation window). null =
@@ -795,7 +803,15 @@ export async function finalizeAgent({
   // exit-code `success`, so task-learning telemetry can distinguish "ran clean
   // but produced nothing" from a genuine success. Best-effort — a validation
   // check failure must never block finalize (falls back to the null sentinel).
-  const validationPassed = await evaluateSuccessCriteria({ task, terminatedByUser, workspacePath, startedAt: runStartedAt, success, hookResult })
+  const validationPassed = await evaluateSuccessCriteria({
+    task,
+    terminatedByUser,
+    workspacePath,
+    startedAt: runStartedAt,
+    success,
+    hookResult,
+    noChangesToShip: prVerdict.noChangesToShip === true,
+  })
     .catch(err => {
       emitLog('warn', `⚠️ Success-criteria validation failed for ${agentId}: ${err.message}`, { agentId });
       return null;
