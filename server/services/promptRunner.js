@@ -45,8 +45,17 @@ import { DEFAULT_OUTPUT_RESERVE_TOKENS, estimateTokens } from '../lib/contextBud
 // lazily on the failure path keeps anything that imports promptRunner.js from
 // dragging the CoS stack along on the happy path. Node caches the module after
 // the first dynamic import, so the cost is one-time.
+let autoFixerLoadPromise;
 function loadAutoFixer() {
-  return import('./autoFixer.js');
+  if (!autoFixerLoadPromise) {
+    autoFixerLoadPromise = import('./autoFixer.js').catch((err) => {
+      // Keep a failed optional load retryable for a later failure after a
+      // transient module-resolution problem.
+      autoFixerLoadPromise = null;
+      throw err;
+    });
+  }
+  return autoFixerLoadPromise;
 }
 
 export const DEFAULT_TIMEOUT_MS = 300000;
