@@ -90,6 +90,7 @@ export default function ChiefOfStaff() {
   const [tasks, setTasks] = useState({ user: null, cos: null });
   const [agents, setAgents] = useState([]);
   const [health, setHealth] = useState(null);
+  const [healthLoaded, setHealthLoaded] = useState(false);
   const [providers, setProviders] = useState([]);
   // Which provider an unpinned task actually runs on — the Schedule tab names it
   // on the "Default" option and resolves model/effort choices against it.
@@ -152,6 +153,7 @@ export default function ChiefOfStaff() {
     const resolved = merge ? fresherHealth(healthRef.current, next) : next;
     healthRef.current = resolved;
     setHealth(resolved);
+    setHealthLoaded(true);
     return resolved;
   }, []);
 
@@ -181,8 +183,15 @@ export default function ChiefOfStaff() {
       api.getCosTasks().catch(() => ({ user: null, cos: null })),
       api.getCosAgents().catch(() => []),
     ]);
+    const healthRead = api.getCosHealth().catch(() => null).then((data) => {
+      // Health is independently useful to the Health tab. Commit it as soon
+      // as its own read settles instead of making that tab wait for the slower
+      // actionable-insights request in the same batch.
+      applyHealth(data, { merge: true });
+      return data;
+    });
     const secondaryRead = Promise.all([
-      api.getCosHealth().catch(() => null),
+      healthRead,
       api.getProviders().catch(() => ({ providers: [] })),
       api.getApps().catch(() => []),
       api.getCosLearningSummary().catch(() => null),
@@ -215,7 +224,7 @@ export default function ChiefOfStaff() {
     const runningAgent = agentsData.find(a => a.status === 'running');
     setActiveAgentMeta(runningAgent?.metadata || null);
 
-    const [healthData, providersData, appsData, learningSummaryData, insightsData] = await secondaryRead;
+    const [, providersData, appsData, learningSummaryData, insightsData] = await secondaryRead;
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
@@ -223,7 +232,7 @@ export default function ChiefOfStaff() {
     // keeps whichever check is newer (and keeps the last-good one when this read
     // failed); everything below derives from what it returned, never from the
     // raw read, so the bubble can't name an older issue than the tile shows.
-    const mergedHealth = applyHealth(healthData, { merge: true });
+    const mergedHealth = healthRef.current;
     setProviders(providersData.providers || []);
     setActiveProviderId(providersData.activeProvider || null);
     // Filter out PortOS Autofixer (it's part of PortOS project)
@@ -1150,7 +1159,7 @@ export default function ChiefOfStaff() {
         {activeTab === 'health' && (
           <div role="tabpanel" id="tabpanel-health" aria-labelledby="tab-health">
             <Suspense fallback={<TabLoadFallback label="health" />}>
-              <HealthTab health={health} onCheck={handleHealthCheck} />
+              <HealthTab health={health} healthLoading={!healthLoaded} onCheck={handleHealthCheck} />
             </Suspense>
           </div>
         )}

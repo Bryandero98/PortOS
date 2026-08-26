@@ -410,6 +410,20 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
     expect(api.getCosActionableInsights.mock.calls.length).toBe(before);
   });
 
+  it('keeps the Health tab pending until its own read settles', async () => {
+    let releaseHealth;
+    api.getCosHealth.mockReturnValue(new Promise((resolve) => { releaseHealth = resolve; }));
+    renderAt('health');
+
+    expect(await screen.findByText('Loading health...')).toBeInTheDocument();
+    expect(screen.queryByText('All Systems Healthy')).not.toBeInTheDocument();
+
+    await act(async () => {
+      releaseHealth({ lastCheck: '2026-01-01T00:00:01Z', issues: [] });
+    });
+    expect(await screen.findByText('All Systems Healthy')).toBeInTheDocument();
+  });
+
   it('does not let a stale fetchData health read clobber a fresher one', async () => {
     // The insights call inside fetchData triggers a fresh server health check
     // whose socket emit can update `health` before fetchData's own getCosHealth
