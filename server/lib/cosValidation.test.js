@@ -124,6 +124,24 @@ describe('cosValidation job taskMetadata.worktreeChangesExpected (#3102)', () =>
   });
 });
 
+describe('cosValidation job taskMetadata.noChangeSuccess (#5074)', () => {
+  it('accepts the verified no-change marker and rejects non-boolean values', () => {
+    const parsed = createCosJobSchema.parse({
+      name: 'catalog audit',
+      taskMetadata: { useWorktree: true, noChangeSuccess: true },
+    });
+    expect(parsed.taskMetadata).toEqual({ useWorktree: true, noChangeSuccess: true });
+    expect(createCosJobSchema.safeParse({ name: 'catalog audit', taskMetadata: { noChangeSuccess: 'yes' } }).success)
+      .toBe(false);
+  });
+
+  it('keeps the marker available to app task-type override sanitization', () => {
+    expect(sanitizeTaskMetadata({ noChangeSuccess: true })).toEqual({ noChangeSuccess: true });
+    expect(sanitizeTaskMetadata({ noChangeSuccess: false })).toEqual({ noChangeSuccess: false });
+    expect(sanitizeTaskMetadata({ noChangeSuccess: 'true' })).toBeNull();
+  });
+});
+
 describe('cosValidation task metadata claimFlow marker', () => {
   it('sanitizes the claim lifecycle marker as a boolean', () => {
     expect(sanitizeTaskMetadata({ claimFlow: true })).toEqual({ claimFlow: true });

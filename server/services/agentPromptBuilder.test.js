@@ -1123,6 +1123,27 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/PortOS will push and open the PR/);
     });
 
+    it('gives a marked catalog audit an explicit no-change exit while retaining the change workflow', () => {
+      const task = makeTask({ metadata: {
+        autonomousJob: true,
+        noChangeSuccess: true,
+        useWorktree: true,
+        openPR: true,
+        simplify: true,
+      } });
+      const prompt = buildLightContextPrompt(
+        task,
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta,
+        { isTui: false, providerId: 'codex', providerCommand: 'codex' });
+      expect(prompt).toMatch(/no change is needed/i);
+      expect(prompt).toMatch(/leave the worktree clean/i);
+      expect(prompt).toMatch(/exit without committing/i);
+      expect(prompt).toMatch(/If a change is needed, continue through the normal workflow/i);
+      expect(prompt).toMatch(/gh pr create/);
+    });
+
     // #3114 — the gates now derive from `resolveSlashdoStyle` with the spawners'
     // blank-command posture, so a CLI provider with NO id and NO command reads as
     // Claude: `buildCliSpawnConfig`'s default branch launches `claude`, and the
@@ -2138,6 +2159,17 @@ describe('buildCompletionGuidelineBullet', () => {
       worktreeInfo: null, willOpenPR: false, willReviewLoop: false,
     });
     expect(none).toBeNull();
+  });
+
+  it('marks a catalog audit no-op as a valid completion without weakening the change path', () => {
+    const bullet = buildCompletionGuidelineBullet({
+      isReadOnly: false, isTui: false, tuiCompletionCommand: '/do:pr',
+      worktreeInfo: { worktreePath: '/wt' }, willOpenPR: true, noChangeSuccess: true,
+    });
+    expect(bullet).toMatch(/no code changes/i);
+    expect(bullet).toMatch(/leave the worktree clean/i);
+    expect(bullet).toMatch(/exit without committing/i);
+    expect(bullet).toMatch(/If a change is needed, continue/);
   });
 
   it('discardWorktree short-circuits to the reasoning-only bullet (wins over TUI/openPR)', () => {

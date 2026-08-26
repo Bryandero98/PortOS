@@ -393,6 +393,18 @@ describe('evaluateSuccessCriteria — commit criterion (#2344, #3637)', () => {
     expect(committedDuringRun).toHaveBeenCalledWith('/w', STARTED_AT);
   });
 
+  it('accepts persisted string markers after the task markdown round-trip', async () => {
+    const task = {
+      id: 'catalog-audit-3',
+      taskType: 'internal',
+      metadata: { autonomousJob: 'true', noChangeSuccess: 'true' }
+    };
+    expect(await evaluateSuccessCriteria({
+      task, workspacePath: '/w', success: true, noChangesToShip: true, startedAt: STARTED_AT
+    })).toBe(true);
+    expect(committedDuringRun).not.toHaveBeenCalled();
+  });
+
   it('passes an autonomous code run that COMMITTED during its window', async () => {
     committedDuringRun.mockResolvedValueOnce(true);
     expect(await evaluateSuccessCriteria({ task: { id: 't1', taskType: 'internal' }, workspacePath: '/w', startedAt: STARTED_AT })).toBe(true);

@@ -34,6 +34,7 @@ import {
   buildCliCompletionSection,
   buildCompletionGuidelineBullet,
   buildInlineReviewLoopSection,
+  NO_CHANGE_AUDIT_GUIDANCE,
   buildProgrammaticOutputCompletionSection,
   buildReadOnlyCompletionSection,
   buildResumeSection,
@@ -314,6 +315,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // `pending` BEFORE this flag existed (persisted across an upgrade) are still
   // recognized without a metadata migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || isCreativeDirectorTask;
+  const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
@@ -326,6 +328,8 @@ ${worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\` (lat
     ? DISCARD_WORKTREE_NOTE
     : claimFlow
       ? 'The claim workflow in the Completion section owns its claim branch, push, PR/MR, review, merge or human-handoff, and cleanup — do not hand those steps back to PortOS.'
+    : noChangeSuccess
+      ? NO_CHANGE_AUDIT_GUIDANCE
     : isTui
       ? 'Commit your changes to this branch — see the **Completion Workflow** section below for the full push/PR/exit sequence.'
       : isWorktreeOnExistingBranch
@@ -367,7 +371,7 @@ Use the findings from the previous stage to inform your work. If the previous st
     ? 'run `/simplify` to review the changed code for reuse, quality, and efficiency'
     : SIMPLIFY_INLINE_REVIEW;
   // Discard tasks don't commit, so the simplify-before-commit step is moot.
-  const simplifySection = simplifyEnabled && !isTui && !discardWorktree && !claimFlow ? `
+  const simplifySection = simplifyEnabled && !isTui && !discardWorktree && !claimFlow && !noChangeSuccess ? `
 ## Simplify Step
 After completing your work and before committing, ${simplifyInstruction}. Fix any issues found, then ${worktreeInfo && willOpenPR ? 'commit your changes (do NOT push — on a successful run the system will push and open the PR after you exit; if the run fails, no push or PR happens)' : 'commit and push using `/do:push`'}.
 ` : '';
@@ -420,9 +424,11 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
       ? buildProgrammaticOutputCompletionSection(sentinelPath)
       : claimFlow
         ? buildClaimFlowCompletionSection({ isTui, sentinelPath, reviewersCsv: claimReviewersCsv(task, codeReviewDefaults, defaultReviewers) })
-      : isTui
+  : noChangeSuccess
+    ? `${NO_CHANGE_AUDIT_GUIDANCE} If the catalogs are current, leave the worktree clean and complete using the no-change path above; if they are stale, continue through the normal commit/PR workflow.`
+  : isTui
         ? buildTuiCompletionSection({
-            willOpenPR, prCompletion, simplifyEnabled,
+            willOpenPR, prCompletion, simplifyEnabled, noChangeSuccess,
             // Unreachable today — every `tui`/`cli` provider returns early at the
             // LIGHT_CONTEXT gate above, so `isTui` is always false on this path
             // (same situation as buildCompletionGuidelineBullet's `isTui` arm).
@@ -638,7 +644,7 @@ ${(() => {
   const bullet = buildCompletionGuidelineBullet({
     isReadOnly: isTruthyMetaFn(task.metadata?.readOnly),
     isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
-    worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput,
+    worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput, noChangeSuccess,
     leavePrOpen: leavesPrForHuman(task),
     isPrFollowUp: isReviewLoopFollowUp, claimFlow,
   });
@@ -657,6 +663,8 @@ ${noCodeOutput
     ? `- **Follow the claim workflow prompt above.** It owns the claim worktree and the full PR/MR lifecycle; do not stop after committing or hand push/PR/merge/cleanup back to PortOS.`
   : isReviewLoopFollowUp
     ? `- **Push fixes straight to the PR branch you are on** (the follow-up section above is the procedure). Stage specific files, use a \`fix:\` prefix, no Co-Authored-By annotations. Do NOT open a new PR.`
+  : noChangeSuccess
+    ? `- **No-change audits may exit cleanly.** ${NO_CHANGE_AUDIT_GUIDANCE}`
     : isTui && tuiSlashdoFree
     ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations, then write the completion sentinel. PortOS will handle the branch after it closes the session.`
     : isTui
@@ -734,6 +742,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // derive from a CD task's `creativeDirector` marker so pre-upgrade `pending`
   // tasks (queued before this flag existed) are recognized without a migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
+  const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   // Ordered reviewer list + flags for the Review Loop (task metadata wins; else
@@ -829,7 +838,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       `- **Path**: \`${worktreeInfo.worktreePath}\``,
       worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
       '',
-      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow }),
+      worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow, noChangeSuccess }),
       'Do NOT manually switch branches or modify the worktree configuration.',
       // Resuming a previous failed agent's branch: establish what's already done
       // before writing code (see buildResumeSection). '' when not a resume.
@@ -905,7 +914,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     }
   } else if (isTui) {
     contractSections.push(buildTuiCompletionSection({
-      willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree, ownsPrWorkflow,
+      willOpenPR, prCompletion, simplifyEnabled, noChangeSuccess, slashdoFree: tuiSlashdoFree, ownsPrWorkflow,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
       branchName: worktreeInfo?.branchName || null,
       baseBranch: worktreeInfo?.baseBranch || null,
@@ -914,7 +923,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       forgeCli: resolvedForgeCli
     }));
   } else {
-    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, noChangeSuccess, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion

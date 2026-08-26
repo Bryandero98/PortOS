@@ -131,9 +131,7 @@ export async function evaluateSuccessCriteria({ task, terminatedByUser, workspac
   // no PR exists AND the branch was proven empty; the task marker narrows this
   // exception to an explicitly opted-in autonomous job. Do not use the marker
   // as a general no-commit exemption: a real change still needs the commit probe.
-  if (success && noChangesToShip === true
-    && task?.metadata?.autonomousJob === true
-    && task?.metadata?.noChangeSuccess === true) return true;
+  if (success && noChangesToShip === true && isVerifiedNoChangeTask(task)) return true;
   // Pipeline/media tasks deliver artifacts, not a commit — the
   // commit criterion doesn't apply, so don't mislabel a clean artifact run as a
   // validation miss (which would also pollute the correlation window). null =
@@ -238,6 +236,11 @@ const HOOK_ABORTED_BEFORE_EVALUATION = new Set(['no-app', 'app-not-found']);
  */
 export const PR_MISSING_CATEGORY = 'pr-missing';
 export const FORGE_UNREACHABLE_CATEGORY = 'forge-unreachable';
+
+function isVerifiedNoChangeTask(task) {
+  const isPersistedTrue = (value) => value === true || value === 'true';
+  return isPersistedTrue(task?.metadata?.autonomousJob) && isPersistedTrue(task?.metadata?.noChangeSuccess);
+}
 
 /**
  * The branch a finished agent's workspace is sitting on, or null when the
@@ -666,6 +669,22 @@ export async function finalizeAgent({
         return { ok: true };
       });
 
+  // Codex/Antigravity/OpenCode sessions can own the PR workflow without being
+  // able to type slashdo commands, so their spawners deliberately pass
+  // `prExpected: false` and let cleanup act as the PR-creation backstop. A
+  // marked catalog audit still needs the same forge + empty-branch proof before
+  // a clean exit can satisfy its no-change success criterion. Keep this
+  // auxiliary verdict separate: a non-empty branch must remain eligible for
+  // cleanup to open the PR after finalize rather than being downgraded here.
+  const noChangeProof = !terminatedByUser && !prExpected && reportedSuccess && isVerifiedNoChangeTask(task)
+    ? await verifyPrClaim({ task, workspacePath, success: reportedSuccess, prExpected: true })
+      .catch(err => {
+        emitLog('warn', `⚠️ No-change verification failed for ${agentId}: ${err.message}`, { agentId });
+        return { ok: false };
+      })
+    : { ok: true };
+  const noChangesToShip = prVerdict.noChangesToShip === true || noChangeProof.noChangesToShip === true;
+
   // Record the verdict in the lifecycle ledger (#4540) — but ONLY when the
   // check actually reached one. `verifyPrClaim` returns the same `{ ok: true }`
   // for "the PR is there", for "this run never promised one", for "there was no
@@ -747,11 +766,12 @@ export async function finalizeAgent({
     emitLog('warn', `⚠️ ${prVerdict.message} — recording ${agentId} as needs-attention (${prVerdict.category}) rather than complete`, {
       agentId, taskId: task?.id, branch: prVerdict.branch, category: prVerdict.category
     });
-  } else if (prVerdict.noChangesToShip) {
+  } else if (noChangesToShip) {
     // A no-op run is a legitimate completion, not a silent one — the human still
     // wants to know a task burned an agent and concluded there was nothing to do.
-    emitLog('info', `🫧 ${agentId} opened no change request and committed nothing to ${prVerdict.branch} — recording the run as complete with no change warranted`, {
-      agentId, taskId: task?.id, branch: prVerdict.branch
+    const noChangeBranch = prVerdict.branch || noChangeProof.branch;
+    emitLog('info', `🫧 ${agentId} opened no change request and committed nothing to ${noChangeBranch} — recording the run as complete with no change warranted`, {
+      agentId, taskId: task?.id, branch: noChangeBranch
     });
   }
 
@@ -810,7 +830,7 @@ export async function finalizeAgent({
     startedAt: runStartedAt,
     success,
     hookResult,
-    noChangesToShip: prVerdict.noChangesToShip === true,
+    noChangesToShip,
   })
     .catch(err => {
       emitLog('warn', `⚠️ Success-criteria validation failed for ${agentId}: ${err.message}`, { agentId });

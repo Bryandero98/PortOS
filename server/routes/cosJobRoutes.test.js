@@ -500,6 +500,32 @@ describe('CoS Job Routes', () => {
       );
     });
 
+    it('should preserve the no-change success contract when Run now queues an agent job', async () => {
+      autonomousJobs.getJob.mockResolvedValue({ id: 'j1', type: 'agent', name: 'Catalog audit' });
+      autonomousJobs.isShellJob.mockReturnValue(false);
+      autonomousJobs.isScriptJob.mockReturnValue(false);
+      autonomousJobs.generateTaskFromJob.mockResolvedValue({
+        description: 'Audit catalogs',
+        priority: 'MEDIUM',
+        metadata: {
+          autonomousJob: true,
+          jobId: 'j1',
+          useWorktree: true,
+          openPR: true,
+          noChangeSuccess: true,
+        }
+      });
+      cos.addTask.mockResolvedValue({ id: 'task-no-change' });
+
+      const response = await request(app).post('/api/cos/jobs/j1/trigger');
+
+      expect(response.status).toBe(200);
+      expect(cos.addTask).toHaveBeenCalledWith(
+        expect.objectContaining({ autonomousJob: true, jobId: 'j1', noChangeSuccess: true }),
+        'internal'
+      );
+    });
+
     it('should forward provider + model overrides into addTask', async () => {
       autonomousJobs.getJob.mockResolvedValue({ id: 'j1', type: 'agent', name: 'Pinned Review' });
       autonomousJobs.isShellJob.mockReturnValue(false);

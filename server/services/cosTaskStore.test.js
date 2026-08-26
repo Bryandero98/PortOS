@@ -323,6 +323,20 @@ describe('cosTaskStore.addTask', () => {
     expect(mock.events.some(e => e.name === 'tasks:changed' && e.payload.action === 'added' && e.payload.type === 'user')).toBe(true);
   });
 
+  it('persists the no-change success marker for an autonomous audit', async () => {
+    const created = await addTask({
+      description: 'Audit shipped catalogs',
+      id: 'catalog-audit-task',
+      autonomousJob: true,
+      jobId: 'job-refresh-cli-provider-catalogs',
+      noChangeSuccess: true,
+    }, 'internal');
+
+    expect(created.metadata.noChangeSuccess).toBe(true);
+    const reloaded = (await getTaskById(created.id)).metadata.noChangeSuccess;
+    expect(reloaded === true || reloaded === 'true').toBe(true);
+  });
+
   describe('targeted instance pin (#4520)', () => {
     it('persists targetInstanceId and round-trips it through markdown', async () => {
       const created = await addTask({ description: 'gpu work', id: 'task-pin', targetInstanceId: 'instance-bbbb' }, 'user');

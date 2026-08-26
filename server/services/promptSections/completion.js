@@ -10,6 +10,8 @@ import { PR_COMPLETIONS, leavesPrForHuman, resolvePrCompletion } from '../../lib
 import { LIGHT_CONTEXT_PROVIDER_TYPES, SIMPLIFY_INLINE_REVIEW } from './constants.js';
 import { buildCiMergeGateSteps, buildReviewLoopFollowUpSection, LEAVE_PR_OPEN_STEP } from './reviewLifecycle.js';
 
+export const NO_CHANGE_AUDIT_GUIDANCE = 'This audit may legitimately conclude that no change is needed. First verify the shipped catalogs against authoritative sources. If they are current, leave the worktree clean and do not run the commit, push, PR, or review steps below; write the completion sentinel when this provider uses one, or exit without committing when it does not. If a change is needed, continue through the normal workflow below.';
+
 /**
  * Build the single "## Guidelines" completion-handoff bullet for the full
  * (api) prompt path. Mirrors the helper pattern the light path already uses
@@ -29,12 +31,14 @@ import { buildCiMergeGateSteps, buildReviewLoopFollowUpSection, LEAVE_PR_OPEN_ST
  * @param {Object|null} opts.worktreeInfo
  * @param {boolean} opts.willOpenPR
  * @param {'review-then-merge'|'merge-on-green'|'leave-open'} opts.prCompletion
+ * @param {boolean} [opts.noChangeSuccess] - The task may succeed after a
+ *   verified clean branch instead of producing a commit/PR.
  * @returns {string|null}
  */
 export function buildCompletionGuidelineBullet({
   isReadOnly, isTui, tuiCompletionCommand, slashdoFree = false,
   worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, discardWorktree = false, noCodeOutput = false,
-  leavePrOpen = false, isPrFollowUp = false, claimFlow = false,
+  leavePrOpen = false, isPrFollowUp = false, claimFlow = false, noChangeSuccess = false,
 }) {
   // A PR follow-up (review-loop or merge-only) already carries its own PRIMARY
   // OBJECTIVE section with the full procedure, and its cleanup runs with
@@ -63,6 +67,9 @@ export function buildCompletionGuidelineBullet({
   }
   if (isReadOnly) {
     return '**This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.';
+  }
+  if (noChangeSuccess) {
+    return `**This audit may legitimately produce no code changes.** ${NO_CHANGE_AUDIT_GUIDANCE}`;
   }
   if (isTui) {
     // NOTE: in production this branch is only reachable from the full/api prompt
@@ -291,9 +298,10 @@ export function buildClaimFlowCompletionSection({ isTui = false, sentinelPath = 
  * push workflow (TUI or Claude Code CLI with slashdo), reuse an existing PR
  * branch (review fixes), or hand off to PortOS's post-exit push.
  */
-export function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow = false }) {
+export function worktreeCommitGuidance({ isTui, hasSlashdo, ownsPrWorkflow = false, isWorktreeOnExistingBranch, willOpenPR, discardWorktree, claimFlow = false, noChangeSuccess = false }) {
   if (discardWorktree) return DISCARD_WORKTREE_NOTE;
   if (claimFlow) return 'The claim workflow in the Completion section owns the push, PR/MR, review, merge or human-handoff, and cleanup steps.';
+  if (noChangeSuccess) return NO_CHANGE_AUDIT_GUIDANCE;
   if (isTui) return 'Commit your changes to this branch — see **Completion Workflow** below.';
   if (isWorktreeOnExistingBranch) {
     return 'Commit and **push** any review-fix commits to this branch (the PR points at it). Use `git pull --rebase` before pushing if needed.';
@@ -423,14 +431,14 @@ export function buildSentinelWriteSteps(stepNumber, sentinelPath, sentinelTail) 
  * return this IS a Claude session, so `/simplify` and `/do:pr` are both safe to
  * emit without a second provider check.
  */
-export function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, ownsPrWorkflow = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh' }) {
+export function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, simplifyEnabled, sentinelPath, slashdoFree = false, ownsPrWorkflow = false, branchName = null, baseBranch = null, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh', noChangeSuccess = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (slashdoFree) {
     // Plain `git`/`gh` instead of `/do:pr` — but still the whole lifecycle when
     // the session is a real coding harness (`ownsPrWorkflow`); the reviewer
     // procedure it needs is inlined in the Review Loop section that follows.
-    return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen, ownsPrWorkflow, forgeCli });
+    return buildManualTuiCompletionSection({ willOpenPR, prCompletion, simplifyEnabled, sentinelPath, branchName, baseBranch, leavePrOpen, ownsPrWorkflow, forgeCli, noChangeSuccess });
   }
   const cmd = willOpenPR ? '/do:pr' : '/do:push';
   // `/do:pr` may inherit a saved `review-with` default. Explicitly opt out
@@ -457,7 +465,9 @@ export function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLE
   // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
   // above), so `/simplify` — a Claude Code built-in — is invokable here.
   const simplifyStep = simplifyEnabled ? '1. `/simplify`' : '1. (simplify disabled — skip)';
-  const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+  const sentinelTail = noChangeSuccess
+    ? '   ## PR\n   No change needed; no PR opened.'
+    : willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
   // A PR gets merge steps — gated on the review verdict when a loop runs, on CI
   // alone when it doesn't (nothing else merges a no-review-loop PR). The one
   // exception is a PR a human lands (JIRA-tracked; see lib/prDisposition.js).
@@ -468,6 +478,7 @@ export function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLE
 
   return [
     '## Completion Workflow',
+    ...(noChangeSuccess ? ['', NO_CHANGE_AUDIT_GUIDANCE, ''] : []),
     'When the task is complete, run these in order:',
     '',
     simplifyStep,
@@ -549,7 +560,7 @@ function buildManualPrCreateStep(step, { branchName, baseBranch, forgeCli = 'gh'
  * `ownsPrWorkflow: false` (lean mode) keeps the original handoff: commit and
  * stop, PortOS owns the post-exit push / PR / review / merge lifecycle.
  */
-function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false, ownsPrWorkflow = false, forgeCli = 'gh' }) {
+function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.REVIEW_THEN_MERGE, simplifyEnabled, sentinelPath, branchName = null, baseBranch = null, leavePrOpen = false, ownsPrWorkflow = false, forgeCli = 'gh', noChangeSuccess = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   // `ownsPrWorkflow` already folds in `willOpenPR`, the worktree, and the
@@ -559,10 +570,13 @@ function buildManualTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLET
   const simplifyStep = simplifyEnabled
     ? `1. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`
     : '1. (simplify disabled — skip)';
-  const sentinelTail = drivesOwnPr ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+  const sentinelTail = noChangeSuccess
+    ? '   ## PR\n   No change needed; no PR opened.'
+    : drivesOwnPr ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
 
   const lines = [
     '## Completion Workflow',
+    ...(noChangeSuccess ? ['', NO_CHANGE_AUDIT_GUIDANCE, ''] : []),
     drivesOwnPr
       ? `This provider does NOT have slashdo (\`/do:*\`) commands, so drive the handoff with plain \`git\` and \`${forgeCli}\`. **You own this ${forgeCli === 'glab' ? 'MR' : 'PR'} end to end — nothing else will open, review, or merge it.** Run these in order:`
       : 'This provider does NOT have slashdo (`/do:*`) commands, so finish the handoff with plain `git`. Run these in order:',
@@ -691,11 +705,11 @@ export function buildInlineReviewLoopSection({
  * CLI providers fall through to the legacy commit-only block where PortOS
  * handles push+PR on exit.
  */
-export function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, ownsPrWorkflow = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh' }) {
+export function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR_COMPLETIONS.MERGE_ON_GREEN, hasSlashdo = false, ownsPrWorkflow = false, simplifyEnabled = false, leavePrOpen = false, reviewers = DEFAULT_REVIEWERS, usernames = [], optionalReviewers = [], reviewerMaxRounds = {}, reviewerModels = {}, reviewerEfforts = {}, reviewStopMode = DEFAULT_REVIEW_STOP_MODE, reviewerApplies = false, forgeCli = 'gh', noChangeSuccess = false }) {
   const policyLeavesOpen = prCompletion === PR_COMPLETIONS.LEAVE_OPEN;
   const runsReviewLoop = prCompletion === PR_COMPLETIONS.REVIEW_THEN_MERGE;
   if (hasSlashdo && worktreeInfo && willOpenPR) {
-    const lines = ['## Completion', 'When finished, run these in order:'];
+    const lines = ['## Completion', ...(noChangeSuccess ? ['', NO_CHANGE_AUDIT_GUIDANCE, ''] : []), 'When finished, run these in order:'];
     let step = 1;
     if (simplifyEnabled) {
       lines.push(`${step++}. \`/simplify\` — review the changed code for reuse, quality, and efficiency, and fix any findings.`);
@@ -724,7 +738,7 @@ export function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompleti
     return lines.join('\n');
   }
   if (hasSlashdo && worktreeInfo) {
-    const lines = ['## Completion', 'When finished, run these in order:'];
+    const lines = ['## Completion', ...(noChangeSuccess ? ['', NO_CHANGE_AUDIT_GUIDANCE, ''] : []), 'When finished, run these in order:'];
     let step = 1;
     if (simplifyEnabled) {
       lines.push(`${step++}. \`/simplify\` — review the changed code for reuse, quality, and efficiency, and fix any findings.`);
@@ -739,7 +753,7 @@ export function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompleti
   // `ownsPrWorkflow` already folds in `willOpenPR`, the worktree, and the
   // leave-open exclusions (it is `inlinePrLifecycleSection() !== null`).
   if (ownsPrWorkflow) {
-    const lines = ['## Completion', '**You own this PR end to end — nothing else will open, review, or merge it.** When finished, run these in order:'];
+    const lines = ['## Completion', ...(noChangeSuccess ? ['', NO_CHANGE_AUDIT_GUIDANCE, ''] : []), '**You own this PR end to end — nothing else will open, review, or merge it.** When finished, run these in order:'];
     let step = 1;
     lines.push(simplifyEnabled
       ? `${step++}. Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings.`
@@ -767,5 +781,5 @@ export function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompleti
   const simplifyLine = simplifyEnabled
     ? `Before committing, ${SIMPLIFY_INLINE_REVIEW} and fix any findings. `
     : '';
-  return `## Completion\n${simplifyLine}${body}`;
+  return `## Completion\n${noChangeSuccess ? `${NO_CHANGE_AUDIT_GUIDANCE} ` : ''}${simplifyLine}${body}`;
 }

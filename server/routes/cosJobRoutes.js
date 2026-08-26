@@ -209,7 +209,11 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     // Preserve the markers consumed by the job:spawned listener so Run now
     // records the execution and re-registers the saved schedule.
     autonomousJob: task.metadata?.autonomousJob,
-    jobId: task.metadata?.jobId
+    jobId: task.metadata?.jobId,
+    // A marked audit may complete successfully with a verified empty branch;
+    // preserve that contract on the manually queued task as well as the
+    // scheduled task path.
+    noChangeSuccess: task.metadata?.noChangeSuccess
   }, 'internal');
 
   if (!taskResult?.id) {
