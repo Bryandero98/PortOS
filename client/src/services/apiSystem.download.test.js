@@ -55,6 +55,17 @@ describe('downloadBackupSnapshot', () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
+  it('forwards structured error.context from a failed download response', async () => {
+    const context = { snapshotId: 'missing', retryable: false };
+    fetch.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: vi.fn().mockResolvedValue({ error: 'snapshot locked', code: 'ERR_SNAPSHOT_LOCKED', context }),
+    });
+
+    await expect(downloadBackupSnapshot('missing')).rejects.toMatchObject({ context });
+  });
+
   it('streams large responses to a file picker when available', async () => {
     const pipeTo = vi.fn().mockResolvedValue(undefined);
     const writable = {};
