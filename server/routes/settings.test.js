@@ -107,6 +107,9 @@ describe('Settings routes — instance feature participation', () => {
     // they resolve off, which is what hides their nav entries.
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'datadog', enabled: false }));
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'jira', enabled: false }));
+    // GSD remains enabled by default so existing app planning tabs stay
+    // available unless the install explicitly opts out.
+    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'gsd', enabled: true }));
   });
 
   it('updates one feature without replacing unrelated settings', async () => {

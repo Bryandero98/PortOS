@@ -251,6 +251,20 @@ describe('portless / desktop apps (#2991)', () => {
     expect(atomicWrite.mock.calls.at(-1)[1].apps[unset.id]).not.toHaveProperty('verifyRepoStateOnCompletion');
   });
 
+  it('createApp preserves managed-app feature overrides', async () => {
+    readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
+    const featureOverrides = { datadog: true, jira: null, gsd: false };
+
+    const created = await createApp({
+      name: 'Feature App',
+      repoPath: '/tmp/feature-app',
+      featureOverrides,
+    });
+
+    expect(created.featureOverrides).toEqual(featureOverrides);
+    expect(atomicWrite.mock.calls.at(-1)[1].apps[created.id].featureOverrides).toEqual(featureOverrides);
+  });
+
   it('createApp preserves web ports when a separate native target is present', async () => {
     readJSONFile.mockResolvedValue({ apps: { [PORTOS_APP_ID]: { name: 'PortOS' } } });
     const nativeLaunch = {

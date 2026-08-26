@@ -14,7 +14,9 @@
 //      in client/src/components/Layout.jsx;
 //   3. add a `detect` hook in services/instanceFeatures.js when a fresh install
 //      should infer the default from whether the integration is configured.
-// The validation schemas and the Features tab pick it up with no further edit.
+// The validation schemas and the install-wide Features tab pick it up with no
+// further edit; managed-app tabs opt into the separate APP_FEATURE_IDS list
+// below when they need an app-level inherit/override control.
 export const INSTANCE_FEATURES = Object.freeze([
   Object.freeze({
     id: 'post',
@@ -34,9 +36,20 @@ export const INSTANCE_FEATURES = Object.freeze([
     description: 'Sprint boards, ticket triage, and JIRA reports for apps wired to a JIRA instance.',
     defaultEnabled: false,
   }),
+  Object.freeze({
+    id: 'gsd',
+    label: 'GSD',
+    description: 'Get Stuff Done project planning and progress tracking for managed apps.',
+    defaultEnabled: true,
+  }),
 ]);
 
 export const INSTANCE_FEATURE_IDS = Object.freeze(INSTANCE_FEATURES.map((feature) => feature.id));
+
+// These are the feature tabs shown on a managed app. POST is install-wide only;
+// it has no app-level tab or override. Keep this list next to the registry so
+// the app schema and client resolver cannot drift from the feature catalog.
+export const APP_FEATURE_IDS = Object.freeze(['datadog', 'jira', 'gsd']);
 
 /**
  * How many instances an integration's config file declares — the signal every

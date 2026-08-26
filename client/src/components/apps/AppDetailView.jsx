@@ -9,7 +9,8 @@ import StatusBadge from '../StatusBadge';
 import * as api from '../../services/api';
 import { getLaunchUrls } from '../../services/appUrls';
 import socket from '../../services/socket';
-import { APP_DETAIL_TABS, NON_PM2_TYPES, getAppTypeLabel, resolveLaunchPanelProcess } from './constants';
+import { APP_DETAIL_TABS, NON_PM2_TYPES, getAppTypeLabel, isAppFeatureEnabled, resolveLaunchPanelProcess } from './constants';
+import { useInstanceFeatures } from '../../hooks/useInstanceFeatures.js';
 import DesktopLaunchProgress from './DesktopLaunchProgress';
 import OverviewTab from './tabs/OverviewTab';
 import TasksTab from './tabs/TasksTab';
@@ -46,6 +47,7 @@ export default function AppDetailView() {
   // (Vite ≥5 blocks unknown hosts). `null` = not yet checked.
   const [viteHostStatus, setViteHostStatus] = useState(null);
   const [viteFixing, setViteFixing] = useState(null); // 'allow-all' | 'ai' while a fix is in flight
+  const { features: instanceFeatures, error: instanceFeaturesError } = useInstanceFeatures();
 
   const fetchApp = useCallback(async () => {
     const data = await api.getApp(appId).catch(() => null);
@@ -218,10 +220,18 @@ export default function AppDetailView() {
     setViteHostStatus((prev) => prev ? { ...prev, hostAllowed: true } : prev);
   };
 
-  const visibleTabs = useMemo(() =>
-    APP_DETAIL_TABS.filter(t => (t.visibleWhen ? t.visibleWhen(app) : true)),
-    [app]
-  );
+  const visibleTabs = useMemo(() => APP_DETAIL_TABS.filter((entry) => {
+    if (entry.visibleWhen && !entry.visibleWhen(app)) return false;
+    if (!entry.feature) return true;
+    // A feature read is ancillary to the app detail request. Keep tabs visible
+    // during loading or a failed read so a transient settings outage cannot
+    // strand the user; a loaded false is the only affirmative hide signal.
+    const globalFeature = instanceFeatures?.find(feature => feature?.id === entry.feature);
+    const globalEnabled = instanceFeaturesError || instanceFeatures === null
+      ? undefined
+      : globalFeature?.enabled;
+    return isAppFeatureEnabled(app, entry.feature, globalEnabled);
+  }), [app, instanceFeatures, instanceFeaturesError]);
 
   if (loading) {
     return (

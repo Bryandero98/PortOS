@@ -7,6 +7,7 @@ import { NON_PM2_TYPES, usesPm2, isDesktopType } from './streamingDetect.js';
 import { listProcessesStrict } from './pm2.js';
 import { SELF_IMPROVEMENT_TASK_TYPES } from './taskScheduleRegistry.js';
 import { sanitizeTaskMetadata } from '../lib/validation.js';
+import { isPlainObject } from '../lib/objects.js';
 import { resolveAppWorkTracker } from '../lib/workTracker.js';
 import { PORTS } from '../lib/ports.js';
 import { hasTailscaleCert } from '../../lib/tailscale-https.js';
@@ -437,6 +438,13 @@ export async function createApp(appData) {
   // absent — createApp otherwise builds the object field-by-field and would drop it.
   if (appData.layeredIntelligence && typeof appData.layeredIntelligence === 'object') {
     app.layeredIntelligence = appData.layeredIntelligence;
+  }
+
+  // An absent map means every managed-app feature inherits the install-wide
+  // setting. Preserve an explicitly supplied (possibly empty) map so create
+  // and update have the same override contract.
+  if (isPlainObject(appData.featureOverrides)) {
+    app.featureOverrides = appData.featureOverrides;
   }
 
   data.apps[id] = app;
