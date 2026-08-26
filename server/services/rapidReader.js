@@ -37,6 +37,26 @@ const REQUIRED_MARKERS = [
   'Chapter 1:',
 ];
 
+function extractBookHtml(html) {
+  const opening = /<div\b[^>]*\bid\s*=\s*(["'])book\1[^>]*>/i.exec(html);
+  if (!opening) return '';
+
+  const bodyStart = opening.index + opening[0].length;
+  const tags = /<!--[\s\S]*?-->|<(script|style|noscript)\b[\s\S]*?<\/\1\s*>|<div\b[^>]*>|<\/div\s*>/gi;
+  tags.lastIndex = bodyStart;
+  let depth = 1;
+  let tag;
+  while ((tag = tags.exec(html))) {
+    if (/^<div\b/i.test(tag[0]) && !/\/\s*>$/.test(tag[0])) {
+      depth += 1;
+    } else if (/^<\/div\b/i.test(tag[0])) {
+      depth -= 1;
+      if (depth === 0) return html.slice(bodyStart, tag.index);
+    }
+  }
+  return '';
+}
+
 /**
  * Extract the book body from the official single-page HTML edition and turn it
  * into the plain text the RSVP reader expects. The marker checks keep an error
@@ -44,7 +64,7 @@ const REQUIRED_MARKERS = [
  */
 export function extractAccelerandoText(html) {
   if (typeof html !== 'string') return '';
-  const bookHtml = html.match(/<div\b[^>]*\bid=["']book["'][^>]*>([\s\S]*?)<\/div>/i)?.[1];
+  const bookHtml = extractBookHtml(html);
   if (!bookHtml) return '';
   const text = htmlToText(bookHtml.replace(/<!--[\s\S]*?-->/g, ''), {
     extraEntities: SOURCE_ENTITIES,

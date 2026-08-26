@@ -28,6 +28,11 @@ const SOURCE_HTML = `<!doctype html>
   </div>
 </body></html>`;
 
+const NESTED_SOURCE_HTML = SOURCE_HTML.replace(
+  '  </div>\n</body>',
+  '    <div class="nested"><p>Chapter 9: Finale</p></div>\n  </div>\n</body>',
+);
+
 beforeEach(() => {
   vi.clearAllMocks();
   rmSync(CACHE_FILE, { force: true });
@@ -47,6 +52,10 @@ describe('extractAccelerandoText', () => {
   it('rejects a page that does not contain the recognized book body', () => {
     expect(service.extractAccelerandoText('<html><body>Temporary error</body></html>')).toBe('');
     expect(service.extractAccelerandoText(null)).toBe('');
+  });
+
+  it('keeps the full book body when the source contains nested divs', () => {
+    expect(service.extractAccelerandoText(NESTED_SOURCE_HTML)).toContain('Chapter 9: Finale');
   });
 });
 
