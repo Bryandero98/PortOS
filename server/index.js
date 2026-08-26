@@ -152,7 +152,10 @@ import roundsRoutes from './routes/rounds.js';
 import midiRuntimeRoutes from './routes/midiRuntime.js';
 import peerSyncRoutes from './routes/peerSync.js';
 import askRoutes from './routes/ask.js';
+import remoteDesktopRoutes from './routes/remoteDesktop.js';
+import remoteDesktopViewerRoutes from './routes/remoteDesktopViewer.js';
 import { initSocket } from './services/socket.js';
+import { remoteDesktopBroker } from './services/remoteDesktop.js';
 import { bootstrapServices, runBootSequence, registerShutdownHandlers } from './services/bootstrap.js';
 import { errorMiddleware } from './lib/errorHandler.js';
 import { setHttpsEnabledAtBoot } from './lib/httpsState.js';
@@ -182,6 +185,13 @@ const io = new Server(httpServer, {
   },
   path: '/socket.io'
 });
+
+// noVNC uses a standards-based WebSocket rather than Socket.IO. The broker
+// accepts only short-lived session tokens issued by the authenticated API and
+// forwards them to a VNC server on loopback; port 5900 is never selected from
+// request input. Mount the HTTPS server and its optional loopback HTTP mirror.
+remoteDesktopBroker.mountWebSocket(httpServer);
+remoteDesktopBroker.mountWebSocket(localHttpServer);
 
 // Auth gate for Socket.IO — when settings.secrets.auth.enabled is true the
 // handshake must carry a valid token cookie or Authorization: Bearer header
@@ -236,6 +246,11 @@ app.use(authGate);
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use(express.urlencoded({ limit: JSON_BODY_LIMIT, extended: true }));
 
+// The viewer and vendored noVNC modules are outside /api so WKWebView can load
+// them without persisting the user's PortOS password. The viewer URL itself is
+// gated by the one-purpose session token created below.
+app.use('/remote-desktop', remoteDesktopViewerRoutes);
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/alerts', alertsRoutes);
@@ -243,6 +258,7 @@ app.use('/api/avatar', avatarRoutes);
 app.use('/api/system', systemHealthRoutes);
 app.use('/api/system/capabilities', systemCapabilitiesRoutes);
 app.use('/api/system-resources', systemResourcesRoutes);
+app.use('/api/remote-desktop', remoteDesktopRoutes);
 app.use('/api/capabilities', capabilitiesRoutes);
 app.use('/api/agent-context', agentContextMcpRoutes);
 app.use('/api/apps', appsRoutes);

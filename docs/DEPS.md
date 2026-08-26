@@ -22,6 +22,7 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | **Root devDeps** | | | | |
 | `pm2` | 1 | KEEP | top-level scripts | Process manager, foundational. Pinned `7.0.3` (aligned with server pin) |
 | **Server deps** | | | | |
+| `@novnc/novnc` | 1 | KEEP | PortDeck remote desktop viewer | Mature RFB/VNC protocol implementation; replacing it would require owning multiple security types and framebuffer encodings |
 | `@googleapis/calendar` | 1 | KEEP | Calendar integration | Scoped official Google SDK (replaced monolithic `googleapis`) |
 | `@googleapis/gmail` | 1 | KEEP | Messages/Gmail integration | Scoped official Google SDK |
 | `express` | 1 | KEEP | `server/index.js` + routes | Framework |
@@ -35,6 +36,7 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | `socket.io` | 1 | KEEP | realtime | Foundational |
 | `socket.io-client` | 1 | KEEP | server-to-client | Paired with socket.io |
 | `undici` | 1 | KEEP | HTTP client | Node core team project |
+| `ws` | 1 | KEEP | remote desktop + browser WebSockets | Foundational WebSocket transport; also used transitively by Socket.IO |
 | `zod` | 1 | KEEP | input validation | Widely-audited |
 | **Server devDeps** | | | | |
 | `vitest` | 1 | KEEP | test runner | |
