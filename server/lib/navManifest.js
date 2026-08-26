@@ -21,7 +21,7 @@ import { PORTOS_APP_ID } from './appIdentity.js';
 // memory quarter") can warp straight into the world. The list is duplicated rather than
 // imported because a server lib can't reach into client code; navManifest.test.js scrapes
 // the registry and fails on drift in the paths, the labels, AND the aliases.
-// Written as [id, label, aliases] tuples so the axis that varies is the only thing repeated.
+// Written as [id, label, aliases, feature?] tuples so the axis that varies is the only thing repeated.
 //
 // Aliases are authored in the human phrasing the fast-travel search box uses ("memory
 // quarter") and registered KEBAB-CASED, because resolveNavCommand normalizes its input to
@@ -38,18 +38,19 @@ const OPEN_WORLD_REGION_COMMANDS = [
   ['productivity', 'Productivity Terrace', ['productivity terrace', 'productivity', 'streak district']],
   ['backup-vault', 'Backup Vault', ['backup vault', 'the vault']],
   ['memory', 'Memory Quarter', ['memory quarter', 'memory district', 'knowledge district']],
-  ['sprint-yard', 'Sprint Yard', ['sprint yard', 'jira yard', 'sprint district']],
+  ['sprint-yard', 'Sprint Yard', ['sprint yard', 'jira yard', 'sprint district'], 'jira'],
   ['voice', 'Voice Beacon', ['voice beacon', 'the beacon']],
   ['goals', 'Goal Monuments', ['goal monuments', 'monuments', 'goals district']],
   ['artifacts', 'Hall of Achievements', ['hall of achievements', 'artifact hall', 'achievements hall']],
   ['data-harbor', 'Data Harbor', ['data harbor', 'the harbor', 'piers']],
-].map(([id, label, aliases]) => ({
+].map(([id, label, aliases, feature]) => ({
   id: `nav.openworld.region.${id}`,
   path: `/openworld/region/${id}`,
   label,
   section: 'Main',
   aliases: aliases.map((a) => a.replace(/\s+/g, '-')),
   keywords: ['openworld', 'fast travel', 'warp', 'region', 'teleport'],
+  ...(feature ? { feature } : {}),
 }));
 
 // Sections whose every page belongs to one optional instance feature, so a page

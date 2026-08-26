@@ -85,6 +85,32 @@ describe('useInstanceFeatures', () => {
     expect(screen.getByTestId('a')).toHaveTextContent('on');
   });
 
+  it('starts a fresh shared read after a legacy invalidation during an in-flight read', async () => {
+    const stale = deferred();
+    const fresh = deferred();
+    mock.getInstanceFeatures
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise);
+    render(<Probe />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, { detail: { featureId: 'jira' } }));
+    });
+    expect(mock.getInstanceFeatures).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      fresh.resolve({ features: JIRA_ON });
+      await fresh.promise;
+    });
+    expect(screen.getByTestId('a')).toHaveTextContent('on');
+
+    await act(async () => {
+      stale.resolve({ features: JIRA_OFF });
+      await stale.promise;
+    });
+    expect(screen.getByTestId('a')).toHaveTextContent('on');
+  });
+
   it('fails open so a failed fetch never blanks navigation', async () => {
     mock.getInstanceFeatures.mockRejectedValue(new Error('offline'));
     render(<Probe />);
