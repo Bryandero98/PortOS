@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdtemp, readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createProviderStatusService, usableFallbackModel } from './providerStatus.js';
@@ -122,6 +122,34 @@ describe('Provider Status Service', () => {
       const status = await svc.markUsageLimit('p', { message: 'limit' });
       expect(benchMs(status)).toBe(5 * 60 * 60 * 1000); // capped to 5h
     });
+
+    it('uses a short provider window without extending the usage-limit probe interval', async () => {
+      const observedAt = new Date().toISOString();
+      const short = await statusService.markUsageLimit('short-window', {
+        rateLimitWindow: { observedAt, retryAfterMs: 250 },
+      });
+      const long = await statusService.markUsageLimit('long-window', {
+        rateLimitWindow: { observedAt, retryAfterMs: 60_000 },
+      });
+
+      expect(benchMs(short)).toBe(1000);
+      expect(benchMs(long)).toBe(1000);
+    });
+
+    it('does not apply the rate-limit maximum to a headerless usage-limit cooldown', async () => {
+      const svc = createProviderStatusService({
+        dataDir: TEST_DATA_DIR,
+        statusFile: 'ps-independent-caps.json',
+        defaultUsageLimitWait: 4000,
+        maxUsageLimitWait: 5000,
+        maxRateLimitWait: 1000,
+      });
+      await svc.init();
+      expect(benchMs(await svc.markUsageLimit('p'))).toBe(4000);
+      expect(benchMs(await svc.markUsageLimit('with-window', {
+        rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 4000 },
+      }))).toBe(4000);
+    });
   });
 
   describe('markUnavailable (generic)', () => {
@@ -202,6 +230,88 @@ describe('Provider Status Service', () => {
       expect(status.available).toBe(false);
       expect(status.reason).toBe('rate-limit');
       expect(status.message).toBe('Rate limit exceeded - temporary');
+    });
+
+    it('uses a bounded provider window for cooldown and persists only normalized metadata', async () => {
+      const observedAt = new Date().toISOString();
+      const status = await statusService.markRateLimited('test-provider', {
+        rateLimitWindow: {
+          observedAt,
+          retryAfterMs: 250,
+          remaining: 0,
+          limit: 100,
+          secret: 'must-not-persist',
+        },
+      });
+
+      const cooldown = new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime();
+      expect(cooldown).toBe(500);
+      expect(status.rateLimitWindow).toEqual({ observedAt, retryAfterMs: 250, remaining: 0, limit: 100 });
+      expect(JSON.stringify(status)).not.toContain('must-not-persist');
+    });
+
+    it('never lets a provider-stated cooldown exceed the short default probe', async () => {
+      const svc = createProviderStatusService({
+        dataDir: TEST_DATA_DIR,
+        statusFile: 'ps-rate-cap.json',
+        defaultRateLimitWait: 500,
+        maxRateLimitWait: 2000,
+      });
+      await svc.init();
+      const status = await svc.markRateLimited('p', {
+        rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 10000 },
+      });
+      expect(new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime()).toBe(500);
+    });
+
+    it('ignores an invalid window when selecting the cooldown', async () => {
+      const observedAt = new Date(Date.now() - (6 * 60 * 60 * 1000)).toISOString();
+      const status = await statusService.markRateLimited('test-provider', {
+        rateLimitWindow: { observedAt, retryAfterMs: 1 },
+      });
+      expect(new Date(status.estimatedRecovery).getTime() - new Date(status.unavailableSince).getTime()).toBe(500);
+      expect(status.rateLimitWindow).toBeUndefined();
+    });
+
+    it('clears rate-limit telemetry after a successful API request', async () => {
+      await statusService.markRateLimited('test-provider', {
+        rateLimitWindow: { observedAt: new Date().toISOString(), retryAfterMs: 500 },
+      });
+      const status = await statusService.markApiSuccess('test-provider');
+      expect(status).toMatchObject({ available: true, reason: 'ok' });
+      expect(status.rateLimitWindow).toBeUndefined();
+    });
+
+    it('sanitizes windows before persistence and socket emission', async () => {
+      const handler = vi.fn();
+      statusService.events.on('status:changed', handler);
+      const observedAt = new Date().toISOString();
+      await statusService.markUnavailable('test-provider', {
+        reason: 'network-error',
+        waitTimeMs: 30000,
+        extras: { rateLimitWindow: { observedAt, remaining: 2, secret: 'hidden' } },
+      });
+
+      const persisted = await readFile(join(TEST_DATA_DIR, 'provider-status.json'), 'utf8');
+      expect(persisted).not.toContain('hidden');
+      expect(JSON.stringify(handler.mock.calls)).not.toContain('hidden');
+      expect(statusService.getStatus('test-provider').rateLimitWindow).toEqual({ observedAt, remaining: 2 });
+    });
+
+    it('ages stale windows out of public status', async () => {
+      const observedAt = new Date(Date.now() - (6 * 60 * 60 * 1000)).toISOString();
+      await statusService.markUnavailable('test-provider', {
+        reason: 'network-error',
+        waitTimeMs: 30000,
+        extras: { rateLimitWindow: { observedAt, remaining: 2, secret: 'hidden' } },
+      });
+      expect(statusService.getStatus('test-provider').rateLimitWindow).toBeUndefined();
+      expect(JSON.stringify(statusService.getAllStatuses())).not.toContain('hidden');
+    });
+
+    it('clears a usage-limit bench after a successful API request', async () => {
+      await statusService.markUsageLimit('test-provider', { message: 'quota' });
+      expect(await statusService.markApiSuccess('test-provider')).toMatchObject({ available: true, reason: 'ok' });
     });
   });
 

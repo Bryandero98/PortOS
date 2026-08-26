@@ -61,6 +61,7 @@ export function createProviderStatusService(config = {}) {
     defaultUsageLimitWait = 10 * 60 * 1000,
     maxUsageLimitWait = 5 * 60 * 60 * 1000,
     defaultRateLimitWait = 5 * 60 * 1000,
+    maxRateLimitWait = 5 * 60 * 60 * 1000,
     onStatusChange = null,
     // Host-supplied `(provider, providers) => boolean` answering "can this
     // provider run at all right now?" — its CLI binary present, its credential
@@ -100,6 +101,7 @@ export function createProviderStatusService(config = {}) {
     providers: {},
     lastUpdated: null
   };
+  let statusWriteTail = Promise.resolve();
 
   async function loadStatus() {
     if (!existsSync(STATUS_PATH)) {
@@ -112,8 +114,11 @@ export function createProviderStatusService(config = {}) {
 
   async function saveStatus(status) {
     status.lastUpdated = new Date().toISOString();
-    await atomicWrite(STATUS_PATH, status);
     statusCache = status;
+    const snapshot = JSON.parse(JSON.stringify(status));
+    const write = statusWriteTail.then(() => atomicWrite(STATUS_PATH, snapshot));
+    statusWriteTail = write.catch(() => {});
+    await write;
   }
 
   function parseWaitTime(waitTimeStr) {
@@ -148,8 +153,46 @@ export function createProviderStatusService(config = {}) {
     return parts.join(' ') || '< 1m';
   }
 
+  function rateLimitDelay(window) {
+    if (!window) return null;
+    if (Number.isFinite(window.retryAfterMs) && window.retryAfterMs >= 0) return window.retryAfterMs;
+    if (window.resetAt) {
+      const delay = new Date(window.resetAt).getTime() - Date.now();
+      if (Number.isFinite(delay) && delay >= 0) return delay;
+    }
+    return null;
+  }
+
+  function sanitizedRateLimitWindow(window) {
+    if (!window || typeof window !== 'object') return null;
+    const observed = new Date(window.observedAt).getTime();
+    const maxWindowWait = Math.max(maxRateLimitWait, maxUsageLimitWait);
+    if (!Number.isFinite(observed) || Date.now() - observed > maxWindowWait) return null;
+    const clean = { observedAt: new Date(observed).toISOString() };
+    if (Number.isSafeInteger(window.retryAfterMs) && window.retryAfterMs >= 0) clean.retryAfterMs = Math.min(window.retryAfterMs, maxWindowWait);
+    const reset = new Date(window.resetAt).getTime();
+    if (Number.isFinite(reset) && reset >= observed) clean.resetAt = new Date(Math.min(reset, observed + maxWindowWait)).toISOString();
+    if (Number.isSafeInteger(window.remaining) && window.remaining >= 0 && window.remaining <= 1_000_000_000) clean.remaining = window.remaining;
+    if (Number.isSafeInteger(window.limit) && window.limit >= 0 && window.limit <= 1_000_000_000) clean.limit = window.limit;
+    return Object.keys(clean).length > 1 ? clean : null;
+  }
+
+  function presentStatus(status) {
+    if (!status) return status;
+    const rateLimitWindow = sanitizedRateLimitWindow(status.rateLimitWindow);
+    const { rateLimitWindow: _storedWindow, ...rest } = status;
+    return rateLimitWindow ? { ...rest, rateLimitWindow } : rest;
+  }
+
+  function sanitizedExtras(extras) {
+    if (!extras || typeof extras !== 'object') return {};
+    const { rateLimitWindow, ...rest } = extras;
+    const cleanWindow = sanitizedRateLimitWindow(rateLimitWindow);
+    return cleanWindow ? { ...rest, rateLimitWindow: cleanWindow } : rest;
+  }
+
   function emitStatusChange(providerId, status, type) {
-    const eventData = { providerId, status, type };
+    const eventData = { providerId, status: presentStatus(status), type };
     events.emit('status:changed', eventData);
     onStatusChange?.(eventData);
   }
@@ -163,6 +206,10 @@ export function createProviderStatusService(config = {}) {
       const now = Date.now();
       let changed = false;
       for (const [providerId, status] of Object.entries(statusCache.providers)) {
+        if (status.rateLimitWindow && !sanitizedRateLimitWindow(status.rateLimitWindow)) {
+          delete status.rateLimitWindow;
+          changed = true;
+        }
         if (status.estimatedRecovery) {
           const recoveryTime = new Date(status.estimatedRecovery).getTime();
           if (now > recoveryTime) {
@@ -206,7 +253,7 @@ export function createProviderStatusService(config = {}) {
           lastChecked: new Date().toISOString()
         };
       }
-      return status;
+      return presentStatus(status);
     },
 
     getAllStatuses() {
@@ -224,7 +271,7 @@ export function createProviderStatusService(config = {}) {
             lastChecked: new Date().toISOString()
           };
         } else {
-          providers[id] = status;
+          providers[id] = presentStatus(status);
         }
       }
       return { ...statusCache, providers };
@@ -267,7 +314,7 @@ export function createProviderStatusService(config = {}) {
         estimatedRecovery,
         failureCount,
         lastChecked: now.toISOString(),
-        ...(extras && typeof extras === 'object' ? extras : {})
+        ...sanitizedExtras(extras)
       };
 
       await saveStatus(statusCache);
@@ -283,8 +330,15 @@ export function createProviderStatusService(config = {}) {
       // exceed the 5h reset-window ceiling. This keeps a "resets in 21h" estimate
       // from sidelining the primary for a day — it retries in 10m and re-benches
       // if still limited. The parsed value is still surfaced for DISPLAY.
+      const rateLimitWindow = sanitizedRateLimitWindow(errorInfo.rateLimitWindow);
+      const headerDelay = rateLimitDelay(rateLimitWindow);
+      const boundedHeaderDelay = headerDelay == null
+        ? null
+        : Math.min(Math.max(1000, headerDelay), maxUsageLimitWait);
       const parsed = parseWaitTime(errorInfo.waitTime);
       const benchMs = Math.min(
+        defaultUsageLimitWait,
+        boundedHeaderDelay ?? defaultUsageLimitWait,
         parsed && parsed < defaultUsageLimitWait ? parsed : defaultUsageLimitWait,
         maxUsageLimitWait,
       );
@@ -295,16 +349,32 @@ export function createProviderStatusService(config = {}) {
         // `waitTime` is a usage-limit-only display string ("resets 5pm") —
         // pass via extras so it's part of the SAME persisted record and
         // status:changed event, not a follow-up second write.
-        extras: errorInfo.waitTime ? { waitTime: errorInfo.waitTime } : null
+        extras: {
+          ...(errorInfo.waitTime ? { waitTime: errorInfo.waitTime } : {}),
+          ...(rateLimitWindow ? { rateLimitWindow } : {}),
+        }
       });
     },
 
-    async markRateLimited(providerId) {
+    async markRateLimited(providerId, errorInfo = {}) {
+      const rateLimitWindow = sanitizedRateLimitWindow(errorInfo.rateLimitWindow);
+      const headerDelay = rateLimitDelay(rateLimitWindow);
       return this.markUnavailable(providerId, {
         reason: 'rate-limit',
         message: 'Rate limit exceeded - temporary',
-        waitTimeMs: defaultRateLimitWait
+        waitTimeMs: Math.min(
+          headerDelay == null ? defaultRateLimitWait : Math.max(1000, headerDelay),
+          defaultRateLimitWait,
+          maxRateLimitWait,
+        ),
+        extras: rateLimitWindow ? { rateLimitWindow } : null,
       });
+    },
+
+    async markApiSuccess(providerId) {
+      const status = statusCache.providers[providerId];
+      if (!['rate-limit', 'usage-limit'].includes(status?.reason)) return status || null;
+      return this.markAvailable(providerId);
     },
 
     async markAvailable(providerId) {
