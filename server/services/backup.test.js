@@ -1287,7 +1287,7 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
     });
 
     it('echoes the subdirFilter back in the result', async () => {
-      await expect(runRestore('/dest', 'snap-1', { subdirFilter: 'brain' }))
+      await expect(runRestore('/dest', 'snap-1', { dryRun: true, subdirFilter: 'brain' }))
         .resolves.toMatchObject({ subdirFilter: 'brain' });
     });
   });
