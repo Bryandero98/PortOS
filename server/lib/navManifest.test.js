@@ -165,11 +165,12 @@ describe('nav contract — instance-feature gating', () => {
     }
   });
 
-  it('gates the DataDog and JIRA Dev Tools pages', () => {
+  it('gates the DataDog, JIRA, and GSD feature pages', () => {
     const byId = Object.fromEntries(NAV_COMMANDS.map((c) => [c.id, c.feature]));
     expect(byId['nav.devtools.datadog']).toBe('datadog');
     expect(byId['nav.devtools.jira']).toBe('jira');
     expect(byId['nav.devtools.jira-reports']).toBe('jira');
+    expect(byId['nav.cos.gsd']).toBe('gsd');
   });
 
   it('leaves ungated pages untagged', () => {

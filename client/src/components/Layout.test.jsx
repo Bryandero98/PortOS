@@ -52,13 +52,14 @@ vi.mock('../services/socket', () => ({
 
 // --- API: every sidebar fetch resolves empty so the dynamic sections stay bare
 //     and the single rows are the only top-level leaves under test. ---
-// Instance features gate sidebar rows (POST / DataDog / JIRA). Default every
+// Instance features gate sidebar rows (POST / DataDog / JIRA / GSD). Default every
 // feature ON so these tests see the full sidebar; the gating itself is covered
 // by 'Layout — instance feature gating' below.
 const allFeaturesOn = () => [
   { id: 'post', label: 'POST', enabled: true },
   { id: 'datadog', label: 'DataDog', enabled: true },
   { id: 'jira', label: 'JIRA', enabled: true },
+  { id: 'gsd', label: 'GSD', enabled: true },
 ];
 const featureMock = vi.hoisted(() => ({ features: null }));
 
@@ -195,6 +196,12 @@ describe('Layout — instance feature gating', () => {
     // Ungated Dev Tools rows and the POST section stay put.
     expect(screen.getByRole('link', { name: 'Flows' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'POST' })).toBeTruthy();
+  });
+
+  it('shows Settings > Features in the primary navigation', async () => {
+    await renderLayout('/settings/features');
+
+    expect(screen.getByRole('link', { name: 'Features' })).toHaveAttribute('href', '/settings/features');
   });
 
   it('drops the whole POST section when POST is off', async () => {
