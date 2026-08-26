@@ -10,16 +10,20 @@ import { readdir } from 'fs/promises';
 import { join, relative } from 'path';
 import { safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { TASK_DATA_INPUT_DEFINITIONS } from '../lib/taskDataInputCatalog.js';
-import { withGlabJson } from '../lib/glabArgs.js';
-import { resolveForgeForRepo } from './git.js';
-import { runCli } from './layeredIntelligence/runCli.js';
+import { githubApiHost, resolveAppWorkTracker } from '../lib/workTracker.js';
+import { resolveForgeTokenEnv } from './git.js';
+import { execGh } from './github.js';
+import { execGlabJson } from './gitlab.js';
 
 const MAX_DOCUMENT_FILES = 3;
 const MAX_DOCUMENT_CHARS = 8_000;
 const MAX_LIST_ITEMS = 50;
 const MAX_INPUT_CHARS = 12_000;
 const MAX_TOTAL_CHARS = 40_000;
+const FORGE_TIMEOUT_MS = 30_000;
+const TOKEN_TIMEOUT_MS = 10_000;
 const SEARCH_MAX_DEPTH = 4;
+const TRUNCATION_NOTICE = '\n\n[Preload truncated. Read this source directly if the omitted detail is needed.]';
 const SKIP_DIRECTORIES = new Set([
   '.git', '.idea', '.next', '.turbo', '.venv', '.vscode',
   'build', 'coverage', 'dist', 'node_modules', 'vendor', 'data'
@@ -51,9 +55,11 @@ async function findNamedFiles(root, filename, {
       const path = join(directory, entry.name);
       if (entry.isFile() && entry.name.toLowerCase() === target) {
         const content = await readFile(path);
-        if (typeof content === 'string') {
-          matches.push({ path: relative(root, path) || entry.name, content: content.slice(0, MAX_DOCUMENT_CHARS) });
-        }
+        matches.push({
+          path: relative(root, path) || entry.name,
+          content: typeof content === 'string' ? content : null,
+          unreadable: typeof content !== 'string',
+        });
       } else if (entry.isDirectory() && !SKIP_DIRECTORIES.has(entry.name)) {
         await walk(path, depth + 1);
       }
@@ -64,9 +70,21 @@ async function findNamedFiles(root, filename, {
   return matches;
 }
 
+function truncateWithNotice(value, maxChars) {
+  if (value.length <= maxChars) return value;
+  const keep = Math.max(0, maxChars - TRUNCATION_NOTICE.length);
+  return `${value.slice(0, keep)}${TRUNCATION_NOTICE}`;
+}
+
 export function renderRepositoryDocuments(filename, documents) {
   if (!documents.length) return `No ${filename} file was found within the repository search boundary.`;
-  return documents.map(({ path, content }) => `#### ${path}\n\n${content}`).join('\n\n').slice(0, MAX_INPUT_CHARS);
+  const rendered = documents.map(({ path, content, unreadable }) => {
+    const body = unreadable
+      ? 'This file was found but could not be preloaded (source read failed). Read it directly before relying on this section.'
+      : truncateWithNotice(content, MAX_DOCUMENT_CHARS);
+    return `#### ${path}\n\n${body}`;
+  }).join('\n\n');
+  return truncateWithNotice(rendered, MAX_INPUT_CHARS);
 }
 
 function normalizeLabels(labels) {
@@ -91,19 +109,31 @@ export function renderForgeItems(items, { emptyMessage }) {
     const url = item.url || item.web_url;
     return `- ${ref}${String(item.title || '').trim()}${details ? ` (${details})` : ''}${url ? ` — ${url}` : ''}`;
   });
-  if (items.length > shown.length) lines.push(`- ${items.length - shown.length} additional item(s) omitted.`);
-  return lines.join('\n').slice(0, MAX_INPUT_CHARS);
+  if (items.length > shown.length) lines.push(`- ${items.length - shown.length} additional item(s) omitted; query the forge if they are needed.`);
+  return truncateWithNotice(lines.join('\n'), MAX_INPUT_CHARS);
 }
 
-export async function listForgeOpenIssues({ cli, cwd, env, exec = runCli } = {}) {
+async function runForgeCli(cli, args, { cwd, env } = {}) {
+  if (cli === 'gh') {
+    const stdout = await execGh(args, FORGE_TIMEOUT_MS, { cwd, env }).catch(() => null);
+    return stdout === null ? { code: -1, stdout: '' } : { code: 0, stdout };
+  }
+  if (cli === 'glab') {
+    const { rows } = await execGlabJson(args, cwd, FORGE_TIMEOUT_MS);
+    return rows === null ? { code: -1, stdout: '' } : { code: 0, stdout: JSON.stringify(rows) };
+  }
+  return { code: -1, stdout: '' };
+}
+
+export async function listForgeOpenIssues({ cli, cwd, env, exec = runForgeCli } = {}) {
   if (!cwd || (cli !== 'gh' && cli !== 'glab')) return { ok: false, issues: [] };
   const args = cli === 'glab'
-    ? withGlabJson(['issue', 'list', '-P', '100'])
+    ? ['issue', 'list', '-P', '100']
     : ['issue', 'list', '--state', 'open', '--limit', '100', '--json', 'number,title,state,url,labels'];
   const result = await exec(cli, args, { cwd, env });
-  if (result.code !== 0) return { ok: false, issues: [] };
+  if (result.code !== 0 || !result.stdout.trim()) return { ok: false, issues: [] };
   const parsed = safeJSONParse(result.stdout, null, { logError: false });
-  if (!Array.isArray(parsed)) return result.stdout.trim() ? { ok: false, issues: [] } : { ok: true, issues: [] };
+  if (!Array.isArray(parsed)) return { ok: false, issues: [] };
   return {
     ok: true,
     issues: parsed
@@ -118,11 +148,11 @@ export async function listForgeOpenIssues({ cli, cwd, env, exec = runCli } = {})
   };
 }
 
-export async function listForgePullRequests({ cli, cwd, env, state = 'open', exec = runCli } = {}) {
+export async function listForgePullRequests({ cli, cwd, env, state = 'open', exec = runForgeCli } = {}) {
   if (!cwd || (cli !== 'gh' && cli !== 'glab')) return { ok: false, items: [] };
   const closed = state === 'closed-unmerged';
   const args = cli === 'glab'
-    ? withGlabJson(['mr', 'list', closed ? '--closed' : '--opened', '-P', closed ? '20' : '100'])
+    ? ['mr', 'list', closed ? '--closed' : '--opened', '-P', closed ? '20' : '100']
     : [
         'pr', 'list', '--state', closed ? 'closed' : 'open',
         ...(closed ? ['--search', 'is:unmerged'] : []),
@@ -130,9 +160,9 @@ export async function listForgePullRequests({ cli, cwd, env, state = 'open', exe
         '--json', 'number,title,author,url,isDraft,headRefName,baseRefName,labels,closedAt'
       ];
   const result = await exec(cli, args, { cwd, env });
-  if (result.code !== 0) return { ok: false, items: [] };
+  if (result.code !== 0 || !result.stdout.trim()) return { ok: false, items: [] };
   const parsed = safeJSONParse(result.stdout, null, { logError: false });
-  if (!Array.isArray(parsed)) return result.stdout.trim() ? { ok: false, items: [] } : { ok: true, items: [] };
+  if (!Array.isArray(parsed)) return { ok: false, items: [] };
   // GitLab's --closed excludes merged MRs on current glab versions. Keep the
   // explicit filter as a compatibility guard if a version returns both.
   const items = closed
@@ -145,10 +175,23 @@ function unavailableMessage(label, reason = 'source read failed') {
   return `${label} could not be preloaded (${reason}). Do not interpret this as an empty source.`;
 }
 
-async function resolveForgeContext(app, resolveForge) {
+async function resolveForgeContext(app, deps) {
   if (!app?.repoPath) return null;
-  const forge = await resolveForge(app.repoPath);
-  return forge?.cli === 'gh' || forge?.cli === 'glab' ? forge : null;
+  const tracker = await deps.resolveTracker(app);
+  if (tracker?.forge !== 'gh' && tracker?.forge !== 'glab') return null;
+
+  const env = { ...deps.environment };
+  if (tracker.forge === 'gh') {
+    // A github.com token must never be forwarded to an arbitrary GHES host.
+    // Enterprise hosts use gh's host-scoped credential store instead.
+    if (githubApiHost(tracker.host) === 'github.com') {
+      Object.assign(env, await deps.resolveTokenEnv(app.repoPath, { timeoutMs: TOKEN_TIMEOUT_MS }));
+    } else {
+      delete env.GH_TOKEN;
+      delete env.GITHUB_TOKEN;
+    }
+  }
+  return { cli: tracker.forge, env, host: tracker.host };
 }
 
 const INPUT_LOADERS = {
@@ -188,14 +231,16 @@ export async function resolveTaskDataInputs(inputIds, { app, dependencies = {} }
   const definitions = new Map(TASK_DATA_INPUT_DEFINITIONS.map((definition) => [definition.id, definition]));
   const deps = {
     findFiles: findNamedFiles,
-    resolveForge: resolveForgeForRepo,
+    resolveTracker: resolveAppWorkTracker,
+    resolveTokenEnv: resolveForgeTokenEnv,
     listIssues: listForgeOpenIssues,
     listPullRequests: listForgePullRequests,
+    environment: process.env,
     ...dependencies,
   };
   const needsForge = selected.some((id) => id.includes('issues') || id.includes('pull-requests'));
   const forge = needsForge
-    ? await resolveForgeContext(app, deps.resolveForge).catch(() => null)
+    ? await resolveForgeContext(app, deps).catch(() => null)
     : null;
 
   const sections = await Promise.all(selected.map(async (id) => {
@@ -210,9 +255,11 @@ export async function resolveTaskDataInputs(inputIds, { app, dependencies = {} }
 
 export function appendTaskDataInputs(prompt, sections) {
   if (!Array.isArray(sections) || sections.length === 0) return prompt;
+  const headingChars = sections.reduce((total, { label }) => total + `### ${label}\n\n`.length, 0);
+  const separatorChars = Math.max(0, sections.length - 1) * 2;
+  const perSectionChars = Math.max(256, Math.floor((MAX_TOTAL_CHARS - headingChars - separatorChars) / sections.length));
   const rendered = sections
-    .map(({ label, content }) => `### ${label}\n\n${content}`)
-    .join('\n\n')
-    .slice(0, MAX_TOTAL_CHARS);
-  return `${prompt}\n\n---\n\n## Preloaded task data\n\nPortOS collected these configured inputs immediately before this task was queued. Treat them as the current snapshot; do not spend tools or tokens fetching the same data again unless a section says it could not be preloaded or the task requires deeper detail.\n\n${rendered}`;
+    .map(({ label, content }) => `### ${label}\n\n${truncateWithNotice(content, perSectionChars)}`)
+    .join('\n\n');
+  return `${prompt}\n\n---\n\n## Preloaded task data\n\nPortOS collected these configured inputs immediately before this task was queued. Treat them as the current snapshot; do not spend tools or tokens fetching the same data again unless a section says it could not be preloaded, was truncated, or the task requires deeper detail.\n\n${rendered}`;
 }

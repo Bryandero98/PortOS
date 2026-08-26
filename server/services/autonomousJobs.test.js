@@ -194,6 +194,16 @@ describe('autonomousJobs', () => {
       })
       expect(task.id).toContain(job.id)
       expect(task.description).toBeTruthy()
+      expect(task.metadata.prompt).toBe('Do the test thing')
+    })
+
+    it('stores a multiline generated body in metadata.prompt and keeps the row summary one-line', async () => {
+      const task = await generateTaskFromJob({
+        ...mockJobsData.jobs[0],
+        promptTemplate: 'Review the app\n\n## Context\nUse the configured inputs.',
+      })
+      expect(task.description).toBe('Review the app')
+      expect(task.metadata.prompt).toBe('Review the app\n\n## Context\nUse the configured inputs.')
     })
 
     it('autoApprove true when autonomyLevel is yolo', async () => {

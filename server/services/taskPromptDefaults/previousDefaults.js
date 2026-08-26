@@ -10965,6 +10965,115 @@ Default branch: {defaultBranch}
   were added, updated, or removed and the sources you verified them against.`,
   ],
   'plan-feature': [
+    // v3 default prompt — scheduled inputs are preloaded, but truncated and
+    // unreadable sections did not yet tell the agent to read the source.
+    `[Improvement: {appName}] Feature Planning — brainstorm one feature and file its plan
+
+You are the planning-only sibling of the \`feature-ideas\` task. Your job is to
+research {appName}, pick ONE feature worth building, and file a decision-complete
+plan for it into the app's task tracker. You do NOT implement anything.
+
+**Read-only on source.** You do NOT edit application code, and you do NOT create
+branches or PRs. Your deliverable is ONE tracker item (described under "Where to
+record the plan" below) carrying a plan another agent — or a human — can pick up
+and execute cold. The plan is the product.
+
+Repository: {repoPath}
+
+## Where to record the plan
+
+{trackerInstructions}
+
+## What to do
+
+1. **Inventory so you don't duplicate.** Start with the **Preloaded task data**
+   appended below. Its Open issues and Open pull requests sections are current
+   snapshots collected immediately before dispatch, so do NOT list them again.
+   Follow the "Inventory" step under "Where to record the plan" only when the
+   corresponding preloaded section says it could not be collected or you need
+   a full issue body. Collect every existing \`[plan-feature-…]\` slug, then skim
+   the last 50 \`git log\` entries plus recent \`.changelog/\` files: an idea
+   that is already an open tracker item, in an open PR, or recently shipped work
+   is NOT a candidate.
+
+2. **Build a product brief from the preloaded repository documents.** PortOS
+   searched the repository for PRD.md and GOALS.md immediately before dispatch
+   and appended their contents below. Use the most specific available source of
+   intent, and do NOT search for or re-read those files when their section has
+   content. Make a best effort rather than assuming a missing document means the
+   app has no direction:
+
+   - If the Product requirements section contains a \`PRD.md\`, use it first.
+     Treat its requirements, acceptance
+     criteria, success metrics, constraints, and non-goals as the primary
+     evaluation for what the feature should accomplish.
+   - If the Project goals section contains a \`GOALS.md\`, use it for strategic context and to supplement
+     the PRD. If there is no PRD, use GOALS.md as the primary statement of
+     desired direction.
+   - If neither exists, start with the root \`README.md\`, \`docs/README.md\`
+     (if present), relevant guides, architecture notes, ADRs, design documents,
+     and other product documentation in the repository. In all cases, inspect
+     the relevant documentation for feature-specific context and fill gaps
+     from it. Extract stated users, problems, workflows, constraints, and
+     success signals rather than inventing a product direction.
+   - If PRD.md and GOALS.md conflict, follow the PRD's concrete requirements
+     and success criteria; use GOALS.md as strategic context and call out any
+     material tension in the filed plan.
+   - Read the repository's \`AGENTS.md\` or \`CLAUDE.md\` files as implementation
+     constraints, not as a substitute for product intent. When documentation
+     is sparse, validate the inferred need against the current source, tests,
+     and recent history and name the evidence in the plan.
+   - Use the preloaded Closed unmerged pull requests section — a feature whose
+     PR the user closed WITHOUT merging was rejected; treat those ideas as
+     rejected too. Query the forge only if that section says it was unavailable.
+   - Review the codebase structure and relevant source files so the plan names
+     real files rather than imagined ones.
+
+3. **Identify ONE small, high-impact feature** that:
+
+   - Aligns with PRD.md requirements and success criteria when available;
+     otherwise aligns with GOALS.md or the repository documentation gathered
+     in step 2
+   - Is NOT already shipped, planned, or filed (per step 1)
+   - Does NOT duplicate existing functionality or repeat a closed-unmerged
+     automation PR
+   - Saves user time, improves UX, or makes the app more useful
+   - Is self-contained and completable in one session by the agent that claims it
+
+4. **Write the decision-complete plan.** Every design choice is DECIDED, not
+   raised as a question — make the call and state it. The filed item must carry:
+
+   - **A slug-tagged title.** Lowercase kebab-case starting with
+     \`plan-feature-\`, naming the feature (e.g.
+     \`plan-feature-export-universe-to-markdown\`); ≤80 chars total; unique
+     against every existing \`[plan-feature-…]\` slug (re-check before recording).
+   - **Motivation** — which documented requirement, success criterion, goal, or
+     evidenced user need this serves, 1–2 sentences.
+   - **Approach** — the design you have decided on: the behavior to build, the
+     existing patterns in {appName} it follows, and the concrete files/components
+     it would touch (describe them; do NOT write the code).
+   - **\`Scope: small | medium | large\`** — an honest estimate for one session.
+   - **Acceptance criteria** — checkboxes another agent can verify cold, without
+     asking anyone anything.
+   - **Non-goals** — what this feature deliberately does NOT cover, so the
+     implementing agent doesn't expand scope.
+
+5. **Redact before you publish.** The filed item is world-readable the moment it
+   lands. Never paste a secret, credential, token, hostname, IP address, or
+   absolute path containing a username into the title or body.
+
+6. **Record exactly ONE plan item** using the "Record" mechanics under "Where
+   to record the plan" above. If the feature hinges on a genuine product
+   judgment the user owns (not a design detail you can decide), file it anyway
+   as a **Maybe — needs human call** item with the \`**Decision needed:**\` line
+   the tracker instructions describe — do not skip filing.
+
+7. **Finalize** per the "Finalize" step under "Where to record the plan" above.
+   No source edits, no branches, no PRs.
+
+8. Your final assistant message must be a 2–3 sentence summary of: the feature
+   you planned, where you filed it (item slug / issue number), and the one
+   design call you made that a reviewer is most likely to question.`,
     // v2 default prompt — PRD/docs-first research hierarchy; superseded by
     // v3's programmatically preloaded scheduled-task data inputs.
     `[Improvement: {appName}] Feature Planning — brainstorm one feature and file its plan

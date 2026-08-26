@@ -503,7 +503,8 @@ describe('CoS Job Routes', () => {
           simplify: false,
           provider: 'anthropic',
           model: 'claude-opus-4-8',
-          effort: 'high'
+          effort: 'high',
+          prompt: 'Review\n\n## Preloaded task data\nSnapshot'
         }
       });
       cos.addTask.mockResolvedValue({ id: 'task-2' });
@@ -521,6 +522,7 @@ describe('CoS Job Routes', () => {
           provider: 'anthropic',
           model: 'claude-opus-4-8',
           effort: 'high',
+          prompt: 'Review\n\n## Preloaded task data\nSnapshot',
           autonomousJob: true,
           jobId: 'j1'
         }),

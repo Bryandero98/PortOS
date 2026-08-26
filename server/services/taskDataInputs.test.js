@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   appendTaskDataInputs,
+  listForgeOpenIssues,
   listForgePullRequests,
   renderForgeItems,
   resolveTaskDataInputs,
@@ -21,7 +22,8 @@ describe('taskDataInputs', () => {
   });
 
   it('resolves selected sources in configured order and reuses one forge resolution', async () => {
-    const resolveForge = vi.fn().mockResolvedValue({ cli: 'gh', env: { GH_TOKEN: 'test-token' } });
+    const resolveTracker = vi.fn().mockResolvedValue({ forge: 'gh', host: 'github.com' });
+    const resolveTokenEnv = vi.fn().mockResolvedValue({ GH_TOKEN: 'test-token' });
     const findFiles = vi.fn(async (_root, filename) => [{ path: filename, content: `${filename} body` }]);
     const listIssues = vi.fn().mockResolvedValue({
       ok: true,
@@ -34,21 +36,25 @@ describe('taskDataInputs', () => {
 
     const sections = await resolveTaskDataInputs([
       'project-goals', 'open-issues', 'open-pull-requests', 'project-goals'
-    ], { app: APP, dependencies: { resolveForge, findFiles, listIssues, listPullRequests } });
+    ], { app: APP, dependencies: { resolveTracker, resolveTokenEnv, findFiles, listIssues, listPullRequests } });
 
     expect(sections.map(({ id }) => id)).toEqual(['project-goals', 'open-issues', 'open-pull-requests']);
     expect(sections[0].content).toContain('GOALS.md body');
     expect(sections[1].content).toContain('#4 Open work');
     expect(sections[2].content).toContain('#8 Current change');
-    expect(resolveForge).toHaveBeenCalledTimes(1);
-    expect(listIssues).toHaveBeenCalledWith(expect.objectContaining({ cli: 'gh', cwd: '/repo' }));
+    expect(resolveTracker).toHaveBeenCalledTimes(1);
+    expect(resolveTokenEnv).toHaveBeenCalledTimes(1);
+    expect(listIssues).toHaveBeenCalledWith(expect.objectContaining({
+      cli: 'gh', cwd: '/repo', env: expect.objectContaining({ GH_TOKEN: 'test-token' })
+    }));
   });
 
   it('preserves failed versus legitimately empty tracker reads', async () => {
     const common = {
       app: APP,
       dependencies: {
-        resolveForge: vi.fn().mockResolvedValue({ cli: 'gh', env: {} }),
+        resolveTracker: vi.fn().mockResolvedValue({ forge: 'gh', host: 'github.com' }),
+        resolveTokenEnv: vi.fn().mockResolvedValue({}),
         listIssues: vi.fn().mockResolvedValue({ ok: false, issues: [] }),
       },
     };
@@ -61,6 +67,51 @@ describe('taskDataInputs', () => {
     expect(empty[0].content).toBe('No open issues.');
   });
 
+  it('reports a discovered document that could not be read', async () => {
+    const sections = await resolveTaskDataInputs(['project-goals'], {
+      app: APP,
+      dependencies: {
+        findFiles: vi.fn().mockResolvedValue([
+          { path: 'GOALS.md', content: null, unreadable: true },
+        ]),
+      },
+    });
+    expect(sections[0].content).toContain('GOALS.md');
+    expect(sections[0].content).toContain('could not be preloaded');
+    expect(sections[0].content).toContain('Read it directly');
+  });
+
+  it('respects the resolved app tracker and never forwards ambient GitHub tokens to GHES', async () => {
+    const listIssues = vi.fn().mockResolvedValue({ ok: true, issues: [] });
+    const resolveTokenEnv = vi.fn();
+    await resolveTaskDataInputs(['open-issues'], {
+      app: { ...APP, workTracker: 'github' },
+      dependencies: {
+        resolveTracker: vi.fn().mockResolvedValue({ forge: 'gh', host: 'github.example.com' }),
+        resolveTokenEnv,
+        listIssues,
+        environment: { GH_TOKEN: 'ambient', GITHUB_TOKEN: 'ambient-again', PATH: '/bin' },
+      },
+    });
+    expect(resolveTokenEnv).not.toHaveBeenCalled();
+    expect(listIssues).toHaveBeenCalledWith(expect.objectContaining({
+      cli: 'gh',
+      env: { PATH: '/bin' },
+    }));
+  });
+
+  it('uses an explicitly resolved GitLab tracker even on an ambiguous host', async () => {
+    const listIssues = vi.fn().mockResolvedValue({ ok: true, issues: [] });
+    await resolveTaskDataInputs(['open-issues'], {
+      app: { ...APP, workTracker: 'gitlab' },
+      dependencies: {
+        resolveTracker: vi.fn().mockResolvedValue({ forge: 'glab', host: 'scm.example.com' }),
+        listIssues,
+      },
+    });
+    expect(listIssues).toHaveBeenCalledWith(expect.objectContaining({ cli: 'glab' }));
+  });
+
   it('appends one bounded prompt section with a no-refetch instruction', () => {
     const prompt = appendTaskDataInputs('Do the task.', [
       { id: 'project-goals', label: 'Project goals', content: 'Ship useful work.' },
@@ -69,6 +120,18 @@ describe('taskDataInputs', () => {
     expect(prompt).toContain('## Preloaded task data');
     expect(prompt).toContain('do not spend tools or tokens fetching the same data again');
     expect(prompt).toContain('### Project goals');
+  });
+
+  it('keeps every selected heading and marks each bounded truncation', () => {
+    const prompt = appendTaskDataInputs('Do the task.', Array.from({ length: 5 }, (_, index) => ({
+      id: `input-${index}`,
+      label: `Input ${index}`,
+      content: 'x'.repeat(20_000),
+    })));
+    for (let index = 0; index < 5; index += 1) {
+      expect(prompt).toContain(`### Input ${index}`);
+    }
+    expect(prompt).toContain('[Preload truncated.');
   });
 
   it('renders forge metadata without serializing label objects', () => {
@@ -92,5 +155,13 @@ describe('taskDataInputs', () => {
     expect(exec).toHaveBeenCalledWith('gh', expect.arrayContaining([
       '--state', 'closed', '--search', 'is:unmerged'
     ]), expect.objectContaining({ cwd: '/repo' }));
+  });
+
+  it('does not treat blank forge output as a legitimately empty list', async () => {
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '   ', stderr: '' });
+    await expect(listForgeOpenIssues({ cli: 'gh', cwd: '/repo', exec }))
+      .resolves.toEqual({ ok: false, issues: [] });
+    await expect(listForgePullRequests({ cli: 'gh', cwd: '/repo', exec }))
+      .resolves.toEqual({ ok: false, items: [] });
   });
 });

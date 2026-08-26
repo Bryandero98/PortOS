@@ -385,6 +385,38 @@ describe('cosTaskStore.addTask', () => {
       expect(reloaded.metadata.context).toBeUndefined();
     });
 
+    it('moves a raw multiline description into metadata.prompt before markdown persistence', async () => {
+      const fullPrompt = 'Scheduled review\n\n## Preloaded task data\nCurrent snapshot.';
+      const created = await addTask({
+        id: 'sys-scheduled-prompt',
+        status: 'pending',
+        priority: 'MEDIUM',
+        priorityValue: 2,
+        description: fullPrompt,
+        metadata: { autonomousJob: true, jobId: 'job-example' },
+        section: 'pending',
+      }, 'internal', { raw: true });
+      expect(created.description).toBe('Scheduled review');
+      expect(created.metadata.prompt).toBe(fullPrompt);
+      const reloaded = await getTaskById('sys-scheduled-prompt');
+      expect(reloaded.description).toBe('Scheduled review');
+      expect(reloaded.metadata.prompt).toBe(fullPrompt);
+    });
+
+    it('preserves an explicitly empty prompt while normalizing a multiline raw description', async () => {
+      const created = await addTask({
+        id: 'sys-cleared-scheduled-prompt',
+        status: 'pending',
+        priority: 'MEDIUM',
+        priorityValue: 2,
+        description: 'Scheduled review\n\nFallback body',
+        metadata: { prompt: '' },
+        section: 'pending',
+      }, 'internal', { raw: true });
+      expect(created.description).toBe('Scheduled review');
+      expect(created.metadata).toHaveProperty('prompt', '');
+    });
+
     it('leaves a one-line human note on metadata.context', async () => {
       const created = await addTask({ description: 'job', id: 'task-note', context: 'Manually triggered job: nightly' }, 'user');
       expect(created.metadata.context).toBe('Manually triggered job: nightly');
@@ -871,11 +903,11 @@ describe('cosTaskStore.addTask', () => {
     expect(task.metadata.worktreeChangesExpected).toBeUndefined();
   });
 
-  it('raw=true stores the pre-built object verbatim', async () => {
-    const raw = { id: 'sys-raw', description: 'raw\nmultiline', status: 'pending', metadata: { context: 'ctx' } };
+  it('raw=true stores a pre-built one-line object verbatim', async () => {
+    const raw = { id: 'sys-raw', description: 'raw task', status: 'pending', metadata: { context: 'ctx' } };
     const task = await addTask(raw, 'internal', { raw: true });
     expect(task).toBe(raw);
-    expect(task.description).toBe('raw\nmultiline');
+    expect(task.description).toBe('raw task');
   });
 
   it('position:top unshifts the task to the front', async () => {

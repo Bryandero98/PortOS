@@ -570,6 +570,21 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
   // inference. See `server/lib/cosTaskPrompt.js` for the full contract.
   const splitMetadata = splitTaskPromptFields(newTask.metadata);
   if (splitMetadata !== newTask.metadata) newTask = { ...newTask, metadata: splitMetadata };
+  // Markdown task rows are one-line records. Preserve every generated prompt
+  // in the newline-safe metadata field before persistence, including raw
+  // on-demand tasks that bypass the queue generator's normalization pass.
+  if (typeof newTask.description === 'string' && newTask.description.includes('\n')) {
+    newTask = {
+      ...newTask,
+      description: firstLine(newTask.description),
+      metadata: {
+        ...(newTask.metadata || {}),
+        prompt: typeof newTask.metadata?.prompt === 'string'
+          ? newTask.metadata.prompt
+          : newTask.description,
+      },
+    };
+  }
 
   // Add task to top or bottom based on position parameter
   if (taskData.position === 'top') {

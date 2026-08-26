@@ -207,6 +207,7 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     provider: task.metadata?.provider,
     model: task.metadata?.model,
     effort: task.metadata?.effort,
+    prompt: task.metadata?.prompt,
     // Preserve the markers consumed by the job:spawned listener so Run now
     // records the execution and re-registers the saved schedule.
     autonomousJob: task.metadata?.autonomousJob,

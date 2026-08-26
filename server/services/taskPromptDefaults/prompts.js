@@ -633,8 +633,9 @@ Repository: {repoPath}
    searched the repository for PRD.md and GOALS.md immediately before dispatch
    and appended their contents below. Use the most specific available source of
    intent, and do NOT search for or re-read those files when their section has
-   content. Make a best effort rather than assuming a missing document means the
-   app has no direction:
+   complete content. If a section is marked unavailable, unreadable, or
+   truncated, read the named source directly before relying on it. Make a best
+   effort rather than assuming a missing document means the app has no direction:
 
    - If the Product requirements section contains a \`PRD.md\`, use it first.
      Treat its requirements, acceptance

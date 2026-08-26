@@ -152,7 +152,8 @@ async function generateTaskFromJob(job) {
   const inputs = selectedInputs.length > 0
     ? await resolveTaskDataInputs(selectedInputs, { app })
     : []
-  const description = appendTaskDataInputs(prompt, inputs)
+  const taskPrompt = appendTaskDataInputs(prompt, inputs)
+  const description = taskPrompt.split('\n').map(line => line.trim()).find(Boolean) || job.name
   const meta = job.taskMetadata || {}
   return {
     id: `${job.id}-${Date.now().toString(36)}`,
@@ -164,6 +165,7 @@ async function generateTaskFromJob(job) {
       jobName: job.name,
       jobCategory: job.category,
       autonomyLevel: job.autonomyLevel,
+      prompt: taskPrompt,
       // App-scoped jobs carry the target app id so prepareAgentWorkspace resolves
       // the agent's workspace to the app's repoPath. Absent = runs in PortOS root.
       ...(job.appId != null ? { app: job.appId } : {}),
