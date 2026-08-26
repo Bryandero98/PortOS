@@ -5,7 +5,8 @@ import { errorMiddleware } from '../lib/errorHandler.js';
 import jobRoutes from './cosJobRoutes.js';
 
 vi.mock('../services/cos.js', () => ({
-  addTask: vi.fn()
+  addTask: vi.fn(),
+  forceSpawnTask: vi.fn()
 }));
 
 vi.mock('../services/autonomousJobs.js', () => ({
@@ -451,13 +452,16 @@ describe('CoS Job Routes', () => {
       autonomousJobs.isScriptJob.mockReturnValue(false);
       autonomousJobs.generateTaskFromJob.mockResolvedValue({ description: 'Review', priority: 'MEDIUM' });
       cos.addTask.mockResolvedValue({ id: 'task-1' });
+      cos.forceSpawnTask.mockResolvedValue({ success: true, taskId: 'task-1' });
 
       const response = await request(app).post('/api/cos/jobs/j1/trigger');
 
       expect(response.status).toBe(200);
       expect(response.body.type).toBe('agent');
       expect(response.body.status).toBe('queued');
+      expect(response.body.started).toBe(true);
       expect(response.body.taskId).toBe('task-1');
+      expect(cos.forceSpawnTask).toHaveBeenCalledWith('task-1');
     });
 
     it('should forward app scope + git options into addTask for an app-scoped agent job', async () => {
@@ -480,6 +484,7 @@ describe('CoS Job Routes', () => {
         }
       });
       cos.addTask.mockResolvedValue({ id: 'task-2' });
+      cos.forceSpawnTask.mockResolvedValue({ success: true, taskId: 'task-2' });
 
       const response = await request(app).post('/api/cos/jobs/j1/trigger');
 
@@ -498,6 +503,7 @@ describe('CoS Job Routes', () => {
         }),
         'internal'
       );
+      expect(cos.forceSpawnTask).toHaveBeenCalledWith('task-2');
     });
 
     it('should forward provider + model overrides into addTask', async () => {
@@ -510,6 +516,7 @@ describe('CoS Job Routes', () => {
         metadata: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }
       });
       cos.addTask.mockResolvedValue({ id: 'task-3' });
+      cos.forceSpawnTask.mockResolvedValue({ success: true, taskId: 'task-3' });
 
       const response = await request(app).post('/api/cos/jobs/j1/trigger');
 
@@ -518,6 +525,27 @@ describe('CoS Job Routes', () => {
         expect.objectContaining({ provider: 'anthropic', model: 'claude-opus-4-8', effort: 'high' }),
         'internal'
       );
+      expect(cos.forceSpawnTask).toHaveBeenCalledWith('task-3');
+    });
+
+    it('reports a direct-spawn failure while retaining the queued task', async () => {
+      autonomousJobs.getJob.mockResolvedValue({ id: 'j1', type: 'agent', name: 'Review' });
+      autonomousJobs.isShellJob.mockReturnValue(false);
+      autonomousJobs.isScriptJob.mockReturnValue(false);
+      autonomousJobs.generateTaskFromJob.mockResolvedValue({ description: 'Review', priority: 'MEDIUM' });
+      cos.addTask.mockResolvedValue({ id: 'task-4' });
+      cos.forceSpawnTask.mockResolvedValue({ error: 'No available agent slots (1/1)' });
+
+      const response = await request(app).post('/api/cos/jobs/j1/trigger');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        success: false,
+        type: 'agent',
+        status: 'skipped',
+        taskId: 'task-4',
+        reason: 'No available agent slots (1/1)'
+      });
     });
 
     it('should return 404 if job not found', async () => {
