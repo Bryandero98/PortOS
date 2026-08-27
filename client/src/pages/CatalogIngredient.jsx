@@ -1460,6 +1460,7 @@ function RevisionsPanel({ revisions, current, fields, onRestore }) {
     setRestoring(id);
     await onRestore(id);
     setRestoring(null);
+    setPendingRestore(null);
   };
 
   return (
