@@ -184,8 +184,12 @@ describe('brainStorage tombstones', () => {
     const live = await brainStorage.create('memories', { content: 'alive' });
 
     const cutoff = Date.parse(ISO('2021-01-01'));
+    const changed = vi.fn();
+    brainStorage.brainEvents.on('record:changed', changed);
     const pruned = await brainStorage.pruneTombstones('memories', cutoff);
+    brainStorage.brainEvents.off('record:changed', changed);
     expect(pruned).toBe(1); // only the 2020 tombstone
+    expect(changed).toHaveBeenCalledWith({ type: 'memories', id: 'old' });
 
     expect(await rawRecord('memories', 'old')).toBeUndefined();
     expect((await rawRecord('memories', freshCreated.id))._deleted).toBe(true);
