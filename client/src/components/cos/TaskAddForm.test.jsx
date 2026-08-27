@@ -59,6 +59,41 @@ describe('TaskAddForm responsive layout', () => {
     expect(options).not.toHaveClass('grid-cols-2');
   });
 
+  it('restores the description draft and clears it after a successful submit', async () => {
+    const user = userEvent.setup();
+    const description = 'Keep this task after an accidental navigation';
+    localStorage.setItem('portos-cos-task-description-draft', description);
+    api.addCosTask.mockResolvedValue({ success: true });
+
+    const { unmount } = render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+    expect(screen.getByPlaceholderText('Task description *')).toHaveValue(description);
+
+    unmount();
+    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+    const descriptionInput = screen.getByPlaceholderText('Task description *');
+    await user.click(descriptionInput);
+    await user.type(descriptionInput, ' with more detail');
+    expect(localStorage.getItem('portos-cos-task-description-draft')).toBe(`${description} with more detail`);
+
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(localStorage.getItem('portos-cos-task-description-draft')).toBeNull();
+  });
+
+  it('keeps the description draft when submission fails', async () => {
+    const user = userEvent.setup();
+    api.addCosTask.mockRejectedValue(new Error('Unable to add task'));
+    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+
+    const descriptionInput = screen.getByPlaceholderText('Task description *');
+    await user.type(descriptionInput, 'Retry this task');
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(descriptionInput).toHaveValue('Retry this task');
+    expect(localStorage.getItem('portos-cos-task-description-draft')).toBe('Retry this task');
+  });
+
   it('sends OpenCode Ollama thinking, effort, and temperature overrides with the task', async () => {
     const user = userEvent.setup();
     api.addCosTask.mockResolvedValue({ success: true });

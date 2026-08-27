@@ -18,9 +18,15 @@ import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import useAssignableInstances from '../../hooks/useAssignableInstances';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
 import { PORTOS_APP_ID } from '../../lib/appIdentity';
+import { safeReadStorage, safeRemoveStorage, safeWriteStorage } from '../../lib/safeStorage';
+
+const TASK_DESCRIPTION_DRAFT_KEY = 'portos-cos-task-description-draft';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
-  const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', temperature: '', thinking: '', app: defaultApp });
+  const [newTask, setNewTask] = useState(() => ({
+    description: safeReadStorage(TASK_DESCRIPTION_DRAFT_KEY) || '',
+    model: '', provider: '', effort: '', temperature: '', thinking: '', app: defaultApp
+  }));
   const [addToTop, setAddToTop] = useState(false);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
@@ -74,6 +80,14 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // run-shape toggles, so the app-defaults effect skips the single run that
   // change triggers. See that effect for why.
   const templateAppChangeRef = useRef(false);
+
+  useEffect(() => {
+    if (newTask.description) {
+      safeWriteStorage(TASK_DESCRIPTION_DRAFT_KEY, newTask.description);
+    } else {
+      safeRemoveStorage(TASK_DESCRIPTION_DRAFT_KEY);
+    }
+  }, [newTask.description]);
 
   // Fetch templates
   useEffect(() => {
@@ -503,6 +517,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
 
     // Only clear form inputs after successful submission
     setNewTask(t => ({ ...t, description: '' }));
+    safeRemoveStorage(TASK_DESCRIPTION_DRAFT_KEY);
     setSlashdoCommand(planOnly ? 'plan-task' : '');
     // targetInstanceId deliberately SURVIVES the clear, like app/model/provider
     // and the worktree toggles: it is a run setting, and someone queueing work
