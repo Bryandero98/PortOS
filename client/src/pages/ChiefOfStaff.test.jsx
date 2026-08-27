@@ -31,8 +31,13 @@ const api = vi.hoisted(() => ({
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 const socketStub = vi.hoisted(() => ({ connected: false, on: vi.fn(), off: vi.fn(), emit: vi.fn() }));
+const localLlm = vi.hoisted(() => ({
+  getLocalLlmStatus: vi.fn(),
+  getToolUseModels: vi.fn(),
+}));
 
 vi.mock('../services/api', () => api);
+vi.mock('../services/apiLocalLlm', () => localLlm);
 vi.mock('../components/ui/Toast', () => ({ default: toast }));
 vi.mock('../services/socket', () => ({ default: socketStub }));
 // TaskAddForm drags in the reviewer/model picker plumbing (local-LLM status,
@@ -85,6 +90,8 @@ beforeEach(() => {
   api.getCosLearningDurations.mockResolvedValue(null);
   api.getCosPopularTemplates.mockResolvedValue([]);
   api.getCodeReviewDefaults.mockResolvedValue({});
+  localLlm.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
+  localLlm.getToolUseModels.mockResolvedValue({ models: [] });
 });
 
 const renderConfigTab = () => render(
