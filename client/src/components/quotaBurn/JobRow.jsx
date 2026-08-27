@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, CheckCircle2, Play, RotateCcw, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Play, RotateCcw, Trash2 } from 'lucide-react';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import JobParamField from './JobParamField';
@@ -18,8 +18,13 @@ import { inputClass } from './fields';
 
 export default function JobRow({
   job, index, total, catalog, pending, ranAt, actionsBusy,
+  expanded = false, onToggleExpand,
   onChange, onMove, onRemove, onRun, onRearm,
 }) {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const isExpanded = onToggleExpand !== undefined ? expanded : localExpanded;
+  const toggleExpand = onToggleExpand || (() => setLocalExpanded((prev) => !prev));
+
   // Two-click arm on delete (the repo's inline-confirm convention). A job holds
   // the family's whole free-text work prompt and nothing else stores it — a
   // stray click on the trash icon would drop it from the persisted plan with no
@@ -67,6 +72,15 @@ export default function JobRow({
     // eight steps ran together as one undifferentiated block.
     <div className="rounded border border-port-border/70 bg-port-bg p-3 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="p-1 text-gray-400 hover:text-white"
+          onClick={toggleExpand}
+          aria-label={isExpanded ? `Collapse step ${index + 1}` : `Expand step ${index + 1}`}
+          title={isExpanded ? 'Collapse step' : 'Expand step'}
+        >
+          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
         <input
           id={`${idPrefix}-enabled`}
           type="checkbox"
@@ -81,6 +95,13 @@ export default function JobRow({
           aria-label={`Name for step ${index + 1}`}
           onChange={(event) => onChange({ ...job, label: event.target.value })}
         />
+        {!isExpanded && (
+          <span className="text-xs text-gray-400 truncate max-w-xs">
+            {spec?.label || job.jobType}
+            {job.model ? ` · ${job.model}` : ''}
+            {job.runOnce ? ' · run once' : ''}
+          </span>
+        )}
         <div className="flex items-center gap-1">
           <button type="button" className="p-1 text-gray-400 hover:text-white disabled:opacity-30" disabled={index === 0} onClick={() => onMove(index, -1)} aria-label={`Move step ${index + 1} earlier`}><ArrowUp size={14} /></button>
           <button type="button" className="p-1 text-gray-400 hover:text-white disabled:opacity-30" disabled={index === total - 1} onClick={() => onMove(index, 1)} aria-label={`Move step ${index + 1} later`}><ArrowDown size={14} /></button>
@@ -116,93 +137,98 @@ export default function JobRow({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <label htmlFor={`${idPrefix}-type`} className="block text-xs text-gray-400">
-          Job type
-          <select
-            id={`${idPrefix}-type`}
-            className={inputClass}
-            value={job.jobType}
-            // Params are CARRIED, not cleared. Each job type reads only its own
-            // keys (the server's normalizer keeps any scalar), so a stray click
-            // through the type picker no longer silently destroys a long work
-            // prompt — switching back restores it.
-            onChange={(event) => onChange({ ...job, jobType: event.target.value })}
-          >
-            {catalog.jobTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-          </select>
-        </label>
-        <label htmlFor={`${idPrefix}-model`} className="block text-xs text-gray-400">
-          Model (optional)
-          <input
-            id={`${idPrefix}-model`}
-            className={inputClass}
-            value={job.model || ''}
-            placeholder="provider default"
-            onChange={(event) => onChange({ ...job, model: event.target.value || null })}
-          />
-        </label>
-        {/* The repeat/one-shot choice. The plan is a rotation the runner walks
-            lap after lap while the window still has quota, which is right for a
-            standing audit and wrong for work that only needs doing once — that
-            was simply re-done every lap. */}
-        <div className="text-xs text-gray-400">
-          <div className="flex items-center gap-2 mt-1">
-            <input
-              id={`${idPrefix}-run-once`}
-              type="checkbox"
-              checked={job.runOnce === true}
-              onChange={(event) => onChange({ ...job, runOnce: event.target.checked })}
+      {isExpanded && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label htmlFor={`${idPrefix}-type`} className="block text-xs text-gray-400">
+              Job type
+              <select
+                id={`${idPrefix}-type`}
+                className={inputClass}
+                value={job.jobType}
+                // Params are CARRIED, not cleared. Each job type reads only its own
+                // keys (the server's normalizer keeps any scalar), so a stray click
+                // through the type picker no longer silently destroys a long work
+                // prompt — switching back restores it.
+                onChange={(event) => onChange({ ...job, jobType: event.target.value })}
+              >
+                {catalog.jobTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+              </select>
+            </label>
+            <label htmlFor={`${idPrefix}-model`} className="block text-xs text-gray-400">
+              Model (optional)
+              <input
+                id={`${idPrefix}-model`}
+                className={inputClass}
+                value={job.model || ''}
+                placeholder="provider default"
+                onChange={(event) => onChange({ ...job, model: event.target.value || null })}
+              />
+            </label>
+            {/* The repeat/one-shot choice. The plan is a rotation the runner walks
+                lap after lap while the window still has quota, which is right for a
+                standing audit and wrong for work that only needs doing once — that
+                was simply re-done every lap. */}
+            <div className="text-xs text-gray-400">
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  id={`${idPrefix}-run-once`}
+                  type="checkbox"
+                  checked={job.runOnce === true}
+                  onChange={(event) => onChange({ ...job, runOnce: event.target.checked })}
+                />
+                <label htmlFor={`${idPrefix}-run-once`}>Run once</label>
+              </div>
+              <p className="text-[11px] text-gray-500 mt-1">
+                {job.runOnce
+                  ? 'Dispatches once, then drops out of the rotation until you re-arm it.'
+                  : 'Repeats every lap of the plan while the window still has quota.'}
+              </p>
+            </div>
+            <PresetPicker
+              id={`${idPrefix}-preset`}
+              label="Start from a preset (optional)"
+              presets={catalog.presets}
+              // Deliberately NOT filtered to this row's current job type. Filtering
+              // hid the control entirely on a non-agent row, so converting an
+              // existing step into an audit meant deleting and re-adding it — and
+              // the conversion is safe: params carry across the type switch and
+              // existing prompt text is confirmed before it is replaced.
+              hint="Fills the work prompt below with a ready-made single-focus audit that files issues and changes no code."
+              value={matchedPreset?.id || ''}
+              // Re-picking the preset the row already matches is a no-op, so it
+              // needs no "replace your text?" confirm — the text IS the preset's.
+              onPick={(preset) => (hasPromptText && preset.id !== matchedPreset?.id
+                ? setPendingPreset(preset)
+                : applyPreset(preset))}
             />
-            <label htmlFor={`${idPrefix}-run-once`}>Run once</label>
+            {(spec?.params || []).map((descriptor) => (
+              <JobParamField
+                key={descriptor.key}
+                descriptor={descriptor}
+                value={job.params?.[descriptor.key]}
+                options={optionsFor(descriptor)}
+                idPrefix={idPrefix}
+                onChange={setParam}
+              />
+            ))}
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">
-            {job.runOnce
-              ? 'Dispatches once, then drops out of the rotation until you re-arm it.'
-              : 'Repeats every lap of the plan while the window still has quota.'}
-          </p>
-        </div>
-        <PresetPicker
-          id={`${idPrefix}-preset`}
-          label="Start from a preset (optional)"
-          presets={catalog.presets}
-          // Deliberately NOT filtered to this row's current job type. Filtering
-          // hid the control entirely on a non-agent row, so converting an
-          // existing step into an audit meant deleting and re-adding it — and
-          // the conversion is safe: params carry across the type switch and
-          // existing prompt text is confirmed before it is replaced.
-          hint="Fills the work prompt below with a ready-made single-focus audit that files issues and changes no code."
-          value={matchedPreset?.id || ''}
-          // Re-picking the preset the row already matches is a no-op, so it
-          // needs no "replace your text?" confirm — the text IS the preset's.
-          onPick={(preset) => (hasPromptText && preset.id !== matchedPreset?.id
-            ? setPendingPreset(preset)
-            : applyPreset(preset))}
-        />
-        {(spec?.params || []).map((descriptor) => (
-          <JobParamField
-            key={descriptor.key}
-            descriptor={descriptor}
-            value={job.params?.[descriptor.key]}
-            options={optionsFor(descriptor)}
-            idPrefix={idPrefix}
-            onChange={setParam}
-          />
-        ))}
-      </div>
 
-      {pendingPreset && (
-        <InlineConfirmRow
-          tone="warning"
-          question={`Replace this step's work prompt with the “${pendingPreset.label}” preset? Your current text is discarded.`}
-          confirmText="Replace"
-          cancelText="Keep mine"
-          onConfirm={() => applyPreset(pendingPreset)}
-          onCancel={() => setPendingPreset(null)}
-        />
+          {pendingPreset && (
+            <InlineConfirmRow
+              tone="warning"
+              question={`Replace this step's work prompt with the “${pendingPreset.label}” preset? Your current text is discarded.`}
+              confirmText="Replace"
+              cancelText="Keep mine"
+              onConfirm={() => applyPreset(pendingPreset)}
+              onCancel={() => setPendingPreset(null)}
+            />
+          )}
+
+          {spec?.description && <p className="text-[11px] text-gray-500">{spec.description}</p>}
+        </>
       )}
 
-      {spec?.description && <p className="text-[11px] text-gray-500">{spec.description}</p>}
       {/* A spent step is not probed server-side (its count would never be acted
           on), so this REPLACES the pending line rather than sitting beside it —
           "Idle — no pending work" would otherwise be the only thing a finished
@@ -230,3 +256,4 @@ export default function JobRow({
     </div>
   );
 }
+

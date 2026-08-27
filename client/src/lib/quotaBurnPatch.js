@@ -87,6 +87,30 @@ export function jobFromPreset(preset, { id, appId = null } = {}) {
 export const quotaBurnJobIsSpent = (job, ranAt) => Boolean(job?.runOnce && ranAt);
 
 /**
+ * Whether a preset is already represented in a family's jobs list.
+ * Matched by comparing the trimmed prompt text (or jobType + label for non-prompt presets).
+ */
+export function isPresetInJobs(preset, jobs = []) {
+  if (!preset) return false;
+  const presetPrompt = String(preset.params?.prompt || '').trim();
+  if (presetPrompt) {
+    return (jobs || []).some(
+      (job) => String(job?.params?.prompt || '').trim() === presetPrompt,
+    );
+  }
+  return (jobs || []).some(
+    (job) => job?.jobType === preset.jobType && job?.label === preset.label,
+  );
+}
+
+/**
+ * Filter catalog presets to only those not currently in the given jobs list.
+ */
+export function getAvailablePresetsForJobs(presets = [], jobs = []) {
+  return (presets || []).filter((preset) => !isPresetInJobs(preset, jobs));
+}
+
+/**
  * `QUOTA_BURN_UNLIMITED_DISPATCHES` in `server/lib/quotaBurnConfig.js`: the
  * `maxDispatchesPerWindow` value that means the window is not counted at all,
  * and the default. Mirrored (not imported) for the same reason the merge above
@@ -107,3 +131,4 @@ export const isUnlimitedDispatchCap = (cap) => Number(cap) < 0;
  * that body with it. -1 is the natural continuation of "fewer restrictions".
  */
 export const dispatchCapInput = (value) => (value < 1 ? UNLIMITED_DISPATCHES : value);
+
