@@ -1453,7 +1453,7 @@ describe('ignoreTaskId reaches the in-flight-counting gates (#3179)', () => {
   it('queueEligibleImprovementTasks passes its ignoreTaskId down to the generator', () => {
     // It already forwards the same id to addTask and buildImprovementDedupSets;
     // the generator was the one path that dropped it.
-    expect(GEN_SRC).toContain('generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId })');
+    expect(GEN_SRC).toMatch(/generateManagedAppImprovementTaskForType\(nextType, app, state, \{[\s\S]*ignoreTaskId[\s\S]*deferPerpetualDispatch: true[\s\S]*\}\)/);
   });
 
   it('the perpetual gate hands ignoreTaskId to the work detector', () => {
@@ -1488,7 +1488,7 @@ describe('ignoreTaskId reaches BOTH completion-continuation generators (#3179)',
     expect(GEN_SRC).toMatch(/export async function generateIdleReviewTask\(state, \{ ignoreTaskId = null \} = \{\}\)/);
     expect(GEN_SRC).toContain('generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId })');
     expect(GEN_SRC).toMatch(/async function generateManagedAppImprovementTask\(app, state, \{ ignoreTaskId = null \} = \{\}\)/);
-    expect(GEN_SRC).toContain('generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId })');
+    expect(GEN_SRC).toMatch(/generateManagedAppImprovementTaskForType\(nextType, app, state, \{[\s\S]*ignoreTaskId[\s\S]*deferPerpetualDispatch: true[\s\S]*\}\)/);
   });
 
   it('cos.js passes the completing task id into the dequeue that follows the refill', () => {
@@ -1646,7 +1646,7 @@ describe('the drain cap has exactly one implementation, at the choke point', () 
 
     const genStart = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
     const body = GEN_SRC.slice(genStart, GEN_SRC.indexOf('return task;', genStart));
-    const spendIdx = body.search(/if \(perpetualGate\.spendDispatch\) \{\s*await taskSchedule\.recordPerpetualDispatch\(taskType, app\.id, perpetualGate\.signature \?\? null\)/);
+    const spendIdx = body.search(/if \(perpetualGate\.spendDispatch\) \{[\s\S]*recordPerpetualDispatch\(taskType, app\.id, perpetualGate\.signature \?\? null\)/);
     expect(spendIdx, 'the choke point must spend the deferred dispatch').toBeGreaterThan(-1);
     // Every `return null` gate must precede it — planId is the last one.
     expect(body.indexOf('planMeta.skipReason')).toBeLessThan(spendIdx);

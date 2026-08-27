@@ -1023,7 +1023,7 @@ async function spawnDequeuePriority0OnDemand(ctx) {
       // and `agent:completed` fires before the completing task's updateTask
       // settles it to `completed` — so without excluding it the re-issued claim is
       // rejected as a duplicate of the run that just finished and the drain stalls.
-      const persisted = await addTask(task, 'internal', { raw: true, ignoreTaskId });
+      const persisted = await addTask(task, 'internal', { raw: true, ignoreTaskId, suppressDequeue: true });
       if (!persisted?.duplicate) {
         await recordDeferredPerpetualDispatch(task, taskScheduleMod);
         cosEvents.emit('task:ready', task);
@@ -1033,7 +1033,7 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         // retry path is reviving the existing task, not minting a duplicate —
         // and without this branch the Run is a silent no-op that strands the
         // bound on-demand review marker.
-        await reviveBlockedTask(persisted.id, { priority: task.priority, metadata: task.metadata }, 'internal');
+        await reviveBlockedTask(persisted.id, { priority: task.priority, metadata: task.metadata }, 'internal', { suppressDequeue: true });
         await recordDeferredPerpetualDispatch(task, taskScheduleMod);
         const revived = { ...task, id: persisted.id };
         cosEvents.emit('task:ready', revived);
@@ -1538,7 +1538,7 @@ async function refillPerpetualForCompletedAgent(agent) {
   // regenerates an identical first-line per app) is rejected as a duplicate of
   // the completing task and the drain stalls until the next scheduler tick.
   const cosTaskData = await getCosTasks();
-  await queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId: agent?.taskId });
+  await queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId: agent?.taskId, wakeAfterRecord: false });
   // NOTE: the caller (the agent:completed handler) runs dequeueNextTask AFTER
   // this resolves, so the freshly-queued perpetual task is on the queue before
   // slots are filled. Do not dequeue here — that would re-introduce the ordering

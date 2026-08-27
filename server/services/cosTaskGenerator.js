@@ -971,7 +971,7 @@ async function spawnPriority0OnDemand(ctx) {
         // engines must stamp it — either may drain a given request. Stamped before
         // addTask so the blocked-revive branch inherits it via `task.metadata`.
         task.metadata = { ...(task.metadata || {}), onDemand: true };
-        const persisted = await addTask(task, 'internal', { raw: true });
+        const persisted = await addTask(task, 'internal', { raw: true, suppressDequeue: true });
         if (!persisted?.duplicate) {
           await recordDeferredPerpetualDispatch(task, taskSchedule);
           tasksToSpawn.push(task);
@@ -981,7 +981,7 @@ async function spawnPriority0OnDemand(ctx) {
           // revive the existing task instead of silently dropping the Run and
           // stranding the bound on-demand review marker. Mirrors the sibling
           // dequeueNextTask on-demand engine in cos.js.
-          await reviveBlockedTask(persisted.id, { priority: task.priority, metadata: task.metadata }, 'internal');
+          await reviveBlockedTask(persisted.id, { priority: task.priority, metadata: task.metadata }, 'internal', { suppressDequeue: true });
           await recordDeferredPerpetualDispatch(task, taskSchedule);
           const revived = { ...task, id: persisted.id };
           tasksToSpawn.push(revived);
@@ -1570,7 +1570,7 @@ export function buildImprovementDedupSets(existingTasks, { ignoreTaskId = null }
  * Called during every evaluation to ensure system tasks are queued even when user tasks exist
  * Tasks are queued to COS-TASKS.md and will be picked up in Priority 2
  */
-export async function queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId = null } = {}) {
+export async function queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId = null, wakeAfterRecord = true } = {}) {
   const taskSchedule = await import('./taskSchedule.js');
   const { getNextTaskType, recordExecution } = taskSchedule;
 
@@ -1709,9 +1709,10 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
       task.description = firstLine(task.description);
     }
 
-    const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId });
+    const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId, suppressDequeue: true });
     if (newTask?.duplicate) continue;
     await recordDeferredPerpetualDispatch(task, taskSchedule);
+    if (wakeAfterRecord) cosEvents.emit('cos:dequeue-requested');
 
     await recordExecution(`task:${nextType}`, app.id);
 
