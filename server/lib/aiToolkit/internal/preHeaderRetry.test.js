@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   fetchWithPreHeaderRetry,
   isReplaySafeTransportError,
+  isReplaySafeLocalRequest,
   isTransientGatewayStatus,
 } from './preHeaderRetry.js';
 
@@ -13,7 +14,7 @@ describe('pre-header retry policy', () => {
     const ok = response(200);
     const fetchAttempt = vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(ok);
 
-    await expect(fetchWithPreHeaderRetry(fetchAttempt, { delay: vi.fn() })).resolves.toBe(ok);
+    await expect(fetchWithPreHeaderRetry(fetchAttempt, { allowReplay: true, delay: vi.fn() })).resolves.toBe(ok);
     expect(fetchAttempt).toHaveBeenCalledTimes(2);
     expect(failed.body.cancel).toHaveBeenCalledOnce();
     expect([400, 401, 429, 500].some(isTransientGatewayStatus)).toBe(false);
@@ -21,11 +22,13 @@ describe('pre-header retry policy', () => {
   });
 
   it('retries classified transport failures but not arbitrary errors', async () => {
-    const socketError = Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } });
+    const socketError = Object.assign(new TypeError('fetch failed'), {
+      cause: { cause: { code: 'UND_ERR_SOCKET' } },
+    });
     const ok = response(200);
     const retrying = vi.fn().mockRejectedValueOnce(socketError).mockResolvedValueOnce(ok);
 
-    await expect(fetchWithPreHeaderRetry(retrying, { delay: vi.fn() })).resolves.toBe(ok);
+    await expect(fetchWithPreHeaderRetry(retrying, { allowReplay: true, delay: vi.fn() })).resolves.toBe(ok);
     expect(isReplaySafeTransportError(socketError)).toBe(true);
 
     const unsafe = Object.assign(new Error('certificate rejected'), { code: 'CERT_HAS_EXPIRED' });
@@ -34,13 +37,28 @@ describe('pre-header retry policy', () => {
     expect(noRetry).toHaveBeenCalledOnce();
   });
 
+  it('does not replay a completion unless the caller proves it is local and keyless', async () => {
+    const failed = response(503);
+    const fetchAttempt = vi.fn().mockResolvedValue(failed);
+
+    await expect(fetchWithPreHeaderRetry(fetchAttempt, { delay: vi.fn() })).resolves.toBe(failed);
+    expect(fetchAttempt).toHaveBeenCalledOnce();
+    expect(isReplaySafeLocalRequest({ endpoint: 'http://localhost:11434/v1' })).toBe(true);
+    expect(isReplaySafeLocalRequest({ endpoint: 'http://127.0.0.42:1234/v1' })).toBe(true);
+    expect(isReplaySafeLocalRequest({ endpoint: 'http://[::1]:1234/v1' })).toBe(true);
+    expect(isReplaySafeLocalRequest({ endpoint: 'http://0.0.0.0:1234/v1' })).toBe(true);
+    expect(isReplaySafeLocalRequest({ endpoint: 'http://[::]:1234/v1' })).toBe(true);
+    expect(isReplaySafeLocalRequest({ endpoint: 'https://api.example.com/v1' })).toBe(false);
+    expect(isReplaySafeLocalRequest({ endpoint: 'http://localhost:11434/v1', apiKey: 'secret' })).toBe(false);
+  });
+
   it('stops promptly when aborted during backoff', async () => {
     const controller = new AbortController();
     const fetchAttempt = vi.fn().mockResolvedValue(response(502));
     const delay = vi.fn((_ms, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }));
-    const pending = fetchWithPreHeaderRetry(fetchAttempt, { signal: controller.signal, delay });
+    const pending = fetchWithPreHeaderRetry(fetchAttempt, { allowReplay: true, signal: controller.signal, delay });
 
     controller.abort(new Error('stopped'));
     await expect(pending).rejects.toThrow('stopped');

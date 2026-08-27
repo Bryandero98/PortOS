@@ -129,7 +129,7 @@ describe('streamOpenAiChat — pre-header retries', () => {
       });
 
     await expect(streamOpenAiChat({
-      endpoint: 'http://example.com/v1', model: 'example-model', messages: [],
+      endpoint: 'http://127.0.0.1:11434/v1', model: 'example-model', messages: [],
     })).resolves.toBe('ok');
     expect(global.fetch).toHaveBeenCalledTimes(2);
     expect(cancel).toHaveBeenCalledOnce();
@@ -152,7 +152,7 @@ describe('streamOpenAiChat — pre-header retries', () => {
     });
 
     const error = await streamOpenAiChat({
-      endpoint: 'http://example.com/v1', model: 'example-model', messages: [],
+      endpoint: 'http://127.0.0.1:11434/v1', model: 'example-model', messages: [],
     }).catch((err) => err);
     expect(error).toMatchObject({ message: 'socket reset', partialOutput: 'partial' });
     expect(global.fetch).toHaveBeenCalledOnce();

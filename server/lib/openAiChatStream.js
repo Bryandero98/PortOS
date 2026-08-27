@@ -20,7 +20,7 @@
  */
 
 import { readResponseJson } from './readResponseJson.js';
-import { fetchWithPreHeaderRetry } from './aiToolkit/internal/preHeaderRetry.js';
+import { fetchWithPreHeaderRetry, isReplaySafeLocalRequest } from './aiToolkit/internal/preHeaderRetry.js';
 
 /**
  * Parse one OpenAI-style SSE `data:` line into its content/reasoning delta and,
@@ -256,7 +256,10 @@ export async function streamOpenAiChat({
       ...(withUsage ? { stream_options: { include_usage: true } } : {}),
       ...extraBody,
     }),
-  }), { signal }).catch((err) => ({ ok: false, status: 0, error: err.message }));
+  }), {
+    signal,
+    allowReplay: isReplaySafeLocalRequest({ endpoint, apiKey }),
+  }).catch((err) => ({ ok: false, status: 0, error: err.message }));
 
   let response = await post(includeUsage);
   // `stream_options` is standard OpenAI, but a stricter daemon (or an older
