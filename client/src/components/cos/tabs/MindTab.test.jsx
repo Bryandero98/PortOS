@@ -207,10 +207,11 @@ describe('MindTab', () => {
     expect(api.getPersistentMind.mock.calls[2][0].cursor).toBeNull();
   });
 
-  it('labels a bounded initial snapshot as truncated', async () => {
+  it('keeps a bounded initial snapshot free of a history banner', async () => {
     api.getPersistentMind.mockResolvedValue(response({ truncated: true }));
     renderTab();
-    expect(await screen.findByText('Showing recent history')).toBeInTheDocument();
+    await screen.findByText('Review the next bounded slice.');
+    expect(screen.queryByText('Showing recent history')).not.toBeInTheDocument();
   });
 
   it('puts the AI profile controls before start and starts only after the profile save finishes', async () => {

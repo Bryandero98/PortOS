@@ -127,7 +127,6 @@ export default function MindTab() {
   const [mind, setMind] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [gap, setGap] = useState(false);
-  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [messageText, setMessageText] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -176,14 +175,12 @@ export default function MindTab() {
     let page = 0;
     let accumulated = [];
     let sawGap = false;
-    let sawTruncation = false;
     let needsMore = false;
     try {
       do {
         const response = await api.getPersistentMind({ cursor, limit: PAGE_LIMIT }, { silent: true });
         accumulated = mergeEvents(accumulated, response.events || []);
         sawGap ||= response.gap === true;
-        sawTruncation ||= response.truncated === true;
         cursor = response.gap === true ? response.cursor : response.cursor || cursor;
         setMind({
           state: response.state,
@@ -198,7 +195,6 @@ export default function MindTab() {
       cursorRef.current = cursor;
       setEvents((previous) => reset || sawGap || previous === null ? accumulated : mergeEvents(previous, accumulated));
       setGap(sawGap);
-      setTruncated((current) => reset ? sawTruncation : current || sawTruncation);
       setLoadError(null);
       if (needsMore) deferredLoadRef.current = true;
     } catch (error) {
@@ -504,7 +500,6 @@ export default function MindTab() {
       <TabPills tabs={MIND_TABS} activeTab={activeView} onChange={changeView} variant="pills" size="sm" ariaLabel="Persistent mind view" />
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
-      {truncated && <Banner tone="info" title="Showing recent history">The initial trace shows the newest {PAGE_LIMIT} events; older retained events are not shown.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
