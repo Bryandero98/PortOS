@@ -13,9 +13,8 @@ import { promisify } from 'util';
 import { execFile } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { execGit } from '../lib/execGit.js';
-import { parseGitRemote } from '../lib/gitForge.js';
-import { readOriginRemoteUrl } from '../lib/gitRemote.js';
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
+import { resolveAppForgeTarget } from '../lib/workTracker.js';
 import {
   PERSISTENT_MIND_VALIDATION_CHECKS,
 } from '../lib/persistentMindCapabilities.js';
@@ -61,7 +60,6 @@ const FORGE_AUTH_ARGS = Object.freeze({
   gitlab: ['auth', 'status'],
 });
 const FORGE_TRACKERS = new Set(['github', 'gitlab']);
-const NON_FORGE_TRACKERS = new Set(['plan', 'jira']);
 
 const defaultDependencies = {
   readFile,
@@ -71,7 +69,7 @@ const defaultDependencies = {
   execGit,
   commandExists,
   execFile: execFileAsync,
-  readOriginRemoteUrl,
+  resolveAppForgeTarget,
   getCodeReviewDefaults: (...args) => typeof codeReview.getCodeReviewDefaults === 'function'
     ? codeReview.getCodeReviewDefaults(...args)
     : Promise.resolve(null),
@@ -356,7 +354,6 @@ const inspectRepository = async (app, dependencies) => {
     return {
       repository: { configured: false, reachable: false },
       checkout: { state: 'unknown' },
-      origin: null,
     };
   }
   const pathState = await readPathState(repoPath, dependencies);
@@ -364,14 +361,12 @@ const inspectRepository = async (app, dependencies) => {
     return {
       repository: { configured: true, reachable: false },
       checkout: { state: 'unknown' },
-      origin: null,
     };
   }
   if (pathState.state !== 'present') {
     return {
       repository: { configured: true, reachable: null },
       checkout: { state: 'unknown' },
-      origin: null,
     };
   }
   const reachableProbe = await safeGit(['rev-parse', '--is-inside-work-tree'], repoPath, dependencies);
@@ -379,21 +374,15 @@ const inspectRepository = async (app, dependencies) => {
     return {
       repository: { configured: true, reachable: null },
       checkout: { state: 'unknown' },
-      origin: null,
     };
   }
   if (reachableProbe.exitCode !== 0 || String(reachableProbe.stdout || '').trim() !== 'true') {
     return {
       repository: { configured: true, reachable: false },
       checkout: { state: 'unknown' },
-      origin: null,
     };
   }
-  const [statusProbe, originUrl] = await Promise.all([
-    safeGit(['status', '--porcelain', '--untracked-files=all'], repoPath, dependencies),
-    dependencies.readOriginRemoteUrl(repoPath).catch(() => null),
-  ]);
-  const origin = parseGitRemote(originUrl);
+  const statusProbe = await safeGit(['status', '--porcelain', '--untracked-files=all'], repoPath, dependencies);
   return {
     repository: { configured: true, reachable: true },
     checkout: {
@@ -401,7 +390,6 @@ const inspectRepository = async (app, dependencies) => {
         ? String(statusProbe.stdout || '').trim() ? 'dirty' : 'clean'
         : 'unknown',
     },
-    origin,
   };
 };
 
@@ -471,36 +459,27 @@ const inspectSubmodules = async (repoPath, dependencies) => {
   };
 };
 
-const forgeTracker = (app, origin) => {
-  if (FORGE_TRACKERS.has(app?.workTracker)) return app.workTracker;
-  if (NON_FORGE_TRACKERS.has(app?.workTracker)) return null;
-  if (origin?.host) {
-    const host = origin.host.toLowerCase();
-    if (host === 'github.com' || /(^|\.)github\./.test(host)) return 'github';
-    if (host === 'gitlab.com' || /(^|\.)gitlab\./.test(host)) return 'gitlab';
-    return 'unknown';
-  }
-  return 'unknown';
-};
-
 const inspectForge = async (app, repository, dependencies) => {
-  const tracker = forgeTracker(app, repository.origin);
-  if (tracker === null) {
+  const resolution = await dependencies.resolveAppForgeTarget(app).catch(() => null);
+  const target = resolution?.target;
+  const tracker = resolution?.tracker;
+  const forge = target?.forge || (FORGE_TRACKERS.has(tracker) ? tracker : null);
+  if (!forge) {
     return { provider: 'none', cli: null, installed: null, authenticated: null, status: 'not-configured' };
   }
-  if (!FORGE_COMMANDS[tracker]) {
+  if (!FORGE_COMMANDS[forge]) {
     return { provider: 'unknown', cli: null, installed: null, authenticated: null, status: 'unknown' };
   }
   if (repository.reachable !== true) {
-    return { provider: tracker, cli: FORGE_COMMANDS[tracker], installed: null, authenticated: null, status: 'unknown' };
+    return { provider: forge, cli: FORGE_COMMANDS[forge], installed: null, authenticated: null, status: 'unknown' };
   }
-  const cli = FORGE_COMMANDS[tracker];
+  const cli = FORGE_COMMANDS[forge];
   const installed = await dependencies.commandExists(cli, ['--version'], {
     cwd: typeof app.repoPath === 'string' ? app.repoPath : undefined,
     timeoutMs: PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.probeTimeoutMs,
   }).catch(() => false);
-  if (!installed) return { provider: tracker, cli, installed: false, authenticated: false, status: 'unavailable' };
-  const authResult = await dependencies.execFile(cli, FORGE_AUTH_ARGS[tracker], {
+  if (!installed) return { provider: forge, cli, installed: false, authenticated: false, status: 'unavailable' };
+  const authResult = await dependencies.execFile(cli, FORGE_AUTH_ARGS[forge], {
     cwd: app.repoPath,
     env: withSpawnCwdEnv(process.env, app.repoPath),
     timeout: PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.probeTimeoutMs,
@@ -542,11 +521,21 @@ const summarizeReviewers = (entries) => {
   return summary;
 };
 
-const inspectReviewers = async (forge, dependencies) => {
-  const [defaults, installed] = await Promise.all([
-    dependencies.getCodeReviewDefaults().catch(() => null),
-    dependencies.getReviewerCliInstalled().catch(() => null),
-  ]);
+const reviewerProbeFor = (dependencies) => {
+  let promise;
+  return () => {
+    if (!promise) {
+      promise = Promise.all([
+        dependencies.getCodeReviewDefaults().catch(() => null),
+        dependencies.getReviewerCliInstalled().catch(() => null),
+      ]);
+    }
+    return promise;
+  };
+};
+
+const inspectReviewers = async (forge, dependencies, reviewerProbe = reviewerProbeFor(dependencies)) => {
+  const [defaults, installed] = await reviewerProbe();
   if (!defaults) {
     return {
       configured: null,
@@ -681,6 +670,7 @@ const unknownSnapshot = (app, capturedAt) => ({
 
 const collectPreflight = async (app, options) => {
   const dependencies = { ...defaultDependencies, ...(options.dependencies || {}) };
+  const reviewerProbe = options.reviewerProbe || reviewerProbeFor(dependencies);
   const timestamp = nowValue(options.now);
   const capturedAt = new Date(timestamp).toISOString();
   const repoPath = typeof app?.repoPath === 'string' ? app.repoPath.trim() : '';
@@ -689,7 +679,7 @@ const collectPreflight = async (app, options) => {
   if (repository.repository.reachable !== true) {
     const submodules = { configured: null, status: 'unknown', initialized: null };
     const forge = await inspectForge(normalizedApp, repository.repository, dependencies);
-    const reviewers = await inspectReviewers(forge, dependencies);
+    const reviewers = await inspectReviewers(forge, dependencies, reviewerProbe);
     const snapshot = {
       schemaVersion: PERSISTENT_MIND_WORKSPACE_PREFLIGHT_SCHEMA_VERSION,
       capturedAt,
@@ -741,9 +731,9 @@ const collectPreflight = async (app, options) => {
       scripts: scriptNames(manifest.value),
     };
   }));
-  const submodules = await inspectSubmodules(app.repoPath, dependencies);
+  const submodules = await inspectSubmodules(repoPath, dependencies);
   const forge = await inspectForge(normalizedApp, repository.repository, dependencies);
-  const reviewers = await inspectReviewers(forge, dependencies);
+  const reviewers = await inspectReviewers(forge, dependencies, reviewerProbe);
   const snapshot = {
     schemaVersion: PERSISTENT_MIND_WORKSPACE_PREFLIGHT_SCHEMA_VERSION,
     capturedAt,
@@ -791,14 +781,20 @@ export function resetPersistentMindWorkspacePreflightCache() {
  * Inspect one configured app. A repeated read within the freshness window does
  * not re-run git, filesystem, forge, or reviewer probes.
  */
-export function readPersistentMindWorkspacePreflight(app, { force = false, now = Date.now, dependencies, runtime } = {}) {
+export function readPersistentMindWorkspacePreflight(app, {
+  force = false,
+  now = Date.now,
+  dependencies,
+  runtime,
+  reviewerProbe,
+} = {}) {
   const timestamp = nowValue(now);
   const key = cacheKeyFor(app);
   const cached = cache.get(key);
   if (!force && cached && cached.expiresAt > timestamp) {
     return cached.promise.then((snapshot) => withFreshness(snapshot, timestamp));
   }
-  const promise = collectPreflight(app, { now: timestamp, dependencies, runtime })
+  const promise = collectPreflight(app, { now: timestamp, dependencies, runtime, reviewerProbe })
     .catch(() => unknownSnapshot(app, new Date(timestamp).toISOString()));
   cache.set(key, { promise, expiresAt: timestamp + PERSISTENT_MIND_WORKSPACE_PREFLIGHT_TTL_MS });
   return promise.then((snapshot) => withFreshness(snapshot, timestamp));
@@ -811,12 +807,18 @@ export async function readPersistentMindWorkspacePreflights(apps, options = {}) 
       && !isPathLike(app.id.trim())
       && app.id.length <= PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.maxAppIdChars)
     .slice(0, PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.maxApps);
+  const dependencies = { ...defaultDependencies, ...(options.dependencies || {}) };
+  const reviewerProbe = reviewerProbeFor(dependencies);
   return Promise.all(candidates.map(async (app) => ({
     appId: app.id.trim(),
     appName: typeof app.name === 'string' && app.name.trim() && !isPathLike(app.name.trim())
       ? app.name.trim().slice(0, PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.maxAppNameChars)
       : app.id.trim(),
-    preflight: await readPersistentMindWorkspacePreflight(app, options),
+    preflight: await readPersistentMindWorkspacePreflight(app, {
+      ...options,
+      dependencies,
+      reviewerProbe,
+    }),
   })));
 }
 

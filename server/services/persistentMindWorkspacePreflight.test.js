@@ -28,6 +28,15 @@ const createDependencies = ({ git, origin = 'git@github.com:example/fixture.git'
     exitCode: 0,
   }))),
   readOriginRemoteUrl: vi.fn(async () => origin),
+  resolveAppForgeTarget: vi.fn(async (app) => {
+    const tracker = app?.workTracker === 'auto'
+      ? origin?.includes('gitlab') ? 'gitlab' : origin ? 'github' : 'plan'
+      : app?.workTracker || 'plan';
+    const forge = origin?.includes('gitlab') ? 'gitlab'
+      : origin ? 'github'
+        : ['github', 'gitlab'].includes(tracker) ? tracker : null;
+    return { tracker, target: forge ? { forge } : null };
+  }),
   commandExists: vi.fn(async () => installed),
   execFile: vi.fn(async (command, args) => {
     if (args[0] === 'auth') {
@@ -189,6 +198,40 @@ describe('persistent mind workspace preflight', () => {
       readiness: 'blocked',
       blockers: [{ check: 'dependencies', status: 'unknown' }],
     });
+  });
+
+  it('resolves forge readiness from the app forge target for auto-tracked workspaces', async () => {
+    await writeManifest(repoPath, 'package.json', { name: 'fixture-root' });
+    const dependencies = createDependencies();
+    const preflight = await readPersistentMindWorkspacePreflight(appFor(repoPath, { workTracker: 'auto' }), {
+      now: 2_600,
+      dependencies,
+    });
+
+    expect(preflight.forge).toMatchObject({
+      provider: 'github',
+      cli: 'gh',
+      installed: true,
+      authenticated: true,
+      status: 'ready',
+    });
+    expect(dependencies.resolveAppForgeTarget).toHaveBeenCalledWith(expect.objectContaining({ workTracker: 'auto' }));
+  });
+
+  it('shares the reviewer defaults and CLI probe across a bounded app batch', async () => {
+    await writeManifest(repoPath, 'package.json', { name: 'fixture-root' });
+    const dependencies = createDependencies();
+    await readPersistentMindWorkspacePreflights([
+      appFor(repoPath, { id: 'fixture-one' }),
+      appFor(repoPath, { id: 'fixture-two' }),
+    ], {
+      force: true,
+      now: 2_700,
+      dependencies,
+    });
+
+    expect(dependencies.getCodeReviewDefaults).toHaveBeenCalledTimes(1);
+    expect(dependencies.getReviewerCliInstalled).toHaveBeenCalledTimes(1);
   });
 
   it('keeps unavailable optional reviewers advisory', async () => {
