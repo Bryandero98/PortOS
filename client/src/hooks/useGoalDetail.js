@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import * as api from '../services/api';
 import { MAX_TAGS, MAX_TAG_LENGTH } from '../components/goals/goalConstants';
 
@@ -15,12 +15,16 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   const [showProgressForm, setShowProgressForm] = useState(false);
   const todayISO = new Date().toISOString().slice(0, 10);
   const [progressForm, setProgressForm] = useState({ date: todayISO, note: '', durationMinutes: '' });
+  const [progressSubmitting, setProgressSubmitting] = useState(false);
+  const progressSubmittingRef = useRef(false);
   const [subcalendars, setSubcalendars] = useState([]);
   const [selectedCalendar, setSelectedCalendar] = useState('');
   const [calendarMatchPattern, setCalendarMatchPattern] = useState('');
   const [newTodoTitle, setNewTodoTitle] = useState('');
   const [newTodoPriority, setNewTodoPriority] = useState('medium');
   const [newTodoEstimate, setNewTodoEstimate] = useState('');
+  const [todoSubmitting, setTodoSubmitting] = useState(false);
+  const todoSubmittingRef = useRef(false);
   // Plan & scheduling state
   const [planOpen, setPlanOpen] = useState(false);
   const [generatingPhases, setGeneratingPhases] = useState(false);
@@ -232,15 +236,24 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   };
 
   const handleAddProgress = async () => {
-    if (!progressForm.note.trim() || !progressForm.date) return;
-    await api.addGoalProgress(goal.id, {
-      date: progressForm.date,
-      note: progressForm.note,
-      ...(progressForm.durationMinutes ? { durationMinutes: parseInt(progressForm.durationMinutes, 10) } : {})
-    });
-    setProgressForm({ date: todayISO, note: '', durationMinutes: '' });
-    setShowProgressForm(false);
-    onRefresh();
+    if (progressSubmittingRef.current || !progressForm.note.trim() || !progressForm.date) return;
+    progressSubmittingRef.current = true;
+    setProgressSubmitting(true);
+    try {
+      await api.addGoalProgress(goal.id, {
+        date: progressForm.date,
+        note: progressForm.note,
+        ...(progressForm.durationMinutes ? { durationMinutes: parseInt(progressForm.durationMinutes, 10) } : {})
+      });
+      setProgressForm({ date: todayISO, note: '', durationMinutes: '' });
+      setShowProgressForm(false);
+      onRefresh();
+    } catch {
+      // Keep the form intact so the user can retry. The request helper owns the toast.
+    } finally {
+      progressSubmittingRef.current = false;
+      setProgressSubmitting(false);
+    }
   };
 
   const resetProgressForm = () => {
@@ -295,16 +308,25 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   };
 
   const handleAddTodo = async () => {
-    if (!newTodoTitle.trim()) return;
-    await api.addGoalTodo(goal.id, {
-      title: newTodoTitle,
-      priority: newTodoPriority,
-      ...(newTodoEstimate ? { estimateMinutes: parseInt(newTodoEstimate, 10) } : {})
-    });
-    setNewTodoTitle('');
-    setNewTodoPriority('medium');
-    setNewTodoEstimate('');
-    onRefresh();
+    if (todoSubmittingRef.current || !newTodoTitle.trim()) return;
+    todoSubmittingRef.current = true;
+    setTodoSubmitting(true);
+    try {
+      await api.addGoalTodo(goal.id, {
+        title: newTodoTitle,
+        priority: newTodoPriority,
+        ...(newTodoEstimate ? { estimateMinutes: parseInt(newTodoEstimate, 10) } : {})
+      });
+      setNewTodoTitle('');
+      setNewTodoPriority('medium');
+      setNewTodoEstimate('');
+      onRefresh();
+    } catch {
+      // Keep the form intact so the user can retry. The request helper owns the toast.
+    } finally {
+      todoSubmittingRef.current = false;
+      setTodoSubmitting(false);
+    }
   };
 
   const handleToggleTodo = async (todo) => {
@@ -367,12 +389,14 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
     selectedActivity, setSelectedActivity,
     showProgressForm, setShowProgressForm,
     progressForm, setProgressForm,
+    progressSubmitting,
     subcalendars,
     selectedCalendar, setSelectedCalendar,
     calendarMatchPattern, setCalendarMatchPattern,
     newTodoTitle, setNewTodoTitle,
     newTodoPriority, setNewTodoPriority,
     newTodoEstimate, setNewTodoEstimate,
+    todoSubmitting,
     planOpen, setPlanOpen,
     generatingPhases,
     proposedPhases, setProposedPhases,
