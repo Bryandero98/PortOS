@@ -1452,6 +1452,7 @@ function diffRevisionAgainstCurrent(revision, current, fields) {
 function RevisionsPanel({ revisions, current, fields, onRestore }) {
   const [openId, setOpenId] = useState(null);
   const [restoring, setRestoring] = useState(null);
+  const [pendingRestore, setPendingRestore] = useState(null);
 
   const list = Array.isArray(revisions) ? revisions : [];
 
@@ -1493,17 +1494,29 @@ function RevisionsPanel({ revisions, current, fields, onRestore }) {
                     <span className="text-[10px] text-gray-500 whitespace-nowrap ml-auto">{timeAgo(rev.createdAt)}</span>
                   </button>
                   {!isLatest && (
-                    <button
-                      type="button"
-                      onClick={() => handleRestore(rev.id)}
-                      disabled={restoring === rev.id}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-port-border text-gray-400 hover:text-white disabled:opacity-50"
-                      title="Restore this revision"
-                    >
-                      {restoring === rev.id
-                        ? <Loader2 size={11} className="animate-spin" />
-                        : <RotateCcw size={11} aria-hidden="true" />} Restore
-                    </button>
+                    pendingRestore === rev.id ? (
+                      <ConfirmButtonPair
+                        prompt="Replace current form?"
+                        confirmText="Restore"
+                        confirmIcon={RotateCcw}
+                        tone="warning"
+                        busy={restoring === rev.id}
+                        busyText="Restoring"
+                        onConfirm={() => handleRestore(rev.id)}
+                        onCancel={() => setPendingRestore(null)}
+                        ariaLabel={`Confirm restore of ${rev.name || 'revision'}`}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setPendingRestore(rev.id)}
+                        disabled={restoring === rev.id}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-port-border text-gray-400 hover:text-white disabled:opacity-50"
+                        title="Restore this revision"
+                      >
+                        <RotateCcw size={11} aria-hidden="true" /> Restore
+                      </button>
+                    )
                   )}
                   {isLatest && (
                     <span className="text-[10px] text-gray-500 px-1 whitespace-nowrap">current</span>
