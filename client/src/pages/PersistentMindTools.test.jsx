@@ -84,6 +84,33 @@ describe('PersistentMindTools', () => {
     expect(api.getPersistentMindTools).toHaveBeenCalledTimes(2);
   });
 
+  it('does not let a stale catalog refresh restore a revoked grant', async () => {
+    const user = userEvent.setup();
+    let resolveCatalog;
+    api.getPersistentMindTools
+      .mockResolvedValueOnce(response())
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveCatalog = resolve;
+      }));
+    renderPage();
+
+    const toggle = await screen.findByRole('checkbox', { name: 'Allow mind to queue CoS agent tasks' });
+    await user.click(toggle);
+    await waitFor(() => expect(api.getPersistentMindTools).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(toggle).toBeChecked());
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    resolveCatalog(response({
+      capabilities: { schemaVersion: 1, createTasks: true },
+      tools: [{ ...response().tools[0], granted: true }],
+      taskCatalog: { apps: [{ id: 'stale-app', name: 'Stale App', planOnly: false }], providers: [] },
+    }));
+
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(screen.queryByText('Available task filing choices')).not.toBeInTheDocument();
+  });
+
   it('keeps the failure visible instead of presenting an empty inventory', async () => {
     api.getPersistentMindTools.mockRejectedValue(new Error('Server unreachable'));
     renderPage();

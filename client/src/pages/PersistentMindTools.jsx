@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, CheckCircle2, LockKeyhole, RefreshCw, ShieldCheck, Wrench } from 'lucide-react';
 import { Link } from 'react-router';
 import * as api from '../services/api';
@@ -11,16 +11,23 @@ export default function PersistentMindTools() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const requestVersion = useRef(0);
 
   const load = useCallback(() => {
+    const version = ++requestVersion.current;
     setLoading(true);
     api.getPersistentMindTools({ silent: true })
       .then((response) => {
+        if (version !== requestVersion.current) return;
         setData(response);
         setError(null);
       })
-      .catch((requestError) => setError(requestError?.message || 'Could not load persistent mind tools'))
-      .finally(() => setLoading(false));
+      .catch((requestError) => {
+        if (version === requestVersion.current) setError(requestError?.message || 'Could not load persistent mind tools');
+      })
+      .finally(() => {
+        if (version === requestVersion.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -31,6 +38,7 @@ export default function PersistentMindTools() {
   const taskCatalog = data?.taskCatalog;
   const grantedCount = tools.filter((tool) => tool.granted === true).length;
   const updateCapabilities = (capabilities) => {
+    requestVersion.current += 1;
     setData((current) => current ? {
       ...current,
       capabilities,
@@ -41,6 +49,7 @@ export default function PersistentMindTools() {
       })),
     } : current);
     if (capabilities.createTasks && !data?.taskCatalog) load();
+    else if (!capabilities.createTasks) setLoading(false);
   };
 
   return (
