@@ -221,7 +221,7 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
     // worktree-rooted path as a backstop (#1947).
     applyDataMigrations: () => runMigrations({ rootDir: resolveInstallRoot(join(serverDir, '..')) }),
 
-    // usage.js and migration 303 both update usage.json. Initialize the service
+    // usage.js and migration 304 both update usage.json. Initialize the service
     // only after migrations finish so their whole-file writes cannot race and
     // replace a freshly normalized or rolled-up snapshot with stale bytes.
     loadUsage,

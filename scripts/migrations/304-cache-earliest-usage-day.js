@@ -32,10 +32,10 @@ export async function up({ rootDir }) {
   if (usage.earliestActivityDay === earliestActivityDay) return;
 
   usage.earliestActivityDay = earliestActivityDay;
-  const tempPath = `${usagePath}.303.tmp`;
+  const tempPath = `${usagePath}.304.tmp`;
   await writeFile(tempPath, `${JSON.stringify(usage, null, 2)}\n`);
   await rename(tempPath, usagePath);
-  console.log('📊 Migration 303: cached earliest usage activity day');
+  console.log('📊 Migration 304: cached earliest usage activity day');
 }
 
 export default { up };
