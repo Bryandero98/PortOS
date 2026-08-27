@@ -17,6 +17,8 @@ import { normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { runPromptThroughProvider } from './promptRunner.js';
 import { stopRun } from './runner.js';
 
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
 const memoryCandidateSchema = z.object({
   content: z.string().trim().min(1).max(10_240),
   summary: z.string().trim().max(500).optional().default(''),
@@ -102,9 +104,22 @@ export function buildPersistentMindSummaryPrompt({ events, previousSummary }) {
   return `Summarize this older portion of one persistent mind's life in first person. Preserve concrete decisions, unresolved questions, user preferences, and causal links. Do not invent facts. Return plain text only, no heading.\n\n${previousSummary ? `Prior cumulative summary:\n${previousSummary}\n\n` : ''}New trajectory events:\n${summaryEventLines(events)}`;
 }
 
-async function runPinnedPrompt({ provider, model, effort, prompt, signal, responseSchema }) {
+async function runPinnedPrompt({ provider, model, effort, prompt, signal, responseSchema, heartbeat }) {
   if (signal?.aborted) throw new Error(String(signal.reason || 'Persistent mind turn interrupted'));
+  if (typeof heartbeat === 'function') await heartbeat();
   let activeRunId = null;
+  let heartbeatPending = null;
+  const pulse = () => {
+    if (typeof heartbeat !== 'function' || heartbeatPending) return;
+    heartbeatPending = Promise.resolve()
+      .then(() => heartbeat())
+      .catch((error) => console.error(`❌ Persistent mind heartbeat failed: ${error.message}`))
+      .finally(() => { heartbeatPending = null; });
+  };
+  const heartbeatTimer = typeof heartbeat === 'function'
+    ? setInterval(pulse, HEARTBEAT_INTERVAL_MS)
+    : null;
+  heartbeatTimer?.unref?.();
   const interrupt = () => {
     if (activeRunId) void stopRun(activeRunId).catch(() => {});
   };
@@ -121,7 +136,11 @@ async function runPinnedPrompt({ provider, model, effort, prompt, signal, respon
       activeRunId = runId;
       if (signal?.aborted) interrupt();
     },
-  }).finally(() => signal?.removeEventListener('abort', interrupt));
+  }).finally(async () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    signal?.removeEventListener('abort', interrupt);
+    await heartbeatPending;
+  });
 }
 
 export function createPersistentMindTurnAdapter() {
@@ -143,24 +162,25 @@ export function createPersistentMindTurnAdapter() {
       };
     },
 
-    async summarize({ events, previousSummary, provider, model, effort, signal }) {
+    async summarize({ events, previousSummary, provider, model, effort, signal, heartbeat }) {
       const result = await runPinnedPrompt({
         provider,
         model,
         effort,
         signal,
+        heartbeat,
         prompt: buildPersistentMindSummaryPrompt({ events, previousSummary }),
       });
       return result.text.trim();
     },
 
     async run({ turnId, wake, provider, model, effort, signal, context, heartbeat }) {
-      await heartbeat();
       const result = await runPinnedPrompt({
         provider,
         model,
         effort,
         signal,
+        heartbeat,
         prompt: buildPersistentMindTurnPrompt({ context, wake }),
         responseSchema: persistentMindResponseSchema,
       });

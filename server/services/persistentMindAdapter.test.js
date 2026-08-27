@@ -62,6 +62,57 @@ describe('persistent mind adapter', () => {
     ]);
   });
 
+  it('keeps slow provider calls alive with a bounded periodic heartbeat', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveRun;
+      mock.runPrompt.mockImplementation(() => new Promise((resolve) => { resolveRun = resolve; }));
+      const heartbeat = vi.fn(async () => true);
+      const pending = createPersistentMindTurnAdapter().run({
+        turnId: 'turn-slow',
+        wake: { kind: 'message', message: { id: 'message-slow', text: 'Wait for this.' } },
+        ...profile,
+        signal: new AbortController().signal,
+        context: { text: '# Context' },
+        heartbeat,
+      });
+
+      await Promise.resolve();
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(heartbeat).toHaveBeenCalledTimes(2);
+      resolveRun({ text: JSON.stringify({ thinkingSummary: 'Still working.', message: 'Done.' }) });
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps slow trajectory summaries alive with the same heartbeat', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveRun;
+      mock.runPrompt.mockImplementation(() => new Promise((resolve) => { resolveRun = resolve; }));
+      const heartbeat = vi.fn(async () => true);
+      const pending = createPersistentMindTurnAdapter().summarize({
+        events: [{ id: 'event-1', kind: 'mind.reply', payload: { text: 'Earlier reply' } }],
+        previousSummary: null,
+        ...profile,
+        signal: new AbortController().signal,
+        heartbeat,
+      });
+
+      await Promise.resolve();
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(heartbeat).toHaveBeenCalledTimes(2);
+      resolveRun({ text: 'Summary' });
+      await expect(pending).resolves.toBe('Summary');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('makes the provider harness tradeoff explicit', () => {
     expect(persistentMindHarnessInfo({ type: 'api' }).recommendation).toBe('recommended');
     expect(persistentMindHarnessInfo({ type: 'cli' }).recommendation).toBe('supported');

@@ -511,6 +511,7 @@ async function runOnePersistentMindTurn() {
               model: prepared.model || null,
               effort: prepared.effort || null,
               signal: controller.signal,
+              heartbeat: () => heartbeat(turn.id, generation),
             })
           : null,
       });
