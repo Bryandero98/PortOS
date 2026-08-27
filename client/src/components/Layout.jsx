@@ -130,6 +130,7 @@ import { useSidebarSeries } from '../hooks/useSidebarSeries.js';
 import { useSidebarUniverses } from '../hooks/useSidebarUniverses.js';
 import { useThemeContext } from './ThemeContext';
 import NotificationDropdown from './NotificationDropdown';
+import ThemeSwitcher from './ThemeSwitcher';
 import VoiceToggleButton from './voice/VoiceToggleButton';
 import CmdKSearch from './CmdKSearch';
 import KeyboardHelp from './KeyboardHelp';
@@ -1280,6 +1281,7 @@ export default function Layout() {
                 <Monitor size={18} />
               </NavLink>
               <ThemeModeToggle />
+              <ThemeSwitcher className={collapsed ? 'lg:hidden' : ''} />
               <VoiceToggleButton className={collapsed ? 'lg:hidden' : ''} />
               <NotificationDropdown
                 notifications={notifications}
@@ -1400,6 +1402,7 @@ export default function Layout() {
               <Monitor size={18} />
             </NavLink>
             <ThemeModeToggle />
+            <ThemeSwitcher position="below" />
             <VoiceToggleButton />
           </div>
         </header>

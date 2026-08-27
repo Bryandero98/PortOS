@@ -36,6 +36,7 @@ describe('ThemeSwitcher', () => {
     const menu = screen.getByRole('menu', { name: 'Interface theme' });
     const active = within(menu).getByRole('menuitemradio', { name: /Classic Midnight/ });
     const inactive = within(menu).getByRole('menuitemradio', { name: /Blueprint Day/ });
+    expect(menu).toHaveStyle({ visibility: 'visible' });
     expect(active).toHaveAttribute('aria-checked', 'true');
     expect(inactive).toHaveAttribute('aria-checked', 'false');
     expect(active).toHaveFocus();

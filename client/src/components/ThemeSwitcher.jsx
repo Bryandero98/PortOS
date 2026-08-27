@@ -34,10 +34,10 @@ export default function ThemeSwitcher({ position = 'above', className = '' }) {
   useEscapeKey(open, () => close(true));
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !menuStyle) return;
     const selected = menuRef.current?.querySelector(`${ITEM_SELECTOR}[aria-checked="true"]`);
     (selected ?? menuRef.current?.querySelector(ITEM_SELECTOR))?.focus();
-  }, [open, menuRef]);
+  }, [open, menuRef, menuStyle]);
 
   const menuItems = () => Array.from(menuRef.current?.querySelectorAll(ITEM_SELECTOR) ?? []);
 
