@@ -46,6 +46,11 @@ export default function PersistentMindProfileControls({
   // its setDraft call into an unconditional render loop in those hosts.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
+    // A socket/manual history refresh can return the pre-PUT profile while an
+    // optimistic save is still in flight. Keep the draft authoritative until
+    // the request settles; onSaved publishes the successful snapshot, while
+    // the catch path restores the last known saved value.
+    if (pendingSavesRef.current > 0) return;
     const next = normalizeProfile(profile);
     draftRef.current = next;
     publishedProfileRef.current = next;

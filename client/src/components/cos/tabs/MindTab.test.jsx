@@ -172,6 +172,11 @@ describe('MindTab', () => {
       { silent: true },
     );
 
+    await user.click(screen.getByRole('button', { name: 'Reload' }));
+    await waitFor(() => expect(api.getPersistentMind).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText('Model')).toHaveValue('gpt-5-mini');
+    expect(start).toBeDisabled();
+
     finishSave({ success: true });
     await waitFor(() => expect(start).toBeEnabled());
     await user.click(start);
