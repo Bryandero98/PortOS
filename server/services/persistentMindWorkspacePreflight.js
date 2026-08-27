@@ -197,17 +197,29 @@ const expandWorkspacePattern = (repoPath, pattern, dependencies) => {
     return Promise.resolve({ paths: [], truncated: true });
   }
 
-  const walk = (basePath, index) => {
-    if (index >= segments.length) return Promise.resolve([basePath]);
+  const walk = async (basePath, index) => {
+    if (index >= segments.length) return { paths: [basePath], truncated: false, unknown: false };
     const segment = segments[index];
     if (segment !== '*') return walk(join(basePath, segment), index + 1);
-    return readDirectoryNames(basePath, dependencies).then(({ names, truncated, unknown }) => (
-      Promise.all(names.map((name) => walk(join(basePath, name), index + 1)))
-        .then((groups) => ({ paths: groups.flat(), truncated, unknown }))
-    ));
+    const { names, truncated: listingTruncated, unknown: listingUnknown } = await readDirectoryNames(basePath, dependencies);
+    const paths = [];
+    let truncated = listingTruncated;
+    let unknown = listingUnknown;
+    for (const name of names) {
+      if (paths.length >= PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.maxWorkspaces) {
+        truncated = true;
+        break;
+      }
+      const result = await walk(join(basePath, name), index + 1);
+      paths.push(...result.paths.slice(0, PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.maxWorkspaces - paths.length));
+      truncated ||= result.truncated;
+      unknown ||= result.unknown;
+      if (paths.length >= PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.maxWorkspaces) truncated = true;
+    }
+    return { paths, truncated, unknown };
   };
 
-  return walk(repoPath, 0).then((result) => Array.isArray(result) ? { paths: result, truncated: false } : result);
+  return walk(repoPath, 0);
 };
 
 const discoverWorkspacePaths = async (repoPath, manifest, dependencies) => {
@@ -295,14 +307,16 @@ export function satisfiesVersionRequirement(version, requirement) {
     if (operator === '<=') return isPartial
       ? compareVersions(candidate, partialUpper) < 0
       : comparison <= 0;
-    if (operator === '>') return comparison > 0;
+    if (operator === '>') return isPartial
+      ? compareVersions(candidate, partialUpper) >= 0
+      : comparison > 0;
     if (operator === '<') return comparison < 0;
     if (operator === '^') {
       const upper = major > 0
         ? `${major + 1}.0.0`
         : minor > 0
           ? `0.${minor + 1}.0`
-          : numericParts.length < 3 ? '1.0.0' : `0.0.${patch + 1}`;
+          : numericParts.length < 3 ? '0.1.0' : `0.0.${patch + 1}`;
       return comparison >= 0 && compareVersions(candidate, upper) < 0;
     }
     if (operator === '=') return comparison === 0;
@@ -479,14 +493,17 @@ const inspectForge = async (app, repository, dependencies) => {
     timeoutMs: PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.probeTimeoutMs,
   }).catch(() => false);
   if (!installed) return { provider: forge, cli, installed: false, authenticated: false, status: 'unavailable' };
-  const authResult = await dependencies.execFile(cli, FORGE_AUTH_ARGS[forge], {
+  const authArgs = target?.apiHost
+    ? [...FORGE_AUTH_ARGS[forge], '--hostname', target.apiHost]
+    : FORGE_AUTH_ARGS[forge];
+  const authResult = await dependencies.execFile(cli, authArgs, {
     cwd: app.repoPath,
     env: withSpawnCwdEnv(process.env, app.repoPath),
     timeout: PERSISTENT_MIND_WORKSPACE_PREFLIGHT_LIMITS.probeTimeoutMs,
     maxBuffer: 8 * 1024,
   }).then(() => true).catch((error) => isTimeout(error) ? null : false);
   return {
-    provider: tracker,
+    provider: forge,
     cli,
     installed: true,
     authenticated: authResult,
@@ -496,7 +513,10 @@ const inspectForge = async (app, repository, dependencies) => {
 
 const reviewerAvailability = (reviewer, forge, installed) => {
   if (isCliReviewer(reviewer)) return installed && Object.hasOwn(installed, reviewer) ? installed[reviewer] : null;
-  if (reviewer === 'copilot') return forge?.authenticated === true ? true : forge?.authenticated === false ? false : null;
+  if (reviewer === 'copilot') {
+    if (forge?.provider !== 'github') return false;
+    return forge.authenticated === true ? true : forge.authenticated === false ? false : null;
+  }
   return null;
 };
 

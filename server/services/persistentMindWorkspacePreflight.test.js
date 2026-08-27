@@ -21,7 +21,7 @@ const appFor = (repoPath, overrides = {}) => ({
   ...overrides,
 });
 
-const createDependencies = ({ git, origin = 'git@github.com:example/fixture.git', installed = true, auth = true } = {}) => ({
+const createDependencies = ({ git, origin = 'git@github.com:example/fixture.git', installed = true, auth = true, forgeHost = null } = {}) => ({
   execGit: vi.fn(git || (async (args) => ({
     stdout: args[0] === 'rev-parse' ? 'true\n' : '',
     stderr: '',
@@ -35,7 +35,7 @@ const createDependencies = ({ git, origin = 'git@github.com:example/fixture.git'
     const forge = origin?.includes('gitlab') ? 'gitlab'
       : origin ? 'github'
         : ['github', 'gitlab'].includes(tracker) ? tracker : null;
-    return { tracker, target: forge ? { forge } : null };
+    return { tracker, target: forge ? { forge, apiHost: forgeHost || (forge === 'github' ? 'github.com' : null) } : null };
   }),
   commandExists: vi.fn(async () => installed),
   execFile: vi.fn(async (command, args) => {
@@ -81,6 +81,10 @@ describe('persistent mind workspace preflight', () => {
     expect(satisfiesVersionRequirement('22.12.3', '22.12.x')).toBe(true);
     expect(satisfiesVersionRequirement('22.13.0', '22.12.x')).toBe(false);
     expect(satisfiesVersionRequirement('22.12.3', '~22.12')).toBe(true);
+    expect(satisfiesVersionRequirement('22.12.1', '>22.12')).toBe(false);
+    expect(satisfiesVersionRequirement('22.13.0', '>22.12')).toBe(true);
+    expect(satisfiesVersionRequirement('0.0.5', '^0.0')).toBe(true);
+    expect(satisfiesVersionRequirement('0.1.0', '^0.0')).toBe(false);
     expect(satisfiesVersionRequirement('not-a-version', '>=22.12.0')).toBe(null);
   });
 
@@ -216,6 +220,63 @@ describe('persistent mind workspace preflight', () => {
       status: 'ready',
     });
     expect(dependencies.resolveAppForgeTarget).toHaveBeenCalledWith(expect.objectContaining({ workTracker: 'auto' }));
+  });
+
+  it('authenticates GitHub Enterprise against the resolved forge host', async () => {
+    await writeManifest(repoPath, 'package.json', { name: 'fixture-root' });
+    const dependencies = createDependencies({
+      origin: 'git@github.enterprise.example:example/fixture.git',
+      forgeHost: 'github.enterprise.example',
+    });
+    await readPersistentMindWorkspacePreflight(appFor(repoPath, { workTracker: 'auto' }), {
+      now: 2_650,
+      dependencies,
+    });
+
+    expect(dependencies.execFile).toHaveBeenCalledWith(
+      'gh',
+      ['auth', 'status', '--hostname', 'github.enterprise.example'],
+      expect.any(Object),
+    );
+  });
+
+  it('flattens nested workspace globs without collapsing to unknown', async () => {
+    await mkdir(join(repoPath, 'packages', 'one', 'plugins', 'first'), { recursive: true });
+    await mkdir(join(repoPath, 'packages', 'two', 'plugins', 'second'), { recursive: true });
+    await writeManifest(repoPath, 'package.json', {
+      name: 'fixture-root',
+      workspaces: ['packages/*/plugins/*'],
+    });
+    await writeManifest(repoPath, 'packages/one/plugins/first/package.json', { name: 'first-plugin' });
+    await writeManifest(repoPath, 'packages/two/plugins/second/package.json', { name: 'second-plugin' });
+
+    const preflight = await readPersistentMindWorkspacePreflight(appFor(repoPath), {
+      now: 2_675,
+      dependencies: createDependencies(),
+    });
+
+    expect(preflight.workspaceDiscovery).toBe('ready');
+    expect(preflight.workspaces.map((workspace) => workspace.id)).toEqual([
+      'root',
+      'packages/one/plugins/first',
+      'packages/two/plugins/second',
+    ]);
+  });
+
+  it('does not report Copilot as available for a GitLab workspace', async () => {
+    await writeManifest(repoPath, 'package.json', { name: 'fixture-root' });
+    const dependencies = createDependencies({ origin: 'git@gitlab.com:example/fixture.git' });
+    dependencies.getCodeReviewDefaults.mockResolvedValue({
+      reviewers: ['copilot'],
+      usernames: [],
+      optionalReviewers: [],
+    });
+    const preflight = await readPersistentMindWorkspacePreflight(appFor(repoPath, { workTracker: 'auto' }), {
+      now: 2_700,
+      dependencies,
+    });
+
+    expect(preflight.reviewers.required).toMatchObject({ configured: 1, available: 0, unavailable: 1, status: 'unavailable' });
   });
 
   it('shares the reviewer defaults and CLI probe across a bounded app batch', async () => {
