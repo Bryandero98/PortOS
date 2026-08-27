@@ -27,6 +27,16 @@ const WIN_EXECUTABLE_EXTS = ['.exe', '.cmd', '.bat', '.com'];
 // `provider.timeout || 300000` so a hung upstream can't hold `activeRuns`
 // (and thus the run slot) open forever.
 const DEFAULT_API_RUN_TIMEOUT_MS = 300000;
+const DEFAULT_OUTPUT_RESERVE_TOKENS = 8000;
+const CHARS_PER_TOKEN = 4;
+
+function deriveRequestCapabilities({ prompt, screenshots, requestCapabilities }) {
+  if (requestCapabilities && typeof requestCapabilities === 'object') return requestCapabilities;
+  return {
+    requiredContextTokens: Math.ceil(String(prompt ?? '').length / CHARS_PER_TOKEN) + DEFAULT_OUTPUT_RESERVE_TOKENS,
+    hasImages: Array.isArray(screenshots) && screenshots.length > 0,
+  };
+}
 
 /**
  * Resolve a bare command name to its full path WITH extension on Windows, so
@@ -299,6 +309,8 @@ export function createRunnerService(config = {}) {
         source = 'devtools',
         fallbackProviderId = null,
         effort = null,
+        requestCapabilities = null,
+        screenshots = [],
       } = options;
 
       if (!providerService) {
@@ -311,6 +323,11 @@ export function createRunnerService(config = {}) {
       // below. Stays null on the non-fallback path so the requested `model`
       // wins as before.
       let fallbackModelHint = null;
+      const effectiveRequestCapabilities = deriveRequestCapabilities({
+        prompt,
+        screenshots,
+        requestCapabilities,
+      });
 
       if (providerStatusService && !providerStatusService.isAvailable(providerId)) {
         const allProviders = await providerService.getAllProviders();
@@ -322,7 +339,9 @@ export function createRunnerService(config = {}) {
         const fallback = providerStatusService.getFallbackProvider(
           providerId,
           providersMap,
-          fallbackProviderId
+          fallbackProviderId,
+          null,
+          effectiveRequestCapabilities
         );
 
         if (fallback) {
