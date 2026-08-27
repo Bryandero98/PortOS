@@ -357,6 +357,18 @@ describe('MindTab', () => {
     expect(screen.getAllByRole('button', { name: /chief of staff/i })).toHaveLength(1);
   });
 
+  it('shows a typing indicator in the chat header while the mind is thinking', async () => {
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: true, status: 'thinking', pauseReason: null, activeTurnId: 'mind-turn-1' },
+    }));
+    renderTab();
+
+    const typingIndicator = await screen.findByRole('status', { name: 'Chief of Staff is typing' });
+    expect(typingIndicator).toHaveAttribute('data-testid', 'mind-typing-indicator');
+    expect(typingIndicator.querySelectorAll('[aria-hidden="true"]')).toHaveLength(3);
+    expect(within(screen.getByTestId('mind-chat')).queryByText('Thinking…')).not.toBeInTheDocument();
+  });
+
   it('animates active thought status and shows context, system, and loaded-model telemetry', async () => {
     api.getPersistentMind.mockResolvedValue(response({
       state: { enabled: true, started: true, status: 'thinking', pauseReason: null, activeTurnId: 'mind-turn-1' },
