@@ -123,6 +123,29 @@ describe('legend disclosure', () => {
   });
 });
 
+describe('type filters', () => {
+  it('shows a keyboard focus ring and toggles with Space', async () => {
+    const user = userEvent.setup();
+    await renderGraph();
+
+    const checkbox = screen.getByRole('checkbox', { name: 'Ideas' });
+    const swatch = checkbox.nextElementSibling;
+
+    expect(checkbox).toHaveClass('peer', 'sr-only');
+    expect(swatch).toHaveClass(
+      'peer-focus-visible:ring-2',
+      'peer-focus-visible:ring-port-accent',
+      'peer-focus-visible:ring-offset-1',
+      'peer-focus-visible:ring-offset-port-bg',
+    );
+
+    expect(checkbox).toBeChecked();
+    checkbox.focus();
+    await user.keyboard(' ');
+    expect(checkbox).not.toBeChecked();
+  });
+});
+
 describe('detail panel', () => {
   // Tapping a node needs a WebGL raycast, so reach the panel the way a user on
   // a phone can: search → focus a node → tap one of its connections. That also
