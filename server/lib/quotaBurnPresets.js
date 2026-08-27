@@ -482,6 +482,126 @@ What is worth filing:
 Every finding needs a plausible attacker or accident story that ends in real
 harm. "Best practice says otherwise" is not one.`,
   }),
+
+  auditPreset({
+    id: 'api-contract-audit',
+    label: 'API & route contracts',
+    summary: 'Endpoint validation, status codes, query/param types, and error payloads.',
+    labels: '`bug`, `area:api`, `plan`',
+    dedupeSearch: 'api route contract validation status code',
+    mission: `
+# API contract audit — file issues, change nothing
+
+Audit this application's API endpoints and route handlers for contract drift,
+validation gaps, and error traps, and file them as GitHub issues. No code changes.
+
+Trace client callers to server routes and schemas:
+
+- **Unvalidated inputs** — endpoints reading \`req.body\`/\`query\`/\`params\` directly
+  without a validation schema, allowing malformed types into domain logic.
+- **Client/server drift** — client services sending unused fields, routes
+  expecting omitted properties, or callers expecting unreturned responses.
+- **Status and envelope errors** — 200 responses returning \`{ error }\`, raw 500s
+  for bad client input, or bare strings instead of \`{ error: message }\`.
+- **Async traps** — route handlers missing \`asyncHandler\`, where a rejected
+  promise hangs the request socket.
+- **Loose schemas** — validation schemas allowing unbounded strings (missing
+  \`.max()\`), arbitrary keys (missing \`.strict()\`), or unvalidated enums.
+- **HTTP method mismatch** — mutations on \`GET\` or non-idempotent updates.
+
+For each finding, cite the caller and route (\`path/to/file.js:LINE\`), the
+invalid shape, and the concrete failure that occurs.`,
+  }),
+
+  auditPreset({
+    id: 'react-lifecycle-audit',
+    label: 'React lifecycle & state',
+    summary: 'Stale closures, effect cleanups, state sync, and unmount safety in UI code.',
+    labels: '`bug`, `area:ui`, `plan`',
+    dedupeSearch: 'react lifecycle effect cleanup state closure',
+    mission: `
+# React lifecycle audit — file issues, change nothing
+
+Audit React components, custom hooks, and state lifecycles for memory leaks,
+stale closures, and race conditions, and file them as GitHub issues. No code changes.
+
+Inspect UI components and hooks:
+
+- **Missing effect teardowns** — \`useEffect\` listeners (\`window\`/\`document\`),
+  timers, sockets, or observers without cleanup functions on unmount.
+- **Stale closures** — callbacks and timers capturing state/props without
+  up-to-date refs or dependencies, operating on stale data.
+- **Unmounted state updates** — async operations setting state after unmount
+  or when superseded by a newer request.
+- **Derived state anti-patterns** — mirroring props in local state synced via
+  \`useEffect\`, causing visual flashes and desync instead of \`useMemo\`.
+- **Render-time side-effects** — mutating refs or triggering side-effects during
+  render rather than in effects/handlers.
+- **Broken dependencies** — missing dependencies causing stale reads, or inline
+  object literals triggering runaway render loops.
+
+Trace the sequence of user interactions and state transitions that triggers
+each defect.`,
+  }),
+
+  auditPreset({
+    id: 'observability-audit',
+    label: 'Logging & observability',
+    summary: 'Silent failure swallowing, missing error logs, log noise, and diagnostic gaps.',
+    labels: '`code-quality`, `plan`',
+    dedupeSearch: 'logging observability telemetry diagnostics',
+    mission: `
+# Observability audit — file issues, change nothing
+
+Audit how this application logs events, reports runtime failures, and surfaces
+diagnostics, and file the gaps as GitHub issues. No code changes this run.
+
+Trace error handling and log statements:
+
+- **Silent failure swallowing** — \`catch\` blocks discarding errors with no
+  logging or telemetry, hiding failures in production.
+- **Log noise & console spam** — polling loops, socket frames, or hot render
+  paths emitting lines on every tick, burying actionable errors.
+- **Missing error context** — errors logged with only \`err.message\` while
+  omitting task IDs, universe IDs, route paths, or stack traces.
+- **Inconsistent log levels** — fatal runtime errors logged as \`console.log\`
+  instead of \`console.error\` / structured error loggers.
+- **Uninstrumented workflows** — multi-step background pipelines or agent
+  transitions with no progress logging, leaving stuck jobs invisible.
+
+For each finding, cite the catch block or uninstrumented workflow and explain
+what operational blindspot it creates.`,
+  }),
+
+  auditPreset({
+    id: 'copy-audit',
+    label: 'Copy & text clarity',
+    summary: 'Jargon, misleading labels, confusing error text, and missing pluralization.',
+    labels: '`ux`, `plan`',
+    dedupeSearch: 'copy text clarity phrasing wording',
+    mission: `
+# Copy clarity audit — file issues, change nothing
+
+Audit user-facing copy, labels, tooltips, dialogs, and error messages for
+clarity, accuracy, and consistency, and file them as GitHub issues. No code changes.
+
+Review user-facing UI text:
+
+- **Internal jargon** — technical variable names, database keys, or protocol
+  details leaking into UI labels where domain terms belong.
+- **Ambiguous action labels** — generic "OK"/"Submit" on destructive actions
+  instead of explicit verbs ("Delete", "Discard"), or misleading "Cancel" buttons.
+- **Dead-end error messages** — "Failed" or "Invalid request" without explaining
+  what was wrong or how the user can resolve it.
+- **Broken pluralization** — "1 items", "0 files deleted", or "found 1 results"
+  missing singular/plural branching.
+- **Inconsistent terminology** — the same entity or action named differently
+  across tabs, dialogs, and navigation.
+- **Clipped labels** — text containers with fixed widths cutting off words.
+
+Provide the exact current string, where it appears (\`file.jsx:LINE\`), and the
+proposed replacement text with rationale.`,
+  }),
 ]);
 
 /** Look up a preset by id. Returns `null` for an unknown id — never throws. */

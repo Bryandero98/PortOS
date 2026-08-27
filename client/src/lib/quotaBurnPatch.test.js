@@ -112,7 +112,7 @@ describe('applyQuotaBurnPreset', () => {
 describe('jobFromPreset', () => {
   it('mints a runnable job with the caller\'s id and app', () => {
     expect(jobFromPreset(preset, { id: 'job-x', appId: 'a1' })).toEqual({
-      id: 'job-x', enabled: true, label: 'UX issues', jobType: 'agent-prompt', model: null, providerId: null,
+      id: 'job-x', enabled: true, label: 'UX issues', jobType: 'agent-prompt', model: null, providerId: null, effort: null,
       // Standing work: an audit dimension is worth re-running as the code moves.
       runOnce: false,
       params: { ...preset.params, appId: 'a1' },
