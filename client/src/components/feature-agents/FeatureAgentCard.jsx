@@ -49,7 +49,7 @@ export default function FeatureAgentCard({ agent, onStart, onPause, onResume, on
         </div>
       )}
 
-      <div className="flex items-center gap-1 pt-2 border-t border-port-border">
+      <div className="flex flex-wrap items-center gap-1 pt-2 border-t border-port-border">
         {agent.status === 'draft' && (
           <button onClick={() => onStart(agent.id)} className="flex min-h-[44px] min-w-[44px] items-center justify-center gap-1 px-2 py-1 text-xs text-port-success hover:bg-port-success/10 rounded transition-colors">
             <Play size={12} /> Start
