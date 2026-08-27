@@ -64,7 +64,7 @@ export const DEFAULT_CONFIG = {
   // opt-in also admits those loop/storm investigations unattended.
   autoApproveInvestigations: false,
   // Persisting a profile is not consent to wake the mind. Fresh and upgraded
-  // installs stay disabled until the user explicitly enables and starts it.
+  // installs stay disabled until the user explicitly starts it.
   persistentMindProfile: createDefaultPersistentMindProfile(),
   // Per-domain autonomy guardrails (#711). Each domain is off | dry-run | execute.
   // Default is `execute` for every domain, reproducing pre-#711 behavior so no
