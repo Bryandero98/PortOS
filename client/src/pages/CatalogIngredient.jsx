@@ -11,6 +11,7 @@ import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, Hist
 import toast from '../components/ui/Toast';
 import FilePickerButton from '../components/ui/FilePickerButton';
 import Modal from '../components/ui/Modal.jsx';
+import ConfirmButtonPair from '../components/ui/ConfirmButtonPair.jsx';
 import {
   getCatalogIngredientDetails,
   updateCatalogIngredient,
@@ -818,6 +819,8 @@ function ReferenceSheetPanel({ payload, universeRef }) {
 function RelationsPanel({ record, relations, onAdd, onRemove }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [kind, setKind] = useState(RELATION_KINDS[0].id);
+  const [armedRelation, setArmedRelation] = useState(null);
+  const [removingRelation, setRemovingRelation] = useState(null);
   const outbound = Array.isArray(relations.outbound) ? relations.outbound : [];
   const inbound = Array.isArray(relations.inbound) ? relations.inbound : [];
 
@@ -861,17 +864,38 @@ function RelationsPanel({ record, relations, onAdd, onRemove }) {
             <div>
               <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">Outbound</div>
               <ul className="space-y-1.5">
-                {outbound.map((r) => (
-                  <li key={`${r.toId}-${r.kind}`} className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-gray-400">{getRelationKind(r.kind)?.label || r.kind}</span>
-                    {chip(r.other)}
-                    <button type="button" onClick={() => onRemove(r.toId, r.kind)}
-                      aria-label={`Remove relation to ${r.other?.name || r.toId}`}
-                      className="text-gray-500 hover:text-port-error">
-                      <X size={12} aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
+                {outbound.map((r) => {
+                  const relationKey = `${r.toId}-${r.kind}`;
+                  const relationName = r.other?.name || r.toId;
+                  return (
+                    <li key={relationKey} className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-gray-400">{getRelationKind(r.kind)?.label || r.kind}</span>
+                      {chip(r.other)}
+                      {armedRelation === relationKey ? (
+                        <ConfirmButtonPair
+                          prompt="Remove?"
+                          confirmText="Remove"
+                          busyText="Removing"
+                          busy={removingRelation === relationKey}
+                          ariaLabel={`Confirm removal of relation to ${relationName}`}
+                          onCancel={() => setArmedRelation(null)}
+                          onConfirm={async () => {
+                            setRemovingRelation(relationKey);
+                            await onRemove(r.toId, r.kind);
+                            setRemovingRelation(null);
+                            setArmedRelation(null);
+                          }}
+                        />
+                      ) : (
+                        <button type="button" onClick={() => setArmedRelation(relationKey)}
+                          aria-label={`Remove relation to ${relationName}`}
+                          className="text-gray-500 hover:text-port-error">
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
