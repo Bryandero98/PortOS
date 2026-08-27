@@ -177,6 +177,13 @@ describe('nav contract — instance-feature gating', () => {
     expect(byId['nav.cos.gsd']).toBe('gsd');
   });
 
+  it('gates the complete Health section and MortalLoom settings', () => {
+    const byId = Object.fromEntries(NAV_COMMANDS.map((c) => [c.id, c.feature]));
+    expect([...SECTION_FEATURE]).toContainEqual(['Health', 'health']);
+    expect(NAV_COMMANDS.filter((c) => c.section === 'Health').every((c) => c.feature === 'health')).toBe(true);
+    expect(byId['nav.settings.mortalloom']).toBe('health');
+  });
+
   it('leaves ungated pages untagged', () => {
     const gated = NAV_COMMANDS.filter((c) => c.feature).map((c) => c.id);
     expect(gated).toContain('nav.devtools.jira');

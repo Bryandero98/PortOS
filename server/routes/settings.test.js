@@ -111,6 +111,7 @@ describe('Settings routes — instance feature participation', () => {
     // available unless the install explicitly opts out.
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'gsd', enabled: true }));
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'openclaw', enabled: true }));
+    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'health', enabled: true }));
   });
 
   it('updates one feature without replacing unrelated settings', async () => {

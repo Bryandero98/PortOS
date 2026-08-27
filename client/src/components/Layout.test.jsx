@@ -53,7 +53,7 @@ vi.mock('../services/socket', () => ({
 
 // --- API: every sidebar fetch resolves empty so the dynamic sections stay bare
 //     and the single rows are the only top-level leaves under test. ---
-// Instance features gate sidebar rows (POST / DataDog / JIRA / GSD / OpenClaw). Default every
+// Instance features gate sidebar rows (Health / POST / DataDog / JIRA / GSD / OpenClaw). Default every
 // feature ON so these tests see the full sidebar; the gating itself is covered
 // by 'Layout — instance feature gating' below.
 const allFeaturesOn = () => [
@@ -62,6 +62,7 @@ const allFeaturesOn = () => [
   { id: 'jira', label: 'JIRA', enabled: true },
   { id: 'gsd', label: 'GSD', enabled: true },
   { id: 'openclaw', label: 'OpenClaw', enabled: true },
+  { id: 'health', label: 'Health tracking', enabled: true },
 ];
 const featureMock = vi.hoisted(() => ({ features: null }));
 
@@ -257,6 +258,15 @@ describe('Layout — instance feature gating', () => {
 
     expect(screen.queryByRole('button', { name: 'POST' })).toBeNull();
     expect(screen.getByRole('link', { name: 'DataDog' })).toBeTruthy();
+  });
+
+  it('drops the whole Health section when health tracking is off', async () => {
+    featureMock.features = allFeaturesOn()
+      .map((f) => (f.id === 'health' ? { ...f, enabled: false } : f));
+
+    await renderLayout('/devtools/flows');
+
+    expect(screen.queryByRole('button', { name: 'Health' })).toBeNull();
   });
 
   it('shows everything when the feature list cannot be read', async () => {
