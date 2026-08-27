@@ -1,16 +1,91 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RhetoricTrainer from './RhetoricTrainer';
-import { evaluateRhetoricAttempt, submitTrainingEntry } from '../../../services/api';
+import { evaluateRhetoricAttempt, getLoadedLlmModels, getProviders, submitTrainingEntry } from '../../../services/api';
 
 vi.mock('../../../services/api', () => ({
   evaluateRhetoricAttempt: vi.fn(),
+  getLoadedLlmModels: vi.fn(() => Promise.resolve({ ollama: [], lmstudio: [], sourceErrors: [] })),
   getProviders: vi.fn(() => Promise.resolve({ providers: [] })),
   submitTrainingEntry: vi.fn(() => Promise.resolve()),
 }));
 
 describe('RhetoricTrainer', () => {
   const props = { onBack: vi.fn(), onSelectMode: vi.fn(), onExitMode: vi.fn(), onContinue: vi.fn() };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLoadedLlmModels.mockResolvedValue({ ollama: [], lmstudio: [], sourceErrors: [] });
+    getProviders.mockResolvedValue({ providers: [] });
+    submitTrainingEntry.mockResolvedValue();
+  });
+
+  it('shows loaded local models and preselects a resident model when no choice is saved', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
+      lmstudio: [],
+      sourceErrors: [],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'example-cloud',
+      providers: [
+        { id: 'example-cloud', name: 'Example Cloud', enabled: true, models: ['example-cloud-model'] },
+        { id: 'ollama', name: 'Ollama', enabled: true, models: [] },
+      ],
+    });
+
+    render(<RhetoricTrainer {...props} config={{ rhetoricEvaluator: { enabled: false } }} />);
+
+    expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
+    expect(screen.getByText('example-rhetoric:latest · Ollama')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('ollama');
+      expect(screen.getByLabelText('Model')).toHaveValue('example-rhetoric:latest');
+    });
+  });
+
+  it('preserves a saved evaluator choice when a local model is loaded', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
+      lmstudio: [],
+      sourceErrors: [],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'ollama',
+      providers: [
+        { id: 'example-cloud', name: 'Example Cloud', enabled: true, models: ['example-cloud-model'] },
+        { id: 'ollama', name: 'Ollama', enabled: true, models: [] },
+      ],
+    });
+
+    render(<RhetoricTrainer
+      {...props}
+      config={{ rhetoricEvaluator: { enabled: true, providerId: 'example-cloud', model: 'example-cloud-model' } }}
+    />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('example-cloud');
+      expect(screen.getByLabelText('Model')).toHaveValue('example-cloud-model');
+    });
+  });
+
+  it('shows partial residency status without claiming no local models are loaded', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
+      lmstudio: [],
+      sourceErrors: ['lmstudio'],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'ollama',
+      providers: [{ id: 'ollama', name: 'Ollama', enabled: true, models: [] }],
+    });
+
+    render(<RhetoricTrainer {...props} config={{ rhetoricEvaluator: { enabled: false } }} />);
+
+    expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't verify residency for LM Studio/)).toBeInTheDocument();
+    expect(screen.queryByText(/No local models are loaded/)).not.toBeInTheDocument();
+  });
 
   it('shows the rhetoric exercise choices', async () => {
     render(<RhetoricTrainer {...props} />);
