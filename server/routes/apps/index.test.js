@@ -18,7 +18,8 @@ vi.mock('./launch.js', () => ({ default: passThrough }));
 vi.mock('./documents.js', () => ({ default: passThrough }));
 vi.mock('./agents.js', () => ({ default: passThrough }));
 vi.mock('./spriteBindings.js', () => ({ default: passThrough }));
-vi.mock('../../services/apps.js', () => ({
+vi.mock('../../services/apps.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   getAppById: vi.fn(),
 }));
 
