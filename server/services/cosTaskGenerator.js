@@ -2336,9 +2336,12 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
     // completion refill would otherwise dispatch the same candidate forever.
     // The detector's signature covers the complete set; `items` is capped for
     // the picker and is not sufficient for convergence.
-    if (detection.signature != null) {
+    const drainSignature = detection.signature == null
+      ? null
+      : JSON.stringify({ taskType: promptTaskType, candidates: detection.signature });
+    if (drainSignature != null) {
       const { signature: lastSignature } = await taskSchedule.getPerpetualDrainState(taskType, app.id);
-      if (shouldParkUnchangedPerpetualWork(detection, lastSignature)) {
+      if (shouldParkUnchangedPerpetualWork({ ...detection, signature: drainSignature }, lastSignature)) {
         const counts = detection.total != null
           ? { open: detection.total, inFlight: detection.inFlightCount ?? 0, filtered: detection.filteredCount ?? 0 }
           : null;
@@ -2356,7 +2359,7 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
     metadata.perpetual = true;
     // The dispatch is SPENT BY THE CALLER, once a task is certain — see the note
     // on `spendDispatch` in the JSDoc above.
-    return { skip: false, spendDispatch: true, signature: detection.signature ?? null };
+    return { skip: false, spendDispatch: true, signature: drainSignature };
   }
   if (detection.transient) {
     emitLog('debug', `Perpetual ${taskType} skip for ${app.name} (transient: ${detection.reason})`, { appId: app.id });
@@ -2378,7 +2381,7 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
     : null;
   // Terminal park — parkPerpetual zeroes the dispatch budget in the same write, so
   // the next drain window starts fresh instead of capping early on this one's spend.
-  await taskSchedule.parkPerpetual(taskType, app.id, { reason: detection.reason, actionableCount: detection.count, counts });
+  await taskSchedule.parkPerpetual(taskType, app.id, { reason: detection.reason, actionableCount: detection.count, counts, signature: null });
   emitLog('info', `Perpetual ${taskType} parked for ${app.name}: ${detection.reason}`, { appId: app.id });
   return { skip: true };
 }

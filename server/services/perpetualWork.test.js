@@ -250,7 +250,7 @@ describe('perpetualWork', () => {
         { ref: '1', title: 'plain' },
         { ref: '5', title: 'also plain' }
       ]);
-      expect(out.signature).toBe('[1,5]');
+      expect(out.signature).toBe('["1@","5@"]');
     });
 
     it('reports the "[Epic]"-prefixed issue as actionable while it is still undecomposed', async () => {
@@ -269,8 +269,23 @@ describe('perpetualWork', () => {
       });
       const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
       expect(out).toMatchObject({ actionable: true, count: 1, reason: 'actionable-issues', sample: [1] });
-      expect(out.signature).toBe('[1]');
+      expect(out.signature).toBe('["1@"]');
       expect(out.filteredCount).toBe(2);
+    });
+
+    it('canonicalizes candidate order and keeps forge updates in the signature', async () => {
+      routeSpawn({
+        'gh issue': { stdout: JSON.stringify([
+          { number: 10, title: 'later', updatedAt: '2026-08-27T02:00:00Z', assignees: [], labels: [] },
+          { number: 2, title: 'first', updatedAt: '2026-08-27T01:00:00Z', assignees: [], labels: [] },
+          { number: 10, title: 'duplicate', updatedAt: '2026-08-27T02:00:00Z', assignees: [], labels: [] }
+        ]) },
+        'git branch': { stdout: 'main\n' },
+        'gh pr': { stdout: '' }
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out.sample).toEqual([10, 2, 10]);
+      expect(out.signature).toBe('["10@2026-08-27T02:00:00Z","2@2026-08-27T01:00:00Z"]');
     });
 
     it('converges (0 actionable) once that epic carries the decomposed label', async () => {

@@ -102,6 +102,13 @@ describe('claim drain convergence', () => {
     expect(shouldParkUnchangedPerpetualWork({ actionable: true }, '[101,202]')).toBe(false);
     expect(shouldParkUnchangedPerpetualWork({ actionable: false, signature: '[]' }, '[]')).toBe(false);
   });
+
+  it('does not confuse tracker-specific signatures', () => {
+    expect(shouldParkUnchangedPerpetualWork(
+      { actionable: true, signature: '{"taskType":"claim-issue-gitlab","candidates":"[1]"}' },
+      '{"taskType":"claim-issue","candidates":"[1]"}'
+    )).toBe(false);
+  });
 });
 
 describe('claim reviewer resolution', () => {
