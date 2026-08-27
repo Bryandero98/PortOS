@@ -482,8 +482,7 @@ export async function recordSession(providerId, providerName, model) {
  * tokens, estimated" so every existing caller — and the
  * `POST /api/usage/messages` route — keeps its current behavior.
  */
-export async function recordMessages(providerId, model, messageCount, outputTokens = 0, inputTokens = 0, extra = {}) {
-  if (!usageData) await loadUsage();
+function applyMessageUsage(providerId, model, messageCount, outputTokens = 0, inputTokens = 0, extra = {}) {
   const provider = normalizeProvider(providerId);
   const cacheReadTokens = Math.max(0, extra?.cacheReadTokens || 0);
   const cacheWriteTokens = Math.max(0, extra?.cacheWriteTokens || 0);
@@ -535,7 +534,11 @@ export async function recordMessages(providerId, model, messageCount, outputToke
   const providerDay = providerDayBucket(day, provider.id, providerName);
   bumpDayBucket(providerDay);
   if (model) bumpDayBucket(modelDayBucket(providerDay, model));
+}
 
+export async function recordMessages(providerId, model, messageCount, outputTokens = 0, inputTokens = 0, extra = {}) {
+  if (!usageData) await loadUsage();
+  applyMessageUsage(providerId, model, messageCount, outputTokens, inputTokens, extra);
   await saveUsage();
 }
 
@@ -561,27 +564,32 @@ export async function recordMessages(providerId, model, messageCount, outputToke
  */
 export async function recordRunUsage(record) {
   // A single run can produce several records when its session switched models
-  // mid-flight (see usageReconciler.reconcileRunUsage) — record each so every
-  // model's tokens are priced at that model's own rate.
-  if (Array.isArray(record)) {
-    for (const entry of record) await recordRunUsage(entry);
-    return;
+  // mid-flight (see usageReconciler.reconcileRunUsage). Apply the full batch
+  // in memory before saving so every model is priced independently without
+  // rewriting the complete usage file once per entry.
+  const records = Array.isArray(record) ? record.flat(Infinity) : [record];
+  if (records.length === 0) return;
+  if (!usageData) await loadUsage();
+
+  for (const entry of records) {
+    const {
+      providerId = null,
+      model = null,
+      messages = 1,
+      tokensIn = 0,
+      tokensOut = 0,
+      cacheReadTokens = 0,
+      cacheWriteTokens = 0,
+      source = 'estimate'
+    } = entry || {};
+    applyMessageUsage(providerId, model, messages, tokensOut, tokensIn, {
+      cacheReadTokens,
+      cacheWriteTokens,
+      source
+    });
   }
-  const {
-    providerId = null,
-    model = null,
-    messages = 1,
-    tokensIn = 0,
-    tokensOut = 0,
-    cacheReadTokens = 0,
-    cacheWriteTokens = 0,
-    source = 'estimate'
-  } = record || {};
-  await recordMessages(providerId, model, messages, tokensOut, tokensIn, {
-    cacheReadTokens,
-    cacheWriteTokens,
-    source
-  });
+
+  await saveUsage();
 }
 
 /**
