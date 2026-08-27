@@ -94,8 +94,8 @@ const uploadRecord = (overrides = {}) => ({
   originalName: 'diagram.png',
   mimeType: 'image/png',
   size: PNG.length,
-  uploadedAt: '2026-08-27T00:00:00.000Z',
-  expiresAt: '2026-08-28T00:00:00.000Z',
+  uploadedAt: new Date(Date.now() - 60_000).toISOString(),
+  expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
   ...overrides,
 });
 
@@ -278,7 +278,7 @@ describe('persistent mind image attachment lifecycle', () => {
 
   it('cleans a pending upload whose stored bytes fail validation', async () => {
     mocks.root.persistentMind.pendingAttachments = [uploadRecord({ expiresAt: '2026-08-28T00:00:00.000Z' })];
-    mocks.detectImageFormat.mockReturnValue(null);
+    mocks.detectImageFormat.mockReturnValueOnce(null);
 
     await expect(supervisor.cleanupPersistentMindAttachments({ now: Date.parse('2026-08-27T00:00:00.000Z') }))
       .resolves.toMatchObject({ success: true, removed: 1, examined: 1 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { ArrowUp, Brain, Check, CirclePause, CirclePlay, ExternalLink, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload } from 'lucide-react';
+import { ArrowUp, Brain, Check, CirclePause, CirclePlay, ExternalLink, ImagePlus, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload, X } from 'lucide-react';
 import { Link } from 'react-router';
 import useMounted from '../../../hooks/useMounted';
 import { useSocket } from '../../../hooks/useSocket';
@@ -10,16 +10,20 @@ import { formatDateTime } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
 import Drawer from '../../Drawer';
 import Banner from '../../ui/Banner';
+import FilePickerButton from '../../ui/FilePickerButton';
 import TabPills from '../../ui/TabPills';
 import PersistentMindContextPanel from '../PersistentMindContextPanel';
 import PersistentMindProfileControls from '../PersistentMindProfileControls';
 import PersistentMindRuntimePanel, { PersistentMindThoughtStatus } from '../PersistentMindRuntimePanel';
 import PersistentMindTaskAccessControls from '../PersistentMindTaskAccessControls';
 import PersistentMindVisibilityPanel from '../PersistentMindVisibilityPanel';
+import { readFileAsBase64, UPLOAD_IMAGE_ACCEPT, validateImageFile } from '../../../utils/fileUpload';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
 const MAX_VISIBLE_EVENTS = PAGE_LIMIT * MAX_BACKFILL_PAGES;
+const MAX_MESSAGE_IMAGES = 8;
+const MAX_MESSAGE_IMAGE_BYTES = 10 * 1024 * 1024;
 const MIND_VIEWS = new Set(['conversation', 'context', 'setup']);
 const MIND_TABS = [
   { id: 'conversation', label: 'Chat', icon: MessageCircle },
@@ -63,6 +67,23 @@ const eventText = (event) => {
   }
   if (typeof data.status === 'string') return data.status;
   return null;
+};
+
+const safeMessageImages = (event) => (Array.isArray(event?.data?.images) ? event.data.images : [])
+  .filter((image) => (
+    typeof image?.attachmentId === 'string'
+    && typeof image?.path === 'string'
+    && image.path.startsWith('/api/screenshots/')
+    && typeof image?.originalName === 'string'
+  ))
+  .slice(0, MAX_MESSAGE_IMAGES);
+
+const imageCapability = (mind) => {
+  const capability = mind?.imageCapability;
+  const status = ['supported', 'unsupported', 'unknown'].includes(capability?.status)
+    ? capability.status
+    : 'unknown';
+  return { status, guidance: typeof capability?.guidance === 'string' ? capability.guidance : null };
 };
 
 const MindTypingIndicator = () => (
@@ -129,6 +150,9 @@ export default function MindTab() {
   const [gap, setGap] = useState(false);
   const [loading, setLoading] = useState(true);
   const [messageText, setMessageText] = useState('');
+  const [messageImages, setMessageImages] = useState([]);
+  const [messageImagesUploading, setMessageImagesUploading] = useState(false);
+  const [messageImageError, setMessageImageError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [annotationText, setAnnotationText] = useState('');
@@ -157,6 +181,7 @@ export default function MindTab() {
   const visibilityLoadedRef = useRef(false);
   const runtimeMountedRef = useMounted();
   const messageDraftIdRef = useRef(null);
+  const messageDraftImagesRef = useRef(null);
   const annotationDraftIdRef = useRef(null);
   const messageListRef = useRef(null);
   const stickToBottomRef = useRef(true);
@@ -186,6 +211,7 @@ export default function MindTab() {
           state: response.state,
           profile: response.profile,
           capabilities: response.capabilities,
+          imageCapability: response.imageCapability,
           autonomyMode: response.autonomyMode,
         });
         page += 1;
@@ -303,7 +329,7 @@ export default function MindTab() {
     setAnnotationError(null);
   }, [selectedEventId]);
 
-  const appendLocalInput = ({ id, content, inputKind, targetEventId = null }) => {
+  const appendLocalInput = ({ id, content, inputKind, targetEventId = null, images = [] }) => {
     setEvents((previous) => {
       const sequence = Math.max(-1, ...(previous || []).map((item) => item.sequence || -1)) + 1;
       return mergeEvents(previous || [], [{
@@ -315,7 +341,7 @@ export default function MindTab() {
         at: new Date().toISOString(),
         data: {
           displayText: content,
-          ...(inputKind === 'message' ? { messageId: id } : { annotationId: id, targetEventId }),
+          ...(inputKind === 'message' ? { messageId: id, ...(images.length > 0 ? { images } : {}) } : { annotationId: id, targetEventId }),
         },
       }]);
     });
@@ -324,17 +350,21 @@ export default function MindTab() {
   const submitMessage = async (event) => {
     event.preventDefault();
     const trimmed = messageText.trim();
-    if (!trimmed || submitting) return;
+    if ((!trimmed && messageImages.length === 0) || submitting || messageImagesUploading) return;
     const id = messageDraftIdRef.current || mintId('message');
     messageDraftIdRef.current = id;
+    const images = messageDraftImagesRef.current || messageImages;
+    messageDraftImagesRef.current = images;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await api.sendPersistentMindMessage({ id, text: trimmed }, { silent: true });
+      await api.sendPersistentMindMessage({ id, text: trimmed, ...(images.length > 0 ? { images: images.map((image) => image.attachmentId) } : {}) }, { silent: true });
       stickToBottomRef.current = true;
-      appendLocalInput({ id, content: trimmed, inputKind: 'message' });
+      appendLocalInput({ id, content: trimmed, inputKind: 'message', images });
       setMessageText('');
+      setMessageImages([]);
       messageDraftIdRef.current = null;
+      messageDraftImagesRef.current = null;
       await loadHistory();
       stickToBottomRef.current = true;
       void loadRuntime();
@@ -369,9 +399,55 @@ export default function MindTab() {
   const changeMessageText = (next) => {
     if (submitError) {
       messageDraftIdRef.current = null;
+      messageDraftImagesRef.current = null;
       setSubmitError(null);
     }
     setMessageText(next);
+  };
+
+  const changeMessageImages = (next) => {
+    if (submitError) {
+      messageDraftIdRef.current = null;
+      messageDraftImagesRef.current = null;
+      setSubmitError(null);
+    }
+    setMessageImages(next);
+  };
+
+  const uploadMessageImages = async (files) => {
+    const selected = Array.from(files || []);
+    const room = MAX_MESSAGE_IMAGES - messageImages.length;
+    if (room <= 0 || selected.length === 0) return;
+    const uploads = selected.slice(0, room);
+    setMessageImagesUploading(true);
+    setMessageImageError(selected.length > room ? `Only ${room} more image${room === 1 ? '' : 's'} can be attached.` : null);
+    const accepted = [];
+    for (const file of uploads) {
+      const validationError = validateImageFile(file, MAX_MESSAGE_IMAGE_BYTES);
+      if (validationError) {
+        setMessageImageError(validationError);
+        continue;
+      }
+      try {
+        const data = await readFileAsBase64(file);
+        const attachment = await api.uploadPersistentMindAttachment({ filename: file.name, data }, { silent: true });
+        if (attachment?.attachmentId) accepted.push(attachment);
+      } catch (error) {
+        setMessageImageError(error?.message || `Could not upload ${file.name}`);
+      }
+    }
+    if (accepted.length > 0) changeMessageImages([...messageImages, ...accepted].slice(0, MAX_MESSAGE_IMAGES));
+    setMessageImagesUploading(false);
+  };
+
+  const removeMessageImage = async (image) => {
+    try {
+      await api.deletePersistentMindAttachment(image.attachmentId, { silent: true });
+      changeMessageImages(messageImages.filter((candidate) => candidate.attachmentId !== image.attachmentId));
+      setMessageImageError(null);
+    } catch (error) {
+      setMessageImageError(error?.message || `Could not remove ${image.originalName}`);
+    }
   };
 
   const handleMessageKeyDown = (event) => {
@@ -439,6 +515,8 @@ export default function MindTab() {
   const selectedEvent = events?.find((event) => event.eventId === selectedEventId) || null;
   const isPaused = state?.status === 'paused';
   const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
+  const { status: imageCapabilityStatus, guidance: imageCapabilityGuidance } = imageCapability(mind);
+  const imageAttachmentsUnavailable = imageCapabilityStatus === 'unsupported';
   const setupSaving = profileSaving || taskAccessSaving;
   const conversationItems = buildConversationItems(events || [], showActivity);
   const changeView = (view) => setSearchParams((current) => {
@@ -600,10 +678,40 @@ export default function MindTab() {
 
           <form onSubmit={submitMessage} className="shrink-0 border-t border-port-border bg-port-card/95 px-2.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] pt-2.5 sm:px-4">
             {submitError && <p role="alert" className="mt-2 text-sm text-port-error">{submitError} — Retry uses the same id, so it will not duplicate the input.</p>}
+            {messageImageError && <p role="alert" className="mt-2 text-sm text-port-error">{messageImageError}</p>}
+            {imageAttachmentsUnavailable && (
+              <p className="mt-2 text-xs text-port-text-muted">
+                Image attachments are unavailable for this Mind profile. {imageCapabilityGuidance || 'Choose a vision-capable provider or model in'}{' '}
+                <Link to="/settings?tab=providers" className="text-port-accent underline">Settings</Link>.
+              </p>
+            )}
+            {messageImages.length > 0 && (
+              <ul aria-label="Attached images" className="mt-2 flex flex-wrap gap-2">
+                {messageImages.map((image) => (
+                  <li key={image.attachmentId} className="relative h-16 w-16 overflow-hidden rounded-lg border border-port-border bg-port-bg">
+                    <MindImage image={image} className="h-full w-full object-cover" />
+                    <button type="button" onClick={() => void removeMessageImage(image)} disabled={submitting || messageImagesUploading} aria-label={`Remove ${image.originalName}`} className="absolute right-1 top-1 rounded-full bg-port-bg/90 p-1 text-port-text shadow disabled:opacity-50">
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
             <div className="flex items-end gap-2 rounded-[1.35rem] border border-port-border bg-port-bg p-1.5 pl-3 focus-within:border-port-accent/70 focus-within:ring-1 focus-within:ring-port-accent/30">
+              <FilePickerButton
+                accept={UPLOAD_IMAGE_ACCEPT}
+                multiple
+                onChange={(event) => uploadMessageImages(event.target.files)}
+                disabled={submitting || messageImagesUploading || imageAttachmentsUnavailable || messageImages.length >= MAX_MESSAGE_IMAGES}
+                ariaLabel="Attach images"
+                title={imageAttachmentsUnavailable ? 'Image attachments are unavailable for this profile' : 'Attach images'}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-port-text-muted hover:bg-port-border/50 hover:text-port-text"
+              >
+                {messageImagesUploading ? <RefreshCw size={17} className="animate-spin" aria-hidden="true" /> : <ImagePlus size={18} aria-hidden="true" />}
+              </FilePickerButton>
               <label htmlFor="mind-input-text" className="sr-only">Message</label>
               <textarea id="mind-input-text" value={messageText} onChange={(event) => changeMessageText(event.target.value)} onKeyDown={handleMessageKeyDown} maxLength={8000} rows={1} className="min-h-[36px] max-h-32 flex-1 resize-y bg-transparent py-2 text-sm leading-5 text-port-text outline-none placeholder:text-port-text-muted" placeholder="Message Persistent Mind" />
-              <button type="submit" disabled={!messageText.trim() || submitting} aria-label={submitting ? 'Sending message' : submitError ? 'Retry' : 'Send message'} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-port-accent text-white transition-colors hover:bg-port-accent/85 disabled:cursor-not-allowed disabled:bg-port-border disabled:text-port-text-muted">
+              <button type="submit" disabled={(!messageText.trim() && messageImages.length === 0) || submitting || messageImagesUploading} aria-label={submitting ? 'Sending message' : submitError ? 'Retry' : 'Send message'} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-port-accent text-white transition-colors hover:bg-port-accent/85 disabled:cursor-not-allowed disabled:bg-port-border disabled:text-port-text-muted">
                 {submitting ? <RefreshCw size={17} className="animate-spin" aria-hidden="true" /> : <ArrowUp size={19} strokeWidth={2.5} aria-hidden="true" />}
               </button>
             </div>
@@ -623,7 +731,9 @@ export default function MindTab() {
           <div className="space-y-5">
             <section aria-labelledby="mind-event-content-heading">
               <h3 id="mind-event-content-heading" className="text-xs font-semibold uppercase tracking-wide text-port-accent">Message</h3>
-              <p className="mt-2 whitespace-pre-wrap break-words text-sm text-port-text">{eventText(selectedEvent) || selectedEvent.kind}</p>
+              {eventText(selectedEvent) && <p className="mt-2 whitespace-pre-wrap break-words text-sm text-port-text">{eventText(selectedEvent)}</p>}
+              <MessageImages images={safeMessageImages(selectedEvent)} />
+              {!eventText(selectedEvent) && safeMessageImages(selectedEvent).length === 0 && <p className="mt-2 text-sm text-port-text">{selectedEvent.kind}</p>}
             </section>
 
             <section aria-labelledby="mind-event-metadata-heading" className="space-y-2 border-t border-port-border pt-4">
@@ -694,6 +804,7 @@ function ConversationItem({ event, thoughts, thoughtOnly, selectedEventId, onSel
         >
           {content}
         </button>
+        <MessageImages images={safeMessageImages(event)} compact />
         {thoughts.length > 0 && (
           <details className={`border-t ${outgoing ? 'border-white/20' : 'border-port-text/10'}`}>
             <summary className="cursor-pointer px-3.5 py-2 text-xs font-medium opacity-75 hover:opacity-100">
@@ -718,6 +829,28 @@ function ConversationItem({ event, thoughts, thoughtOnly, selectedEventId, onSel
       </div>
       <time className={`mt-1 px-2 text-[10px] text-port-text-muted ${outgoing ? 'text-right' : 'text-left'}`} dateTime={event.at}>{formatDateTime(event.at)}</time>
     </li>
+  );
+}
+
+function MindImage({ image, className = '' }) {
+  const [missing, setMissing] = useState(false);
+  if (missing || !image?.path) {
+    return <span role="img" aria-label={`${image?.originalName || 'Image'} is unavailable`} className={`flex items-center justify-center bg-port-bg p-1 text-center text-[10px] text-port-text-muted ${className}`}>Image unavailable</span>;
+  }
+  return <img src={image.path} alt={image.originalName || 'Attached image'} onError={() => setMissing(true)} className={className} />;
+}
+
+function MessageImages({ images, compact = false }) {
+  if (images.length === 0) return null;
+  return (
+    <ul aria-label={`${images.length} attached image${images.length === 1 ? '' : 's'}`} className={`flex flex-wrap gap-2 ${compact ? 'border-t border-white/20 px-3.5 py-2.5' : 'mt-3'}`}>
+      {images.map((image) => (
+        <li key={image.attachmentId} className={compact ? 'h-20 w-20 overflow-hidden rounded-lg bg-port-bg/20' : 'overflow-hidden rounded-lg border border-port-border bg-port-bg'}>
+          <MindImage image={image} className={compact ? 'h-full w-full object-cover' : 'max-h-64 max-w-full object-contain'} />
+          {!compact && <p className="border-t border-port-border px-2 py-1 text-xs text-port-text-muted">{image.originalName}</p>}
+        </li>
+      ))}
+    </ul>
   );
 }
 
