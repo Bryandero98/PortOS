@@ -16,6 +16,9 @@ const api = vi.hoisted(() => ({
   promotePersistentMindEvent: vi.fn(),
   getProviders: vi.fn(),
   updateCosConfig: vi.fn(),
+  getPersistentMindContext: vi.fn(),
+  createPersistentMindMemory: vi.fn(),
+  updatePersistentMindMemory: vi.fn(),
 }));
 
 const socket = vi.hoisted(() => {
@@ -89,6 +92,15 @@ describe('MindTab', () => {
       }],
     });
     api.updateCosConfig.mockResolvedValue({ success: true });
+    api.getPersistentMindContext.mockResolvedValue({
+      prompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
+      preview: { text: '# Effective context', chars: 19, approximateTokens: 5, summaryState: 'empty' },
+      memories: [],
+      rollups: [],
+      harness: { type: 'api', label: 'Direct API', recommendation: 'recommended', detail: 'Structured and reliable.' },
+    });
+    api.createPersistentMindMemory.mockResolvedValue({ success: true });
+    api.updatePersistentMindMemory.mockResolvedValue({ success: true });
   });
 
   it('restores the selected event from the URL and uses a responsive single DOM tree', async () => {
@@ -107,7 +119,7 @@ describe('MindTab', () => {
 
     expect(await screen.findByText('Conversation unavailable')).toBeInTheDocument();
     expect(screen.queryByText(/No conversation yet/)).not.toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Enable persistent mind profile' })).toBeDisabled();
+    expect(screen.getByRole('tab', { name: 'Provider & lifecycle' })).toBeInTheDocument();
   });
 
   it('deduplicates a socket-triggered cursor backfill', async () => {
@@ -156,7 +168,7 @@ describe('MindTab', () => {
       profile: { enabled: true, providerId: 'codex', model: 'gpt-5', effort: 'high', thinkingInterface: 'text' },
     }));
     api.updateCosConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
-    renderTab();
+    renderTab('/cos/mind?view=setup');
 
     expect(await screen.findByRole('heading', { name: 'AI profile' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText('AI provider')).toHaveValue('codex'));
@@ -190,7 +202,7 @@ describe('MindTab', () => {
     await screen.findByText('Review the next bounded slice.');
 
     await user.type(screen.getByLabelText('Message'), 'Keep this queued.');
-    await user.click(screen.getByRole('button', { name: 'Submit' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(/Retry uses the same id/);
     expect(screen.getByLabelText('Message')).toHaveValue('Keep this queued.');
 
@@ -206,12 +218,12 @@ describe('MindTab', () => {
     renderTab();
     await screen.findByText('Review the next bounded slice.');
     await user.type(screen.getByLabelText('Message'), 'Original text');
-    await user.click(screen.getByRole('button', { name: 'Submit' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
     await screen.findByRole('alert');
     const firstId = api.sendPersistentMindMessage.mock.calls[0][0].id;
 
     await user.type(screen.getByLabelText('Message'), ' updated');
-    await user.click(screen.getByRole('button', { name: 'Submit' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(api.sendPersistentMindMessage).toHaveBeenCalledTimes(2));
     expect(api.sendPersistentMindMessage.mock.calls[1][0].id).not.toBe(firstId);
   });
@@ -223,7 +235,26 @@ describe('MindTab', () => {
     })] }));
     renderTab();
 
+    await userEvent.setup().click(await screen.findByRole('checkbox', { name: 'Show run activity' }));
     expect(await screen.findByText('A synthesized summary.')).toBeInTheDocument();
     expect(screen.queryByText(/not-rendered|5000|prompt/i)).not.toBeInTheDocument();
+  });
+
+  it('renders user-visible working notes and replies in the conversation', async () => {
+    api.getPersistentMind.mockResolvedValue(response({ events: [
+      event({ eventId: 'thought-1', kind: 'mind.thought', sequence: 2, data: { displayText: 'I connected this with the prior decision.' } }),
+      event({ eventId: 'reply-1', kind: 'mind.reply', sequence: 3, data: { displayText: 'Here is the recommendation.' } }),
+    ] }));
+    renderTab();
+    expect(await screen.findByText('I connected this with the prior decision.')).toBeInTheDocument();
+    expect(screen.getByText('Here is the recommendation.')).toBeInTheDocument();
+  });
+
+  it('loads the editable effective context from the URL-backed context view', async () => {
+    renderTab('/cos/mind?view=context');
+    expect(await screen.findByRole('heading', { name: 'Identity and operating prompt' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Identity')).toHaveValue('Resident mind');
+    expect(screen.getByText('# Effective context')).toBeInTheDocument();
+    expect(api.getPersistentMindContext).toHaveBeenCalledWith({ silent: true });
   });
 });

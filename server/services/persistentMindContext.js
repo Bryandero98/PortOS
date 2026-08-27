@@ -55,6 +55,19 @@ export async function readPersistentMindRollups(mindId = PERSISTENT_MIND_ID) {
     .sort((a, b) => a.source.fromSequence - b.source.fromSequence);
 }
 
+/** Full active memories explicitly owned by this mind, newest importance first. */
+export async function readPersistentMindMemories(mindId = PERSISTENT_MIND_ID) {
+  const result = await memoryBackend.getMemories({
+    status: 'active',
+    sourceAgentId: mindId,
+    sortBy: 'importance',
+    sortOrder: 'desc',
+    limit: 100,
+  });
+  const details = await Promise.all((result.memories || []).map((memory) => memoryBackend.peekMemory(memory.id)));
+  return details.filter((memory) => memory?.status === 'active' && memory.sourceAgentId === mindId);
+}
+
 export function recordPersistentMindRollup(input) {
   const rollup = buildPersistentMindRollup(input);
   return queueRollupWrite(async () => {
@@ -100,6 +113,8 @@ const summaryOutcome = (summarize, input) => Promise.resolve()
 export async function preparePersistentMindContext({
   mindId = PERSISTENT_MIND_ID,
   identity = '',
+  instructions = '',
+  memories = [],
   maxChars,
   recentEventLimit = PERSISTENT_MIND_TRAJECTORY_LIMITS.recentContextEvents,
   promptVersion = PERSISTENT_MIND_ROLLUP_PROMPT_VERSION,
@@ -108,8 +123,11 @@ export async function preparePersistentMindContext({
   summarize = null,
   forceSummary = false,
 } = {}) {
-  const history = await readPersistentMindHistory(mindId);
-  let rollups = await readPersistentMindRollups(mindId);
+  const [history, initialRollups] = await Promise.all([
+    readPersistentMindHistory(mindId),
+    readPersistentMindRollups(mindId),
+  ]);
+  let rollups = initialRollups;
   const older = history.slice(0, Math.max(0, history.length - Math.max(1, recentEventLimit)));
   let coverageGap = null;
 
@@ -193,6 +211,8 @@ export async function preparePersistentMindContext({
   return assemblePersistentMindContext({
     mindId,
     identity,
+    instructions,
+    memories,
     events: history,
     rollups,
     maxChars,
@@ -200,6 +220,20 @@ export async function preparePersistentMindContext({
     promptVersion,
     coverageGap,
   });
+}
+
+export function createPersistentMindMemory({ mindId = PERSISTENT_MIND_ID, ...input } = {}) {
+  return memoryBackend.createMemory({
+    ...input,
+    sourceAgentId: mindId,
+    status: 'active',
+  });
+}
+
+export async function updatePersistentMindMemory(memoryId, updates, mindId = PERSISTENT_MIND_ID) {
+  const existing = await memoryBackend.peekMemory(memoryId);
+  if (!existing || existing.sourceAgentId !== mindId) return null;
+  return memoryBackend.updateMemory(memoryId, updates);
 }
 
 /** Add an attributable comment/idea to the trajectory. */

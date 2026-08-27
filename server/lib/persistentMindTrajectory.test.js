@@ -120,6 +120,17 @@ describe('assemblePersistentMindContext', () => {
     expect(context.omittedRange).toMatchObject({ fromSequence: 1, toSequence: 3 });
   });
 
+  it('includes every character accepted by the editable prompt contract', () => {
+    const identity = `${'i'.repeat(3_999)}!`;
+    const instructions = `${'o'.repeat(11_999)}!`;
+    const context = assemblePersistentMindContext({ identity, instructions, maxChars: 32_000 });
+
+    expect(context.identityChars).toBe(4_000);
+    expect(context.instructionsChars).toBe(12_000);
+    expect(context.text).toContain(identity);
+    expect(context.text).toContain(instructions);
+  });
+
   it('distinguishes empty, unavailable, failed, stale, and not-needed context', () => {
     expect(assemblePersistentMindContext().summaryState).toBe('empty');
     expect(assemblePersistentMindContext({ events: history.slice(-1) }).summaryState).toBe('not-needed');

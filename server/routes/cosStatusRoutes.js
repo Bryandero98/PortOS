@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { DOMAIN_IDS, DOMAIN_MODES } from '../lib/domainAutonomy.js';
 import { BUDGET_LIMIT_FIELDS } from '../lib/domainBudgets.js';
 import { persistentMindProfileSchema } from '../lib/persistentMindProfile.js';
+import { persistentMindPromptSchema } from '../lib/persistentMindPrompt.js';
 
 const router = Router();
 
@@ -53,6 +54,7 @@ export const cosConfigSchema = z.object({
   // A durable reasoning route for the persistent mind. It is separate from
   // `alwaysOn`: saving or enabling this profile never starts background work.
   persistentMindProfile: persistentMindProfileSchema.optional(),
+  persistentMindPrompt: persistentMindPromptSchema.optional(),
   // Per-domain autonomy guardrails (#711): partial map of domainId → mode.
   // Partial is fine — updateConfig() merges it over the stored map.
   domainAutonomy: z.object(

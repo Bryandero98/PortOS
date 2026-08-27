@@ -542,6 +542,9 @@ export function assertVisionRunUsedImages(result, requestedProvider) {
  *   must pass this — without it, the CLI/TUI spawn lands in PortOS's own
  *   cwd and the analysis runs against the wrong files. No-op for API
  *   providers (no spawn).
+ * @param {boolean} [args.allowFallback=true] — set false when provider/model
+ *   identity is part of the feature contract. Disables proactive provider
+ *   substitution and every model/provider retry tier after the first attempt.
  * @param {*} [args.responseSchema] — the caller's declared response schema
  *   (issue #2350). A Zod-style schema (`.safeParse`/`.parse`) or a bare
  *   predicate `(parsedValue) => boolean`. When set, the runner enables Tier-2
@@ -650,6 +653,10 @@ export async function runPromptThroughProvider(rawArgs) {
   // attempt. Do not enter any correction/fallback tier, mark the provider
   // unavailable, or escalate an investigation task.
   if (isRunCanceledError(firstError)) {
+    throw stripFallbackContext(firstError);
+  }
+
+  if (rawArgs.allowFallback === false) {
     throw stripFallbackContext(firstError);
   }
 
@@ -1142,6 +1149,7 @@ async function executeProviderRunOnce({
   cwd: cwdOverride,
   screenshots = [],
   outputReserveTokens,
+  allowFallback = true,
 }) {
   // Resolve the model that'll actually run BEFORE creating the run record
   // so the record reflects reality. resolveEffectiveModel handles both
@@ -1178,6 +1186,7 @@ async function executeProviderRunOnce({
       workspacePath: effectiveCwd,
       effort,
       requestCapabilities: buildRequestCapabilities({ prompt, screenshots, outputReserveTokens }),
+      allowFallback,
     });
     runId = runResult.runId;
     if (runResult.provider && runResult.provider.id !== provider.id) {

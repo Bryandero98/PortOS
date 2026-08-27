@@ -36,6 +36,7 @@ import { getUserTimezone } from './userTimezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
 import { mergePersistentMindProfile } from '../lib/persistentMindProfile.js';
+import { mergePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
 import { pendingCosActionReservations } from './cosAdmissionReservations.js';
 // Dependency-free leaf holding the shared agent maps + the runner-mode flag,
@@ -157,7 +158,10 @@ import {
   shutdownPersistentMindSupervisor,
   handlePersistentMindGlobalPause,
   handlePersistentMindGlobalResume,
+  registerPersistentMindTurnAdapter,
+  unregisterPersistentMindTurnAdapter,
 } from './persistentMindSupervisor.js';
+import { createPersistentMindTurnAdapter } from './persistentMindAdapter.js';
 
 export {
   getPersistentMindState,
@@ -222,6 +226,7 @@ export async function updateConfig(updates) {
     // domain) must merge field-by-field over the rest, not replace the map.
     const priorDomainBudgets = state.config.domainBudgets;
     const priorPersistentMindProfile = state.config.persistentMindProfile;
+    const priorPersistentMindPrompt = state.config.persistentMindPrompt;
     state.config = { ...state.config, ...updates };
     if (updates.domainAutonomy !== undefined) {
       state.config.domainAutonomy = normalizeDomainAutonomy({
@@ -240,6 +245,12 @@ export async function updateConfig(updates) {
       state.config.persistentMindProfile = mergePersistentMindProfile(
         priorPersistentMindProfile,
         updates.persistentMindProfile,
+      );
+    }
+    if (updates.persistentMindPrompt !== undefined) {
+      state.config.persistentMindPrompt = mergePersistentMindPrompt(
+        priorPersistentMindPrompt,
+        updates.persistentMindPrompt,
       );
     }
     await saveState(state);
@@ -458,6 +469,7 @@ export async function start() {
   emitLog('info', 'Running initial task evaluation...');
   await evaluateTasks({ initialStartup: true });
   await runHealthCheck();
+  await registerPersistentMindTurnAdapter(createPersistentMindTurnAdapter());
   await initializePersistentMindSupervisor();
 
   cosEvents.emit('status', { running: true });
@@ -489,6 +501,7 @@ export async function stop() {
   }
 
   await shutdownPersistentMindSupervisor();
+  unregisterPersistentMindTurnAdapter();
 
   // Cancel all scheduled events
   cancelEvent('cos-health-check');

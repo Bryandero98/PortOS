@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { PERSISTENT_MIND_PROMPT_LIMITS } from './persistentMindPrompt.js';
 
 export const PERSISTENT_MIND_ID = 'cos-persistent-mind';
 export const PERSISTENT_MIND_ROLLUP_PROMPT_VERSION = 1;
@@ -18,6 +19,9 @@ export const PERSISTENT_MIND_EVENT_KINDS = Object.freeze([
   'mind.wake',
   'mind.model.request',
   'mind.model.result',
+  'mind.thought',
+  'mind.reply',
+  'mind.memory.candidate',
   'mind.capability.request',
   'mind.capability.result',
   'mind.summary',
@@ -33,8 +37,10 @@ export const PERSISTENT_MIND_TRAJECTORY_LIMITS = Object.freeze({
   defaultPageSize: 100,
   maxPageSize: 500,
   recentContextEvents: 60,
-  maxContextChars: 16_000,
-  maxIdentityChars: 2_000,
+  maxContextChars: 32_000,
+  maxIdentityChars: PERSISTENT_MIND_PROMPT_LIMITS.identityChars,
+  maxInstructionsChars: PERSISTENT_MIND_PROMPT_LIMITS.instructionsChars,
+  maxMemoriesChars: 8_000,
   maxSummaryChars: 6_000,
   maxStoredRollups: 100,
   maxProjectedTurns: 100,
@@ -280,6 +286,8 @@ const renderEventLine = (event) => {
 export function assemblePersistentMindContext({
   mindId = PERSISTENT_MIND_ID,
   identity = '',
+  instructions = '',
+  memories = [],
   events = [],
   rollups = [],
   maxChars = PERSISTENT_MIND_TRAJECTORY_LIMITS.maxContextChars,
@@ -336,7 +344,30 @@ export function assemblePersistentMindContext({
     typeof identity === 'string' ? identity : JSON.stringify(identity),
     PERSISTENT_MIND_TRAJECTORY_LIMITS.maxIdentityChars
   );
-  const prefix = `# Persistent mind identity\nmindId=${mindId}${identityText ? `\n${identityText}` : ''}`;
+  const instructionsText = bounded(
+    typeof instructions === 'string' ? instructions : JSON.stringify(instructions),
+    PERSISTENT_MIND_TRAJECTORY_LIMITS.maxInstructionsChars
+  );
+  const memoryLines = (Array.isArray(memories) ? memories : [])
+    .filter((memory) => memory && typeof memory === 'object')
+    .map((memory) => {
+      const content = typeof memory.content === 'string' && memory.content.trim()
+        ? memory.content.trim()
+        : typeof memory.summary === 'string' ? memory.summary.trim() : '';
+      if (!content) return null;
+      const label = [memory.type, memory.category].filter(Boolean).join('/') || 'memory';
+      return `- [${label}; id=${memory.id || 'unknown'}] ${content}`;
+    })
+    .filter(Boolean);
+  const memoryText = bounded(
+    memoryLines.join('\n'),
+    PERSISTENT_MIND_TRAJECTORY_LIMITS.maxMemoriesChars
+  );
+  const prefix = [
+    `# Persistent mind identity\nmindId=${mindId}${identityText ? `\n${identityText}` : ''}`,
+    `# Operating instructions\n${instructionsText || '(none)'}`,
+    `# Curated memories\n${memoryText || '(none)'}`,
+  ].join('\n\n');
   const summaryLines = effectiveReadyRollups
     .map((rollup) => `[events ${rollup.source.fromSequence}-${rollup.source.toSequence}; ${rollup.provenance.providerId || 'unknown'}/${rollup.provenance.model || 'default'}; prompt v${rollup.provenance.promptVersion}]\n${rollup.summary}`);
   const omittedStarts = [selectedRollups[0]?.source.fromSequence, older[0]?.sequence].filter(Number.isSafeInteger);
@@ -391,5 +422,8 @@ export function assemblePersistentMindContext({
       toEventId: older.at(-1)?.eventId ?? selectedRollups.at(-1)?.source.toEventId ?? null,
     } : null,
     recentEventCount: recentLines.length,
+    memoryCount: memoryLines.length,
+    identityChars: identityText.length,
+    instructionsChars: instructionsText.length,
   };
 }

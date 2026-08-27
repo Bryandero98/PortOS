@@ -52,6 +52,30 @@ describe('AI Toolkit runner service', () => {
     );
   });
 
+  it('refuses proactive fallback when an exact provider is required', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const primary = { id: 'primary', name: 'Primary', type: 'api', enabled: true };
+    const providerService = {
+      getAllProviders: vi.fn().mockResolvedValue({ providers: [primary] }),
+      getProviderById: vi.fn().mockResolvedValue(primary),
+    };
+    const providerStatusService = {
+      isAvailable: vi.fn().mockReturnValue(false),
+      getFallbackProvider: vi.fn(),
+      getStatus: vi.fn().mockReturnValue({ reason: 'rate-limit' }),
+    };
+    const runner = createRunnerService({ dataDir, providerService, providerStatusService });
+
+    await expect(runner.createRun({
+      providerId: primary.id,
+      prompt: 'stay pinned',
+      allowFallback: false,
+    })).rejects.toThrow('fallback is disabled');
+    expect(providerStatusService.getFallbackProvider).not.toHaveBeenCalled();
+    expect(providerService.getAllProviders).not.toHaveBeenCalled();
+  });
+
   it('derives request capabilities for direct and pre-created runs', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     tempDirs.push(dataDir);
