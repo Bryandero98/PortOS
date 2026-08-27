@@ -42,8 +42,8 @@ import { useOpenClawStream } from '../hooks/useOpenClawStream';
 import { modKey } from '../utils/platform';
 import { useInstanceFeatures } from '../hooks/useInstanceFeatures.js';
 
-function getRuntimeState(status) {
-  if (status?.enabled === false) {
+function getRuntimeState(status, featureEnabled) {
+  if (!featureEnabled || status?.featureEnabled === false) {
     return {
       label: 'Disabled',
       classes: 'bg-gray-500/15 text-gray-300 border-gray-500/30'
@@ -125,9 +125,8 @@ function partitionSessions(sessions = [], selectedSessionId = '', defaultSession
 }
 
 export default function OpenClaw() {
-  const { features } = useInstanceFeatures();
-  const featureEnabled = Array.isArray(features)
-    && features.some((feature) => feature?.id === 'openclaw' && feature.enabled === true);
+  const { isFeatureEnabled } = useInstanceFeatures();
+  const featureEnabled = isFeatureEnabled('openclaw');
   const [status, setStatus] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [apps, setApps] = useState([]);
@@ -201,7 +200,7 @@ export default function OpenClaw() {
     featureEnabled,
   });
 
-  const runtimeState = useMemo(() => getRuntimeState(status), [status]);
+  const runtimeState = useMemo(() => getRuntimeState(status, featureEnabled), [status, featureEnabled]);
   const visibleSessions = useMemo(
     () => partitionSessions(sessions, selectedSessionId, status?.defaultSession),
     [sessions, selectedSessionId, status?.defaultSession]
@@ -216,6 +215,7 @@ export default function OpenClaw() {
       setStatus({
         configured: false,
         enabled: false,
+        featureEnabled: false,
         reachable: false,
         label: 'OpenClaw Runtime',
         defaultSession: null,
@@ -410,7 +410,7 @@ export default function OpenClaw() {
                   <RefreshCw size={14} className="animate-spin" />
                   Loading sessions…
                 </div>
-              ) : status?.enabled === false ? (
+              ) : !featureEnabled || status?.featureEnabled === false ? (
                 <div className="p-4 text-sm text-gray-400">
                   Enable OpenClaw in Settings &gt; Features to discover sessions.
                 </div>
@@ -522,7 +522,7 @@ export default function OpenClaw() {
                 <RefreshCw size={16} className="animate-spin" />
                 Loading messages…
               </div>
-            ) : status?.enabled === false ? (
+            ) : !featureEnabled || status?.featureEnabled === false ? (
               <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-port-border bg-port-bg/40 p-6 text-center text-sm text-gray-400">
                 OpenClaw is disabled for this PortOS instance. Enable it in Settings &gt; Features to use operator chat.
               </div>
@@ -645,7 +645,7 @@ export default function OpenClaw() {
                 onPaste={handlePaste}
                 onKeyDown={handleComposerKeyDown}
                 rows={3}
-                placeholder={status?.enabled === false ? 'OpenClaw is disabled' : (status?.configured ? 'Send a message, paste an image, or drop files here…' : 'OpenClaw is not configured')}
+                placeholder={!featureEnabled || status?.featureEnabled === false ? 'OpenClaw is disabled' : (status?.configured ? 'Send a message, paste an image, or drop files here…' : 'OpenClaw is not configured')}
                 disabled={!status?.configured || !selectedSessionId || sending}
                 className="w-full resize-none rounded-lg border border-port-border bg-port-bg px-3 py-3 text-sm text-white focus:border-port-accent focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-60"
               />
@@ -692,7 +692,7 @@ export default function OpenClaw() {
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
                 <span>
-                  {status?.enabled === false ? 'Enable OpenClaw in Settings > Features to send messages.' : (status?.configured && selectedSessionId ? `Stream via PortOS · ${modKey}+↵ to send` : 'Select a configured session to send.')}
+                  {!featureEnabled || status?.featureEnabled === false ? 'Enable OpenClaw in Settings > Features to send messages.' : (status?.configured && selectedSessionId ? `Stream via PortOS · ${modKey}+↵ to send` : 'Select a configured session to send.')}
                 </span>
                 <FilePickerButton
                   multiple

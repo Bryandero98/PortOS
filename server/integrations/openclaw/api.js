@@ -106,6 +106,7 @@ function normalizeStatusPayload(payload, config, reachable, errorMessage) {
   return {
     configured: config.configured,
     enabled: config.enabled,
+    featureEnabled: config.featureEnabled,
     reachable,
     label: pickFirst(payload?.label, payload?.name, config.label, 'OpenClaw Runtime'),
     defaultSession: pickFirst(payload?.defaultSession, payload?.defaultSessionId, config.defaultSession, null) || null,
