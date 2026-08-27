@@ -23,6 +23,7 @@ let tmpRoot;
 let tmpLoras;
 let lorasService;
 let civitaiLib;
+let atomicWriteHook;
 
 beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'portos-loras-test-'));
@@ -34,6 +35,9 @@ beforeEach(async () => {
     return {
       ...actual,
       PATHS: { ...actual.PATHS, loras: tmpLoras },
+      atomicWrite: (...args) => atomicWriteHook
+        ? atomicWriteHook(actual.atomicWrite, ...args)
+        : actual.atomicWrite(...args),
     };
   });
   // Stub settings so resolveCivitaiKey doesn't read the real data/settings.json.
@@ -45,6 +49,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  atomicWriteHook = null;
   vi.doUnmock('../lib/fileUtils.js');
   vi.doUnmock('./settings.js');
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -355,6 +360,19 @@ describe('deleteLora', () => {
     expect(existsSync(join(tmpLoras, 'lora-x.safetensors'))).toBe(false);
     expect(existsSync(join(tmpLoras, 'lora-x.safetensors.metadata.json'))).toBe(false);
   });
+  it('keeps the model when sidecar removal fails', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    const filePath = join(tmpLoras, 'cleanup-fails.safetensors');
+    const sidecar = `${filePath}.metadata.json`;
+    await fs.writeFile(filePath, 'weights');
+    await fs.mkdir(sidecar);
+    await fs.writeFile(join(sidecar, 'locked'), 'metadata');
+
+    await expect(lorasService.deleteLora('cleanup-fails.safetensors')).rejects.toThrow();
+    expect(existsSync(filePath)).toBe(true);
+    expect(existsSync(sidecar)).toBe(true);
+  });
   it('invalidates cached metadata before the same filename is reused', async () => {
     const fs = await import('fs/promises');
     await fs.mkdir(tmpLoras, { recursive: true });
@@ -424,6 +442,37 @@ describe('patchLoraSidecar', () => {
     expect(patched.recommendedScale).toBe(0.5);
     expect(patched.name).toBe('Custom');
     expect(JSON.parse(readFileSync(join(tmpLoras, 'lora-y.safetensors.metadata.json'), 'utf-8')).name).toBe('Custom');
+  });
+  it('does not recreate a sidecar when deletion wins the write queue', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    const filePath = join(tmpLoras, 'delete-race.safetensors');
+    const sidecar = `${filePath}.metadata.json`;
+    await fs.writeFile(filePath, 'weights');
+
+    let releaseWrite;
+    let markWriteStarted;
+    const writeStarted = new Promise((resolve) => { markWriteStarted = resolve; });
+    const writeReleased = new Promise((resolve) => { releaseWrite = resolve; });
+    atomicWriteHook = async (atomicWrite, ...args) => {
+      markWriteStarted();
+      await writeReleased;
+      return atomicWrite(...args);
+    };
+
+    const firstPatch = lorasService.patchLoraSidecar('delete-race.safetensors', { name: 'Before delete' });
+    await writeStarted;
+    const deletion = lorasService.deleteLora('delete-race.safetensors');
+    const latePatch = lorasService.patchLoraSidecar('delete-race.safetensors', { name: 'After delete' });
+
+    releaseWrite();
+    await firstPatch;
+    await deletion;
+    const err = await latePatch.catch((error) => error);
+    expect(err.status).toBe(404);
+    expect(err.code).toBe('NOT_FOUND');
+    expect(existsSync(filePath)).toBe(false);
+    expect(existsSync(sidecar)).toBe(false);
   });
 });
 
