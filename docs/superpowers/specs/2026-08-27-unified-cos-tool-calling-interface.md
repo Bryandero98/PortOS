@@ -432,7 +432,15 @@ Tools annotated `requiresConfirmation: true` never perform their side effect on 
 }
 ```
 
-The token is single-use, bound to the authenticated actor, tool, normalized arguments, request ID, and digest, and expires quickly. The model must not invent or replay a token. A UI or supervising mind obtains explicit user confirmation and calls `/confirm`; `approvalToken` is never accepted for a different payload. Destructive operations, external sends/publishes, process/database controls, provider-spend operations, and privacy-sensitive reveals are confirmation-gated or denied outright.
+The token is single-use, bound to the authenticated actor, tool, normalized arguments, request ID, and digest, and expires quickly. The model must not invent or replay a token. A UI or supervising mind obtains explicit user confirmation and calls `/confirm` with `{ "approvalToken": "..." }`; the confirmation request uses the original `requestId` in the path and the same authenticated actor. `approvalToken` is never accepted for a different payload.
+
+Confirmation is an explicit idempotency state transition, not a second invocation of the adapter:
+
+1. The initial call atomically creates an idempotency record in `preflight_confirmation` with the normalized-argument digest, actor, tool, token digest, expiry, and the complete `confirmation_required` envelope. It performs no side effect. A replay with the same key returns that envelope, including while it is pending.
+2. `POST /api/cos/tools/calls/:requestId/confirm` validates the token and atomically compare-and-swaps `preflight_confirmation` to `accepted`. Only the winner may enqueue or execute the adapter. A different actor, digest, expired token, or already-consumed token returns `409 CONFIRMATION_INVALID` and does not invoke the adapter.
+3. The winner stores the normal `accepted`/`running` record before dispatch and transitions it to one terminal result: `completed`, `failed`, `cancelled`, or `expired`. The original request and later confirmation retries return the stored terminal envelope with `replayed: true`; they never run the adapter again. A confirmation retry while execution is still active returns the stored `accepted`/`running` state and job reference.
+
+The compare-and-swap and terminal-result write are serialized by the same request record. The token is stored only as a digest, and the record is retained for the normal idempotency retention period so a retry cannot create a duplicate external effect. Destructive operations, external sends/publishes, process/database controls, provider-spend operations, and privacy-sensitive reveals are confirmation-gated or denied outright.
 
 ### 5.5 Errors
 
@@ -507,11 +515,11 @@ The first implementation should migrate the existing semantic tools and a small 
 
 | Canonical tool | Source | Initial policy |
 |---|---|---|
-| `brain.capture`, `brain.search`, `brain.recent` | Existing Brain voice tools and `/api/brain` services | Enabled for `mind`/`voice`; personal-data scope. |
+| `brain.capture`, `brain.search`, `brain.recent` | Existing Brain voice tools and `/api/brain` services | Enabled for `voice`/`palette`; personal-data scope. `mind` requires the explicit capability below. |
 | `memory.search`, `memory.get` | `/api/memory/search`, `/api/memory/:id` | Read-only, bounded, redacted. |
-| `goal.list`, `goal.update-progress`, `goal.log-note` | Existing goal voice tools and Digital Twin goal services | Writes idempotent by request ID. |
+| `goal.list`, `goal.update-progress`, `goal.log-note` | Existing goal voice tools and Digital Twin goal services | Reads may be exposed to `mind`; writes are initially `voice`/`palette` and idempotent by request ID. |
 | `calendar.today`, `calendar.next` | Existing ambient voice tools and calendar services | Read-only; account selection stays server-side. |
-| `health.summary-today`, `health.log-weight`, `health.log-workout` | Existing MeatSpace voice tools | Explicit personal-health capability. |
+| `health.summary-today`, `health.log-weight`, `health.log-workout` | Existing MeatSpace voice tools | Summary may be exposed to `mind`; writes are initially `voice`/`palette` and require an explicit personal-health capability. |
 | `catalog.lookup` | Existing catalog voice tool | Bounded result; custom type enum from current registry. |
 | `feeds.digest`, `feeds.mark-read` | Existing feeds voice tools | Read and low-risk mutation. |
 | `time.now`, `weather.now` | Existing ambient voice tools | Read-only. |
@@ -521,6 +529,12 @@ The first implementation should migrate the existing semantic tools and a small 
 | `code-agent.status` | Existing `code_agent_status` | Read-only status. |
 
 Do not include `pm2.restart`, generic `/api/commands/execute`, shell, database, backup restore, privacy vault reveal, OAuth/debug token routes, or outbound send/publish tools in the first wave.
+
+### 6.4 Persistent Mind compatibility gate
+
+The current Persistent Mind capability schema is strict and grants only the default-off `createTasks` capability. This proposal does not silently widen authority for existing conversation-only installs. Until the capability work is shipped, the first-wave write tools above are registered for `voice` and `palette` only; `mind` receives read-only tools that are already covered by its context contract.
+
+To add a typed action to `mind`, the implementation must add a named default-off capability (for example `brainWrite`, `goalsWrite`, or `healthWrite`) to the canonical Persistent Mind schema and catalog, persist it through a migration in `scripts/migrations/` with its seed in `data.reference/`, and expose its grant/revoke control in the Persistent Mind UI. Existing records must retain their prior effective authority after migration. The call path revalidates the stored grant, actor, tool, and scope at execution time; a generic `mind` scope or global default never implies a write grant. The tool manifest must advertise the capability requirement and the call must return `CAPABILITY_REQUIRED` when it is absent.
 
 ## 7. Scope and capability policy
 
