@@ -74,6 +74,16 @@ tool call back to the canonical PortOS call envelope.
         "properties": {"routing": {"const": "pinned"}},
         "required": ["provider"]
       }
+    ],
+    "allOf": [
+      {
+        "if": {"properties": {"mode": {"const": "implement"}}, "required": ["mode"]},
+        "then": {
+          "required": ["prCompletion"],
+          "properties": {"prCompletion": {"enum": ["review-then-merge", "merge-on-green", "leave-open"]}}
+        },
+        "else": {"properties": {"prCompletion": {"type": "null"}}}
+      }
     ]
   },
   "output_schema": {
