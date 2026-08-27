@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   readPersistentMindRollups: vi.fn(),
   updatePersistentMindMemory: vi.fn(),
   getProviderById: vi.fn(),
+  createPersistentMindAttachment: vi.fn(),
+  deletePersistentMindAttachment: vi.fn(),
   startPersistentMind: vi.fn(),
   pausePersistentMind: vi.fn(),
   resumePersistentMind: vi.fn(),
@@ -53,6 +55,8 @@ vi.mock('../services/persistentMindTaskCapability.js', () => ({
   readPersistentMindTaskCatalog: mocks.readPersistentMindTaskCatalog,
 }));
 vi.mock('../services/persistentMindSupervisor.js', () => ({
+  createPersistentMindAttachment: mocks.createPersistentMindAttachment,
+  deletePersistentMindAttachment: mocks.deletePersistentMindAttachment,
   getPersistentMindState: mocks.getPersistentMindState,
   enqueuePersistentMindMessage: mocks.enqueuePersistentMindMessage,
   startPersistentMind: mocks.startPersistentMind,
@@ -104,6 +108,19 @@ describe('persistent mind routes', () => {
     mocks.createPersistentMindMemory.mockResolvedValue({ id: 'memory-2', content: 'A new fact', sourceAgentId: 'cos-persistent-mind' });
     mocks.updatePersistentMindMemory.mockResolvedValue({ id: 'memory-1', content: 'An edited fact', sourceAgentId: 'cos-persistent-mind' });
     mocks.enqueuePersistentMindMessage.mockResolvedValue({ success: true, duplicate: false, messageId: 'message-1' });
+    mocks.createPersistentMindAttachment.mockResolvedValue({
+      success: true,
+      attachment: {
+        attachmentId: 'attachment-1',
+        filename: 'mind-attachment-1.png',
+        path: '/api/screenshots/mind-attachment-1.png',
+        originalName: 'diagram.png',
+        mimeType: 'image/png',
+        size: 12,
+        expiresAt: '2026-08-28T00:00:00.000Z',
+      },
+    });
+    mocks.deletePersistentMindAttachment.mockResolvedValue({ success: true, attachmentId: 'attachment-1' });
     mocks.appendPersistentMindAnnotation.mockResolvedValue({ appended: true, duplicate: false });
     mocks.promotePersistentMindMemory.mockResolvedValue({ success: true, memory: { id: 'memory-1' } });
     mocks.startPersistentMind.mockResolvedValue({ success: true });
@@ -269,6 +286,36 @@ describe('persistent mind routes', () => {
     expect(retry.status).toBe(202);
     expect(retry.body.duplicate).toBe(true);
     expect(mocks.enqueuePersistentMindMessage).toHaveBeenNthCalledWith(2, { id: 'message-1', text: 'Consider the next bounded slice.' });
+  });
+
+  it('admits image-only messages and forwards strict image references', async () => {
+    const res = await post('/mind/messages', { id: 'message-image', images: ['attachment-1'] });
+    expect(res.status).toBe(202);
+    expect(mocks.enqueuePersistentMindMessage).toHaveBeenCalledWith({
+      id: 'message-image', images: ['attachment-1'],
+    });
+  });
+
+  it('rejects empty, duplicate, oversized, and traversal image references', async () => {
+    expect((await post('/mind/messages', { id: 'empty' })).status).toBe(400);
+    expect((await post('/mind/messages', { id: 'duplicate', images: ['attachment-1', 'attachment-1'] })).status).toBe(400);
+    expect((await post('/mind/messages', {
+      id: 'too-many',
+      images: Array.from({ length: 9 }, (_, index) => `attachment-${index}`),
+    })).status).toBe(400);
+    expect((await post('/mind/messages', { id: 'traversal', images: ['../screenshot.png'] })).status).toBe(400);
+    expect(mocks.enqueuePersistentMindMessage).not.toHaveBeenCalled();
+  });
+
+  it('stores and removes attachments through the Mind-specific endpoints', async () => {
+    const upload = await post('/mind/attachments', { filename: 'diagram.png', data: 'iVBORw0KGgo=' });
+    expect(upload.status).toBe(201);
+    expect(mocks.createPersistentMindAttachment).toHaveBeenCalledWith({ filename: 'diagram.png', data: 'iVBORw0KGgo=' });
+    expect(upload.body.attachment).toMatchObject({ attachmentId: 'attachment-1', path: '/api/screenshots/mind-attachment-1.png' });
+
+    const deleteResponse = await request(app()).delete('/api/cos/mind/attachments/attachment-1');
+    expect(deleteResponse.status).toBe(200);
+    expect(mocks.deletePersistentMindAttachment).toHaveBeenCalledWith('attachment-1');
   });
 
   it('validates annotation targets and lifecycle inputs', async () => {

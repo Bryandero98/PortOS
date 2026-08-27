@@ -19,6 +19,7 @@ describe('persistent mind state', () => {
       started: false,
       status: 'disabled',
       queuedMessages: [],
+      pendingAttachments: [],
       selfWake: null,
       activeTurn: null,
     });
@@ -79,6 +80,55 @@ describe('persistent mind state', () => {
     const completed = requeuePersistentMindWake({ ...once, queuedMessages: [], recentMessageIds: ['m1'] }, wake);
     expect(twice.queuedMessages).toHaveLength(1);
     expect(completed.queuedMessages).toHaveLength(0);
+  });
+
+  it('preserves bounded image references for image-only messages through requeue normalization', () => {
+    const attachment = {
+      attachmentId: 'attachment-1',
+      filename: 'mind-attachment-1.png',
+      originalName: 'diagram.png',
+      mimeType: 'image/png',
+      size: 128,
+      uploadedAt: iso(1),
+      claimedBy: 'message-1',
+      expiresAt: null,
+    };
+    const state = normalizePersistentMindState({
+      enabled: true,
+      started: true,
+      status: 'waiting',
+      pendingAttachments: [attachment],
+      queuedMessages: [{ id: 'message-1', text: '', images: [attachment], createdAt: iso(1) }],
+    });
+    expect(state.pendingAttachments).toMatchObject([{ attachmentId: 'attachment-1', claimedBy: 'message-1', expiresAt: null }]);
+    expect(state.queuedMessages[0]).toMatchObject({
+      id: 'message-1',
+      text: '',
+      images: [{ attachmentId: 'attachment-1', path: '/api/screenshots/mind-attachment-1.png' }],
+    });
+    const requeued = requeuePersistentMindWake({ ...state, queuedMessages: [] }, {
+      kind: 'message',
+      message: state.queuedMessages[0],
+    });
+    expect(requeued.queuedMessages[0].images).toEqual(state.queuedMessages[0].images);
+  });
+
+  it('drops image-only messages whose durable image reference is not safe', () => {
+    const state = normalizePersistentMindState({
+      queuedMessages: [{
+        id: 'message-1',
+        text: '',
+        images: [{
+          attachmentId: 'attachment-1',
+          filename: '../outside.png',
+          originalName: 'outside.png',
+          mimeType: 'image/png',
+          size: 128,
+          uploadedAt: iso(1),
+        }],
+      }],
+    });
+    expect(state.queuedMessages).toEqual([]);
   });
 
   it('caps exponential backoff and detects stale heartbeats at the boundary', () => {
