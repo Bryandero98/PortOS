@@ -5,13 +5,9 @@ import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { getMemoryStats } from '../lib/memoryStats.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { PERSISTENT_MIND_TRAJECTORY_LIMITS } from '../lib/persistentMindTrajectory.js';
+import { getLoadedModelsAt as getLoadedOllamaModelsAt } from './ollamaManager.js';
 import {
-  getLastLoadedModelsError as getOllamaResidencyError,
-  getLoadedModels as getLoadedOllamaModels,
-} from './ollamaManager.js';
-import {
-  getLastLoadedModelsError as getLmStudioResidencyError,
-  getLoadedModels as getLoadedLmStudioModels,
+  getLoadedModelsAt as getLoadedLmStudioModelsAt,
   modelIdsReferToSameRepo,
 } from './lmStudioManager.js';
 import { preparePersistentMindContext, readPersistentMindMemories } from './persistentMindContext.js';
@@ -42,11 +38,9 @@ async function inspectModelResidency(provider, model) {
   let models;
   let error;
   if (backend === 'ollama') {
-    models = await getLoadedOllamaModels();
-    error = getOllamaResidencyError();
+    ({ models, error } = await getLoadedOllamaModelsAt(runtime.endpoint));
   } else if (backend === 'lmstudio') {
-    models = await getLoadedLmStudioModels(true);
-    error = getLmStudioResidencyError();
+    ({ models, error } = await getLoadedLmStudioModelsAt(runtime.endpoint));
   } else {
     const probe = await probeOpenAiModels(runtime.endpoint, { apiKey: provider.apiKey || '' });
     models = Array.isArray(probe.models) ? probe.models.map((id) => ({ id })) : [];
