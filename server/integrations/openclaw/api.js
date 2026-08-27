@@ -2,6 +2,7 @@ import { join } from 'path';
 import { readJSONFile, PATHS } from '../../lib/fileUtils.js';
 import { fetchWithTimeout } from '../../lib/fetchWithTimeout.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { isInstanceFeatureEnabled } from '../../services/instanceFeatures.js';
 
 const CONFIG_FILE = join(PATHS.data, 'openclaw', 'config.json');
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -121,9 +122,10 @@ async function loadConfig() {
   const fileConfig = await readJSONFile(CONFIG_FILE, {}, { logError: false });
   const envEnabled = parseBoolean(process.env.OPENCLAW_ENABLED);
   const enabled = pickFirst(envEnabled, fileConfig.enabled, true);
+  const featureEnabled = await isInstanceFeatureEnabled('openclaw');
   const baseUrlRaw = pickFirst(process.env.OPENCLAW_BASE_URL, fileConfig.baseUrl, '');
   let finalBaseUrl = typeof baseUrlRaw === 'string' ? baseUrlRaw.trim() : '';
-  let configured = enabled !== false && Boolean(finalBaseUrl);
+  let configured = featureEnabled && enabled !== false && Boolean(finalBaseUrl);
 
   if (configured && finalBaseUrl) {
     try {
@@ -141,7 +143,8 @@ async function loadConfig() {
   }
 
   return {
-    enabled,
+    enabled: featureEnabled && enabled !== false,
+    featureEnabled,
     configured,
     baseUrl: finalBaseUrl,
     authToken: pickFirst(process.env.OPENCLAW_AUTH_TOKEN, fileConfig.authToken, ''),
@@ -356,7 +359,12 @@ export async function isConfigured() {
 export async function getRuntimeStatus() {
   const config = await loadConfig();
   if (!config.configured) {
-    return normalizeStatusPayload(null, config, false, 'OpenClaw is not configured');
+    return normalizeStatusPayload(
+      null,
+      config,
+      false,
+      config.featureEnabled ? 'OpenClaw is not configured' : 'OpenClaw is disabled for this PortOS instance'
+    );
   }
 
   try {

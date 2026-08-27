@@ -3,6 +3,7 @@ import { render, screen, within, act, fireEvent, waitFor } from '@testing-librar
 import { MemoryRouter } from 'react-router';
 import { PINNED_KEY } from '../utils/navWorkingSet.js';
 import * as api from '../services/api';
+import { INSTANCE_FEATURES_CHANGED } from '../constants/events.js';
 
 // This suite locks the *integration* path that SingleNavRow.test.jsx can't reach:
 // pinning a top-level `single: true` row (Dashboard `/`, Review Hub `/review`,
@@ -52,7 +53,7 @@ vi.mock('../services/socket', () => ({
 
 // --- API: every sidebar fetch resolves empty so the dynamic sections stay bare
 //     and the single rows are the only top-level leaves under test. ---
-// Instance features gate sidebar rows (POST / DataDog / JIRA / GSD). Default every
+// Instance features gate sidebar rows (POST / DataDog / JIRA / GSD / OpenClaw). Default every
 // feature ON so these tests see the full sidebar; the gating itself is covered
 // by 'Layout — instance feature gating' below.
 const allFeaturesOn = () => [
@@ -60,6 +61,7 @@ const allFeaturesOn = () => [
   { id: 'datadog', label: 'DataDog', enabled: true },
   { id: 'jira', label: 'JIRA', enabled: true },
   { id: 'gsd', label: 'GSD', enabled: true },
+  { id: 'openclaw', label: 'OpenClaw', enabled: true },
 ];
 const featureMock = vi.hoisted(() => ({ features: null }));
 
@@ -68,6 +70,7 @@ vi.mock('../services/api', () => ({
   listPipelineSeries: vi.fn(() => Promise.resolve([])),
   listUniverses: vi.fn(() => Promise.resolve([])),
   getPaletteManifest: vi.fn(() => Promise.resolve({ nav: [] })),
+  getDailyActions: vi.fn(() => Promise.resolve({ actions: [] })),
   getInstanceFeatures: vi.fn(() => Promise.resolve({ features: featureMock.features })),
 }));
 
@@ -202,6 +205,18 @@ describe('Layout — instance feature gating', () => {
     await renderLayout('/settings/features');
 
     expect(screen.getByRole('link', { name: 'Features' })).toHaveAttribute('href', '/settings/features');
+  });
+
+  it('shows and hides OpenClaw with its instance feature flag', async () => {
+    await renderLayout('/openclaw');
+    expect(screen.getByRole('link', { name: 'OpenClaw' })).toHaveAttribute('href', '/openclaw');
+
+    featureMock.features = allFeaturesOn()
+      .map((feature) => feature.id === 'openclaw' ? { ...feature, enabled: false } : feature);
+    act(() => window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { features: featureMock.features },
+    })));
+    expect(screen.queryByRole('link', { name: 'OpenClaw' })).toBeNull();
   });
 
   it('drops the whole POST section when POST is off', async () => {

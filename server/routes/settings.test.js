@@ -110,6 +110,7 @@ describe('Settings routes — instance feature participation', () => {
     // GSD remains enabled by default so existing app planning tabs stay
     // available unless the install explicitly opts out.
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'gsd', enabled: true }));
+    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'openclaw', enabled: true }));
   });
 
   it('updates one feature without replacing unrelated settings', async () => {

@@ -40,8 +40,16 @@ import { formatDateTime } from '../utils/formatters';
 import { useOpenClawAttachments, OPENCLAW_ATTACHMENT_ACCEPT } from '../hooks/useOpenClawAttachments';
 import { useOpenClawStream } from '../hooks/useOpenClawStream';
 import { modKey } from '../utils/platform';
+import { useInstanceFeatures } from '../hooks/useInstanceFeatures.js';
 
 function getRuntimeState(status) {
+  if (status?.enabled === false) {
+    return {
+      label: 'Disabled',
+      classes: 'bg-gray-500/15 text-gray-300 border-gray-500/30'
+    };
+  }
+
   if (!status?.configured) {
     return {
       label: 'Unconfigured',
@@ -117,6 +125,9 @@ function partitionSessions(sessions = [], selectedSessionId = '', defaultSession
 }
 
 export default function OpenClaw() {
+  const { features } = useInstanceFeatures();
+  const featureEnabled = Array.isArray(features)
+    && features.some((feature) => feature?.id === 'openclaw' && feature.enabled === true);
   const [status, setStatus] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [apps, setApps] = useState([]);
@@ -186,7 +197,8 @@ export default function OpenClaw() {
     sending,
     setSending,
     onError: setMessagesError,
-    onSendComplete: handleSendComplete
+    onSendComplete: handleSendComplete,
+    featureEnabled,
   });
 
   const runtimeState = useMemo(() => getRuntimeState(status), [status]);
@@ -199,6 +211,23 @@ export default function OpenClaw() {
     setStatusLoading(true);
     setSessionsLoading(true);
     setPageError('');
+
+    if (!featureEnabled) {
+      setStatus({
+        configured: false,
+        enabled: false,
+        reachable: false,
+        label: 'OpenClaw Runtime',
+        defaultSession: null,
+        message: 'OpenClaw is disabled for this PortOS instance.'
+      });
+      setSessions([]);
+      setSelectedSessionId('');
+      loadMessages('');
+      setStatusLoading(false);
+      setSessionsLoading(false);
+      return;
+    }
 
     try {
       const statusData = await api.getOpenClawStatus();
@@ -239,12 +268,16 @@ export default function OpenClaw() {
       setStatusLoading(false);
       setSessionsLoading(false);
     }
-  }, [loadMessages]);
+  }, [featureEnabled, loadMessages]);
 
   useEffect(() => {
     loadRuntime();
+    if (!featureEnabled) {
+      setApps([]);
+      return;
+    }
     coreApi.getApps().then(data => setApps((data || []).filter(app => !app.archived))).catch(() => setApps([]));
-  }, [loadRuntime]);
+  }, [featureEnabled, loadRuntime]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -377,6 +410,10 @@ export default function OpenClaw() {
                   <RefreshCw size={14} className="animate-spin" />
                   Loading sessions…
                 </div>
+              ) : status?.enabled === false ? (
+                <div className="p-4 text-sm text-gray-400">
+                  Enable OpenClaw in Settings &gt; Features to discover sessions.
+                </div>
               ) : !status?.configured ? (
                 <div className="p-4 text-sm text-gray-400">
                   Add local OpenClaw config to enable session discovery.
@@ -484,6 +521,10 @@ export default function OpenClaw() {
               <div className="flex h-full items-center justify-center gap-2 text-sm text-gray-400">
                 <RefreshCw size={16} className="animate-spin" />
                 Loading messages…
+              </div>
+            ) : status?.enabled === false ? (
+              <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-port-border bg-port-bg/40 p-6 text-center text-sm text-gray-400">
+                OpenClaw is disabled for this PortOS instance. Enable it in Settings &gt; Features to use operator chat.
               </div>
             ) : !status?.configured ? (
               <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-port-border bg-port-bg/40 p-6 text-center text-sm text-gray-400">
@@ -604,7 +645,7 @@ export default function OpenClaw() {
                 onPaste={handlePaste}
                 onKeyDown={handleComposerKeyDown}
                 rows={3}
-                placeholder={status?.configured ? 'Send a message, paste an image, or drop files here…' : 'OpenClaw is not configured'}
+                placeholder={status?.enabled === false ? 'OpenClaw is disabled' : (status?.configured ? 'Send a message, paste an image, or drop files here…' : 'OpenClaw is not configured')}
                 disabled={!status?.configured || !selectedSessionId || sending}
                 className="w-full resize-none rounded-lg border border-port-border bg-port-bg px-3 py-3 text-sm text-white focus:border-port-accent focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-60"
               />
@@ -651,7 +692,7 @@ export default function OpenClaw() {
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
                 <span>
-                  {status?.configured && selectedSessionId ? `Stream via PortOS · ${modKey}+↵ to send` : 'Select a configured session to send.'}
+                  {status?.enabled === false ? 'Enable OpenClaw in Settings > Features to send messages.' : (status?.configured && selectedSessionId ? `Stream via PortOS · ${modKey}+↵ to send` : 'Select a configured session to send.')}
                 </span>
                 <FilePickerButton
                   multiple
