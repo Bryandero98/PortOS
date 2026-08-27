@@ -5,7 +5,12 @@ import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
 import { PERSISTENT_MIND_LIMITS } from '../lib/persistentMind.js';
-import { normalizePersistentMindCapabilities } from '../lib/persistentMindCapabilities.js';
+import {
+  normalizePersistentMindCapabilities,
+  PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
+  PERSISTENT_MIND_TOOL_BOUNDARIES,
+  PERSISTENT_MIND_TOOL_CATALOG,
+} from '../lib/persistentMindCapabilities.js';
 import {
   PERSISTENT_MIND_ID,
   PERSISTENT_MIND_TRAJECTORY_LIMITS,
@@ -151,6 +156,23 @@ router.get('/mind/context', asyncHandler(async (_req, res) => {
     memories,
     rollups,
     harness: persistentMindHarnessInfo(provider),
+  });
+}));
+
+// Keep the persistent mind's authority inventory separate from the broader
+// onboard-tools registry. Those tools belong to other agent surfaces and are
+// not direct capabilities of the persistent mind.
+router.get('/mind/tools', asyncHandler(async (_req, res) => {
+  const root = await loadState();
+  const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+  res.json({
+    schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
+    capabilities,
+    boundaries: PERSISTENT_MIND_TOOL_BOUNDARIES,
+    tools: PERSISTENT_MIND_TOOL_CATALOG.map((tool) => ({
+      ...tool,
+      granted: capabilities[tool.capability] === true,
+    })),
   });
 }));
 

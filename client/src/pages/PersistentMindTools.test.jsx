@@ -1,0 +1,79 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router';
+
+const api = vi.hoisted(() => ({
+  getPersistentMindTools: vi.fn(),
+  updateCosConfig: vi.fn(),
+}));
+
+vi.mock('../services/api', () => api);
+vi.mock('../components/ui/Toast', () => ({
+  default: { success: vi.fn(), error: vi.fn() },
+}));
+
+import PersistentMindTools from './PersistentMindTools';
+
+const response = (overrides = {}) => ({
+  schemaVersion: 1,
+  capabilities: { schemaVersion: 1, createTasks: false },
+  tools: [{
+    id: 'cos.create-task',
+    capability: 'createTasks',
+    name: 'Queue CoS agent tasks',
+    description: 'Request a bounded, typed CoS task for an app using a configured coding provider.',
+    kind: 'typed-action',
+    defaultEnabled: false,
+    granted: false,
+    guardrails: ['Up to five requests per turn'],
+  }],
+  boundaries: ['No arbitrary shell or file-system access'],
+  ...overrides,
+});
+
+const renderPage = () => render(
+  <MemoryRouter initialEntries={['/cos/mind/tools']}>
+    <PersistentMindTools />
+  </MemoryRouter>,
+);
+
+describe('PersistentMindTools', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getPersistentMindTools.mockResolvedValue(response());
+    api.updateCosConfig.mockResolvedValue({ success: true });
+  });
+
+  it('renders the server-described authority inventory and hard boundaries', async () => {
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Access inventory' })).toBeInTheDocument();
+    expect(screen.getByText(/persistent-mind capabilities granted/)).toHaveTextContent('0 of 1');
+    expect(screen.getByText('No arbitrary shell or file-system access')).toBeInTheDocument();
+    expect(screen.getByText('Off by default')).toBeInTheDocument();
+  });
+
+  it('edits the typed task grant and updates the inventory without a refetch', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole('checkbox', { name: 'Allow mind to queue CoS agent tasks' });
+    await user.click(toggle);
+
+    await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
+      { persistentMindCapabilities: { schemaVersion: 1, createTasks: true } },
+      { silent: true },
+    ));
+    expect(await screen.findByText(/persistent-mind capabilities granted/)).toHaveTextContent('1 of 1');
+    expect(screen.getByText('Granted')).toBeInTheDocument();
+  });
+
+  it('keeps the failure visible instead of presenting an empty inventory', async () => {
+    api.getPersistentMindTools.mockRejectedValue(new Error('Server unreachable'));
+    renderPage();
+
+    expect(await screen.findByText('Tools unavailable')).toBeInTheDocument();
+    expect(screen.queryByText(/persistent-mind capabilities granted/)).not.toBeInTheDocument();
+  });
+});

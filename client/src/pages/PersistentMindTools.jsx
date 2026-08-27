@@ -1,0 +1,134 @@
+import { useCallback, useEffect, useState } from 'react';
+import { ArrowLeft, CheckCircle2, LockKeyhole, RefreshCw, ShieldCheck, Wrench } from 'lucide-react';
+import { Link } from 'react-router';
+import * as api from '../services/api';
+import PageHeader from '../components/PageHeader';
+import BrailleSpinner from '../components/BrailleSpinner';
+import Banner from '../components/ui/Banner';
+import PersistentMindTaskAccessControls from '../components/cos/PersistentMindTaskAccessControls';
+
+export default function PersistentMindTools() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.getPersistentMindTools({ silent: true })
+      .then((response) => {
+        setData(response);
+        setError(null);
+      })
+      .catch((requestError) => setError(requestError?.message || 'Could not load persistent mind tools'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const tools = Array.isArray(data?.tools) ? data.tools : [];
+  const grantedCount = tools.filter((tool) => tool.granted === true).length;
+  const updateCapabilities = (capabilities) => setData((current) => current ? {
+    ...current,
+    capabilities,
+    tools: (current.tools || []).map((tool) => ({
+      ...tool,
+      granted: capabilities[tool.capability] === true,
+    })),
+  } : current);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        icon={Wrench}
+        title="Persistent Mind Tools"
+        subtitle="Inventory and edit the typed authority granted to the resident mind"
+        actions={(
+          <Link to="/cos/mind" className="inline-flex min-h-10 items-center gap-1.5 rounded border border-port-border px-3 text-sm text-port-text-muted hover:border-port-accent hover:text-port-accent">
+            <ArrowLeft size={15} aria-hidden="true" /> Back to mind
+          </Link>
+        )}
+      />
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+        <div className="mx-auto max-w-5xl space-y-4">
+          {error && <Banner tone="error" title="Tools unavailable">{error}. The last loaded state is preserved; retry when the connection recovers.</Banner>}
+
+          {loading && !data ? (
+            <div className="flex justify-center py-12"><BrailleSpinner text="Loading persistent mind tools" /></div>
+          ) : data ? (
+            <>
+              <section aria-labelledby="tools-summary-heading" className="rounded border border-port-border bg-port-card p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 id="tools-summary-heading" className="flex items-center gap-2 text-base font-semibold text-port-text">
+                      <ShieldCheck size={18} className="text-port-accent" aria-hidden="true" />
+                      Access inventory
+                    </h2>
+                    <p className="mt-1 text-sm text-port-text-muted">
+                      {grantedCount} of {tools.length} persistent-mind capabilities granted. Changes apply to the next eligible wake.
+                    </p>
+                  </div>
+                  <button type="button" onClick={load} disabled={loading} className="inline-flex min-h-10 items-center gap-1.5 rounded border border-port-border px-3 text-sm text-port-text-muted hover:border-port-accent hover:text-port-accent disabled:opacity-50">
+                    <RefreshCw size={15} className={loading ? 'animate-spin motion-reduce:animate-none' : ''} aria-hidden="true" /> Refresh
+                  </button>
+                </div>
+              </section>
+
+              <section aria-labelledby="tools-heading" className="space-y-3">
+                <h2 id="tools-heading" className="text-sm font-semibold uppercase tracking-wide text-port-text-muted">Granted capabilities</h2>
+                {tools.map((tool) => (
+                  <article key={tool.id} className="rounded border border-port-border bg-port-card p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded ${tool.granted ? 'bg-port-success/15 text-port-success' : 'bg-port-border/50 text-port-text-muted'}`}>
+                          {tool.granted ? <CheckCircle2 size={19} aria-hidden="true" /> : <LockKeyhole size={18} aria-hidden="true" />}
+                        </span>
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-semibold text-port-text">{tool.name}</h3>
+                          <p className="mt-1 text-sm text-port-text-muted">{tool.description}</p>
+                        </div>
+                      </div>
+                      <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${tool.granted ? 'border-port-success/40 text-port-success' : 'border-port-border text-port-text-muted'}`}>
+                        {tool.granted ? 'Granted' : 'Off by default'}
+                      </span>
+                    </div>
+
+                    {tool.capability === 'createTasks' && (
+                      <div className="mt-4 border-t border-port-border pt-4">
+                        <PersistentMindTaskAccessControls
+                          capabilities={data.capabilities}
+                          onSaved={updateCapabilities}
+                        />
+                      </div>
+                    )}
+
+                    {Array.isArray(tool.guardrails) && tool.guardrails.length > 0 && (
+                      <div className="mt-4 rounded border border-port-border bg-port-bg/40 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-port-text-muted">Guardrails</p>
+                        <ul className="mt-2 space-y-1 text-xs text-port-text-muted">
+                          {tool.guardrails.map((guardrail) => <li key={guardrail}>• {guardrail}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </section>
+
+              <section aria-labelledby="boundaries-heading" className="rounded border border-port-border bg-port-card p-4">
+                <h2 id="boundaries-heading" className="flex items-center gap-2 text-sm font-semibold text-port-text">
+                  <LockKeyhole size={16} className="text-port-warning" aria-hidden="true" />
+                  Always outside the persistent mind's authority
+                </h2>
+                <ul className="mt-3 grid gap-2 text-sm text-port-text-muted sm:grid-cols-3">
+                  {(data.boundaries || []).map((boundary) => <li key={boundary} className="rounded border border-port-border px-3 py-2">{boundary}</li>)}
+                </ul>
+              </section>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
