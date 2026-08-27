@@ -112,6 +112,26 @@ describe('brainJournal', () => {
     });
   });
 
+  describe('settings', () => {
+    it('serializes concurrent patches so each update sees the latest settings', async () => {
+      const [vaultUpdate, folderUpdate] = await Promise.all([
+        journal.updateSettings({ obsidianVaultId: 'vault-1' }),
+        journal.updateSettings({ obsidianFolder: 'Journal' }),
+      ]);
+
+      expect(vaultUpdate).toMatchObject({ obsidianVaultId: 'vault-1' });
+      expect(folderUpdate).toMatchObject({
+        obsidianVaultId: 'vault-1',
+        obsidianFolder: 'Journal',
+      });
+      expect(await journal.getSettings()).toEqual({
+        obsidianVaultId: 'vault-1',
+        obsidianFolder: 'Journal',
+        autoSync: true,
+      });
+    });
+  });
+
   describe('getJournal / listJournals', () => {
     it('returns null for missing dates', async () => {
       expect(await journal.getJournal('2026-01-01')).toBeNull();

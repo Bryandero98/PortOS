@@ -25,6 +25,7 @@
 import { join } from 'path';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
+import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { replaceMarkedSection } from '../lib/markedSection.js';
 import * as brainStorage from './brainStorage.js';
@@ -51,6 +52,8 @@ const DEFAULT_SETTINGS = {
   autoSync: true,
 };
 
+const queueSettingsWrite = createFileWriteQueue();
+
 // ─── Settings ──────────────────────────────────────────────────────────────
 
 export async function getSettings() {
@@ -60,10 +63,12 @@ export async function getSettings() {
 }
 
 export async function updateSettings(partial) {
-  const current = await getSettings();
-  const next = { ...current, ...partial };
-  await atomicWrite(SETTINGS_FILE, next);
-  return next;
+  return queueSettingsWrite(async () => {
+    const current = await getSettings();
+    const next = { ...current, ...partial };
+    await atomicWrite(SETTINGS_FILE, next);
+    return next;
+  });
 }
 
 // ─── Store ─────────────────────────────────────────────────────────────────
