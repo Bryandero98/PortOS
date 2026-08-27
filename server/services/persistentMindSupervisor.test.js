@@ -182,6 +182,19 @@ describe('persistent mind supervisor', () => {
     expect(mock.recordUsage).toHaveBeenCalledWith('cos', expect.objectContaining({ actions: 1 }));
   });
 
+  it('fails closed when a legacy completed message has no retry fingerprint', async () => {
+    mock.root.persistentMind.recentMessageIds = ['legacy-message'];
+
+    await expect(supervisor.enqueuePersistentMindMessage({
+      id: 'legacy-message',
+      text: 'A changed retry cannot be verified.',
+    })).resolves.toMatchObject({
+      success: false,
+      code: 'IDEMPOTENCY_CONFLICT',
+      status: 409,
+    });
+  });
+
   it('pauses before adapter preparation when the pinned profile cannot resolve', async () => {
     const prepare = vi.fn();
     await supervisor.registerPersistentMindTurnAdapter({ prepare, run: vi.fn() });

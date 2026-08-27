@@ -1136,6 +1136,15 @@ export async function enqueuePersistentMindMessage({ id = randomUUID(), text, im
       ? imageIdsForMessage(existingMessage)
       : claimedRecords.map((attachment) => attachment.attachmentId);
     if (duplicate) {
+      if (!existingMessage && !recentFingerprint) {
+        return {
+          mind,
+          value: attachmentFailure('This completed message predates retry verification; send it again with a new message id', {
+            code: 'IDEMPOTENCY_CONFLICT',
+            status: 409,
+          }),
+        };
+      }
       if (!existingMessage && recentFingerprint && recentFingerprint !== requestedFingerprint) {
         return {
           mind,
