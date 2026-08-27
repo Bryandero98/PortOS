@@ -140,7 +140,9 @@ export default function FamilyCard({
             {status.windowLabel ? `${status.windowLabel}: ` : ''}{status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}{isUnlimitedDispatchCap(config.maxDispatchesPerWindow) ? '' : `/${config.maxDispatchesPerWindow}`} used
           </span>
         ) : (
-          <span className="text-xs text-gray-500">{status?.skipReason || 'not evaluated yet'}</span>
+          !status?.blockedUntil && (
+            <span className="text-xs text-gray-500">{status?.skipReason || 'not evaluated yet'}</span>
+          )
         )}
 
         {/* An observed refusal, shown even when some other gate is the one
