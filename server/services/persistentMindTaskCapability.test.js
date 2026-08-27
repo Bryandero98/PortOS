@@ -10,15 +10,23 @@ const mocks = vi.hoisted(() => ({
   existing: null,
   addTask: vi.fn(),
   getTaskById: vi.fn(),
+  getAppWorkTracker: vi.fn(),
+  resolveAppWorkTracker: vi.fn(),
 }));
 
-vi.mock('./apps.js', () => ({ getActiveApps: vi.fn(async () => mocks.apps) }));
+vi.mock('./apps.js', () => ({
+  getActiveApps: vi.fn(async () => mocks.apps),
+  getAppWorkTracker: (...args) => mocks.getAppWorkTracker(...args),
+}));
 vi.mock('./cosState.js', () => ({ loadState: vi.fn(async () => mocks.root) }));
 vi.mock('./cosTaskStore.js', () => ({
   addTask: (...args) => mocks.addTask(...args),
   getTaskById: (...args) => mocks.getTaskById(...args),
 }));
 vi.mock('./providers.js', () => ({ listProviders: vi.fn(async () => mocks.providers) }));
+vi.mock('../lib/workTracker.js', () => ({
+  resolveAppWorkTracker: (...args) => mocks.resolveAppWorkTracker(...args),
+}));
 
 const {
   buildPersistentMindTaskCapabilityPrompt,
@@ -47,6 +55,8 @@ beforeEach(() => {
     defaultModel: 'gpt-5', models: ['gpt-5', 'gpt-5-mini'],
   }];
   mocks.existing = null;
+  mocks.getAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
+  mocks.resolveAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
   mocks.getTaskById.mockImplementation(async () => mocks.existing);
   mocks.addTask.mockResolvedValue({ id: 'sys-mind-stable', status: 'pending', autoApproved: true });
 });
@@ -57,7 +67,7 @@ describe('persistent mind CoS-task capability', () => {
     mocks.providers.push({ id: 'api-only', name: 'API Only', type: 'api', enabled: true });
     const catalog = await readPersistentMindTaskCatalog();
     expect(catalog).toEqual({
-      apps: [{ id: 'portos', name: 'PortOS' }],
+      apps: [{ id: 'portos', name: 'PortOS', planOnly: false }],
       providers: [{
         id: 'codex', name: 'Codex', type: 'cli',
         models: [
@@ -70,6 +80,8 @@ describe('persistent mind CoS-task capability', () => {
     expect(prompt).toContain('"review-then-merge"');
     expect(prompt).toContain('"merge-on-green"');
     expect(prompt).toContain('"leave-open"');
+    expect(prompt).toContain('Plan & File Issue');
+    expect(prompt).toContain('planOnly');
     expect(prompt).not.toContain('command');
   });
 
@@ -92,6 +104,14 @@ describe('persistent mind CoS-task capability', () => {
     expect(prompt).toContain('provider-0');
   });
 
+  it('reuses tracker resolution for repeated catalog reads', async () => {
+    mocks.apps = [{ id: 'cached-app', name: 'Cached App', repoPath: '/example/cached-app' }];
+    await readPersistentMindTaskCatalog();
+    await readPersistentMindTaskCatalog();
+
+    expect(mocks.resolveAppWorkTracker).toHaveBeenCalledTimes(1);
+  });
+
   it('queues an auto-approved isolated task with the chosen run and PR policy', async () => {
     const recordCapabilityEvent = vi.fn(async () => true);
     const results = await executePersistentMindTaskRequests({
@@ -109,6 +129,32 @@ describe('persistent mind CoS-task capability', () => {
       simplify: true, approvalRequired: false,
     }), 'internal');
     expect(recordCapabilityEvent.mock.calls.map(([event]) => event.kind)).toEqual(['request', 'result']);
+  });
+
+  it('queues plan-and-file mode only for an app with an issue tracker', async () => {
+    mocks.getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
+    const results = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest({ planOnly: true, prCompletion: undefined })],
+      turnId: 'turn-plan-only',
+      wake: { kind: 'message', message: { id: 'message-plan-only' } },
+    });
+
+    expect(results).toMatchObject([{ success: true }]);
+    expect(mocks.addTask).toHaveBeenCalledWith(expect.objectContaining({ planOnly: true }), 'internal');
+    expect(mocks.addTask.mock.calls[0][0]).not.toHaveProperty('openPR');
+    expect(mocks.addTask.mock.calls[0][0]).not.toHaveProperty('prCompletion');
+  });
+
+  it('rejects plan-and-file mode for PLAN.md apps before queueing', async () => {
+    mocks.getAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
+    const [result] = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest({ planOnly: true, prCompletion: undefined })],
+      turnId: 'turn-plan-tracker',
+      wake: { kind: 'message', message: { id: 'message-plan-tracker' } },
+    });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('GitHub or GitLab') });
+    expect(mocks.addTask).not.toHaveBeenCalled();
   });
 
   it('fails closed when access is revoked after inference', async () => {

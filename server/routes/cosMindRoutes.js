@@ -33,6 +33,7 @@ import {
 } from '../services/persistentMindContext.js';
 import { getProviderById } from '../services/providers.js';
 import { persistentMindHarnessInfo } from '../services/persistentMindAdapter.js';
+import { readPersistentMindTaskCatalog } from '../services/persistentMindTaskCapability.js';
 import { inspectPersistentMindRuntime } from '../services/persistentMindRuntime.js';
 import {
   enqueuePersistentMindMessage,
@@ -165,10 +166,12 @@ router.get('/mind/context', asyncHandler(async (_req, res) => {
 router.get('/mind/tools', asyncHandler(async (_req, res) => {
   const root = await loadState();
   const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+  const taskCatalog = capabilities.createTasks ? await readPersistentMindTaskCatalog() : null;
   res.json({
     schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
     capabilities,
     boundaries: PERSISTENT_MIND_TOOL_BOUNDARIES,
+    taskCatalog,
     tools: PERSISTENT_MIND_TOOL_CATALOG.map((tool) => ({
       ...tool,
       granted: capabilities[tool.capability] === true,
