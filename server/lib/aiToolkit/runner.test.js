@@ -307,6 +307,41 @@ describe('AI Toolkit runner service', () => {
     expect('num_ctx' in JSON.parse(fetch.mock.calls[0][1].body)).toBe(false);
   });
 
+  it('retries a transient gateway response before the API stream starts', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const cancel = vi.fn(async () => {});
+    const encoder = new TextEncoder();
+    const chunks = [encoder.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n')];
+    let index = 0;
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, body: { cancel } })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        body: { getReader: () => ({ read: async () => index < chunks.length
+          ? { done: false, value: chunks[index++] }
+          : { done: true } }) },
+      });
+    vi.stubGlobal('fetch', fetch);
+
+    const runner = createRunnerService({
+      dataDir,
+      hooks: { ensureProviderReady: async () => ({ success: true }) },
+    });
+    let done;
+    const completed = new Promise((resolve) => { done = resolve; });
+    await runner.executeApiRun({
+      runId: 'run-pre-header-retry', provider: runReady(), model: null,
+      prompt: 'hi', workspacePath: process.cwd(), screenshots: [],
+      onData: undefined, onComplete: (metadata) => done(metadata),
+    });
+
+    await expect(completed).resolves.toMatchObject({ success: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('anchors relative screenshot refs under screenshotsDir so `../` traversal cannot escape it', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     const screenshotsDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-shots-'));
