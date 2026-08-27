@@ -100,7 +100,7 @@ vi.mock('../components/TagPicker', () => ({ default: () => <div data-testid="tag
 vi.mock('../components/ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 import CatalogIngredient, { buildGenerationPromptSeed } from './CatalogIngredient';
-import { getCatalogIngredientDetails } from '../services/apiCatalog';
+import { getCatalogIngredientDetails, unlinkCatalogIngredientRelation } from '../services/apiCatalog';
 
 const renderPage = () => render(<MemoryRouter><CatalogIngredient /></MemoryRouter>);
 
@@ -109,6 +109,41 @@ beforeEach(() => {
 });
 
 describe('CatalogIngredient — character sheet', () => {
+  it('requires confirmation before removing an outbound relation', async () => {
+    unlinkCatalogIngredientRelation.mockResolvedValue({});
+    getCatalogIngredientDetails.mockImplementation(async () => ({
+      ...detailsOf(CHAR_FIXTURE),
+      relations: {
+        outbound: [{
+          fromId: CHAR_FIXTURE.id,
+          toId: 'cat-place-1',
+          kind: 'lives-at',
+          other: { id: 'cat-place-1', name: 'Example Place', type: 'place' },
+        }],
+        inbound: [],
+      },
+    }));
+    renderPage();
+
+    const removeButton = await screen.findByRole('button', { name: 'Remove relation to Example Place' });
+    fireEvent.click(removeButton);
+    expect(unlinkCatalogIngredientRelation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(unlinkCatalogIngredientRelation).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Remove relation to Example Place' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove relation to Example Place' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(unlinkCatalogIngredientRelation).toHaveBeenCalledWith(
+      CHAR_FIXTURE.id,
+      { toId: 'cat-place-1', kind: 'lives-at' },
+      { silent: true },
+    ));
+    await waitFor(() => expect(screen.queryByText('Example Place')).toBeNull());
+  });
+
   it('renders grouped sheet sections with the enriched canon scalar fields', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByDisplayValue('Sharp eyes, ink-stained cuffs.')).toBeTruthy());
