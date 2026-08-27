@@ -51,6 +51,7 @@ export default function JobRow({
   const spec = catalog.jobTypes.find((type) => type.id === job.jobType);
   const idPrefix = `burn-job-${job.id}`;
   const spent = quotaBurnJobIsSpent(job, ranAt);
+  const actionButtonClass = 'inline-flex min-h-[44px] min-w-[44px] items-center justify-center';
   const setParam = (key, value) => onChange({ ...job, params: { ...job.params, [key]: value } });
   const promptText = String(job.params?.prompt || '').trim();
   const hasPromptText = Boolean(promptText);
@@ -138,38 +139,42 @@ export default function JobRow({
             {job.runOnce ? ' · run once' : ''}
           </span>
         )}
-        <div className="flex items-center gap-1">
-          <button type="button" className="p-1 text-gray-400 hover:text-white disabled:opacity-30" disabled={index === 0} onClick={() => onMove(index, -1)} aria-label={`Move step ${index + 1} earlier`}><ArrowUp size={14} /></button>
-          <button type="button" className="p-1 text-gray-400 hover:text-white disabled:opacity-30" disabled={index === total - 1} onClick={() => onMove(index, 1)} aria-label={`Move step ${index + 1} later`}><ArrowDown size={14} /></button>
-          {runArmed ? (
-            // `warning`, not `error`: forcing a run is expensive-but-safe, and
-            // it must not look identical to the delete confirm beside it.
-            <ConfirmButtonPair
-              prompt="Spend now?"
-              confirmText="Run"
-              confirmIcon={Play}
-              cancelText="Cancel"
-              tone="warning"
-              ariaLabel={`Confirm running step ${index + 1} now`}
-              onConfirm={() => { setRunArmed(false); onRun(job); }}
-              onCancel={() => setRunArmed(false)}
-            />
-          ) : (
-            <button type="button" className="p-1 text-port-accent hover:text-white disabled:opacity-30" disabled={actionsBusy} onClick={() => { setArmed(false); setRunArmed(true); }} aria-label={`Run step ${index + 1} now`} title="Run this job now, ignoring the reset window (asks to confirm)"><Play size={14} /></button>
-          )}
-          {armed ? (
-            <ConfirmButtonPair
-              prompt="Discards its prompt."
-              confirmText="Delete"
-              confirmIcon={Trash2}
-              cancelText="Cancel"
-              ariaLabel={`Confirm removing step ${index + 1}`}
-              onConfirm={() => onRemove(index)}
-              onCancel={() => setArmed(false)}
-            />
-          ) : (
-            <button type="button" className="p-1 text-red-400 hover:text-red-300 disabled:opacity-30" onClick={() => { setRunArmed(false); setArmed(true); }} aria-label={`Remove step ${index + 1}`}><Trash2 size={14} /></button>
-          )}
+        <div className="flex items-center">
+          <div className="flex items-center gap-1">
+            <button type="button" className={`${actionButtonClass} text-gray-400 hover:text-white disabled:opacity-30`} disabled={index === 0} onClick={() => onMove(index, -1)} aria-label={`Move step ${index + 1} earlier`}><ArrowUp size={14} /></button>
+            <button type="button" className={`${actionButtonClass} text-gray-400 hover:text-white disabled:opacity-30`} disabled={index === total - 1} onClick={() => onMove(index, 1)} aria-label={`Move step ${index + 1} later`}><ArrowDown size={14} /></button>
+            {runArmed ? (
+              // `warning`, not `error`: forcing a run is expensive-but-safe, and
+              // it must not look identical to the delete confirm beside it.
+              <ConfirmButtonPair
+                prompt="Spend now?"
+                confirmText="Run"
+                confirmIcon={Play}
+                cancelText="Cancel"
+                tone="warning"
+                ariaLabel={`Confirm running step ${index + 1} now`}
+                onConfirm={() => { setRunArmed(false); onRun(job); }}
+                onCancel={() => setRunArmed(false)}
+              />
+            ) : (
+              <button type="button" className={`${actionButtonClass} text-port-accent hover:text-white disabled:opacity-30`} disabled={actionsBusy} onClick={() => { setArmed(false); setRunArmed(true); }} aria-label={`Run step ${index + 1} now`} title="Run this job now, ignoring the reset window (asks to confirm)"><Play size={14} /></button>
+            )}
+          </div>
+          <div className="ml-2 border-l border-port-border/50 pl-2">
+            {armed ? (
+              <ConfirmButtonPair
+                prompt="Discards its prompt."
+                confirmText="Delete"
+                confirmIcon={Trash2}
+                cancelText="Cancel"
+                ariaLabel={`Confirm removing step ${index + 1}`}
+                onConfirm={() => onRemove(index)}
+                onCancel={() => setArmed(false)}
+              />
+            ) : (
+              <button type="button" className={`${actionButtonClass} text-red-400 hover:text-red-300 disabled:opacity-30`} onClick={() => { setRunArmed(false); setArmed(true); }} aria-label={`Remove step ${index + 1}`}><Trash2 size={14} /></button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -314,4 +319,3 @@ export default function JobRow({
     </div>
   );
 }
-
