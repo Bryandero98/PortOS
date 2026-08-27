@@ -175,11 +175,15 @@ describe('persistent mind state', () => {
           message: { id: 'active-image', images: [{ attachmentId: 'attachment-2' }] },
         },
       },
-    })).toEqual({ safe: false, queuedImageMessages: 1, activeImageMessage: true });
+    })).toEqual({ safe: false, trusted: true, queuedImageMessages: 1, activeImageMessage: true });
     expect(persistentMindImageWorkGuard({
       queuedMessages: [{ id: 'text-only', text: 'Safe to preserve.' }],
       pendingAttachments: [{ attachmentId: 'completed-asset', claimedBy: 'completed-message' }],
-    })).toEqual({ safe: true, queuedImageMessages: 0, activeImageMessage: false });
+    })).toEqual({ safe: true, trusted: true, queuedImageMessages: 0, activeImageMessage: false });
+    expect(persistentMindImageWorkGuard({
+      queuedMessages: { corrupted: true },
+      activeTurn: null,
+    })).toEqual({ safe: false, trusted: false, queuedImageMessages: 0, activeImageMessage: false });
   });
 
   it('caps exponential backoff and detects stale heartbeats at the boundary', () => {

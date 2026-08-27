@@ -45,6 +45,7 @@ import { acquireCosActionReservation, acquireCosGlobalSlot } from './cosAdmissio
 import { appendMindEvent } from './agentRunEventLog.js';
 import { preparePersistentMindContext } from './persistentMindContext.js';
 import { resolvePersistentMindProfile } from './persistentMindProfile.js';
+import { isUpdateInProgress } from './updateChecker.js';
 import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
 
 export const PERSISTENT_MIND_WAKE_EVENT_ID = 'cos-persistent-mind-wake';
@@ -320,6 +321,12 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
   if (typeof filename !== 'string' || !filename.trim() || typeof data !== 'string' || !data.trim()) {
     return attachmentFailure('Image filename and base64 data are required', { code: 'VALIDATION_ERROR' });
   }
+  if (isUpdateInProgress()) {
+    return attachmentFailure('Persistent Mind image admission is paused during a PortOS update', {
+      code: 'UPDATE_IN_PROGRESS',
+      status: 409,
+    });
+  }
   await cleanupPersistentMindAttachments();
   const attachmentId = randomUUID();
   const originalName = sanitizeFilename(filename).slice(0, PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_NAME_CHARS) || `image-${attachmentId}`;
@@ -353,6 +360,15 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
     return attachmentFailure('Stored image metadata was invalid', { code: 'INVALID_ATTACHMENT' });
   }
   const result = await mutateMindState(async (mind) => {
+    if (isUpdateInProgress()) {
+      return {
+        mind,
+        value: attachmentFailure('Persistent Mind image admission is paused during a PortOS update', {
+          code: 'UPDATE_IN_PROGRESS',
+          status: 409,
+        }),
+      };
+    }
     const retainedMessageIds = new Set([
       ...mind.recentMessageIds,
       ...mind.queuedMessages.map((message) => message.id),
@@ -1147,6 +1163,15 @@ export async function enqueuePersistentMindMessage({ id = randomUUID(), text, im
     : nowIso();
   await cleanupPersistentMindAttachments();
   const result = await mutateMindState(async (mind) => {
+    if (attachmentIds.length > 0 && isUpdateInProgress()) {
+      return {
+        mind,
+        value: attachmentFailure('Persistent Mind image admission is paused during a PortOS update', {
+          code: 'UPDATE_IN_PROGRESS',
+          status: 409,
+        }),
+      };
+    }
     const existingMessage = findMessageById(mind, messageId);
     const claimedRecords = claimedAttachmentsForMessage(mind, messageId);
     const duplicate = Boolean(existingMessage) || mind.recentMessageIds.includes(messageId);

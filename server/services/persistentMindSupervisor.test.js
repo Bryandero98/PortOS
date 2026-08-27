@@ -15,6 +15,7 @@ const mock = vi.hoisted(() => ({
   acquireSlot: vi.fn(async () => ({ ok: true, release: vi.fn() })),
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
   prepareContext: vi.fn(async () => ({ text: 'bounded context', chars: 15, summaryState: 'not-needed' })),
+  updateInProgress: false,
   daemonRunning: true,
   profile: {
     ok: true,
@@ -66,6 +67,10 @@ vi.mock('./persistentMindProfile.js', () => ({
   resolvePersistentMindProfile: vi.fn(async () => mock.profile),
 }));
 
+vi.mock('./updateChecker.js', () => ({
+  isUpdateInProgress: vi.fn(() => mock.updateInProgress),
+}));
+
 const supervisor = await import('./persistentMindSupervisor.js');
 
 const makeRoot = () => ({
@@ -93,6 +98,7 @@ describe('persistent mind supervisor', () => {
     mock.emitted.length = 0;
     mock.budget = { withinBudget: true, exceeded: null };
     mock.daemonRunning = true;
+    mock.updateInProgress = false;
     mock.recordUsage.mockClear();
     mock.profile = {
       ok: true,
@@ -193,6 +199,20 @@ describe('persistent mind supervisor', () => {
       code: 'IDEMPOTENCY_CONFLICT',
       status: 409,
     });
+  });
+
+  it('rejects new image messages while a source transition is in progress', async () => {
+    mock.updateInProgress = true;
+
+    await expect(supervisor.enqueuePersistentMindMessage({
+      id: 'message-during-update',
+      images: ['attachment-example'],
+    })).resolves.toMatchObject({
+      success: false,
+      code: 'UPDATE_IN_PROGRESS',
+      status: 409,
+    });
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
   });
 
   it('pauses before adapter preparation when the pinned profile cannot resolve', async () => {

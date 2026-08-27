@@ -409,18 +409,31 @@ export function requeuePersistentMindWake(raw, wake) {
  * work; completed historical assets do not make rollback unsafe.
  */
 export function persistentMindImageWorkGuard(raw) {
-  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  const queuedImageMessages = (Array.isArray(source.queuedMessages) ? source.queuedMessages : [])
+  const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const hasValidImages = (value) => value.images === undefined || Array.isArray(value.images);
+  const source = raw == null ? {} : raw;
+  const queuedMessages = source?.queuedMessages;
+  const activeTurn = source?.activeTurn;
+  const activeMessage = activeTurn?.wake?.kind === 'message' ? activeTurn.wake.message : null;
+  const trusted = isRecord(source)
+    && (queuedMessages === undefined || (
+      Array.isArray(queuedMessages)
+      && queuedMessages.every((message) => isRecord(message) && hasValidImages(message))
+    ))
+    && (activeTurn == null || isRecord(activeTurn))
+    && (activeMessage == null || (isRecord(activeMessage) && hasValidImages(activeMessage)));
+  if (!trusted) {
+    return { safe: false, trusted: false, queuedImageMessages: 0, activeImageMessage: false };
+  }
+  const queuedImageMessages = (Array.isArray(queuedMessages) ? queuedMessages : [])
     .filter((message) => Array.isArray(message?.images) && message.images.length > 0)
     .length;
-  const activeMessage = source.activeTurn?.wake?.kind === 'message'
-    ? source.activeTurn.wake.message
-    : null;
   const activeImageMessage = Boolean(
     activeMessage && Array.isArray(activeMessage.images) && activeMessage.images.length > 0,
   );
   return {
     safe: queuedImageMessages === 0 && !activeImageMessage,
+    trusted: true,
     queuedImageMessages,
     activeImageMessage,
   };

@@ -33,13 +33,17 @@ const { mockCosState } = vi.hoisted(() => ({
   },
 }));
 vi.mock('../services/cosState.js', () => ({
-  loadState: vi.fn(async () => mockCosState),
+  readPersistentMindStateForSafetyCheck: vi.fn(async () => ({
+    trusted: true,
+    persistentMind: mockCosState.persistentMind,
+  })),
+  withStateLock: vi.fn(async (fn) => fn()),
 }));
 
 import * as updateChecker from '../services/updateChecker.js';
 import { executeUpdate } from '../services/updateExecutor.js';
 import { getActiveAgentIds } from '../services/agentState.js';
-import { loadState } from '../services/cosState.js';
+import { readPersistentMindStateForSafetyCheck } from '../services/cosState.js';
 import updateRoutes from './update.js';
 
 const makeApp = () => {
@@ -68,7 +72,10 @@ describe('POST /api/update/execute — reconcile gating (issue #1779)', () => {
     executeUpdate.mockResolvedValue({ success: true, version: '1.26.0' });
     getActiveAgentIds.mockReturnValue([]);
     mockCosState.persistentMind = { queuedMessages: [], activeTurn: null };
-    loadState.mockImplementation(async () => mockCosState);
+    readPersistentMindStateForSafetyCheck.mockImplementation(async () => ({
+      trusted: true,
+      persistentMind: mockCosState.persistentMind,
+    }));
   });
 
   it('rejects reconcile when the install is already in sync (even with a cached release)', async () => {
@@ -160,7 +167,10 @@ describe('POST /api/update/execute — active CoS agent gating', () => {
     executeUpdate.mockResolvedValue({ success: true, version: '1.26.0' });
     getActiveAgentIds.mockReturnValue([]);
     mockCosState.persistentMind = { queuedMessages: [], activeTurn: null };
-    loadState.mockImplementation(async () => mockCosState);
+    readPersistentMindStateForSafetyCheck.mockImplementation(async () => ({
+      trusted: true,
+      persistentMind: mockCosState.persistentMind,
+    }));
   });
 
   it('rejects a normal update with 409 AGENTS_ACTIVE while an agent is live (no restart)', async () => {
@@ -226,18 +236,19 @@ describe('POST /api/update/execute — active CoS agent gating', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('PERSISTENT_MIND_IMAGES_IN_FLIGHT');
-    expect(res.body.error).toMatch(/Drain or stop the image-bearing work, create a backup/);
+    expect(res.body.error).toMatch(/Drain the image-bearing work, or create a backup/);
     expect(updateChecker.setUpdateInProgress).not.toHaveBeenCalled();
     expect(executeUpdate).not.toHaveBeenCalled();
   });
 
   it('re-checks image work after locking and releases the update lock on a race', async () => {
     let reads = 0;
-    loadState.mockImplementation(async () => {
+    readPersistentMindStateForSafetyCheck.mockImplementation(async () => {
       reads += 1;
       return reads === 1
-        ? { persistentMind: { queuedMessages: [], activeTurn: null } }
+        ? { trusted: true, persistentMind: { queuedMessages: [], activeTurn: null } }
         : {
+            trusted: true,
             persistentMind: {
               queuedMessages: [],
               activeTurn: {
@@ -258,6 +269,44 @@ describe('POST /api/update/execute — active CoS agent gating', () => {
     expect(updateChecker.setUpdateInProgress).toHaveBeenCalledWith(false);
     expect(executeUpdate).not.toHaveBeenCalled();
   });
+
+  it('releases the update lock when the post-lock safety read fails', async () => {
+    readPersistentMindStateForSafetyCheck
+      .mockResolvedValueOnce({ trusted: true, persistentMind: { queuedMessages: [], activeTurn: null } })
+      .mockRejectedValueOnce(new Error('state read failed'));
+
+    const res = await request(makeApp()).post('/api/update/execute').send({});
+
+    expect(res.status).toBe(500);
+    expect(updateChecker.setUpdateInProgress).toHaveBeenNthCalledWith(1, true);
+    expect(updateChecker.setUpdateInProgress).toHaveBeenCalledWith(false);
+    expect(executeUpdate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when persisted Persistent Mind state is untrusted', async () => {
+    readPersistentMindStateForSafetyCheck.mockResolvedValue({ trusted: false, persistentMind: null });
+
+    const res = await request(makeApp()).post('/api/update/execute').send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('PERSISTENT_MIND_STATE_UNTRUSTED');
+    expect(updateChecker.setUpdateInProgress).not.toHaveBeenCalled();
+    expect(executeUpdate).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicit backup acknowledgement when queued image work cannot drain', async () => {
+    mockCosState.persistentMind = {
+      queuedMessages: [{ id: 'message-example', images: [{ attachmentId: 'attachment-example' }] }],
+      activeTurn: null,
+    };
+
+    const res = await request(makeApp()).post('/api/update/execute').send({
+      acknowledgePersistentMindImageBackup: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(executeUpdate).toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/update/status — activeCosAgents', () => {
@@ -268,7 +317,10 @@ describe('GET /api/update/status — activeCosAgents', () => {
     updateChecker.getUpdateStatus.mockResolvedValue(baseStatus());
     getActiveAgentIds.mockReturnValue([]);
     mockCosState.persistentMind = { queuedMessages: [], activeTurn: null };
-    loadState.mockImplementation(async () => mockCosState);
+    readPersistentMindStateForSafetyCheck.mockImplementation(async () => ({
+      trusted: true,
+      persistentMind: mockCosState.persistentMind,
+    }));
   });
 
   it('reports the live agent count so the UI can suppress update actions', async () => {
@@ -301,6 +353,7 @@ describe('GET /api/update/status — activeCosAgents', () => {
     expect(res.body.activeCosAgents).toBe(0);
     expect(res.body.persistentMindImages).toEqual({
       safe: true,
+      trusted: true,
       queuedImageMessages: 0,
       activeImageMessage: false,
     });

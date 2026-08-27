@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
   prepareContext: vi.fn(async () => ({ text: '', chars: 0, summaryState: 'empty' })),
   acquireSlot: vi.fn(async () => ({ ok: true, release: vi.fn() })),
+  updateInProgress: false,
 }));
 
 vi.mock('./cosState.js', () => ({
@@ -26,6 +27,10 @@ vi.mock('./cosState.js', () => ({
   saveState: vi.fn(async (state) => { mocks.root = state; }),
   withStateLock: vi.fn(async (fn) => fn()),
   isDaemonRunning: vi.fn(() => true),
+}));
+
+vi.mock('./updateChecker.js', () => ({
+  isUpdateInProgress: vi.fn(() => mocks.updateInProgress),
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
@@ -111,6 +116,7 @@ describe('persistent mind image attachment lifecycle', () => {
     mocks.root = makeRoot();
     mocks.scheduled.clear();
     mocks.emitted.length = 0;
+    mocks.updateInProgress = false;
     mocks.saveImageUpload.mockReset();
     mocks.saveImageUpload.mockResolvedValue({
       filename: 'mind-attachment-1.png',
@@ -137,6 +143,16 @@ describe('persistent mind image attachment lifecycle', () => {
     mocks.appendMindEvent.mockClear();
     mocks.acquireSlot.mockClear();
     supervisor.__resetPersistentMindSupervisorForTests();
+  });
+
+  it('rejects attachment uploads while a source transition is in progress', async () => {
+    mocks.updateInProgress = true;
+
+    await expect(supervisor.createPersistentMindAttachment({
+      filename: 'diagram.png',
+      data: PNG.toString('base64'),
+    })).resolves.toMatchObject({ success: false, code: 'UPDATE_IN_PROGRESS', status: 409 });
+    expect(mocks.saveImageUpload).not.toHaveBeenCalled();
   });
 
   it('stores a safe pending record, claims it atomically, and preserves it on retry', async () => {
