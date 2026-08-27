@@ -10,7 +10,13 @@ const mocks = vi.hoisted(() => ({
   getPersistentMindState: vi.fn(),
   enqueuePersistentMindMessage: vi.fn(),
   appendPersistentMindAnnotation: vi.fn(),
+  createPersistentMindMemory: vi.fn(),
+  preparePersistentMindContext: vi.fn(),
   promotePersistentMindMemory: vi.fn(),
+  readPersistentMindMemories: vi.fn(),
+  readPersistentMindRollups: vi.fn(),
+  updatePersistentMindMemory: vi.fn(),
+  getProviderById: vi.fn(),
   startPersistentMind: vi.fn(),
   pausePersistentMind: vi.fn(),
   resumePersistentMind: vi.fn(),
@@ -24,7 +30,21 @@ vi.mock('../services/agentRunEventLog.js', () => ({
 vi.mock('../services/cosState.js', () => ({ loadState: mocks.loadState }));
 vi.mock('../services/persistentMindContext.js', () => ({
   appendPersistentMindAnnotation: mocks.appendPersistentMindAnnotation,
+  createPersistentMindMemory: mocks.createPersistentMindMemory,
+  preparePersistentMindContext: mocks.preparePersistentMindContext,
   promotePersistentMindMemory: mocks.promotePersistentMindMemory,
+  readPersistentMindMemories: mocks.readPersistentMindMemories,
+  readPersistentMindRollups: mocks.readPersistentMindRollups,
+  updatePersistentMindMemory: mocks.updatePersistentMindMemory,
+}));
+vi.mock('../services/providers.js', () => ({ getProviderById: mocks.getProviderById }));
+vi.mock('../services/persistentMindAdapter.js', () => ({
+  persistentMindHarnessInfo: (provider) => ({
+    type: provider?.type || null,
+    label: provider?.type === 'api' ? 'Direct API' : 'Headless CLI',
+    recommendation: provider?.type === 'api' ? 'recommended' : 'supported',
+    detail: 'Structured provider harness.',
+  }),
 }));
 vi.mock('../services/persistentMindSupervisor.js', () => ({
   getPersistentMindState: mocks.getPersistentMindState,
@@ -47,6 +67,7 @@ const app = () => {
 
 const get = (path) => request(app()).get(`/api/cos${path}`);
 const post = (path, body) => request(app()).post(`/api/cos${path}`).send(body);
+const put = (path, body) => request(app()).put(`/api/cos${path}`).send(body);
 
 describe('persistent mind routes', () => {
   beforeEach(() => {
@@ -58,7 +79,17 @@ describe('persistent mind routes', () => {
       activeTurn: null, lastCompletedTurnId: null, lastCompletedAt: null, nextEligibleWakeAt: null,
       failureCount: 0, pauseReason: null, lastError: 'provider failed with \"apiKey\": \"secret-value\"',
     });
-    mocks.loadState.mockResolvedValue({ config: { domainAutonomy: { cos: 'execute' }, persistentMindProfile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high' } } });
+    mocks.loadState.mockResolvedValue({ config: {
+      domainAutonomy: { cos: 'execute' },
+      persistentMindProfile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high' },
+      persistentMindPrompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
+    } });
+    mocks.getProviderById.mockResolvedValue({ id: 'demo', type: 'api' });
+    mocks.readPersistentMindMemories.mockResolvedValue([{ id: 'memory-1', content: 'A durable fact', sourceAgentId: 'cos-persistent-mind' }]);
+    mocks.readPersistentMindRollups.mockResolvedValue([]);
+    mocks.preparePersistentMindContext.mockResolvedValue({ text: '# Context', chars: 9, approximateTokens: 3, summaryState: 'empty' });
+    mocks.createPersistentMindMemory.mockResolvedValue({ id: 'memory-2', content: 'A new fact', sourceAgentId: 'cos-persistent-mind' });
+    mocks.updatePersistentMindMemory.mockResolvedValue({ id: 'memory-1', content: 'An edited fact', sourceAgentId: 'cos-persistent-mind' });
     mocks.enqueuePersistentMindMessage.mockResolvedValue({ success: true, duplicate: false, messageId: 'message-1' });
     mocks.appendPersistentMindAnnotation.mockResolvedValue({ appended: true, duplicate: false });
     mocks.promotePersistentMindMemory.mockResolvedValue({ success: true, memory: { id: 'memory-1' } });
@@ -75,6 +106,7 @@ describe('persistent mind routes', () => {
     expect(res.body).toMatchObject({
       events: [], gap: false, state: { status: 'idle' },
       profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
+      harness: { type: 'api', recommendation: 'recommended' },
       autonomyMode: 'execute',
     });
     expect(res.body.profile).not.toHaveProperty('credential');
@@ -82,6 +114,42 @@ describe('persistent mind routes', () => {
     expect(res.body.state).not.toHaveProperty('queuedMessages');
     expect(res.body.state.queuedMessageCount).toBe(1);
     expect(JSON.stringify(res.body)).not.toContain('secret-value');
+  });
+
+  it('exposes the editable prompt, owned memories, derived rollups, and exact context preview', async () => {
+    const res = await get('/mind/context');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      prompt: { identity: 'Resident mind', instructions: 'Stay grounded.' },
+      preview: { text: '# Context', summaryState: 'empty' },
+      memories: [{ id: 'memory-1', content: 'A durable fact' }],
+      rollups: [],
+      harness: { type: 'api', recommendation: 'recommended' },
+    });
+    expect(mocks.preparePersistentMindContext).toHaveBeenCalledWith(expect.objectContaining({
+      mindId: 'cos-persistent-mind',
+      identity: 'Resident mind',
+      instructions: 'Stay grounded.',
+      memories: expect.any(Array),
+    }));
+  });
+
+  it('creates and edits only validated persistent-mind memories', async () => {
+    const created = await post('/mind/memories', { content: 'A new fact' });
+    expect(created.status).toBe(201);
+    expect(mocks.createPersistentMindMemory).toHaveBeenCalledWith({
+      content: 'A new fact', type: 'observation', category: 'other', tags: [], importance: 0.5,
+    });
+
+    const updated = await put('/mind/memories/memory-1', { content: 'An edited fact' });
+    expect(updated.status).toBe(200);
+    expect(mocks.updatePersistentMindMemory).toHaveBeenCalledWith('memory-1', { content: 'An edited fact' });
+    expect((await put('/mind/memories/memory-1', {})).status).toBe(400);
+  });
+
+  it('returns not found when an edited memory is not owned by this mind', async () => {
+    mocks.updatePersistentMindMemory.mockResolvedValue(null);
+    expect((await put('/mind/memories/foreign', { content: 'No access' })).status).toBe(404);
   });
 
   it('rejects malformed cursors, oversized pages, and unknown query fields', async () => {

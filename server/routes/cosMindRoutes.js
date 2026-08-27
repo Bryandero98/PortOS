@@ -11,14 +11,22 @@ import {
   parsePersistentMindCursor,
 } from '../lib/persistentMindTrajectory.js';
 import { normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
+import { normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
 import { validateRequest } from '../lib/validation.js';
 import { readPersistentMindEvents, readPersistentMindHistory } from '../services/agentRunEventLog.js';
 import { loadState } from '../services/cosState.js';
 import {
   appendPersistentMindAnnotation,
+  createPersistentMindMemory,
+  preparePersistentMindContext,
   promotePersistentMindMemory,
+  readPersistentMindMemories,
+  readPersistentMindRollups,
+  updatePersistentMindMemory,
 } from '../services/persistentMindContext.js';
+import { getProviderById } from '../services/providers.js';
+import { persistentMindHarnessInfo } from '../services/persistentMindAdapter.js';
 import {
   enqueuePersistentMindMessage,
   getPersistentMindState,
@@ -57,6 +65,27 @@ const promotionSchema = z.object({
   category: z.string().trim().min(1).max(100).optional(),
   tags: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
 }).strict();
+const memoryType = z.enum(['fact', 'learning', 'observation', 'decision', 'preference', 'context']);
+const memoryFields = {
+  content: z.string().trim().min(1).max(10_240),
+  summary: z.string().trim().max(500).optional(),
+  type: memoryType,
+  category: z.string().trim().min(1).max(100),
+  tags: z.array(z.string().trim().min(1).max(50)).max(20),
+  importance: z.number().min(0).max(1),
+};
+const memoryInputSchema = z.object({
+  ...memoryFields,
+  type: memoryFields.type.optional().default('observation'),
+  category: memoryFields.category.optional().default('other'),
+  tags: memoryFields.tags.optional().default([]),
+  importance: memoryFields.importance.optional().default(0.5),
+}).strict();
+const memoryUpdateSchema = z.object(memoryFields).partial().strict().refine(
+  (value) => Object.keys(value).length > 0,
+  'At least one memory field is required'
+);
+const memoryParamsSchema = z.object({ memoryId: z.string().trim().min(1).max(128) }).strict();
 
 const requireSuccess = (result) => {
   if (result?.success === false) {
@@ -80,6 +109,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
     loadState(),
   ]);
   const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+  const provider = profile.providerId ? await getProviderById(profile.providerId) : null;
   const { snapshot: _snapshot, ...publicHistory } = history;
   res.json({
     ...publicHistory,
@@ -91,8 +121,47 @@ router.get('/mind', asyncHandler(async (req, res) => {
       effort: profile.effort || null,
       thinkingInterface: profile.thinkingInterface,
     },
+    harness: persistentMindHarnessInfo(provider),
     autonomyMode: getDomainMode(root.config, 'cos'),
   });
+}));
+
+router.get('/mind/context', asyncHandler(async (_req, res) => {
+  const root = await loadState();
+  const prompt = normalizePersistentMindPrompt(root.config?.persistentMindPrompt);
+  const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+  const [memories, rollups, provider] = await Promise.all([
+    readPersistentMindMemories(PERSISTENT_MIND_ID),
+    readPersistentMindRollups(PERSISTENT_MIND_ID),
+    profile.providerId ? getProviderById(profile.providerId) : null,
+  ]);
+  const preview = await preparePersistentMindContext({
+    mindId: PERSISTENT_MIND_ID,
+    identity: prompt.identity,
+    instructions: prompt.instructions,
+    memories,
+  });
+  res.json({
+    prompt,
+    preview,
+    memories,
+    rollups,
+    harness: persistentMindHarnessInfo(provider),
+  });
+}));
+
+router.post('/mind/memories', asyncHandler(async (req, res) => {
+  const input = validateRequest(memoryInputSchema, req.body);
+  const memory = await createPersistentMindMemory(input);
+  res.status(201).json({ success: true, memory });
+}));
+
+router.put('/mind/memories/:memoryId', asyncHandler(async (req, res) => {
+  const { memoryId } = validateRequest(memoryParamsSchema, req.params);
+  const updates = validateRequest(memoryUpdateSchema, req.body);
+  const memory = await updatePersistentMindMemory(memoryId, updates);
+  if (!memory) throw new ServerError('Persistent mind memory not found', { status: 404, code: 'NOT_FOUND' });
+  res.json({ success: true, memory });
 }));
 
 router.post('/mind/messages', asyncHandler(async (req, res) => {

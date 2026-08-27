@@ -311,6 +311,7 @@ export function createRunnerService(config = {}) {
         effort = null,
         requestCapabilities = null,
         screenshots = [],
+        allowFallback = true,
       } = options;
 
       if (!providerService) {
@@ -330,6 +331,10 @@ export function createRunnerService(config = {}) {
       });
 
       if (providerStatusService && !providerStatusService.isAvailable(providerId)) {
+        if (!allowFallback) {
+          const status = providerStatusService.getStatus(providerId) || {};
+          throw new Error(`Provider ${providerId} is unavailable (${status.reason || 'unknown'}) and fallback is disabled`);
+        }
         const allProviders = await providerService.getAllProviders();
         const providersMap = {};
         for (const p of allProviders.providers) {

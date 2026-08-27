@@ -13,6 +13,7 @@ import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js
 import { normalizeDomainBudgets } from '../lib/domainBudgets.js';
 import { createDefaultPersistentMindState, normalizePersistentMindState } from '../lib/persistentMind.js';
 import { createDefaultPersistentMindProfile, normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
+import { createDefaultPersistentMindPrompt, normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { DEFAULT_ALWAYS_APPROVE_KINDS } from './taskLearning/safetyKind.js';
 
 export const STATE_FILE = join(PATHS.cos, 'state.json');
@@ -66,6 +67,7 @@ export const DEFAULT_CONFIG = {
   // Persisting a profile is not consent to wake the mind. Fresh and upgraded
   // installs stay disabled until the user explicitly starts it.
   persistentMindProfile: createDefaultPersistentMindProfile(),
+  persistentMindPrompt: createDefaultPersistentMindPrompt(),
   // Per-domain autonomy guardrails (#711). Each domain is off | dry-run | execute.
   // Default is `execute` for every domain, reproducing pre-#711 behavior so no
   // migration is needed — an install with no stored value reads `execute`.
@@ -227,6 +229,7 @@ export async function loadState() {
       ...DEFAULT_CONFIG,
       ...persistedConfig,
       persistentMindProfile: normalizePersistentMindProfile(persistedConfig.persistentMindProfile),
+      persistentMindPrompt: normalizePersistentMindPrompt(persistedConfig.persistentMindPrompt),
     },
     stats: { ...DEFAULT_STATE.stats, ...state.stats },
     persistentMind: normalizePersistentMindState(state.persistentMind),

@@ -499,7 +499,9 @@ async function runOnePersistentMindTurn() {
       runStartedAt = Date.now();
       const context = await preparePersistentMindContext({
         mindId: mind.mindId,
-        identity: turnAdapter.identity || 'One supervised persistent Chief of Staff mind.',
+        identity: prepared.identity ?? turnAdapter.identity ?? 'One supervised persistent Chief of Staff mind.',
+        instructions: prepared.instructions || '',
+        memories: Array.isArray(prepared.memories) ? prepared.memories : [],
         providerId: prepared.provider.id,
         model: prepared.model || null,
         summarize: typeof turnAdapter.summarize === 'function'
@@ -549,6 +551,15 @@ async function runOnePersistentMindTurn() {
           });
         },
       });
+      for (const event of Array.isArray(result?.events) ? result.events : []) {
+        await appendMindEvent({
+          kind: event.kind,
+          mindId: mind.mindId,
+          turnId: turn.id,
+          eventId: `mind-${event.id}`,
+          data: event.data,
+        });
+      }
       await appendMindEvent({
         kind: 'mind.model.result',
         mindId: mind.mindId,

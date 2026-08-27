@@ -784,6 +784,25 @@ describe('promptRunner — retry-with-fallback', () => {
     return { isAvailable, markUnavailable, markUsageLimit, getFallbackProvider };
   }
 
+  it('keeps an exact provider pin and skips every fallback tier when disabled', async () => {
+    const status = mockToolkitWithFallback();
+    runner.executeCliRun.mockImplementation(async ({ onComplete }) => {
+      onComplete({ success: false, error: 'Pinned provider failed' });
+    });
+
+    await expect(runPromptThroughProvider({
+      provider: primaryCli,
+      prompt: 'p',
+      source: 'test',
+      allowFallback: false,
+    })).rejects.toThrow('Pinned provider failed');
+
+    expect(runner.createRun).toHaveBeenCalledWith(expect.objectContaining({ allowFallback: false }));
+    expect(status.markUnavailable).not.toHaveBeenCalled();
+    expect(status.getFallbackProvider).not.toHaveBeenCalled();
+    expect(autoFixer.escalateProviderFailure).not.toHaveBeenCalled();
+  });
+
   it('does not retry, bench, or escalate a canceled TUI run', async () => {
     const status = mockToolkitWithFallback();
     const primaryTui = tuiProvider({ id: 'primary-tui', name: 'Primary TUI', defaultModel: 'primary-model' });

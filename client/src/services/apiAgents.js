@@ -65,6 +65,7 @@ export const repairRunRecords = (body = {}, options = {}) =>
 // timed-out request cannot duplicate a message or annotation.
 export const getPersistentMind = (filters = {}, options = {}) =>
   request(`/cos/mind${runEventQuery(filters)}`, options);
+export const getPersistentMindContext = (options = {}) => request('/cos/mind/context', options);
 export const sendPersistentMindMessage = (body, options = {}) =>
   request('/cos/mind/messages', { method: 'POST', body: JSON.stringify(body), ...options });
 export const addPersistentMindAnnotation = (body, options = {}) =>
@@ -83,6 +84,12 @@ export const promotePersistentMindEvent = (eventId, body, options = {}) =>
   request(`/cos/mind/events/${encodeURIComponent(eventId)}/promote`, {
     method: 'POST', body: JSON.stringify(body), ...options,
   });
+export const createPersistentMindMemory = (body, options = {}) => request('/cos/mind/memories', {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+export const updatePersistentMindMemory = (memoryId, body, options = {}) => request(`/cos/mind/memories/${encodeURIComponent(memoryId)}`, {
+  method: 'PUT', body: JSON.stringify(body), ...options,
+});
 
 // Chief of Staff
 export const getCosStatus = () => request('/cos');

@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { Check, CirclePause, CirclePlay, MessageCircle, RefreshCw, Square, Upload } from 'lucide-react';
+import { Brain, Check, CirclePause, CirclePlay, MessageCircle, RefreshCw, Settings2, Square, Upload } from 'lucide-react';
 import { useSocket } from '../../../hooks/useSocket';
 import { uuidv4 } from '../../../lib/uuid.js';
 import * as api from '../../../services/api';
 import { formatDateTime } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
+import TabPills from '../../ui/TabPills';
+import PersistentMindContextPanel from '../PersistentMindContextPanel';
 import PersistentMindProfileControls from '../PersistentMindProfileControls';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
 const MAX_VISIBLE_EVENTS = PAGE_LIMIT * MAX_BACKFILL_PAGES;
+const MIND_VIEWS = new Set(['conversation', 'context', 'setup']);
+const MIND_TABS = [
+  { id: 'conversation', label: 'Conversation', icon: MessageCircle },
+  { id: 'context', label: 'Context & memory', icon: Brain },
+  { id: 'setup', label: 'Provider & lifecycle', icon: Settings2 },
+];
 
 const EVENT_LABELS = {
   'mind.message.accepted': 'User input',
@@ -19,6 +27,9 @@ const EVENT_LABELS = {
   'mind.summary': 'Mind summary',
   'mind.model.result': 'Mind summary',
   'mind.turn.completed': 'Mind summary',
+  'mind.thought': 'Working note',
+  'mind.reply': 'Chief of Staff',
+  'mind.memory.candidate': 'Memory proposal',
   'mind.capability.request': 'Action request',
   'mind.capability.result': 'Action outcome',
   'mind.memory.promoted': 'Memory promoted',
@@ -53,6 +64,7 @@ const mintId = (prefix) => `${prefix}-${uuidv4()}`;
 export default function MindTab() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedEventId = searchParams.get('event');
+  const activeView = MIND_VIEWS.has(searchParams.get('view')) ? searchParams.get('view') : 'conversation';
   const socket = useSocket();
   const [events, setEvents] = useState(null);
   const [mind, setMind] = useState(null);
@@ -68,6 +80,7 @@ export default function MindTab() {
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [showActivity, setShowActivity] = useState(false);
   const cursorRef = useRef(null);
   const loadPendingRef = useRef(false);
   const deferredLoadRef = useRef(false);
@@ -236,6 +249,15 @@ export default function MindTab() {
   const selectedEvent = events?.find((event) => event.eventId === selectedEventId) || null;
   const isPaused = state?.status === 'paused';
   const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
+  const visibleEvents = (events || []).filter((event) => showActivity || ![
+    'mind.wake', 'mind.model.request', 'mind.model.result', 'mind.turn.completed',
+  ].includes(event.kind));
+  const changeView = (view) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    if (view === 'conversation') next.delete('view');
+    else next.set('view', view);
+    return next;
+  });
 
   return (
     <section aria-labelledby="mind-heading" className="space-y-4">
@@ -257,129 +279,129 @@ export default function MindTab() {
         </div>
       </header>
 
-      <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
-        <div className="mb-3">
-          <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
-          <p className="mt-1 text-xs text-port-text-muted">
-            Choose the provider, model, and model effort here before starting the persistent mind. Changes apply to its next wake.
-          </p>
-        </div>
-        <PersistentMindProfileControls
-          profile={mind?.profile}
-          disabled={!mind}
-          onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
-          onSavingChange={setProfileSaving}
-        />
-        {!state?.started && (
-          <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-port-text-muted">
-              {profileSaving
-                ? 'Saving the AI profile…'
-                : profileReady
-                  ? 'The saved AI profile is ready.'
-                  : 'Enable the profile and select both an AI provider and model to start.'}
-            </p>
-            <ActionButton
-              label="Start persistent mind"
-              icon={CirclePlay}
-              pending={lifecyclePending === 'start'}
-              disabled={loading || profileSaving || !profileReady}
-              onClick={() => runLifecycle('start')}
-            />
-          </div>
-        )}
-      </section>
+      <TabPills tabs={MIND_TABS} activeTab={activeView} onChange={changeView} variant="pills" mobileDropdown mobileSelectId="persistent-mind-view" ariaLabel="Persistent mind view" />
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
       {truncated && <Banner tone="info" title="Showing recent history">The initial trace shows the newest {PAGE_LIMIT} events; older retained events are not shown.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
-      <div data-testid="mind-layout" className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.42fr)]">
-        <div className="min-w-0 rounded border border-port-border bg-port-card">
-          <div className="border-b border-port-border px-4 py-3 text-sm text-port-text-muted">
-            Status: <span className="font-medium text-port-text">{state?.status || 'unknown'}</span>
-            {state?.pauseReason ? ` · ${state.pauseReason}` : ''}
-            {state?.failureCount > 0 ? ` · ${state.failureCount} failed wake${state.failureCount === 1 ? '' : 's'}` : ''}
-            {state?.nextEligibleWakeAt ? ` · retry after ${formatDateTime(state.nextEligibleWakeAt)}` : ''}
-            {state?.lastError ? ` · ${state.lastError}` : ''}
+      {activeView === 'setup' && (
+        <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
+          <div className="mb-3">
+            <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
+            <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
           </div>
-          {loading && events === null ? (
-            <div className="flex justify-center p-10"><BrailleSpinner text="Loading mind history" /></div>
-          ) : events?.length === 0 && !loadError ? (
-            <p className="p-8 text-center text-sm text-port-text-muted">No conversation yet. Add a message or idea below.</p>
-          ) : (
-            <ol className="max-h-[52vh] space-y-2 overflow-y-auto p-3" aria-label="Persistent mind conversation">
-              {(events || []).map((event) => {
-                const selected = event.eventId === selectedEventId;
-                const textValue = eventText(event);
-                return (
-                  <li key={event.eventId}>
-                    <button
-                      type="button"
-                      onClick={() => setSearchParams((current) => {
-                        const next = new URLSearchParams(current);
-                        next.set('event', event.eventId);
-                        return next;
-                      })}
-                      aria-current={selected ? 'true' : undefined}
-                      className={`w-full rounded border p-3 text-left ${selected ? 'border-port-accent bg-port-accent/10' : 'border-port-border hover:bg-port-border/20'}`}
-                    >
-                      <span className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-xs font-semibold uppercase tracking-wide text-port-accent">{eventLabel(event.kind)}</span>
-                        <time className="text-xs text-port-text-muted" dateTime={event.at}>{formatDateTime(event.at)}</time>
-                      </span>
-                      <span className="mt-1 block whitespace-pre-wrap break-words text-sm text-port-text">{textValue || event.kind}</span>
-                      {event.turnId && <span className="mt-1 block truncate font-mono text-[11px] text-port-text-muted">turn {event.turnId}</span>}
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
+          <PersistentMindProfileControls
+            profile={mind?.profile}
+            disabled={!mind}
+            onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
+            onSavingChange={setProfileSaving}
+          />
+          {!state?.started && (
+            <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-port-text-muted">{profileSaving ? 'Saving the AI profile…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
+              <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || profileSaving || !profileReady} onClick={() => runLifecycle('start')} />
+            </div>
           )}
-        </div>
+        </section>
+      )}
 
-        <aside className="space-y-3 rounded border border-port-border bg-port-card p-4" aria-label="Selected mind event">
-          <h3 className="text-sm font-semibold text-port-text">Selected event</h3>
-          {selectedEvent ? (
-            <>
-              <p className="break-all font-mono text-xs text-port-text-muted">{selectedEvent.eventId}</p>
-              <p className="text-sm text-port-text">{eventLabel(selectedEvent.kind)}</p>
-              {selectedEvent.kind === 'mind.capability.request' && (
-                <div className="flex flex-wrap gap-2">
-                  <ActionButton label="Acknowledge" icon={Check} pending={eventActionPending === selectedEvent.eventId} onClick={() => acknowledge(selectedEvent)} />
-                </div>
-              )}
-              {['mind.summary', 'mind.model.result', 'mind.turn.completed'].includes(selectedEvent.kind) && (
-                <ActionButton label="Promote" icon={Upload} pending={eventActionPending === selectedEvent.eventId} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
-              )}
-            </>
-          ) : <p className="text-sm text-port-text-muted">Choose an event to keep the selection in the URL and attach an annotation.</p>}
-        </aside>
-      </div>
+      {activeView === 'context' && <PersistentMindContextPanel />}
 
-      <form onSubmit={submit} className="rounded border border-port-border bg-port-card p-4">
-        <div className="grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)]">
-          <div>
-            <label htmlFor="mind-input-kind" className="mb-1 block text-sm font-medium text-port-text">Input type</label>
-            <select id="mind-input-kind" value={kind} onChange={(event) => changeKind(event.target.value)} className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text">
-              <option value="message">Instruction / message</option>
-              <option value="annotation">Comment / idea</option>
-            </select>
+      {activeView === 'conversation' && (
+        <>
+          <div data-testid="mind-layout" className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.42fr)]">
+            <div className="min-w-0 rounded border border-port-border bg-port-card">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-port-border px-4 py-3 text-sm text-port-text-muted">
+                <span>
+                  Status: <span className="font-medium text-port-text">{state?.status || 'unknown'}</span>
+                  {state?.pauseReason ? ` · ${state.pauseReason}` : ''}
+                  {state?.queuedMessageCount > 0 ? ` · ${state.queuedMessageCount} queued` : ''}
+                  {state?.failureCount > 0 ? ` · ${state.failureCount} failed wake${state.failureCount === 1 ? '' : 's'}` : ''}
+                  {state?.nextEligibleWakeAt ? ` · retry after ${formatDateTime(state.nextEligibleWakeAt)}` : ''}
+                  {state?.lastError ? ` · ${state.lastError}` : ''}
+                </span>
+                <label htmlFor="mind-show-activity" className="flex items-center gap-2 text-xs">
+                  <input id="mind-show-activity" type="checkbox" checked={showActivity} onChange={(event) => setShowActivity(event.target.checked)} className="accent-port-accent" /> Show run activity
+                </label>
+              </div>
+              {loading && events === null ? (
+                <div className="flex justify-center p-10"><BrailleSpinner text="Loading mind history" /></div>
+              ) : visibleEvents.length === 0 && !loadError ? (
+                <p className="p-8 text-center text-sm text-port-text-muted">No conversation yet. Add a message below, or start the mind from Provider & lifecycle.</p>
+              ) : (
+                <ol className="max-h-[62vh] space-y-3 overflow-y-auto p-3" aria-label="Persistent mind conversation">
+                  {visibleEvents.map((event) => {
+                    const selected = event.eventId === selectedEventId;
+                    const textValue = eventText(event);
+                    const assistant = event.kind === 'mind.reply';
+                    const thought = event.kind === 'mind.thought';
+                    return (
+                      <li key={event.eventId} className={assistant ? 'flex justify-end' : ''}>
+                        <button
+                          type="button"
+                          onClick={() => setSearchParams((current) => {
+                            const next = new URLSearchParams(current);
+                            next.set('event', event.eventId);
+                            return next;
+                          })}
+                          aria-current={selected ? 'true' : undefined}
+                          className={`${assistant ? 'max-w-[88%] border-port-accent/50 bg-port-accent/10' : 'w-full'} rounded border p-3 text-left ${thought ? 'border-dashed border-port-accent/40 bg-port-bg/40' : ''} ${selected ? 'ring-1 ring-port-accent' : 'hover:bg-port-border/20'} ${!assistant && !thought ? 'border-port-border' : ''}`}
+                        >
+                          <span className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-port-accent">{eventLabel(event.kind)}</span>
+                            <time className="text-xs text-port-text-muted" dateTime={event.at}>{formatDateTime(event.at)}</time>
+                          </span>
+                          <span className="mt-1 block whitespace-pre-wrap break-words text-sm text-port-text">{textValue || event.kind}</span>
+                          {event.turnId && <span className="mt-1 block truncate font-mono text-[11px] text-port-text-muted">turn {event.turnId}</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </div>
+
+            <aside className="space-y-3 rounded border border-port-border bg-port-card p-4" aria-label="Selected mind event">
+              <h3 className="text-sm font-semibold text-port-text">Selected event</h3>
+              {selectedEvent ? (
+                <>
+                  <p className="break-all font-mono text-xs text-port-text-muted">{selectedEvent.eventId}</p>
+                  <p className="text-sm text-port-text">{eventLabel(selectedEvent.kind)}</p>
+                  <p className="text-xs text-port-text-muted">Sequence {selectedEvent.sequence}{selectedEvent.turnId ? ` · turn ${selectedEvent.turnId}` : ''}</p>
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-port-border bg-port-bg p-2 text-[11px] text-port-text-muted">{JSON.stringify(selectedEvent.data || {}, null, 2)}</pre>
+                  {selectedEvent.kind === 'mind.capability.request' && <ActionButton label="Acknowledge" icon={Check} pending={eventActionPending === selectedEvent.eventId} onClick={() => acknowledge(selectedEvent)} />}
+                  {['mind.summary', 'mind.reply', 'mind.thought', 'mind.memory.candidate'].includes(selectedEvent.kind) && (
+                    <ActionButton label="Promote to memory" icon={Upload} pending={eventActionPending === selectedEvent.eventId} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
+                  )}
+                </>
+              ) : <p className="text-sm text-port-text-muted">Choose an item to inspect its safe event payload, keep it selected in the URL, attach an annotation, or promote it to memory.</p>}
+            </aside>
           </div>
-          <div>
-            <label htmlFor="mind-input-text" className="mb-1 block text-sm font-medium text-port-text">{kind === 'message' ? 'Message' : 'Comment or idea'}</label>
-            <textarea id="mind-input-text" value={text} onChange={(event) => changeText(event.target.value)} maxLength={8000} rows={3} className="w-full resize-y rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text" placeholder={kind === 'message' ? 'What should the mind consider on its next eligible wake?' : 'Add context without turning it into an immediate task.'} />
-          </div>
-        </div>
-        {kind === 'annotation' && selectedEventId && <p className="mt-2 text-xs text-port-text-muted">Attached to selected event {selectedEventId}</p>}
-        {submitError && <p role="alert" className="mt-2 text-sm text-port-error">{submitError} — Retry uses the same id, so it will not duplicate the input.</p>}
-        <div className="mt-3 flex justify-end">
-          <button type="submit" disabled={!text.trim() || submitting} className="rounded bg-port-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">
-            {submitting ? 'Submitting…' : submitError ? 'Retry' : 'Submit'}
-          </button>
-        </div>
-      </form>
+
+          <form onSubmit={submit} className="rounded border border-port-border bg-port-card p-4">
+            <div className="grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)]">
+              <div>
+                <label htmlFor="mind-input-kind" className="mb-1 block text-sm font-medium text-port-text">Input type</label>
+                <select id="mind-input-kind" value={kind} onChange={(event) => changeKind(event.target.value)} className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text">
+                  <option value="message">Message</option>
+                  <option value="annotation">Comment / idea</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="mind-input-text" className="mb-1 block text-sm font-medium text-port-text">{kind === 'message' ? 'Message' : 'Comment or idea'}</label>
+                <textarea id="mind-input-text" value={text} onChange={(event) => changeText(event.target.value)} maxLength={8000} rows={3} className="w-full resize-y rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text" placeholder={kind === 'message' ? 'Write directly into the persistent conversation…' : 'Add context without requesting an immediate reply.'} />
+              </div>
+            </div>
+            {kind === 'annotation' && selectedEventId && <p className="mt-2 text-xs text-port-text-muted">Attached to selected event {selectedEventId}</p>}
+            {submitError && <p role="alert" className="mt-2 text-sm text-port-error">{submitError} — Retry uses the same id, so it will not duplicate the input.</p>}
+            <div className="mt-3 flex justify-end">
+              <button type="submit" disabled={!text.trim() || submitting} className="rounded bg-port-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">{submitting ? 'Sending…' : submitError ? 'Retry' : kind === 'message' ? 'Send message' : 'Add annotation'}</button>
+            </div>
+          </form>
+        </>
+      )}
     </section>
   );
 }
