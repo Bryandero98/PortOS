@@ -1445,7 +1445,7 @@ describe('ignoreTaskId reaches the in-flight-counting gates (#3179)', () => {
   };
 
   it('accepts ignoreTaskId and forwards it to the input hook and the perpetual gate', () => {
-    expect(GEN_SRC).toMatch(/generateManagedAppImprovementTaskForType\(taskType, app, state, \{ skipPreconditions = false, ignoreTaskId = null \} = \{\}\)/);
+    expect(GEN_SRC).toMatch(/generateManagedAppImprovementTaskForType\(taskType, app, state, \{\s*skipPreconditions = false,\s*ignoreTaskId = null/);
     expect(body()).toContain('resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId })');
     expect(body()).toContain('applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId })');
   });
