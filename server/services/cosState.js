@@ -12,6 +12,7 @@ import { ensureDirs, safeJSONParse, PATHS, atomicWrite } from '../lib/fileUtils.
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets } from '../lib/domainBudgets.js';
 import { createDefaultPersistentMindState, normalizePersistentMindState } from '../lib/persistentMind.js';
+import { createDefaultPersistentMindCapabilities, normalizePersistentMindCapabilities } from '../lib/persistentMindCapabilities.js';
 import { createDefaultPersistentMindProfile, normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
 import { createDefaultPersistentMindPrompt, normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { DEFAULT_ALWAYS_APPROVE_KINDS } from './taskLearning/safetyKind.js';
@@ -68,6 +69,9 @@ export const DEFAULT_CONFIG = {
   // installs stay disabled until the user explicitly starts it.
   persistentMindProfile: createDefaultPersistentMindProfile(),
   persistentMindPrompt: createDefaultPersistentMindPrompt(),
+  // Action grants are independent of the provider profile. Existing and fresh
+  // conversation-only installs never gain task-creation authority on upgrade.
+  persistentMindCapabilities: createDefaultPersistentMindCapabilities(),
   // Per-domain autonomy guardrails (#711). Each domain is off | dry-run | execute.
   // Default is `execute` for every domain, reproducing pre-#711 behavior so no
   // migration is needed — an install with no stored value reads `execute`.
@@ -228,6 +232,7 @@ export async function loadState() {
     config: {
       ...DEFAULT_CONFIG,
       ...persistedConfig,
+      persistentMindCapabilities: normalizePersistentMindCapabilities(persistedConfig.persistentMindCapabilities),
       persistentMindProfile: normalizePersistentMindProfile(persistedConfig.persistentMindProfile),
       persistentMindPrompt: normalizePersistentMindPrompt(persistedConfig.persistentMindPrompt),
     },

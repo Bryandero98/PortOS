@@ -35,6 +35,7 @@ import { todayInTimezone } from '../lib/timezone.js';
 import { getUserTimezone } from './userTimezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
+import { mergePersistentMindCapabilities } from '../lib/persistentMindCapabilities.js';
 import { mergePersistentMindProfile } from '../lib/persistentMindProfile.js';
 import { mergePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
@@ -225,6 +226,7 @@ export async function updateConfig(updates) {
     // Same for domainBudgets — a PATCH naming one domain (or one cap on one
     // domain) must merge field-by-field over the rest, not replace the map.
     const priorDomainBudgets = state.config.domainBudgets;
+    const priorPersistentMindCapabilities = state.config.persistentMindCapabilities;
     const priorPersistentMindProfile = state.config.persistentMindProfile;
     const priorPersistentMindPrompt = state.config.persistentMindPrompt;
     state.config = { ...state.config, ...updates };
@@ -245,6 +247,12 @@ export async function updateConfig(updates) {
       state.config.persistentMindProfile = mergePersistentMindProfile(
         priorPersistentMindProfile,
         updates.persistentMindProfile,
+      );
+    }
+    if (updates.persistentMindCapabilities !== undefined) {
+      state.config.persistentMindCapabilities = mergePersistentMindCapabilities(
+        priorPersistentMindCapabilities,
+        updates.persistentMindCapabilities,
       );
     }
     if (updates.persistentMindPrompt !== undefined) {
