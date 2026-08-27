@@ -566,10 +566,10 @@ export default function BrainGraph() {
                   type="checkbox"
                   checked={typeFilters[type]}
                   onChange={() => toggleType(type)}
-                  className="sr-only"
+                  className="peer sr-only"
                 />
                 <span
-                  className={`inline-block w-3 h-3 rounded-sm border-2 transition-colors ${
+                  className={`inline-block w-3 h-3 rounded-sm border-2 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-port-accent peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-port-bg ${
                     typeFilters[type] ? 'border-transparent' : 'border-gray-600 bg-transparent'
                   }`}
                   style={typeFilters[type] ? { backgroundColor: BRAIN_TYPE_HEX[type] } : undefined}
