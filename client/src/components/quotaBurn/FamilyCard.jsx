@@ -140,7 +140,9 @@ export default function FamilyCard({
             {status.windowLabel ? `${status.windowLabel}: ` : ''}{status.percentRemaining}% left · resets in {status.hoursUntilReset}h · {status.dispatchesUsed}{isUnlimitedDispatchCap(config.maxDispatchesPerWindow) ? '' : `/${config.maxDispatchesPerWindow}`} used
           </span>
         ) : (
-          <span className="text-xs text-gray-500">{status?.skipReason || 'not evaluated yet'}</span>
+          !status?.blockedUntil && (
+            <span className="text-xs text-gray-500">{status?.skipReason || 'not evaluated yet'}</span>
+          )
         )}
 
         {/* An observed refusal, shown even when some other gate is the one
@@ -149,10 +151,15 @@ export default function FamilyCard({
             server's skip reason deliberately omits the instant so this badge
             owns it, in the app's shared timestamp format. */}
         {status?.blockedUntil && (
-          <span className="inline-flex items-center gap-1 text-xs text-amber-400" title={status.blockedReason || 'The provider refused the last burn.'}>
-            <Ban size={13} />
-            provider refused — retrying after {formatDateTime(status.blockedUntil)}
-          </span>
+          <div className="flex flex-wrap items-center gap-1 text-xs text-amber-400">
+            <span className="inline-flex items-center gap-1">
+              <Ban size={13} />
+              provider refused — retrying after {formatDateTime(status.blockedUntil)}
+            </span>
+            <span className="basis-full pl-[17px] break-words text-amber-300/90">
+              {status.blockedReason || 'The provider refused the last burn.'}
+            </span>
+          </div>
         )}
 
         {/* A collapsed card otherwise says nothing about whether this family has
@@ -313,4 +320,3 @@ export default function FamilyCard({
     </div>
   );
 }
-
