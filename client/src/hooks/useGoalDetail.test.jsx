@@ -9,6 +9,8 @@ const rescheduleGoalTimeBlocks = vi.fn(() => Promise.resolve({}));
 const checkInGoal = vi.fn(() => Promise.resolve({ id: 'check-in-1' }));
 const updateGoalProgress = vi.fn(() => Promise.resolve({}));
 const updateGoal = vi.fn(() => Promise.resolve({}));
+const addGoalProgress = vi.fn(() => Promise.resolve({}));
+const addGoalTodo = vi.fn(() => Promise.resolve({}));
 
 vi.mock('../services/api', () => ({
   getActivities: (...args) => getActivities(...args),
@@ -18,7 +20,9 @@ vi.mock('../services/api', () => ({
   rescheduleGoalTimeBlocks: (...args) => rescheduleGoalTimeBlocks(...args),
   checkInGoal: (...args) => checkInGoal(...args),
   updateGoalProgress: (...args) => updateGoalProgress(...args),
-  updateGoal: (...args) => updateGoal(...args)
+  updateGoal: (...args) => updateGoal(...args),
+  addGoalProgress: (...args) => addGoalProgress(...args),
+  addGoalTodo: (...args) => addGoalTodo(...args)
 }));
 
 const { useGoalDetail } = await import('./useGoalDetail');
@@ -298,5 +302,54 @@ describe('useGoalDetail handleProgressChange', () => {
     await act(async () => {
       await expect(result.current.handleProgressChange(85)).resolves.toBe(false);
     });
+  });
+});
+
+describe('useGoalDetail creation actions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActivities.mockResolvedValue([]);
+    getCalendarAccounts.mockResolvedValue([]);
+    addGoalProgress.mockResolvedValue({});
+    addGoalTodo.mockResolvedValue({});
+  });
+
+  it('gates duplicate progress submissions and refreshes after success', async () => {
+    let release;
+    addGoalProgress.mockReturnValue(new Promise(resolve => { release = resolve; }));
+    const { result, onRefresh } = renderGoalDetail();
+    act(() => { result.current.setProgressForm({ date: '2026-08-27', note: 'Shipped it', durationMinutes: '' }); });
+    let first;
+    act(() => { first = result.current.handleAddProgress(); });
+    expect(result.current.progressSubmitting).toBe(true);
+    await act(async () => { await result.current.handleAddProgress(); });
+    expect(addGoalProgress).toHaveBeenCalledTimes(1);
+    await act(async () => { release({}); await first; });
+    expect(result.current.progressSubmitting).toBe(false);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves progress input and skips refresh after failure', async () => {
+    addGoalProgress.mockRejectedValue(new Error('server exploded'));
+    const { result, onRefresh } = renderGoalDetail();
+    act(() => { result.current.setProgressForm({ date: '2026-08-27', note: 'Retry me', durationMinutes: '5' }); });
+    await act(async () => { await result.current.handleAddProgress(); });
+    expect(result.current.progressForm.note).toBe('Retry me');
+    expect(result.current.progressSubmitting).toBe(false);
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('gates duplicate todo submissions and preserves input after failure', async () => {
+    let release;
+    addGoalTodo.mockReturnValue(new Promise(resolve => { release = resolve; }));
+    const { result } = renderGoalDetail();
+    act(() => { result.current.setNewTodoTitle('Follow up'); });
+    let first;
+    act(() => { first = result.current.handleAddTodo(); });
+    expect(result.current.todoSubmitting).toBe(true);
+    await act(async () => { await result.current.handleAddTodo(); });
+    expect(addGoalTodo).toHaveBeenCalledTimes(1);
+    await act(async () => { release({}); await first; });
+    expect(result.current.todoSubmitting).toBe(false);
   });
 });
