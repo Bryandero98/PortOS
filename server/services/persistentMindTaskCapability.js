@@ -17,6 +17,7 @@ import { canonicalStringify } from '../lib/objects.js';
 import { antigravityBaseModels, effortLevelsForProvider, filterSelectableModels } from '../lib/providerModels.js';
 import { PR_COMPLETIONS } from '../lib/prDisposition.js';
 import { sha256Text } from '../lib/fileUtils.js';
+import { resolveAppWorkTracker } from '../lib/workTracker.js';
 import { getActiveApps, getAppWorkTracker } from './apps.js';
 import { loadState } from './cosState.js';
 import { addTask, getTaskById } from './cosTaskStore.js';
@@ -27,7 +28,9 @@ const MAX_CATALOG_PROVIDERS = 50;
 const MAX_CATALOG_MODELS = 60;
 const MAX_CATALOG_PROMPT_CHARS = 16_000;
 const MAX_CATALOG_APP_PROMPT_CHARS = 4_000;
+const APP_TRACKER_CACHE_TTL_MS = 30_000;
 const ISSUE_TRACKERS = new Set(['github', 'gitlab']);
+const appTrackerCache = new Map();
 
 const isRunnableApp = (app) => typeof app?.repoPath === 'string' && app.repoPath.trim().length > 0;
 const isRunnableAgentProvider = (provider) => provider?.enabled !== false
@@ -59,8 +62,17 @@ const providerCatalogEntry = (provider) => {
   };
 };
 
+const catalogTrackerFor = (app) => {
+  const key = `${app.id}\0${app.repoPath}\0${app.workTracker || 'auto'}`;
+  const cached = appTrackerCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const promise = resolveAppWorkTracker(app);
+  appTrackerCache.set(key, { expiresAt: Date.now() + APP_TRACKER_CACHE_TTL_MS, promise });
+  return promise;
+};
+
 const appCatalogEntry = async (app) => {
-  const tracker = await getAppWorkTracker(app.id);
+  const tracker = await catalogTrackerFor(app);
   return {
     id: app.id,
     name: String(app.name || app.id).slice(0, 100),

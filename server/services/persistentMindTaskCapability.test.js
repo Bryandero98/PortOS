@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   addTask: vi.fn(),
   getTaskById: vi.fn(),
   getAppWorkTracker: vi.fn(),
+  resolveAppWorkTracker: vi.fn(),
 }));
 
 vi.mock('./apps.js', () => ({
@@ -23,6 +24,9 @@ vi.mock('./cosTaskStore.js', () => ({
   getTaskById: (...args) => mocks.getTaskById(...args),
 }));
 vi.mock('./providers.js', () => ({ listProviders: vi.fn(async () => mocks.providers) }));
+vi.mock('../lib/workTracker.js', () => ({
+  resolveAppWorkTracker: (...args) => mocks.resolveAppWorkTracker(...args),
+}));
 
 const {
   buildPersistentMindTaskCapabilityPrompt,
@@ -52,6 +56,7 @@ beforeEach(() => {
   }];
   mocks.existing = null;
   mocks.getAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
+  mocks.resolveAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
   mocks.getTaskById.mockImplementation(async () => mocks.existing);
   mocks.addTask.mockResolvedValue({ id: 'sys-mind-stable', status: 'pending', autoApproved: true });
 });
