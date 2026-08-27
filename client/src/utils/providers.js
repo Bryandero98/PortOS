@@ -1120,13 +1120,14 @@ export const isOllamaBackedProvider = (provider) => {
  *
  * `[]` is a valid runtime answer meaning no optional capabilities were
  * reported. `null` means the capability set is unknown, and `source` tells the
- * UI whether that is because the runtime is still loading, the provider gave a
- * harness-level fact, or no authoritative metadata exists.
+ * UI whether that is because the runtime is still loading, the runtime probe
+ * failed, the provider gave a harness-level fact, or no authoritative metadata
+ * exists.
  *
  * @param {{id?:string,type?:string,command?:string,endpoint?:string,name?:string,ollamaBacked?:boolean}|null|undefined} provider
  * @param {string|null|undefined} model
  * @param {{capabilitiesByBackend?: {ollama?: Record<string, string[]|null>, lmstudio?: Record<string, string[]|null>}, recommendations?: {ollama?: object|null, lmstudio?: object|null}, loading?: boolean}} [options]
- * @returns {{capabilities: string[]|null, source: 'unselected'|'runtime'|'provider'|'inferred'|'loading'|'unknown', recommendation: object|null}}
+ * @returns {{capabilities: string[]|null, source: 'unselected'|'runtime'|'runtime-unknown'|'provider'|'inferred'|'loading'|'unknown', recommendation: object|null}}
  */
 export const modelCapabilityInfo = (provider, model, {
   capabilitiesByBackend = {},
@@ -1139,7 +1140,9 @@ export const modelCapabilityInfo = (provider, model, {
   }
 
   const backend = localBackendForProvider(provider);
-  const canonicalLocalProvider = backend && provider.id === backend;
+  const canonicalLocalProvider = backend
+    && provider.id === backend
+    && isLocalInstanceProvider(provider);
   const recommendation = canonicalLocalProvider ? recommendations?.[backend] : null;
   const selectedRecommendation = recommendation?.id === modelId ? recommendation : null;
 
@@ -1149,7 +1152,7 @@ export const modelCapabilityInfo = (provider, model, {
       const capabilities = modelCapabilities[modelId];
       return {
         capabilities: Array.isArray(capabilities) ? [...new Set(capabilities)] : null,
-        source: 'runtime',
+        source: Array.isArray(capabilities) ? 'runtime' : 'runtime-unknown',
         recommendation: selectedRecommendation,
       };
     }

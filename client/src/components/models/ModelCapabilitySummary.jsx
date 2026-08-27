@@ -2,6 +2,7 @@ import CapabilityBadges from './CapabilityBadges.jsx';
 
 const SOURCE_COPY = {
   runtime: 'Reported by the local model runtime.',
+  'runtime-unknown': 'The local runtime found this model but could not report its capabilities right now.',
   provider: 'These are provider-level harness capabilities; this provider does not publish a separate per-model report.',
   inferred: 'Some badges are inferred from the model id. A runtime report takes precedence when available.',
   loading: 'Checking the local runtime for an authoritative capability report…',

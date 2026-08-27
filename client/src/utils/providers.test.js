@@ -916,6 +916,20 @@ describe('modelCapabilityInfo', () => {
     })).toEqual({ capabilities: null, source: 'unknown', recommendation: null });
   });
 
+  it('does not let the canonical provider id override a remote endpoint', () => {
+    const remoteCanonicalOllama = { ...ollama, endpoint: 'http://192.0.2.10:11434/v1' };
+    expect(modelCapabilityInfo(remoteCanonicalOllama, 'phi4-mini:latest', {
+      capabilitiesByBackend: { ollama: { 'phi4-mini:latest': ['chat', 'tools'] } },
+      recommendations: { ollama: { id: 'phi4-mini:latest', reason: 'Local-only recommendation.' } },
+    })).toEqual({ capabilities: null, source: 'unknown', recommendation: null });
+  });
+
+  it('distinguishes a failed local capability probe from a reported empty set', () => {
+    expect(modelCapabilityInfo(ollama, 'qwen3.6:35b', {
+      capabilitiesByBackend: { ollama: { 'qwen3.6:35b': null } },
+    })).toEqual({ capabilities: null, source: 'runtime-unknown', recommendation: null });
+  });
+
   it('shows known CLI harness capabilities separately from per-model metadata', () => {
     expect(modelCapabilityInfo({ id: 'codex', type: 'cli', command: 'codex' }, 'gpt-5'))
       .toEqual({ capabilities: ['tools', 'vision'], source: 'provider', recommendation: null });

@@ -37,6 +37,16 @@ describe('ModelCapabilitySummary', () => {
 
     rerender(
       <ModelCapabilitySummary
+        provider={{ id: 'ollama' }}
+        model="qwen3.6:35b"
+        capabilities={null}
+        source="runtime-unknown"
+      />,
+    );
+    expect(screen.getByText('The local runtime found this model but could not report its capabilities right now.')).toBeInTheDocument();
+
+    rerender(
+      <ModelCapabilitySummary
         provider={{ id: 'openai' }}
         model="gpt-5"
         capabilities={null}
