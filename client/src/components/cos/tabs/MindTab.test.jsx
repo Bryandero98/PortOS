@@ -282,6 +282,19 @@ describe('MindTab', () => {
     ));
   });
 
+  it('does not submit an IME composition commit key', async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByText('Review the next bounded slice.');
+    const message = screen.getByLabelText('Message');
+
+    await user.type(message, 'Composing text');
+    fireEvent(message, createEvent.keyDown(message, { key: 'Enter', keyCode: 229 }));
+
+    expect(api.sendPersistentMindMessage).not.toHaveBeenCalled();
+    expect(message).toHaveValue('Composing text');
+  });
+
   it('mints a new id when failed text is edited into a different submission', async () => {
     const user = userEvent.setup();
     api.sendPersistentMindMessage.mockRejectedValueOnce(new Error('Connection lost'));

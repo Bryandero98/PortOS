@@ -316,7 +316,7 @@ export default function MindTab() {
   };
 
   const handleMessageKeyDown = (event) => {
-    if (event.key !== 'Enter' || event.altKey || event.nativeEvent.isComposing) return;
+    if (event.key !== 'Enter' || event.altKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
     void submitMessage(event);
   };
 
