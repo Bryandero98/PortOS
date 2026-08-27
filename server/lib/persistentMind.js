@@ -6,6 +6,7 @@
  * rules without depending on module-level process state.
  */
 
+import { createHash } from 'crypto';
 import { PERSISTENT_MIND_ID } from './persistentMindTrajectory.js';
 import { MAX_SCREENSHOT_BYTES } from './uploadLimits.js';
 import { sanitizeFilename } from './mimeTypes.js';
@@ -68,6 +69,10 @@ const asMindId = (value) => asBoundedString(value, 128);
 
 const asCount = (value) => (
   Number.isSafeInteger(value) && value >= 0 ? value : 0
+);
+
+const asFingerprint = (value) => (
+  typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null
 );
 
 const asAttachmentId = (value) => {
@@ -162,6 +167,21 @@ export function normalizePersistentMindMessageImage(value) {
     size: attachment.size,
     uploadedAt: attachment.uploadedAt,
   };
+}
+
+/** Hash the bounded message content used to validate retries after completion. */
+export function persistentMindMessageFingerprint(value) {
+  const images = Array.isArray(value?.images)
+    ? value.images.map((image) => (typeof image === 'string' ? image : image?.attachmentId))
+      .map(asAttachmentId)
+      .filter(Boolean)
+    : [];
+  return createHash('sha256')
+    .update(JSON.stringify({
+      text: asBoundedString(value?.text, PERSISTENT_MIND_LIMITS.MAX_MESSAGE_CHARS),
+      images,
+    }))
+    .digest('hex');
 }
 
 /** Build the safe upload response without exposing claim bookkeeping. */
@@ -279,6 +299,15 @@ export function normalizePersistentMindState(raw) {
     if (!id || recentMessageIds.includes(id)) continue;
     recentMessageIds.push(id);
   }
+  const recentMessageFingerprints = [];
+  const seenFingerprintIds = new Set();
+  for (const candidate of Array.isArray(source.recentMessageFingerprints) ? source.recentMessageFingerprints : []) {
+    const id = asId(candidate?.id);
+    const fingerprint = asFingerprint(candidate?.fingerprint);
+    if (!id || !fingerprint || seenFingerprintIds.has(id)) continue;
+    seenFingerprintIds.add(id);
+    recentMessageFingerprints.push({ id, fingerprint });
+  }
   const pendingAttachments = [];
   const seenAttachmentIds = new Set();
   for (const candidate of Array.isArray(source.pendingAttachments) ? source.pendingAttachments : []) {
@@ -325,6 +354,7 @@ export function normalizePersistentMindState(raw) {
     selfWake,
     activeTurn,
     recentMessageIds: recentMessageIds.slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS),
+    recentMessageFingerprints: recentMessageFingerprints.slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS),
     lastCompletedTurnId: asId(source.lastCompletedTurnId) || null,
     lastCompletedAt: asIso(source.lastCompletedAt),
     nextEligibleWakeAt: asIso(source.nextEligibleWakeAt),

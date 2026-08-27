@@ -43,13 +43,19 @@ describe('migration 303 — persistent mind image attachments', () => {
     expect(migrated).toMatchObject({
       schemaVersion: PERSISTENT_MIND_SCHEMA_VERSION,
       pendingAttachments: [],
+      recentMessageFingerprints: [],
       queuedMessages: legacy.queuedMessages,
       activeTurn: legacy.activeTurn,
     });
   });
 
   it('is idempotent once the schema and pending index are present', async () => {
-    const current = { schemaVersion: PERSISTENT_MIND_SCHEMA_VERSION, pendingAttachments: [], enabled: false };
+    const current = {
+      schemaVersion: PERSISTENT_MIND_SCHEMA_VERSION,
+      pendingAttachments: [],
+      recentMessageFingerprints: [],
+      enabled: false,
+    };
     await writeFile(statePath(), JSON.stringify({ persistentMind: current }));
 
     await expect(migration.up({ rootDir })).resolves.toEqual({ updated: 0, reason: 'already-applied' });

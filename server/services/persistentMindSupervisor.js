@@ -20,6 +20,7 @@ import {
   normalizePersistentMindMessageImage,
   nextPersistentMindWakeAt,
   normalizePersistentMindState,
+  persistentMindMessageFingerprint,
   persistentMindBackoffMs,
   persistentMindTurnIsStale,
   publicPersistentMindAttachment,
@@ -534,10 +535,19 @@ async function completeTurn(turnId, result, generation) {
     const messageId = mind.activeTurn.wake.kind === 'message'
       ? mind.activeTurn.wake.message.id
       : null;
+    const messageFingerprint = messageId
+      ? persistentMindMessageFingerprint(mind.activeTurn.wake.message)
+      : null;
     const recentMessageIds = messageId
       ? [...mind.recentMessageIds.filter((id) => id !== messageId), messageId]
         .slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS)
       : mind.recentMessageIds;
+    const recentMessageFingerprints = messageId
+      ? [...mind.recentMessageFingerprints.filter((entry) => entry.id !== messageId), {
+          id: messageId,
+          fingerprint: messageFingerprint,
+        }].slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS)
+      : mind.recentMessageFingerprints;
     const requestedWake = result?.selfWake && typeof result.selfWake === 'object'
       ? {
           id: `wake-${randomUUID()}`,
@@ -555,6 +565,7 @@ async function completeTurn(turnId, result, generation) {
         ...mind,
         activeTurn: null,
         recentMessageIds,
+        recentMessageFingerprints,
         selfWake: requestedWake,
         lastCompletedTurnId: turnId,
         lastCompletedAt: completedAt,
@@ -1021,10 +1032,24 @@ export async function enqueuePersistentMindMessage({ id = randomUUID(), text, im
     const existingMessage = findMessageById(mind, messageId);
     const claimedRecords = claimedAttachmentsForMessage(mind, messageId);
     const duplicate = Boolean(existingMessage) || mind.recentMessageIds.includes(messageId);
+    const requestedFingerprint = persistentMindMessageFingerprint({
+      text: messageText,
+      images: attachmentIds,
+    });
+    const recentFingerprint = mind.recentMessageFingerprints.find((entry) => entry.id === messageId)?.fingerprint;
     const existingImageIds = existingMessage
       ? imageIdsForMessage(existingMessage)
       : claimedRecords.map((attachment) => attachment.attachmentId);
     if (duplicate) {
+      if (!existingMessage && recentFingerprint && recentFingerprint !== requestedFingerprint) {
+        return {
+          mind,
+          value: attachmentFailure('A retry must use the same Persistent Mind message content', {
+            code: 'IDEMPOTENCY_CONFLICT',
+            status: 409,
+          }),
+        };
+      }
       if (existingMessage && existingMessage.text !== messageText) {
         return {
           mind,

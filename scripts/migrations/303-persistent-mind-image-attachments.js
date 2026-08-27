@@ -23,7 +23,8 @@ export default {
       return { updated: 0, reason: 'no-persistent-mind' };
     }
     if (existing.schemaVersion === PERSISTENT_MIND_SCHEMA_VERSION
-        && Array.isArray(existing.pendingAttachments)) {
+        && Array.isArray(existing.pendingAttachments)
+        && Array.isArray(existing.recentMessageFingerprints)) {
       return { updated: 0, reason: 'already-applied' };
     }
 
@@ -32,6 +33,9 @@ export default {
       schemaVersion: PERSISTENT_MIND_SCHEMA_VERSION,
       pendingAttachments: Array.isArray(existing.pendingAttachments)
         ? existing.pendingAttachments
+        : [],
+      recentMessageFingerprints: Array.isArray(existing.recentMessageFingerprints)
+        ? existing.recentMessageFingerprints
         : [],
     };
     await atomicWrite(statePath, state);

@@ -174,6 +174,11 @@ describe('persistent mind supervisor', () => {
     expect(mock.acquireSlot).toHaveBeenCalledTimes(1);
     expect(mock.root.persistentMind.activeTurn).toBeNull();
     expect(mock.root.persistentMind.recentMessageIds).toContain('message-1');
+    expect(mock.root.persistentMind.recentMessageFingerprints).toEqual([
+      { id: 'message-1', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    ]);
+    expect(await supervisor.enqueuePersistentMindMessage({ id: 'message-1', text: 'Changed after completion.' }))
+      .toMatchObject({ success: false, code: 'IDEMPOTENCY_CONFLICT', status: 409 });
     expect(mock.recordUsage).toHaveBeenCalledWith('cos', expect.objectContaining({ actions: 1 }));
   });
 
