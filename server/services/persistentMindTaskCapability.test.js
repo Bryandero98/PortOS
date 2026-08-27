@@ -104,6 +104,14 @@ describe('persistent mind CoS-task capability', () => {
     expect(prompt).toContain('provider-0');
   });
 
+  it('reuses tracker resolution for repeated catalog reads', async () => {
+    mocks.apps = [{ id: 'cached-app', name: 'Cached App', repoPath: '/example/cached-app' }];
+    await readPersistentMindTaskCatalog();
+    await readPersistentMindTaskCatalog();
+
+    expect(mocks.resolveAppWorkTracker).toHaveBeenCalledTimes(1);
+  });
+
   it('queues an auto-approved isolated task with the chosen run and PR policy', async () => {
     const recordCapabilityEvent = vi.fn(async () => true);
     const results = await executePersistentMindTaskRequests({
