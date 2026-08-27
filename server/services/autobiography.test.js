@@ -672,6 +672,17 @@ describe('Autobiography - checkAndPrompt', () => {
     expect(notification.metadata).not.toHaveProperty('type');
   });
 
+  it('creates only one notification across concurrent due checks', async () => {
+    const oldTime = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    setupPersistentMocks(makeStoriesData(), makeConfigData({ lastPromptAt: oldTime }));
+
+    const results = await Promise.all([checkAndPrompt(), checkAndPrompt()]);
+
+    expect(results.filter(result => result.prompted)).toHaveLength(1);
+    expect(results.filter(result => result.reason === 'not_due')).toHaveLength(1);
+    expect(mockAddNotification).toHaveBeenCalledTimes(1);
+  });
+
   it('should prompt when lastPromptAt is null (first time)', async () => {
     setupMocks(makeStoriesData(), makeConfigData({ lastPromptAt: null }));
 

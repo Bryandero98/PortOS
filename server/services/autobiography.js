@@ -9,9 +9,12 @@
 
 import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
-import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { recordTombstone } from '../lib/tombstones.js';
+import {
+  queueAutobiographyConfigWrite,
+  queueAutobiographyStoriesWrite
+} from './autobiographyFileQueues.js';
 import { addNotification, NOTIFICATION_TYPES, exists as notificationExists } from './notifications.js';
 import { getActiveProvider, getProviderById } from './providers.js';
 import { callProviderAISimple, parseLLMJSON } from './aiProvider.js';
@@ -19,8 +22,6 @@ import { callProviderAISimple, parseLLMJSON } from './aiProvider.js';
 const DATA_DIR = join(PATHS.digitalTwin, 'autobiography');
 const STORIES_FILE = join(DATA_DIR, 'stories.json');
 const CONFIG_FILE = join(DATA_DIR, 'config.json');
-const queueStoriesWrite = createFileWriteQueue();
-const queueConfigWrite = createFileWriteQueue();
 
 // Thematic prompt bank organized by life themes
 const PROMPT_THEMES = [
@@ -215,7 +216,7 @@ export function getThemes() {
  * @param {string} [excludePromptId] - Prompt ID to exclude (used by skip to avoid returning the same prompt)
  */
 export async function getNextPrompt(excludePromptId) {
-  return queueStoriesWrite(async () => {
+  return queueAutobiographyStoriesWrite(async () => {
     const data = await loadStories();
     const usedPrompts = data.usedPrompts || [];
 
@@ -282,7 +283,7 @@ export function getPromptById(promptId) {
  * Save a story for a given prompt
  */
 export async function saveStory({ promptId, content, parentStoryId, customPromptText }) {
-  return queueStoriesWrite(async () => {
+  return queueAutobiographyStoriesWrite(async () => {
     const data = await loadStories();
     const prompt = getPromptById(promptId);
 
@@ -321,7 +322,7 @@ export async function saveStory({ promptId, content, parentStoryId, customPrompt
  * Update an existing story
  */
 export async function updateStory(storyId, content) {
-  return queueStoriesWrite(async () => {
+  return queueAutobiographyStoriesWrite(async () => {
     const data = await loadStories();
     const story = data.stories.find(s => s.id === storyId);
 
@@ -350,7 +351,7 @@ export async function updateStory(storyId, content) {
  * carries the same id on every peer.
  */
 export async function deleteStory(storyId) {
-  return queueStoriesWrite(async () => {
+  return queueAutobiographyStoriesWrite(async () => {
     const data = await loadStories();
     const idx = data.stories.findIndex(s => s.id === storyId);
     if (idx === -1) return null;
@@ -426,7 +427,7 @@ export async function getConfig() {
  * Update configuration
  */
 export async function updateConfig(updates) {
-  return queueConfigWrite(async () => {
+  return queueAutobiographyConfigWrite(async () => {
     const config = await loadConfig();
     const updated = { ...config, ...updates };
     await saveConfig(updated);
@@ -524,7 +525,7 @@ Return a JSON array of exactly 3 strings, nothing else. Example:
 
   // Re-read inside the file queue so a story mutation that completed while the
   // provider was running is preserved in the write-back.
-  const storedFollowUps = await queueStoriesWrite(async () => {
+  const storedFollowUps = await queueAutobiographyStoriesWrite(async () => {
     const currentData = await loadStories();
     const currentStory = currentData.stories.find(s => s.id === storyId);
     if (!currentStory) return null;
@@ -639,51 +640,50 @@ Rules:
  * Called by the autonomous job system or can be triggered manually.
  */
 export async function checkAndPrompt() {
-  const config = await loadConfig();
+  return queueAutobiographyConfigWrite(async () => {
+    const config = await loadConfig();
 
-  if (!config.enabled) {
-    return { prompted: false, reason: 'disabled' };
-  }
-
-  const now = Date.now();
-  const intervalMs = (config.intervalHours || 24) * 60 * 60 * 1000;
-  const lastPromptTime = config.lastPromptAt ? new Date(config.lastPromptAt).getTime() : 0;
-
-  if (now - lastPromptTime < intervalMs) {
-    return { prompted: false, reason: 'not_due' };
-  }
-
-  // Check if there's already an unread autobiography notification
-  const alreadyNotified = await notificationExists(
-    NOTIFICATION_TYPES.AUTOBIOGRAPHY_PROMPT
-  );
-
-  if (alreadyNotified) {
-    return { prompted: false, reason: 'pending_notification' };
-  }
-
-  const prompt = await getNextPrompt();
-
-  await addNotification({
-    type: NOTIFICATION_TYPES.AUTOBIOGRAPHY_PROMPT,
-    title: '5-Minute Story Time',
-    description: `${prompt.themeLabel}: ${prompt.text}`,
-    priority: 'low',
-    link: `/digital-twin/autobiography?prompt=${prompt.id}`,
-    metadata: {
-      promptId: prompt.id,
-      themeId: prompt.themeId
+    if (!config.enabled) {
+      return { prompted: false, reason: 'disabled' };
     }
+
+    const now = Date.now();
+    const intervalMs = (config.intervalHours || 24) * 60 * 60 * 1000;
+    const lastPromptTime = config.lastPromptAt ? new Date(config.lastPromptAt).getTime() : 0;
+
+    if (now - lastPromptTime < intervalMs) {
+      return { prompted: false, reason: 'not_due' };
+    }
+
+    // Check if there's already an unread autobiography notification
+    const alreadyNotified = await notificationExists(
+      NOTIFICATION_TYPES.AUTOBIOGRAPHY_PROMPT
+    );
+
+    if (alreadyNotified) {
+      return { prompted: false, reason: 'pending_notification' };
+    }
+
+    const prompt = await getNextPrompt();
+
+    await addNotification({
+      type: NOTIFICATION_TYPES.AUTOBIOGRAPHY_PROMPT,
+      title: '5-Minute Story Time',
+      description: `${prompt.themeLabel}: ${prompt.text}`,
+      priority: 'low',
+      link: `/digital-twin/autobiography?prompt=${prompt.id}`,
+      metadata: {
+        promptId: prompt.id,
+        themeId: prompt.themeId
+      }
+    });
+
+    config.lastPromptAt = new Date().toISOString();
+    config.lastPromptId = prompt.id;
+    await saveConfig(config);
+
+    console.log(`📖 Autobiography prompt sent: ${prompt.themeLabel} - ${prompt.text.substring(0, 50)}...`);
+
+    return { prompted: true, prompt };
   });
-
-  await queueConfigWrite(async () => {
-    const currentConfig = await loadConfig();
-    currentConfig.lastPromptAt = new Date().toISOString();
-    currentConfig.lastPromptId = prompt.id;
-    await saveConfig(currentConfig);
-  });
-
-  console.log(`📖 Autobiography prompt sent: ${prompt.themeLabel} - ${prompt.text.substring(0, 50)}...`);
-
-  return { prompted: true, prompt };
 }
