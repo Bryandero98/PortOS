@@ -148,6 +148,20 @@ export function isCooldownExemptTask(task) {
 }
 
 /**
+ * A claim/plan perpetual drain must stop when a completed agent leaves the
+ * complete actionable set unchanged. A null signature means the detector has
+ * no progress identity and keeps the legacy behavior; an empty signature is a
+ * valid idle result but never reaches this predicate because `actionable` is
+ * false.
+ */
+export function shouldParkUnchangedPerpetualWork(detection, lastSignature) {
+  return detection?.actionable === true
+    && detection.signature != null
+    && lastSignature != null
+    && detection.signature === lastSignature;
+}
+
+/**
  * Dry-run eligibility pass over auto-approved system tasks. Walks the tasks in
  * file order applying the SAME gates execute mode uses — global slot cap,
  * max-total-spawns, app cooldown, per-project cap — while tracking virtual
@@ -2289,10 +2303,11 @@ async function resolveClaimWorkRouting(app, taskType, metadata, taskSchedule) {
  * IS the detector — a programmatic detector decides whether there's anything to
  * claim BEFORE building the (expensive) prompt or burning an agent:
  *   - actionable → stamp metadata.perpetual (skip cooldown), proceed;
+ *   - unchanged actionable set → PARK after a successful no-progress run;
  *   - idle (definitive) → PARK on the recheck cadence, skip;
  *   - transient probe failure → skip WITHOUT parking so the next tick retries.
- * The detector keys on the RESOLVED promptTaskType. Returns `{ skip, spendDispatch }`
- * and mutates `metadata.perpetual` on the actionable path.
+ * The detector keys on the RESOLVED promptTaskType. Returns `{ skip, spendDispatch,
+ * signature }` and mutates `metadata.perpetual` on the actionable path.
  *
  * `spendDispatch` is the caller's cue to call `recordPerpetualDispatch` (which
  * clears the park and spends one unit of the type's `drainDispatchCap` budget in a
@@ -2316,11 +2331,32 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
     ignoreTaskId
   });
   if (detection.actionable) {
+    // A successful claim/plan agent can still return without changing forge or
+    // PLAN state (for example, it decides not to pick the advertised item). The
+    // completion refill would otherwise dispatch the same candidate forever.
+    // The detector's signature covers the complete set; `items` is capped for
+    // the picker and is not sufficient for convergence.
+    if (detection.signature != null) {
+      const { signature: lastSignature } = await taskSchedule.getPerpetualDrainState(taskType, app.id);
+      if (shouldParkUnchangedPerpetualWork(detection, lastSignature)) {
+        const counts = detection.total != null
+          ? { open: detection.total, inFlight: detection.inFlightCount ?? 0, filtered: detection.filteredCount ?? 0 }
+          : null;
+        await taskSchedule.parkPerpetual(taskType, app.id, {
+          reason: 'no-progress',
+          actionableCount: detection.count,
+          counts,
+          signature: null
+        });
+        emitLog('info', `Perpetual ${taskType} parked for ${app.name}: actionable work unchanged after the last run`, { appId: app.id });
+        return { skip: true };
+      }
+    }
     recordPerpetualTransient(taskType, app.id, null);
     metadata.perpetual = true;
     // The dispatch is SPENT BY THE CALLER, once a task is certain — see the note
     // on `spendDispatch` in the JSDoc above.
-    return { skip: false, spendDispatch: true };
+    return { skip: false, spendDispatch: true, signature: detection.signature ?? null };
   }
   if (detection.transient) {
     emitLog('debug', `Perpetual ${taskType} skip for ${app.name} (transient: ${detection.reason})`, { appId: app.id });
@@ -3173,7 +3209,9 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // The reconcile drains spend theirs inside their own block, which no later gate
   // can skip (their types are outside PLAN_PICK_TASK_TYPES / pr-watcher /
   // reference-watch), so they are already charged only on real dispatches.
-  if (perpetualGate.spendDispatch) await taskSchedule.recordPerpetualDispatch(taskType, app.id, null);
+  if (perpetualGate.spendDispatch) {
+    await taskSchedule.recordPerpetualDispatch(taskType, app.id, perpetualGate.signature ?? null);
+  }
   await updateAppActivity(app.id, { lastImprovementType: taskType });
   emitLog('info', `Generating improvement task for ${app.name}: ${taskType}`, { appId: app.id, analysisType: taskType });
 

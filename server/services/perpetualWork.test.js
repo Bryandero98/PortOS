@@ -250,6 +250,7 @@ describe('perpetualWork', () => {
         { ref: '1', title: 'plain' },
         { ref: '5', title: 'also plain' }
       ]);
+      expect(out.signature).toBe('[1,5]');
     });
 
     it('reports the "[Epic]"-prefixed issue as actionable while it is still undecomposed', async () => {
@@ -268,6 +269,7 @@ describe('perpetualWork', () => {
       });
       const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
       expect(out).toMatchObject({ actionable: true, count: 1, reason: 'actionable-issues', sample: [1] });
+      expect(out.signature).toBe('[1]');
       expect(out.filteredCount).toBe(2);
     });
 

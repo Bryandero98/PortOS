@@ -652,6 +652,10 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
     filteredCount,
     reason: actionable.length > 0 ? 'actionable-issues' : 'no-actionable-issues',
     sample: actionable.slice(0, 5).map((i) => i.number),
+    // The perpetual drain uses the complete candidate set to detect a
+    // successful agent that exited without claiming anything. `sample` is
+    // intentionally capped for UI payloads, so it cannot serve as that brake.
+    signature: JSON.stringify(actionable.map((i) => i.number)),
     items: actionable.slice(0, WORK_ITEM_LIMIT).map((i) => ({ ref: String(i.number), title: i.title || '' }))
   };
 }
@@ -692,6 +696,8 @@ export async function detectPlanTask(app) {
     actionable: !!pick,
     count: available.length,
     reason: pick ? 'actionable-plan-items' : 'no-actionable-plan-items',
+    // Keep the signature complete even though the picker payload is capped.
+    signature: JSON.stringify(available.map((it) => it.id)),
     items: available.slice(0, WORK_ITEM_LIMIT).map((it) => ({ ref: it.id, title: planItemTitle(it) }))
   };
 }

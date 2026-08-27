@@ -59,6 +59,7 @@ vi.mock('./github.js', async (importActual) => ({
 import {
   selectDryRunAutoApproved,
   exceedsMaxSpawns,
+  shouldParkUnchangedPerpetualWork,
   resolveIssueAuthorFilterBlock,
   resolveIssueExcludeLabelsBlock,
   resolveSwarmBlock,
@@ -89,6 +90,19 @@ const COS_SRC = readFileSync(join(__dirname, 'cos.js'), 'utf-8');
 
 const task = (id, metadata = {}) => ({ id, metadata });
 const noCooldown = () => Promise.resolve(false);
+
+describe('claim drain convergence', () => {
+  it('parks a successful no-progress run when the actionable set is unchanged', () => {
+    const detection = { actionable: true, signature: '[101,202]' };
+    expect(shouldParkUnchangedPerpetualWork(detection, '[101,202]')).toBe(true);
+  });
+
+  it('continues when the candidate set changed or has no progress identity', () => {
+    expect(shouldParkUnchangedPerpetualWork({ actionable: true, signature: '[202]' }, '[101,202]')).toBe(false);
+    expect(shouldParkUnchangedPerpetualWork({ actionable: true }, '[101,202]')).toBe(false);
+    expect(shouldParkUnchangedPerpetualWork({ actionable: false, signature: '[]' }, '[]')).toBe(false);
+  });
+});
 
 describe('claim reviewer resolution', () => {
   // The claim prompts run their local reviewers BEFORE the PR/MR is opened, so
@@ -1623,7 +1637,7 @@ describe('the drain cap has exactly one implementation, at the choke point', () 
 
     const genStart = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
     const body = GEN_SRC.slice(genStart, GEN_SRC.indexOf('return task;', genStart));
-    const spendIdx = body.indexOf('if (perpetualGate.spendDispatch) await taskSchedule.recordPerpetualDispatch(taskType, app.id, null)');
+    const spendIdx = body.search(/if \(perpetualGate\.spendDispatch\) \{\s*await taskSchedule\.recordPerpetualDispatch\(taskType, app\.id, perpetualGate\.signature \?\? null\)/);
     expect(spendIdx, 'the choke point must spend the deferred dispatch').toBeGreaterThan(-1);
     // Every `return null` gate must precede it — planId is the last one.
     expect(body.indexOf('planMeta.skipReason')).toBeLessThan(spendIdx);
