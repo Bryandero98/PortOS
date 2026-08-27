@@ -57,11 +57,8 @@ export const DEFAULT_CONFIG = {
   appReviewCooldownMs: 1800000,
   idleReviewEnabled: true,
   idleReviewPriority: 'MEDIUM',
-  comprehensiveAppImprovement: true,
-  immediateExecution: true,
   proactiveMode: true,
   autonomousJobsEnabled: true,
-  autonomyLevel: 'standby',
   // Investigation tasks normally hold only failure loops for a human. This
   // opt-in also admits those loop/storm investigations unattended.
   autoApproveInvestigations: false,
@@ -225,6 +222,13 @@ export async function loadState() {
   // from re-emitting a key the strict PUT schema would now reject on a full
   // round-trip, and purges it from disk on the next saveState.
   delete persistedConfig.evaluationIntervalMs;
+  // The global four-level autonomy preset was only a UI shortcut that rewrote
+  // independent capacity/work-generation fields. Domain guardrails now own the
+  // actual off/dry-run/execute policy, so do not keep re-emitting this inert key
+  // from upgraded state files. Per-job autonomyLevel remains a separate contract.
+  delete persistedConfig.autonomyLevel;
+  delete persistedConfig.comprehensiveAppImprovement;
+  delete persistedConfig.immediateExecution;
 
   stateCache = {
     ...DEFAULT_STATE,

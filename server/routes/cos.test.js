@@ -249,6 +249,19 @@ describe('CoS Routes', () => {
       expect(response.status).toBe(200);
       expect(cos.updateConfig).toHaveBeenCalledWith(updates);
     });
+
+    it.each([
+      ['autonomyLevel', 'manager'],
+      ['comprehensiveAppImprovement', true],
+      ['immediateExecution', true],
+    ])('rejects the retired %s config field', async (field, value) => {
+      const response = await request(app)
+        .put('/api/cos/config')
+        .send({ [field]: value });
+
+      expect(response.status).toBe(400);
+      expect(cos.updateConfig).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /api/cos/tasks', () => {

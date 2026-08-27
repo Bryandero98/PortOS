@@ -46,11 +46,8 @@ export const cosConfigSchema = z.object({
   appReviewCooldownMs: z.number().int().min(0).optional(),
   idleReviewEnabled: z.boolean().optional(),
   idleReviewPriority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
-  comprehensiveAppImprovement: z.boolean().optional(),
-  immediateExecution: z.boolean().optional(),
   proactiveMode: z.boolean().optional(),
   autonomousJobsEnabled: z.boolean().optional(),
-  autonomyLevel: z.enum(['standby', 'assistant', 'manager', 'yolo']).optional(),
   autoApproveInvestigations: z.boolean().optional(),
   // A durable reasoning route for the persistent mind. It is separate from
   // `alwaysOn`: saving or enabling this profile never starts background work.
