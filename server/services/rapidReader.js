@@ -8,8 +8,8 @@ export const ACCELERANDO_BOOK = Object.freeze({
   id: 'accelerando',
   title: 'Accelerando',
   author: 'Charles Stross',
-  sourceUrl: 'https://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando.html',
-  sourcePageUrl: 'https://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando-intro.html',
+  sourceUrl: 'http://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando.html',
+  sourcePageUrl: 'http://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando-intro.html',
   licenseName: 'CC BY-NC-ND 2.5',
   licenseUrl: 'https://creativecommons.org/licenses/by-nc-nd/2.5/',
 });

@@ -69,6 +69,7 @@ describe('getAccelerandoBook', () => {
       id: 'accelerando',
       title: 'Accelerando',
       author: 'Charles Stross',
+      sourceUrl: 'http://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando.html',
       licenseName: 'CC BY-NC-ND 2.5',
       licenseUrl: 'https://creativecommons.org/licenses/by-nc-nd/2.5/',
       cached: false,
