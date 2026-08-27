@@ -9,13 +9,14 @@ const mocks = vi.hoisted(() => ({
   }],
   existing: null,
   addTask: vi.fn(),
+  getTaskById: vi.fn(),
 }));
 
 vi.mock('./apps.js', () => ({ getActiveApps: vi.fn(async () => mocks.apps) }));
 vi.mock('./cosState.js', () => ({ loadState: vi.fn(async () => mocks.root) }));
 vi.mock('./cosTaskStore.js', () => ({
   addTask: (...args) => mocks.addTask(...args),
-  getTaskById: vi.fn(async () => mocks.existing),
+  getTaskById: (...args) => mocks.getTaskById(...args),
 }));
 vi.mock('./providers.js', () => ({ listProviders: vi.fn(async () => mocks.providers) }));
 
@@ -46,6 +47,7 @@ beforeEach(() => {
     defaultModel: 'gpt-5', models: ['gpt-5', 'gpt-5-mini'],
   }];
   mocks.existing = null;
+  mocks.getTaskById.mockImplementation(async () => mocks.existing);
   mocks.addTask.mockResolvedValue({ id: 'sys-mind-stable', status: 'pending', autoApproved: true });
 });
 
@@ -182,5 +184,27 @@ describe('persistent mind CoS-task capability', () => {
     });
     expect(result).toMatchObject({ success: true, duplicate: true, task: { id: 'sys-mind-existing' } });
     expect(mocks.addTask).not.toHaveBeenCalled();
+  });
+
+  it('binds replay ids to request content rather than array position', async () => {
+    const first = taskRequest({ description: 'First task' });
+    const second = taskRequest({ description: 'Second task' });
+    const wake = { kind: 'message', message: { id: 'message-reordered' } };
+    const firstEvents = vi.fn(async () => true);
+    const secondEvents = vi.fn(async () => true);
+
+    await executePersistentMindTaskRequests({ taskRequests: [first, second], turnId: 'turn-a', wake, recordCapabilityEvent: firstEvents });
+    await executePersistentMindTaskRequests({ taskRequests: [second, first], turnId: 'turn-b', wake, recordCapabilityEvent: secondEvents });
+
+    const taskIds = mocks.addTask.mock.calls.map(([task]) => task.id);
+    expect(taskIds[0]).toBe(taskIds[3]);
+    expect(taskIds[1]).toBe(taskIds[2]);
+    expect(taskIds[0]).not.toBe(taskIds[1]);
+    const requestEventIds = (events) => events.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'request')
+      .map((event) => event.id)
+      .sort();
+    expect(requestEventIds(firstEvents)).toEqual(requestEventIds(secondEvents));
   });
 });

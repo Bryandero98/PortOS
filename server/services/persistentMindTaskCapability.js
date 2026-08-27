@@ -13,6 +13,7 @@ import {
   persistentMindTaskRequestSchema,
 } from '../lib/persistentMindCapabilities.js';
 import { PERSISTENT_MIND_ID } from '../lib/persistentMindTrajectory.js';
+import { canonicalStringify } from '../lib/objects.js';
 import { antigravityBaseModels, effortLevelsForProvider, filterSelectableModels } from '../lib/providerModels.js';
 import { PR_COMPLETIONS } from '../lib/prDisposition.js';
 import { sha256Text } from '../lib/fileUtils.js';
@@ -125,8 +126,10 @@ const wakeIdentity = (wake, turnId) => (
   wake?.kind === 'message' ? wake.message?.id : wake?.id
 ) || turnId;
 
-const taskIdFor = (wakeId, index) => (
-  `sys-mind-${sha256Text(`${PERSISTENT_MIND_ID}:${wakeId}:${index}`).slice(0, 24)}`
+const requestFingerprint = (request) => sha256Text(canonicalStringify(request));
+
+const taskIdFor = (wakeId, fingerprint) => (
+  `sys-mind-${sha256Text(`${PERSISTENT_MIND_ID}:${wakeId}:${fingerprint}`).slice(0, 24)}`
 );
 
 const boundedError = (error) => String(error?.message || error || 'Task creation failed').slice(0, 300);
@@ -214,8 +217,8 @@ export async function executePersistentMindTaskRequests({
 
   for (const [index, candidate] of requests.entries()) {
     const parsed = persistentMindTaskRequestSchema.safeParse(candidate);
-    const capabilityId = `cos-task-${sha256Text(`${sourceWakeId}:${index}`).slice(0, 24)}`;
     if (!parsed.success) {
+      const capabilityId = `cos-task-${sha256Text(`${sourceWakeId}:invalid:${index}`).slice(0, 24)}`;
       const outcome = { success: false, error: 'Task request failed validation' };
       await record({
         kind: 'result',
@@ -227,12 +230,14 @@ export async function executePersistentMindTaskRequests({
     }
 
     const request = parsed.data;
+    const fingerprint = requestFingerprint(request);
+    const capabilityId = `cos-task-${sha256Text(`${sourceWakeId}:${fingerprint}`).slice(0, 24)}`;
     await record({
       kind: 'request',
       id: capabilityId,
       data: eventDataFor(request, null, `Requested CoS task ${index + 1} for ${request.appId}`),
     });
-    const taskId = taskIdFor(sourceWakeId, index);
+    const taskId = taskIdFor(sourceWakeId, fingerprint);
     const outcome = signal?.aborted
       ? { success: false, error: 'Persistent mind turn was interrupted before task creation' }
       : enabled
