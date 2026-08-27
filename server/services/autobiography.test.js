@@ -111,6 +111,27 @@ const setupMocks = (storiesData, configData) => {
   });
 };
 
+const setupPersistentMocks = (storiesData, configData) => {
+  let storedStories = JSON.parse(JSON.stringify(storiesData));
+  let storedConfig = JSON.parse(JSON.stringify(configData));
+
+  readFile.mockImplementation(async (filePath) => JSON.stringify(
+    filePath.includes('config.json') ? storedConfig : storedStories
+  ));
+  writeFile.mockImplementation(async (filePath, content) => {
+    if (filePath.includes('config.json')) {
+      storedConfig = JSON.parse(content);
+    } else {
+      storedStories = JSON.parse(content);
+    }
+  });
+
+  return {
+    getConfig: () => storedConfig,
+    getStories: () => storedStories
+  };
+};
+
 describe('Autobiography - getThemes', () => {
   it('should return all 12 themes with prompt counts', () => {
     const themes = getThemes();
@@ -406,6 +427,53 @@ describe('Autobiography - deleteStory', () => {
     const result = await deleteStory('nonexistent');
 
     expect(result).toBeNull();
+  });
+});
+
+describe('Autobiography - concurrent mutations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    uuidCounter = 0;
+  });
+
+  it('preserves stories and tombstones across concurrent story operations', async () => {
+    const allPromptIds = getThemes().flatMap(theme =>
+      Array.from({ length: theme.promptCount }, (_, i) => `${theme.id}-${i}`)
+    );
+    const persisted = setupPersistentMocks(makeStoriesData({
+      stories: [
+        { id: 'delete-me', themeId: 'family', themeLabel: 'Family', content: 'Old story' }
+      ],
+      usedPrompts: allPromptIds,
+      deletedStories: [{ id: 'previous-delete', deletedAt: '2026-01-01T00:00:00.000Z' }]
+    }), makeConfigData());
+
+    await Promise.all([
+      saveStory({ promptId: 'childhood-0', content: 'A newly preserved story.' }),
+      deleteStory('delete-me'),
+      getNextPrompt()
+    ]);
+
+    const stored = persisted.getStories();
+    expect(stored.stories.map(story => story.id)).toEqual(['test-uuid-1']);
+    expect(stored.deletedStories.map(tombstone => tombstone.id)).toEqual(
+      expect.arrayContaining(['delete-me', 'previous-delete'])
+    );
+    expect(stored.usedPrompts).toEqual([]);
+  });
+
+  it('merges concurrent config updates against the latest write', async () => {
+    const persisted = setupPersistentMocks(makeStoriesData(), makeConfigData());
+
+    await Promise.all([
+      updateConfig({ intervalHours: 48 }),
+      updateConfig({ enabled: false })
+    ]);
+
+    expect(persisted.getConfig()).toMatchObject({
+      intervalHours: 48,
+      enabled: false
+    });
   });
 });
 

@@ -9,6 +9,7 @@
 
 import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
+import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { recordTombstone } from '../lib/tombstones.js';
 import { addNotification, NOTIFICATION_TYPES, exists as notificationExists } from './notifications.js';
@@ -18,6 +19,8 @@ import { callProviderAISimple, parseLLMJSON } from './aiProvider.js';
 const DATA_DIR = join(PATHS.digitalTwin, 'autobiography');
 const STORIES_FILE = join(DATA_DIR, 'stories.json');
 const CONFIG_FILE = join(DATA_DIR, 'config.json');
+const queueStoriesWrite = createFileWriteQueue();
+const queueConfigWrite = createFileWriteQueue();
 
 // Thematic prompt bank organized by life themes
 const PROMPT_THEMES = [
@@ -212,47 +215,49 @@ export function getThemes() {
  * @param {string} [excludePromptId] - Prompt ID to exclude (used by skip to avoid returning the same prompt)
  */
 export async function getNextPrompt(excludePromptId) {
-  const data = await loadStories();
-  const usedPrompts = data.usedPrompts || [];
+  return queueStoriesWrite(async () => {
+    const data = await loadStories();
+    const usedPrompts = data.usedPrompts || [];
 
-  // Build flat list of all prompts with IDs
-  const allPrompts = PROMPT_THEMES.flatMap(theme =>
-    theme.prompts.map((text, idx) => ({
-      id: `${theme.id}-${idx}`,
-      themeId: theme.id,
-      themeLabel: theme.label,
-      text
-    }))
-  );
+    // Build flat list of all prompts with IDs
+    const allPrompts = PROMPT_THEMES.flatMap(theme =>
+      theme.prompts.map((text, idx) => ({
+        id: `${theme.id}-${idx}`,
+        themeId: theme.id,
+        themeLabel: theme.label,
+        text
+      }))
+    );
 
-  // Filter out used prompts
-  let available = allPrompts.filter(p => !usedPrompts.includes(p.id));
+    // Filter out used prompts
+    let available = allPrompts.filter(p => !usedPrompts.includes(p.id));
 
-  // If all prompts used, reset and start over
-  if (available.length === 0) {
-    data.usedPrompts = [];
-    await saveStories(data);
-    available = allPrompts;
-  }
-
-  // Exclude the currently displayed prompt so skip returns a different one
-  if (excludePromptId) {
-    const filtered = available.filter(p => p.id !== excludePromptId);
-    if (filtered.length > 0) {
-      available = filtered;
+    // If all prompts used, reset and start over
+    if (available.length === 0) {
+      data.usedPrompts = [];
+      await saveStories(data);
+      available = allPrompts;
     }
-  }
 
-  // Pick from the least-used theme to keep balance
-  const themeCounts = {};
-  for (const story of data.stories) {
-    themeCounts[story.themeId] = (themeCounts[story.themeId] || 0) + 1;
-  }
+    // Exclude the currently displayed prompt so skip returns a different one
+    if (excludePromptId) {
+      const filtered = available.filter(p => p.id !== excludePromptId);
+      if (filtered.length > 0) {
+        available = filtered;
+      }
+    }
 
-  // Sort available prompts by theme usage (least written first)
-  available.sort((a, b) => (themeCounts[a.themeId] || 0) - (themeCounts[b.themeId] || 0));
+    // Pick from the least-used theme to keep balance
+    const themeCounts = {};
+    for (const story of data.stories) {
+      themeCounts[story.themeId] = (themeCounts[story.themeId] || 0) + 1;
+    }
 
-  return available[0];
+    // Sort available prompts by theme usage (least written first)
+    available.sort((a, b) => (themeCounts[a.themeId] || 0) - (themeCounts[b.themeId] || 0));
+
+    return available[0];
+  });
 }
 
 /**
@@ -277,56 +282,60 @@ export function getPromptById(promptId) {
  * Save a story for a given prompt
  */
 export async function saveStory({ promptId, content, parentStoryId, customPromptText }) {
-  const data = await loadStories();
-  const prompt = getPromptById(promptId);
+  return queueStoriesWrite(async () => {
+    const data = await loadStories();
+    const prompt = getPromptById(promptId);
 
-  // For follow-up stories, use custom prompt text from the follow-up question
-  const isFollowUp = !!parentStoryId;
-  const parentStory = isFollowUp ? data.stories.find(s => s.id === parentStoryId) : null;
+    // For follow-up stories, use custom prompt text from the follow-up question
+    const isFollowUp = !!parentStoryId;
+    const parentStory = isFollowUp ? data.stories.find(s => s.id === parentStoryId) : null;
 
-  const story = {
-    id: uuidv4(),
-    promptId: isFollowUp ? `followup-${parentStoryId}` : promptId,
-    themeId: isFollowUp ? (parentStory?.themeId || 'unknown') : (prompt?.themeId || 'unknown'),
-    themeLabel: isFollowUp ? (parentStory?.themeLabel || 'Unknown') : (prompt?.themeLabel || 'Unknown'),
-    promptText: customPromptText || prompt?.text || '',
-    content,
-    wordCount: content.split(/\s+/).filter(Boolean).length,
-    createdAt: new Date().toISOString(),
-    ...(parentStoryId && { parentStoryId })
-  };
+    const story = {
+      id: uuidv4(),
+      promptId: isFollowUp ? `followup-${parentStoryId}` : promptId,
+      themeId: isFollowUp ? (parentStory?.themeId || 'unknown') : (prompt?.themeId || 'unknown'),
+      themeLabel: isFollowUp ? (parentStory?.themeLabel || 'Unknown') : (prompt?.themeLabel || 'Unknown'),
+      promptText: customPromptText || prompt?.text || '',
+      content,
+      wordCount: content.split(/\s+/).filter(Boolean).length,
+      createdAt: new Date().toISOString(),
+      ...(parentStoryId && { parentStoryId })
+    };
 
-  data.stories.push(story);
+    data.stories.push(story);
 
-  // Mark prompt as used
-  if (!data.usedPrompts) data.usedPrompts = [];
-  if (!data.usedPrompts.includes(promptId)) {
-    data.usedPrompts.push(promptId);
-  }
+    // Mark prompt as used
+    if (!data.usedPrompts) data.usedPrompts = [];
+    if (!data.usedPrompts.includes(promptId)) {
+      data.usedPrompts.push(promptId);
+    }
 
-  await saveStories(data);
-  console.log(`📖 Autobiography story saved: ${story.themeLabel} (${story.wordCount} words)`);
+    await saveStories(data);
+    console.log(`📖 Autobiography story saved: ${story.themeLabel} (${story.wordCount} words)`);
 
-  return story;
+    return story;
+  });
 }
 
 /**
  * Update an existing story
  */
 export async function updateStory(storyId, content) {
-  const data = await loadStories();
-  const story = data.stories.find(s => s.id === storyId);
+  return queueStoriesWrite(async () => {
+    const data = await loadStories();
+    const story = data.stories.find(s => s.id === storyId);
 
-  if (!story) return null;
+    if (!story) return null;
 
-  story.content = content;
-  story.wordCount = content.split(/\s+/).filter(Boolean).length;
-  story.updatedAt = new Date().toISOString();
+    story.content = content;
+    story.wordCount = content.split(/\s+/).filter(Boolean).length;
+    story.updatedAt = new Date().toISOString();
 
-  await saveStories(data);
-  console.log(`📖 Autobiography story updated: ${story.themeLabel} (${story.wordCount} words)`);
+    await saveStories(data);
+    console.log(`📖 Autobiography story updated: ${story.themeLabel} (${story.wordCount} words)`);
 
-  return story;
+    return story;
+  });
 }
 
 /**
@@ -341,16 +350,18 @@ export async function updateStory(storyId, content) {
  * carries the same id on every peer.
  */
 export async function deleteStory(storyId) {
-  const data = await loadStories();
-  const idx = data.stories.findIndex(s => s.id === storyId);
-  if (idx === -1) return null;
+  return queueStoriesWrite(async () => {
+    const data = await loadStories();
+    const idx = data.stories.findIndex(s => s.id === storyId);
+    if (idx === -1) return null;
 
-  const removed = data.stories.splice(idx, 1)[0];
-  data.deletedStories = recordTombstone(data.deletedStories, removed.id, { keyField: 'id' });
-  await saveStories(data);
-  console.log(`📖 Autobiography story deleted: ${removed.themeLabel}`);
+    const removed = data.stories.splice(idx, 1)[0];
+    data.deletedStories = recordTombstone(data.deletedStories, removed.id, { keyField: 'id' });
+    await saveStories(data);
+    console.log(`📖 Autobiography story deleted: ${removed.themeLabel}`);
 
-  return removed;
+    return removed;
+  });
 }
 
 /**
@@ -415,11 +426,13 @@ export async function getConfig() {
  * Update configuration
  */
 export async function updateConfig(updates) {
-  const config = await loadConfig();
-  const updated = { ...config, ...updates };
-  await saveConfig(updated);
-  console.log(`📖 Autobiography config updated: interval=${updated.intervalHours}h, enabled=${updated.enabled}`);
-  return updated;
+  return queueConfigWrite(async () => {
+    const config = await loadConfig();
+    const updated = { ...config, ...updates };
+    await saveConfig(updated);
+    console.log(`📖 Autobiography config updated: interval=${updated.intervalHours}h, enabled=${updated.enabled}`);
+    return updated;
+  });
 }
 
 /**
@@ -509,14 +522,24 @@ Return a JSON array of exactly 3 strings, nothing else. Example:
     return { error: 'Failed to parse follow-up questions from AI response' };
   }
 
-  // Store follow-ups on the story
-  story.followUpPrompts = followUps.slice(0, 3);
-  story.followUpsGeneratedAt = new Date().toISOString();
-  await saveStories(data);
+  // Re-read inside the file queue so a story mutation that completed while the
+  // provider was running is preserved in the write-back.
+  const storedFollowUps = await queueStoriesWrite(async () => {
+    const currentData = await loadStories();
+    const currentStory = currentData.stories.find(s => s.id === storyId);
+    if (!currentStory) return null;
+
+    currentStory.followUpPrompts = followUps.slice(0, 3);
+    currentStory.followUpsGeneratedAt = new Date().toISOString();
+    await saveStories(currentData);
+    return currentStory.followUpPrompts;
+  });
+
+  if (!storedFollowUps) return { error: 'Story not found' };
 
   console.log(`📖 Autobiography follow-ups generated for story ${storyId}: ${followUps.length} questions`);
 
-  return { followUps: story.followUpPrompts };
+  return { followUps: storedFollowUps };
 }
 
 /**
@@ -653,9 +676,12 @@ export async function checkAndPrompt() {
     }
   });
 
-  config.lastPromptAt = new Date().toISOString();
-  config.lastPromptId = prompt.id;
-  await saveConfig(config);
+  await queueConfigWrite(async () => {
+    const currentConfig = await loadConfig();
+    currentConfig.lastPromptAt = new Date().toISOString();
+    currentConfig.lastPromptId = prompt.id;
+    await saveConfig(currentConfig);
+  });
 
   console.log(`📖 Autobiography prompt sent: ${prompt.themeLabel} - ${prompt.text.substring(0, 50)}...`);
 
