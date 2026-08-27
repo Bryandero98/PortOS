@@ -88,7 +88,7 @@ PortOS/
 │
 ├── browser/                   # portos-browser service
 │   ├── server.js              # Launches Chromium with CDP, runs health server
-│   └── package.json           # Playwright dependency
+│   └── package.json           # Zero third-party dependencies; Chrome launched via native child_process.spawn
 │
 ├── autofixer/                 # portos-autofixer service
 │   ├── server.js              # Crash detection daemon (polls PM2 every 15min)
