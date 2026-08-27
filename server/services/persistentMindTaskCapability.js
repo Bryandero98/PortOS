@@ -115,10 +115,7 @@ const appCatalogEntry = async (app) => {
 };
 
 export async function readPersistentMindTaskCatalog() {
-  const [apps, providers] = await Promise.all([
-    Array.isArray(suppliedApps) ? suppliedApps : getActiveApps(),
-    Array.isArray(suppliedProviders) ? suppliedProviders : listProviders(),
-  ]);
+  const [apps, providers] = await Promise.all([getActiveApps(), listProviders()]);
   const runnableApps = apps
     .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
       && app.id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars)
