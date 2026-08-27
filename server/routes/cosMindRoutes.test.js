@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   pausePersistentMind: vi.fn(),
   resumePersistentMind: vi.fn(),
   stopPersistentMind: vi.fn(),
+  inspectPersistentMindRuntime: vi.fn(),
 }));
 
 vi.mock('../services/agentRunEventLog.js', () => ({
@@ -53,6 +54,9 @@ vi.mock('../services/persistentMindSupervisor.js', () => ({
   pausePersistentMind: mocks.pausePersistentMind,
   resumePersistentMind: mocks.resumePersistentMind,
   stopPersistentMind: mocks.stopPersistentMind,
+}));
+vi.mock('../services/persistentMindRuntime.js', () => ({
+  inspectPersistentMindRuntime: mocks.inspectPersistentMindRuntime,
 }));
 
 import cosMindRoutes from './cosMindRoutes.js';
@@ -97,6 +101,17 @@ describe('persistent mind routes', () => {
     mocks.pausePersistentMind.mockResolvedValue({ success: true });
     mocks.resumePersistentMind.mockResolvedValue({ success: true });
     mocks.stopPersistentMind.mockResolvedValue({ success: true });
+    mocks.inspectPersistentMindRuntime.mockResolvedValue({
+      observedAt: '2026-08-27T12:00:00.000Z',
+      inference: {
+        active: false,
+        providerId: 'demo',
+        model: 'demo-model',
+        residency: { status: 'provider-managed', backend: null, loaded: null },
+      },
+      context: { chars: 9, maxChars: 32000, approximateTokens: 3, summaryState: 'empty', memoryCount: 1 },
+      system: { memory: { total: 100, used: 40, free: 60, usagePercent: 40 } },
+    });
   });
 
   it('serves a bounded cursor snapshot with only the safe profile fields', async () => {
@@ -132,6 +147,30 @@ describe('persistent mind routes', () => {
       instructions: 'Stay grounded.',
       memories: expect.any(Array),
     }));
+  });
+
+  it('exposes live context, system, inference, and model-residency telemetry', async () => {
+    mocks.getPersistentMindState.mockResolvedValue({
+      enabled: true,
+      started: true,
+      status: 'thinking',
+      activeTurn: { id: 'turn-1', providerId: 'ollama', model: 'active-model' },
+    });
+    mocks.getProviderById.mockResolvedValue({ id: 'ollama', type: 'api' });
+    const res = await get('/mind/runtime');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      inference: { active: false, providerId: 'demo', model: 'demo-model', residency: { status: 'provider-managed' } },
+      context: { approximateTokens: 3, memoryCount: 1 },
+      system: { memory: { usagePercent: 40 } },
+    });
+    expect(mocks.inspectPersistentMindRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      state: expect.objectContaining({ status: 'thinking' }),
+      profile: expect.objectContaining({ providerId: 'demo', model: 'demo-model' }),
+      prompt: expect.objectContaining({ identity: 'Resident mind' }),
+      provider: expect.objectContaining({ id: 'ollama' }),
+    }));
+    expect(mocks.getProviderById).toHaveBeenCalledWith('ollama');
   });
 
   it('creates and edits only validated persistent-mind memories', async () => {

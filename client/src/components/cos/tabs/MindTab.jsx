@@ -10,6 +10,7 @@ import Banner from '../../ui/Banner';
 import TabPills from '../../ui/TabPills';
 import PersistentMindContextPanel from '../PersistentMindContextPanel';
 import PersistentMindProfileControls from '../PersistentMindProfileControls';
+import PersistentMindRuntimePanel, { PersistentMindThoughtStatus } from '../PersistentMindRuntimePanel';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
@@ -81,9 +82,16 @@ export default function MindTab() {
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
+  const [runtime, setRuntime] = useState(null);
+  const [runtimeError, setRuntimeError] = useState(null);
+  const [runtimeLoading, setRuntimeLoading] = useState(true);
   const cursorRef = useRef(null);
   const loadPendingRef = useRef(false);
   const deferredLoadRef = useRef(false);
+  const runtimePendingRef = useRef(false);
+  const deferredRuntimeRef = useRef(false);
+  const runtimeLoadedRef = useRef(false);
+  const runtimeMountedRef = useRef(true);
   const draftIdRef = useRef(null);
 
   const loadHistory = useCallback(async ({ reset = false } = {}) => {
@@ -129,10 +137,46 @@ export default function MindTab() {
     }
   }, []);
 
+  const loadRuntime = useCallback(async () => {
+    if (runtimePendingRef.current) {
+      deferredRuntimeRef.current = true;
+      return;
+    }
+    runtimePendingRef.current = true;
+    if (!runtimeLoadedRef.current) setRuntimeLoading(true);
+    try {
+      const response = await api.getPersistentMindRuntime({ silent: true });
+      if (!runtimeMountedRef.current) return;
+      setRuntime(response);
+      runtimeLoadedRef.current = true;
+      setRuntimeError(null);
+    } catch (error) {
+      if (runtimeMountedRef.current) {
+        setRuntimeError(error?.message || 'Could not refresh runtime telemetry');
+      }
+    } finally {
+      if (runtimeMountedRef.current) setRuntimeLoading(false);
+      runtimePendingRef.current = false;
+      if (runtimeMountedRef.current && deferredRuntimeRef.current) {
+        deferredRuntimeRef.current = false;
+        void loadRuntime();
+      }
+    }
+  }, []);
+
   useEffect(() => { void loadHistory({ reset: true }); }, [loadHistory]);
+  useEffect(() => () => { runtimeMountedRef.current = false; }, []);
+  useEffect(() => {
+    void loadRuntime();
+    const interval = setInterval(() => { void loadRuntime(); }, 10_000);
+    return () => clearInterval(interval);
+  }, [loadRuntime]);
 
   useEffect(() => {
-    const refresh = () => { void loadHistory(); };
+    const refresh = () => {
+      void loadHistory();
+      void loadRuntime();
+    };
     socket.on('connect', refresh);
     socket.on('cos:mind:event', refresh);
     socket.on('cos:mind:status', refresh);
@@ -141,7 +185,7 @@ export default function MindTab() {
       socket.off('cos:mind:event', refresh);
       socket.off('cos:mind:status', refresh);
     };
-  }, [loadHistory, socket]);
+  }, [loadHistory, loadRuntime, socket]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -177,6 +221,7 @@ export default function MindTab() {
       setText('');
       draftIdRef.current = null;
       await loadHistory();
+      void loadRuntime();
     } catch (error) {
       setSubmitError(error?.message || 'The input was not accepted');
     } finally {
@@ -207,6 +252,7 @@ export default function MindTab() {
       if (action === 'resume') await api.resumePersistentMind({ silent: true });
       if (action === 'stop') await api.stopPersistentMind({ silent: true });
       await loadHistory();
+      void loadRuntime();
     } catch (error) {
       setLifecycleError(error?.message || `Could not ${action} the persistent mind`);
     } finally {
@@ -270,12 +316,23 @@ export default function MindTab() {
           <p className="mt-2 text-xs text-port-text-muted">
             {mind ? `${mind.profile?.providerId || 'No provider'} · ${mind.profile?.model || 'No model'} · ${mind.profile?.effort || 'provider default'} · autonomy ${mind.autonomyMode}` : 'Profile unavailable'}
           </p>
+          <div className="mt-3">
+            <PersistentMindThoughtStatus
+              state={state}
+              model={state?.activeTurnId && state.activeTurnId === runtime?.inference?.turnId
+                ? runtime.inference.model
+                : mind?.profile?.model}
+            />
+          </div>
         </div>
         <div className="flex flex-wrap gap-2" role="group" aria-label="Persistent mind lifecycle">
           {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
           {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
           {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
-          <ActionButton label="Reload" icon={RefreshCw} pending={loading} onClick={() => loadHistory({ reset: true })} />
+          <ActionButton label="Reload" icon={RefreshCw} pending={loading || runtimeLoading} onClick={() => {
+            void loadHistory({ reset: true });
+            void loadRuntime();
+          }} />
         </div>
       </header>
 
@@ -285,6 +342,8 @@ export default function MindTab() {
       {truncated && <Banner tone="info" title="Showing recent history">The initial trace shows the newest {PAGE_LIMIT} events; older retained events are not shown.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
+
+      <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} onOpenContext={() => changeView('context')} />
 
       {activeView === 'setup' && (
         <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">

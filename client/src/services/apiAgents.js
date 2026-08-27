@@ -66,6 +66,7 @@ export const repairRunRecords = (body = {}, options = {}) =>
 export const getPersistentMind = (filters = {}, options = {}) =>
   request(`/cos/mind${runEventQuery(filters)}`, options);
 export const getPersistentMindContext = (options = {}) => request('/cos/mind/context', options);
+export const getPersistentMindRuntime = (options = {}) => request('/cos/mind/runtime', options);
 export const sendPersistentMindMessage = (body, options = {}) =>
   request('/cos/mind/messages', { method: 'POST', body: JSON.stringify(body), ...options });
 export const addPersistentMindAnnotation = (body, options = {}) =>

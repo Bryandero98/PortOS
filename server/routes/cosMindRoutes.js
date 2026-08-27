@@ -27,6 +27,7 @@ import {
 } from '../services/persistentMindContext.js';
 import { getProviderById } from '../services/providers.js';
 import { persistentMindHarnessInfo } from '../services/persistentMindAdapter.js';
+import { inspectPersistentMindRuntime } from '../services/persistentMindRuntime.js';
 import {
   enqueuePersistentMindMessage,
   getPersistentMindState,
@@ -148,6 +149,15 @@ router.get('/mind/context', asyncHandler(async (_req, res) => {
     rollups,
     harness: persistentMindHarnessInfo(provider),
   });
+}));
+
+router.get('/mind/runtime', asyncHandler(async (_req, res) => {
+  const [root, state] = await Promise.all([loadState(), getPersistentMindState()]);
+  const prompt = normalizePersistentMindPrompt(root.config?.persistentMindPrompt);
+  const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+  const providerId = state.activeTurn?.providerId || profile.providerId;
+  const provider = providerId ? await getProviderById(providerId) : null;
+  res.json(await inspectPersistentMindRuntime({ state, profile, prompt, provider }));
 }));
 
 router.post('/mind/memories', asyncHandler(async (req, res) => {

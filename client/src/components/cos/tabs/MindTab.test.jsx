@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   getProviders: vi.fn(),
   updateCosConfig: vi.fn(),
   getPersistentMindContext: vi.fn(),
+  getPersistentMindRuntime: vi.fn(),
   createPersistentMindMemory: vi.fn(),
   updatePersistentMindMemory: vi.fn(),
 }));
@@ -98,6 +99,21 @@ describe('MindTab', () => {
       memories: [],
       rollups: [],
       harness: { type: 'api', label: 'Direct API', recommendation: 'recommended', detail: 'Structured and reliable.' },
+    });
+    api.getPersistentMindRuntime.mockResolvedValue({
+      observedAt: '2026-08-27T12:00:00.000Z',
+      inference: {
+        active: false,
+        providerId: 'demo',
+        model: 'demo-model',
+        residency: { status: 'provider-managed', backend: null, loaded: null, memoryBytes: null },
+      },
+      context: { chars: 19, maxChars: 32000, approximateTokens: 5, summaryState: 'empty', memoryCount: 0 },
+      system: {
+        memory: { total: 8 * 1024 ** 3, used: 4 * 1024 ** 3, free: 4 * 1024 ** 3, usagePercent: 50 },
+        process: { rss: 256 * 1024 ** 2, heapUsed: 64 * 1024 ** 2, heapTotal: 128 * 1024 ** 2 },
+        cpu: { cores: 8, loadAvg1m: 1.25 },
+      },
     });
     api.createPersistentMindMemory.mockResolvedValue({ success: true });
     api.updatePersistentMindMemory.mockResolvedValue({ success: true });
@@ -248,6 +264,38 @@ describe('MindTab', () => {
     renderTab();
     expect(await screen.findByText('I connected this with the prior decision.')).toBeInTheDocument();
     expect(screen.getByText('Here is the recommendation.')).toBeInTheDocument();
+  });
+
+  it('animates active thought status and shows context, system, and loaded-model telemetry', async () => {
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: true, status: 'thinking', pauseReason: null, activeTurnId: 'mind-turn-1' },
+    }));
+    api.getPersistentMindRuntime.mockResolvedValue({
+      observedAt: '2026-08-27T12:00:00.000Z',
+      inference: {
+        active: true,
+        turnId: 'mind-turn-1',
+        providerId: 'ollama',
+        model: 'demo-model',
+        residency: { status: 'loaded', backend: 'ollama', loaded: true, memoryBytes: 2 * 1024 ** 3 },
+      },
+      context: { chars: 12000, maxChars: 32000, approximateTokens: 3000, summaryState: 'ready', memoryCount: 4 },
+      system: {
+        memory: { total: 8 * 1024 ** 3, used: 4 * 1024 ** 3, free: 4 * 1024 ** 3, usagePercent: 50 },
+        process: { rss: 256 * 1024 ** 2, heapUsed: 64 * 1024 ** 2, heapTotal: 128 * 1024 ** 2 },
+        cpu: { cores: 8, loadAvg1m: 1.25 },
+      },
+    });
+    renderTab();
+
+    const thoughtStatus = await screen.findByRole('status');
+    expect(thoughtStatus).toHaveTextContent('Thinking with demo-model');
+    expect(thoughtStatus).toHaveAttribute('aria-busy', 'true');
+    expect(thoughtStatus.querySelector('.animate-pulse')).toBeInTheDocument();
+    expect(screen.getByText('~3,000 tokens')).toBeInTheDocument();
+    expect(screen.getByText('4 GB / 8 GB')).toBeInTheDocument();
+    expect(screen.getByText('Running now')).toBeInTheDocument();
+    expect(screen.getByText(/ollama · 2 GB/)).toBeInTheDocument();
   });
 
   it('loads the editable effective context from the URL-backed context view', async () => {
