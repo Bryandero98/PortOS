@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
-import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel } from '../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, seedModelEffort } from '../../../utils/providers';
 import { formatDurationMin, formatBytes } from '../../../utils/formatters';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
@@ -54,16 +54,27 @@ const APPROVAL_REASON_HINTS = {
   'config:requireApproval': 'Held for you: this scheduled task type has Require approval turned on.'
 };
 
-const getTaskEditData = (task) => ({
-  description: task.description,
-  prompt: task.metadata?.prompt || '',
-  context: task.metadata?.context || '',
-  model: task.metadata?.model || '',
-  provider: task.metadata?.provider || '',
-  effort: task.metadata?.effort || '',
-  // '' = "Any instance" (#4520) — no pin, the opportunistic default.
-  targetInstanceId: task.metadata?.targetInstanceId || ''
-});
+const getTaskEditData = (task, providers) => {
+  const provider = task.metadata?.provider || '';
+  // Tasks saved before Antigravity split model from effort carry a suffixed
+  // model id (`gemini-3.6-flash-high`). Seed both controls together so editing
+  // any other field cannot silently replace that tier with the provider default.
+  const seeded = seedModelEffort(
+    providers?.find(candidate => candidate.id === provider) || { id: provider },
+    task.metadata?.model,
+    task.metadata?.effort,
+  );
+  return {
+    description: task.description,
+    prompt: task.metadata?.prompt || '',
+    context: task.metadata?.context || '',
+    model: seeded.model,
+    provider,
+    effort: seeded.effort,
+    // '' = "Any instance" (#4520) — no pin, the opportunistic default.
+    targetInstanceId: task.metadata?.targetInstanceId || ''
+  };
+};
 
 export const taskRowId = (taskId, source) => `cos-task-${source}-${encodeURIComponent(taskId)}`;
 
@@ -124,7 +135,8 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   const taskModel = task.metadata?.model || '';
   const taskProvider = task.metadata?.provider || '';
   const taskEffort = task.metadata?.effort || '';
-  const [editData, setEditData] = useState(() => getTaskEditData(task));
+  const savedEditData = getTaskEditData(task, providers);
+  const [editData, setEditData] = useState(() => savedEditData);
   const [showBlockedModal, setShowBlockedModal] = useState(false);
   const [blockedReason, setBlockedReason] = useState('');
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
@@ -146,8 +158,8 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   // component stays mounted under the same task id. Keep the draft current
   // whenever it is safe to do so, but never overwrite an active edit.
   useEffect(() => {
-    if (!editing) setEditData(getTaskEditData(task));
-  }, [editing, task.id, task.description, taskPrompt, taskContext, taskModel, taskProvider, taskEffort, task]);
+    if (!editing) setEditData(getTaskEditData(task, providers));
+  }, [editing, task.id, task.description, taskPrompt, taskContext, taskModel, taskProvider, taskEffort, task, providers]);
 
   // Get models for selected provider in edit mode
   const editProvider = providers?.find(p => p.id === editData.provider);
@@ -260,13 +272,13 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   // (see the useState initializer above) — true only when the user actually
   // changed something, so an unmodified Cancel still discards with no friction.
   const hasUnsavedEdits =
-    editData.description !== task.description ||
-    (hasPromptField && editData.prompt !== (task.metadata?.prompt || '')) ||
-    editData.context !== (task.metadata?.context || '') ||
-    editData.model !== (task.metadata?.model || '') ||
-    editData.provider !== (task.metadata?.provider || '') ||
-    editData.effort !== (task.metadata?.effort || '') ||
-    editData.targetInstanceId !== targetInstanceId;
+    editData.description !== savedEditData.description ||
+    (hasPromptField && editData.prompt !== savedEditData.prompt) ||
+    editData.context !== savedEditData.context ||
+    editData.model !== savedEditData.model ||
+    editData.provider !== savedEditData.provider ||
+    editData.effort !== savedEditData.effort ||
+    editData.targetInstanceId !== savedEditData.targetInstanceId;
 
   const handleCancelEdit = () => {
     if (hasUnsavedEdits) {
@@ -281,7 +293,7 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   // again instead of the task's real values.
   const handleConfirmDiscard = () => {
     confirmDiscard(() => {
-      setEditData(getTaskEditData(task));
+      setEditData(getTaskEditData(task, providers));
       setEditing(false);
     });
   };

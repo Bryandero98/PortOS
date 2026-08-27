@@ -132,6 +132,45 @@ describe('TaskItem task source', () => {
     ));
   });
 
+  it('preserves effort encoded in a legacy Antigravity model pin', async () => {
+    const legacyTask = {
+      ...task,
+      metadata: {
+        provider: 'antigravity-tui',
+        model: 'gemini-3.6-flash-high',
+      },
+    };
+    const antigravityProviders = [{
+      id: 'antigravity-tui',
+      name: 'Antigravity TUI',
+      enabled: true,
+      models: ['gemini-3.6-flash-low', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-high'],
+    }];
+    render(<TaskItem task={legacyTask} isSystem onRefresh={vi.fn()} providers={antigravityProviders} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('gemini-3.6-flash');
+    expect(screen.getByRole('combobox', { name: 'Thinking effort' })).toHaveValue('high');
+
+    // Normalizing the two controls is not itself an edit, so Cancel stays
+    // immediate instead of asking the user to discard a change they never made.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('group', { name: 'Confirm discard task edits' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-model-edit',
+      expect.objectContaining({
+        provider: 'antigravity-tui',
+        model: 'gemini-3.6-flash',
+        effort: 'high',
+        type: 'internal',
+      }),
+      { silent: true },
+    ));
+  });
+
   it('updates an approval-gated system task in the internal queue when changing status', async () => {
     render(<TaskItem task={{ ...task, approvalRequired: true }} isSystem onRefresh={vi.fn()} providers={providers} />);
 
