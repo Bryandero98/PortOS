@@ -35,6 +35,7 @@ import { getProviderById } from '../services/providers.js';
 import { persistentMindHarnessInfo } from '../services/persistentMindAdapter.js';
 import { readPersistentMindTaskCatalog } from '../services/persistentMindTaskCapability.js';
 import { inspectPersistentMindRuntime } from '../services/persistentMindRuntime.js';
+import { readPersistentMindVisibility } from '../services/persistentMindVisibility.js';
 import {
   enqueuePersistentMindMessage,
   getPersistentMindState,
@@ -52,6 +53,9 @@ const text = z.string().trim().min(1).max(PERSISTENT_MIND_LIMITS.MAX_MESSAGE_CHA
 const mindReadSchema = z.object({
   cursor: z.string().max(260).refine((value) => parsePersistentMindCursor(value) !== null, 'Invalid cursor').optional(),
   limit: z.coerce.number().int().positive().max(PERSISTENT_MIND_TRAJECTORY_LIMITS.maxPageSize).optional(),
+}).strict();
+const visibilityReadSchema = z.object({
+  refresh: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
 }).strict();
 const messageSchema = z.object({ id: idempotencyId, text }).strict();
 const annotationSchema = z.object({
@@ -186,6 +190,16 @@ router.get('/mind/runtime', asyncHandler(async (_req, res) => {
   const providerId = state.activeTurn?.providerId || profile.providerId;
   const provider = providerId ? await getProviderById(providerId) : null;
   res.json(await inspectPersistentMindRuntime({ state, profile, prompt, provider }));
+}));
+
+router.get('/mind/visibility', asyncHandler(async (req, res) => {
+  const { refresh = false } = validateRequest(visibilityReadSchema, req.query);
+  const [root, state] = await Promise.all([loadState(), getPersistentMindState()]);
+  const prompt = normalizePersistentMindPrompt(root.config?.persistentMindPrompt);
+  const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+  const providerId = state.activeTurn?.providerId || profile.providerId;
+  const provider = providerId ? await getProviderById(providerId) : null;
+  res.json(await readPersistentMindVisibility({ root, state, profile, prompt, provider, force: refresh }));
 }));
 
 router.post('/mind/memories', asyncHandler(async (req, res) => {

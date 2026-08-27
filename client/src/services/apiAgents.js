@@ -68,6 +68,10 @@ export const getPersistentMind = (filters = {}, options = {}) =>
 export const getPersistentMindContext = (options = {}) => request('/cos/mind/context', options);
 export const getPersistentMindTools = (options = {}) => request('/cos/mind/tools', options);
 export const getPersistentMindRuntime = (options = {}) => request('/cos/mind/runtime', options);
+export const getPersistentMindVisibility = (options = {}) => {
+  const { refresh, ...requestOptions } = options;
+  return request(`/cos/mind/visibility${refresh ? '?refresh=true' : ''}`, requestOptions);
+};
 export const sendPersistentMindMessage = (body, options = {}) =>
   request('/cos/mind/messages', { method: 'POST', body: JSON.stringify(body), ...options });
 export const addPersistentMindAnnotation = (body, options = {}) =>

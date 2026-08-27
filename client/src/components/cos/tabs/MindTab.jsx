@@ -15,6 +15,7 @@ import PersistentMindContextPanel from '../PersistentMindContextPanel';
 import PersistentMindProfileControls from '../PersistentMindProfileControls';
 import PersistentMindRuntimePanel, { PersistentMindThoughtStatus } from '../PersistentMindRuntimePanel';
 import PersistentMindTaskAccessControls from '../PersistentMindTaskAccessControls';
+import PersistentMindVisibilityPanel from '../PersistentMindVisibilityPanel';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
@@ -124,12 +125,18 @@ export default function MindTab() {
   const [runtime, setRuntime] = useState(null);
   const [runtimeError, setRuntimeError] = useState(null);
   const [runtimeLoading, setRuntimeLoading] = useState(true);
+  const [visibility, setVisibility] = useState(null);
+  const [visibilityError, setVisibilityError] = useState(null);
+  const [visibilityLoading, setVisibilityLoading] = useState(true);
   const cursorRef = useRef(null);
   const loadPendingRef = useRef(false);
   const deferredLoadRef = useRef(false);
   const runtimePendingRef = useRef(false);
   const deferredRuntimeRef = useRef(false);
   const runtimeLoadedRef = useRef(false);
+  const visibilityPendingRef = useRef(false);
+  const deferredVisibilityRefreshRef = useRef(false);
+  const visibilityLoadedRef = useRef(false);
   const runtimeMountedRef = useMounted();
   const messageDraftIdRef = useRef(null);
   const annotationDraftIdRef = useRef(null);
@@ -214,17 +221,51 @@ export default function MindTab() {
     }
   }, []);
 
+  const loadVisibility = useCallback(async ({ refresh = false } = {}) => {
+    if (visibilityPendingRef.current) {
+      deferredVisibilityRefreshRef.current ||= refresh;
+      return;
+    }
+    visibilityPendingRef.current = true;
+    if (!visibilityLoadedRef.current) setVisibilityLoading(true);
+    try {
+      const response = await api.getPersistentMindVisibility({ refresh, silent: true });
+      if (!runtimeMountedRef.current) return;
+      setVisibility(response);
+      visibilityLoadedRef.current = true;
+      setVisibilityError(null);
+    } catch (error) {
+      if (runtimeMountedRef.current) {
+        setVisibilityError(error?.message || 'Could not refresh environment visibility');
+      }
+    } finally {
+      if (runtimeMountedRef.current) setVisibilityLoading(false);
+      visibilityPendingRef.current = false;
+      if (runtimeMountedRef.current && deferredVisibilityRefreshRef.current) {
+        const deferredRefresh = deferredVisibilityRefreshRef.current;
+        deferredVisibilityRefreshRef.current = false;
+        void loadVisibility({ refresh: deferredRefresh });
+      }
+    }
+  }, [runtimeMountedRef]);
+
   useEffect(() => { void loadHistory({ reset: true }); }, [loadHistory]);
   useEffect(() => {
     void loadRuntime();
     const interval = setInterval(() => { void loadRuntime(); }, 10_000);
     return () => clearInterval(interval);
   }, [loadRuntime]);
+  useEffect(() => {
+    void loadVisibility();
+    const interval = setInterval(() => { void loadVisibility(); }, 30_000);
+    return () => clearInterval(interval);
+  }, [loadVisibility]);
 
   useEffect(() => {
     const refresh = () => {
       void loadHistory();
       void loadRuntime();
+      void loadVisibility();
     };
     socket.on('connect', refresh);
     socket.on('cos:mind:event', refresh);
@@ -234,7 +275,7 @@ export default function MindTab() {
       socket.off('cos:mind:event', refresh);
       socket.off('cos:mind:status', refresh);
     };
-  }, [loadHistory, loadRuntime, socket]);
+  }, [loadHistory, loadRuntime, loadVisibility, socket]);
 
   useEffect(() => {
     if (!stickToBottomRef.current || !messageListRef.current) return;
@@ -435,6 +476,7 @@ export default function MindTab() {
             <ActionButton label="Reload" icon={RefreshCw} pending={loading || runtimeLoading} onClick={() => {
               void loadHistory({ reset: true });
               void loadRuntime();
+              void loadVisibility({ refresh: true });
             }} />
           </div>
         </header>
@@ -448,7 +490,15 @@ export default function MindTab() {
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
       {activeView !== 'conversation' && (
-        <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} onOpenContext={() => changeView('context')} />
+        <>
+          <PersistentMindVisibilityPanel
+            visibility={visibility}
+            error={visibilityError}
+            loading={visibilityLoading}
+            onRefresh={() => loadVisibility({ refresh: true })}
+          />
+          <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} onOpenContext={() => changeView('context')} />
+        </>
       )}
 
       {activeView === 'setup' && (

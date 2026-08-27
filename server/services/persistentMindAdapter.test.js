@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   stopRun: vi.fn(),
   readTaskCatalog: vi.fn(),
   executeTaskRequests: vi.fn(),
+  readVisibility: vi.fn(),
   createPersistentMindMemoryFromCandidate: vi.fn(async ({ candidateId, ...candidate }) => ({
     success: true,
     duplicate: false,
@@ -26,6 +27,10 @@ vi.mock('./persistentMindTaskCapability.js', () => ({
   readPersistentMindTaskCatalog: (...args) => mock.readTaskCatalog(...args),
   executePersistentMindTaskRequests: (...args) => mock.executeTaskRequests(...args),
 }));
+vi.mock('./persistentMindVisibility.js', () => ({
+  readPersistentMindVisibility: (...args) => mock.readVisibility(...args),
+  buildPersistentMindVisibilityPrompt: () => 'Environment visibility: READY',
+}));
 
 const { createPersistentMindTurnAdapter, persistentMindHarnessInfo } = await import('./persistentMindAdapter.js');
 
@@ -35,6 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mock.root.config.persistentMindCapabilities = { createTasks: true };
   mock.readTaskCatalog.mockResolvedValue({ apps: [{ id: 'portos' }], providers: [{ id: 'codex' }] });
+  mock.readVisibility.mockResolvedValue({ readiness: 'ready', workspaces: [] });
   mock.executeTaskRequests.mockResolvedValue([]);
   mock.runPrompt.mockResolvedValue({ text: JSON.stringify({
     thinkingSummary: 'I connected the new request to the durable fact.',
@@ -83,6 +89,7 @@ describe('persistent mind adapter', () => {
       candidateId: 'turn-1:0', turnId: 'turn-1',
     });
     expect(mock.runPrompt.mock.calls[0][0].prompt).toContain('Task access: ON');
+    expect(mock.runPrompt.mock.calls[0][0].prompt).toContain('Environment visibility: READY');
   });
 
   it('executes bounded typed task requests through the supervised capability', async () => {
