@@ -70,7 +70,7 @@ export const knownModelContextWindow = (model) => {
 // import server-side modules. Strip the directory + a Windows `.exe` suffix so a
 // path-configured command (/opt/homebrew/bin/grok) matches the bare vendor name.
 // Keep in lockstep with the server helper (only `.exe` is stripped, not `.cmd`).
-const commandBasename = (command) =>
+export const commandBasename = (command) =>
   typeof command === 'string' && command !== ''
     ? command.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '')
     : '';

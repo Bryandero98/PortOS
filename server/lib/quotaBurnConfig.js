@@ -256,6 +256,7 @@ export function normalizeQuotaBurnJob(raw, index = 0) {
     jobType,
     model: nullableString(raw.model, BOUNDS.labelLength.max),
     providerId: nullableString(raw.providerId, BOUNDS.labelLength.max),
+    effort: nullableString(raw.effort, BOUNDS.labelLength.max),
     // Opt-IN, and absent reads as `false`, so every plan written before this
     // field existed keeps repeating exactly as it did. See `jobIsSpent`.
     runOnce: raw.runOnce === true,

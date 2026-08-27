@@ -920,5 +920,98 @@ describe('QuotaBurn preset addition filtering', () => {
     expect(await screen.findByDisplayValue('UX issues')).toBeInTheDocument();
     expect(screen.queryByLabelText(/Add a preset job/)).not.toBeInTheDocument();
   });
+
+  it('renders standard model select and effort picker for effort-capable providers', async () => {
+    const claudeProviderCatalog = {
+      ...catalog,
+      providers: [
+        {
+          id: 'claude-code',
+          name: 'Claude Code',
+          type: 'tui',
+          command: 'claude',
+          models: [{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4' }, { id: 'claude-opus-4', name: 'Claude Opus 4' }],
+        },
+      ],
+    };
+    const claudeConfig = {
+      ...config,
+      families: {
+        ...config.families,
+        claude: {
+          enabled: true,
+          resetWithinHours: 24,
+          reservePercent: 0,
+          maxDispatchesPerWindow: 5,
+          priority: 0,
+          jobs: [
+            { id: 'j1', enabled: true, label: 'Audit UI', jobType: 'agent-prompt', model: 'claude-sonnet-4', effort: 'high', params: { appId: 'a1', prompt: 'audit' } },
+          ],
+        },
+      },
+    };
+    api.getQuotaBurn.mockResolvedValue({ config: claudeConfig, status });
+    api.getQuotaBurnCatalog.mockResolvedValue(claudeProviderCatalog);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = setupSaveUser();
+
+    renderPage('/devtools/quota-burn/claude');
+    await user.click(await screen.findByLabelText('Expand step 1'));
+
+    const modelSelect = await screen.findByLabelText('Model (optional)');
+    expect(modelSelect).toBeInTheDocument();
+    expect(modelSelect.tagName).toBe('SELECT');
+    expect(modelSelect).toHaveValue('claude-sonnet-4');
+
+    const effortSelect = screen.getByLabelText('Thinking effort');
+    expect(effortSelect).toBeInTheDocument();
+    expect(effortSelect.tagName).toBe('SELECT');
+    expect(effortSelect).toHaveValue('high');
+
+    // Change effort to medium and verify auto-save
+    await user.selectOptions(effortSelect, 'medium');
+    await flushSave();
+    expect(api.saveQuotaBurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        families: expect.objectContaining({
+          claude: expect.objectContaining({
+            jobs: [
+              expect.objectContaining({
+                id: 'j1',
+                model: 'claude-sonnet-4',
+                effort: 'medium',
+              }),
+            ],
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('displays model and effort in collapsed step summary badge', async () => {
+    const claudeConfig = {
+      ...config,
+      families: {
+        ...config.families,
+        claude: {
+          enabled: true,
+          resetWithinHours: 24,
+          reservePercent: 0,
+          maxDispatchesPerWindow: 5,
+          priority: 0,
+          jobs: [
+            { id: 'j1', enabled: true, label: '', jobType: 'agent-prompt', model: 'claude-sonnet-4', effort: 'high', params: { appId: 'a1', prompt: 'audit' } },
+          ],
+        },
+      },
+    };
+    api.getQuotaBurn.mockResolvedValue({ config: claudeConfig, status });
+    api.getQuotaBurnCatalog.mockResolvedValue(catalog);
+
+    renderPage('/devtools/quota-burn/claude');
+    expect(await screen.findByText(/Agent prompt · claude-sonnet-4 · high/)).toBeInTheDocument();
+  });
 });
+
 

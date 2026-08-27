@@ -12,12 +12,15 @@ import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import JobParamField from './JobParamField';
 import PresetPicker from './PresetPicker';
+import EffortSelect from '../cos/EffortSelect';
 import { applyQuotaBurnPreset, quotaBurnJobIsSpent } from '../../lib/quotaBurnPatch';
 import { timeAgo } from '../../utils/formatters';
+import { commandBasename, effortAwareModelOptions, effortLevelsForProvider, effortSurvivingModel } from '../../utils/providers';
 import { inputClass } from './fields';
 
 export default function JobRow({
   job, index, total, catalog, pending, ranAt, actionsBusy,
+  familyId,
   expanded = false, onToggleExpand,
   onChange, onMove, onRemove, onRun, onRearm,
 }) {
@@ -65,6 +68,38 @@ export default function JobRow({
     imageMode: catalog.imageModes,
   })[descriptor.kind];
 
+  // Resolve the provider for this family/job to provide model options and effort support
+  const familyProviders = (catalog.providers || []).filter((provider) =>
+    provider?.enabled !== false &&
+    provider?.ollamaBacked !== true && provider?.mtplxBacked !== true &&
+    provider?.llamaBacked !== true && provider?.vllmBacked !== true &&
+    provider?.sglangBacked !== true &&
+    (provider?.type === 'cli' || provider?.type === 'tui') &&
+    (commandBasename(provider?.command) === familyId ||
+     String(provider?.id || '').toLowerCase().includes(familyId || '') ||
+     (familyId === 'agy' && String(provider?.id || '').toLowerCase().includes('antigravity')))
+  );
+
+  const selectedProvider = (job.providerId && familyProviders.find((p) => p.id === job.providerId))
+    || (job.providerId && (catalog.providers || []).find((p) => p.id === job.providerId))
+    || familyProviders.find((p) => p.type === (job.jobType === 'agent-prompt' ? 'tui' : 'cli'))
+    || familyProviders[0]
+    || null;
+
+  const availableModels = selectedProvider ? effortAwareModelOptions(selectedProvider, job.model) : [];
+  const effortLevels = selectedProvider ? effortLevelsForProvider(selectedProvider, job.model) : null;
+  const showEffort = Boolean(effortLevels && effortLevels.length > 0);
+
+  const handleModelChange = (modelVal) => {
+    const nextModel = modelVal || null;
+    let nextEffort = job.effort || null;
+    if (job.effort && selectedProvider) {
+      const surviving = effortSurvivingModel(selectedProvider, nextModel, job.effort);
+      nextEffort = surviving || null;
+    }
+    onChange({ ...job, model: nextModel, effort: nextEffort });
+  };
+
   return (
     // `bg-port-bg`, not `bg-port-bg/40`: a step sits INSIDE the family card, so
     // it reads as a sunken well only if it carries the page color at full
@@ -99,6 +134,7 @@ export default function JobRow({
           <span className="text-xs text-gray-400 truncate max-w-xs">
             {spec?.label || job.jobType}
             {job.model ? ` · ${job.model}` : ''}
+            {job.effort ? ` · ${job.effort}` : ''}
             {job.runOnce ? ' · run once' : ''}
           </span>
         )}
@@ -157,14 +193,36 @@ export default function JobRow({
             </label>
             <label htmlFor={`${idPrefix}-model`} className="block text-xs text-gray-400">
               Model (optional)
-              <input
+              <select
                 id={`${idPrefix}-model`}
                 className={inputClass}
                 value={job.model || ''}
-                placeholder="provider default"
-                onChange={(event) => onChange({ ...job, model: event.target.value || null })}
-              />
+                onChange={(event) => handleModelChange(event.target.value)}
+              >
+                <option value="">Default model</option>
+                {availableModels.map((m) => {
+                  const val = typeof m === 'string' ? m : m.id;
+                  const lbl = typeof m === 'string' ? m : (m.name || m.id);
+                  return <option key={val} value={val}>{lbl}</option>;
+                })}
+                {job.model && !availableModels.some((m) => (typeof m === 'string' ? m : m.id) === job.model) && (
+                  <option value={job.model}>{job.model}</option>
+                )}
+              </select>
             </label>
+            {showEffort && (
+              <label htmlFor={`${idPrefix}-effort`} className="block text-xs text-gray-400">
+                Thinking effort (optional)
+                <EffortSelect
+                  id={`${idPrefix}-effort`}
+                  provider={selectedProvider}
+                  model={job.model}
+                  value={job.effort || ''}
+                  onChange={(effort) => onChange({ ...job, effort: effort || null })}
+                  className={inputClass}
+                />
+              </label>
+            )}
             {/* The repeat/one-shot choice. The plan is a rotation the runner walks
                 lap after lap while the window still has quota, which is right for a
                 standing audit and wrong for work that only needs doing once — that

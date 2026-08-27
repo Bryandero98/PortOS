@@ -37,7 +37,7 @@ export const SAVE_DEBOUNCE_MS = 500;
 // is a 10-20s PTY spawn, so this is a handful of polls, not a busy loop.
 const PENDING_POLL_MS = 4000;
 
-const EMPTY_CATALOG = { jobTypes: [], apps: [], universes: [], imageModes: [] };
+const EMPTY_CATALOG = { jobTypes: [], apps: [], universes: [], imageModes: [], providers: [] };
 
 // Where a patch the server never accepted waits for the next visit. Session
 // scope, not local: this is a crash buffer for the current tab, and a patch

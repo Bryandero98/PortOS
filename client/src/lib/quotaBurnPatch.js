@@ -61,7 +61,7 @@ export function applyQuotaBurnPreset(job, preset) {
  */
 export function jobFromPreset(preset, { id, appId = null } = {}) {
   return applyQuotaBurnPreset({
-    id, enabled: true, label: '', jobType: preset.jobType, model: null, providerId: null,
+    id, enabled: true, label: '', jobType: preset.jobType, model: null, providerId: null, effort: null,
     // Standing work, matching a hand-added step: an audit dimension is worth
     // re-running as the code changes.
     runOnce: false,

@@ -71,6 +71,7 @@ export default function FamilyCard({
       jobType: catalog.jobTypes[0].id,
       model: null,
       providerId: null,
+      effort: null,
       runOnce: false,
       params: {},
     }]);
@@ -290,6 +291,7 @@ export default function FamilyCard({
               <JobRow
                 key={job.id}
                 job={job}
+                familyId={familyId}
                 index={index}
                 total={jobs.length}
                 catalog={catalog}
