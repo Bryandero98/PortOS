@@ -311,6 +311,43 @@ describe('usage.js — streak calculations', () => {
       await loadUsage();
       expect(getFirstActivityDay()).toBeNull();
     });
+
+    it('backfills a stale cached value during load and persists it', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage(
+        { '2025-06-08': { sessions: 1 } },
+        { earliestActivityDay: '2025-06-10', monthlyActivity: { '2024-03': { sessions: 5 } } }
+      ));
+
+      await loadUsage();
+
+      expect(getFirstActivityDay()).toBe('2024-03-01');
+      expect(atomicWrite).toHaveBeenCalled();
+    });
+
+    it('updates the cached value when the first day bucket is recorded', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({}));
+      await loadUsage();
+
+      await recordSession('codex', 'Codex', 'gpt-5.6');
+
+      expect(getFirstActivityDay()).toBe(daysAgo(0));
+    });
+  });
+
+  describe('summary memoization', () => {
+    it('reuses a summary until usage changes', async () => {
+      readJSONFile.mockResolvedValueOnce(makeUsage({ [daysAgo(0)]: { sessions: 1 } }));
+      await loadUsage();
+
+      const first = getUsageSummary();
+      const cached = getUsageSummary();
+      await recordSession('codex', 'Codex', 'gpt-5.6');
+      const updated = getUsageSummary();
+
+      expect(cached).toBe(first);
+      expect(updated).not.toBe(first);
+      expect(updated.totalSessions).toBe(2);
+    });
   });
 
   describe('time-dimensioned capture', () => {
