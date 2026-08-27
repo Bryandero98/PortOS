@@ -1088,6 +1088,3 @@ export async function resetUsage() {
   await saveUsage();
   return true;
 }
-
-// Load on startup
-loadUsage().catch(err => console.error(`❌ Failed to load usage: ${err.message}`));
