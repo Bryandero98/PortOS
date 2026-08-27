@@ -42,6 +42,8 @@ export default function ThemeSwitcher({ position = 'above', className = '' }) {
       {open && createPortal(
         <div
           ref={menuRef}
+          role="menu"
+          aria-label="Interface theme"
           className="fixed max-w-[calc(100vw-1rem)] bg-port-card border border-port-border rounded-xl shadow-xl z-[100] p-2"
           style={{
             left: menuStyle?.left ?? `${VIEWPORT_PADDING}px`,
@@ -60,6 +62,8 @@ export default function ThemeSwitcher({ position = 'above', className = '' }) {
               return (
                 <button
                   key={option.id}
+                  role="menuitemradio"
+                  aria-checked={active}
                   onClick={() => { setTheme(option.id); setOpen(false); }}
                   className={`w-full flex items-center gap-3 px-2.5 py-2.5 rounded-lg text-sm transition-colors ${
                     active
