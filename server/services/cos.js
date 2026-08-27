@@ -122,6 +122,7 @@ import {
   queueEligibleImprovementTasks,
   generateSelfImprovementTaskForType,
   generateManagedAppImprovementTaskForType,
+  recordDeferredPerpetualDispatch,
   applyOnDemandConsent,
   emitOnDemandEmpty,
   blockIfExceedsMaxSpawns,
@@ -988,7 +989,10 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         reviewStartedApps.add(targetApp.id);
       }
       await taskScheduleMod.recordExecution(`task:${request.taskType}`, targetApp.id);
-      task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, { skipPreconditions: true });
+      task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, {
+        skipPreconditions: true,
+        deferPerpetualDispatch: true
+      });
       if (task) {
         await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
       }
@@ -1021,6 +1025,7 @@ async function spawnDequeuePriority0OnDemand(ctx) {
       // rejected as a duplicate of the run that just finished and the drain stalls.
       const persisted = await addTask(task, 'internal', { raw: true, ignoreTaskId });
       if (!persisted?.duplicate) {
+        await recordDeferredPerpetualDispatch(task, taskScheduleMod);
         cosEvents.emit('task:ready', task);
         capacity.trackSpawn(task);
       } else if (persisted.status === 'blocked') {
@@ -1029,6 +1034,7 @@ async function spawnDequeuePriority0OnDemand(ctx) {
         // and without this branch the Run is a silent no-op that strands the
         // bound on-demand review marker.
         await reviveBlockedTask(persisted.id, { priority: task.priority, metadata: task.metadata }, 'internal');
+        await recordDeferredPerpetualDispatch(task, taskScheduleMod);
         const revived = { ...task, id: persisted.id };
         cosEvents.emit('task:ready', revived);
         capacity.trackSpawn(revived);
@@ -1263,6 +1269,7 @@ async function spawnDequeuePriority4IdleReview(ctx) {
     // that marker, which requires the emit. A denial would leave the app reading
     // "in review" indefinitely (#978's mode). See canSpawnCommitted (#4834).
     if (idleTask && capacity.canSpawnCommitted(idleTask, ctx.autonomousSpawnCeiling)) {
+      await recordDeferredPerpetualDispatch(idleTask, await import('./taskSchedule.js'));
       cosEvents.emit('task:ready', idleTask);
       capacity.trackSpawn(idleTask);
     }

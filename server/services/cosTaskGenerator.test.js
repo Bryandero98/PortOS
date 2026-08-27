@@ -94,19 +94,21 @@ const noCooldown = () => Promise.resolve(false);
 describe('claim drain convergence', () => {
   it('parks a successful no-progress run when the actionable set is unchanged', () => {
     const detection = { actionable: true, signature: '[101,202]' };
-    expect(shouldParkUnchangedPerpetualWork(detection, '[101,202]')).toBe(true);
+    expect(shouldParkUnchangedPerpetualWork(detection, '[101,202]', 2)).toBe(true);
+    expect(shouldParkUnchangedPerpetualWork(detection, '[101,202]', 1)).toBe(false);
   });
 
   it('continues when the candidate set changed or has no progress identity', () => {
-    expect(shouldParkUnchangedPerpetualWork({ actionable: true, signature: '[202]' }, '[101,202]')).toBe(false);
-    expect(shouldParkUnchangedPerpetualWork({ actionable: true }, '[101,202]')).toBe(false);
-    expect(shouldParkUnchangedPerpetualWork({ actionable: false, signature: '[]' }, '[]')).toBe(false);
+    expect(shouldParkUnchangedPerpetualWork({ actionable: true, signature: '[202]' }, '[101,202]', 2)).toBe(false);
+    expect(shouldParkUnchangedPerpetualWork({ actionable: true }, '[101,202]', 2)).toBe(false);
+    expect(shouldParkUnchangedPerpetualWork({ actionable: false, signature: '[]' }, '[]', 2)).toBe(false);
   });
 
   it('does not confuse tracker-specific signatures', () => {
     expect(shouldParkUnchangedPerpetualWork(
       { actionable: true, signature: '{"taskType":"claim-issue-gitlab","candidates":"[1]"}' },
-      '{"taskType":"claim-issue","candidates":"[1]"}'
+      '{"taskType":"claim-issue","candidates":"[1]"}',
+      2
     )).toBe(false);
   });
 });

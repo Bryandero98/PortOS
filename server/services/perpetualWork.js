@@ -307,8 +307,7 @@ const normalizeIssues = (raw, numberKey, authorKey) => raw.map((r) => ({
   title: r.title,
   labels: r.labels,
   assignees: r.assignees,
-  authorLogin: (r.author?.[authorKey] || '').toLowerCase(),
-  updatedAt: r.updatedAt || r.updated_at || null
+  authorLogin: (r.author?.[authorKey] || '').toLowerCase()
 }));
 
 // A forge can return the same candidate set in a different order, especially
@@ -316,7 +315,13 @@ const normalizeIssues = (raw, numberKey, authorKey) => raw.map((r) => ({
 // a canonical representation for the perpetual drain's set comparison.
 const canonicalizeIds = (ids) => [...new Set(ids
   .filter((id) => id != null)
-  .map((id) => String(id)))].sort();
+  .map((id) => String(id)))].sort((a, b) => {
+  const numericA = Number(a);
+  const numericB = Number(b);
+  return Number.isFinite(numericA) && Number.isFinite(numericB)
+    ? numericA - numericB
+    : a.localeCompare(b);
+});
 
 const GLAB_SELF_LOGIN_ARGS = ['api', 'user', '-q', '.username'];
 
@@ -351,7 +356,7 @@ const FORGE_ISSUE_CONFIG = {
     // happens to be full of excluded/in-flight/decomposed-epic issues even
     // though real work exists further down the queue. Matches the same
     // tradeoff the /do:next auto-pick walk already makes for the same reason.
-    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author,updatedAt', '--limit', '500'],
+    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '500'],
     listFail: 'gh-list-failed',
     parseFail: 'gh-parse-failed',
     // Park reason when the owner filter resolves to a non-authoring owner. On
@@ -663,11 +668,7 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
     // The perpetual drain uses the complete candidate set to detect a
     // successful agent that exited without claiming anything. `sample` is
     // intentionally capped for UI payloads, so it cannot serve as that brake.
-    // updatedAt changes when the claim flow posts a partial-delivery comment
-    // or releases its markers, so a same-issue continuation remains eligible.
-    // The ID is retained as the primary identity for forge responses that omit
-    // the timestamp (and for older test/mocked CLI output).
-    signature: JSON.stringify(canonicalizeIds(actionable.map((i) => `${i.number}@${i.updatedAt || ''}`))),
+    signature: JSON.stringify(canonicalizeIds(actionable.map((i) => i.number))),
     items: actionable.slice(0, WORK_ITEM_LIMIT).map((i) => ({ ref: String(i.number), title: i.title || '' }))
   };
 }
@@ -709,7 +710,9 @@ export async function detectPlanTask(app) {
     count: available.length,
     reason: pick ? 'actionable-plan-items' : 'no-actionable-plan-items',
     // Keep the signature complete even though the picker payload is capped.
-    signature: JSON.stringify(canonicalizeIds(available.map((it) => it.id))),
+    // PLAN.md order is meaningful because pickFirstAvailable chooses the first
+    // eligible item; unlike forge issue sets, preserve that order in the brake.
+    signature: JSON.stringify(available.map((it) => it.id)),
     items: available.slice(0, WORK_ITEM_LIMIT).map((it) => ({ ref: it.id, title: planItemTitle(it) }))
   };
 }

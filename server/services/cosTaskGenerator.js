@@ -154,11 +154,28 @@ export function isCooldownExemptTask(task) {
  * valid idle result but never reaches this predicate because `actionable` is
  * false.
  */
-export function shouldParkUnchangedPerpetualWork(detection, lastSignature) {
+export function shouldParkUnchangedPerpetualWork(detection, lastSignature, dispatchCount = 0) {
   return detection?.actionable === true
     && detection.signature != null
     && lastSignature != null
-    && detection.signature === lastSignature;
+    && detection.signature === lastSignature
+    // A same-issue continuation is allowed one unchanged recheck: the prior
+    // claim may have shipped a partial slice while leaving the issue actionable.
+    // A second unchanged observation is a genuine no-progress loop.
+    && dispatchCount > 1;
+}
+
+// The generator can be called before either spawn engine admits its result.
+// Keep the drain signature off persisted task metadata until that admission is
+// known to have succeeded; a WeakMap carries it only across the in-memory handoff.
+const deferredPerpetualSignatures = new WeakMap();
+
+export async function recordDeferredPerpetualDispatch(task, taskSchedule) {
+  const deferred = deferredPerpetualSignatures.get(task);
+  if (!deferred) return false;
+  deferredPerpetualSignatures.delete(task);
+  await taskSchedule.recordPerpetualDispatch(deferred.taskType, deferred.appId, deferred.signature);
+  return true;
 }
 
 /**
@@ -928,7 +945,10 @@ async function spawnPriority0OnDemand(ctx) {
           reviewStartedApps.add(targetApp.id);
         }
         await taskSchedule.recordExecution(`task:${request.taskType}`, targetApp.id);
-        task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, { skipPreconditions: true });
+        task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, {
+          skipPreconditions: true,
+          deferPerpetualDispatch: true
+        });
         if (task) {
           await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
         }
@@ -953,6 +973,7 @@ async function spawnPriority0OnDemand(ctx) {
         task.metadata = { ...(task.metadata || {}), onDemand: true };
         const persisted = await addTask(task, 'internal', { raw: true });
         if (!persisted?.duplicate) {
+          await recordDeferredPerpetualDispatch(task, taskSchedule);
           tasksToSpawn.push(task);
           trackSpawn(task);
         } else if (persisted.status === 'blocked') {
@@ -961,6 +982,7 @@ async function spawnPriority0OnDemand(ctx) {
           // stranding the bound on-demand review marker. Mirrors the sibling
           // dequeueNextTask on-demand engine in cos.js.
           await reviveBlockedTask(persisted.id, { priority: task.priority, metadata: task.metadata }, 'internal');
+          await recordDeferredPerpetualDispatch(task, taskSchedule);
           const revived = { ...task, id: persisted.id };
           tasksToSpawn.push(revived);
           trackSpawn(revived);
@@ -1189,6 +1211,7 @@ async function spawnPriority4IdleReview(ctx) {
     if (pendingSystemTasks === 0) {
       const idleTask = await generateIdleReviewTask(state);
       if (idleTask && canSpawnTask(idleTask, autonomousSlotCeiling)) {
+        await recordDeferredPerpetualDispatch(idleTask, await import('./taskSchedule.js'));
         tasksToSpawn.push(idleTask);
         trackSpawn(idleTask);
       }
@@ -1548,7 +1571,8 @@ export function buildImprovementDedupSets(existingTasks, { ignoreTaskId = null }
  * Tasks are queued to COS-TASKS.md and will be picked up in Priority 2
  */
 export async function queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId = null } = {}) {
-  const { getNextTaskType, recordExecution } = await import('./taskSchedule.js');
+  const taskSchedule = await import('./taskSchedule.js');
+  const { getNextTaskType, recordExecution } = taskSchedule;
 
   if (!isImprovementEnabled(state)) return;
 
@@ -1644,7 +1668,10 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // agents claim the same slug (2026-05-21 incident). The generator
     // returns null on plan-gate / precondition skip; we silently continue.
     // Regression-pinned in cos.test.js.
-    const task = await generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
+    const task = await generateManagedAppImprovementTaskForType(nextType, app, state, {
+      ignoreTaskId,
+      deferPerpetualDispatch: true
+    });
     if (!task) continue;
 
     // Queue-path invariants override the generator's direct-spawn defaults
@@ -1684,6 +1711,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
 
     const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId });
     if (newTask?.duplicate) continue;
+    await recordDeferredPerpetualDispatch(task, taskSchedule);
 
     await recordExecution(`task:${nextType}`, app.id);
 
@@ -2066,7 +2094,10 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // with the literal {prData}/{referenceData} markers and never poll. The
   // recordExecution + activity bump above already accounted for the idle
   // spawn; the per-type generator does not record execution itself.
-  const task = await generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
+  const task = await generateManagedAppImprovementTaskForType(nextType, app, state, {
+    ignoreTaskId,
+    deferPerpetualDispatch: true
+  });
   // Idle-review can steal a queued on-demand request for this app. That
   // request is still a user Run — apply the same consent as Priority 0.
   if (selectionReason === 'on-demand') applyOnDemandConsent(task);
@@ -2340,8 +2371,8 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
       ? null
       : JSON.stringify({ taskType: promptTaskType, candidates: detection.signature });
     if (drainSignature != null) {
-      const { signature: lastSignature } = await taskSchedule.getPerpetualDrainState(taskType, app.id);
-      if (shouldParkUnchangedPerpetualWork({ ...detection, signature: drainSignature }, lastSignature)) {
+      const { signature: lastSignature, dispatchCount } = await taskSchedule.getPerpetualDrainState(taskType, app.id);
+      if (shouldParkUnchangedPerpetualWork({ ...detection, signature: drainSignature }, lastSignature, dispatchCount)) {
         const counts = detection.total != null
           ? { open: detection.total, inFlight: detection.inFlightCount ?? 0, filtered: detection.filteredCount ?? 0 }
           : null;
@@ -2993,7 +3024,11 @@ function applyProviderModelPins(metadata, interval, appPin, hookOverride) {
   applyOneProviderPin(metadata, hookOverride);
 }
 
-export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false, ignoreTaskId = null } = {}) {
+export async function generateManagedAppImprovementTaskForType(taskType, app, state, {
+  skipPreconditions = false,
+  ignoreTaskId = null,
+  deferPerpetualDispatch = false
+} = {}) {
   const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
   const { getTaskPrompt, getStagePrompt } = await import('./taskPromptService.js');
@@ -3035,7 +3070,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // while the completing task is still `in_progress` on disk — a hook that
   // counts in-flight tasks against a budget must not count the run that just
   // finished and already recorded itself (#3179).
-  const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId });
+      const inputHook = await resolveTaskInputHook(app, taskType, taskSchedule, { ignoreTaskId });
   if (inputHook.skip) return null;
   const { hookPrompt, hookOverride, hookMetadata } = inputHook;
 
@@ -3205,16 +3240,6 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     }
     metadata[key] = value;
   }
-  // Every gate has now passed and a task is certain, so the perpetual drain can
-  // finally be charged for this hop (and its park cleared). Sits beside
-  // `updateAppActivity` for the same reason that call does: both are "a task was
-  // really produced" side effects, and every `return null` above must skip them.
-  // The reconcile drains spend theirs inside their own block, which no later gate
-  // can skip (their types are outside PLAN_PICK_TASK_TYPES / pr-watcher /
-  // reference-watch), so they are already charged only on real dispatches.
-  if (perpetualGate.spendDispatch) {
-    await taskSchedule.recordPerpetualDispatch(taskType, app.id, perpetualGate.signature ?? null);
-  }
   await updateAppActivity(app.id, { lastImprovementType: taskType });
   emitLog('info', `Generating improvement task for ${app.name}: ${taskType}`, { appId: app.id, analysisType: taskType });
 
@@ -3228,6 +3253,21 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     taskType: 'internal',
     ...approval
   };
+
+  // Most callers return the task to a spawn engine, so keep this side effect
+  // deferred until that engine admits the task. Direct callers retain the old
+  // immediate behavior; queue/on-demand/idle paths opt into the handoff below.
+  if (perpetualGate.spendDispatch) {
+    if (deferPerpetualDispatch) {
+      deferredPerpetualSignatures.set(task, {
+        taskType,
+        appId: app.id,
+        signature: perpetualGate.signature ?? null
+      });
+    } else {
+      await taskSchedule.recordPerpetualDispatch(taskType, app.id, perpetualGate.signature ?? null);
+    }
+  }
 
   return task;
 }
