@@ -65,6 +65,25 @@ const eventText = (event) => {
   return null;
 };
 
+const MindTypingIndicator = () => (
+  <span
+    data-testid="mind-typing-indicator"
+    role="status"
+    aria-label="Chief of Staff is typing"
+    className="inline-flex items-center gap-0.5"
+  >
+    <span className="sr-only">Chief of Staff is typing</span>
+    {[0, 1, 2].map((index) => (
+      <span
+        key={index}
+        aria-hidden="true"
+        className="h-1.5 w-1.5 animate-bounce rounded-full bg-current motion-reduce:animate-none"
+        style={{ animationDelay: `${index * 120}ms` }}
+      />
+    ))}
+  </span>
+);
+
 const mergeEvents = (previous, incoming) => {
   const byId = new Map(previous.map((event) => [event.eventId, event]));
   for (const event of incoming) byId.set(event.eventId, event);
@@ -550,7 +569,7 @@ export default function MindTab() {
               <div className="min-w-0">
                 <h3 className="truncate text-sm font-semibold text-port-text">Chief of Staff</h3>
                 <p className="truncate text-[11px] text-port-text-muted">
-                  {state?.pauseReason || (state?.status === 'thinking' ? 'Thinking…' : state?.started ? 'Available' : 'Not started')}
+                  {state?.pauseReason || (state?.status === 'thinking' ? <MindTypingIndicator /> : state?.started ? 'Available' : 'Not started')}
                   {state?.queuedMessageCount > 0 ? ` · ${state.queuedMessageCount} queued` : ''}
                   {mind?.profile?.model ? ` · ${mind.profile.model}` : ''}
                 </p>
