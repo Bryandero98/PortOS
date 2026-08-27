@@ -27,7 +27,7 @@ export default function FeatureAgentCard({ agent, onStart, onPause, onResume, on
         </div>
       </div>
 
-      <div className="flex items-center gap-4 text-xs text-gray-500 mb-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-3">
         <span>Runs: {agent.runCount || 0}</span>
         <span>Last: {timeAgo(agent.lastRunAt)}</span>
         <span>{SCHEDULE_LABELS[agent.schedule?.mode] || 'Continuous'}</span>
