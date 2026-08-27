@@ -64,4 +64,25 @@ describe('PersistentMindProfileControls capability guidance', () => {
     expect(screen.getByText('Best fit for local text work.')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('option', { name: /qwen3\.6:35b.*tool use/i })).toBeInTheDocument());
   });
+
+  it('keeps an unpinned model visibly unselected even when the provider has a default', async () => {
+    localLlm.getToolUseModels.mockResolvedValue({ models: [] });
+    localLlm.getLocalLlmStatus.mockResolvedValue({
+      ollama: {
+        models: [{ id: 'qwen3.6:35b', capabilities: ['chat', 'tools'] }],
+        recommendations: { editorial: { id: 'qwen3.6:35b', reason: 'Best fit for local text work.' } },
+      },
+      lmstudio: { models: [] },
+    });
+
+    render(
+      <PersistentMindProfileControls
+        profile={{ enabled: true, providerId: 'ollama', model: '', effort: '', thinkingInterface: 'text' }}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Choose a provider and model to see capability badges and the available recommendation.')).toBeInTheDocument());
+    expect(screen.queryByText('★ Recommended local model')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tool use')).not.toBeInTheDocument();
+  });
 });

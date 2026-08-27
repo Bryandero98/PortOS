@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import useProviderModels from '../../hooks/useProviderModels';
 import * as api from '../../services/api';
 import useLocalModels from '../../hooks/useLocalModels';
-import { effectiveModelFor, modelCapabilityInfo } from '../../utils/providers.js';
+import { modelCapabilityInfo } from '../../utils/providers.js';
 import ModelCapabilitySummary from '../models/ModelCapabilitySummary.jsx';
 import ProviderModelSelector from '../ProviderModelSelector';
 import toast from '../ui/Toast';
@@ -48,7 +48,10 @@ export default function PersistentMindProfileControls({
   const publishedProfileRef = useRef(draft);
   const pendingSavesRef = useRef(0);
   const selectedProvider = providers.find((provider) => provider.id === draft.providerId) || null;
-  const capabilityModel = effectiveModelFor(selectedProvider, draft.model);
+  // Persistent mind requires an explicit model pin. Keep the capability panel
+  // on the stored value instead of previewing the provider default, which could
+  // make an invalid/unpinned profile look runnable.
+  const capabilityModel = draft.model;
   const capabilityInfo = modelCapabilityInfo(selectedProvider, capabilityModel, {
     capabilitiesByBackend,
     recommendations,
