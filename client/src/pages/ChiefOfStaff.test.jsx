@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   getCosLearningSummary: vi.fn(),
   getCosActionableInsights: vi.fn(),
   getCosBudgetUsage: vi.fn(),
+  getPersistentMind: vi.fn(),
   forceCosEvaluate: vi.fn(),
   pauseCos: vi.fn(),
   resumeCos: vi.fn(),
@@ -71,7 +72,6 @@ const config = {
   improvementEnabled: true,
   proactiveMode: true,
   idleReviewEnabled: true,
-  immediateExecution: true,
 };
 
 beforeEach(() => {
@@ -89,6 +89,10 @@ beforeEach(() => {
   api.getCosLearning.mockResolvedValue(null);
   api.getProviderStatuses.mockResolvedValue({ providers: {} });
   api.getCosBudgetUsage.mockResolvedValue({ usage: {} });
+  api.getPersistentMind.mockResolvedValue({
+    state: { enabled: false, started: false, status: 'disabled', queuedMessageCount: 0 },
+    profile: { enabled: false, providerId: null, model: null },
+  });
   api.pauseCos.mockResolvedValue({ success: true, pausedAt: '2026-01-01T00:00:00.000Z' });
   api.resumeCos.mockResolvedValue({ success: true });
   api.getCosLearningDurations.mockResolvedValue(null);
