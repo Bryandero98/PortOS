@@ -254,13 +254,14 @@ describe('CoS Routes', () => {
       ['autonomyLevel', 'manager'],
       ['comprehensiveAppImprovement', true],
       ['immediateExecution', true],
-    ])('rejects the retired %s config field', async (field, value) => {
+    ])('accepts but ignores the retired %s config field for older clients', async (field, value) => {
+      cos.updateConfig.mockResolvedValue({ maxConcurrentAgents: 5 });
       const response = await request(app)
         .put('/api/cos/config')
-        .send({ [field]: value });
+        .send({ [field]: value, maxConcurrentAgents: 5 });
 
-      expect(response.status).toBe(400);
-      expect(cos.updateConfig).not.toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      expect(cos.updateConfig).toHaveBeenCalledWith({ maxConcurrentAgents: 5 });
     });
   });
 

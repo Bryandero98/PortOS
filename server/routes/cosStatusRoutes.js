@@ -46,8 +46,13 @@ export const cosConfigSchema = z.object({
   appReviewCooldownMs: z.number().int().min(0).optional(),
   idleReviewEnabled: z.boolean().optional(),
   idleReviewPriority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+  // Accept retired fields from cached/older clients, then discard them in the
+  // transform below so they cannot be re-persisted.
+  comprehensiveAppImprovement: z.boolean().optional(),
+  immediateExecution: z.boolean().optional(),
   proactiveMode: z.boolean().optional(),
   autonomousJobsEnabled: z.boolean().optional(),
+  autonomyLevel: z.enum(['standby', 'assistant', 'manager', 'yolo']).optional(),
   autoApproveInvestigations: z.boolean().optional(),
   // A durable reasoning route for the persistent mind. It is separate from
   // `alwaysOn`: saving or enabling this profile never starts background work.
@@ -87,7 +92,13 @@ export const cosConfigSchema = z.object({
     enabled: z.boolean().optional(),
     alwaysApproveKinds: z.array(z.string()).optional()
   }).strict().optional()
-}).strict();
+}).strict().transform((config) => {
+  const supportedConfig = { ...config };
+  delete supportedConfig.autonomyLevel;
+  delete supportedConfig.comprehensiveAppImprovement;
+  delete supportedConfig.immediateExecution;
+  return supportedConfig;
+});
 
 // GET /api/cos - Get CoS status
 router.get('/', asyncHandler(async (req, res) => {
