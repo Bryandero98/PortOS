@@ -134,6 +134,20 @@ describe('ConfigTab handleSave', () => {
       { silent: true },
     ));
   });
+
+  it('preserves a valid sub-minute cooldown when saving unrelated settings', async () => {
+    api.updateCosConfig.mockResolvedValue({ success: true });
+    renderConfig({ config: { ...config, appReviewCooldownMs: 30_000 } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit settings/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Dynamic avatar/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Save settings/i }));
+
+    await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ appReviewCooldownMs: 30_000, dynamicAvatar: false }),
+      { silent: true },
+    ));
+  });
 });
 
 describe('persistent mind profile', () => {

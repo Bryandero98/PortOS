@@ -64,7 +64,7 @@ const getDefaultFormData = (config, avatarStyle) => ({
   idleReviewPriority: config?.idleReviewPriority ?? 'MEDIUM',
   autonomousJobsEnabled: config?.autonomousJobsEnabled ?? true,
   autoApproveInvestigations: config?.autoApproveInvestigations ?? false,
-  appReviewCooldownMinutes: Math.round((config?.appReviewCooldownMs ?? 1_800_000) / 60_000),
+  appReviewCooldownMs: config?.appReviewCooldownMs ?? 1_800_000,
   avatarStyle: config?.avatarStyle || avatarStyle || 'svg',
   dynamicAvatar: config?.dynamicAvatar ?? true,
 });
@@ -85,7 +85,7 @@ const configPayload = (formData) => ({
   idleReviewPriority: formData.idleReviewPriority,
   autonomousJobsEnabled: formData.autonomousJobsEnabled,
   autoApproveInvestigations: formData.autoApproveInvestigations,
-  appReviewCooldownMs: formData.appReviewCooldownMinutes * 60_000,
+  appReviewCooldownMs: formData.appReviewCooldownMs,
   avatarStyle: formData.avatarStyle,
   dynamicAvatar: formData.dynamicAvatar,
 });
@@ -427,7 +427,7 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
           <ConfigRow label="Idle app review" description="Look for app improvements when user work is idle." value={formData.idleReviewEnabled ? 'Enabled' : 'Disabled'} editing={editing} type="checkbox" inputValue={formData.idleReviewEnabled} onChange={(value) => setFormData((current) => ({ ...current, idleReviewEnabled: value }))} />
           <ConfigRow label="Idle review priority" description="Priority assigned to newly generated idle-review tasks." value={PRIORITY_OPTIONS.find((option) => option.value === formData.idleReviewPriority)?.label} editing={editing} type="select" inputValue={formData.idleReviewPriority} options={PRIORITY_OPTIONS} onChange={(value) => setFormData((current) => ({ ...current, idleReviewPriority: value }))} />
           <ConfigRow label="Scheduled agent jobs" description="Enable the global scheduler in addition to each job's own switch." value={formData.autonomousJobsEnabled ? 'Enabled' : 'Disabled'} editing={editing} type="checkbox" inputValue={formData.autonomousJobsEnabled} onChange={(value) => setFormData((current) => ({ ...current, autonomousJobsEnabled: value }))} />
-          <ConfigRow label="App review cooldown" description="Minimum time before CoS reviews the same app again." value={`${formData.appReviewCooldownMinutes} min`} editing={editing} type="number" inputValue={formData.appReviewCooldownMinutes} min={0} suffix="minutes" onChange={(value) => setFormData((current) => ({ ...current, appReviewCooldownMinutes: value }))} />
+          <ConfigRow label="App review cooldown" description="Minimum time before CoS reviews the same app again." value={`${formData.appReviewCooldownMs / 60_000} min`} editing={editing} type="number" inputValue={formData.appReviewCooldownMs / 60_000} min={0} step="any" suffix="minutes" onChange={(value) => setFormData((current) => ({ ...current, appReviewCooldownMs: value * 60_000 }))} />
           <ConfigRow label="Auto-approve investigations" description="Admit failure-loop and failure-storm investigations unattended." value={formData.autoApproveInvestigations ? 'Enabled' : 'Disabled'} editing={editing} type="checkbox" inputValue={formData.autoApproveInvestigations} onChange={(value) => setFormData((current) => ({ ...current, autoApproveInvestigations: value }))} />
         </div>
       </section>
