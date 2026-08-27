@@ -94,7 +94,14 @@ describe('peerHttpClient', () => {
       const sent = Object.keys(calls[0].options.headers).filter((k) => k.toLowerCase() === 'x-portos-instance-id');
       expect(sent).toEqual(['x-portos-instance-id']);
       expect(calls[0].options.headers['x-portos-instance-id']).toBe('explicit');
-      expect(calls[0].options.headers['X-Request-Id']).toBe('request-1');
+      expect(calls[0].options.headers['x-request-id']).toBe('request-1');
+    });
+
+    it('preserves duplicate values from iterable header pairs', async () => {
+      await peerFetch('http://peer.example/x', {
+        headers: [['Accept', 'application/json'], ['Accept', 'text/plain']],
+      });
+      expect(calls[0].options.headers.accept).toBe('application/json, text/plain');
     });
 
     it('omits the header entirely when this install has no identity yet', async () => {

@@ -77,7 +77,7 @@ export async function peerFetch(url, options = {}, peer = null) {
 
 function normalizeHeaders(headers) {
   if (!headers) return {};
-  if (typeof headers[Symbol.iterator] === 'function') return Object.fromEntries(headers);
+  if (typeof headers[Symbol.iterator] === 'function') return Object.fromEntries(new Headers(headers));
   return { ...headers };
 }
 
