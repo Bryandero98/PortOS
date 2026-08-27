@@ -131,12 +131,12 @@ export const brainEvents = new EventEmitter();
  * Announce a persisted entity-store change that did NOT emit the usual
  * `${type}:upserted` / `${type}:deleted` event.
  *
- * Two write paths are deliberately event-silent — `applyRemoteRecord` (peer
- * applies, silent to prevent the #1077 cross-peer echo loop) and
- * `upsertWithId({ emitEvent: false })` (the caller emits its own richer event).
- * Read-through consumers didn't care, but a derived in-memory projection does:
- * without this signal, brainSearchIndex would serve stale results forever after
- * an inbound sync (issue #3506).
+ * Some write paths are deliberately event-silent — `applyRemoteRecord` (peer
+ * applies, silent to prevent the #1077 cross-peer echo loop),
+ * `upsertWithId({ emitEvent: false })` (the caller emits its own richer event),
+ * tombstone pruning, and origin-instance backfill. Read-through consumers did
+ * not care, but derived in-memory state does: without this signal,
+ * brainSearchIndex or the reconcile checksum cache could stay stale.
  *
  * LOCAL-ONLY, like `sync:applied`: it carries no record payload, is never fed
  * to the sync log, and is never relayed to a peer, so it cannot amplify an
@@ -1156,6 +1156,7 @@ export async function pruneTombstones(type, cutoffMs) {
     const deletedAt = Date.parse(record.deletedAt ?? record.updatedAt ?? '');
     if (Number.isFinite(deletedAt) && deletedAt < cutoffMs) {
       await store.deleteOneNow(id);
+      emitRecordChanged(type, id);
       return true;
     }
     return false;
@@ -1180,6 +1181,7 @@ export async function backfillOriginInstanceId() {
       // Tombstones always carry originInstanceId; skip them and absent records.
       if (!record || isTombstone(record) || record.originInstanceId) return false;
       await store.saveOneNow(id, { ...record, originInstanceId: instanceId });
+      emitRecordChanged(type, id);
       return true;
     })));
     return changes.filter(Boolean).length;
