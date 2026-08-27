@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 
 // Stable navigate mock — returning a fresh vi.fn() per call would change the
 // load effect's dependency identity every render and re-fire the fetch, which
@@ -96,16 +96,36 @@ vi.mock('../components/pipeline/MediaJobThumb', async () => {
 vi.mock('../services/apiImageVideo', () => ({ listImageGallery: vi.fn(async () => []) }));
 vi.mock('../components/IngredientPicker', () => ({ default: () => null }));
 vi.mock('../components/MediaImage', () => ({ default: ({ src, alt }) => <img src={src} alt={alt} /> }));
-vi.mock('../components/TagPicker', () => ({ default: () => <div data-testid="tag-picker" /> }));
+vi.mock('../components/loraTraining/CharacterLoraChip', () => ({ default: () => null }));
+vi.mock('../components/TagPicker', () => ({
+  default: ({ value = [], onChange }) => (
+    <button
+      type="button"
+      onClick={() => onChange(value.includes('example-tag')
+        ? value.filter((tag) => tag !== 'example-tag')
+        : [...value, 'example-tag'])}
+    >
+      Change tag
+    </button>
+  ),
+}));
 vi.mock('../components/ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 import CatalogIngredient, { buildGenerationPromptSeed } from './CatalogIngredient';
-import { getCatalogIngredientDetails, unlinkCatalogIngredientRelation } from '../services/apiCatalog';
+import { getCatalogIngredientDetails, unlinkCatalogIngredientRelation, updateCatalogIngredient } from '../services/apiCatalog';
 
-const renderPage = () => render(<MemoryRouter><CatalogIngredient /></MemoryRouter>);
+const renderPage = (path = '/catalog/character/cat-chr-1') => {
+  const router = createMemoryRouter([
+    { path: '/catalog', element: <div>Catalog index</div> },
+    { path: '/catalog/:type/:id', element: <CatalogIngredient /> },
+  ], { initialEntries: [path] });
+  return { ...render(<RouterProvider router={router} />), router };
+};
 
 beforeEach(() => {
   getCatalogIngredientDetails.mockImplementation(async () => detailsOf(CHAR_FIXTURE));
+  updateCatalogIngredient.mockReset();
+  unlinkCatalogIngredientRelation.mockReset();
 });
 
 describe('CatalogIngredient — character sheet', () => {
@@ -142,6 +162,61 @@ describe('CatalogIngredient — character sheet', () => {
       { silent: true },
     ));
     await waitFor(() => expect(screen.queryByText('Example Place')).toBeNull());
+  });
+
+  describe('unsaved changes', () => {
+    it('tracks name, tags, and payload edits in the unsaved indicator', async () => {
+      renderPage();
+      const nameInput = await screen.findByLabelText('Name');
+      const descriptionInput = screen.getByDisplayValue('Sharp eyes, ink-stained cuffs.');
+      const tagButton = screen.getByRole('button', { name: 'Change tag' });
+
+      expect(screen.queryByText('Unsaved changes')).toBeNull();
+
+      fireEvent.change(nameInput, { target: { value: 'Edited ingredient' } });
+      expect(screen.getByText('Unsaved changes')).toBeTruthy();
+      fireEvent.change(nameInput, { target: { value: CHAR_FIXTURE.name } });
+      await waitFor(() => expect(screen.queryByText('Unsaved changes')).toBeNull());
+
+      fireEvent.click(tagButton);
+      expect(screen.getByText('Unsaved changes')).toBeTruthy();
+      fireEvent.click(tagButton);
+      await waitFor(() => expect(screen.queryByText('Unsaved changes')).toBeNull());
+
+      fireEvent.change(descriptionInput, { target: { value: 'Edited description' } });
+      expect(screen.getByText('Unsaved changes')).toBeTruthy();
+    });
+
+    it('confirms before the Back link discards dirty edits', async () => {
+      const { router } = renderPage();
+      const nameInput = await screen.findByLabelText('Name');
+      fireEvent.change(nameInput, { target: { value: 'Edited ingredient' } });
+
+      fireEvent.click(screen.getByRole('link', { name: /Back/ }));
+      expect(await screen.findByText('Discard your unsaved changes to this ingredient?')).toBeTruthy();
+      expect(screen.queryByText('Catalog index')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+      await waitFor(() => expect(screen.queryByText('Discard your unsaved changes to this ingredient?')).toBeNull());
+      expect(router.state.location.pathname).toBe('/catalog/character/cat-chr-1');
+
+      fireEvent.click(screen.getByRole('link', { name: /Back/ }));
+      expect(await screen.findByText('Discard your unsaved changes to this ingredient?')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+      expect(await screen.findByText('Catalog index')).toBeTruthy();
+    });
+
+    it('clears the unsaved indicator after a successful save', async () => {
+      updateCatalogIngredient.mockResolvedValue({ ...CHAR_FIXTURE, name: 'Saved ingredient' });
+      renderPage();
+      const nameInput = await screen.findByLabelText('Name');
+      fireEvent.change(nameInput, { target: { value: 'Saved ingredient' } });
+      expect(screen.getByText('Unsaved changes')).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+      await waitFor(() => expect(updateCatalogIngredient).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByText('Unsaved changes')).toBeNull());
+    });
   });
 
   it('renders grouped sheet sections with the enriched canon scalar fields', async () => {
