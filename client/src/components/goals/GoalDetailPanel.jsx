@@ -136,6 +136,7 @@ export default function GoalDetailPanel({ goal, allGoals, onClose, onRefresh }) 
             setNewTodoPriority={s.setNewTodoPriority}
             newTodoEstimate={s.newTodoEstimate}
             setNewTodoEstimate={s.setNewTodoEstimate}
+            todoSubmitting={s.todoSubmitting}
             handleAddTodo={s.handleAddTodo}
             handleToggleTodo={s.handleToggleTodo}
             handleDeleteTodo={s.handleDeleteTodo}
@@ -244,6 +245,7 @@ export default function GoalDetailPanel({ goal, allGoals, onClose, onRefresh }) 
             setShowProgressForm={s.setShowProgressForm}
             progressForm={s.progressForm}
             setProgressForm={s.setProgressForm}
+            progressSubmitting={s.progressSubmitting}
             handleAddProgress={s.handleAddProgress}
             resetProgressForm={s.resetProgressForm}
             handleDeleteProgress={s.handleDeleteProgress}
