@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({
   ACCELERANDO_LICENSE_URL: 'https://creativecommons.org/licenses/by-nc-nd/2.5/',
-  ACCELERANDO_SOURCE_PAGE_URL: 'https://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando-intro.html',
+  ACCELERANDO_SOURCE_PAGE_URL: 'http://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando-intro.html',
   getAccelerandoBook: vi.fn(),
 }));
 
@@ -30,7 +30,7 @@ describe('RapidReader Accelerando loader', () => {
     expect(api.getAccelerandoBook).not.toHaveBeenCalled();
     expect(screen.getByRole('link', { name: /author's page/i })).toHaveAttribute(
       'href',
-      'https://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando-intro.html',
+      'http://www.antipope.org/charlie/blog-static/fiction/accelerando/accelerando-intro.html',
     );
     expect(screen.getByRole('link', { name: 'CC BY-NC-ND 2.5' })).toHaveAttribute(
       'href',
