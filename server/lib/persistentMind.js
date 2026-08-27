@@ -403,6 +403,29 @@ export function requeuePersistentMindWake(raw, wake) {
   return { ...state, selfWake: sanitized };
 }
 
+/**
+ * Report whether a source transition can safely cross a reader that predates
+ * image-bearing Persistent Mind messages. Counts only durable queued/active
+ * work; completed historical assets do not make rollback unsafe.
+ */
+export function persistentMindImageWorkGuard(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const queuedImageMessages = (Array.isArray(source.queuedMessages) ? source.queuedMessages : [])
+    .filter((message) => Array.isArray(message?.images) && message.images.length > 0)
+    .length;
+  const activeMessage = source.activeTurn?.wake?.kind === 'message'
+    ? source.activeTurn.wake.message
+    : null;
+  const activeImageMessage = Boolean(
+    activeMessage && Array.isArray(activeMessage.images) && activeMessage.images.length > 0,
+  );
+  return {
+    safe: queuedImageMessages === 0 && !activeImageMessage,
+    queuedImageMessages,
+    activeImageMessage,
+  };
+}
+
 export function persistentMindTurnIsStale(raw, now = Date.now(), staleMs = PERSISTENT_MIND_LIMITS.WATCHDOG_STALE_MS) {
   const active = normalizePersistentMindState(raw).activeTurn;
   if (!active) return false;

@@ -207,8 +207,21 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind).toMatchObject({ status: 'degraded', pauseReason: 'Pinned provider unavailable' });
   });
 
-  it('recovers an orphaned turn without losing or duplicating its accepted message', async () => {
-    const message = { id: 'message-1', text: 'Do not lose me.', createdAt: new Date(1).toISOString() };
+  it('recovers an orphaned image turn without losing images or duplicating acceptance', async () => {
+    const message = {
+      id: 'message-1',
+      text: 'Do not lose this image.',
+      images: [{
+        attachmentId: 'attachment-example',
+        filename: 'mind-attachment-example.png',
+        path: '/api/screenshots/mind-attachment-example.png',
+        originalName: 'diagram.png',
+        mimeType: 'image/png',
+        size: 128,
+        uploadedAt: new Date(1).toISOString(),
+      }],
+      createdAt: new Date(1).toISOString(),
+    };
     mock.root.persistentMind = {
       ...createDefaultPersistentMindState(),
       enabled: true,
@@ -236,6 +249,8 @@ describe('persistent mind supervisor', () => {
       turnId: 'turn-orphan',
       data: expect.objectContaining({ status: 'interrupted' }),
     }));
+    expect(mock.appendMindEvent.mock.calls.map(([event]) => event.kind))
+      .not.toContain('mind.message.accepted');
   });
 
   it('records pause, stop, and disable boundaries even without an active provider turn', async () => {

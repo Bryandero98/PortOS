@@ -62,6 +62,44 @@ describe('migration 303 — persistent mind image attachments', () => {
     expect(JSON.parse(await readFile(statePath(), 'utf8')).persistentMind).toEqual(current);
   });
 
+  it('preserves image-bearing queued and active messages byte-for-byte', async () => {
+    const image = {
+      attachmentId: 'attachment-example',
+      filename: 'mind-attachment-example.png',
+      path: '/api/screenshots/mind-attachment-example.png',
+      originalName: 'diagram.png',
+      mimeType: 'image/png',
+      size: 128,
+      uploadedAt: '2026-08-27T00:00:00.000Z',
+    };
+    const queuedMessages = [{
+      id: 'queued-image-message',
+      text: 'Keep this queue entry.',
+      images: [image],
+      createdAt: '2026-08-27T00:01:00.000Z',
+    }];
+    const activeTurn = {
+      id: 'active-image-turn',
+      wake: {
+        kind: 'message',
+        message: {
+          id: 'active-image-message',
+          text: '',
+          images: [{ ...image, attachmentId: 'attachment-active' }],
+          createdAt: '2026-08-27T00:02:00.000Z',
+        },
+      },
+    };
+    await writeFile(statePath(), JSON.stringify({
+      persistentMind: { schemaVersion: 2, queuedMessages, activeTurn },
+    }));
+
+    await expect(migration.up({ rootDir })).resolves.toEqual({ updated: 1 });
+    const migrated = JSON.parse(await readFile(statePath(), 'utf8')).persistentMind;
+    expect(migrated.queuedMessages).toEqual(queuedMessages);
+    expect(migrated.activeTurn).toEqual(activeTurn);
+  });
+
   it('leaves invalid and missing persistent mind slices untouched', async () => {
     await writeFile(statePath(), JSON.stringify({ config: {} }));
     await expect(migration.up({ rootDir })).resolves.toEqual({ updated: 0, reason: 'no-persistent-mind' });

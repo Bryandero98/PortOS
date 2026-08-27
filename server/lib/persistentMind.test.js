@@ -5,6 +5,7 @@ import {
   nextPersistentMindWakeAt,
   normalizePersistentMindState,
   persistentMindBackoffMs,
+  persistentMindImageWorkGuard,
   persistentMindTurnIsStale,
   requeuePersistentMindWake,
   takeNextPersistentMindWake,
@@ -130,6 +131,55 @@ describe('persistent mind state', () => {
       }],
     });
     expect(state.queuedMessages).toEqual([]);
+  });
+
+  it('preserves image references when a stopped active turn returns to the queue', () => {
+    const image = {
+      attachmentId: 'attachment-1',
+      filename: 'mind-attachment-1.png',
+      originalName: 'diagram.png',
+      mimeType: 'image/png',
+      size: 128,
+      uploadedAt: iso(1),
+    };
+    const state = normalizePersistentMindState({
+      enabled: true,
+      started: false,
+      status: 'thinking',
+      activeTurn: {
+        id: 'turn-1',
+        wake: {
+          kind: 'message',
+          message: { id: 'message-1', text: '', images: [image], createdAt: iso(1) },
+        },
+        startedAt: iso(1),
+        heartbeatAt: iso(1),
+      },
+    });
+
+    expect(state.activeTurn).toBeNull();
+    expect(state.queuedMessages).toEqual([
+      expect.objectContaining({
+        id: 'message-1',
+        images: [expect.objectContaining({ attachmentId: 'attachment-1' })],
+      }),
+    ]);
+  });
+
+  it('fails the source-transition guard for raw queued or active image work', () => {
+    expect(persistentMindImageWorkGuard({
+      queuedMessages: [{ id: 'queued-image', images: [{ attachmentId: 'attachment-1' }] }],
+      activeTurn: {
+        wake: {
+          kind: 'message',
+          message: { id: 'active-image', images: [{ attachmentId: 'attachment-2' }] },
+        },
+      },
+    })).toEqual({ safe: false, queuedImageMessages: 1, activeImageMessage: true });
+    expect(persistentMindImageWorkGuard({
+      queuedMessages: [{ id: 'text-only', text: 'Safe to preserve.' }],
+      pendingAttachments: [{ attachmentId: 'completed-asset', claimedBy: 'completed-message' }],
+    })).toEqual({ safe: true, queuedImageMessages: 0, activeImageMessage: false });
   });
 
   it('caps exponential backoff and detects stale heartbeats at the boundary', () => {
