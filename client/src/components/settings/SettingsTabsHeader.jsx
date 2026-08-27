@@ -18,7 +18,7 @@ export const TABS = [
   { id: 'database', label: 'Database', to: '/settings/database' },
   { id: 'features', label: 'Features', to: '/settings/features' },
   { id: 'general', label: 'General', to: '/settings/general' },
-  { id: 'mortalloom', label: 'MortalLoom', to: '/settings/mortalloom' },
+  { id: 'mortalloom', label: 'MortalLoom', to: '/settings/mortalloom', feature: 'health' },
   { id: 'openclaw', label: 'OpenClaw', to: '/openclaw', feature: 'openclaw' },
   { id: 'prompts', label: 'Prompts', to: '/prompts' },
   { id: 'providers', label: 'Providers', to: '/ai' },

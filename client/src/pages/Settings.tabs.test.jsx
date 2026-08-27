@@ -59,3 +59,10 @@ describe('Settings — Instance Features tab', () => {
     expect(screen.queryByTestId('general-tab')).toBeNull();
   });
 });
+
+describe('Settings — MortalLoom tab', () => {
+  it('marks MortalLoom as part of the health-tracking feature', () => {
+    const tab = TABS.find(t => t.id === 'mortalloom');
+    expect(tab).toMatchObject({ to: '/settings/mortalloom', feature: 'health' });
+  });
+});
