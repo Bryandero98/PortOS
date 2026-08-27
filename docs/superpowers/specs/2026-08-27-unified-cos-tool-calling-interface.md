@@ -46,7 +46,7 @@ tool call back to the canonical PortOS call envelope.
   "input_schema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["mode", "appId", "prompt"],
+    "required": ["mode", "appId", "prompt", "routing"],
     "properties": {
       "mode": {"enum": ["implement", "research-and-file-issue"]},
       "appId": {"type": "string"},
@@ -64,7 +64,17 @@ tool call back to the canonical PortOS call envelope.
       "prompt": {"type": "string"},
       "requiredValidation": {"type": "array", "items": {"type": "string"}},
       "prCompletion": {"enum": ["review-then-merge", "merge-on-green", "leave-open", null]}
-    }
+    },
+    "oneOf": [
+      {
+        "properties": {"routing": {"const": "automatic"}},
+        "not": {"required": ["provider"]}
+      },
+      {
+        "properties": {"routing": {"const": "pinned"}},
+        "required": ["provider"]
+      }
+    ]
   },
   "output_schema": {
     "type": "object",
@@ -100,24 +110,23 @@ definitions, audit events, and validation use this shape. Schemas are closed by
 default (`additionalProperties: false`), semantic absence is represented by
 `null` or an omitted optional key rather than an empty string, and results must
 validate before they are exposed to the model. `provider` is required when
-`routing` is `pinned` and omitted when routing is automatic; the registry's Zod
-schema and generated JSON Schema must encode that discriminated union even
-though the abbreviated example above lists the shared properties once.
+`routing` is `pinned` and omitted when routing is automatic; the `oneOf` above
+is the same discriminated union the registry's Zod schema must enforce.
 
 **Proposed call contract:**
 
 ```json
 {
   "type": "portos_tool_call",
-  "request_id": "mind-turn-example-tool-01",
+  "requestId": "mind-turn-example-tool-01",
   "name": "cos.create-task",
   "version": 1,
   "arguments": {},
-  "context": {"turn_id": "turn-example", "source": "persistent-mind"}
+  "context": {"turnId": "turn-example", "source": "persistent-mind"}
 }
 ```
 
-`request_id` is the body representation of the HTTP `Idempotency-Key`.
+`requestId` is the body representation of the HTTP `Idempotency-Key`.
 `context` is correlation-only; the supervisor supplies authority out of band.
 The normalized result is the envelope in section 5.3 plus
 `type: "portos_tool_result"` and `version: 1`. Provider adapters never return a
