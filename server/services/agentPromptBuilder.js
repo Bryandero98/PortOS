@@ -803,6 +803,12 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // same split spelled out: local CLIs/local LLMs inspect the committed branch
   // before it is public; Copilot and @login reviewers can only run after a PR.
   const isLocalReviewer = reviewer => isCliReviewer(reviewer) || LOCAL_LLM_REVIEWERS.includes(reviewer);
+  const localReviewers = lightReviewers.filter(isLocalReviewer);
+  const localReviewRequired = localReviewers.some(reviewer => !lightOptionalReviewers.includes(reviewer));
+  const reviewerPositions = [
+    ...lightReviewers.map((reviewer, position) => ({ reviewer, position })),
+    ...lightReviewerUsernames.map((username, index) => ({ reviewer: `@${username}`, position: lightReviewers.length + index })),
+  ];
   const localReviewSection = inlineSection === 'review-loop'
     ? buildLocalReviewLoopSection({
       taskId: task.id,
@@ -817,11 +823,14 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       reviewerEfforts: lightReviewerEfforts,
       reviewStopMode: lightReviewStopMode,
       reviewerApplies: lightReviewerApplies,
+      reviewerPositions,
     })
     : '';
   const prSideReviewers = lightReviewers.filter(reviewer => !isLocalReviewer(reviewer));
   const runsPrSideReviewLoop = inlineSection === 'review-loop'
     && (prSideReviewers.length > 0 || lightReviewerUsernames.length > 0);
+  const localPhaseCanShortCircuit = localReviewSection !== ''
+    && runsPrSideReviewLoop;
 
   const taskSections = [];
   const contractSections = [];
@@ -945,10 +954,10 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       baseBranch: worktreeInfo?.baseBranch || null,
       leavePrOpen: leavesPrForHuman(task),
       reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies,
-      forgeCli: resolvedForgeCli, localReviewSection, postPrReview: ownsPrWorkflow ? runsPrSideReviewLoop : null
+      forgeCli: resolvedForgeCli, localReviewSection, localReviewRequired, postPrReview: ownsPrWorkflow ? runsPrSideReviewLoop : null
     }));
   } else {
-    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, noChangeSuccess, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli, localReviewSection, postPrReview: ownsPrWorkflow ? runsPrSideReviewLoop : null }));
+    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, noChangeSuccess, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli, localReviewSection, localReviewRequired, postPrReview: ownsPrWorkflow ? runsPrSideReviewLoop : null }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion
@@ -974,6 +983,9 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       reviewerEfforts: lightReviewerEfforts,
       reviewStopMode: lightReviewStopMode,
       reviewerApplies: lightReviewerApplies,
+      localPhaseReviewers: localReviewers,
+      localPhaseCanShortCircuit,
+      reviewerPositions,
       forgeCli: resolvedForgeCli,
       workflowStep: localReviewSection ? 5 : 4,
     }));

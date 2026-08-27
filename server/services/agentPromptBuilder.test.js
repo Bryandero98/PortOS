@@ -860,13 +860,31 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/git commit -m/);
       expect(prompt).toMatch(/### Local Review Before Opening the PR\/MR/);
       expect(prompt).toMatch(/RECIPE: codex --sandbox read-only review/);
-      expect(prompt).toMatch(/git diff main\.\.\.HEAD/);
-      expect(prompt).toMatch(/git push -u origin claim\/issue-1/);
-      expect(prompt).toMatch(/PR_URL=\$\(gh pr create --base main --head claim\/issue-1/);
+      expect(prompt).toMatch(/git diff origin\/main\.\.\.HEAD/);
+      expect(prompt).toMatch(/BRANCH=claim\/issue-1/);
+      expect(prompt).toContain('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"');
+      expect(prompt).toContain('git config --get "branch.${BRANCH}.pushRemote"');
+      expect(prompt).toContain('git config --get remote.pushDefault');
+      expect(prompt).toContain('git fetch "$PUBLISH_REMOTE" "+refs/heads/$BRANCH:refs/remotes/$PUBLISH_REMOTE/$BRANCH"');
+      expect(prompt).toContain('PUBLISH_REMOTE="$PUSH_REMOTE"');
+      expect(prompt).toContain('git merge-base --is-ancestor "$REMOTE_BRANCH_SHA" HEAD');
+      expect(prompt).toContain('publish_reviewed_branch -u "$PUBLISH_REMOTE" "HEAD:refs/heads/$BRANCH"');
+      expect(prompt).toContain('publish_reviewed_branch --force-with-lease="refs/heads/$BRANCH:$REMOTE_BRANCH_SHA" -u "$PUBLISH_REMOTE" "HEAD:refs/heads/$BRANCH"');
+      expect(prompt).toContain('PUBLISH_ERROR="publish failed; refusing PR/MR"');
+      expect(prompt).toContain('publish_reviewed_branch() { git push "$@" || { echo "$PUBLISH_ERROR" >&2; exit 1; }; }');
+      expect(prompt).toContain('PUSH_OWNER=$(gh repo view "$(git remote get-url --push "$PUSH_REMOTE"');
+      expect(prompt).toContain('[ -n "$PUSH_OWNER" ] || { echo "Missing PR head owner; refusing PR" >&2; exit 1; }');
+      expect(prompt).toContain('PR_HEAD="$PUSH_OWNER:$BRANCH"');
+      expect(prompt).toContain('portos-local-review-baseline');
+      expect(prompt).toContain('refusing to overwrite them');
+      expect(prompt).toMatch(/PR_URL=\$\(gh pr create --base main --head "\$PR_HEAD"/);
       expect(prompt).toMatch(/## Review Loop/);
       expect(prompt).toMatch(/gh pr merge "\$PR_URL" --merge --delete-branch/);
-      expect(prompt.indexOf('### Local Review Before Opening the PR/MR')).toBeLessThan(prompt.indexOf('git push -u origin claim/issue-1'));
-      expect(prompt.indexOf('git push -u origin claim/issue-1')).toBeLessThan(prompt.indexOf('## Review Loop'));
+      expect(prompt).toContain('LOCAL_PHASE_START_SHA');
+      expect(prompt).toContain('Cross-phase stop-mode gate');
+      expect(prompt).toContain('`all` always runs the PR-side reviewers.');
+      expect(prompt.indexOf('### Local Review Before Opening the PR/MR')).toBeLessThan(prompt.indexOf('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"'));
+      expect(prompt.indexOf('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"')).toBeLessThan(prompt.indexOf('## Review Loop'));
       // The post-PR section receives only Copilot, never the local codex reviewer.
       expect(prompt.slice(prompt.indexOf('## Review Loop'))).not.toMatch(/CLI Reviewer Procedure/);
       // PortOS no longer promises to do any of it.
@@ -875,6 +893,67 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/\.agent-done/);
       expect(prompt).toMatch(/NOT run `\/quit`/);
       expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
+    });
+
+    it.each(['on-clean', 'on-findings'])('carries the %s stop mode across the local and PR-side phases', (reviewStopMode) => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex', 'copilot'], reviewStopMode } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
+
+      expect(prompt).toContain(`\`${reviewStopMode}\` skips the PR-side reviewers only when the local phase actually satisfied that stop condition`);
+      expect(prompt).toContain('LOCAL_STOP_TRIGGERED=true');
+      expect(prompt).toContain('git rev-parse --git-path portos-local-review-state');
+      expect(prompt).toContain('. "$LOCAL_REVIEW_STATE_FILE"');
+      expect(prompt).toContain('The original order places every local reviewer before every PR-side reviewer.');
+      expect(prompt).toContain('skip the PR-side phase and record the configured stop-mode short-circuit as `partial`');
+      expect(prompt).toContain('including when that verdict came from the final local reviewer');
+    });
+
+    it.each(['on-clean', 'on-findings'])('runs every PR-side reviewer for an interleaved %s order', (reviewStopMode) => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['copilot', 'codex'], reviewStopMode } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
+
+      expect(prompt).toContain('Cross-phase stop-mode gate');
+      expect(prompt).toContain('Cross-phase stop-mode skip disabled');
+      expect(prompt).toContain('Always run every PR-side reviewer');
+      expect(prompt).not.toContain('skip the PR-side phase and record the configured stop-mode short-circuit');
+      expect(prompt.slice(prompt.indexOf('## Review Loop'))).toContain('copilot');
+    });
+
+    it.each(['on-clean', 'on-findings'])('disables cross-phase skipping for an interleaved %s order', (reviewStopMode) => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex', 'copilot', 'ollama'], reviewStopMode } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
+
+      expect(prompt).toContain('`codex`=0, `copilot`=1, `ollama`=2');
+      expect(prompt).toContain('`LOCAL_STOP_INDEX` to that triggering local reviewer\'s position');
+      expect(prompt).toContain('Cross-phase stop-mode skip disabled');
+      expect(prompt).toContain('run every PR-side reviewer in this phase');
+    });
+
+    it('keeps an optional local reviewer non-blocking when its verdict is inconclusive', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { openPR: true, reviewLoop: true, reviewers: ['codex', 'copilot'], optionalReviewers: ['codex'] } }),
+        '/r',
+        { branchName: 'claim/issue-1', worktreePath: '/tmp/wt', baseBranch: 'main' },
+        isTruthyMeta,
+        { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
+
+      expect(prompt).toContain('All local reviewers are optional, so missing/inconclusive results');
+      expect(prompt).toContain('Set aggregate `LOCAL_OVERALL_STATUS=clean` for clean, configured capped, or optional inconclusive');
+      expect(prompt).toContain('missing/malformed/no-verdict result from one of them is non-blocking');
+      expect(prompt).toContain('`codex` still run and their findings must still be fixed');
+      expect(prompt).not.toContain('a missing, timed-out, malformed, or inconclusive local review is UNSATISFIED');
     });
 
     it('defers the local CLI recipe push until after the local review gate', () => {
@@ -897,14 +976,17 @@ describe('buildLightContextPrompt', () => {
           localAgentLoopBody: localRecipe,
         });
       const localStart = prompt.indexOf('### Local Review Before Opening the PR/MR');
-      const prPush = prompt.indexOf('git push -u origin claim/issue-1');
+      const prPush = prompt.indexOf('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"');
       const localSection = prompt.slice(localStart, prPush);
 
       expect(localStart).toBeGreaterThanOrEqual(0);
       expect(prPush).toBeGreaterThan(localStart);
       expect(localSection).toContain('Keep verified changes local');
-      expect(localSection).not.toMatch(/^\s*(?:git pull --rebase --autostash && )?git push\b/m);
-      expect(localSection).not.toContain('git push origin');
+      const recipeStart = localSection.indexOf('### Maintained local recipe');
+      const recipeEnd = localSection.indexOf('\n\n4. Push', recipeStart);
+      const renderedLocalRecipe = localSection.slice(recipeStart, recipeEnd);
+      expect(renderedLocalRecipe).not.toMatch(/^\s*(?:git pull --rebase --autostash && )?git push\b/m);
+      expect(renderedLocalRecipe).not.toContain('git push origin');
     });
 
     it('keeps reviewer-applies local fixes off the remote branch', () => {
@@ -915,7 +997,7 @@ describe('buildLightContextPrompt', () => {
         isTruthyMeta,
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
       const localStart = prompt.indexOf('### Local Review Before Opening the PR/MR');
-      const prPush = prompt.indexOf('git push -u origin claim/issue-1');
+      const prPush = prompt.indexOf('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"');
       const localSection = prompt.slice(localStart, prPush);
 
       expect(localSection).toContain('keep fixes committed locally');
@@ -931,8 +1013,8 @@ describe('buildLightContextPrompt', () => {
         isTruthyMeta,
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode', localAgentLoopBody: 'RECIPE' });
 
-      expect(prompt).toContain("git diff 'release; echo bad'...HEAD");
-      expect(prompt).not.toContain('git diff release; echo bad...HEAD');
+      expect(prompt).toContain("git diff 'origin/release; echo bad'...HEAD");
+      expect(prompt).not.toContain('git diff origin/release; echo bad...HEAD');
     });
 
     it('runs local review before GitLab MR creation and leaves @ reviewers after it', () => {
@@ -944,7 +1026,7 @@ describe('buildLightContextPrompt', () => {
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
 
       expect(prompt).toMatch(/### Local Review Before Opening the PR\/MR/);
-      expect(prompt).toMatch(/git diff main\.\.\.HEAD/);
+      expect(prompt).toMatch(/git diff origin\/main\.\.\.HEAD/);
       expect(prompt).toMatch(/PR_URL=\$\(glab mr create --source-branch claim\/issue-4363 --target-branch main/);
       expect(prompt).toMatch(/PR_NUMBER=\$\(glab mr view "\$PR_URL" --output json \| jq -r \.iid\)/);
       expect(prompt).toMatch(/## Review Loop/);
@@ -1018,8 +1100,8 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/`\/do:push`/);
       // Plain git/gh equivalent of the whole slashdo workflow (#3733).
       expect(prompt).toMatch(/git commit -m/);
-      expect(prompt).toMatch(/git push -u origin claim\/x/);
-      expect(prompt).toMatch(/gh pr create --base main --head claim\/x/);
+      expect(prompt).toContain('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"');
+      expect(prompt).toMatch(/gh pr create --base main --head "\$PR_HEAD"/);
       expect(prompt).toMatch(/## Review Loop/);
       expect(prompt).not.toMatch(/PortOS will push the branch/);
       expect(prompt).toMatch(/\.agent-done/);
@@ -1070,6 +1152,9 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/### Local Review Before Opening the PR\/MR/);
       expect(prompt).toMatch(/## Merge Gate/);
       expect(prompt).toMatch(/You are done — exit/);
+      expect(prompt).toContain('repeat the pre-PR local review phase');
+      expect(prompt).toContain('the pre-PR local review is the only configured review');
+      expect(prompt).not.toContain('No code review was requested for this task');
       expect(prompt).not.toMatch(/write the completion sentinel — the run is not done/);
     });
 
@@ -1123,8 +1208,9 @@ describe('buildLightContextPrompt', () => {
         { branchName: 'weird;rm -rf /', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
         { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
-      expect(prompt).toMatch(/git push -u origin 'weird;rm -rf \/'/);
-      expect(prompt).toMatch(/gh pr create --base main --head 'weird;rm -rf \/'/);
+      expect(prompt).toMatch(/BRANCH='weird;rm -rf \/'/);
+      expect(prompt).toContain('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"');
+      expect(prompt).toMatch(/gh pr create --base main --head "\$PR_HEAD"/);
       // Never bare — that would be a command substitution waiting to happen.
       expect(prompt).not.toMatch(/origin weird;rm/);
     });
@@ -1136,7 +1222,8 @@ describe('buildLightContextPrompt', () => {
         { branchName: 'cos/task-1/agent-2', worktreePath: '/tmp/wt', baseBranch: 'main' },
         isTruthyMeta,
         { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
-      expect(readable).toMatch(/git push -u origin cos\/task-1\/agent-2/);
+      expect(readable).toMatch(/BRANCH=cos\/task-1\/agent-2/);
+      expect(readable).toContain('publish_reviewed_branch -u "$PUSH_REMOTE" "$BRANCH"');
 
       const noBase = buildLightContextPrompt(
         makeTask({ metadata: { openPR: true } }),
@@ -1144,7 +1231,9 @@ describe('buildLightContextPrompt', () => {
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta,
         { isTui: true, providerId: 'codex-tui', providerCommand: 'codex' });
-      expect(noBase).toMatch(/gh pr create --base <base-branch> --head b/);
+      expect(noBase).toMatch(/git remote set-head origin --auto/);
+      expect(noBase).toMatch(/BASE_BRANCH=\$\(git symbolic-ref --short refs\/remotes\/origin\/HEAD/);
+      expect(noBase).toMatch(/gh pr create --base "\$BASE_BRANCH" --head "\$PR_HEAD"/);
     });
 
     it('a path-configured claude binary under a custom provider id gets the slashdo workflow', () => {
@@ -2695,13 +2784,13 @@ describe('buildReviewLoopFollowUpSection — CLI reviewer procedure inlining', (
     });
   }
 
-  it('fails the local reviewer command when its JSON response has no findings', () => {
+  it('records a no-verdict local reviewer result when its JSON response has no findings', () => {
     const out = buildReviewLoopFollowUpSection(
       { ...baseMeta, reviewLoopReviewers: ['ollama'] },
       { verbose: false, localAgentLoopBody: null }
     );
     expect(out).toMatch(/Local reviewer failed:/);
-    expect(out).toMatch(/STATUS=cli-error[^]*exit 1/);
+    expect(out).toMatch(/STATUS=no-verdict[^]*exit 1/);
   });
 
   it('does NOT inline the procedure for a copilot-only loop', () => {
