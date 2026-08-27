@@ -40,6 +40,11 @@ export default function PersistentMindProfileControls({
   const publishedProfileRef = useRef(draft);
   const pendingSavesRef = useRef(0);
 
+  // The provider hook memoizes its setters in production, but simple host-page
+  // test mocks may return fresh functions every render. This effect describes
+  // persisted profile changes only; depending on setter identity would turn
+  // its setDraft call into an unconditional render loop in those hosts.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const next = normalizeProfile(profile);
     draftRef.current = next;
@@ -54,8 +59,6 @@ export default function PersistentMindProfileControls({
     profile?.model,
     profile?.effort,
     profile?.thinkingInterface,
-    setSelectedProviderId,
-    setSelectedModel,
   ]);
 
   const save = async (patch) => {
