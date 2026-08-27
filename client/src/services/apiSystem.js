@@ -188,23 +188,38 @@ export async function downloadBackupSnapshot(snapshotId) {
     }
   }
 
-  const response = await fetch(`${API_BASE}/backup/snapshots/${encodeURIComponent(snapshotId)}/download`, {
-    credentials: 'same-origin',
-  });
-  if (!response.ok) {
-    // Close the handle we opened before we knew the request would fail, so the
-    // picker doesn't leave a 0-byte file behind.
-    await writable?.abort?.().catch(() => {});
-    await throwApiError(response);
-  }
+  let writableAborted = false;
+  const abortWritable = async () => {
+    if (!writable || writableAborted) return;
+    writableAborted = true;
+    await writable.abort?.().catch(() => {});
+  };
 
-  if (writable && response.body?.pipeTo) {
-    await response.body.pipeTo(writable);
-  } else {
-    // No File System Access API (Firefox, Safari): the Blob path is the only one
-    // available, and it is why the server caps nothing — the browser holds it all.
-    await writable?.abort?.().catch(() => {});
-    downloadBlob(await response.blob(), filename);
+  try {
+    const response = await fetch(`${API_BASE}/backup/snapshots/${encodeURIComponent(snapshotId)}/download`, {
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      // The catch below closes the handle before propagating the API error, so
+      // the picker doesn't leave a 0-byte file behind.
+      await throwApiError(response);
+    }
+
+    if (writable && response.body?.pipeTo) {
+      await response.body.pipeTo(writable);
+    } else {
+      // No File System Access API (Firefox, Safari): the Blob path is the only
+      // one available, and it is why the server caps nothing — the browser
+      // holds it all. Abort the unused picker stream before falling back.
+      await abortWritable();
+      downloadBlob(await response.blob(), filename);
+    }
+  } catch (error) {
+    // Fetch, response parsing, and pipeTo can all fail after the picker has
+    // created its stream. Abort it on every failure path so the destination is
+    // immediately available for a retry.
+    await abortWritable();
+    throw error;
   }
   return { filename };
 }
