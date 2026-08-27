@@ -140,10 +140,10 @@ describe('persistent mind routes', () => {
   });
 
   it('fails visibly when the supervisor refuses a lifecycle transition', async () => {
-    mocks.startPersistentMind.mockResolvedValue({ success: false, error: 'Persistent mind is disabled' });
+    mocks.startPersistentMind.mockResolvedValue({ success: false, error: 'Lifecycle transition refused' });
     const res = await post('/mind/start');
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe('Persistent mind is disabled');
+    expect(res.body.error).toBe('Lifecycle transition refused');
   });
 
   it('requires explicit approval before promoting a redacted event summary', async () => {

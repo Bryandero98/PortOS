@@ -653,11 +653,11 @@ export async function setPersistentMindEnabled(enabled) {
 
 export async function startPersistentMind() {
   const result = await mutateMindState((mind) => {
-    if (!mind.enabled) return { mind, value: { success: false, error: 'Persistent mind is disabled' } };
     if (mind.started) return { mind, value: { success: true, alreadyStarted: true } };
     return {
       mind: {
         ...mind,
+        enabled: true,
         started: true,
         status: 'waiting',
         pauseReason: null,

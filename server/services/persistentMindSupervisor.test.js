@@ -109,14 +109,15 @@ describe('persistent mind supervisor', () => {
     supervisor.__resetPersistentMindSupervisorForTests();
   });
 
-  it('is silent on boot and refuses start until explicitly enabled', async () => {
+  it('is silent on boot and enables the runtime only when explicitly started', async () => {
     const prepare = vi.fn();
     const run = vi.fn();
     await supervisor.registerPersistentMindTurnAdapter({ prepare, run });
 
     await supervisor.initializePersistentMindSupervisor();
     expect(mock.scheduled.size).toBe(0);
-    expect(await supervisor.startPersistentMind()).toEqual({ success: false, error: 'Persistent mind is disabled' });
+    expect(await supervisor.startPersistentMind()).toEqual({ success: true, alreadyStarted: false });
+    expect(mock.root.persistentMind).toMatchObject({ enabled: true, started: true, status: 'waiting' });
     expect(prepare).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
   });
