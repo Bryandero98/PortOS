@@ -138,6 +138,7 @@ describe('type filters', () => {
       'peer-focus-visible:ring-offset-1',
       'peer-focus-visible:ring-offset-port-bg',
     );
+    expect(swatch.className).not.toMatch(/(^|\s)ring-/);
 
     expect(checkbox).toBeChecked();
     checkbox.focus();
