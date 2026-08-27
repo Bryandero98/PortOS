@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
 import { PERSISTENT_MIND_LIMITS } from '../lib/persistentMind.js';
+import { MAX_SCREENSHOT_BYTES } from '../lib/uploadLimits.js';
 import {
   normalizePersistentMindCapabilities,
   PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
@@ -37,6 +38,8 @@ import { readPersistentMindTaskCatalog } from '../services/persistentMindTaskCap
 import { inspectPersistentMindRuntime } from '../services/persistentMindRuntime.js';
 import { readPersistentMindVisibility } from '../services/persistentMindVisibility.js';
 import {
+  createPersistentMindAttachment,
+  deletePersistentMindAttachment,
   enqueuePersistentMindMessage,
   getPersistentMindState,
   pausePersistentMind,
@@ -50,6 +53,16 @@ const router = Router();
 const idempotencyId = z.string().trim().min(1).max(200);
 const eventId = z.string().trim().min(1).max(128);
 const text = z.string().trim().min(1).max(PERSISTENT_MIND_LIMITS.MAX_MESSAGE_CHARS);
+const messageText = z.string().trim().max(PERSISTENT_MIND_LIMITS.MAX_MESSAGE_CHARS).optional();
+const attachmentId = z.string()
+  .trim()
+  .min(1)
+  .max(PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_ID_CHARS)
+  .regex(/^[A-Za-z0-9_-]+$/, 'invalid attachment id');
+const imageReference = z.union([
+  attachmentId,
+  z.object({ attachmentId }).strict(),
+]);
 const mindReadSchema = z.object({
   cursor: z.string().max(260).refine((value) => parsePersistentMindCursor(value) !== null, 'Invalid cursor').optional(),
   limit: z.coerce.number().int().positive().max(PERSISTENT_MIND_TRAJECTORY_LIMITS.maxPageSize).optional(),
@@ -57,7 +70,25 @@ const mindReadSchema = z.object({
 const visibilityReadSchema = z.object({
   refresh: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
 }).strict();
-const messageSchema = z.object({ id: idempotencyId, text }).strict();
+const messageSchema = z.object({
+  id: idempotencyId,
+  text: messageText,
+  images: z.array(imageReference).max(PERSISTENT_MIND_LIMITS.MAX_MESSAGE_IMAGES).optional(),
+}).strict().superRefine((value, ctx) => {
+  const images = Array.isArray(value.images) ? value.images : [];
+  const ids = images.map((image) => typeof image === 'string' ? image : image.attachmentId);
+  if (!value.text && ids.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['text'], message: 'text or at least one image is required' });
+  }
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['images'], message: 'image references must be unique' });
+  }
+});
+const attachmentUploadSchema = z.object({
+  filename: z.string().trim().min(1).max(PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_FILENAME_CHARS),
+  data: z.string().min(1).max(Math.ceil(MAX_SCREENSHOT_BYTES * 4 / 3) + 16),
+}).strict();
+const attachmentParamsSchema = z.object({ attachmentId }).strict();
 const annotationSchema = z.object({
   id: idempotencyId,
   text,
@@ -101,7 +132,10 @@ const memoryParamsSchema = z.object({ memoryId: z.string().trim().min(1).max(128
 
 const requireSuccess = (result) => {
   if (result?.success === false) {
-    throw new ServerError(result.error || 'Persistent mind request was refused', { status: 409, code: 'INVALID_STATE' });
+    throw new ServerError(result.error || 'Persistent mind request was refused', {
+      status: Number.isInteger(result.status) ? result.status : 409,
+      code: result.code || 'INVALID_STATE',
+    });
   }
   return result;
 };
@@ -214,6 +248,16 @@ router.put('/mind/memories/:memoryId', asyncHandler(async (req, res) => {
   const memory = await updatePersistentMindMemory(memoryId, updates);
   if (!memory) throw new ServerError('Persistent mind memory not found', { status: 404, code: 'NOT_FOUND' });
   res.json({ success: true, memory });
+}));
+
+router.post('/mind/attachments', asyncHandler(async (req, res) => {
+  const input = validateRequest(attachmentUploadSchema, req.body);
+  res.status(201).json(requireSuccess(await createPersistentMindAttachment(input)));
+}));
+
+router.delete('/mind/attachments/:attachmentId', asyncHandler(async (req, res) => {
+  const { attachmentId: id } = validateRequest(attachmentParamsSchema, req.params);
+  res.json(requireSuccess(await deletePersistentMindAttachment(id)));
 }));
 
 router.post('/mind/messages', asyncHandler(async (req, res) => {

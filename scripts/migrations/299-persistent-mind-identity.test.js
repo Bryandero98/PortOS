@@ -28,7 +28,7 @@ describe('migration 299 — persistent mind identity', () => {
     expect(readJson(statePath)).toMatchObject({
       running: true,
       persistentMind: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         mindId: 'cos-persistent-mind',
         enabled: true,
         customFutureField: 'preserve',
@@ -38,7 +38,7 @@ describe('migration 299 — persistent mind identity', () => {
 
   it('is idempotent', async () => {
     writeFileSync(statePath, JSON.stringify({
-      persistentMind: { schemaVersion: 2, mindId: 'cos-persistent-mind' },
+      persistentMind: { schemaVersion: 3, mindId: 'cos-persistent-mind' },
     }));
     await expect(migration.up({ rootDir })).resolves.toEqual({ updated: 0, reason: 'already-applied' });
   });
