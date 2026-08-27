@@ -34,6 +34,7 @@ import {
 } from '../services/persistentMindContext.js';
 import { getProviderById } from '../services/providers.js';
 import { persistentMindHarnessInfo } from '../services/persistentMindAdapter.js';
+import { resolvePersistentMindImageCapability } from '../services/persistentMindImageCapability.js';
 import { readPersistentMindTaskCatalog } from '../services/persistentMindTaskCapability.js';
 import { inspectPersistentMindRuntime } from '../services/persistentMindRuntime.js';
 import { readPersistentMindVisibility } from '../services/persistentMindVisibility.js';
@@ -157,6 +158,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
   const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
   const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
   const provider = profile.providerId ? await getProviderById(profile.providerId) : null;
+  const imageCapability = await resolvePersistentMindImageCapability({ provider, model: profile.model });
   const { snapshot: _snapshot, ...publicHistory } = history;
   res.json({
     ...publicHistory,
@@ -170,6 +172,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
     },
     capabilities,
     harness: persistentMindHarnessInfo(provider),
+    imageCapability,
     autonomyMode: getDomainMode(root.config, 'cos'),
   });
 }));

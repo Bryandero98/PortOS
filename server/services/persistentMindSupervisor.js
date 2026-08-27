@@ -47,6 +47,12 @@ import { preparePersistentMindContext } from './persistentMindContext.js';
 import { resolvePersistentMindProfile } from './persistentMindProfile.js';
 import { isUpdateInProgress } from './updateChecker.js';
 import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
+import { normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
+import { getProviderById } from './providers.js';
+import {
+  imageCapabilityAllowsAttempt,
+  resolvePersistentMindImageCapability,
+} from './persistentMindImageCapability.js';
 
 export const PERSISTENT_MIND_WAKE_EVENT_ID = 'cos-persistent-mind-wake';
 export const PERSISTENT_MIND_WATCHDOG_EVENT_ID = 'cos-persistent-mind-watchdog';
@@ -873,6 +879,16 @@ async function runOnePersistentMindTurn() {
         await parkActiveTurn(turn.id, 'Persistent mind adapter did not honor the pinned provider profile', 'degraded');
         return;
       }
+      if (turn.wake.kind === 'message' && Array.isArray(turn.wake.message?.images) && turn.wake.message.images.length > 0) {
+        const imageCapability = await resolvePersistentMindImageCapability({
+          provider: prepared.provider,
+          model: prepared.model,
+        });
+        if (!imageCapabilityAllowsAttempt(imageCapability, prepared.provider)) {
+          await parkActiveTurn(turn.id, imageCapability.reason, 'degraded');
+          return;
+        }
+      }
       await recordTurnProfile(turn.id, prepared);
       if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
 
@@ -1157,6 +1173,15 @@ export async function enqueuePersistentMindMessage({ id = randomUUID(), text, im
   const attachmentIds = normalizeRequestedAttachmentIds(images);
   if (!messageId || attachmentIds === null || (!messageText && attachmentIds.length === 0)) {
     return attachmentFailure('Message id and text or at least one image are required', { code: 'VALIDATION_ERROR' });
+  }
+  if (attachmentIds.length > 0) {
+    const root = await loadState();
+    const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+    const provider = profile.providerId ? await getProviderById(profile.providerId) : null;
+    const imageCapability = await resolvePersistentMindImageCapability({ provider, model: profile.model });
+    if (!imageCapabilityAllowsAttempt(imageCapability, provider)) {
+      return attachmentFailure(imageCapability.reason, { code: 'IMAGE_CAPABILITY_UNSUPPORTED', status: 422 });
+    }
   }
   const messageCreatedAt = typeof createdAt === 'string' && Number.isFinite(Date.parse(createdAt))
     ? new Date(createdAt).toISOString()

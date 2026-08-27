@@ -64,7 +64,7 @@ const autoFixer = await import('./autoFixer.js');
 const toolkitState = await import('../lib/aiToolkitState.js');
 const { ERROR_CATEGORIES } = await import('../lib/aiToolkit/errorDetection.js');
 const { CREATIVE_LATITUDE_HEADING, withCreativeLatitude } = await import('../lib/creativeLatitude.js');
-const { runPromptThroughProvider, resolveProviderAndModel, resolveEffectiveModel, pickConfigCorrectedModel, normalizeResponseSchema, coerceResponseToSchema, isSchemaTypeCategory, buildRequestCapabilities } = await import('./promptRunner.js');
+const { runPromptThroughProvider, resolveProviderAndModel, resolveEffectiveModel, pickConfigCorrectedModel, normalizeResponseSchema, coerceResponseToSchema, isSchemaTypeCategory, buildRequestCapabilities, assertVisionRunUsedImages } = await import('./promptRunner.js');
 
 const apiProvider = (extra = {}) => ({
   id: 'mock-api', type: 'api', defaultModel: 'm-default', ...extra,
@@ -110,6 +110,28 @@ describe('promptRunner — happy paths', () => {
     expect(out).toEqual({ text: 'hello world', runId: 'run-xyz', model: 'm-default', provider: cliProvider() });
     expect(runner.executeCliRun).toHaveBeenCalledTimes(1);
     expect(runner.executeApiRun).not.toHaveBeenCalled();
+  });
+
+  it('forwards images through the ordinary Codex CLI lifecycle and rejects unsupported CLIs', async () => {
+    const codex = cliProvider({ command: 'codex' });
+    runner.executeCliRun.mockImplementation(async ({ screenshots, onComplete }) => {
+      expect(screenshots).toEqual(['/tmp/example.png']);
+      onComplete({ success: true });
+    });
+    const output = await runPromptThroughProvider({
+      provider: codex,
+      prompt: 'Inspect the image.',
+      source: 'test',
+      screenshots: ['/tmp/example.png'],
+      allowFallback: false,
+    });
+    expect(assertVisionRunUsedImages(output, codex)).toBe(codex);
+    await expect(runPromptThroughProvider({
+      provider: cliProvider({ command: 'opencode' }),
+      prompt: 'Inspect the image.',
+      source: 'test',
+      screenshots: ['/tmp/example.png'],
+    })).rejects.toMatchObject({ code: 'VISION_PROVIDER_UNSUPPORTED' });
   });
 
   it('routes API providers through executeApiRun, accumulates text, resolves { text, runId, model }', async () => {

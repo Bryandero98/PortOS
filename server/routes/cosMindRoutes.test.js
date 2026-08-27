@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   inspectPersistentMindRuntime: vi.fn(),
   readPersistentMindVisibility: vi.fn(),
   readPersistentMindTaskCatalog: vi.fn(),
+  resolveImageCapability: vi.fn(),
 }));
 
 vi.mock('../services/agentRunEventLog.js', () => ({
@@ -50,6 +51,9 @@ vi.mock('../services/persistentMindAdapter.js', () => ({
     recommendation: provider?.type === 'api' ? 'recommended' : 'supported',
     detail: 'Structured provider harness.',
   }),
+}));
+vi.mock('../services/persistentMindImageCapability.js', () => ({
+  resolvePersistentMindImageCapability: (...args) => mocks.resolveImageCapability(...args),
 }));
 vi.mock('../services/persistentMindTaskCapability.js', () => ({
   readPersistentMindTaskCatalog: mocks.readPersistentMindTaskCatalog,
@@ -102,6 +106,7 @@ describe('persistent mind routes', () => {
       persistentMindPrompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
     } });
     mocks.getProviderById.mockResolvedValue({ id: 'demo', type: 'api' });
+    mocks.resolveImageCapability.mockResolvedValue({ status: 'unknown', reason: 'No authoritative metadata.', settingsPath: '/settings?tab=ai-providers' });
     mocks.readPersistentMindMemories.mockResolvedValue([{ id: 'memory-1', content: 'A durable fact', sourceAgentId: 'cos-persistent-mind' }]);
     mocks.readPersistentMindRollups.mockResolvedValue([]);
     mocks.preparePersistentMindContext.mockResolvedValue({ text: '# Context', chars: 9, approximateTokens: 3, summaryState: 'empty' });
@@ -161,6 +166,7 @@ describe('persistent mind routes', () => {
       profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
       capabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false },
       harness: { type: 'api', recommendation: 'recommended' },
+      imageCapability: { status: 'unknown' },
       autonomyMode: 'execute',
     });
     expect(res.body.profile).not.toHaveProperty('credential');

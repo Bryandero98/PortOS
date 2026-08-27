@@ -256,7 +256,7 @@ const describeSpawnFailure = (spawnError, command) =>
  * `.cmd`/`.bat` spawn under `shell:false` fails outright post-CVE-2024-27980,
  * and why the `cmd.exe` wrapper avoids DEP0190's unescaped-join hazard).
  */
-export async function executeCliRun({ runId, provider, prompt, workspacePath, onData, onComplete, timeout }) {
+export async function executeCliRun({ runId, provider, prompt, workspacePath, screenshots = [], onData, onComplete, timeout }) {
   const toolkit = requireToolkit();
 
   const runsPath = join(runnerConfig.dataDir, 'runs');
@@ -293,8 +293,19 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   });
   if (failure) return;
 
+  const prepareVision = screenshots.length > 0 ? await import('./visionCli.js') : null;
+  const vision = prepareVision
+    ? await prepareVision.prepareCliVisionRun({
+        provider,
+        imagePaths: screenshots,
+        prompt,
+        model: provider.defaultModel || null,
+        effort: provider.effort || null,
+      })
+    : null;
+  const cleanupVisionFiles = vision?.cleanup || (() => Promise.resolve());
   // Build provider-specific args for prompt delivery
-  const builtArgs = buildCliArgs(provider);
+  const builtArgs = vision?.invocation.args || buildCliArgs(provider);
   // Rewrite the argv for prompt delivery and learn whether to still write stdin:
   //   - Antigravity (`agy`): prompt spliced in as the --print VALUE (agy doesn't
   //     read stdin) → useStdin=false.
@@ -302,8 +313,11 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   //     rewritten to a temp file on Windows → useStdin=false.
   //   - Every other provider: unchanged, prompt over stdin → useStdin=true.
   // cleanupPromptFile removes any temp file after the run (no-op otherwise).
-  const { args, useStdin, cleanup: cleanupPromptFile } = prepareCliPrompt(provider.command, builtArgs, prompt);
-  console.log(`🚀 Executing CLI: ${provider.command} (${prompt.length} chars via ${useStdin ? 'stdin' : 'argv'})`);
+  const promptInput = vision ? vision.invocation.stdin : prompt;
+  const { args, useStdin, cleanup: cleanupPromptFile } = vision
+    ? { args: builtArgs, useStdin: promptInput != null, cleanup: () => {} }
+    : prepareCliPrompt(provider.command, builtArgs, promptInput);
+  console.log(`🚀 Executing CLI: ${provider.command} (${prompt.length} chars via ${useStdin ? 'stdin' : 'argv'}${vision ? `, ${screenshots.length} images` : ''})`);
 
   // Ollama-backed CLIs (claude-ollama, opencode-ollama) reach the daemon
   // themselves, so the toolkit's per-request `num_ctx` never applies to them —
@@ -322,25 +336,27 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
   // shared daemon.
   const childEnv = buildCliChildEnv({
     provider,
-    cwd: effectiveCwd,
+    cwd: vision?.invocation.cwd || effectiveCwd,
     guard: true,
   });
 
   // See the executeCliRun docblock above for why this is a resolve+wrap, not
   // a shell:true. Resolved against `childEnv` (not bare process.env) so a
   // provider-configured PATH override is honored.
-  const resolvedCommand = resolveWindowsExecutable(provider.command, undefined, childEnv) || provider.command;
+  const runCommand = vision?.invocation.command || provider.command;
+  const runCwd = vision?.invocation.cwd || effectiveCwd;
+  const resolvedCommand = resolveWindowsExecutable(runCommand, undefined, childEnv) || runCommand;
   const { command: spawnCommand, args: spawnArgs } = prepareWindowsSafeSpawn(resolvedCommand, args);
 
   childProcess = spawn(spawnCommand, spawnArgs, {
-    cwd: effectiveCwd,
+    cwd: runCwd,
     env: childEnv
   });
 
   // Pass prompt via stdin to avoid OS argv limits. When grok is delivered via a
   // Windows temp file (useStdin === false) the prompt is already on disk, so
   // just close stdin.
-  if (useStdin) childProcess.stdin.write(prompt);
+  if (useStdin) childProcess.stdin.write(promptInput);
   childProcess.stdin.end();
 
   // Track active run via the toolkit's declared external-run registry so its
@@ -415,6 +431,7 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, on
       if (timeoutHandle) clearTimeout(timeoutHandle);
       toolkit.services.runner.unregisterExternalRun(runId);
       cleanupPromptFile();
+      await cleanupVisionFiles().catch((error) => console.error(`❌ Failed to clean CLI vision files: ${error.message}`));
       if (spawnError) console.error(`❌ Run ${runId} spawn error: ${spawnError.message}`);
 
       await writeFile(outputPath, output);
