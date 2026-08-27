@@ -6,6 +6,11 @@ import { join } from 'path';
 const mock = vi.hoisted(() => ({
   history: [],
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
+  memoryApi: {
+    getMemories: vi.fn(async () => ({ memories: [] })),
+    peekMemory: vi.fn(),
+    createMemory: vi.fn(async (input) => ({ id: 'memory-automatic-1', ...input })),
+  },
 }));
 
 const { CONTEXT_DIR } = await vi.hoisted(async () => {
@@ -24,9 +29,11 @@ vi.mock('./agentRunEventLog.js', () => ({
   appendMindEvent: (...args) => mock.appendMindEvent(...args),
   readPersistentMindHistory: vi.fn(async () => mock.history),
 }));
+vi.mock('./memoryBackend.js', () => mock.memoryApi);
 
 const {
   appendPersistentMindAnnotation,
+  createPersistentMindMemoryFromCandidate,
   preparePersistentMindContext,
   promotePersistentMindMemory,
   readPersistentMindRollups,
@@ -53,6 +60,9 @@ beforeEach(() => {
   mkdirSync(CONTEXT_DIR, { recursive: true });
   mock.history = [];
   mock.appendMindEvent.mockClear();
+  mock.memoryApi.getMemories.mockClear();
+  mock.memoryApi.peekMemory.mockClear();
+  mock.memoryApi.createMemory.mockClear();
 });
 
 afterAll(() => rmSync(CONTEXT_DIR, { recursive: true, force: true }));
@@ -222,6 +232,31 @@ describe('persistent mind rollups', () => {
 });
 
 describe('trajectory annotations and Brain promotion', () => {
+  it('automatically creates a mind-owned memory without approval', async () => {
+    const created = await createPersistentMindMemoryFromCandidate({
+      candidateId: 'turn-automatic:0',
+      turnId: 'turn-automatic',
+      content: 'Remember this automatically created fact.',
+      summary: 'Automatic fact',
+      type: 'fact',
+      category: 'other',
+      tags: ['durable', 'durable'],
+      memoryApi: mock.memoryApi,
+    });
+
+    expect(created).toMatchObject({ success: true, duplicate: false, memory: { id: 'memory-automatic-1', status: 'active' } });
+    expect(mock.memoryApi.createMemory).toHaveBeenCalledWith({
+      content: 'Remember this automatically created fact.',
+      summary: 'Automatic fact',
+      type: 'fact',
+      category: 'other',
+      tags: ['durable'],
+      sourceTaskId: 'turn-automatic',
+      sourceAgentId: 'cos-persistent-mind',
+      status: 'active',
+    });
+  });
+
   it('keeps comments attributable to their turn and target event', async () => {
     await expect(appendPersistentMindAnnotation({
       id: 'annotation-1',

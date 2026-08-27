@@ -22,6 +22,8 @@ export const PERSISTENT_MIND_EVENT_KINDS = Object.freeze([
   'mind.thought',
   'mind.reply',
   'mind.memory.candidate',
+  'mind.memory.created',
+  'mind.memory.failed',
   'mind.capability.request',
   'mind.capability.result',
   'mind.summary',

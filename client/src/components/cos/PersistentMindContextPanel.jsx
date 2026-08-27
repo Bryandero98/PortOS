@@ -71,7 +71,7 @@ export default function PersistentMindContextPanel() {
           {[
             ['1 · Observe', 'Messages, annotations, and scheduled self-wakes enter one FIFO stream.'],
             ['2 · Assemble', 'Identity, instructions, curated memories, rollups, and recent events fill a bounded context.'],
-            ['3 · Think', 'The exact pinned provider returns a visible working note, reply, memory proposals, and optional follow-up.'],
+            ['3 · Think', 'The exact pinned provider returns a visible working note, reply, durable memories, and optional follow-up.'],
             ['4 · Persist', 'The append-only trajectory becomes the source for chat, inspection, replay, and later context.'],
           ].map(([title, body]) => (
             <div key={title} className="rounded border border-port-border bg-port-bg/40 p-3">
@@ -113,7 +113,7 @@ export default function PersistentMindContextPanel() {
       <section className="rounded border border-port-border bg-port-card p-4" aria-labelledby="mind-memory-heading">
         <div>
           <h3 id="mind-memory-heading" className="flex items-center gap-2 text-sm font-semibold text-port-text"><Database size={16} aria-hidden="true" /> Curated memories</h3>
-          <p className="mt-1 text-xs text-port-text-muted">Only memories explicitly promoted or added here enter the mind context. Model proposals stay in the conversation until you promote them.</p>
+          <p className="mt-1 text-xs text-port-text-muted">Memories created by the persistent mind and memories added here enter its bounded context automatically. You can edit them here at any time.</p>
         </div>
         <MemoryCreator onCreated={load} />
         <div className="mt-3 space-y-2">

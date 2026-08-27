@@ -38,6 +38,8 @@ const EVENT_LABELS = {
   'mind.thought': 'Working note',
   'mind.reply': 'Chief of Staff',
   'mind.memory.candidate': 'Memory proposal',
+  'mind.memory.created': 'Memory created',
+  'mind.memory.failed': 'Memory save failed',
   'mind.capability.request': 'Action request',
   'mind.capability.result': 'Action outcome',
   'mind.memory.promoted': 'Memory promoted',

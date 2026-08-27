@@ -17,7 +17,10 @@ import {
 import { PERSISTENT_MIND_ID } from '../lib/persistentMindTrajectory.js';
 import { parseLLMJSON } from '../lib/llmText.js';
 import { loadState } from './cosState.js';
-import { readPersistentMindMemories } from './persistentMindContext.js';
+import {
+  createPersistentMindMemoryFromCandidate,
+  readPersistentMindMemories,
+} from './persistentMindContext.js';
 import { normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { runPromptThroughProvider } from './promptRunner.js';
 import { stopRun } from './runner.js';
@@ -105,11 +108,11 @@ Return ONLY one JSON object with this shape:
 {
   "thinkingSummary": "A concise, user-visible working note explaining what you considered and why. Do not reveal hidden chain-of-thought.",
   "message": "The conversational reply. Required for a human message; optional for a self-directed wake.",
-  "memoryCandidates": [{ "content": "A durable fact worth proposing", "summary": "Short label", "type": "fact", "category": "other", "tags": ["optional"] }],
+  "memoryCandidates": [{ "content": "A durable fact worth remembering", "summary": "Short label", "type": "fact", "category": "other", "tags": ["optional"] }],
   "taskRequests": [{ "description": "Concise queue label", "prompt": "Complete instructions for the agent", "priority": "MEDIUM", "appId": "configured-app-id", "providerId": "configured-provider-id", "model": "configured-model-id-or-empty-for-default", "effort": "high", "prCompletion": "review-then-merge" }],
   "selfWake": { "reason": "Why another wake would be useful", "delayMinutes": 60 }
 }
-Use empty arrays when there is no durable memory candidate or task request, and null when no earlier follow-up is needed. Memory candidates are proposals only; a human decides whether to promote them. Typed CoS task creation is the only action capability in this lane and is available only when the capability section says ON. This lane still cannot mutate files directly, call arbitrary tools, contact people, or perform other external actions.`;
+Use empty arrays when there is no durable memory candidate or task request, and null when no earlier follow-up is needed. Memory candidates are durable memories to save automatically; only include information that is worth retaining. Typed CoS task creation is the only action capability in this lane and is available only when the capability section says ON. This lane still cannot mutate files directly, call arbitrary tools, contact people, or perform other external actions.`;
 }
 
 const summaryEventLines = (events) => (Array.isArray(events) ? events : []).map((event) => {
@@ -220,6 +223,13 @@ export function createPersistentMindTurnAdapter() {
         signal,
         recordCapabilityEvent,
       });
+      const memoryWrites = await Promise.allSettled(parsed.memoryCandidates.map((candidate, index) => (
+        createPersistentMindMemoryFromCandidate({
+          ...candidate,
+          candidateId: `${turnId}:${index}`,
+          turnId,
+        })
+      )));
       const events = [];
       if (parsed.thinkingSummary) {
         events.push({
@@ -235,11 +245,28 @@ export function createPersistentMindTurnAdapter() {
           data: { displayText: message, replyToMessageId: wake?.message?.id || null },
         });
       }
-      parsed.memoryCandidates.forEach((candidate, index) => events.push({
-        kind: 'mind.memory.candidate',
-        id: `memory-candidate:${turnId}:${index}`,
-        data: { ...candidate, displayText: candidate.content },
-      }));
+      memoryWrites.forEach((result, index) => {
+        const candidate = parsed.memoryCandidates[index];
+        if (result.status === 'fulfilled') {
+          events.push({
+            kind: 'mind.memory.created',
+            id: `memory-created:${turnId}:${index}`,
+            data: {
+              ...candidate,
+              memoryId: result.value.memory.id,
+              duplicate: result.value.duplicate,
+              displayText: candidate.content,
+            },
+          });
+        } else {
+          console.error(`❌ Persistent mind memory write failed for turn ${turnId}: ${result.reason?.message || 'unknown error'}`);
+          events.push({
+            kind: 'mind.memory.failed',
+            id: `memory-failed:${turnId}:${index}`,
+            data: { displayText: 'The persistent mind could not save this memory automatically.' },
+          });
+        }
+      });
       return {
         output: result.text,
         events,
