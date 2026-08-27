@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   resumePersistentMind: vi.fn(),
   stopPersistentMind: vi.fn(),
   inspectPersistentMindRuntime: vi.fn(),
+  readPersistentMindVisibility: vi.fn(),
   readPersistentMindTaskCatalog: vi.fn(),
 }));
 
@@ -61,6 +62,9 @@ vi.mock('../services/persistentMindSupervisor.js', () => ({
 }));
 vi.mock('../services/persistentMindRuntime.js', () => ({
   inspectPersistentMindRuntime: mocks.inspectPersistentMindRuntime,
+}));
+vi.mock('../services/persistentMindVisibility.js', () => ({
+  readPersistentMindVisibility: mocks.readPersistentMindVisibility,
 }));
 
 import cosMindRoutes from './cosMindRoutes.js';
@@ -116,6 +120,14 @@ describe('persistent mind routes', () => {
       },
       context: { chars: 9, maxChars: 32000, approximateTokens: 3, summaryState: 'empty', memoryCount: 1 },
       system: { memory: { total: 100, used: 40, free: 60, usagePercent: 40 } },
+    });
+    mocks.readPersistentMindVisibility.mockResolvedValue({
+      schemaVersion: 1,
+      capturedAt: '2026-08-27T12:00:00.000Z',
+      freshness: { state: 'fresh', ageMs: 0, ttlMs: 30_000 },
+      readiness: 'degraded',
+      truncated: false,
+      workspaces: [{ appId: 'demo-app', appName: 'Demo App', readiness: 'degraded', preflight: { warnings: [] } }],
     });
     mocks.readPersistentMindTaskCatalog.mockResolvedValue({
       apps: [{ id: 'demo-app', name: 'Demo App', planOnly: true }],
@@ -204,6 +216,23 @@ describe('persistent mind routes', () => {
       provider: expect.objectContaining({ id: 'ollama' }),
     }));
     expect(mocks.getProviderById).toHaveBeenCalledWith('ollama');
+  });
+
+  it('serves the shared environment visibility projection and accepts an explicit refresh', async () => {
+    const res = await get('/mind/visibility?refresh=true');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      schemaVersion: 1,
+      readiness: 'degraded',
+      freshness: { state: 'fresh' },
+      workspaces: [{ appId: 'demo-app', readiness: 'degraded' }],
+    });
+    expect(mocks.readPersistentMindVisibility).toHaveBeenCalledWith(expect.objectContaining({
+      force: true,
+      state: expect.objectContaining({ status: 'idle' }),
+      profile: expect.objectContaining({ providerId: 'demo' }),
+      provider: expect.objectContaining({ id: 'demo' }),
+    }));
   });
 
   it('creates and edits only validated persistent-mind memories', async () => {

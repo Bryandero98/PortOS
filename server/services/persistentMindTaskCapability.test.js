@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   getAppWorkTracker: vi.fn(),
   resolveAppWorkTracker: vi.fn(),
   getProviderPrerequisiteReadinessMap: vi.fn(),
+  workspacePreflight: vi.fn(),
+  assessWorkspaceReadiness: vi.fn(),
 }));
 
 vi.mock('./apps.js', () => ({
@@ -30,6 +32,10 @@ vi.mock('./providerPrerequisites.js', () => ({
 }));
 vi.mock('../lib/workTracker.js', () => ({
   resolveAppWorkTracker: (...args) => mocks.resolveAppWorkTracker(...args),
+}));
+vi.mock('./persistentMindWorkspacePreflight.js', () => ({
+  readPersistentMindWorkspacePreflight: (...args) => mocks.workspacePreflight(...args),
+  assessPersistentMindWorkspaceReadiness: (...args) => mocks.assessWorkspaceReadiness(...args),
 }));
 
 const {
@@ -66,6 +72,13 @@ beforeEach(() => {
   mocks.getProviderPrerequisiteReadinessMap.mockImplementation((providers) => Object.fromEntries(
     providers.map((provider) => [provider.id, { status: 'ready', reasonCodes: [] }]),
   ));
+  mocks.workspacePreflight.mockResolvedValue({ readiness: 'ready', warnings: [] });
+  mocks.assessWorkspaceReadiness.mockImplementation((preflight, requiredValidation) => ({
+    readiness: preflight.readiness,
+    requiredValidation: requiredValidation || [],
+    blockers: [],
+    warnings: preflight.warnings,
+  }));
 });
 
 describe('persistent mind CoS-task capability', () => {
@@ -167,6 +180,25 @@ describe('persistent mind CoS-task capability', () => {
       simplify: true, approvalRequired: false,
     }), 'internal');
     expect(recordCapabilityEvent.mock.calls.map(([event]) => event.kind)).toEqual(['request', 'result']);
+  });
+
+  it('blocks only the validation checks a task explicitly requires', async () => {
+    mocks.workspacePreflight.mockResolvedValue({ readiness: 'degraded', warnings: [] });
+    mocks.assessWorkspaceReadiness.mockReturnValue({
+      readiness: 'blocked',
+      requiredValidation: ['dependencies'],
+      blockers: [{ check: 'dependencies', status: 'unavailable', message: 'Dependencies are absent.' }],
+      warnings: [],
+    });
+
+    const [result] = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest({ requiredValidation: ['dependencies'] })],
+      turnId: 'turn-required-validation',
+      wake: { kind: 'message', message: { id: 'message-required-validation' } },
+    });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('Dependencies are absent') });
+    expect(mocks.addTask).not.toHaveBeenCalled();
   });
 
   it('queues plan-and-file mode only for an app with an issue tracker', async () => {

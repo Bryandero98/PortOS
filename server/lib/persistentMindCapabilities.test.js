@@ -40,6 +40,8 @@ describe('persistent mind capabilities', () => {
       prCompletion: 'review-then-merge',
     };
     expect(persistentMindTaskRequestSchema.safeParse(task).success).toBe(true);
+    expect(persistentMindTaskRequestSchema.safeParse({ ...task, requiredValidation: ['dependencies', 'reviewers'] }).success).toBe(true);
+    expect(persistentMindTaskRequestSchema.safeParse({ ...task, requiredValidation: ['shell'] }).success).toBe(false);
     expect(persistentMindTaskRequestSchema.safeParse({ ...task, prCompletion: 'merge-now' }).success).toBe(false);
     expect(persistentMindTaskRequestSchema.safeParse({ ...task, priority: 'URGENT' }).success).toBe(false);
   });

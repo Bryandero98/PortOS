@@ -47,6 +47,17 @@ export const PERSISTENT_MIND_TASK_LIMITS = Object.freeze({
   modelChars: 200,
 });
 
+// These are the only workspace facts a task may promote from advisory
+// visibility into a queueing gate. An omitted or empty list keeps the
+// preflight informative without blocking docs-only/read-only work.
+export const PERSISTENT_MIND_VALIDATION_CHECKS = Object.freeze([
+  'dependencies',
+  'engines',
+  'submodules',
+  'forge',
+  'reviewers',
+]);
+
 export const persistentMindCapabilitiesSchema = z.object({
   schemaVersion: z.literal(PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION).optional(),
   createTasks: z.boolean().optional(),
@@ -71,6 +82,10 @@ export const persistentMindTaskRequestSchema = z.object({
   // and could queue it twice after an install upgrades.
   planOnly: z.boolean().optional(),
   prCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
+  // Advisory by default. A task declares only the checks its acceptance
+  // criteria require; this lets docs-only work proceed when code dependencies
+  // are absent while still failing closed for required validation.
+  requiredValidation: z.array(z.enum(PERSISTENT_MIND_VALIDATION_CHECKS)).max(PERSISTENT_MIND_VALIDATION_CHECKS.length).optional(),
 }).strict().superRefine((value, context) => {
   if (!value.planOnly && !value.prCompletion) {
     context.addIssue({

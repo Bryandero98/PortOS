@@ -29,6 +29,10 @@ import {
   executePersistentMindTaskRequests,
   readPersistentMindTaskCatalog,
 } from './persistentMindTaskCapability.js';
+import {
+  buildPersistentMindVisibilityPrompt,
+  readPersistentMindVisibility,
+} from './persistentMindVisibility.js';
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
@@ -95,8 +99,10 @@ const currentWakeText = (wake) => {
   return `This is a self-directed wake. Continue one worthwhile thread from the trajectory.\nreason=${wake?.reason || 'scheduled reflection'}`;
 };
 
-export function buildPersistentMindTurnPrompt({ context, wake, taskCapabilityPrompt }) {
+export function buildPersistentMindTurnPrompt({ context, wake, taskCapabilityPrompt, visibilityPrompt = '# Persistent Mind environment visibility\nWorkspace and runtime visibility is unknown.' }) {
   return `${context.text}
+
+${visibilityPrompt}
 
 # Current wake
 ${currentWakeText(wake)}
@@ -109,7 +115,7 @@ Return ONLY one JSON object with this shape:
   "thinkingSummary": "A concise, user-visible working note explaining what you considered and why. Do not reveal hidden chain-of-thought.",
   "message": "The conversational reply. Required for a human message; optional for a self-directed wake.",
   "memoryCandidates": [{ "content": "A durable fact worth remembering", "summary": "Short label", "type": "fact", "category": "other", "tags": ["optional"] }],
-  "taskRequests": [{ "description": "Concise queue label", "prompt": "Complete instructions for the agent", "priority": "MEDIUM", "appId": "configured-app-id", "providerId": "configured-provider-id", "model": "configured-model-id-or-empty-for-default", "effort": "high", "planOnly": false, "prCompletion": "review-then-merge" }],
+  "taskRequests": [{ "description": "Concise queue label", "prompt": "Complete instructions for the agent", "priority": "MEDIUM", "appId": "configured-app-id", "providerId": "configured-provider-id", "model": "configured-model-id-or-empty-for-default", "effort": "high", "planOnly": false, "prCompletion": "review-then-merge", "requiredValidation": ["dependencies"] }],
   "selfWake": { "reason": "Why another wake would be useful", "delayMinutes": 60 }
 }
 Use empty arrays when there is no durable memory candidate or task request, and null when no earlier follow-up is needed. Memory candidates are durable memories to save automatically; only include information that is worth retaining. Typed CoS task creation is the only action capability in this lane and is available only when the capability section says ON. This lane still cannot mutate files directly, call arbitrary tools, contact people, or perform other external actions.`;
@@ -197,18 +203,26 @@ export function createPersistentMindTurnAdapter() {
     async run({ turnId, wake, provider, model, effort, signal, context, heartbeat, recordCapabilityEvent }) {
       const root = await loadState();
       const taskAccess = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+      const prompt = normalizePersistentMindPrompt(root.config?.persistentMindPrompt);
+      const visibility = await readPersistentMindVisibility({
+        root,
+        profile: { providerId: provider?.id || null, model: model || null, effort: effort || null },
+        prompt,
+        provider,
+      });
       const taskCatalog = taskAccess.createTasks ? await readPersistentMindTaskCatalog() : undefined;
       const taskCapabilityPrompt = buildPersistentMindTaskCapabilityPrompt({
         enabled: taskAccess.createTasks,
         catalog: taskCatalog,
       });
+      const visibilityPrompt = buildPersistentMindVisibilityPrompt(visibility);
       const result = await runPinnedPrompt({
         provider,
         model,
         effort,
         signal,
         heartbeat,
-        prompt: buildPersistentMindTurnPrompt({ context, wake, taskCapabilityPrompt }),
+        prompt: buildPersistentMindTurnPrompt({ context, wake, taskCapabilityPrompt, visibilityPrompt }),
         responseSchema: persistentMindResponseSchema,
       });
       const parsed = persistentMindResponseSchema.parse(parseLLMJSON(result.text));

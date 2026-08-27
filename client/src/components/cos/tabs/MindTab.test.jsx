@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   updateCosConfig: vi.fn(),
   getPersistentMindContext: vi.fn(),
   getPersistentMindRuntime: vi.fn(),
+  getPersistentMindVisibility: vi.fn(),
   createPersistentMindMemory: vi.fn(),
   updatePersistentMindMemory: vi.fn(),
 }));
@@ -122,6 +123,20 @@ describe('MindTab', () => {
         process: { rss: 256 * 1024 ** 2, heapUsed: 64 * 1024 ** 2, heapTotal: 128 * 1024 ** 2 },
         cpu: { cores: 8, loadAvg1m: 1.25 },
       },
+    });
+    api.getPersistentMindVisibility.mockResolvedValue({
+      schemaVersion: 1,
+      capturedAt: '2026-08-27T12:00:00.000Z',
+      freshness: { state: 'fresh', ageMs: 0, ttlMs: 30_000 },
+      readiness: 'ready',
+      truncated: false,
+      workspaces: [{ appId: 'demo-app', appName: 'Demo App', readiness: 'ready', preflight: {
+        workspaces: [{ dependencies: { status: 'installed' }, engines: { node: { status: 'compatible' }, packageManager: null } }],
+        submodules: { status: 'not-configured' },
+        forge: { status: 'ready' },
+        reviewers: { required: { status: 'ready' } },
+        warnings: [],
+      } }],
     });
     api.createPersistentMindMemory.mockResolvedValue({ success: true });
     api.updatePersistentMindMemory.mockResolvedValue({ success: true });

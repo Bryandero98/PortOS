@@ -23,6 +23,10 @@ import { loadState } from './cosState.js';
 import { addTask, getTaskById } from './cosTaskStore.js';
 import { getProviderPrerequisiteReadinessMap } from './providerPrerequisites.js';
 import { listProviders } from './providers.js';
+import {
+  assessPersistentMindWorkspaceReadiness,
+  readPersistentMindWorkspacePreflight,
+} from './persistentMindWorkspacePreflight.js';
 
 const MAX_CATALOG_APPS = 50;
 const MAX_CATALOG_PROVIDERS = 50;
@@ -111,7 +115,10 @@ const appCatalogEntry = async (app) => {
 };
 
 export async function readPersistentMindTaskCatalog() {
-  const [apps, providers] = await Promise.all([getActiveApps(), listProviders()]);
+  const [apps, providers] = await Promise.all([
+    Array.isArray(suppliedApps) ? suppliedApps : getActiveApps(),
+    Array.isArray(suppliedProviders) ? suppliedProviders : listProviders(),
+  ]);
   const runnableApps = apps
     .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
       && app.id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars)
@@ -188,6 +195,10 @@ for an app whose catalog entry has 'planOnly: true'; that mode investigates the
 repository and files one GitHub/GitLab issue without editing code or opening a
 PR. In plan-only mode, 'prCompletion' may be omitted. Otherwise set
 'planOnly' to false and choose one PR completion policy.
+Use 'requiredValidation' only when the task's acceptance criteria require those
+workspace checks before queueing. Supported checks are 'dependencies',
+'engines', 'submodules', 'forge', and 'reviewers'. An omitted or empty list
+keeps absent dependencies advisory, which is appropriate for docs-only work.
 
 Configured choices (ids are authoritative; do not invent ids):
 ${JSON.stringify(promptCatalog)}
@@ -241,7 +252,16 @@ const validateChoice = async (request, apps, providers) => {
       return { error: `Plan-and-file tasks require a GitHub or GitLab issue tracker for app '${request.appId}'` };
     }
   }
-  return { app, provider };
+  const preflight = await readPersistentMindWorkspacePreflight(app);
+  const readiness = assessPersistentMindWorkspaceReadiness(preflight, request.requiredValidation);
+  if (readiness.blockers.length) {
+    return {
+      error: `Workspace preflight blocked task '${request.description}': ${readiness.blockers.map((blocker) => blocker.message).join(' ')}`,
+      preflight,
+      readiness,
+    };
+  }
+  return { app, provider, preflight, readiness };
 };
 
 async function queueOneTask({ request, taskId, apps }) {
@@ -282,6 +302,7 @@ const eventDataFor = (request, outcome, displayText) => ({
   effort: request.effort || null,
   planOnly: request.planOnly === true,
   prCompletion: request.prCompletion || null,
+  requiredValidation: request.requiredValidation || [],
   ...(outcome ? {
     success: outcome.success === true,
     duplicate: outcome.duplicate === true,
