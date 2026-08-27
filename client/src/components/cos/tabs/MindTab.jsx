@@ -315,6 +315,11 @@ export default function MindTab() {
     setMessageText(next);
   };
 
+  const handleMessageKeyDown = (event) => {
+    if (event.key !== 'Enter' || event.altKey || event.nativeEvent.isComposing) return;
+    void submitMessage(event);
+  };
+
   const changeAnnotationText = (next) => {
     if (annotationError) {
       annotationDraftIdRef.current = null;
@@ -525,7 +530,7 @@ export default function MindTab() {
             {submitError && <p role="alert" className="mt-2 text-sm text-port-error">{submitError} — Retry uses the same id, so it will not duplicate the input.</p>}
             <div className="flex items-end gap-2 rounded-[1.35rem] border border-port-border bg-port-bg p-1.5 pl-3 focus-within:border-port-accent/70 focus-within:ring-1 focus-within:ring-port-accent/30">
               <label htmlFor="mind-input-text" className="sr-only">Message</label>
-              <textarea id="mind-input-text" value={messageText} onChange={(event) => changeMessageText(event.target.value)} maxLength={8000} rows={1} className="min-h-[36px] max-h-32 flex-1 resize-y bg-transparent py-2 text-sm leading-5 text-port-text outline-none placeholder:text-port-text-muted" placeholder="Message Persistent Mind" />
+              <textarea id="mind-input-text" value={messageText} onChange={(event) => changeMessageText(event.target.value)} onKeyDown={handleMessageKeyDown} maxLength={8000} rows={1} className="min-h-[36px] max-h-32 flex-1 resize-y bg-transparent py-2 text-sm leading-5 text-port-text outline-none placeholder:text-port-text-muted" placeholder="Message Persistent Mind" />
               <button type="submit" disabled={!messageText.trim() || submitting} aria-label={submitting ? 'Sending message' : submitError ? 'Retry' : 'Send message'} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-port-accent text-white transition-colors hover:bg-port-accent/85 disabled:cursor-not-allowed disabled:bg-port-border disabled:text-port-text-muted">
                 {submitting ? <RefreshCw size={17} className="animate-spin" aria-hidden="true" /> : <ArrowUp size={19} strokeWidth={2.5} aria-hidden="true" />}
               </button>

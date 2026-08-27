@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 
@@ -258,6 +258,28 @@ describe('MindTab', () => {
     await waitFor(() => expect(api.sendPersistentMindMessage).toHaveBeenCalledTimes(2));
     const firstId = api.sendPersistentMindMessage.mock.calls[0][0].id;
     expect(api.sendPersistentMindMessage.mock.calls[1][0].id).toBe(firstId);
+  });
+
+  it('sends on Enter while preserving a newline for Option+Enter', async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByText('Review the next bounded slice.');
+    const message = screen.getByLabelText('Message');
+
+    await user.type(message, 'First line');
+    const optionEnter = createEvent.keyDown(message, { key: 'Enter', altKey: true });
+    fireEvent(message, optionEnter);
+    expect(optionEnter.defaultPrevented).toBe(false);
+    expect(api.sendPersistentMindMessage).not.toHaveBeenCalled();
+
+    await user.clear(message);
+    await user.type(message, 'First line\nSecond line');
+    expect(message).toHaveValue('First line\nSecond line');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(api.sendPersistentMindMessage).toHaveBeenCalledWith(
+      { id: expect.stringMatching(/^message-/), text: 'First line\nSecond line' },
+      { silent: true },
+    ));
   });
 
   it('mints a new id when failed text is edited into a different submission', async () => {
