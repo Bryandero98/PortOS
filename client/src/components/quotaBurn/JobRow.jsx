@@ -153,6 +153,7 @@ export default function JobRow({
                 cancelText="Cancel"
                 tone="warning"
                 ariaLabel={`Confirm running step ${index + 1} now`}
+                largeTouchTargets
                 onConfirm={() => { setRunArmed(false); onRun(job); }}
                 onCancel={() => setRunArmed(false)}
               />
@@ -168,6 +169,7 @@ export default function JobRow({
                 confirmIcon={Trash2}
                 cancelText="Cancel"
                 ariaLabel={`Confirm removing step ${index + 1}`}
+                largeTouchTargets
                 onConfirm={() => onRemove(index)}
                 onCancel={() => setArmed(false)}
               />

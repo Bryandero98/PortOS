@@ -214,6 +214,7 @@ describe('QuotaBurn page', () => {
   });
 
   it('keeps step actions touch-sized and separates delete from run', async () => {
+    const user = userEvent.setup();
     renderPage('/devtools/quota-burn/grok');
 
     const actions = await Promise.all([
@@ -229,6 +230,19 @@ describe('QuotaBurn page', () => {
     expect(screen.getByLabelText('Remove step 1').parentElement).toHaveClass(
       'ml-2', 'border-l', 'border-port-border/50', 'pl-2',
     );
+
+    await user.click(screen.getByLabelText('Run step 1 now'));
+    const runConfirm = screen.getByRole('group', { name: 'Confirm running step 1 now' });
+    Array.from(runConfirm.querySelectorAll('button')).forEach((action) => {
+      expect(action).toHaveClass('min-h-[44px]', 'min-w-[44px]');
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByLabelText('Remove step 1'));
+    const removeConfirm = screen.getByRole('group', { name: 'Confirm removing step 1' });
+    Array.from(removeConfirm.querySelectorAll('button')).forEach((action) => {
+      expect(action).toHaveClass('min-h-[44px]', 'min-w-[44px]');
+    });
   });
 
   it('force-runs a single job from its row only after the arm click is confirmed', async () => {
@@ -1031,4 +1045,3 @@ describe('QuotaBurn preset addition filtering', () => {
     expect(await screen.findByText(/Agent prompt · claude-sonnet-4 · high/)).toBeInTheDocument();
   });
 });
-
