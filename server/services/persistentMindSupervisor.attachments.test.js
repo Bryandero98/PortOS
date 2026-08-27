@@ -195,6 +195,18 @@ describe('persistent mind image attachment lifecycle', () => {
     expect(mocks.appendMindEvent).toHaveBeenCalledTimes(2);
   });
 
+  it('removes the pending marker when image persistence rejects', async () => {
+    mocks.saveImageUpload.mockRejectedValue(new Error('Invalid image file'));
+
+    await expect(supervisor.createPersistentMindAttachment({ filename: 'diagram.png', data: 'encoded-image' }))
+      .rejects.toThrow('Invalid image file');
+
+    const markerPath = mocks.writeFile.mock.calls[0][0];
+    expect(markerPath).toMatch(/\.mind-pending-[A-Za-z0-9_-]+$/);
+    expect(mocks.unlink).toHaveBeenCalledWith(markerPath);
+    expect(mocks.root.persistentMind.pendingAttachments).toEqual([]);
+  });
+
   it('deletes only unclaimed files and leaves claimed historical assets alone', async () => {
     mocks.root.persistentMind.pendingAttachments = [uploadRecord()];
     await expect(supervisor.deletePersistentMindAttachment('attachment-1')).resolves.toEqual({

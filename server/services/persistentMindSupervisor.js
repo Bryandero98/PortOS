@@ -241,6 +241,16 @@ const removeUploadAfterStateFailure = async (filePath, attachmentId) => unlink(f
   },
 );
 
+// A validation/write rejection happens before `saveImageUpload` can return its
+// stored path. Remove every file with this upload's generated prefix as well as
+// the marker, so a partial write cannot survive without the marker-based crash
+// recovery path.
+const removeRejectedUpload = async (attachmentId) => {
+  const entries = await screenshotEntries();
+  if (entries) await removePendingAttachmentFiles(attachmentId, entries);
+  await removePendingAttachmentMarker(attachmentId);
+};
+
 const resolveMessageAttachments = async (mind, attachmentIds, messageId) => {
   const byId = new Map(mind.pendingAttachments.map((attachment) => [attachment.attachmentId, attachment]));
   const attachments = [];
@@ -321,7 +331,13 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
   const saved = await saveImageUpload(PATHS.screenshots, {
     filename: `mind-${attachmentId}-${originalName}`,
     data,
-  }, { maxBytes: PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_BYTES });
+  }, { maxBytes: PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_BYTES }).then(
+    (value) => value,
+    async (error) => {
+      await removeRejectedUpload(attachmentId);
+      throw error;
+    },
+  );
   const uploadedAt = nowIso();
   const attachment = normalizePersistentMindAttachment({
     attachmentId,
