@@ -11,18 +11,21 @@ describe('widgetRegistry', () => {
       expect(widget.id).toBeDefined();
       expect(widget.label).toBeDefined();
       expect(widget.Component).toBeDefined();
-      expect(widget.width).toBeDefined();
+      expect(Object.keys(widgetRegistry.WIDTH_TO_COLS)).toContain(widget.width);
       expect(widgetRegistry.WIDGETS_BY_ID[widget.id]).toBe(widget);
     }
   });
 
-  it('exports FALLBACK_LAYOUT with expected shape', () => {
+  it('exports FALLBACK_LAYOUT with expected shape and registered widgets', () => {
     expect(widgetRegistry.FALLBACK_LAYOUT).toEqual({
       id: '_fallback',
       name: 'Default (offline)',
       builtIn: true,
       widgets: ['apps', 'cos', 'upcoming-tasks', 'system-health'],
     });
+    for (const id of widgetRegistry.FALLBACK_LAYOUT.widgets) {
+      expect(widgetRegistry.WIDGETS_BY_ID[id]).toBeDefined();
+    }
   });
 
   it('exports grid conversion constants', () => {
