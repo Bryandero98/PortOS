@@ -77,6 +77,26 @@ describe('peerHttpClient', () => {
       expect(sent).toEqual(['authorization']);
     });
 
+    it('preserves a Headers instance while dropping the overridden Basic credential', async () => {
+      await peerFetch('http://peer.example/x', {
+        headers: new Headers({ Authorization: 'Bearer t', 'X-Request-Id': 'request-1' }),
+      }, { auth: { password: 'pw' } });
+      const sent = Object.keys(calls[0].options.headers).filter((k) => k.toLowerCase() === 'authorization');
+      expect(sent).toEqual(['authorization']);
+      expect(calls[0].options.headers.authorization).toBe('Bearer t');
+      expect(calls[0].options.headers['x-request-id']).toBe('request-1');
+    });
+
+    it('preserves Map headers while dropping overridden injected headers', async () => {
+      await peerFetch('http://peer.example/x', {
+        headers: new Map([['x-portos-instance-id', 'explicit'], ['X-Request-Id', 'request-1']]),
+      });
+      const sent = Object.keys(calls[0].options.headers).filter((k) => k.toLowerCase() === 'x-portos-instance-id');
+      expect(sent).toEqual(['x-portos-instance-id']);
+      expect(calls[0].options.headers['x-portos-instance-id']).toBe('explicit');
+      expect(calls[0].options.headers['X-Request-Id']).toBe('request-1');
+    });
+
     it('omits the header entirely when this install has no identity yet', async () => {
       selfInstanceId = 'unknown';
       __resetSelfInstanceIdForTests();
