@@ -21,12 +21,13 @@ import { PORTOS_APP_ID } from '../../lib/appIdentity';
 import { safeReadJsonStorage, safeReadStorage, safeRemoveStorage, safeWriteJsonStorage } from '../../lib/safeStorage';
 
 const TASK_DESCRIPTION_DRAFT_KEY = 'portos-cos-task-description-draft';
+const INVALID_DRAFT = Symbol('invalid task description draft');
 
 const readTaskDescriptionDraft = (defaultApp) => {
   const raw = safeReadStorage(TASK_DESCRIPTION_DRAFT_KEY);
   if (raw === null) return { description: '', app: defaultApp };
-  const draft = safeReadJsonStorage(TASK_DESCRIPTION_DRAFT_KEY, undefined);
-  if (draft === undefined) return { description: raw, app: defaultApp };
+  const draft = safeReadJsonStorage(TASK_DESCRIPTION_DRAFT_KEY, INVALID_DRAFT);
+  if (draft === INVALID_DRAFT) return { description: raw, app: defaultApp };
   if (typeof draft === 'string') return { description: draft, app: defaultApp };
   if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return { description: '', app: defaultApp };
   return {
@@ -36,11 +37,12 @@ const readTaskDescriptionDraft = (defaultApp) => {
 };
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
+  const [initialDraft] = useState(() => readTaskDescriptionDraft(defaultApp));
   const [newTask, setNewTask] = useState(() => {
-    const draft = readTaskDescriptionDraft(defaultApp);
     return {
-      description: draft.description,
-      model: '', provider: '', effort: '', temperature: '', thinking: '', app: draft.app
+      description: initialDraft.description,
+      model: '', provider: '', effort: '', temperature: '', thinking: '',
+      app: apps?.some(app => app.id === initialDraft.app) ? initialDraft.app : defaultApp
     };
   });
   const [addToTop, setAddToTop] = useState(false);
@@ -107,6 +109,13 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       safeRemoveStorage(TASK_DESCRIPTION_DRAFT_KEY);
     }
   }, [newTask.app, newTask.description]);
+
+  useEffect(() => {
+    if (!initialDraft.app || !apps?.length || newTask.app === initialDraft.app) return;
+    if (apps.some(app => app.id === initialDraft.app)) {
+      setNewTask(task => ({ ...task, app: initialDraft.app }));
+    }
+  }, [apps, initialDraft.app, newTask.app]);
 
   useEffect(() => {
     if (!newTask.app || !apps?.length || apps.some(app => app.id === newTask.app)) return;

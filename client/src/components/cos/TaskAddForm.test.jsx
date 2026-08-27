@@ -105,6 +105,27 @@ describe('TaskAddForm responsive layout', () => {
     });
   });
 
+  it('does not submit a stale restored app while app options are unavailable', async () => {
+    const user = userEvent.setup();
+    localStorage.setItem('portos-cos-task-description-draft', JSON.stringify({
+      description: 'Use the current app safely',
+      app: 'stale-app',
+    }));
+    api.addCosTask.mockResolvedValue({ success: true });
+    render(<TaskAddForm providers={[]} apps={[]} defaultApp="current-app" onTaskAdded={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(api.addCosTask.mock.calls[0][0].app).toBe('current-app');
+  });
+
+  it('restores a plain-text draft from the previous storage format', async () => {
+    localStorage.setItem('portos-cos-task-description-draft', 'Legacy task draft');
+    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByPlaceholderText('Task description *')).toHaveValue('Legacy task draft'));
+  });
+
   it('sends OpenCode Ollama thinking, effort, and temperature overrides with the task', async () => {
     const user = userEvent.setup();
     api.addCosTask.mockResolvedValue({ success: true });
