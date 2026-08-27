@@ -1645,6 +1645,7 @@ export async function init() {
       setImmediate(() => dequeueNextTask());
       if (data.type === 'user' && data.task) setImmediate(() => tryImmediateSpawn(data.task));
     } else if (data.action === 'approved' || data.action === 'unblocked' || data.action === 'requeued') {
+      if (data.suppressDequeue) return;
       setImmediate(() => dequeueNextTask());
     } else if (data.task?.status === 'completed' && data.previousStatus !== 'completed') {
       // A finished investigation releases the task(s) its failure was blocking

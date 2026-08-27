@@ -2265,8 +2265,8 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     expect(fnIdx, 'refillPerpetualForCompletedAgent must exist').toBeGreaterThan(-1);
     const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 4600);
     expect(
-      /queueEligibleImprovementTasks\(\s*state\s*,\s*cosTaskData\s*,\s*\{\s*ignoreTaskId:\s*agent\?\.taskId\s*\}\s*\)/.test(fnSlice),
-      'refill must forward { ignoreTaskId: agent?.taskId } to queueEligibleImprovementTasks'
+      /queueEligibleImprovementTasks\(\s*state\s*,\s*cosTaskData\s*,\s*\{[\s\S]*?ignoreTaskId:\s*agent\?\.taskId[\s\S]*?\}\s*\)/.test(fnSlice),
+      'refill must forward ignoreTaskId: agent?.taskId to queueEligibleImprovementTasks'
     ).toBe(true);
   });
 
@@ -2319,7 +2319,7 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
       'on-demand engine must stamp metadata.onDemand: true before addTask'
     ).toBe(true);
     expect(
-      /addTask\(\s*task\s*,\s*'internal'\s*,\s*\{\s*raw:\s*true\s*,\s*ignoreTaskId\s*\}\s*\)/.test(engSlice),
+      /addTask\(\s*task\s*,\s*'internal'\s*,\s*\{[\s\S]*?raw:\s*true[\s\S]*?ignoreTaskId[\s\S]*?\}\s*\)/.test(engSlice),
       'on-demand engine must forward ignoreTaskId to addTask'
     ).toBe(true);
   });

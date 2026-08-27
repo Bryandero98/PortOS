@@ -632,7 +632,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
  */
 export async function updateTask(taskId, updates, taskType = 'user', { now = Date.now(), suppressDequeue = false } = {}) {
   const release = await preparePauseRelease(taskId, updates);
-  const result = await writeTaskUpdate(taskId, release ? { ...updates, metadata: release.metadata } : updates, taskType, { now });
+  const result = await writeTaskUpdate(taskId, release ? { ...updates, metadata: release.metadata } : updates, taskType, { now, suppressDequeue });
   if (release && !result?.error) {
     await retirePausedAgent(release.agentId, taskId, resolveTaskTargetBranch(result?.metadata));
   }
@@ -667,7 +667,7 @@ async function preparePauseRelease(taskId, updates) {
   return { agentId, metadata: { ...pointer, ...(updates.metadata || {}) } };
 }
 
-async function writeTaskUpdate(taskId, updates, taskType, { now }) {
+async function writeTaskUpdate(taskId, updates, taskType, { now, suppressDequeue = false }) {
   return withStateLock(async () => {
   const state = await loadState();
   const filePath = taskType === 'user'
