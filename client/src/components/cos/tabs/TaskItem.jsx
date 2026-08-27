@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
-import { filterSelectableModels } from '../../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel } from '../../../utils/providers';
 import { formatDurationMin, formatBytes } from '../../../utils/formatters';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
@@ -30,6 +30,7 @@ import Modal from '../../ui/Modal';
 import CollapsibleText from '../../ui/CollapsibleText';
 import { extractCosTaskType } from '../../../lib/cosTaskType';
 import InstancePicker from '../InstancePicker';
+import EffortSelect from '../EffortSelect';
 
 const statusIcons = {
   pending: <Clock size={16} aria-hidden="true" className="text-yellow-500" />,
@@ -59,6 +60,7 @@ const getTaskEditData = (task) => ({
   context: task.metadata?.context || '',
   model: task.metadata?.model || '',
   provider: task.metadata?.provider || '',
+  effort: task.metadata?.effort || '',
   // '' = "Any instance" (#4520) — no pin, the opportunistic default.
   targetInstanceId: task.metadata?.targetInstanceId || ''
 });
@@ -121,6 +123,7 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   const taskContext = task.metadata?.context || '';
   const taskModel = task.metadata?.model || '';
   const taskProvider = task.metadata?.provider || '';
+  const taskEffort = task.metadata?.effort || '';
   const [editData, setEditData] = useState(() => getTaskEditData(task));
   const [showBlockedModal, setShowBlockedModal] = useState(false);
   const [blockedReason, setBlockedReason] = useState('');
@@ -144,11 +147,11 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   // whenever it is safe to do so, but never overwrite an active edit.
   useEffect(() => {
     if (!editing) setEditData(getTaskEditData(task));
-  }, [editing, task.id, task.description, taskPrompt, taskContext, taskModel, taskProvider, task]);
+  }, [editing, task.id, task.description, taskPrompt, taskContext, taskModel, taskProvider, taskEffort, task]);
 
   // Get models for selected provider in edit mode
   const editProvider = providers?.find(p => p.id === editData.provider);
-  const editModels = filterSelectableModels(editProvider?.models);
+  const editModels = effortAwareModelOptions(editProvider, editData.model);
 
   // Calculate duration estimate for pending tasks
   // Uses P80 estimate when available for more realistic time predictions
@@ -262,6 +265,7 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
     editData.context !== (task.metadata?.context || '') ||
     editData.model !== (task.metadata?.model || '') ||
     editData.provider !== (task.metadata?.provider || '') ||
+    editData.effort !== (task.metadata?.effort || '') ||
     editData.targetInstanceId !== targetInstanceId;
 
   const handleCancelEdit = () => {
@@ -445,15 +449,15 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                 onChange={e => setEditData(d => ({ ...d, context: e.target.value }))}
                 className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm font-mono resize-y overflow-auto"
               />
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <select
                   aria-label="Provider"
                   value={editData.provider}
-                  onChange={e => setEditData(d => ({ ...d, provider: e.target.value, model: '' }))}
-                  className="w-36 px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
+                  onChange={e => setEditData(d => ({ ...d, provider: e.target.value, model: '', effort: '' }))}
+                  className="w-full sm:w-36 px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
                 >
                   <option value="">Auto</option>
-                  {providers?.filter(p => p.enabled).map(p => (
+                  {providers?.filter(p => p.enabled !== false || p.id === editData.provider).map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
@@ -461,7 +465,11 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                   <select
                     aria-label="Model"
                     value={editData.model}
-                    onChange={e => setEditData(d => ({ ...d, model: e.target.value }))}
+                    onChange={e => setEditData(d => ({
+                      ...d,
+                      model: e.target.value,
+                      effort: effortSurvivingModel(editProvider, e.target.value, d.effort)
+                    }))}
                     className="flex-1 px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
                   >
                     <option value="">Auto</option>
@@ -470,6 +478,13 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                     ))}
                   </select>
                 )}
+                <EffortSelect
+                  provider={editProvider}
+                  model={effectiveModelFor(editProvider, editData.model)}
+                  value={editData.effort}
+                  onChange={effort => setEditData(d => ({ ...d, effort }))}
+                  className="w-full sm:w-36 px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
+                />
               </div>
               {canPinInstance && (
                 <InstancePicker
@@ -531,8 +546,8 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                   className="text-sm text-gray-500 mt-1"
                 />
               )}
-              {(task.metadata?.model || task.metadata?.provider) && (
-                <div className="flex items-center gap-2 mt-1">
+              {(task.metadata?.model || task.metadata?.provider || task.metadata?.effort) && (
+                <div className="flex flex-wrap items-center gap-2 mt-1">
                   {task.metadata?.model && (
                     <span className="px-1.5 py-0.5 text-xs bg-port-accent-2/20 text-port-accent-2 rounded font-mono">
                       {task.metadata.model}
@@ -541,6 +556,11 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                   {task.metadata?.provider && (
                     <span className="px-1.5 py-0.5 text-xs bg-port-accent/20 text-port-accent rounded">
                       {task.metadata.provider}
+                    </span>
+                  )}
+                  {task.metadata?.effort && (
+                    <span className="px-1.5 py-0.5 text-xs bg-port-warning/20 text-port-warning rounded">
+                      {task.metadata.effort} effort
                     </span>
                   )}
                 </div>

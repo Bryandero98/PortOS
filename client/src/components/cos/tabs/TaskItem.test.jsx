@@ -86,6 +86,52 @@ describe('TaskItem task source', () => {
     ));
   });
 
+  it('shows and persists the selected thinking effort for an effort-capable provider', async () => {
+    const effortTask = {
+      ...task,
+      metadata: { ...task.metadata, effort: 'medium' },
+    };
+    render(<TaskItem task={effortTask} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    expect(screen.getByText('medium effort')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+
+    const effortSelect = screen.getByRole('combobox', { name: 'Thinking effort' });
+    expect(effortSelect).toHaveValue('medium');
+    fireEvent.change(effortSelect, { target: { value: 'xhigh' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-model-edit',
+      expect.objectContaining({
+        provider: 'codex-tui',
+        model: 'gpt-5.6-terra',
+        effort: 'xhigh',
+        type: 'internal',
+      }),
+      { silent: true },
+    ));
+  });
+
+  it('clears the model and effort when the provider changes', async () => {
+    const effortTask = {
+      ...task,
+      metadata: { ...task.metadata, effort: 'high' },
+    };
+    render(<TaskItem task={effortTask} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Provider' }), { target: { value: '' } });
+    expect(screen.queryByRole('combobox', { name: 'Thinking effort' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-model-edit',
+      expect.objectContaining({ provider: '', model: '', effort: '', type: 'internal' }),
+      { silent: true },
+    ));
+  });
+
   it('updates an approval-gated system task in the internal queue when changing status', async () => {
     render(<TaskItem task={{ ...task, approvalRequired: true }} isSystem onRefresh={vi.fn()} providers={providers} />);
 
