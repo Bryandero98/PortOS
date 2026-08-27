@@ -68,12 +68,21 @@ import { getSettings } from './settings.js';
 
 const SIDECAR_SUFFIX = '.metadata.json';
 
+// listLoras() is called from several picker/setup paths. Cache the fully
+// normalized public entry by the weight file's path plus weight/sidecar mtimes
+// so repeated reads only pay the directory/stat pass, not one sidecar read (and
+// potentially one safetensors header parse) per installed LoRA.
+const loraMetadataCache = new Map();
+
 // One install attempt per requested Civitai model version at a time. A duplicate
 // submit shares the original result instead of racing it to the same destination
 // files, while two explicitly different versions remain independent.
 const civitaiInstalls = createSingleFlight();
 
 const sidecarPath = (loraFilename) => join(PATHS.loras, `${loraFilename}${SIDECAR_SUFFIX}`);
+const invalidateLoraMetadataCache = (filename) => {
+  loraMetadataCache.delete(join(PATHS.loras, filename));
+};
 
 // Reads the sidecar JSON next to a LoRA file. Returns `null` when the
 // sidecar is absent — calling code can fall back to filename inference for
@@ -133,9 +142,13 @@ export const assertSafeLoraFilename = (filename) => {
 // LoRAs without sidecars get a minimal "legacy" entry with sensible defaults
 // so the manager UI can still render LoRAs the user dropped in pre-Civitai.
 export const listLoras = async () => {
-  if (!existsSync(PATHS.loras)) return [];
+  if (!existsSync(PATHS.loras)) {
+    loraMetadataCache.clear();
+    return [];
+  }
   const lorasStat = await stat(PATHS.loras).catch(() => null);
   if (!lorasStat || !lorasStat.isDirectory()) {
+    loraMetadataCache.clear();
     console.log(`⚠️ PATHS.loras exists but is not a directory: ${PATHS.loras}`);
     return [];
   }
@@ -145,6 +158,12 @@ export const listLoras = async () => {
   const out = await listDirectoryByExtension(PATHS.loras, {
     extensions: ['.safetensors'],
     mapEntry: async (filename, _fullPath, s) => {
+      const sidecarStat = await stat(sidecarPath(filename)).catch(() => null);
+      const cached = loraMetadataCache.get(_fullPath);
+      if (cached?.mtimeMs === s.mtimeMs && cached?.sidecarMtimeMs === sidecarStat?.mtimeMs) {
+        return cached.entry;
+      }
+
       const sidecar = await readSidecar(filename);
       const fallbackName = filename.replace(/^lora-/, '').replace(/\.safetensors$/, '');
       // Re-derive runnerFamily from civitai.baseModel at read time so
@@ -199,7 +218,7 @@ export const listLoras = async () => {
       // FLUX.2 → size-specific (or bare 'flux2' when size is unknown, so it
       // still shows for both sizes); every other family → its runner id.
       const loraCompatKey = composeCompatKey(runnerFamily, fluxVariant);
-      return {
+      const entry = {
         filename,
         name: sidecar?.name || fallbackName,
         sizeBytes: s.size,
@@ -239,8 +258,18 @@ export const listLoras = async () => {
         // run the check, not as a verdict.
         effectReport: readCachedLoraEffectReport(sidecar?.effectReport, { sizeBytes: s.size, mtimeMs: s.mtimeMs }),
       };
+      loraMetadataCache.set(_fullPath, {
+        mtimeMs: s.mtimeMs,
+        sidecarMtimeMs: sidecarStat?.mtimeMs,
+        entry,
+      });
+      return entry;
     },
   });
+  const listedPaths = new Set(out.map(({ filename }) => join(PATHS.loras, filename)));
+  for (const cachedPath of loraMetadataCache.keys()) {
+    if (!listedPaths.has(cachedPath)) loraMetadataCache.delete(cachedPath);
+  }
   return out.sort((a, b) => (b.installedAt || '').localeCompare(a.installedAt || ''));
 };
 
@@ -298,13 +327,17 @@ export const deleteLora = async (filename) => {
 const queueSidecarWrite = createKeyedFileWriteQueue();
 
 // Replace a sidecar wholesale (the install paths), serialized against patches.
-const writeSidecar = (filename, sidecar) => queueSidecarWrite(filename, () =>
-  atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n'));
+const writeSidecar = (filename, sidecar) => queueSidecarWrite(filename, async () => {
+  await atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
+  invalidateLoraMetadataCache(filename);
+});
 
 // Remove a sidecar, serialized so a queued patch can't recreate it after the
 // LoRA is gone.
-const removeSidecar = (filename) => queueSidecarWrite(filename, () =>
-  rm(sidecarPath(filename), { force: true }));
+const removeSidecar = (filename) => queueSidecarWrite(filename, async () => {
+  await rm(sidecarPath(filename), { force: true });
+  invalidateLoraMetadataCache(filename);
+});
 
 export const patchLoraSidecar = async (filename, patch) => {
   assertSafeLoraFilename(filename);
@@ -328,6 +361,7 @@ export const patchLoraSidecar = async (filename, patch) => {
     const current = (await readSidecar(filename)) || { filename };
     const next = { ...current, ...patch, filename };
     await atomicWrite(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
+    invalidateLoraMetadataCache(filename);
     return next;
   });
 };
