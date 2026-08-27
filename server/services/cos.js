@@ -105,6 +105,13 @@ const RECENT_COMPLETION_GRACE_MS = 60_000;
 // sub-second; this is generous cover for a slow worktree/JIRA provisioning step.
 const SPAWN_CLAIM_GRACE_MS = 60_000;
 
+// Boot can reach the auto-start path from more than one initializer while the
+// server and runner settle. A boolean check is not sufficient: both callers
+// can observe the daemon as stopped before either one sets the in-memory flag.
+// Share the entire startup promise so recovery, scheduling, and the initial
+// dequeue happen exactly once.
+let daemonStartPromise = null;
+
 // Internal imports for functions used in this module
 import { pruneOldAgentArchives, loadAgentIndex } from './cosAgentIndex.js';
 import { archiveStaleAgents as _archiveStaleAgents } from './cosAgentArchive.js';
@@ -277,7 +284,16 @@ export async function updateConfig(updates) {
 /**
  * Start the CoS daemon
  */
-export async function start() {
+export function start() {
+  if (!daemonStartPromise) {
+    daemonStartPromise = runStart().finally(() => {
+      daemonStartPromise = null;
+    });
+  }
+  return daemonStartPromise;
+}
+
+async function runStart() {
   if (isDaemonRunning()) {
     emitLog('warn', 'CoS already running');
     return { success: false, error: 'Already running' };
