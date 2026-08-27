@@ -186,6 +186,7 @@ describe('QuotaBurn page', () => {
     api.getQuotaBurn.mockResolvedValueOnce({ config, status: blocked });
     renderPage();
     expect(await screen.findByText(/provider refused — retrying after/)).toBeInTheDocument();
+    expect(screen.getByText('Usage limit exceeded')).toBeInTheDocument();
   });
 
   it('does NOT poll when nothing is pending', async () => {
