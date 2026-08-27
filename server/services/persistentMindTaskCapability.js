@@ -27,6 +27,10 @@ const MAX_CATALOG_MODELS = 60;
 const MAX_CATALOG_PROMPT_CHARS = 16_000;
 const MAX_CATALOG_APP_PROMPT_CHARS = 4_000;
 
+const isRunnableApp = (app) => typeof app?.repoPath === 'string' && app.repoPath.trim().length > 0;
+const isRunnableAgentProvider = (provider) => provider?.enabled !== false
+  && (provider?.type === 'cli' || provider?.type === 'tui');
+
 const selectableModelIds = (provider) => {
   const stored = filterSelectableModels(antigravityBaseModels(provider?.models))
     .filter((model) => typeof model === 'string' && model.trim()
@@ -57,12 +61,13 @@ export async function readPersistentMindTaskCatalog() {
   const [apps, providers] = await Promise.all([getActiveApps(), listProviders()]);
   return {
     apps: apps
-      .filter((app) => typeof app?.id === 'string' && app.id
+      .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
         && app.id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars)
       .slice(0, MAX_CATALOG_APPS)
       .map((app) => ({ id: app.id, name: String(app.name || app.id).slice(0, 100) })),
     providers: providers
-      .filter((provider) => provider?.enabled !== false && typeof provider?.id === 'string' && provider.id
+      .filter((provider) => isRunnableAgentProvider(provider)
+        && typeof provider?.id === 'string' && provider.id
         && provider.id.length <= PERSISTENT_MIND_TASK_LIMITS.providerIdChars)
       .slice(0, MAX_CATALOG_PROVIDERS)
       .map(providerCatalogEntry),
@@ -127,10 +132,12 @@ const taskIdFor = (wakeId, index) => (
 const boundedError = (error) => String(error?.message || error || 'Task creation failed').slice(0, 300);
 
 const validateChoice = (request, apps, providers) => {
-  const app = apps.find((candidate) => candidate.id === request.appId);
-  if (!app) return { error: `App '${request.appId}' is not active` };
-  const provider = providers.find((candidate) => candidate.id === request.providerId && candidate.enabled !== false);
-  if (!provider) return { error: `Provider '${request.providerId}' is not enabled` };
+  const app = apps.find((candidate) => candidate.id === request.appId && isRunnableApp(candidate));
+  if (!app) return { error: `App '${request.appId}' has no configured repository` };
+  const provider = providers.find((candidate) => (
+    candidate.id === request.providerId && isRunnableAgentProvider(candidate)
+  ));
+  if (!provider) return { error: `Provider '${request.providerId}' is not an enabled CLI/TUI coding provider` };
   const models = selectableModelIds(provider);
   if (request.model && !models.includes(request.model)) {
     return { error: `Model '${request.model}' is not configured for provider '${request.providerId}'` };

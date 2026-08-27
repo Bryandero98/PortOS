@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   root: { config: { persistentMindCapabilities: { createTasks: true } } },
-  apps: [{ id: 'portos', name: 'PortOS' }],
+  apps: [{ id: 'portos', name: 'PortOS', repoPath: '/example/portos' }],
   providers: [{
     id: 'codex', name: 'Codex', type: 'cli', enabled: true, command: 'codex',
     defaultModel: 'gpt-5', models: ['gpt-5', 'gpt-5-mini'],
@@ -40,6 +40,7 @@ const taskRequest = (overrides = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.root = { config: { persistentMindCapabilities: { createTasks: true } } };
+  mocks.apps = [{ id: 'portos', name: 'PortOS', repoPath: '/example/portos' }];
   mocks.providers = [{
     id: 'codex', name: 'Codex', type: 'cli', enabled: true, command: 'codex',
     defaultModel: 'gpt-5', models: ['gpt-5', 'gpt-5-mini'],
@@ -50,6 +51,8 @@ beforeEach(() => {
 
 describe('persistent mind CoS-task capability', () => {
   it('publishes only bounded app/provider/model/effort choices to the mind', async () => {
+    mocks.apps.push({ id: 'no-repo', name: 'No Repository' });
+    mocks.providers.push({ id: 'api-only', name: 'API Only', type: 'api', enabled: true });
     const catalog = await readPersistentMindTaskCatalog();
     expect(catalog).toEqual({
       apps: [{ id: 'portos', name: 'PortOS' }],
@@ -140,6 +143,18 @@ describe('persistent mind CoS-task capability', () => {
     });
     expect(results[0]).toMatchObject({ success: false, error: expect.stringContaining('not configured') });
     expect(results[1]).toMatchObject({ success: false, error: expect.stringContaining('not supported') });
+    expect(mocks.addTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-runnable app and provider choices if configuration changes after inference', async () => {
+    mocks.apps = [{ id: 'portos', name: 'PortOS' }];
+    mocks.providers = [{ id: 'codex', name: 'Codex API', type: 'api', enabled: true }];
+    const [result] = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest()],
+      turnId: 'turn-unrunnable',
+      wake: { kind: 'message', message: { id: 'message-unrunnable' } },
+    });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('repository') });
     expect(mocks.addTask).not.toHaveBeenCalled();
   });
 
