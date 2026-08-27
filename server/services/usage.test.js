@@ -908,6 +908,57 @@ describe('usage.js — cache tiers and measured/estimate provenance (#3124 Phase
     expect(getUsage().totalTokens.input).toBe(1500 + 3_500_000 + 280_000);
   });
 
+  it('records a multi-model run with one atomic write', async () => {
+    readJSONFile.mockResolvedValueOnce(makeUsage({}, {
+      byModel: {
+        'claude-opus-5': { sessions: 1, messages: 0, tokens: 0 },
+        'claude-sonnet-5': { sessions: 1, messages: 0, tokens: 0 }
+      }
+    }));
+    await loadUsage();
+    vi.clearAllMocks();
+
+    await recordRunUsage([
+      {
+        providerId: 'claude-code',
+        model: 'claude-opus-5',
+        messages: 2,
+        tokensIn: 100,
+        tokensOut: 20,
+        source: 'measured'
+      },
+      {
+        providerId: 'claude-code',
+        model: 'claude-sonnet-5',
+        messages: 3,
+        tokensIn: 200,
+        tokensOut: 30,
+        cacheReadTokens: 400,
+        source: 'estimate'
+      }
+    ]);
+
+    expect(atomicWrite).toHaveBeenCalledTimes(1);
+    expect(getUsage()).toMatchObject({
+      totalMessages: 5,
+      totalTokens: { input: 700, output: 50 },
+      byProvider: {
+        'claude-code': { messages: 5, tokens: 50 }
+      },
+      byModel: {
+        'claude-opus-5': { messages: 2, tokens: 20 },
+        'claude-sonnet-5': { messages: 3, tokens: 30 }
+      }
+    });
+    expect(getUsage().dailyActivity[today].byProvider['claude-code']).toMatchObject({
+      messages: 5,
+      tokensIn: 300,
+      tokensOut: 50,
+      cacheReadTokens: 400,
+      source: 'mixed'
+    });
+  });
+
   it('defaults recordMessages to an estimate source with no cache tokens', async () => {
     readJSONFile.mockResolvedValueOnce(makeUsage({}));
     await loadUsage();
