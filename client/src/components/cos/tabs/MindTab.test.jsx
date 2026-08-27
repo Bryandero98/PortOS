@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 
@@ -120,14 +120,28 @@ describe('MindTab', () => {
     api.updatePersistentMindMemory.mockResolvedValue({ success: true });
   });
 
-  it('restores the selected event from the URL and uses a responsive single DOM tree', async () => {
+  it('restores event details from the URL and keeps the chat composer single-purpose', async () => {
     renderTab('/cos/mind?event=mind-message%3Amessage-1');
 
     expect(await screen.findByRole('button', { name: /user input/i })).toHaveAttribute('aria-current', 'true');
-    expect(screen.getByTestId('mind-layout')).toHaveClass('grid');
-    expect(screen.getByTestId('mind-layout').className).toContain('lg:grid-cols-');
-    expect(screen.getByLabelText('Input type')).toBeInTheDocument();
-    expect(screen.getByLabelText('Message')).toBeInTheDocument();
+    expect(screen.getByTestId('mind-chat')).toHaveClass('flex');
+    expect(screen.getByRole('dialog', { name: 'User input' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Input type')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('mind-chat')).getByLabelText('Message')).toBeInTheDocument();
+  });
+
+  it('keeps annotations in message details instead of the primary composer', async () => {
+    const user = userEvent.setup();
+    renderTab('/cos/mind?event=mind-message%3Amessage-1');
+
+    await user.type(await screen.findByLabelText('Add a note'), 'Keep this linked context.');
+    await user.click(screen.getByRole('button', { name: 'Add note' }));
+
+    await waitFor(() => expect(api.addPersistentMindAnnotation).toHaveBeenCalledWith({
+      id: expect.stringMatching(/^annotation-/),
+      text: 'Keep this linked context.',
+      targetEventId: 'mind-message:message-1',
+    }, { silent: true }));
   });
 
   it('never renders a fetch failure as an empty conversation', async () => {
@@ -136,7 +150,7 @@ describe('MindTab', () => {
 
     expect(await screen.findByText('Conversation unavailable')).toBeInTheDocument();
     expect(screen.queryByText(/No conversation yet/)).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Provider & lifecycle' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Settings' })).toBeInTheDocument();
   });
 
   it('deduplicates a socket-triggered cursor backfill', async () => {
@@ -269,19 +283,21 @@ describe('MindTab', () => {
     })] }));
     renderTab();
 
-    await userEvent.setup().click(await screen.findByRole('checkbox', { name: 'Show run activity' }));
+    await userEvent.setup().click(await screen.findByRole('checkbox', { name: 'Activity' }));
     expect(await screen.findByText('A synthesized summary.')).toBeInTheDocument();
     expect(screen.queryByText(/not-rendered|5000|prompt/i)).not.toBeInTheDocument();
   });
 
   it('renders user-visible working notes and replies in the conversation', async () => {
     api.getPersistentMind.mockResolvedValue(response({ events: [
-      event({ eventId: 'thought-1', kind: 'mind.thought', sequence: 2, data: { displayText: 'I connected this with the prior decision.' } }),
-      event({ eventId: 'reply-1', kind: 'mind.reply', sequence: 3, data: { displayText: 'Here is the recommendation.' } }),
+      event({ eventId: 'thought-1', kind: 'mind.thought', turnId: 'mind-turn-1', sequence: 2, data: { displayText: 'I connected this with the prior decision.' } }),
+      event({ eventId: 'reply-1', kind: 'mind.reply', turnId: 'mind-turn-1', sequence: 3, data: { displayText: 'Here is the recommendation.' } }),
     ] }));
     renderTab();
     expect(await screen.findByText('I connected this with the prior decision.')).toBeInTheDocument();
     expect(screen.getByText('Here is the recommendation.')).toBeInTheDocument();
+    expect(screen.getByText('1 thought').closest('details')).not.toHaveAttribute('open');
+    expect(screen.getAllByRole('button', { name: /chief of staff/i })).toHaveLength(1);
   });
 
   it('animates active thought status and shows context, system, and loaded-model telemetry', async () => {
@@ -304,7 +320,7 @@ describe('MindTab', () => {
         cpu: { cores: 8, loadAvg1m: 1.25 },
       },
     });
-    renderTab();
+    renderTab('/cos/mind?view=setup');
 
     const thoughtStatus = await screen.findByRole('status');
     expect(thoughtStatus).toHaveTextContent('Thinking with demo-model');

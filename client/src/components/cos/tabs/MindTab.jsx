@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { Brain, Check, CirclePause, CirclePlay, MessageCircle, RefreshCw, Settings2, Square, Upload } from 'lucide-react';
+import { ArrowUp, Brain, Check, CirclePause, CirclePlay, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload } from 'lucide-react';
 import useMounted from '../../../hooks/useMounted';
 import { useSocket } from '../../../hooks/useSocket';
 import { uuidv4 } from '../../../lib/uuid.js';
 import * as api from '../../../services/api';
 import { formatDateTime } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
+import Drawer from '../../Drawer';
 import Banner from '../../ui/Banner';
 import TabPills from '../../ui/TabPills';
 import PersistentMindContextPanel from '../PersistentMindContextPanel';
@@ -19,10 +20,14 @@ const MAX_BACKFILL_PAGES = 5;
 const MAX_VISIBLE_EVENTS = PAGE_LIMIT * MAX_BACKFILL_PAGES;
 const MIND_VIEWS = new Set(['conversation', 'context', 'setup']);
 const MIND_TABS = [
-  { id: 'conversation', label: 'Conversation', icon: MessageCircle },
-  { id: 'context', label: 'Context & memory', icon: Brain },
-  { id: 'setup', label: 'Provider & lifecycle', icon: Settings2 },
+  { id: 'conversation', label: 'Chat', icon: MessageCircle },
+  { id: 'context', label: 'Memory', icon: Brain },
+  { id: 'setup', label: 'Settings', icon: Settings2 },
 ];
+
+const ACTIVITY_KINDS = new Set([
+  'mind.wake', 'mind.model.request', 'mind.model.result', 'mind.turn.completed',
+]);
 
 const EVENT_LABELS = {
   'mind.message.accepted': 'User input',
@@ -64,6 +69,32 @@ const mergeEvents = (previous, incoming) => {
 
 const mintId = (prefix) => `${prefix}-${uuidv4()}`;
 
+const buildConversationItems = (events, showActivity) => {
+  const included = events.filter((event) => showActivity || !ACTIVITY_KINDS.has(event.kind));
+  const thoughtsByTurn = new Map();
+  const replyTurns = new Set();
+
+  for (const event of included) {
+    if (event.kind === 'mind.thought' && event.turnId) {
+      thoughtsByTurn.set(event.turnId, [...(thoughtsByTurn.get(event.turnId) || []), event]);
+    }
+    if (event.kind === 'mind.reply' && event.turnId) replyTurns.add(event.turnId);
+  }
+
+  const emittedThoughtTurns = new Set();
+  return included.flatMap((event) => {
+    if (event.kind === 'mind.thought' && event.turnId) {
+      if (replyTurns.has(event.turnId) || emittedThoughtTurns.has(event.turnId)) return [];
+      emittedThoughtTurns.add(event.turnId);
+      return [{ event, thoughts: thoughtsByTurn.get(event.turnId) || [], thoughtOnly: true }];
+    }
+    if (event.kind === 'mind.reply' && event.turnId) {
+      return [{ event, thoughts: thoughtsByTurn.get(event.turnId) || [], thoughtOnly: false }];
+    }
+    return [{ event, thoughts: [], thoughtOnly: false }];
+  });
+};
+
 export default function MindTab() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedEventId = searchParams.get('event');
@@ -75,10 +106,12 @@ export default function MindTab() {
   const [gap, setGap] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [kind, setKind] = useState('message');
-  const [text, setText] = useState('');
+  const [messageText, setMessageText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  const [annotationText, setAnnotationText] = useState('');
+  const [annotationSubmitting, setAnnotationSubmitting] = useState(false);
+  const [annotationError, setAnnotationError] = useState(null);
   const [lifecyclePending, setLifecyclePending] = useState(null);
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
@@ -95,7 +128,10 @@ export default function MindTab() {
   const deferredRuntimeRef = useRef(false);
   const runtimeLoadedRef = useRef(false);
   const runtimeMountedRef = useMounted();
-  const draftIdRef = useRef(null);
+  const messageDraftIdRef = useRef(null);
+  const annotationDraftIdRef = useRef(null);
+  const messageListRef = useRef(null);
+  const stickToBottomRef = useRef(true);
 
   const loadHistory = useCallback(async ({ reset = false } = {}) => {
     if (loadPendingRef.current) {
@@ -103,6 +139,9 @@ export default function MindTab() {
       return;
     }
     loadPendingRef.current = true;
+    const messageList = messageListRef.current;
+    stickToBottomRef.current = reset || !messageList
+      || messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
     if (reset) setLoading(true);
     let cursor = reset ? null : cursorRef.current;
     let page = 0;
@@ -194,40 +233,51 @@ export default function MindTab() {
     };
   }, [loadHistory, loadRuntime, socket]);
 
-  const submit = async (event) => {
-    event.preventDefault();
-    const trimmed = text.trim();
-    if (!trimmed || submitting) return;
-    const id = draftIdRef.current || mintId(kind);
-    draftIdRef.current = id;
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      if (kind === 'message') {
-        await api.sendPersistentMindMessage({ id, text: trimmed }, { silent: true });
-      } else {
-        await api.addPersistentMindAnnotation({
-          id,
-          text: trimmed,
-          targetEventId: selectedEventId || null,
-        }, { silent: true });
-      }
-      const sequence = Math.max(-1, ...(events || []).map((item) => item.sequence || -1)) + 1;
-      setEvents((previous) => mergeEvents(previous || [], [{
-        eventId: `mind-${kind === 'message' ? 'message' : 'annotation'}:${id}`,
-        kind: kind === 'message' ? 'mind.message.accepted' : 'mind.annotation.accepted',
+  useEffect(() => {
+    if (!stickToBottomRef.current || !messageListRef.current) return;
+    messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
+  }, [events]);
+
+  useEffect(() => {
+    annotationDraftIdRef.current = null;
+    setAnnotationText('');
+    setAnnotationError(null);
+  }, [selectedEventId]);
+
+  const appendLocalInput = ({ id, content, inputKind, targetEventId = null }) => {
+    setEvents((previous) => {
+      const sequence = Math.max(-1, ...(previous || []).map((item) => item.sequence || -1)) + 1;
+      return mergeEvents(previous || [], [{
+        eventId: `mind-${inputKind}:${id}`,
+        kind: inputKind === 'message' ? 'mind.message.accepted' : 'mind.annotation.accepted',
         mindId: 'cos-persistent-mind',
         turnId: null,
         sequence,
         at: new Date().toISOString(),
         data: {
-          displayText: trimmed,
-          ...(kind === 'annotation' ? { annotationId: id, targetEventId: selectedEventId || null } : { messageId: id }),
+          displayText: content,
+          ...(inputKind === 'message' ? { messageId: id } : { annotationId: id, targetEventId }),
         },
-      }]));
-      setText('');
-      draftIdRef.current = null;
+      }]);
+    });
+  };
+
+  const submitMessage = async (event) => {
+    event.preventDefault();
+    const trimmed = messageText.trim();
+    if (!trimmed || submitting) return;
+    const id = messageDraftIdRef.current || mintId('message');
+    messageDraftIdRef.current = id;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await api.sendPersistentMindMessage({ id, text: trimmed }, { silent: true });
+      stickToBottomRef.current = true;
+      appendLocalInput({ id, content: trimmed, inputKind: 'message' });
+      setMessageText('');
+      messageDraftIdRef.current = null;
       await loadHistory();
+      stickToBottomRef.current = true;
       void loadRuntime();
     } catch (error) {
       setSubmitError(error?.message || 'The input was not accepted');
@@ -236,18 +286,41 @@ export default function MindTab() {
     }
   };
 
-  const changeKind = (next) => {
-    setKind(next);
-    draftIdRef.current = null;
-    setSubmitError(null);
+  const submitAnnotation = async (event) => {
+    event.preventDefault();
+    const trimmed = annotationText.trim();
+    if (!selectedEventId || !trimmed || annotationSubmitting) return;
+    const id = annotationDraftIdRef.current || mintId('annotation');
+    annotationDraftIdRef.current = id;
+    setAnnotationSubmitting(true);
+    setAnnotationError(null);
+    try {
+      await api.addPersistentMindAnnotation({ id, text: trimmed, targetEventId: selectedEventId }, { silent: true });
+      appendLocalInput({ id, content: trimmed, inputKind: 'annotation', targetEventId: selectedEventId });
+      setAnnotationText('');
+      annotationDraftIdRef.current = null;
+      await loadHistory();
+    } catch (error) {
+      setAnnotationError(error?.message || 'The annotation was not accepted');
+    } finally {
+      setAnnotationSubmitting(false);
+    }
   };
 
-  const changeText = (next) => {
+  const changeMessageText = (next) => {
     if (submitError) {
-      draftIdRef.current = null;
+      messageDraftIdRef.current = null;
       setSubmitError(null);
     }
-    setText(next);
+    setMessageText(next);
+  };
+
+  const changeAnnotationText = (next) => {
+    if (annotationError) {
+      annotationDraftIdRef.current = null;
+      setAnnotationError(null);
+    }
+    setAnnotationText(next);
   };
 
   const runLifecycle = async (action) => {
@@ -303,55 +376,72 @@ export default function MindTab() {
   const isPaused = state?.status === 'paused';
   const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
   const setupSaving = profileSaving || taskAccessSaving;
-  const visibleEvents = (events || []).filter((event) => showActivity || ![
-    'mind.wake', 'mind.model.request', 'mind.model.result', 'mind.turn.completed',
-  ].includes(event.kind));
+  const conversationItems = buildConversationItems(events || [], showActivity);
   const changeView = (view) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
     if (view === 'conversation') next.delete('view');
-    else next.set('view', view);
+    else {
+      next.set('view', view);
+      next.delete('event');
+    }
+    return next;
+  });
+  const selectEvent = (eventId) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    next.set('event', eventId);
+    return next;
+  });
+  const closeSelectedEvent = () => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    next.delete('event');
     return next;
   });
 
   return (
-    <section aria-labelledby="mind-heading" className="space-y-4">
-      <header className="flex flex-col gap-3 rounded border border-port-border bg-port-card p-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 id="mind-heading" className="flex items-center gap-2 text-lg font-semibold text-port-text">
-            <MessageCircle size={20} aria-hidden="true" /> Persistent Mind
-          </h2>
-          <p className="mt-1 text-sm text-port-text-muted">One durable, machine-local conversation with the resident Chief of Staff mind.</p>
-          <p className="mt-2 text-xs text-port-text-muted">
-            {mind ? `${mind.profile?.providerId || 'No provider'} · ${mind.profile?.model || 'No model'} · ${mind.profile?.effort || 'provider default'} · autonomy ${mind.autonomyMode}` : 'Profile unavailable'}
-          </p>
-          <div className="mt-3">
+    <section aria-labelledby="mind-heading" className="mx-auto max-w-6xl space-y-4 pb-4">
+      {activeView === 'conversation' ? (
+        <h2 id="mind-heading" className="sr-only">Persistent Mind</h2>
+      ) : (
+        <header className="flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-port-accent/15 text-port-accent ring-1 ring-port-accent/30">
+              <Brain size={23} aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <h2 id="mind-heading" className="truncate text-lg font-semibold text-port-text">Persistent Mind</h2>
+              <p className="truncate text-xs text-port-text-muted">
+                {mind ? `${mind.profile?.model || 'No model'} · ${mind.profile?.providerId || 'No provider'} · machine-local` : 'Loading profile…'}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Persistent mind lifecycle">
             <PersistentMindThoughtStatus
               state={state}
               model={state?.activeTurnId && state.activeTurnId === runtime?.inference?.turnId
                 ? runtime.inference.model
                 : mind?.profile?.model}
             />
+            {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
+            {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
+            {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
+            <ActionButton label="Reload" icon={RefreshCw} pending={loading || runtimeLoading} onClick={() => {
+              void loadHistory({ reset: true });
+              void loadRuntime();
+            }} />
           </div>
-        </div>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Persistent mind lifecycle">
-          {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
-          {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
-          {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
-          <ActionButton label="Reload" icon={RefreshCw} pending={loading || runtimeLoading} onClick={() => {
-            void loadHistory({ reset: true });
-            void loadRuntime();
-          }} />
-        </div>
-      </header>
+        </header>
+      )}
 
-      <TabPills tabs={MIND_TABS} activeTab={activeView} onChange={changeView} variant="pills" mobileDropdown mobileSelectId="persistent-mind-view" ariaLabel="Persistent mind view" />
+      <TabPills tabs={MIND_TABS} activeTab={activeView} onChange={changeView} variant="pills" size="sm" ariaLabel="Persistent mind view" />
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
       {truncated && <Banner tone="info" title="Showing recent history">The initial trace shows the newest {PAGE_LIMIT} events; older retained events are not shown.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
-      <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} onOpenContext={() => changeView('context')} />
+      {activeView !== 'conversation' && (
+        <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} onOpenContext={() => changeView('context')} />
+      )}
 
       {activeView === 'setup' && (
         <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
@@ -387,99 +477,170 @@ export default function MindTab() {
       {activeView === 'context' && <PersistentMindContextPanel />}
 
       {activeView === 'conversation' && (
-        <>
-          <div data-testid="mind-layout" className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.42fr)]">
-            <div className="min-w-0 rounded border border-port-border bg-port-card">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-port-border px-4 py-3 text-sm text-port-text-muted">
-                <span>
-                  Status: <span className="font-medium text-port-text">{state?.status || 'unknown'}</span>
-                  {state?.pauseReason ? ` · ${state.pauseReason}` : ''}
+        <section data-testid="mind-chat" aria-label="Persistent mind chat" className="flex h-[60dvh] min-h-[27rem] max-h-[48rem] flex-col overflow-hidden rounded-[1.5rem] border border-port-border bg-port-card shadow-lg shadow-black/10 sm:h-[72dvh] sm:min-h-[30rem]">
+          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-port-border bg-port-card/95 px-3 py-2.5 sm:px-4">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-port-accent/15 text-port-accent">
+                <Brain size={19} aria-hidden="true" />
+                <span className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-port-card ${state?.started && !isPaused ? 'bg-port-success' : 'bg-port-text-muted'}`} aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="truncate text-sm font-semibold text-port-text">Chief of Staff</h3>
+                <p className="truncate text-[11px] text-port-text-muted">
+                  {state?.pauseReason || (state?.status === 'thinking' ? 'Thinking…' : state?.started ? 'Available' : 'Not started')}
                   {state?.queuedMessageCount > 0 ? ` · ${state.queuedMessageCount} queued` : ''}
-                  {state?.failureCount > 0 ? ` · ${state.failureCount} failed wake${state.failureCount === 1 ? '' : 's'}` : ''}
-                  {state?.nextEligibleWakeAt ? ` · retry after ${formatDateTime(state.nextEligibleWakeAt)}` : ''}
-                  {state?.lastError ? ` · ${state.lastError}` : ''}
-                </span>
-                <label htmlFor="mind-show-activity" className="flex items-center gap-2 text-xs">
-                  <input id="mind-show-activity" type="checkbox" checked={showActivity} onChange={(event) => setShowActivity(event.target.checked)} className="accent-port-accent" /> Show run activity
-                </label>
+                  {mind?.profile?.model ? ` · ${mind.profile.model}` : ''}
+                </p>
               </div>
-              {loading && events === null ? (
-                <div className="flex justify-center p-10"><BrailleSpinner text="Loading mind history" /></div>
-              ) : visibleEvents.length === 0 && !loadError ? (
-                <p className="p-8 text-center text-sm text-port-text-muted">No conversation yet. Add a message below, or start the mind from Provider & lifecycle.</p>
-              ) : (
-                <ol className="max-h-[62vh] space-y-3 overflow-y-auto p-3" aria-label="Persistent mind conversation">
-                  {visibleEvents.map((event) => {
-                    const selected = event.eventId === selectedEventId;
-                    const textValue = eventText(event);
-                    const assistant = event.kind === 'mind.reply';
-                    const thought = event.kind === 'mind.thought';
-                    return (
-                      <li key={event.eventId} className={assistant ? 'flex justify-end' : ''}>
-                        <button
-                          type="button"
-                          onClick={() => setSearchParams((current) => {
-                            const next = new URLSearchParams(current);
-                            next.set('event', event.eventId);
-                            return next;
-                          })}
-                          aria-current={selected ? 'true' : undefined}
-                          className={`${assistant ? 'max-w-[88%] border-port-accent/50 bg-port-accent/10' : 'w-full'} rounded border p-3 text-left ${thought ? 'border-dashed border-port-accent/40 bg-port-bg/40' : ''} ${selected ? 'ring-1 ring-port-accent' : 'hover:bg-port-border/20'} ${!assistant && !thought ? 'border-port-border' : ''}`}
-                        >
-                          <span className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-xs font-semibold uppercase tracking-wide text-port-accent">{eventLabel(event.kind)}</span>
-                            <time className="text-xs text-port-text-muted" dateTime={event.at}>{formatDateTime(event.at)}</time>
-                          </span>
-                          <span className="mt-1 block whitespace-pre-wrap break-words text-sm text-port-text">{textValue || event.kind}</span>
-                          {event.turnId && <span className="mt-1 block truncate font-mono text-[11px] text-port-text-muted">turn {event.turnId}</span>}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ol>
+            </div>
+            <label htmlFor="mind-show-activity" className="flex shrink-0 items-center gap-2 rounded-full border border-port-border px-2.5 py-1.5 text-[11px] text-port-text-muted">
+              <input id="mind-show-activity" type="checkbox" checked={showActivity} onChange={(event) => setShowActivity(event.target.checked)} className="accent-port-accent" /> Activity
+            </label>
+          </header>
+
+          <div ref={messageListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-5 sm:px-5" aria-label="Persistent mind conversation">
+            {loading && events === null ? (
+              <div className="flex h-full items-center justify-center"><BrailleSpinner text="Loading mind history" /></div>
+            ) : conversationItems.length === 0 && !loadError ? (
+              <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+                <span className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-port-accent/10 text-port-accent"><MessageCircle size={26} aria-hidden="true" /></span>
+                <p className="text-sm font-medium text-port-text">Start the conversation</p>
+                <p className="mt-1 max-w-sm text-xs text-port-text-muted">Send a message below. This thread stays on this machine and carries forward across wakes.</p>
+              </div>
+            ) : (
+              <ol className="space-y-3">
+                {conversationItems.map((item) => (
+                  <ConversationItem
+                    key={item.event.eventId}
+                    {...item}
+                    selectedEventId={selectedEventId}
+                    onSelect={selectEvent}
+                  />
+                ))}
+              </ol>
+            )}
+          </div>
+
+          <form onSubmit={submitMessage} className="shrink-0 border-t border-port-border bg-port-card/95 px-2.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] pt-2.5 sm:px-4">
+            {submitError && <p role="alert" className="mt-2 text-sm text-port-error">{submitError} — Retry uses the same id, so it will not duplicate the input.</p>}
+            <div className="flex items-end gap-2 rounded-[1.35rem] border border-port-border bg-port-bg p-1.5 pl-3 focus-within:border-port-accent/70 focus-within:ring-1 focus-within:ring-port-accent/30">
+              <label htmlFor="mind-input-text" className="sr-only">Message</label>
+              <textarea id="mind-input-text" value={messageText} onChange={(event) => changeMessageText(event.target.value)} maxLength={8000} rows={1} className="min-h-[36px] max-h-32 flex-1 resize-y bg-transparent py-2 text-sm leading-5 text-port-text outline-none placeholder:text-port-text-muted" placeholder="Message Persistent Mind" />
+              <button type="submit" disabled={!messageText.trim() || submitting} aria-label={submitting ? 'Sending message' : submitError ? 'Retry' : 'Send message'} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-port-accent text-white transition-colors hover:bg-port-accent/85 disabled:cursor-not-allowed disabled:bg-port-border disabled:text-port-text-muted">
+                {submitting ? <RefreshCw size={17} className="animate-spin" aria-hidden="true" /> : <ArrowUp size={19} strokeWidth={2.5} aria-hidden="true" />}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      <Drawer
+        open={activeView === 'conversation' && Boolean(selectedEventId)}
+        onClose={closeSelectedEvent}
+        title={selectedEvent ? eventLabel(selectedEvent.kind) : 'Event details'}
+        subtitle={selectedEvent?.at ? formatDateTime(selectedEvent.at) : undefined}
+        size="sm"
+        closeLabel="Close event details"
+      >
+        {selectedEvent ? (
+          <div className="space-y-5">
+            <section aria-labelledby="mind-event-content-heading">
+              <h3 id="mind-event-content-heading" className="text-xs font-semibold uppercase tracking-wide text-port-accent">Message</h3>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm text-port-text">{eventText(selectedEvent) || selectedEvent.kind}</p>
+            </section>
+
+            <section aria-labelledby="mind-event-metadata-heading" className="space-y-2 border-t border-port-border pt-4">
+              <h3 id="mind-event-metadata-heading" className="text-xs font-semibold uppercase tracking-wide text-port-accent">Event metadata</h3>
+              <p className="break-all font-mono text-xs text-port-text-muted">{selectedEvent.eventId}</p>
+              <p className="text-xs text-port-text-muted">Sequence {selectedEvent.sequence}{selectedEvent.turnId ? ` · turn ${selectedEvent.turnId}` : ''}</p>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-port-border bg-port-bg p-3 text-[11px] text-port-text-muted">{JSON.stringify(selectedEvent.data || {}, null, 2)}</pre>
+            </section>
+
+            <div className="flex flex-wrap gap-2 border-t border-port-border pt-4">
+              {selectedEvent.kind === 'mind.capability.request' && <ActionButton label="Acknowledge" icon={Check} pending={eventActionPending === selectedEvent.eventId} onClick={() => acknowledge(selectedEvent)} />}
+              {['mind.summary', 'mind.reply', 'mind.thought', 'mind.memory.candidate'].includes(selectedEvent.kind) && (
+                <ActionButton label="Promote to memory" icon={Upload} pending={eventActionPending === selectedEvent.eventId} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
               )}
             </div>
 
-            <aside className="space-y-3 rounded border border-port-border bg-port-card p-4" aria-label="Selected mind event">
-              <h3 className="text-sm font-semibold text-port-text">Selected event</h3>
-              {selectedEvent ? (
-                <>
-                  <p className="break-all font-mono text-xs text-port-text-muted">{selectedEvent.eventId}</p>
-                  <p className="text-sm text-port-text">{eventLabel(selectedEvent.kind)}</p>
-                  <p className="text-xs text-port-text-muted">Sequence {selectedEvent.sequence}{selectedEvent.turnId ? ` · turn ${selectedEvent.turnId}` : ''}</p>
-                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-port-border bg-port-bg p-2 text-[11px] text-port-text-muted">{JSON.stringify(selectedEvent.data || {}, null, 2)}</pre>
-                  {selectedEvent.kind === 'mind.capability.request' && <ActionButton label="Acknowledge" icon={Check} pending={eventActionPending === selectedEvent.eventId} onClick={() => acknowledge(selectedEvent)} />}
-                  {['mind.summary', 'mind.reply', 'mind.thought', 'mind.memory.candidate'].includes(selectedEvent.kind) && (
-                    <ActionButton label="Promote to memory" icon={Upload} pending={eventActionPending === selectedEvent.eventId} disabled={!eventText(selectedEvent)} onClick={() => promote(selectedEvent)} />
-                  )}
-                </>
-              ) : <p className="text-sm text-port-text-muted">Choose an item to inspect its safe event payload, keep it selected in the URL, attach an annotation, or promote it to memory.</p>}
-            </aside>
+            <form onSubmit={submitAnnotation} className="space-y-3 border-t border-port-border pt-4">
+              <div>
+                <label htmlFor="mind-annotation-text" className="flex items-center gap-2 text-sm font-medium text-port-text"><StickyNote size={15} aria-hidden="true" /> Add a note</label>
+                <p className="mt-1 text-xs text-port-text-muted">Attach context to this event without starting a new turn.</p>
+              </div>
+              <textarea id="mind-annotation-text" value={annotationText} onChange={(event) => changeAnnotationText(event.target.value)} maxLength={8000} rows={4} className="w-full resize-y rounded-xl border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text focus:border-port-accent focus:outline-none" placeholder="Add context or an idea…" />
+              {annotationError && <p role="alert" className="text-sm text-port-error">{annotationError} — Retry uses the same id.</p>}
+              <button type="submit" disabled={!annotationText.trim() || annotationSubmitting} className="rounded-full bg-port-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">{annotationSubmitting ? 'Adding note…' : annotationError ? 'Retry note' : 'Add note'}</button>
+            </form>
           </div>
-
-          <form onSubmit={submit} className="rounded border border-port-border bg-port-card p-4">
-            <div className="grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)]">
-              <div>
-                <label htmlFor="mind-input-kind" className="mb-1 block text-sm font-medium text-port-text">Input type</label>
-                <select id="mind-input-kind" value={kind} onChange={(event) => changeKind(event.target.value)} className="w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text">
-                  <option value="message">Message</option>
-                  <option value="annotation">Comment / idea</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="mind-input-text" className="mb-1 block text-sm font-medium text-port-text">{kind === 'message' ? 'Message' : 'Comment or idea'}</label>
-                <textarea id="mind-input-text" value={text} onChange={(event) => changeText(event.target.value)} maxLength={8000} rows={3} className="w-full resize-y rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text" placeholder={kind === 'message' ? 'Write directly into the persistent conversation…' : 'Add context without requesting an immediate reply.'} />
-              </div>
-            </div>
-            {kind === 'annotation' && selectedEventId && <p className="mt-2 text-xs text-port-text-muted">Attached to selected event {selectedEventId}</p>}
-            {submitError && <p role="alert" className="mt-2 text-sm text-port-error">{submitError} — Retry uses the same id, so it will not duplicate the input.</p>}
-            <div className="mt-3 flex justify-end">
-              <button type="submit" disabled={!text.trim() || submitting} className="rounded bg-port-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">{submitting ? 'Sending…' : submitError ? 'Retry' : kind === 'message' ? 'Send message' : 'Add annotation'}</button>
-            </div>
-          </form>
-        </>
-      )}
+        ) : (
+          <p className="text-sm text-port-text-muted">This event is no longer available in the retained conversation history.</p>
+        )}
+      </Drawer>
     </section>
+  );
+}
+
+function ConversationItem({ event, thoughts, thoughtOnly, selectedEventId, onSelect }) {
+  const outgoing = event.kind === 'mind.message.accepted';
+  const incoming = thoughtOnly || ['mind.reply', 'mind.summary'].includes(event.kind);
+  const selected = event.eventId === selectedEventId;
+  const content = thoughtOnly ? 'Thoughts from this turn' : eventText(event) || event.kind;
+
+  if (!outgoing && !incoming) {
+    return (
+      <li className="flex justify-center px-2">
+        <button
+          type="button"
+          onClick={() => onSelect(event.eventId)}
+          aria-current={selected ? 'true' : undefined}
+          aria-label={`${eventLabel(event.kind)} · ${formatDateTime(event.at)}`}
+          className={`max-w-[92%] rounded-full border border-port-border bg-port-bg/70 px-3 py-1.5 text-center text-xs text-port-text-muted transition-colors hover:bg-port-border/30 ${selected ? 'ring-2 ring-port-accent/70' : ''}`}
+        >
+          <span className="font-medium text-port-text">{eventLabel(event.kind)}</span>
+          {eventText(event) && <><span aria-hidden="true"> · </span><span>{eventText(event)}</span></>}
+        </button>
+      </li>
+    );
+  }
+
+  return (
+    <li className={`flex flex-col ${outgoing ? 'items-end' : 'items-start'}`}>
+      {!outgoing && <span className="mb-1 ml-2 text-[11px] font-medium text-port-text-muted">Chief of Staff</span>}
+      <div className={`max-w-[86%] overflow-hidden ${outgoing ? 'rounded-[1.25rem] rounded-br-md bg-port-accent text-white' : 'rounded-[1.25rem] rounded-bl-md bg-port-border/55 text-port-text'} ${selected ? 'ring-2 ring-port-accent/80 ring-offset-2 ring-offset-port-card' : ''}`}>
+        <button
+          type="button"
+          onClick={() => onSelect(event.eventId)}
+          aria-current={selected ? 'true' : undefined}
+          aria-label={`${eventLabel(event.kind)} · ${formatDateTime(event.at)}`}
+          className="block w-full whitespace-pre-wrap break-words px-3.5 py-2.5 text-left text-[15px] leading-5"
+        >
+          {content}
+        </button>
+        {thoughts.length > 0 && (
+          <details className={`border-t ${outgoing ? 'border-white/20' : 'border-port-text/10'}`}>
+            <summary className="cursor-pointer px-3.5 py-2 text-xs font-medium opacity-75 hover:opacity-100">
+              {thoughts.length} {thoughts.length === 1 ? 'thought' : 'thoughts'}
+            </summary>
+            <div className={`space-y-1.5 border-t px-2 py-2 ${outgoing ? 'border-white/20' : 'border-port-text/10'}`}>
+              {thoughts.map((thought) => (
+                <button
+                  key={thought.eventId}
+                  type="button"
+                  onClick={() => onSelect(thought.eventId)}
+                  aria-current={thought.eventId === selectedEventId ? 'true' : undefined}
+                  aria-label={`${eventLabel(thought.kind)} · ${formatDateTime(thought.at)}`}
+                  className={`block w-full rounded-xl px-2 py-1.5 text-left text-xs leading-5 opacity-75 hover:bg-black/10 hover:opacity-100 ${thought.eventId === selectedEventId ? 'ring-1 ring-current' : ''}`}
+                >
+                  {eventText(thought) || thought.kind}
+                </button>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+      <time className={`mt-1 px-2 text-[10px] text-port-text-muted ${outgoing ? 'text-right' : 'text-left'}`} dateTime={event.at}>{formatDateTime(event.at)}</time>
+    </li>
   );
 }
 
