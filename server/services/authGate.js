@@ -29,22 +29,28 @@ const PUBLIC_API_PATHS = new Set([
 // future routes that live outside `/api`.
 const GATED_NON_API_PREFIXES = ['/sdapi/'];
 
-// Short-lived cache for Basic-auth scrypt results so probe cycles (3 parallel
-// HTTP requests every 30s) don't re-run scrypt each time. Keyed by sha256 of
-// the password so the plaintext never lives in the Map. Flushed on any
-// settings write (covers password rotation).
+// Short-lived cache for successful Basic-auth scrypt results so probe cycles
+// (3 parallel HTTP requests every 30s) don't re-run scrypt each time. Failed
+// results are deliberately not cached so a corrected credential is retried
+// immediately. Keyed by sha256 so plaintext never lives in the Map. Flushed
+// on any settings write (covers password rotation).
 const basicAuthCache = new Map();
 const BASIC_AUTH_CACHE_TTL_MS = 60_000;
 settingsEvents.on('settings:updated', () => basicAuthCache.clear());
 
 const verifyBasicPassword = async (password) => {
+  if (typeof password !== 'string' || password.length === 0) return false;
   const key = createHash('sha256').update(password).digest('hex');
   const cached = basicAuthCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.ok;
   const ok = await verifyPassword(password);
-  basicAuthCache.set(key, { ok, expiresAt: Date.now() + BASIC_AUTH_CACHE_TTL_MS });
+  if (ok) {
+    basicAuthCache.set(key, { ok: true, expiresAt: Date.now() + BASIC_AUTH_CACHE_TTL_MS });
+  }
   return ok;
 };
+
+export const __testing = { verifyBasicPassword };
 
 const isPublicPath = (path) => {
   if (PUBLIC_API_PATHS.has(path)) return true;
