@@ -1,8 +1,13 @@
 # Unified CoS Tool-Calling Interface
 
-Status: proposed specification
+Status: preliminary proposed specification; pending route, quota-telemetry, and provider-fallback audit
 Date: 2026-08-27
 Audience: PortOS server, Persistent Mind, voice, palette, and future agent integrations
+
+> **Verification legend:** **Verified in source** means the current repository
+> contains the named route/service contract. **Proposed** means this document is
+> defining a new interface. **[VERIFY]** marks a decision or integration detail
+> that must be confirmed by the implementation audit before it becomes binding.
 
 ## 1. Decision summary
 
@@ -23,6 +28,119 @@ The interface is not a generic HTTP proxy. A raw endpoint proxy would expose inc
 | `GET` | `/api/cos/tools/jobs/:jobId/events` | Unified SSE progress stream for adapters that can expose progress. The adapter may still use an existing job-specific source internally. |
 
 The exact route names are proposed; implementation should preserve the existing `/api/cos/mind/tools` route for the Persistent Mind authority inventory and should not silently broaden that route. `/api/cos/tools` is the broader CoS execution catalog.
+
+### Preliminary `portos_tool` profile
+
+`portos_tool` is the provider-neutral profile name for a PortOS catalog entry,
+call, and result. It is not an additional transport and does not permit a model
+to supply an arbitrary route. Provider-specific adapters translate this profile
+to OpenAI/Responses, Anthropic, or MCP tool syntax and translate the provider's
+tool call back to the canonical PortOS call envelope.
+
+```json
+{
+  "type": "portos_tool",
+  "name": "cos.create-task",
+  "version": 1,
+  "description": "Queue a supervised PortOS task.",
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["mode", "appId", "prompt", "routing"],
+    "properties": {
+      "mode": {"enum": ["implement", "research-and-file-issue"]},
+      "appId": {"type": "string"},
+      "provider": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string"},
+          "model": {"type": ["string", "null"]},
+          "effort": {"type": ["string", "null"]}
+        }
+      },
+      "routing": {"enum": ["automatic", "pinned"]},
+      "prompt": {"type": "string"},
+      "requiredValidation": {"type": "array", "items": {"type": "string"}},
+      "prCompletion": {"enum": ["review-then-merge", "merge-on-green", "leave-open", null]}
+    },
+    "oneOf": [
+      {
+        "properties": {"routing": {"const": "automatic"}},
+        "not": {"required": ["provider"]}
+      },
+      {
+        "properties": {"routing": {"const": "pinned"}},
+        "required": ["provider"]
+      }
+    ],
+    "allOf": [
+      {
+        "if": {"properties": {"mode": {"const": "implement"}}, "required": ["mode"]},
+        "then": {
+          "required": ["prCompletion"],
+          "properties": {"prCompletion": {"enum": ["review-then-merge", "merge-on-green", "leave-open"]}}
+        },
+        "else": {"properties": {"prCompletion": {"type": "null"}}}
+      }
+    ]
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["taskId", "mode", "state", "duplicate"],
+    "properties": {
+      "taskId": {"type": "string"},
+      "mode": {"enum": ["implement", "research-and-file-issue"]},
+      "state": {"enum": ["queued", "running", "completed", "failed", "blocked"]},
+      "duplicate": {"type": "boolean"},
+      "artifact": {
+        "oneOf": [
+          {"type": "null"},
+          {"type": "object", "additionalProperties": false, "required": ["kind", "url"], "properties": {"kind": {"enum": ["issue", "pull-request", "report"]}, "url": {"type": "string"}, "number": {"type": ["integer", "null"]}}}
+        ]
+      }
+    }
+  },
+  "policy": {
+    "scopes": ["mind"],
+    "requiredCapabilities": ["cos.create-task"],
+    "sideEffect": "supervised-write",
+    "idempotent": true,
+    "async": true,
+    "confirmation": "capability-grant"
+  }
+}
+```
+
+The JSON spelling above is canonical for PortOS. Provider adapters may rename
+`input_schema` to `parameters` or another provider field, but stored catalog
+definitions, audit events, and validation use this shape. Schemas are closed by
+default (`additionalProperties: false`), semantic absence is represented by
+`null` or an omitted optional key rather than an empty string, and results must
+validate before they are exposed to the model. `provider` is required when
+`routing` is `pinned` and omitted when routing is automatic; the `oneOf` above
+is the same discriminated union the registry's Zod schema must enforce.
+
+**Proposed call contract:**
+
+```json
+{
+  "type": "portos_tool_call",
+  "requestId": "mind-turn-example-tool-01",
+  "name": "cos.create-task",
+  "version": 1,
+  "arguments": {},
+  "context": {"turnId": "turn-example", "source": "persistent-mind"}
+}
+```
+
+`requestId` is the body representation of the HTTP `Idempotency-Key`.
+`context` is correlation-only; the supervisor supplies authority out of band.
+The normalized result is the envelope in section 5.3 plus
+`type: "portos_tool_result"` and `version: 1`. Provider adapters never return a
+raw provider tool-call object or a raw PortOS route response to the mind.
 
 ## 2. Audit method and scope
 
@@ -543,6 +661,26 @@ The current Persistent Mind capability schema is strict and grants only the defa
 
 To add a typed action to `mind`, the implementation must add a named default-off capability (for example `brainWrite`, `goalsWrite`, or `healthWrite`) to the canonical Persistent Mind schema and catalog, persist it through a migration in `scripts/migrations/` with its seed in `data.reference/`, and expose its grant/revoke control in the Persistent Mind UI. Existing records must retain their prior effective authority after migration. The call path revalidates the stored grant, actor, tool, and scope at execution time; a generic `mind` scope or global default never implies a write grant. The tool manifest must advertise the capability requirement and the call must return `CAPABILITY_REQUIRED` when it is absent.
 
+### 6.5 Verified endpoint-to-tool mappings
+
+The following mappings are the preliminary bridge from current PortOS entry
+points to `portos_tool`. “Adapter” means an in-process service call; none of
+these tools may proxy arbitrary HTTP.
+
+| Canonical tool or supervisor operation | Current source | Normalized input | Normalized output | Status |
+|---|---|---|---|---|
+| `cos.create-task` | `GET /api/cos/mind/tools`, `persistentMindTaskCapability.js`, `POST /api/cos/tasks` | app/provider/model/effort, prompt, mode, validation, PR policy | task ID, queue state, duplicate flag, eventual artifact | **Verified in source**; canonical wrapper proposed. |
+| `cos.research.file-issue` | Same capability with `planOnly: true`; `plan-task` workflow | app, research question, acceptance criteria, provider preference | task ID, then GitHub/GitLab issue URL/number | **Verified in source** for plan-and-file; result projection **[VERIFY]**. |
+| `provider.usage.read` | `GET /api/usage/providers`; `providerUsage.js` | optional family and freshness | family cards with limits, remaining %, reset, age, approximation/error/pending | **Verified in source**; mind exposure proposed as supervisor-only metadata. |
+| `provider.status.read` | `/api/providers/status`; `providerStatus.js` | optional provider ID | availability, reason, recovery time | **Verified in source**; combined visibility projection proposed. |
+| `provider.route.preview` | provider catalog/readiness + the routing policy in section 9.1 | task requirements; no prompt body | selected candidate, ordered fallbacks, safe reason codes | **Proposed**; must make zero LLM calls. |
+| `code-agent.status` | CoS task reads and existing voice `code_agent_status` | task ID | normalized task/job state and artifact reference | **Verified in source**; output parity **[VERIFY]**. |
+
+The route audit must confirm the final task artifact projection before
+implementation; the status and usage routes above are mounted in the current
+source, while the projection from completed task metadata to a normalized
+artifact remains deliberately preliminary.
+
 ## 7. Scope and capability policy
 
 Scopes are audience and context constraints, not a replacement for authorization:
@@ -602,6 +740,153 @@ The Persistent Mind prompt should receive only the scope-filtered catalog, not t
 
 Small models should continue to receive intent-filtered subsets. `GET /api/cos/tools?intent=...` may support server-side filtering, but the server must not trust a client-provided intent as authorization. The existing voice `TOOL_GROUPS`/intent regexes can seed groups, while canonical registry metadata becomes the source of truth for names, schemas, and risk annotations.
 
+### 9.1 Preliminary provider-routing policy
+
+For Persistent Mind tool-planning and research tasks, the proposed default
+candidate order is:
+
+1. **Codex Luna Max** — the enabled Codex-family CLI/TUI provider, model
+   `gpt-5.6-luna`, effort `max`.
+2. **Claude** — the enabled Claude Code CLI/TUI provider, using its configured
+   default (or heavy) model and the highest effort that provider/model advertises.
+3. The task's explicit configured fallback, then the existing system-priority
+   fallback list, filtered by tool-use, context, image, readiness, and scope
+   requirements.
+
+“Codex Luna Max” is a routing label for the model/effort pair, not a new
+provider record. A user-pinned provider/model remains first unless the request
+sets `routing: "automatic"`; the Persistent Mind default is automatic. The
+selection is resolved from enabled provider configuration and readiness rather
+than assuming the seed IDs still exist on every install.
+
+This ordering is **Proposed [VERIFY]**. The audit must confirm that Luna remains
+selectable with `max` effort in the current Codex CLI and that the chosen Claude
+model has the required tool-use/context capabilities. If either combination is
+not advertised, it is excluded rather than invoked optimistically.
+
+#### Pre-dispatch decision
+
+The supervisor obtains a quota/status snapshot before creating a provider run:
+
+```text
+candidates = configured order filtered by readiness and task capabilities
+for candidate in candidates:
+  visibility = family quota card + provider availability status
+  if visibility is unavailable because of a known usage/rate limit: skip
+  if any current limiting window is at or below reserve: skip
+  if visibility is pending, stale, unsupported, or approximate: keep candidate,
+    mark the uncertainty, and rely on execution-time fallback
+  select candidate
+```
+
+The preliminary reserve is **15% remaining in the narrowest/limiting window**
+and **5% remaining in the broadest/target window**. The two-window rule prevents
+a nearly exhausted five-hour allowance from starting a long task while also
+preserving the remainder of a nearly exhausted weekly allowance. These values,
+the definition of a “long task,” and the maximum acceptable reading age are
+**[VERIFY]** and must become settings rather than hidden constants if retained.
+
+A missing, pending, approximate, or unsupported reading is not the same as zero
+quota. It must be surfaced as `confidence: "unknown"` and must not permanently
+bench a provider. A positively observed provider refusal still flows through
+the existing provider-status service: usage-limit errors use the parsed reset,
+rate limits use their shorter cooldown, and the runner selects the next eligible
+fallback. At most one automatic provider switch occurs per logical tool-planning
+step **[VERIFY]**; the same `request_id` and canonical argument digest survive
+the switch so a retry cannot duplicate a side effect.
+
+Provider fallback is allowed only before a side effect or for a provider-only
+planning/generation phase proven idempotent. Once an adapter has accepted a
+mutation or asynchronous job, the supervisor polls that operation; it never
+replays it against another provider.
+
+### 9.2 Usage visibility layer
+
+The visibility layer is a supervisor projection over existing local services,
+not a new provider call:
+
+```json
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-08-27T12:00:00.000Z",
+  "providers": [
+    {
+      "providerId": "codex",
+      "family": "codex",
+      "available": true,
+      "confidence": "approximate",
+      "source": "local-telemetry",
+      "pending": false,
+      "stale": false,
+      "limits": [
+        {"scope": "session", "percentRemaining": 42, "resetsAt": "2026-08-27T15:00:00.000Z", "role": "limiting"},
+        {"scope": "week", "percentRemaining": 58, "resetsAt": "2026-09-01T00:00:00.000Z", "role": "target"}
+      ],
+      "routing": {"eligible": true, "reasonCodes": []}
+    }
+  ]
+}
+```
+
+- `GET /api/usage/providers` remains the source of subscription-family cards.
+  A normal read serves cached data immediately and revalidates in the
+  background; `refresh=1` explicitly waits for a bounded fresh read.
+- Provider status supplies known unavailability, failure category, and recovery
+  time. The projection joins status by configured provider and quota by
+  subscription family; it never conflates a provider ID with a family ID.
+- Codex quota comes from bounded local rollout telemetry. Claude quota comes
+  from the zero-token local `/usage` reader. Both may be approximate and must
+  expose `fetchedAt`/age. Catalog and visibility reads never call an LLM.
+- `pending`, `error`, `supported: false`, no limits, and a legitimate 0% reading
+  remain distinct states. The router may skip only on an explicit threshold or
+  known status denial, never on truthiness or an empty list.
+- The UI subscribes to a proposed `provider-visibility:changed` Socket.IO event
+  and reconciles with the HTTP snapshot. **[VERIFY]** the event name and whether
+  the current provider-status event can be safely extended rather than adding a
+  second stream.
+- Persistent Mind receives only the selected provider, fallback reason codes,
+  remaining percentages, and reset times needed to explain routing. It does not
+  receive credentials, raw session logs, usage-panel text, provider responses,
+  or other machines' quota. Visibility is machine-local and never federated.
+
+Real-time means that a user-requested refresh and provider status changes become
+visible without reloading the page; it does not mean scraping every provider on
+every call. The implementation should retain the current single-flight,
+stale-while-revalidate behavior to avoid spawning duplicate PTY readers.
+
+### 9.3 Research-heavy GitHub issue filing mode
+
+`cos.research.file-issue` is the canonical convenience tool for the existing
+Persistent Mind `cos.create-task` capability with
+`mode: "research-and-file-issue"` (stored as `planOnly: true`). It is intended
+for work whose durable deliverable is a decision-complete tracker issue rather
+than a code diff.
+
+The supervisor must:
+
+1. Resolve the managed app and verify it has a repository path and a GitHub or
+   GitLab tracker. This is already enforced by the current task capability.
+2. Route the research agent through section 9.1, retaining the requested
+   provider preference and recording any automatic fallback reason.
+3. Require repository inspection, relevant source references, constraints,
+   implementation steps, acceptance criteria, validation, rollout/compatibility
+   risks, and explicit **[VERIFY]** items in the issue body.
+4. Search open tracker items for semantic/exact duplicates before filing. A
+   failed duplicate search is a blocking uncertainty, not proof that no
+   duplicate exists **[VERIFY]** against the `plan-task` workflow.
+5. File exactly one issue using the repository's resolved forge workflow; do
+   not edit code, open a PR, or write the target app's research into PortOS.
+6. Return a typed `artifact: { kind: "issue", url, number }`. Until the queued
+   task completes, return `artifact: null` and the task status reference; never
+   claim an issue was filed from a natural-language plan.
+
+Issue filing is an authorized consequence of the default-off
+`cos.create-task` capability and the explicit research mode. It does not use the
+generic human-confirmation token for each issue, but it remains subject to the
+five-requests-per-turn limit, tracker gate, workspace preflight, task budget,
+and canonical replay protection. Direct issue creation outside this supervised
+mode remains an external write and requires its own explicit capability.
+
 ## 10. Observability and privacy
 
 Every call gets a request ID, tool ID, outcome status, duration, and redacted error code. Logs use the existing emoji-prefixed, single-line format and contain no full arguments, personal records, prompts, tokens, credentials, file paths, hostnames, or provider responses. Metrics should include counts and latency by tool ID, status, provider class, and scope, with cardinality bounds.
@@ -624,6 +909,7 @@ Trajectory events may record the tool ID, request ID, argument digest, status, a
 ## 12. Acceptance criteria
 
 - A Persistent Mind turn can discover a bounded, scope-correct catalog and call a typed tool without knowing a PortOS route.
+- Catalog entries, calls, and results round-trip through the versioned `portos_tool`, `portos_tool_call`, and `portos_tool_result` profiles with closed input/output schemas.
 - Existing voice tools and palette actions continue to pass their current tests through compatible aliases.
 - Every tool has input/output schemas, risk/privacy/lifecycle annotations, and a declared capability.
 - Invalid arguments, missing capabilities, unavailable integrations, duplicate replays, confirmation requirements, provider failures, and cancellations have stable machine-readable outcomes.
@@ -631,6 +917,10 @@ Trajectory events may record the tool ID, request ID, argument digest, status, a
 - UI-only operations cannot be invoked by a headless Persistent Mind.
 - No raw shell, database, backup restore, secret reveal, credential, or arbitrary HTTP proxy is exposed.
 - No catalog or capability read makes a cold-bootstrap LLM/provider call.
+- Automatic routing selects an eligible Codex Luna Max candidate before Claude, explains quota/status-driven fallback with safe reason codes, and preserves one logical request ID across a provider switch.
+- A pending, stale, unsupported, failed, empty, and genuinely exhausted quota reading remain distinguishable; only a known status denial or verified reserve threshold makes a provider ineligible.
+- Usage visibility updates from local quota/status sources without exposing credentials, raw telemetry, prompts, or quota through federation.
+- Research-and-file mode validates a GitHub/GitLab tracker, files at most one duplicate-checked issue, creates no code/PR, and reports the issue only after a typed artifact is observed.
 - Personal data remains local and redacted from logs/trajectory summaries by default.
 - A generated route/adapter coverage report and focused tests make drift fail fast.
 
