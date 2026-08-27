@@ -36,8 +36,8 @@ PortOS is a monorepo application with a React frontend and Express.js backend, m
 │  │  │                     │  │ health :5557       │  │ UI :5560               │  │  │
 │  │  │ Task Watcher        │  │                    │  │                        │  │  │
 │  │  │ CoS Evaluation      │  │ Persistent         │  │ PM2 crash monitor      │  │  │
-│  │  │ Agent cluster event  │  │ Chromium instance  │  │ (polls every 15m)      │  │  │
-│  │  │ wiring / dispatch    │  │ CDP WebSocket for  │  │ Claude CLI auto-fix    │  │  │
+│  │  │ CoS runner / task    │  │ Chromium instance  │  │ (polls every 15m)      │  │  │
+│  │  │ execution            │  │ CDP WebSocket for  │  │ Claude CLI auto-fix    │  │  │
 │  │  │                     │  │ web automation     │  │ Reads apps.json        │  │  │
 │  │  └─────────────────────┘  └────────────────────┘  │ Session history        │  │  │
 │  │                                                   └────────────────────────┘  │  │
@@ -76,7 +76,7 @@ PortOS/
 │   │   ├── cos.js             # Chief of Staff core
 │   │   ├── subAgentSpawner.js # Agent-cluster event wiring, runner communication, and slashdo loading
 │   │   ├── agentCliSpawning.js # Multi-provider CLI agent spawning
-│   │   ├── agentOrchestrator.js # Agent execution orchestration
+│   │   ├── agentOrchestrator.js # Agent lifecycle-transition facade
 │   │   ├── pm2.js             # PM2 process management
 │   │   ├── runner.js          # AI execution engine
 │   │   ├── memory.js          # Memory system
