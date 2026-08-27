@@ -85,6 +85,7 @@ describe('persistent mind routes', () => {
     });
     mocks.loadState.mockResolvedValue({ config: {
       domainAutonomy: { cos: 'execute' },
+      persistentMindCapabilities: { schemaVersion: 1, createTasks: true },
       persistentMindProfile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high' },
       persistentMindPrompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
     } });
@@ -121,6 +122,7 @@ describe('persistent mind routes', () => {
     expect(res.body).toMatchObject({
       events: [], gap: false, state: { status: 'idle' },
       profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
+      capabilities: { schemaVersion: 1, createTasks: true },
       harness: { type: 'api', recommendation: 'recommended' },
       autonomyMode: 'execute',
     });

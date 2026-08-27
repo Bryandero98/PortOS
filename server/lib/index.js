@@ -216,6 +216,7 @@ export * from './agentOutputMarkers.js';
 export * from './agentRunEvents.js';
 export * from './agentRunReconcile.js';
 export * from './persistentMind.js';
+export * from './persistentMindCapabilities.js';
 export * from './persistentMindTrajectory.js';
 export * from './persistentMindProfile.js';
 export * from './persistentMindPrompt.js';

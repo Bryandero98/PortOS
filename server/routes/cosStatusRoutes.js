@@ -12,6 +12,7 @@ import { validateRequest } from '../lib/validation.js';
 import { z } from 'zod';
 import { DOMAIN_IDS, DOMAIN_MODES } from '../lib/domainAutonomy.js';
 import { BUDGET_LIMIT_FIELDS } from '../lib/domainBudgets.js';
+import { persistentMindCapabilitiesSchema } from '../lib/persistentMindCapabilities.js';
 import { persistentMindProfileSchema } from '../lib/persistentMindProfile.js';
 import { persistentMindPromptSchema } from '../lib/persistentMindPrompt.js';
 
@@ -55,6 +56,9 @@ export const cosConfigSchema = z.object({
   // `alwaysOn`: saving or enabling this profile never starts background work.
   persistentMindProfile: persistentMindProfileSchema.optional(),
   persistentMindPrompt: persistentMindPromptSchema.optional(),
+  // Separate opt-in action grant: an enabled reasoning profile does not imply
+  // authority to create and execute agent tasks.
+  persistentMindCapabilities: persistentMindCapabilitiesSchema.optional(),
   // Per-domain autonomy guardrails (#711): partial map of domainId → mode.
   // Partial is fine — updateConfig() merges it over the stored map.
   domainAutonomy: z.object(

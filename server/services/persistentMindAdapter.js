@@ -9,6 +9,11 @@
  */
 
 import { z } from 'zod';
+import {
+  PERSISTENT_MIND_TASK_LIMITS,
+  normalizePersistentMindCapabilities,
+  persistentMindTaskRequestSchema,
+} from '../lib/persistentMindCapabilities.js';
 import { PERSISTENT_MIND_ID } from '../lib/persistentMindTrajectory.js';
 import { parseLLMJSON } from '../lib/llmText.js';
 import { loadState } from './cosState.js';
@@ -16,6 +21,11 @@ import { readPersistentMindMemories } from './persistentMindContext.js';
 import { normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { runPromptThroughProvider } from './promptRunner.js';
 import { stopRun } from './runner.js';
+import {
+  buildPersistentMindTaskCapabilityPrompt,
+  executePersistentMindTaskRequests,
+  readPersistentMindTaskCatalog,
+} from './persistentMindTaskCapability.js';
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
@@ -31,6 +41,10 @@ export const persistentMindResponseSchema = z.object({
   thinkingSummary: z.string().trim().max(4_000).optional().default(''),
   message: z.string().trim().max(8_000).optional().default(''),
   memoryCandidates: z.array(memoryCandidateSchema).max(5).optional().default([]),
+  taskRequests: z.array(persistentMindTaskRequestSchema)
+    .max(PERSISTENT_MIND_TASK_LIMITS.maxPerTurn)
+    .optional()
+    .default([]),
   selfWake: z.object({
     reason: z.string().trim().min(1).max(500),
     delayMinutes: z.number().int().min(1).max(10_080),
@@ -78,11 +92,13 @@ const currentWakeText = (wake) => {
   return `This is a self-directed wake. Continue one worthwhile thread from the trajectory.\nreason=${wake?.reason || 'scheduled reflection'}`;
 };
 
-export function buildPersistentMindTurnPrompt({ context, wake }) {
+export function buildPersistentMindTurnPrompt({ context, wake, taskCapabilityPrompt }) {
   return `${context.text}
 
 # Current wake
 ${currentWakeText(wake)}
+
+${taskCapabilityPrompt}
 
 # Response contract
 Return ONLY one JSON object with this shape:
@@ -90,9 +106,10 @@ Return ONLY one JSON object with this shape:
   "thinkingSummary": "A concise, user-visible working note explaining what you considered and why. Do not reveal hidden chain-of-thought.",
   "message": "The conversational reply. Required for a human message; optional for a self-directed wake.",
   "memoryCandidates": [{ "content": "A durable fact worth proposing", "summary": "Short label", "type": "fact", "category": "other", "tags": ["optional"] }],
+  "taskRequests": [{ "description": "Concise queue label", "prompt": "Complete instructions for the agent", "priority": "MEDIUM", "appId": "configured-app-id", "providerId": "configured-provider-id", "model": "configured-model-id-or-empty-for-default", "effort": "high", "prCompletion": "review-then-merge" }],
   "selfWake": { "reason": "Why another wake would be useful", "delayMinutes": 60 }
 }
-Use an empty array when there is no durable memory candidate and null when no earlier follow-up is needed. Memory candidates are proposals only; a human decides whether to promote them. This lane cannot mutate files, call tools, contact people, or perform external actions.`;
+Use empty arrays when there is no durable memory candidate or task request, and null when no earlier follow-up is needed. Memory candidates are proposals only; a human decides whether to promote them. Typed CoS task creation is the only action capability in this lane and is available only when the capability section says ON. This lane still cannot mutate files directly, call arbitrary tools, contact people, or perform other external actions.`;
 }
 
 const summaryEventLines = (events) => (Array.isArray(events) ? events : []).map((event) => {
@@ -174,21 +191,35 @@ export function createPersistentMindTurnAdapter() {
       return result.text.trim();
     },
 
-    async run({ turnId, wake, provider, model, effort, signal, context, heartbeat }) {
+    async run({ turnId, wake, provider, model, effort, signal, context, heartbeat, recordCapabilityEvent }) {
+      const root = await loadState();
+      const taskAccess = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+      const taskCatalog = taskAccess.createTasks ? await readPersistentMindTaskCatalog() : undefined;
+      const taskCapabilityPrompt = buildPersistentMindTaskCapabilityPrompt({
+        enabled: taskAccess.createTasks,
+        catalog: taskCatalog,
+      });
       const result = await runPinnedPrompt({
         provider,
         model,
         effort,
         signal,
         heartbeat,
-        prompt: buildPersistentMindTurnPrompt({ context, wake }),
+        prompt: buildPersistentMindTurnPrompt({ context, wake, taskCapabilityPrompt }),
         responseSchema: persistentMindResponseSchema,
       });
       const parsed = persistentMindResponseSchema.parse(parseLLMJSON(result.text));
       const message = parsed.message || (wake?.kind === 'message' ? parsed.thinkingSummary : '');
-      if (!parsed.thinkingSummary && !message && parsed.memoryCandidates.length === 0) {
-        throw new Error('Persistent mind returned no visible thought, reply, or memory candidate');
+      if (!parsed.thinkingSummary && !message && parsed.memoryCandidates.length === 0 && parsed.taskRequests.length === 0) {
+        throw new Error('Persistent mind returned no visible thought, reply, memory candidate, or task request');
       }
+      await executePersistentMindTaskRequests({
+        taskRequests: parsed.taskRequests,
+        turnId,
+        wake,
+        signal,
+        recordCapabilityEvent,
+      });
       const events = [];
       if (parsed.thinkingSummary) {
         events.push({

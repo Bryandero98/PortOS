@@ -12,6 +12,7 @@ import TabPills from '../../ui/TabPills';
 import PersistentMindContextPanel from '../PersistentMindContextPanel';
 import PersistentMindProfileControls from '../PersistentMindProfileControls';
 import PersistentMindRuntimePanel, { PersistentMindThoughtStatus } from '../PersistentMindRuntimePanel';
+import PersistentMindTaskAccessControls from '../PersistentMindTaskAccessControls';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
@@ -82,6 +83,7 @@ export default function MindTab() {
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [taskAccessSaving, setTaskAccessSaving] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [runtime, setRuntime] = useState(null);
   const [runtimeError, setRuntimeError] = useState(null);
@@ -115,7 +117,12 @@ export default function MindTab() {
         sawGap ||= response.gap === true;
         sawTruncation ||= response.truncated === true;
         cursor = response.gap === true ? response.cursor : response.cursor || cursor;
-        setMind({ state: response.state, profile: response.profile, autonomyMode: response.autonomyMode });
+        setMind({
+          state: response.state,
+          profile: response.profile,
+          capabilities: response.capabilities,
+          autonomyMode: response.autonomyMode,
+        });
         page += 1;
         needsMore = response.hasMore === true && !sawGap;
         if (!needsMore) break;
@@ -295,6 +302,7 @@ export default function MindTab() {
   const selectedEvent = events?.find((event) => event.eventId === selectedEventId) || null;
   const isPaused = state?.status === 'paused';
   const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
+  const setupSaving = profileSaving || taskAccessSaving;
   const visibleEvents = (events || []).filter((event) => showActivity || ![
     'mind.wake', 'mind.model.request', 'mind.model.result', 'mind.turn.completed',
   ].includes(event.kind));
@@ -357,10 +365,20 @@ export default function MindTab() {
             onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
             onSavingChange={setProfileSaving}
           />
+          <div className="mt-4 border-t border-port-border pt-4">
+            <h3 className="text-sm font-semibold text-port-text">Agent task access</h3>
+            <p className="mb-3 mt-1 text-xs text-port-text-muted">Choose whether this mind may turn a concrete recommendation into a typed task with its own run profile and landing gate.</p>
+            <PersistentMindTaskAccessControls
+              capabilities={mind?.capabilities}
+              disabled={!mind}
+              onSaved={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)}
+              onSavingChange={setTaskAccessSaving}
+            />
+          </div>
           {!state?.started && (
             <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-port-text-muted">{profileSaving ? 'Saving the AI profile…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
-              <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || profileSaving || !profileReady} onClick={() => runLifecycle('start')} />
+              <p className="text-xs text-port-text-muted">{setupSaving ? 'Saving persistent mind settings…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
+              <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || setupSaving || !profileReady} onClick={() => runLifecycle('start')} />
             </div>
           )}
         </section>

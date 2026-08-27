@@ -57,6 +57,7 @@ const response = (overrides = {}) => ({
   snapshot: {},
   state: { enabled: true, started: true, status: 'waiting', pauseReason: null },
   profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
+  capabilities: { schemaVersion: 1, createTasks: false },
   autonomyMode: 'execute',
   ...overrides,
 });
@@ -209,6 +210,23 @@ describe('MindTab', () => {
     await waitFor(() => expect(start).toBeEnabled());
     await user.click(start);
     await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
+  });
+
+  it('persists the separate opt-in task-creation grant', async () => {
+    const user = userEvent.setup();
+    renderTab('/cos/mind?view=setup');
+
+    const taskAccess = await screen.findByRole('checkbox', { name: 'Allow mind to queue CoS agent tasks' });
+    expect(taskAccess).not.toBeChecked();
+    await user.click(taskAccess);
+
+    await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
+      { persistentMindCapabilities: { schemaVersion: 1, createTasks: true } },
+      { silent: true },
+    ));
+    expect(screen.getByText(/code review then merge/i)).toBeInTheDocument();
+    expect(screen.getByText(/merge when CI is green/i)).toBeInTheDocument();
+    expect(screen.getByText(/leave open for human review/i)).toBeInTheDocument();
   });
 
   it('keeps a failed message for a visible idempotent retry', async () => {

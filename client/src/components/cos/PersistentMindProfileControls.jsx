@@ -170,7 +170,7 @@ export default function PersistentMindProfileControls({
         </div>
       )}
       <p className="text-xs text-port-text-muted">
-        Thinking effort appears when the selected provider and model support it. File-changing work remains an explicit typed CoS task; an unavailable or invalid pin pauses the mind instead of falling back.
+        Thinking effort appears when the selected provider and model support it. An unavailable or invalid pin pauses the mind instead of falling back; agent-task authority is granted separately below.
       </p>
     </div>
   );

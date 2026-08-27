@@ -5,12 +5,19 @@ const mock = vi.hoisted(() => ({
   memories: [{ id: 'memory-1', type: 'fact', content: 'A durable fact.', sourceAgentId: 'cos-persistent-mind', status: 'active' }],
   runPrompt: vi.fn(),
   stopRun: vi.fn(),
+  readTaskCatalog: vi.fn(),
+  executeTaskRequests: vi.fn(),
 }));
 
 vi.mock('./cosState.js', () => ({ loadState: vi.fn(async () => mock.root) }));
 vi.mock('./persistentMindContext.js', () => ({ readPersistentMindMemories: vi.fn(async () => mock.memories) }));
 vi.mock('./promptRunner.js', () => ({ runPromptThroughProvider: (...args) => mock.runPrompt(...args) }));
 vi.mock('./runner.js', () => ({ stopRun: (...args) => mock.stopRun(...args) }));
+vi.mock('./persistentMindTaskCapability.js', () => ({
+  buildPersistentMindTaskCapabilityPrompt: ({ enabled }) => `Task access: ${enabled ? 'ON' : 'OFF'}`,
+  readPersistentMindTaskCatalog: (...args) => mock.readTaskCatalog(...args),
+  executePersistentMindTaskRequests: (...args) => mock.executeTaskRequests(...args),
+}));
 
 const { createPersistentMindTurnAdapter, persistentMindHarnessInfo } = await import('./persistentMindAdapter.js');
 
@@ -18,6 +25,9 @@ const profile = { provider: { id: 'example-api', type: 'api' }, model: 'example-
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mock.root.config.persistentMindCapabilities = { createTasks: true };
+  mock.readTaskCatalog.mockResolvedValue({ apps: [{ id: 'portos' }], providers: [{ id: 'codex' }] });
+  mock.executeTaskRequests.mockResolvedValue([]);
   mock.runPrompt.mockResolvedValue({ text: JSON.stringify({
     thinkingSummary: 'I connected the new request to the durable fact.',
     message: 'Here is the answer.',
@@ -60,6 +70,42 @@ describe('persistent mind adapter', () => {
     expect(result.events.map((event) => event.kind)).toEqual([
       'mind.thought', 'mind.reply', 'mind.memory.candidate',
     ]);
+    expect(mock.runPrompt.mock.calls[0][0].prompt).toContain('Task access: ON');
+  });
+
+  it('executes bounded typed task requests through the supervised capability', async () => {
+    const taskRequest = {
+      description: 'Audit the local configuration contract',
+      prompt: 'Inspect the repository and implement the bounded fix.',
+      priority: 'HIGH',
+      appId: 'portos',
+      providerId: 'codex',
+      model: 'gpt-5',
+      effort: 'high',
+      prCompletion: 'review-then-merge',
+    };
+    mock.runPrompt.mockResolvedValue({ text: JSON.stringify({
+      thinkingSummary: 'This is concrete delegated work.',
+      message: 'I am requesting the task now.',
+      taskRequests: [taskRequest],
+    }) });
+    const recordCapabilityEvent = vi.fn(async () => true);
+    const signal = new AbortController().signal;
+    await createPersistentMindTurnAdapter().run({
+      turnId: 'turn-task',
+      wake: { kind: 'message', message: { id: 'message-task', text: 'Queue the audit.' } },
+      ...profile,
+      signal,
+      context: { text: '# Context' },
+      recordCapabilityEvent,
+    });
+    expect(mock.executeTaskRequests).toHaveBeenCalledWith({
+      taskRequests: [taskRequest],
+      turnId: 'turn-task',
+      wake: expect.objectContaining({ kind: 'message' }),
+      signal,
+      recordCapabilityEvent,
+    });
   });
 
   it('keeps slow provider calls alive with a bounded periodic heartbeat', async () => {
@@ -77,7 +123,9 @@ describe('persistent mind adapter', () => {
         heartbeat,
       });
 
-      await Promise.resolve();
+      // The task-capability grant and bounded provider/app catalog are resolved
+      // before inference starts; flush that read-only preflight too.
+      await vi.advanceTimersByTimeAsync(0);
       expect(heartbeat).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(heartbeat).toHaveBeenCalledTimes(2);

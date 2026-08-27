@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
 import { PERSISTENT_MIND_LIMITS } from '../lib/persistentMind.js';
+import { normalizePersistentMindCapabilities } from '../lib/persistentMindCapabilities.js';
 import {
   PERSISTENT_MIND_ID,
   PERSISTENT_MIND_TRAJECTORY_LIMITS,
@@ -110,6 +111,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
     loadState(),
   ]);
   const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
+  const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
   const provider = profile.providerId ? await getProviderById(profile.providerId) : null;
   const { snapshot: _snapshot, ...publicHistory } = history;
   res.json({
@@ -122,6 +124,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
       effort: profile.effort || null,
       thinkingInterface: profile.thinkingInterface,
     },
+    capabilities,
     harness: persistentMindHarnessInfo(provider),
     autonomyMode: getDomainMode(root.config, 'cos'),
   });
