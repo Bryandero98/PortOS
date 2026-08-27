@@ -10,10 +10,12 @@
  */
 
 import { randomUUID } from 'crypto';
-import { readFile, unlink } from 'fs/promises';
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
+import { join } from 'path';
 import { getDomainMode } from '../lib/domainAutonomy.js';
 import {
   PERSISTENT_MIND_LIMITS,
+  PERSISTENT_MIND_IMAGE_EXTENSIONS,
   createDefaultPersistentMindState,
   isPersistentMindAttachmentId,
   normalizePersistentMindAttachment,
@@ -58,6 +60,8 @@ let supervisorStopping = false;
 const nowIso = () => new Date().toISOString();
 const errorMessage = (error) => String(error?.message || error || 'Persistent mind turn failed')
   .slice(0, PERSISTENT_MIND_LIMITS.MAX_REASON_CHARS);
+const PENDING_ATTACHMENT_MARKER_PREFIX = '.mind-pending-';
+const PENDING_ATTACHMENT_MARKER_PATTERN = /^\.mind-pending-([A-Za-z0-9_-]{1,128})$/;
 
 async function mutateMindState(mutator) {
   return withStateLock(async () => {
@@ -130,6 +134,87 @@ const messageFromAttachments = ({ id, text, createdAt, attachments }) => ({
   createdAt,
 });
 
+const pendingAttachmentMarkerPath = (attachmentId) => join(
+  PATHS.screenshots,
+  `${PENDING_ATTACHMENT_MARKER_PREFIX}${attachmentId}`,
+);
+
+const removePendingAttachmentMarker = async (attachmentId) => unlink(pendingAttachmentMarkerPath(attachmentId)).then(
+  () => true,
+  (error) => {
+    if (error?.code === 'ENOENT') return true;
+    console.error(`❌ Failed to remove Persistent Mind upload marker ${attachmentId}: ${error.message}`);
+    return false;
+  },
+);
+
+const removeStoredFilename = async (filename) => {
+  const filePath = resolveScreenshot(filename);
+  if (!filePath) return true;
+  return unlink(filePath).then(
+    () => true,
+    (error) => {
+      if (error?.code === 'ENOENT') return true;
+      console.error(`❌ Failed to remove Persistent Mind attachment file: ${error.message}`);
+      return false;
+    },
+  );
+};
+
+const screenshotEntries = async () => readdir(PATHS.screenshots).then(
+  (entries) => entries.filter((entry) => typeof entry === 'string'),
+  (error) => {
+    if (error?.code === 'ENOENT') return [];
+    console.error(`❌ Failed to inspect Persistent Mind upload markers: ${error.message}`);
+    return null;
+  },
+);
+
+const removePendingAttachmentFiles = async (attachmentId, entries) => {
+  const prefix = `mind-${attachmentId}-`;
+  const candidates = entries.filter((entry) => (
+    entry.startsWith(prefix)
+    && PERSISTENT_MIND_IMAGE_EXTENSIONS.some((extension) => entry.toLowerCase().endsWith(extension))
+  ));
+  let removed = true;
+  for (const filename of candidates) {
+    if (!await removeStoredFilename(filename)) removed = false;
+  }
+  return removed;
+};
+
+/** Reap marker-backed files left before their pending state could be indexed. */
+const cleanupUnindexedPendingAttachments = async ({ knownAttachments, now, limit }) => {
+  const entries = await screenshotEntries();
+  if (!entries) return { examined: 0, removed: 0 };
+  const recordsById = new Map(knownAttachments.map((attachment) => [attachment.attachmentId, attachment]));
+  const markers = entries
+    .map((entry) => ({ entry, match: PENDING_ATTACHMENT_MARKER_PATTERN.exec(entry) }))
+    .filter(({ match }) => Boolean(match))
+    .slice(0, limit);
+  let removed = 0;
+  for (const { entry, match } of markers) {
+    const attachmentId = match[1];
+    const known = recordsById.get(attachmentId);
+    if (known) {
+      // A claimed asset is durable even if its metadata is later pruned. The
+      // marker is only a pending-upload sentinel, so removing it is safe.
+      if (known.claimedBy && await removePendingAttachmentMarker(attachmentId)) removed += 1;
+      continue;
+    }
+    const markerAge = await stat(join(PATHS.screenshots, entry)).then(
+      (value) => value.mtimeMs,
+      () => null,
+    );
+    if (!Number.isFinite(markerAge) || markerAge > now - PERSISTENT_MIND_LIMITS.PENDING_ATTACHMENT_TTL_MS) continue;
+    if (await removePendingAttachmentFiles(attachmentId, entries)
+        && await removePendingAttachmentMarker(attachmentId)) {
+      removed += 1;
+    }
+  }
+  return { examined: markers.length, removed };
+};
+
 const verifyStoredAttachment = async (attachment) => {
   const filePath = resolveScreenshot(attachment.filename);
   if (!filePath) return false;
@@ -143,25 +228,16 @@ const verifyStoredAttachment = async (attachment) => {
 };
 
 const removeStoredAttachmentFile = async (attachment) => {
-  const filePath = resolveScreenshot(attachment.filename);
-  if (!filePath) return true;
-  return unlink(filePath).then(
-    () => true,
-    (error) => {
-      if (error?.code === 'ENOENT') return true;
-      console.error(`❌ Failed to remove Persistent Mind attachment ${attachment.attachmentId}: ${error.message}`);
-      return false;
-    },
-  );
+  return removeStoredFilename(attachment.filename);
 };
 
 const removeUploadAfterStateFailure = async (filePath, attachmentId) => unlink(filePath).then(
-  () => true,
+  async () => removePendingAttachmentMarker(attachmentId),
   (error) => {
     if (error?.code !== 'ENOENT') {
       console.error(`❌ Failed to clean up Persistent Mind upload ${attachmentId}: ${error.message}`);
     }
-    return false;
+    return removePendingAttachmentMarker(attachmentId).then(() => false);
   },
 );
 
@@ -195,7 +271,12 @@ export async function cleanupPersistentMindAttachments({ now = Date.now() } = {}
     let removed = 0;
     const pendingAttachments = [];
     for (const attachment of mind.pendingAttachments) {
-      if (attachment.claimedBy || examined >= PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_CLEANUP_PER_PASS) {
+      if (attachment.claimedBy) {
+        await removePendingAttachmentMarker(attachment.attachmentId);
+        pendingAttachments.push(attachment);
+        continue;
+      }
+      if (examined >= PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_CLEANUP_PER_PASS) {
         pendingAttachments.push(attachment);
         continue;
       }
@@ -210,9 +291,15 @@ export async function cleanupPersistentMindAttachments({ now = Date.now() } = {}
       if (await removeStoredAttachmentFile(attachment)) removed += 1;
       else pendingAttachments.push(attachment);
     }
+    const orphaned = await cleanupUnindexedPendingAttachments({
+      knownAttachments: pendingAttachments,
+      now,
+      limit: Math.max(0, PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_CLEANUP_PER_PASS - examined),
+    });
+    removed += orphaned.removed;
     return {
       mind: removed > 0 ? { ...mind, pendingAttachments } : mind,
-      value: { success: true, removed, examined },
+      value: { success: true, removed, examined: examined + orphaned.examined },
     };
   });
   return result.value;
@@ -226,6 +313,11 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
   await cleanupPersistentMindAttachments();
   const attachmentId = randomUUID();
   const originalName = sanitizeFilename(filename).slice(0, PERSISTENT_MIND_LIMITS.MAX_ATTACHMENT_NAME_CHARS) || `image-${attachmentId}`;
+  // Create the marker BEFORE the image write. If the process dies after the
+  // write but before the state record is saved, boot/activity cleanup can find
+  // and reap the otherwise-unindexed file without ever scanning durable assets.
+  await mkdir(PATHS.screenshots, { recursive: true });
+  await writeFile(pendingAttachmentMarkerPath(attachmentId), '', { flag: 'wx' });
   const saved = await saveImageUpload(PATHS.screenshots, {
     filename: `mind-${attachmentId}-${originalName}`,
     data,
@@ -278,6 +370,8 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
   );
   if (!result.value.success) {
     await removeUploadAfterStateFailure(saved.filePath, attachmentId);
+  } else {
+    await removePendingAttachmentMarker(attachmentId);
   }
   return result.value;
 }
@@ -296,6 +390,7 @@ export async function deletePersistentMindAttachment(attachmentId) {
     if (!await removeStoredAttachmentFile(attachment)) {
       return { mind, value: attachmentFailure('Persistent mind attachment could not be removed', { code: 'ATTACHMENT_DELETE_FAILED', status: 500 }) };
     }
+    await removePendingAttachmentMarker(attachmentId);
     return {
       mind: { ...mind, pendingAttachments: mind.pendingAttachments.filter((item) => item.attachmentId !== attachmentId) },
       value: { success: true, attachmentId },
@@ -1103,6 +1198,13 @@ export async function enqueuePersistentMindMessage({ id = randomUUID(), text, im
       + (mind.activeTurn?.wake.kind === 'message' ? 1 : 0);
     if (acceptedMessageCount >= PERSISTENT_MIND_LIMITS.MAX_QUEUED_MESSAGES) {
       return { mind, value: attachmentFailure('Persistent mind message queue is full', { code: 'QUEUE_FULL', status: 409 }) };
+    }
+    // Once the state mutation below records the claim, the attachment is a
+    // durable conversation asset. Removing the pending marker first is safe:
+    // if this process stops before saveState, the still-unclaimed state record
+    // continues to protect the valid file from cleanup.
+    for (const attachment of resolved.attachments) {
+      await removePendingAttachmentMarker(attachment.attachmentId);
     }
     const claimedAt = nowIso();
     const requestedIds = new Set(attachmentIds);

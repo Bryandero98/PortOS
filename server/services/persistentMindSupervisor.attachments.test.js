@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultPersistentMindState } from '../lib/persistentMind.js';
+import { PERSISTENT_MIND_LIMITS, createDefaultPersistentMindState } from '../lib/persistentMind.js';
 
 const mocks = vi.hoisted(() => ({
   root: null,
@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   saveImageUpload: vi.fn(),
   resolveScreenshot: vi.fn(),
   detectImageFormat: vi.fn(),
+  mkdir: vi.fn(),
+  writeFile: vi.fn(),
+  readdir: vi.fn(),
+  stat: vi.fn(),
   sanitizeFilename: vi.fn((value) => String(value).replace(/[^a-zA-Z0-9._-]/g, '_')),
   readFile: vi.fn(),
   unlink: vi.fn(),
@@ -33,8 +37,12 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 vi.mock('fs/promises', async (importOriginal) => ({
   ...(await importOriginal()),
+  mkdir: mocks.mkdir,
   readFile: mocks.readFile,
+  readdir: mocks.readdir,
+  stat: mocks.stat,
   unlink: mocks.unlink,
+  writeFile: mocks.writeFile,
 }));
 
 vi.mock('./cosEvents.js', () => ({
@@ -116,6 +124,13 @@ describe('persistent mind image attachment lifecycle', () => {
     mocks.detectImageFormat.mockReturnValue({ mime: 'image/png' });
     mocks.readFile.mockReset();
     mocks.readFile.mockResolvedValue(PNG);
+    mocks.mkdir.mockReset();
+    mocks.mkdir.mockResolvedValue(undefined);
+    mocks.writeFile.mockReset();
+    mocks.writeFile.mockResolvedValue(undefined);
+    mocks.readdir.mockReset();
+    mocks.readdir.mockResolvedValue([]);
+    mocks.stat.mockReset();
     mocks.unlink.mockReset();
     mocks.unlink.mockResolvedValue(undefined);
     mocks.appendMindEvent.mockClear();
@@ -186,7 +201,7 @@ describe('persistent mind image attachment lifecycle', () => {
       success: true,
       attachmentId: 'attachment-1',
     });
-    expect(mocks.unlink).toHaveBeenCalledTimes(1);
+    expect(mocks.unlink).toHaveBeenCalledTimes(2);
     expect(mocks.root.persistentMind.pendingAttachments).toEqual([]);
 
     mocks.root.persistentMind.pendingAttachments = [uploadRecord({ claimedBy: 'message-1', expiresAt: null })];
@@ -195,8 +210,24 @@ describe('persistent mind image attachment lifecycle', () => {
       code: 'ATTACHMENT_ALREADY_CLAIMED',
       status: 409,
     });
-    expect(mocks.unlink).toHaveBeenCalledTimes(1);
+    expect(mocks.unlink).toHaveBeenCalledTimes(2);
     expect(mocks.root.persistentMind.pendingAttachments).toHaveLength(1);
+  });
+
+  it('reaps an expired unindexed upload marker and its image without scanning durable assets', async () => {
+    const now = Date.parse('2026-08-27T00:00:00.000Z');
+    mocks.readdir.mockResolvedValue([
+      '.mind-pending-orphan',
+      'mind-orphan-diagram.png',
+      'historical.png',
+    ]);
+    mocks.stat.mockResolvedValue({ mtimeMs: now - PERSISTENT_MIND_LIMITS.PENDING_ATTACHMENT_TTL_MS - 1 });
+
+    await expect(supervisor.cleanupPersistentMindAttachments({ now }))
+      .resolves.toMatchObject({ success: true, removed: 1, examined: 1 });
+    expect(mocks.unlink).toHaveBeenNthCalledWith(1, '/tmp/portos-mind-attachments/mind-orphan-diagram.png');
+    expect(mocks.unlink).toHaveBeenNthCalledWith(2, '/tmp/portos-mind-attachments/.mind-pending-orphan');
+    expect(mocks.unlink).toHaveBeenCalledTimes(2);
   });
 
   it('cleans expired unclaimed files in a bounded pass without touching claimed files', async () => {
@@ -207,7 +238,7 @@ describe('persistent mind image attachment lifecycle', () => {
 
     await expect(supervisor.cleanupPersistentMindAttachments({ now: Date.parse('2026-08-27T00:00:00.000Z') }))
       .resolves.toMatchObject({ success: true, removed: 1, examined: 1 });
-    expect(mocks.unlink).toHaveBeenCalledTimes(1);
+    expect(mocks.unlink).toHaveBeenCalledTimes(2);
     expect(mocks.root.persistentMind.pendingAttachments).toMatchObject([{ attachmentId: 'claimed', claimedBy: 'message-1' }]);
   });
 
