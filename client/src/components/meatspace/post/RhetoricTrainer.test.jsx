@@ -129,7 +129,7 @@ describe('RhetoricTrainer', () => {
     });
   });
 
-  it('checks local residency when POST config is unavailable', async () => {
+  it('checks local residency when POST config is unavailable and preserves it through hydration', async () => {
     getLoadedLlmModels.mockResolvedValueOnce({
       ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
       lmstudio: [],
@@ -140,10 +140,42 @@ describe('RhetoricTrainer', () => {
       providers: [{ id: 'ollama', name: 'Ollama', enabled: true, models: [] }],
     });
 
-    render(<RhetoricTrainer {...props} config={null} />);
+    const view = render(<RhetoricTrainer {...props} config={null} />);
 
     expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
     expect(getLoadedLlmModels).toHaveBeenCalledWith({ silent: true });
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('ollama');
+      expect(screen.getByLabelText('Model')).toHaveValue('example-rhetoric:latest');
+    });
+
+    view.rerender(<RhetoricTrainer {...props} config={{ rhetoricEvaluator: { enabled: false } }} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('ollama');
+      expect(screen.getByLabelText('Model')).toHaveValue('example-rhetoric:latest');
+    });
+  });
+
+  it('does not use local residency for a remote Ollama provider', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
+      lmstudio: [],
+      sourceErrors: [],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'remote-ollama',
+      providers: [{ id: 'remote-ollama', name: 'Remote Ollama', endpoint: 'http://192.0.2.10:11434/v1', enabled: true, models: [] }],
+    });
+
+    render(<RhetoricTrainer {...props} config={{ rhetoricEvaluator: { enabled: false } }} />);
+
+    expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('');
+      expect(screen.getByLabelText('Model')).toHaveValue('');
+    });
+    expect(screen.queryByRole('option', { name: 'example-rhetoric:latest' })).not.toBeInTheDocument();
   });
 
   it('shows the rhetoric exercise choices', async () => {

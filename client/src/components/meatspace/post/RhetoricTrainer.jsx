@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, CheckCircle, ChevronRight, Feather, Lightbulb, Repeat2, RotateCcw, Save, Sparkles, Timer } from 'lucide-react';
 import { evaluateRhetoricAttempt, getLoadedLlmModels, submitTrainingEntry, updatePostConfig } from '../../../services/api';
 import useProviderModels from '../../../hooks/useProviderModels';
-import { isEmbeddingModel, isOllamaBackedProvider, localBackendForProvider, mergeModelLists } from '../../../utils/providers';
+import { isEmbeddingModel, isLocalEndpoint, isLocalInstanceProvider, isOllamaBackedProvider, localBackendForProvider, mergeModelLists } from '../../../utils/providers';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import toast from '../../ui/Toast';
 import { uuidv4 } from '../../../lib/uuid';
@@ -119,9 +119,26 @@ const normalizeLoadedLocalModels = (status, sourceErrors = []) => LOCAL_MODEL_BA
     : []
 ));
 
-const backendForProvider = (provider) => (
-  isOllamaBackedProvider(provider) ? 'ollama' : localBackendForProvider(provider)
-);
+const configuredProviderEndpoints = (provider) => {
+  const endpoints = [];
+  if (typeof provider?.endpoint === 'string' && provider.endpoint.trim()) endpoints.push(provider.endpoint);
+  const anthropicBaseUrl = provider?.envVars?.ANTHROPIC_BASE_URL;
+  if (typeof anthropicBaseUrl === 'string' && anthropicBaseUrl.trim()) endpoints.push(anthropicBaseUrl);
+  const openCodeConfig = provider?.envVars?.OPENCODE_CONFIG_CONTENT;
+  if (typeof openCodeConfig === 'string' && openCodeConfig.trim()) {
+    const openCodeEndpoints = [...openCodeConfig.matchAll(/"baseURL"\s*:\s*"([^"]+)"/g)].map((match) => match[1]);
+    if (openCodeEndpoints.length === 0) return null;
+    endpoints.push(...openCodeEndpoints);
+  }
+  return endpoints;
+};
+
+const backendForProvider = (provider) => {
+  if (!provider || !isLocalInstanceProvider(provider)) return null;
+  const endpoints = configuredProviderEndpoints(provider);
+  if (!endpoints || endpoints.some((endpoint) => !isLocalEndpoint(endpoint))) return null;
+  return isOllamaBackedProvider(provider) ? 'ollama' : localBackendForProvider(provider);
+};
 
 const pickLoadedEvaluatorModel = (models, providers, activeProviderId, sourceErrors) => {
   const available = models.filter((model) => (
@@ -341,10 +358,15 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
 
   useEffect(() => {
     setEvaluatorEnabled(savedEvaluator.enabled === true);
-    setEvaluatorProviderId(savedEvaluator.providerId || '');
-    setEvaluatorModel(savedEvaluator.model || '');
+    if (
+      !evaluatorSelectionTouchedRef.current
+      && (hasSavedEvaluatorChoice || !evaluatorAutoSelectionRef.current)
+    ) {
+      setEvaluatorProviderId(savedEvaluator.providerId || '');
+      setEvaluatorModel(savedEvaluator.model || '');
+    }
     setEvaluatorEffort(savedEvaluator.effort || '');
-  }, [savedEvaluator.enabled, savedEvaluator.providerId, savedEvaluator.model, savedEvaluator.effort]);
+  }, [hasSavedEvaluatorChoice, savedEvaluator.enabled, savedEvaluator.providerId, savedEvaluator.model, savedEvaluator.effort]);
 
   useEffect(() => {
     if (selectedMode) return undefined;
