@@ -295,18 +295,34 @@ export const getLora = async (filename) => {
 export const deleteLora = async (filename) => {
   assertSafeLoraFilename(filename);
   const filePath = join(PATHS.loras, filename);
-  if (!existsSync(filePath)) {
-    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
-  }
-  const s = await stat(filePath).catch(() => null);
-  if (!s || !s.isFile()) {
-    throw new ServerError(
-      `Cannot delete "${filename}": not a regular file`,
-      { status: 400, code: 'INVALID_LORA_FILE' },
+  await queueSidecarWrite(filename, async () => {
+    if (!existsSync(filePath)) {
+      throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+    }
+    const s = await stat(filePath).catch(() => null);
+    if (!s || !s.isFile()) {
+      throw new ServerError(
+        `Cannot delete "${filename}": not a regular file`,
+        { status: 400, code: 'INVALID_LORA_FILE' },
+      );
+    }
+
+    // Capture metadata before removing it so a later model-unlink failure can
+    // restore the usable pair. readFile also fails before model removal when a
+    // malformed sidecar is a directory or otherwise unreadable.
+    const metadataPath = sidecarPath(filename);
+    const metadata = await readFile(metadataPath).then(
+      (contents) => contents,
+      (err) => (err.code === 'ENOENT' ? null : Promise.reject(err)),
     );
-  }
-  await rm(filePath, { force: true });
-  await removeSidecar(filename);
+    if (metadata !== null) await rm(metadataPath);
+    const modelRemovalError = await rm(filePath).then(() => null, (err) => err);
+    if (modelRemovalError) {
+      if (metadata !== null) await atomicWrite(metadataPath, metadata);
+      throw modelRemovalError;
+    }
+    invalidateLoraMetadataCache(filename);
+  });
   console.log(`🗑️ Deleted LoRA: ${filename}`);
   return { ok: true, filename };
 };
@@ -327,37 +343,33 @@ export const deleteLora = async (filename) => {
 const queueSidecarWrite = createKeyedFileWriteQueue();
 
 // Replace a sidecar wholesale (the install paths), serialized against patches.
-const writeSidecar = (filename, sidecar) => queueSidecarWrite(filename, async () => {
+export const writeLoraSidecar = (filename, sidecar) => queueSidecarWrite(filename, async () => {
+  if (!existsSync(join(PATHS.loras, filename))) {
+    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+  }
   await atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
-  invalidateLoraMetadataCache(filename);
-});
-
-// Remove a sidecar, serialized so a queued patch can't recreate it after the
-// LoRA is gone.
-const removeSidecar = (filename) => queueSidecarWrite(filename, async () => {
-  await rm(sidecarPath(filename), { force: true });
   invalidateLoraMetadataCache(filename);
 });
 
 export const patchLoraSidecar = async (filename, patch) => {
   assertSafeLoraFilename(filename);
   const filePath = join(PATHS.loras, filename);
-  if (!existsSync(filePath)) {
-    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
-  }
-  // Match getLora/deleteLora: refuse non-regular files (directory named
-  // foo.safetensors, dangling symlink, etc.) so we don't quietly create a
-  // sidecar for an entry that listLoras() will then filter out.
-  const s = await stat(filePath).catch(() => null);
-  if (!s || !s.isFile()) {
-    throw new ServerError(
-      `Cannot patch "${filename}": not a regular file`,
-      { status: 400, code: 'INVALID_LORA_FILE' },
-    );
-  }
   // The read has to be INSIDE the queued cycle — reading before joining the
   // queue would merge against a snapshot the previous write already superseded.
   return queueSidecarWrite(filename, async () => {
+    if (!existsSync(filePath)) {
+      throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+    }
+    // Match getLora/deleteLora: refuse non-regular files (directory named
+    // foo.safetensors, dangling symlink, etc.) so we don't quietly create a
+    // sidecar for an entry that listLoras() will then filter out.
+    const s = await stat(filePath).catch(() => null);
+    if (!s || !s.isFile()) {
+      throw new ServerError(
+        `Cannot patch "${filename}": not a regular file`,
+        { status: 400, code: 'INVALID_LORA_FILE' },
+      );
+    }
     const current = (await readSidecar(filename)) || { filename };
     const next = { ...current, ...patch, filename };
     await atomicWrite(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
@@ -625,7 +637,7 @@ const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) =
   await verifyDownloadedLora(destPath, { expectedSha256: file?.hashes?.SHA256 || null, source: 'civitai' });
 
   const sidecar = await withKeyLayout(buildSidecar({ model, version, file, filename }), destPath);
-  await writeSidecar(filename, sidecar);
+  await writeLoraSidecar(filename, sidecar);
   console.log(`✅ Installed Civitai LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };
@@ -733,7 +745,7 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
     buildHfLoraSidecar({ repo, revision, file, model, family, filename, fluxVariant }),
     destPath,
   );
-  await writeSidecar(filename, sidecar);
+  await writeLoraSidecar(filename, sidecar);
   console.log(`✅ Installed HuggingFace LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };
