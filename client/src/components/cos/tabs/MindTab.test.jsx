@@ -14,6 +14,8 @@ const api = vi.hoisted(() => ({
   stopPersistentMind: vi.fn(),
   acknowledgePersistentMindEvent: vi.fn(),
   promotePersistentMindEvent: vi.fn(),
+  getProviders: vi.fn(),
+  updateCosConfig: vi.fn(),
 }));
 
 const socket = vi.hoisted(() => {
@@ -74,6 +76,19 @@ describe('MindTab', () => {
     api.stopPersistentMind.mockResolvedValue({ success: true });
     api.acknowledgePersistentMindEvent.mockResolvedValue({ success: true });
     api.promotePersistentMindEvent.mockResolvedValue({ success: true });
+    api.getProviders.mockResolvedValue({
+      activeProvider: 'codex',
+      providers: [{
+        id: 'codex',
+        name: 'Codex',
+        enabled: true,
+        type: 'cli',
+        command: 'codex',
+        defaultModel: 'gpt-5',
+        models: ['gpt-5', 'gpt-5-mini'],
+      }],
+    });
+    api.updateCosConfig.mockResolvedValue({ success: true });
   });
 
   it('restores the selected event from the URL and uses a responsive single DOM tree', async () => {
@@ -92,6 +107,7 @@ describe('MindTab', () => {
 
     expect(await screen.findByText('Conversation unavailable')).toBeInTheDocument();
     expect(screen.queryByText(/No conversation yet/)).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Enable persistent mind profile' })).toBeDisabled();
   });
 
   it('deduplicates a socket-triggered cursor backfill', async () => {
@@ -130,6 +146,36 @@ describe('MindTab', () => {
     api.getPersistentMind.mockResolvedValue(response({ truncated: true }));
     renderTab();
     expect(await screen.findByText('Showing recent history')).toBeInTheDocument();
+  });
+
+  it('puts the AI profile controls before start and starts only after the profile save finishes', async () => {
+    const user = userEvent.setup();
+    let finishSave;
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: false, status: 'idle', pauseReason: null },
+      profile: { enabled: true, providerId: 'codex', model: 'gpt-5', effort: 'high', thinkingInterface: 'text' },
+    }));
+    api.updateCosConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+    renderTab();
+
+    expect(await screen.findByRole('heading', { name: 'AI profile' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('AI provider')).toHaveValue('codex'));
+    expect(screen.getByLabelText('Model')).toHaveValue('gpt-5');
+    expect(screen.getByLabelText('Thinking effort')).toHaveValue('high');
+    const start = screen.getByRole('button', { name: 'Start persistent mind' });
+
+    await user.selectOptions(screen.getByLabelText('Model'), 'gpt-5-mini');
+    expect(start).toBeDisabled();
+    expect(api.startPersistentMind).not.toHaveBeenCalled();
+    expect(api.updateCosConfig).toHaveBeenCalledWith(
+      { persistentMindProfile: expect.objectContaining({ providerId: 'codex', model: 'gpt-5-mini', effort: 'high' }) },
+      { silent: true },
+    );
+
+    finishSave({ success: true });
+    await waitFor(() => expect(start).toBeEnabled());
+    await user.click(start);
+    await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
   });
 
   it('keeps a failed message for a visible idempotent retry', async () => {
