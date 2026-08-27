@@ -7,10 +7,18 @@ const mock = vi.hoisted(() => ({
   stopRun: vi.fn(),
   readTaskCatalog: vi.fn(),
   executeTaskRequests: vi.fn(),
+  createPersistentMindMemoryFromCandidate: vi.fn(async ({ candidateId, ...candidate }) => ({
+    success: true,
+    duplicate: false,
+    memory: { id: `memory-${candidateId}`, ...candidate },
+  })),
 }));
 
 vi.mock('./cosState.js', () => ({ loadState: vi.fn(async () => mock.root) }));
-vi.mock('./persistentMindContext.js', () => ({ readPersistentMindMemories: vi.fn(async () => mock.memories) }));
+vi.mock('./persistentMindContext.js', () => ({
+  createPersistentMindMemoryFromCandidate: (...args) => mock.createPersistentMindMemoryFromCandidate(...args),
+  readPersistentMindMemories: vi.fn(async () => mock.memories),
+}));
 vi.mock('./promptRunner.js', () => ({ runPromptThroughProvider: (...args) => mock.runPrompt(...args) }));
 vi.mock('./runner.js', () => ({ stopRun: (...args) => mock.stopRun(...args) }));
 vi.mock('./persistentMindTaskCapability.js', () => ({
@@ -68,8 +76,12 @@ describe('persistent mind adapter', () => {
     }));
     expect(heartbeat).toHaveBeenCalled();
     expect(result.events.map((event) => event.kind)).toEqual([
-      'mind.thought', 'mind.reply', 'mind.memory.candidate',
+      'mind.thought', 'mind.reply', 'mind.memory.created',
     ]);
+    expect(mock.createPersistentMindMemoryFromCandidate).toHaveBeenCalledWith({
+      content: 'Remember this.', type: 'fact', category: 'other', tags: [], summary: '',
+      candidateId: 'turn-1:0', turnId: 'turn-1',
+    });
     expect(mock.runPrompt.mock.calls[0][0].prompt).toContain('Task access: ON');
   });
 
