@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { PERSISTENT_MIND_PROMPT_LIMITS } from './persistentMindPrompt.js';
 
 export const PERSISTENT_MIND_ID = 'cos-persistent-mind';
 export const PERSISTENT_MIND_ROLLUP_PROMPT_VERSION = 1;
@@ -37,8 +38,8 @@ export const PERSISTENT_MIND_TRAJECTORY_LIMITS = Object.freeze({
   maxPageSize: 500,
   recentContextEvents: 60,
   maxContextChars: 32_000,
-  maxIdentityChars: 2_000,
-  maxInstructionsChars: 8_000,
+  maxIdentityChars: PERSISTENT_MIND_PROMPT_LIMITS.identityChars,
+  maxInstructionsChars: PERSISTENT_MIND_PROMPT_LIMITS.instructionsChars,
   maxMemoriesChars: 8_000,
   maxSummaryChars: 6_000,
   maxStoredRollups: 100,
