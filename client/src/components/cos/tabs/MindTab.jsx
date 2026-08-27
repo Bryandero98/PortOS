@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { Brain, Check, CirclePause, CirclePlay, MessageCircle, RefreshCw, Settings2, Square, Upload } from 'lucide-react';
+import useMounted from '../../../hooks/useMounted';
 import { useSocket } from '../../../hooks/useSocket';
 import { uuidv4 } from '../../../lib/uuid.js';
 import * as api from '../../../services/api';
@@ -91,7 +92,7 @@ export default function MindTab() {
   const runtimePendingRef = useRef(false);
   const deferredRuntimeRef = useRef(false);
   const runtimeLoadedRef = useRef(false);
-  const runtimeMountedRef = useRef(true);
+  const runtimeMountedRef = useMounted();
   const draftIdRef = useRef(null);
 
   const loadHistory = useCallback(async ({ reset = false } = {}) => {
@@ -165,7 +166,6 @@ export default function MindTab() {
   }, []);
 
   useEffect(() => { void loadHistory({ reset: true }); }, [loadHistory]);
-  useEffect(() => () => { runtimeMountedRef.current = false; }, []);
   useEffect(() => {
     void loadRuntime();
     const interval = setInterval(() => { void loadRuntime(); }, 10_000);
