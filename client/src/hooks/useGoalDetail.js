@@ -6,6 +6,7 @@ import { MAX_TAGS, MAX_TAG_LENGTH } from '../components/goals/goalConstants';
 // thin composition shell; behavior is identical to the prior inline logic.
 export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({});
   const [tagInput, setTagInput] = useState('');
   const [newMilestone, setNewMilestone] = useState({ title: '', targetDate: '' });
@@ -68,6 +69,7 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   };
 
   const saveEdit = async () => {
+    if (saving) return;
     // featureAreas handling (issue #2679):
     //  - When the user did NOT touch the selector, OMIT featureAreas from the
     //    PATCH. The whole editor sends a startEdit snapshot, so re-sending an
@@ -96,7 +98,14 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
     if (featureAreasChanged) {
       payload.featureAreas = current;
     }
-    await api.updateGoal(goal.id, payload);
+    setSaving(true);
+    try {
+      await api.updateGoal(goal.id, payload);
+    } catch {
+      return;
+    } finally {
+      setSaving(false);
+    }
     setEditing(false);
     onRefresh();
   };
@@ -350,7 +359,7 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   };
 
   return {
-    editing, setEditing,
+    editing, setEditing, saving,
     form, setForm,
     tagInput, setTagInput,
     newMilestone, setNewMilestone,

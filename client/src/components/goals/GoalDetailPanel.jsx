@@ -99,6 +99,7 @@ export default function GoalDetailPanel({ goal, allGoals, onClose, onRefresh }) 
           toggleFeatureArea={s.toggleFeatureArea}
           parentOptions={parentOptions}
           saveEdit={s.saveEdit}
+          saving={s.saving}
           onCancel={() => s.setEditing(false)}
         />
       ) : (

@@ -8,6 +8,7 @@ const removeGoalSchedule = vi.fn(() => Promise.resolve({}));
 const rescheduleGoalTimeBlocks = vi.fn(() => Promise.resolve({}));
 const checkInGoal = vi.fn(() => Promise.resolve({ id: 'check-in-1' }));
 const updateGoalProgress = vi.fn(() => Promise.resolve({}));
+const updateGoal = vi.fn(() => Promise.resolve({}));
 
 vi.mock('../services/api', () => ({
   getActivities: (...args) => getActivities(...args),
@@ -16,7 +17,8 @@ vi.mock('../services/api', () => ({
   removeGoalSchedule: (...args) => removeGoalSchedule(...args),
   rescheduleGoalTimeBlocks: (...args) => rescheduleGoalTimeBlocks(...args),
   checkInGoal: (...args) => checkInGoal(...args),
-  updateGoalProgress: (...args) => updateGoalProgress(...args)
+  updateGoalProgress: (...args) => updateGoalProgress(...args),
+  updateGoal: (...args) => updateGoal(...args)
 }));
 
 const { useGoalDetail } = await import('./useGoalDetail');
@@ -34,6 +36,39 @@ const SCHEDULING_ACTIONS = [
   ['handleRemoveSchedule', () => removeGoalSchedule],
   ['handleReschedule', () => rescheduleGoalTimeBlocks]
 ];
+
+describe('useGoalDetail saveEdit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateGoal.mockResolvedValue({});
+  });
+
+  it('gates duplicate saves while the update is in flight', async () => {
+    let release;
+    updateGoal.mockReturnValue(new Promise(resolve => { release = resolve; }));
+    const { result } = renderGoalDetail();
+    act(() => { result.current.startEdit(); });
+    let first;
+    act(() => { first = result.current.saveEdit(); });
+    expect(result.current.saving).toBe(true);
+    await act(async () => { await result.current.saveEdit(); });
+    expect(updateGoal).toHaveBeenCalledTimes(1);
+    await act(async () => { release({}); await first; });
+    expect(result.current.saving).toBe(false);
+  });
+
+  it('keeps edit mode and form data when saving fails', async () => {
+    updateGoal.mockRejectedValue(new Error('server exploded'));
+    const { result, onRefresh } = renderGoalDetail();
+    act(() => { result.current.startEdit(); });
+    const originalForm = result.current.form;
+    await act(async () => { await result.current.saveEdit(); });
+    expect(result.current.saving).toBe(false);
+    expect(result.current.editing).toBe(true);
+    expect(result.current.form).toEqual(originalForm);
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+});
 
 describe('useGoalDetail scheduling actions', () => {
   beforeEach(() => {
