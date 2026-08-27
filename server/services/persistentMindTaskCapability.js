@@ -230,11 +230,11 @@ const validateChoice = async (request, apps, providers) => {
     candidate.id === request.providerId && isRunnableAgentProvider(candidate)
   ));
   if (!provider) return { error: `Provider '${request.providerId}' is not an enabled CLI/TUI coding provider` };
-  const readiness = (await getProviderPrerequisiteReadinessMap(providers, {
+  const providerReadiness = (await getProviderPrerequisiteReadinessMap(providers, {
     candidates: [provider],
     cwd: app.repoPath,
   }))[provider.id];
-  if (readiness?.status !== 'ready') return { error: readinessError(provider.id, readiness) };
+  if (providerReadiness?.status !== 'ready') return { error: readinessError(provider.id, providerReadiness) };
   const models = selectableModelIds(provider);
   if (request.model && !models.includes(request.model)) {
     return { error: `Model '${request.model}' is not configured for provider '${request.providerId}'` };
