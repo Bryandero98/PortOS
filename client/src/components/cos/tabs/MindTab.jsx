@@ -7,6 +7,7 @@ import * as api from '../../../services/api';
 import { formatDateTime } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
+import PersistentMindProfileControls from '../PersistentMindProfileControls';
 
 const PAGE_LIMIT = 200;
 const MAX_BACKFILL_PAGES = 5;
@@ -66,6 +67,7 @@ export default function MindTab() {
   const [lifecyclePending, setLifecyclePending] = useState(null);
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
+  const [profileSaving, setProfileSaving] = useState(false);
   const cursorRef = useRef(null);
   const loadPendingRef = useRef(false);
   const deferredLoadRef = useRef(false);
@@ -233,6 +235,7 @@ export default function MindTab() {
   const state = mind?.state;
   const selectedEvent = events?.find((event) => event.eventId === selectedEventId) || null;
   const isPaused = state?.status === 'paused';
+  const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
 
   return (
     <section aria-labelledby="mind-heading" className="space-y-4">
@@ -247,13 +250,45 @@ export default function MindTab() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2" role="group" aria-label="Persistent mind lifecycle">
-          {!state?.started && <ActionButton label="Start" icon={CirclePlay} pending={lifecyclePending === 'start'} onClick={() => runLifecycle('start')} />}
           {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
           {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
           {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
           <ActionButton label="Reload" icon={RefreshCw} pending={loading} onClick={() => loadHistory({ reset: true })} />
         </div>
       </header>
+
+      <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
+        <div className="mb-3">
+          <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
+          <p className="mt-1 text-xs text-port-text-muted">
+            Choose the provider, model, and model effort here before starting the persistent mind. Changes apply to its next wake.
+          </p>
+        </div>
+        <PersistentMindProfileControls
+          profile={mind?.profile}
+          disabled={!mind}
+          onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
+          onSavingChange={setProfileSaving}
+        />
+        {!state?.started && (
+          <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-port-text-muted">
+              {profileSaving
+                ? 'Saving the AI profile…'
+                : profileReady
+                  ? 'The saved AI profile is ready.'
+                  : 'Enable the profile and select both an AI provider and model to start.'}
+            </p>
+            <ActionButton
+              label="Start persistent mind"
+              icon={CirclePlay}
+              pending={lifecyclePending === 'start'}
+              disabled={loading || profileSaving || !profileReady}
+              onClick={() => runLifecycle('start')}
+            />
+          </div>
+        )}
+      </section>
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
       {truncated && <Banner tone="info" title="Showing recent history">The initial trace shows the newest {PAGE_LIMIT} events; older retained events are not shown.</Banner>}

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Settings, Activity, CheckCircle, FileText, X } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
+import PersistentMindProfileControls from '../PersistentMindProfileControls';
 import ConfigRow from './ConfigRow';
 import { AUTONOMY_LEVELS, detectAutonomyLevel, AVATAR_STYLE_LABELS, AUTONOMY_DOMAINS, DOMAIN_AUTONOMY_MODES, getDomainMode, DOMAIN_BUDGET_FIELDS, getDomainBudget, normalizeBudgetLimit } from '../constants';
 import ProviderModelSelector from '../../ProviderModelSelector';
@@ -263,34 +264,10 @@ const getDefaultFormData = (config, avatarStyle) => ({
   avatarStyle: config?.avatarStyle || avatarStyle || 'svg'
 });
 
-const DEFAULT_PERSISTENT_MIND_PROFILE = {
-  schemaVersion: 1,
-  enabled: false,
-  providerId: '',
-  model: '',
-  effort: '',
-  thinkingInterface: 'text',
-};
-
-const mindProfileFromConfig = (config) => ({
-  ...DEFAULT_PERSISTENT_MIND_PROFILE,
-  ...(config?.persistentMindProfile || {}),
-});
-
 export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle }) {
   const { providers, availableModels, setSelectedProviderId: setProviderHook, setSelectedModel: setModelHook, selectedProviderId: hookProviderId, selectedModel: hookModel } = useProviderModels();
-  const {
-    providers: mindProviders,
-    availableModels: mindModels,
-    setSelectedProviderId: setMindProviderHook,
-    setSelectedModel: setMindModelHook,
-    selectedProviderId: mindHookProviderId,
-    selectedModel: mindHookModel,
-  } = useProviderModels({ allowDefault: true, withEffort: true, silent: true });
   const [embeddingProviderId, setEmbeddingProviderId] = useState(config?.embeddingProviderId || 'lmstudio');
   const [embeddingModel, setEmbeddingModel] = useState(config?.embeddingModel || '');
-  const [mindProfile, setMindProfile] = useState(() => mindProfileFromConfig(config));
-  const [mindProfileSaving, setMindProfileSaving] = useState(false);
 
   // Sync local state when config prop updates
   useEffect(() => {
@@ -303,19 +280,6 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
       setModelHook(config.embeddingModel);
     }
   }, [config?.embeddingProviderId, config?.embeddingModel, setProviderHook, setModelHook]);
-
-  // Only re-run when the persisted profile itself changes — not when the
-  // provider-model hook's setters are re-created. `useProviderModels`
-  // memoizes them, but a fresh object each render (as in a naive test
-  // mock) would otherwise turn this into an unconditional-setState loop,
-  // since `next` is a new object on every call.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    const next = mindProfileFromConfig(config);
-    setMindProfile(next);
-    setMindProviderHook(next.providerId);
-    setMindModelHook(next.model);
-  }, [config?.persistentMindProfile]);
 
   const [editing, setEditing] = useState(false);
   const [formData, setFormData] = useState(() => getDefaultFormData(config, avatarStyle));
@@ -394,31 +358,6 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
     }
   };
 
-  const saveMindProfile = async (patch) => {
-    const providerChanged = patch.providerId !== undefined && patch.providerId !== mindProfile.providerId;
-    const next = {
-      ...mindProfile,
-      ...patch,
-      ...(providerChanged && patch.model === undefined ? { model: '' } : {}),
-      ...(providerChanged && patch.effort === undefined ? { effort: '' } : {}),
-    };
-    const previous = mindProfile;
-    setMindProfile(next);
-    setMindProfileSaving(true);
-    try {
-      await api.updateCosConfig({ persistentMindProfile: next }, { silent: true });
-      toast.success('Persistent mind profile updated');
-      onUpdate();
-    } catch (err) {
-      setMindProfile(previous);
-      setMindProviderHook(previous.providerId);
-      setMindModelHook(previous.model);
-      toast.error(err.message);
-    } finally {
-      setMindProfileSaving(false);
-    }
-  };
-
   const handleSave = async () => {
     // Keep the user in edit mode on failure — only close the editor and toast
     // success once the config PUT actually resolves.
@@ -484,49 +423,8 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
 
       <div>
         <h4 className="text-sm font-medium text-gray-400 mb-2">Persistent Mind</h4>
-        <div className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <label htmlFor="persistent-mind-enabled" className="text-sm text-gray-300">Enable persistent mind profile</label>
-              <p className="text-xs text-gray-600 mt-0.5">
-                Pins text reasoning to one provider and model. Saving this profile never starts a turn or downloads a model.
-              </p>
-            </div>
-            <input
-              id="persistent-mind-enabled"
-              type="checkbox"
-              checked={mindProfile.enabled}
-              disabled={mindProfileSaving}
-              onChange={(event) => saveMindProfile({ enabled: event.target.checked })}
-              className="mt-1 h-4 w-4 accent-port-accent disabled:opacity-50"
-            />
-          </div>
-          <ProviderModelSelector
-            providers={mindProviders}
-            selectedProviderId={mindProfile.providerId || mindHookProviderId}
-            selectedModel={mindProfile.model || mindHookModel}
-            availableModels={mindModels}
-            effort={mindProfile.effort}
-            disabled={mindProfileSaving || !mindProfile.enabled}
-            emptyProviderOption="Select a provider"
-            emptyModelOption="Select a model"
-            alwaysShowModel
-            layout="stacked"
-            label="Persistent mind provider"
-            onProviderChange={(providerId) => {
-              setMindProviderHook(providerId);
-              setMindModelHook('');
-              saveMindProfile({ providerId });
-            }}
-            onModelChange={(model) => {
-              setMindModelHook(model);
-              saveMindProfile({ model });
-            }}
-            onEffortChange={(effort) => saveMindProfile({ effort })}
-          />
-          <p className="text-xs text-gray-600">
-            Interface: text reasoning only. File-changing work remains an explicit typed CoS task with its own coding harness; an unavailable or invalid pin pauses the mind instead of falling back.
-          </p>
+        <div className="bg-port-card border border-port-border rounded-lg p-4">
+          <PersistentMindProfileControls profile={config?.persistentMindProfile} onSaved={onUpdate} />
         </div>
       </div>
 
