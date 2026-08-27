@@ -17,8 +17,9 @@ The interface is not a generic HTTP proxy. A raw endpoint proxy would expose inc
 | `GET` | `/api/cos/tools` | Return the current, scope-filtered tool catalog and capability state. Supports `scope`, `intent`, `cursor`, and conditional `ETag` requests. |
 | `POST` | `/api/cos/tools/call` | Execute one tool call synchronously or start its asynchronous job. Requires an idempotency key for mutations. |
 | `GET` | `/api/cos/tools/calls/:requestId` | Read the normalized outcome of a prior call, including a job reference when work is still running. |
+| `POST` | `/api/cos/tools/calls/:requestId/approve` | Record explicit approval from a separate trusted human/UI session for a pending confirmation. |
 | `POST` | `/api/cos/tools/calls/:requestId/cancel` | Cancel a cancellable asynchronous call; delegates to the owning job/run adapter. |
-| `POST` | `/api/cos/tools/calls/:requestId/confirm` | Execute a previously confirmation-gated call using a short-lived, digest-bound confirmation token. |
+| `POST` | `/api/cos/tools/calls/:requestId/confirm` | Consume a server-recorded human approval and execute a previously confirmation-gated call. |
 | `GET` | `/api/cos/tools/jobs/:jobId/events` | Unified SSE progress stream for adapters that can expose progress. The adapter may still use an existing job-specific source internally. |
 
 The exact route names are proposed; implementation should preserve the existing `/api/cos/mind/tools` route for the Persistent Mind authority inventory and should not silently broaden that route. `/api/cos/tools` is the broader CoS execution catalog.
@@ -51,6 +52,8 @@ The unified CoS interface must therefore:
 4. Preserve CSRF and cross-origin behavior when auth is enabled.
 5. Redact credentials, personal records, prompts containing PII, and provider responses from logs and errors.
 6. Treat Agent Context separately: it is loopback-only, origin-checked, opt-in, and read-only.
+
+The request body's `context`, including `source`, `mindId`, and `turnId`, is correlation metadata only. It cannot select authority. The server derives the caller and scope from one of these trusted paths: a process-local dispatch context created by the Persistent Mind supervisor; an authenticated, CSRF-checked PortOS UI/voice session; or a short-lived server-issued caller credential bound to a known scope and session. A peer credential derives only the federation scope. A passwordless install must reject direct HTTP mutations and privileged `mind`/`admin` claims unless the request carries such a server-issued credential; it must never treat a client-supplied scope as proof of identity. The catalog's optional scope filter may narrow the derived scope, never widen it.
 
 ### 3.2 Existing direct tool registry
 
@@ -352,12 +355,13 @@ The catalog must contain input and output JSON Schemas, not only prose. Schemas 
     "mindId": "persistent",
     "turnId": "turn-example-01",
     "source": "persistent-mind"
-  },
-  "approvalToken": null
+  }
 }
 ```
 
 `Idempotency-Key` is the preferred HTTP header and `requestId` is retained in the JSON body for model/tool protocols that cannot set headers. The server rejects a missing key for mutations, normalizes the request, computes a canonical argument digest, and returns the stored result for an identical replay. A reused key with a different tool or digest returns `409 IDEMPOTENCY_KEY_REUSED`.
+
+`context` is accepted for correlation but is not an authority input; the server ignores any client attempt to set `actor` or `scope`. For a model-facing call, the server derives `actor.kind: persistent-mind` and `scope: mind` only from the process-local supervisor or its server-issued caller credential. A UI or voice pipeline receives its corresponding derived scope from its trusted session/context.
 
 The adapter receives a normalized context:
 
@@ -424,7 +428,7 @@ Tools annotated `requiresConfirmation: true` never perform their side effect on 
     "message": "This will send a message to the selected recipient."
   },
   "confirmation": {
-    "token": "opaque-short-lived-token",
+    "reference": "opaque-pending-confirmation-reference",
     "expiresAt": "2026-08-27T12:05:00.000Z",
     "digest": "sha256:example",
     "summary": "Send the drafted message to the selected recipient."
@@ -432,15 +436,18 @@ Tools annotated `requiresConfirmation: true` never perform their side effect on 
 }
 ```
 
-The token is single-use, bound to the authenticated actor, tool, normalized arguments, request ID, and digest, and expires quickly. The model must not invent or replay a token. A UI or supervising mind obtains explicit user confirmation and calls `/confirm` with `{ "approvalToken": "..." }`; the confirmation request uses the original `requestId` in the path and the same authenticated actor. `approvalToken` is never accepted for a different payload.
+The response contains only a non-authorizing pending reference. It contains no usable approval token, and the model-facing caller cannot approve its own external send, process control, or provider-spend request. The reference is bound to the actor, tool, normalized arguments, request ID, and digest and expires quickly.
 
 Confirmation is an explicit idempotency state transition, not a second invocation of the adapter:
 
-1. The initial call atomically creates an idempotency record in `preflight_confirmation` with the normalized-argument digest, actor, tool, token digest, expiry, and the complete `confirmation_required` envelope. It performs no side effect. A replay with the same key returns that envelope, including while it is pending.
-2. `POST /api/cos/tools/calls/:requestId/confirm` validates the token and atomically compare-and-swaps `preflight_confirmation` to `accepted`. Only the winner may enqueue or execute the adapter. A different actor, digest, expired token, or already-consumed token returns `409 CONFIRMATION_INVALID` and does not invoke the adapter.
-3. The winner stores the normal `accepted`/`running` record before dispatch and transitions it to one terminal result: `completed`, `failed`, `cancelled`, or `expired`. The original request and later confirmation retries return the stored terminal envelope with `replayed: true`; they never run the adapter again. A confirmation retry while execution is still active returns the stored `accepted`/`running` state and job reference.
+1. The initial call atomically creates an idempotency record in `preflight_confirmation` with the normalized-argument digest, actor, tool, confirmation-reference digest, expiry, and the complete `confirmation_required` envelope. It performs no side effect. A replay with the same key returns that envelope, including while it is pending.
+2. A separate trusted human/UI session presents the summary and calls `POST /api/cos/tools/calls/:requestId/approve`. The server verifies the session or server-issued UI approval credential, CSRF/origin rules, request digest, and expiry, then records one approval bound to that request and approving session. The approval record is not returned to the model caller and cannot be created by the model-facing dispatch path.
+3. The UI session calls `POST /api/cos/tools/calls/:requestId/confirm` with `{ "approvalId": "..." }`. The server validates the one-shot, server-recorded approval and atomically compare-and-swaps `preflight_confirmation` to `accepted`. Only the winner may enqueue or execute the adapter. A different actor, digest, expired approval, or already-consumed approval returns `409 CONFIRMATION_INVALID` and does not invoke the adapter.
+4. The winner stores the normal `accepted`/`running` record before dispatch and transitions it to one terminal result: `completed`, `failed`, `cancelled`, or `expired`. The original request and later confirmation retries return the stored terminal envelope with `replayed: true`; they never run the adapter again. A confirmation retry while execution is still active returns the stored `accepted`/`running` state and job reference.
 
-The compare-and-swap and terminal-result write are serialized by the same request record. The token is stored only as a digest, and the record is retained for the normal idempotency retention period so a retry cannot create a duplicate external effect. Destructive operations, external sends/publishes, process/database controls, provider-spend operations, and privacy-sensitive reveals are confirmation-gated or denied outright.
+The approval endpoint accepts only the pending confirmation reference and no replacement tool arguments. It returns an approval ID only to the approving UI session; the model-facing result and trajectory contain the summary and pending reference, never the approval ID. On a passwordless install, the UI approval credential is a server-issued, short-lived, same-origin browser context; a bare HTTP client cannot manufacture it or self-approve.
+
+The approval consume, compare-and-swap, and terminal-result write are serialized by the same request record. Approval IDs and references are stored only as digests, and the record is retained for the normal idempotency retention period so a retry cannot create a duplicate external effect. Destructive operations, external sends/publishes, process/database controls, provider-spend operations, and privacy-sensitive reveals are confirmation-gated or denied outright.
 
 ### 5.5 Errors
 
