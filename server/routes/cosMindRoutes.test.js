@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   resumePersistentMind: vi.fn(),
   stopPersistentMind: vi.fn(),
   inspectPersistentMindRuntime: vi.fn(),
+  readPersistentMindTaskCatalog: vi.fn(),
 }));
 
 vi.mock('../services/agentRunEventLog.js', () => ({
@@ -46,6 +47,9 @@ vi.mock('../services/persistentMindAdapter.js', () => ({
     recommendation: provider?.type === 'api' ? 'recommended' : 'supported',
     detail: 'Structured provider harness.',
   }),
+}));
+vi.mock('../services/persistentMindTaskCapability.js', () => ({
+  readPersistentMindTaskCatalog: mocks.readPersistentMindTaskCatalog,
 }));
 vi.mock('../services/persistentMindSupervisor.js', () => ({
   getPersistentMindState: mocks.getPersistentMindState,
@@ -113,6 +117,10 @@ describe('persistent mind routes', () => {
       context: { chars: 9, maxChars: 32000, approximateTokens: 3, summaryState: 'empty', memoryCount: 1 },
       system: { memory: { total: 100, used: 40, free: 60, usagePercent: 40 } },
     });
+    mocks.readPersistentMindTaskCatalog.mockResolvedValue({
+      apps: [{ id: 'demo-app', name: 'Demo App', planOnly: true }],
+      providers: [{ id: 'codex', name: 'Codex', type: 'cli', models: [{ id: 'gpt-5', efforts: ['low', 'high'] }] }],
+    });
   });
 
   it('serves a bounded cursor snapshot with only the safe profile fields', async () => {
@@ -164,6 +172,10 @@ describe('persistent mind routes', () => {
         granted: true,
         defaultEnabled: false,
       })],
+      taskCatalog: {
+        apps: [{ id: 'demo-app', planOnly: true }],
+        providers: [{ id: 'codex' }],
+      },
     });
     expect(res.body.tools[0].guardrails).toEqual(expect.arrayContaining([
       expect.stringMatching(/isolated-worktree/i),

@@ -25,8 +25,9 @@ export const PERSISTENT_MIND_TOOL_CATALOG = Object.freeze([
     defaultEnabled: false,
     guardrails: [
       'Up to five requests per turn',
-      'Configured app, provider, model, effort, and completion policy are re-validated before queueing',
-      'Work runs through the normal isolated-worktree, autonomy, budget, review, CI, and PR gates',
+      'Configured app, provider, model, effort, mode, and completion policy are re-validated before queueing',
+      'Implementation work runs through the normal isolated-worktree, autonomy, budget, review, CI, and PR gates',
+      'Plan & File Issue requests use the existing issue-only planning contract',
     ],
   }),
 ]);
@@ -61,8 +62,24 @@ export const persistentMindTaskRequestSchema = z.object({
   // providers whose CLI owns model selection and publishes no concrete ids.
   model: z.string().trim().max(PERSISTENT_MIND_TASK_LIMITS.modelChars),
   effort: z.union([z.literal(''), z.enum(EFFORT_LEVELS)]).optional().default(''),
-  prCompletion: z.enum(PR_COMPLETION_VALUES),
-}).strict();
+  // `planOnly` is the User Task form's issue-only mode. It deliberately does
+  // not require a PR disposition because the task store forces the
+  // no-worktree/no-PR posture for it. Implementation tasks still must choose a
+  // disposition so the mind cannot silently inherit a different landing gate.
+  // Keep absence meaningful for replay compatibility: adding a default here
+  // would change the canonical fingerprint of an older implementation request
+  // and could queue it twice after an install upgrades.
+  planOnly: z.boolean().optional(),
+  prCompletion: z.enum(PR_COMPLETION_VALUES).optional(),
+}).strict().superRefine((value, context) => {
+  if (!value.planOnly && !value.prCompletion) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['prCompletion'],
+      message: 'Implementation tasks require a PR completion policy',
+    });
+  }
+});
 
 export function createDefaultPersistentMindCapabilities() {
   return {

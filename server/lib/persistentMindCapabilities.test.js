@@ -43,4 +43,18 @@ describe('persistent mind capabilities', () => {
     expect(persistentMindTaskRequestSchema.safeParse({ ...task, prCompletion: 'merge-now' }).success).toBe(false);
     expect(persistentMindTaskRequestSchema.safeParse({ ...task, priority: 'URGENT' }).success).toBe(false);
   });
+
+  it('allows plan-and-file requests without a PR disposition', () => {
+    const task = {
+      description: 'File an issue for the missing export contract',
+      prompt: 'Inspect the repository and file one actionable issue without editing code.',
+      appId: 'portos',
+      providerId: 'codex',
+      model: '',
+      effort: '',
+      planOnly: true,
+    };
+    expect(persistentMindTaskRequestSchema.safeParse(task).success).toBe(true);
+    expect(persistentMindTaskRequestSchema.safeParse({ ...task, planOnly: false }).success).toBe(false);
+  });
 });

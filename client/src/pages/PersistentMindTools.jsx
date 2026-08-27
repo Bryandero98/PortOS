@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, CheckCircle2, LockKeyhole, RefreshCw, ShieldCheck, Wrench } from 'lucide-react';
 import { Link } from 'react-router';
 import * as api from '../services/api';
@@ -11,16 +11,23 @@ export default function PersistentMindTools() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const requestVersion = useRef(0);
 
   const load = useCallback(() => {
+    const version = ++requestVersion.current;
     setLoading(true);
     api.getPersistentMindTools({ silent: true })
       .then((response) => {
+        if (version !== requestVersion.current) return;
         setData(response);
         setError(null);
       })
-      .catch((requestError) => setError(requestError?.message || 'Could not load persistent mind tools'))
-      .finally(() => setLoading(false));
+      .catch((requestError) => {
+        if (version === requestVersion.current) setError(requestError?.message || 'Could not load persistent mind tools');
+      })
+      .finally(() => {
+        if (version === requestVersion.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -28,15 +35,22 @@ export default function PersistentMindTools() {
   }, [load]);
 
   const tools = Array.isArray(data?.tools) ? data.tools : [];
+  const taskCatalog = data?.taskCatalog;
   const grantedCount = tools.filter((tool) => tool.granted === true).length;
-  const updateCapabilities = (capabilities) => setData((current) => current ? {
-    ...current,
-    capabilities,
-    tools: (current.tools || []).map((tool) => ({
-      ...tool,
-      granted: capabilities[tool.capability] === true,
-    })),
-  } : current);
+  const updateCapabilities = (capabilities) => {
+    requestVersion.current += 1;
+    setData((current) => current ? {
+      ...current,
+      capabilities,
+      taskCatalog: capabilities.createTasks ? current.taskCatalog : null,
+      tools: (current.tools || []).map((tool) => ({
+        ...tool,
+        granted: capabilities[tool.capability] === true,
+      })),
+    } : current);
+    if (capabilities.createTasks && !data?.taskCatalog) load();
+    else if (!capabilities.createTasks) setLoading(false);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -75,6 +89,41 @@ export default function PersistentMindTools() {
                   </button>
                 </div>
               </section>
+
+              {taskCatalog && (
+                <section aria-labelledby="task-catalog-heading" className="rounded border border-port-border bg-port-card p-4">
+                  <h2 id="task-catalog-heading" className="text-sm font-semibold uppercase tracking-wide text-port-text-muted">Available task filing choices</h2>
+                  <p className="mt-1 text-sm text-port-text-muted">These are the current choices the mind receives when it uses the typed task action. Repository paths and credentials are never included.</p>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-port-text-muted">Target apps</h3>
+                      <ul className="mt-2 space-y-2 text-sm text-port-text">
+                        {(taskCatalog.apps || []).map((app) => (
+                          <li key={app.id} className="rounded border border-port-border px-3 py-2">
+                            <span>{app.name}</span>
+                            <span className="ml-2 text-xs text-port-text-muted">{app.planOnly ? 'Implementation or Plan & File Issue' : 'Implementation delivery'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-port-text-muted">Coding providers, models, and effort</h3>
+                      <ul className="mt-2 space-y-2 text-sm text-port-text">
+                        {(taskCatalog.providers || []).map((provider) => (
+                          <li key={provider.id} className="rounded border border-port-border px-3 py-2">
+                            <div>{provider.name}</div>
+                            {provider.models?.length ? provider.models.map((model) => (
+                              <div key={model.id} className="mt-1 text-xs text-port-text-muted">
+                                {model.id} · {model.efforts?.length ? model.efforts.join(', ') : 'provider default effort'}
+                              </div>
+                            )) : <div className="mt-1 text-xs text-port-text-muted">Provider default model and effort</div>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+              )}
 
               <section aria-labelledby="tools-heading" className="space-y-3">
                 <h2 id="tools-heading" className="text-sm font-semibold uppercase tracking-wide text-port-text-muted">Granted capabilities</h2>

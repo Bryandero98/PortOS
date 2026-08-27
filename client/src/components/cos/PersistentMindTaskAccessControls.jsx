@@ -61,6 +61,7 @@ export default function PersistentMindTaskAccessControls({
       <div className="rounded border border-port-border bg-port-bg/40 px-3 py-2 text-xs text-port-text-muted">
         <p className="font-medium text-port-text">The mind chooses per task</p>
         <p className="mt-1">Target app · AI provider · model · thinking effort · priority</p>
+        <p className="mt-1">Mode: implement and ship · or Plan &amp; File Issue for GitHub/GitLab apps</p>
         <p className="mt-1">Landing gate: code review then merge · merge when CI is green · leave open for human review</p>
       </div>
       <p className="text-xs text-port-text-muted">
