@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, CheckCircle, ChevronRight, Feather, Lightbulb, Repeat2, RotateCcw, Save, Sparkles, Timer } from 'lucide-react';
 import { evaluateRhetoricAttempt, getLoadedLlmModels, submitTrainingEntry, updatePostConfig } from '../../../services/api';
 import useProviderModels from '../../../hooks/useProviderModels';
-import { mergeModelLists } from '../../../utils/providers';
+import { isEmbeddingModel, isOllamaBackedProvider, localBackendForProvider, mergeModelLists } from '../../../utils/providers';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import toast from '../../ui/Toast';
 import { uuidv4 } from '../../../lib/uuid';
@@ -92,21 +92,50 @@ const LOCAL_MODEL_BACKENDS = [
   { id: 'ollama', label: 'Ollama' },
   { id: 'lmstudio', label: 'LM Studio' },
 ];
+const EMBEDDING_CAPABILITIES = new Set(['embedding', 'embeddings']);
+
+const isGenerationLoadedModel = (model) => {
+  const type = typeof model?.type === 'string' ? model.type.toLowerCase() : '';
+  if (EMBEDDING_CAPABILITIES.has(type)) return false;
+  if (Array.isArray(model?.capabilities) && model.capabilities.length > 0) {
+    return !model.capabilities.some((capability) => EMBEDDING_CAPABILITIES.has(String(capability).toLowerCase()));
+  }
+  if (type) return true;
+  return !isEmbeddingModel(model?.id || model?.name || '');
+};
 
 const normalizeLoadedLocalModels = (status, sourceErrors = []) => LOCAL_MODEL_BACKENDS.flatMap(({ id: backend, label }) => (
   !sourceErrors.includes(backend) && Array.isArray(status?.[backend])
     ? status[backend]
       .filter((model) => typeof model?.id === 'string' && model.id.trim())
-      .map((model) => ({ backend, backendLabel: label, id: model.id, name: model.name || model.id }))
+      .map((model) => ({
+        backend,
+        backendLabel: label,
+        id: model.id,
+        name: model.name || model.id,
+        type: model.type,
+        capabilities: model.capabilities,
+      }))
     : []
 ));
 
+const backendForProvider = (provider) => (
+  isOllamaBackedProvider(provider) ? 'ollama' : localBackendForProvider(provider)
+);
+
 const pickLoadedEvaluatorModel = (models, providers, activeProviderId, sourceErrors) => {
   const available = models.filter((model) => (
-    !sourceErrors.includes(model.backend) && providers.some((provider) => provider.id === model.backend)
+    !sourceErrors.includes(model.backend)
+    && isGenerationLoadedModel(model)
+    && providers.some((provider) => backendForProvider(provider) === model.backend)
   ));
-  const active = available.find((model) => model.backend === activeProviderId);
-  return active || available[0] || null;
+  const activeBackend = backendForProvider(providers.find((provider) => provider.id === activeProviderId));
+  const selected = available.find((model) => model.backend === activeBackend) || available[0] || null;
+  if (!selected) return null;
+  const provider = providers.find((candidate) => (
+    candidate.id === activeProviderId && backendForProvider(candidate) === selected.backend
+  )) || providers.find((candidate) => backendForProvider(candidate) === selected.backend);
+  return provider ? { ...selected, providerId: provider.id } : null;
 };
 
 function EvaluatorReport({ results, enabled }) {
@@ -281,13 +310,13 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
     setSelectedProviderId: setEvaluatorProviderId,
     setSelectedModel: setEvaluatorModel,
   } = useProviderModels({ filter: evaluatorProviderFilter, allowDefault: true, silent: true, withEffort: true });
-  const configReady = config !== null;
+  const evaluatorBackend = backendForProvider(providers.find((provider) => provider.id === evaluatorProviderId));
   const evaluatorAvailableModels = useMemo(() => mergeModelLists(
     evaluatorModels,
     localModelStatus.models
-      .filter((model) => model.backend === evaluatorProviderId)
+      .filter((model) => model.backend === evaluatorBackend && isGenerationLoadedModel(model))
       .map((model) => model.id),
-  ), [evaluatorModels, evaluatorProviderId, localModelStatus.models]);
+  ), [evaluatorBackend, evaluatorModels, localModelStatus.models]);
   const roundStart = useRef(Date.now());
   const promptStart = useRef(Date.now());
   const roundIdRef = useRef(newRoundId());
@@ -318,7 +347,7 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
   }, [savedEvaluator.enabled, savedEvaluator.providerId, savedEvaluator.model, savedEvaluator.effort]);
 
   useEffect(() => {
-    if (selectedMode || !configReady) return undefined;
+    if (selectedMode) return undefined;
     let canceled = false;
     setLocalModelStatus({ state: 'loading', models: [], sourceErrors: [] });
     getLoadedLlmModels({ silent: true })
@@ -340,12 +369,11 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
         if (!canceled) setLocalModelStatus({ state: 'unavailable', models: [], sourceErrors: LOCAL_MODEL_BACKENDS.map(({ id }) => id) });
       });
     return () => { canceled = true; };
-  }, [configReady, selectedMode?.id]);
+  }, [selectedMode?.id]);
 
   useEffect(() => {
     if (
       selectedMode
-      || !configReady
       || localModelStatus.state !== 'ready'
       || evaluatorSelectionTouchedRef.current
       || evaluatorAutoSelectionRef.current
@@ -359,10 +387,9 @@ export default function RhetoricTrainer({ mode, onSelectMode, onExitMode, onBack
     );
     if (!loaded) return;
     evaluatorAutoSelectionRef.current = true;
-    setEvaluatorProviderId(loaded.backend);
+    setEvaluatorProviderId(loaded.providerId);
     setEvaluatorModel(loaded.id);
   }, [
-    configReady,
     evaluatorActiveProviderId,
     localModelStatus,
     providers,

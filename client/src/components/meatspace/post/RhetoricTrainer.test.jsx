@@ -15,6 +15,7 @@ describe('RhetoricTrainer', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    evaluateRhetoricAttempt.mockReset();
     getLoadedLlmModels.mockResolvedValue({ ollama: [], lmstudio: [], sourceErrors: [] });
     getProviders.mockResolvedValue({ providers: [] });
     submitTrainingEntry.mockResolvedValue();
@@ -85,6 +86,64 @@ describe('RhetoricTrainer', () => {
     expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
     expect(screen.getByText(/Couldn't verify residency for LM Studio/)).toBeInTheDocument();
     expect(screen.queryByText(/No local models are loaded/)).not.toBeInTheDocument();
+  });
+
+  it('does not preselect embedding-only resident models', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'nomic-embed-text:latest', name: 'nomic-embed-text:latest' }],
+      lmstudio: [{ id: 'example-embed', name: 'example-embed', type: 'embeddings' }],
+      sourceErrors: [],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'ollama',
+      providers: [{ id: 'ollama', name: 'Ollama', enabled: true, models: [] }],
+    });
+
+    render(<RhetoricTrainer {...props} config={{ rhetoricEvaluator: { enabled: false } }} />);
+
+    expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('');
+      expect(screen.getByLabelText('Model')).toHaveValue('');
+    });
+    expect(screen.queryByRole('option', { name: 'nomic-embed-text:latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'example-embed' })).not.toBeInTheDocument();
+  });
+
+  it('maps an Ollama-backed wrapper provider to resident Ollama models', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
+      lmstudio: [],
+      sourceErrors: [],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'opencode-ollama-tui',
+      providers: [{ id: 'opencode-ollama-tui', name: 'OpenCode Ollama TUI', enabled: true, models: [], ollamaBacked: true }],
+    });
+
+    render(<RhetoricTrainer {...props} config={{ rhetoricEvaluator: { enabled: false } }} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Provider')).toHaveValue('opencode-ollama-tui');
+      expect(screen.getByLabelText('Model')).toHaveValue('example-rhetoric:latest');
+    });
+  });
+
+  it('checks local residency when POST config is unavailable', async () => {
+    getLoadedLlmModels.mockResolvedValueOnce({
+      ollama: [{ id: 'example-rhetoric:latest', name: 'example-rhetoric:latest' }],
+      lmstudio: [],
+      sourceErrors: [],
+    });
+    getProviders.mockResolvedValueOnce({
+      activeProvider: 'ollama',
+      providers: [{ id: 'ollama', name: 'Ollama', enabled: true, models: [] }],
+    });
+
+    render(<RhetoricTrainer {...props} config={null} />);
+
+    expect(await screen.findByText('Loaded local models')).toBeInTheDocument();
+    expect(getLoadedLlmModels).toHaveBeenCalledWith({ silent: true });
   });
 
   it('shows the rhetoric exercise choices', async () => {
