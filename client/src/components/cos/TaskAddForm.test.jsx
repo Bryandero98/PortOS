@@ -62,18 +62,26 @@ describe('TaskAddForm responsive layout', () => {
   it('restores the description draft and clears it after a successful submit', async () => {
     const user = userEvent.setup();
     const description = 'Keep this task after an accidental navigation';
-    localStorage.setItem('portos-cos-task-description-draft', description);
+    localStorage.setItem('portos-cos-task-description-draft', JSON.stringify({ description, app: 'draft-app' }));
     api.addCosTask.mockResolvedValue({ success: true });
 
-    const { unmount } = render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+    const apps = [
+      { id: 'draft-app', name: 'Draft App', repoPath: 'example.com/draft' },
+      { id: 'current-app', name: 'Current App', repoPath: 'example.com/current' },
+    ];
+    const { unmount } = render(<TaskAddForm providers={[]} apps={apps} defaultApp="current-app" onTaskAdded={vi.fn()} />);
     expect(screen.getByPlaceholderText('Task description *')).toHaveValue(description);
+    expect(screen.getByLabelText('Target application')).toHaveValue('draft-app');
 
     unmount();
-    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+    render(<TaskAddForm providers={[]} apps={apps} defaultApp="current-app" onTaskAdded={vi.fn()} />);
     const descriptionInput = screen.getByPlaceholderText('Task description *');
     await user.click(descriptionInput);
     await user.type(descriptionInput, ' with more detail');
-    expect(localStorage.getItem('portos-cos-task-description-draft')).toBe(`${description} with more detail`);
+    expect(JSON.parse(localStorage.getItem('portos-cos-task-description-draft'))).toEqual({
+      description: `${description} with more detail`,
+      app: 'draft-app',
+    });
 
     await user.click(screen.getByRole('button', { name: /^Add$/ }));
     await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
@@ -91,7 +99,10 @@ describe('TaskAddForm responsive layout', () => {
 
     await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
     expect(descriptionInput).toHaveValue('Retry this task');
-    expect(localStorage.getItem('portos-cos-task-description-draft')).toBe('Retry this task');
+    expect(JSON.parse(localStorage.getItem('portos-cos-task-description-draft'))).toEqual({
+      description: 'Retry this task',
+      app: null,
+    });
   });
 
   it('sends OpenCode Ollama thinking, effort, and temperature overrides with the task', async () => {

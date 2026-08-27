@@ -18,15 +18,31 @@ import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import useAssignableInstances from '../../hooks/useAssignableInstances';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
 import { PORTOS_APP_ID } from '../../lib/appIdentity';
-import { safeReadStorage, safeRemoveStorage, safeWriteStorage } from '../../lib/safeStorage';
+import { safeReadJsonStorage, safeReadStorage, safeRemoveStorage, safeWriteJsonStorage } from '../../lib/safeStorage';
 
 const TASK_DESCRIPTION_DRAFT_KEY = 'portos-cos-task-description-draft';
 
+const readTaskDescriptionDraft = (defaultApp) => {
+  const raw = safeReadStorage(TASK_DESCRIPTION_DRAFT_KEY);
+  if (raw === null) return { description: '', app: defaultApp };
+  const draft = safeReadJsonStorage(TASK_DESCRIPTION_DRAFT_KEY, undefined);
+  if (draft === undefined) return { description: raw, app: defaultApp };
+  if (typeof draft === 'string') return { description: draft, app: defaultApp };
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return { description: '', app: defaultApp };
+  return {
+    description: typeof draft.description === 'string' ? draft.description : '',
+    app: typeof draft.app === 'string' && draft.app ? draft.app : defaultApp,
+  };
+};
+
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
-  const [newTask, setNewTask] = useState(() => ({
-    description: safeReadStorage(TASK_DESCRIPTION_DRAFT_KEY) || '',
-    model: '', provider: '', effort: '', temperature: '', thinking: '', app: defaultApp
-  }));
+  const [newTask, setNewTask] = useState(() => {
+    const draft = readTaskDescriptionDraft(defaultApp);
+    return {
+      description: draft.description,
+      model: '', provider: '', effort: '', temperature: '', thinking: '', app: draft.app
+    };
+  });
   const [addToTop, setAddToTop] = useState(false);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
@@ -83,11 +99,19 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
 
   useEffect(() => {
     if (newTask.description) {
-      safeWriteStorage(TASK_DESCRIPTION_DRAFT_KEY, newTask.description);
+      safeWriteJsonStorage(TASK_DESCRIPTION_DRAFT_KEY, {
+        description: newTask.description,
+        app: newTask.app || null,
+      });
     } else {
       safeRemoveStorage(TASK_DESCRIPTION_DRAFT_KEY);
     }
-  }, [newTask.description]);
+  }, [newTask.app, newTask.description]);
+
+  useEffect(() => {
+    if (!newTask.app || !apps?.length || apps.some(app => app.id === newTask.app)) return;
+    setNewTask(task => ({ ...task, app: defaultApp }));
+  }, [apps, defaultApp, newTask.app]);
 
   // Fetch templates
   useEffect(() => {
