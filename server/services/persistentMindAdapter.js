@@ -109,7 +109,7 @@ Return ONLY one JSON object with this shape:
   "thinkingSummary": "A concise, user-visible working note explaining what you considered and why. Do not reveal hidden chain-of-thought.",
   "message": "The conversational reply. Required for a human message; optional for a self-directed wake.",
   "memoryCandidates": [{ "content": "A durable fact worth remembering", "summary": "Short label", "type": "fact", "category": "other", "tags": ["optional"] }],
-  "taskRequests": [{ "description": "Concise queue label", "prompt": "Complete instructions for the agent", "priority": "MEDIUM", "appId": "configured-app-id", "providerId": "configured-provider-id", "model": "configured-model-id-or-empty-for-default", "effort": "high", "prCompletion": "review-then-merge" }],
+  "taskRequests": [{ "description": "Concise queue label", "prompt": "Complete instructions for the agent", "priority": "MEDIUM", "appId": "configured-app-id", "providerId": "configured-provider-id", "model": "configured-model-id-or-empty-for-default", "effort": "high", "planOnly": false, "prCompletion": "review-then-merge" }],
   "selfWake": { "reason": "Why another wake would be useful", "delayMinutes": 60 }
 }
 Use empty arrays when there is no durable memory candidate or task request, and null when no earlier follow-up is needed. Memory candidates are durable memories to save automatically; only include information that is worth retaining. Typed CoS task creation is the only action capability in this lane and is available only when the capability section says ON. This lane still cannot mutate files directly, call arbitrary tools, contact people, or perform other external actions.`;

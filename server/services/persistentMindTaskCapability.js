@@ -17,7 +17,7 @@ import { canonicalStringify } from '../lib/objects.js';
 import { antigravityBaseModels, effortLevelsForProvider, filterSelectableModels } from '../lib/providerModels.js';
 import { PR_COMPLETIONS } from '../lib/prDisposition.js';
 import { sha256Text } from '../lib/fileUtils.js';
-import { getActiveApps } from './apps.js';
+import { getActiveApps, getAppWorkTracker } from './apps.js';
 import { loadState } from './cosState.js';
 import { addTask, getTaskById } from './cosTaskStore.js';
 import { listProviders } from './providers.js';
@@ -27,6 +27,7 @@ const MAX_CATALOG_PROVIDERS = 50;
 const MAX_CATALOG_MODELS = 60;
 const MAX_CATALOG_PROMPT_CHARS = 16_000;
 const MAX_CATALOG_APP_PROMPT_CHARS = 4_000;
+const ISSUE_TRACKERS = new Set(['github', 'gitlab']);
 
 const isRunnableApp = (app) => typeof app?.repoPath === 'string' && app.repoPath.trim().length > 0;
 const isRunnableAgentProvider = (provider) => provider?.enabled !== false
@@ -58,14 +59,23 @@ const providerCatalogEntry = (provider) => {
   };
 };
 
+const appCatalogEntry = async (app) => {
+  const tracker = await getAppWorkTracker(app.id);
+  return {
+    id: app.id,
+    name: String(app.name || app.id).slice(0, 100),
+    planOnly: ISSUE_TRACKERS.has(tracker?.resolved),
+  };
+};
+
 export async function readPersistentMindTaskCatalog() {
   const [apps, providers] = await Promise.all([getActiveApps(), listProviders()]);
+  const runnableApps = apps
+    .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
+      && app.id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars)
+    .slice(0, MAX_CATALOG_APPS);
   return {
-    apps: apps
-      .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
-        && app.id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars)
-      .slice(0, MAX_CATALOG_APPS)
-      .map((app) => ({ id: app.id, name: String(app.name || app.id).slice(0, 100) })),
+    apps: await Promise.all(runnableApps.map(appCatalogEntry)),
     providers: providers
       .filter((provider) => isRunnableAgentProvider(provider)
         && typeof provider?.id === 'string' && provider.id
@@ -109,12 +119,17 @@ Task creation access is OFF. Return an empty taskRequests array. You may recomme
   }
   const promptCatalog = boundedPromptCatalog(catalog);
   return `# CoS agent task capability
-Task creation access is ON. You may request up to ${PERSISTENT_MIND_TASK_LIMITS.maxPerTurn} internal CoS agent tasks when the current wake calls for concrete delegated work. Each task runs in an isolated worktree, opens a pull request, and is auto-approved into the normal CoS scheduler. The scheduler still enforces capacity, autonomy, and budget gates.
+Task creation access is ON. You may request up to ${PERSISTENT_MIND_TASK_LIMITS.maxPerTurn} internal CoS agent tasks when the current wake calls for concrete delegated work. Implementation tasks run in an isolated worktree, open a pull request, and are auto-approved into the normal CoS scheduler. Plan-only tasks use the issue-only planning contract described below. The scheduler still enforces capacity, autonomy, and budget gates.
 
 For each task, choose one configured app, provider, model (or "" for the provider's configured default), supported effort (or "" for the provider default), and exactly one PR completion policy:
 - "review-then-merge": run the configured code-review loop, then merge only when its gate passes.
 - "merge-on-green": skip code review and merge after CI is green.
 - "leave-open": open the PR and wait for a human to review and merge it.
+Set 'planOnly' to true to use the issue-only "Plan & File Issue" mode, but only
+for an app whose catalog entry has 'planOnly: true'; that mode investigates the
+repository and files one GitHub/GitLab issue without editing code or opening a
+PR. In plan-only mode, 'prCompletion' may be omitted. Otherwise set
+'planOnly' to false and choose one PR completion policy.
 
 Configured choices (ids are authoritative; do not invent ids):
 ${JSON.stringify(promptCatalog)}
@@ -134,7 +149,7 @@ const taskIdFor = (wakeId, fingerprint) => (
 
 const boundedError = (error) => String(error?.message || error || 'Task creation failed').slice(0, 300);
 
-const validateChoice = (request, apps, providers) => {
+const validateChoice = async (request, apps, providers) => {
   const app = apps.find((candidate) => candidate.id === request.appId && isRunnableApp(candidate));
   if (!app) return { error: `App '${request.appId}' has no configured repository` };
   const provider = providers.find((candidate) => (
@@ -149,14 +164,21 @@ const validateChoice = (request, apps, providers) => {
   if (request.effort && !efforts.includes(request.effort)) {
     return { error: `Effort '${request.effort}' is not supported by provider '${request.providerId}'` };
   }
+  if (request.planOnly) {
+    const tracker = await getAppWorkTracker(request.appId);
+    if (!ISSUE_TRACKERS.has(tracker?.resolved)) {
+      return { error: `Plan-and-file tasks require a GitHub or GitLab issue tracker for app '${request.appId}'` };
+    }
+  }
   return { app, provider };
 };
 
 async function queueOneTask({ request, taskId, apps, providers }) {
   const existing = await getTaskById(taskId);
   if (existing) return { success: true, duplicate: true, task: existing };
-  const choice = validateChoice(request, apps, providers);
+  const choice = await validateChoice(request, apps, providers);
   if (choice.error) return { success: false, error: choice.error };
+  const planOnly = request.planOnly === true;
   const task = await addTask({
     id: taskId,
     description: request.description,
@@ -166,11 +188,15 @@ async function queueOneTask({ request, taskId, apps, providers }) {
     provider: request.providerId,
     model: request.model || undefined,
     effort: request.effort || undefined,
-    useWorktree: true,
-    openPR: true,
-    prCompletion: request.prCompletion,
-    simplify: true,
-    worktreeChangesExpected: true,
+    ...(planOnly ? {
+      planOnly: true,
+    } : {
+      useWorktree: true,
+      openPR: true,
+      prCompletion: request.prCompletion,
+      simplify: true,
+      worktreeChangesExpected: true,
+    }),
     approvalRequired: false,
   }, 'internal');
   return { success: true, duplicate: task.duplicate === true, task };
@@ -182,7 +208,8 @@ const eventDataFor = (request, outcome, displayText) => ({
   providerId: request.providerId,
   model: request.model || null,
   effort: request.effort || null,
-  prCompletion: request.prCompletion,
+  planOnly: request.planOnly === true,
+  prCompletion: request.prCompletion || null,
   ...(outcome ? {
     success: outcome.success === true,
     duplicate: outcome.duplicate === true,

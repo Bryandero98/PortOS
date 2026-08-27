@@ -29,6 +29,7 @@ const response = (overrides = {}) => ({
     guardrails: ['Up to five requests per turn'],
   }],
   boundaries: ['No arbitrary shell or file-system access'],
+  taskCatalog: null,
   ...overrides,
 });
 
@@ -54,8 +55,18 @@ describe('PersistentMindTools', () => {
     expect(screen.getByText('Off by default')).toBeInTheDocument();
   });
 
-  it('edits the typed task grant and updates the inventory without a refetch', async () => {
+  it('edits the typed task grant and refreshes the newly available catalog', async () => {
     const user = userEvent.setup();
+    api.getPersistentMindTools
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(response({
+        capabilities: { schemaVersion: 1, createTasks: true },
+        tools: [{ ...response().tools[0], granted: true }],
+        taskCatalog: {
+          apps: [{ id: 'example-app', name: 'Example App', planOnly: true }],
+          providers: [{ id: 'codex', name: 'Codex', type: 'cli', models: [{ id: 'gpt-5', efforts: ['low', 'high'] }] }],
+        },
+      }));
     renderPage();
 
     const toggle = await screen.findByRole('checkbox', { name: 'Allow mind to queue CoS agent tasks' });
@@ -67,6 +78,10 @@ describe('PersistentMindTools', () => {
     ));
     expect(await screen.findByText(/persistent-mind capabilities granted/)).toHaveTextContent('1 of 1');
     expect(screen.getByText('Granted')).toBeInTheDocument();
+    expect(await screen.findByText('Available task filing choices')).toBeInTheDocument();
+    expect(screen.getByText(/Implementation or Plan & File Issue/)).toBeInTheDocument();
+    expect(screen.getByText('gpt-5 · low, high')).toBeInTheDocument();
+    expect(api.getPersistentMindTools).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the failure visible instead of presenting an empty inventory', async () => {
