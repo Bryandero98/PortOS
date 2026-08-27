@@ -20,6 +20,7 @@ describe('persistent mind state', () => {
       status: 'disabled',
       queuedMessages: [],
       pendingAttachments: [],
+      recentMessageFingerprints: [],
       selfWake: null,
       activeTurn: null,
     });

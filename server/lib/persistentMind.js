@@ -272,6 +272,7 @@ export function createDefaultPersistentMindState() {
     selfWake: null,
     activeTurn: null,
     recentMessageIds: [],
+    recentMessageFingerprints: [],
     lastCompletedTurnId: null,
     lastCompletedAt: null,
     nextEligibleWakeAt: null,

@@ -352,7 +352,7 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
     await removeUploadAfterStateFailure(saved.filePath, attachmentId);
     return attachmentFailure('Stored image metadata was invalid', { code: 'INVALID_ATTACHMENT' });
   }
-  const result = await mutateMindState((mind) => {
+  const result = await mutateMindState(async (mind) => {
     const retainedMessageIds = new Set([
       ...mind.recentMessageIds,
       ...mind.queuedMessages.map((message) => message.id),
@@ -360,10 +360,17 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
     ]);
     // Old claimed records are metadata only once their message leaves the
     // idempotency window. Keep their files and message references durable, but
-    // do not let the pending-record index grow without bound.
-    const pendingAttachments = mind.pendingAttachments.filter((item) => (
-      !item.claimedBy || retainedMessageIds.has(item.claimedBy)
-    ));
+    // do not let the pending-record index grow without bound. If removing the
+    // claim marker fails, retain the metadata: without it the marker-based
+    // orphan sweep could mistake the durable image for an unindexed upload.
+    const pendingAttachments = [];
+    for (const item of mind.pendingAttachments) {
+      if (!item.claimedBy || retainedMessageIds.has(item.claimedBy)) {
+        pendingAttachments.push(item);
+      } else if (!await removePendingAttachmentMarker(item.attachmentId)) {
+        pendingAttachments.push(item);
+      }
+    }
     if (pendingAttachments.length >= PERSISTENT_MIND_LIMITS.MAX_PENDING_ATTACHMENTS) {
       return {
         mind,

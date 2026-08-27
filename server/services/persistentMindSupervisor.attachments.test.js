@@ -207,6 +207,27 @@ describe('persistent mind image attachment lifecycle', () => {
     expect(mocks.root.persistentMind.pendingAttachments).toEqual([]);
   });
 
+  it('retains claimed metadata when a leftover marker cannot be removed', async () => {
+    const claimed = uploadRecord({ attachmentId: 'claimed-old', filename: 'mind-claimed-old.png', claimedBy: 'completed-message', expiresAt: null });
+    mocks.root.persistentMind.pendingAttachments = [claimed];
+    mocks.readdir.mockResolvedValue(['.mind-pending-claimed-old']);
+    mocks.unlink.mockImplementation(async (path) => {
+      if (path.endsWith('.mind-pending-claimed-old')) {
+        const error = new Error('marker unavailable');
+        error.code = 'EPERM';
+        throw error;
+      }
+    });
+
+    const uploaded = await supervisor.createPersistentMindAttachment({ filename: 'new.png', data: 'encoded-image' });
+
+    expect(uploaded.success).toBe(true);
+    expect(mocks.root.persistentMind.pendingAttachments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ attachmentId: 'claimed-old', claimedBy: 'completed-message' }),
+    ]));
+    expect(mocks.unlink).not.toHaveBeenCalledWith('/tmp/portos-mind-attachments/mind-claimed-old.png');
+  });
+
   it('deletes only unclaimed files and leaves claimed historical assets alone', async () => {
     mocks.root.persistentMind.pendingAttachments = [uploadRecord()];
     await expect(supervisor.deletePersistentMindAttachment('attachment-1')).resolves.toEqual({
