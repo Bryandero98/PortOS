@@ -50,7 +50,8 @@ import {
 } from './bootstrapSequence.js';
 
 import { ensureBackendProvider, getBackend as getLocalLlmBackend } from './localLlm.js';
-import { ensureProviderReady as ensureOllamaProviderReady, ensureRunning as ensureOllamaRunning } from './ollamaManager.js';
+import { ensureRunning as ensureOllamaRunning } from './ollamaManager.js';
+import { ensureProviderReadyForExecution } from './providerExecutionReadiness.js';
 import { recordSession } from './usage.js';
 import { recordCompletedRunUsage } from './usageReconciler.js';
 import { setAIToolkit as setProvidersToolkit } from './providers.js';
@@ -158,7 +159,7 @@ import { prerequisitesMetForRouting } from './providerPrerequisites.js';
 export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverDir }) => {
   // Lifecycle hooks shared between AI Toolkit and PortOS runner shim
   const aiToolkitHooks = {
-    ensureProviderReady: (provider) => ensureOllamaProviderReady(provider),
+    ensureProviderReady: (provider) => ensureProviderReadyForExecution(provider),
     onRunCreated: (metadata) => {
       recordSession(metadata.providerId, metadata.providerName, metadata.model).catch(err => {
         console.error(`❌ Failed to record usage session: ${err.message}`);
