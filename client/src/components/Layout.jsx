@@ -197,6 +197,7 @@ export const NAV_PRESENTATION = {
   '/cos/learning': { icon: GraduationCap },
   '/cos/memory': { icon: Brain },
   '/cos/mind': { icon: MessageSquare },
+  '/cos/tools': { icon: Wrench },
   '/cos/run-events': { icon: ScrollText },
   '/cos/runs': { icon: Play },
   '/cos/schedule': { icon: Clock },

@@ -284,6 +284,7 @@ export default function App() {
           <Route path="ai/edit/:providerId" element={<AIProviders />} />
           <Route path="prompts" element={<PromptManager />} />
           <Route path="cos" element={<Navigate to="/cos/tasks" replace />} />
+          <Route path="cos/mind/tools" element={<Navigate to="/cos/tools" replace />} />
           <Route path="cos/:tab" element={<ChiefOfStaff />} />
           <Route path="calendar" element={<Navigate to="/calendar/agenda" replace />} />
           <Route path="calendar/:tab" element={<CalendarPage />} />

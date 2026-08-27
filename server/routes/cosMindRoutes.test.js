@@ -151,6 +151,25 @@ describe('persistent mind routes', () => {
     }));
   });
 
+  it('serves a server-described inventory of persistent-mind tools', async () => {
+    const res = await get('/mind/tools');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      schemaVersion: 1,
+      capabilities: { schemaVersion: 1, createTasks: true },
+      boundaries: expect.arrayContaining([expect.stringMatching(/arbitrary shell/i)]),
+      tools: [expect.objectContaining({
+        id: 'cos.create-task',
+        capability: 'createTasks',
+        granted: true,
+        defaultEnabled: false,
+      })],
+    });
+    expect(res.body.tools[0].guardrails).toEqual(expect.arrayContaining([
+      expect.stringMatching(/isolated-worktree/i),
+    ]));
+  });
+
   it('exposes live context, system, inference, and model-residency telemetry', async () => {
     mocks.getPersistentMindState.mockResolvedValue({
       enabled: true,

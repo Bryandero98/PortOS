@@ -3,11 +3,18 @@ import {
   createDefaultPersistentMindCapabilities,
   mergePersistentMindCapabilities,
   normalizePersistentMindCapabilities,
+  PERSISTENT_MIND_TOOL_CATALOG,
   persistentMindCapabilitiesSchema,
   persistentMindTaskRequestSchema,
 } from './persistentMindCapabilities.js';
 
 describe('persistent mind capabilities', () => {
+  it('describes every persistent-mind grant from the capability contract', () => {
+    expect(PERSISTENT_MIND_TOOL_CATALOG).toEqual([
+      expect.objectContaining({ id: 'cos.create-task', capability: 'createTasks', defaultEnabled: false }),
+    ]);
+  });
+
   it('keeps task creation opt-in across fresh and legacy config', () => {
     expect(createDefaultPersistentMindCapabilities()).toMatchObject({ createTasks: false });
     expect(normalizePersistentMindCapabilities(null)).toMatchObject({ createTasks: false });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { ArrowUp, Brain, Check, CirclePause, CirclePlay, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload } from 'lucide-react';
+import { ArrowUp, Brain, Check, CirclePause, CirclePlay, ExternalLink, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload } from 'lucide-react';
+import { Link } from 'react-router';
 import useMounted from '../../../hooks/useMounted';
 import { useSocket } from '../../../hooks/useSocket';
 import { uuidv4 } from '../../../lib/uuid.js';
@@ -456,7 +457,12 @@ export default function MindTab() {
             onSavingChange={setProfileSaving}
           />
           <div className="mt-4 border-t border-port-border pt-4">
-            <h3 className="text-sm font-semibold text-port-text">Agent task access</h3>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-port-text">Agent task access</h3>
+              <Link to="/cos/tools" className="inline-flex items-center gap-1 text-xs font-medium text-port-accent hover:underline">
+                View and edit tools <ExternalLink size={13} aria-hidden="true" />
+              </Link>
+            </div>
             <p className="mb-3 mt-1 text-xs text-port-text-muted">Choose whether this mind may turn a concrete recommendation into a typed task with its own run profile and landing gate.</p>
             <PersistentMindTaskAccessControls
               capabilities={mind?.capabilities}

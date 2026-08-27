@@ -14,7 +14,8 @@ import {
   ChartGantt,
   Play,
   ScrollText,
-  MessageCircle
+  MessageCircle,
+  Wrench
 } from 'lucide-react';
 import { normalizeReviewerSlug } from '../../lib/reviewerPins';
 import { inPlaceClipName } from '../../utils/animationClips';
@@ -34,6 +35,7 @@ export const TABS = [
   { id: 'learning', label: 'Learning', icon: GraduationCap },
   { id: 'memory', label: 'Memory', icon: Brain },
   { id: 'mind', label: 'Mind', icon: MessageCircle },
+  { id: 'tools', label: 'Mind Tools', icon: Wrench },
   { id: 'health', label: 'Health', icon: Activity },
   { id: 'config', label: 'Config', icon: Settings }
 ];

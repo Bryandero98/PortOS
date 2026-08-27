@@ -12,6 +12,31 @@ import { PR_COMPLETION_VALUES } from './prDisposition.js';
 
 export const PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION = 1;
 
+// The persistent mind has a deliberately smaller surface than ordinary CoS
+// agents. Keep this catalog beside the capability schema so the API and the UI
+// describe the same grants instead of maintaining a second client-only list.
+export const PERSISTENT_MIND_TOOL_CATALOG = Object.freeze([
+  Object.freeze({
+    id: 'cos.create-task',
+    capability: 'createTasks',
+    name: 'Queue CoS agent tasks',
+    description: 'Request a bounded, typed CoS task for an app using a configured coding provider.',
+    kind: 'typed-action',
+    defaultEnabled: false,
+    guardrails: [
+      'Up to five requests per turn',
+      'Configured app, provider, model, effort, and completion policy are re-validated before queueing',
+      'Work runs through the normal isolated-worktree, autonomy, budget, review, CI, and PR gates',
+    ],
+  }),
+]);
+
+export const PERSISTENT_MIND_TOOL_BOUNDARIES = Object.freeze([
+  'No arbitrary shell or file-system access',
+  'No direct access to onboard tools such as image generation or browser controls',
+  'No provider credentials or hidden reasoning tokens are exposed as tools',
+]);
+
 export const PERSISTENT_MIND_TASK_LIMITS = Object.freeze({
   maxPerTurn: 5,
   descriptionChars: 500,
