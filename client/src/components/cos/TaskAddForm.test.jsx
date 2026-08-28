@@ -195,6 +195,21 @@ describe('TaskAddForm responsive layout', () => {
     });
   });
 
+  it('offers and submits the non-worktree completion choice', async () => {
+    const user = userEvent.setup();
+    api.addCosTask.mockResolvedValue({ success: true });
+    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+
+    await user.click(worktreeToggle());
+    expect(screen.getByLabelText('When done')).toHaveValue('leave-uncommitted');
+    await user.selectOptions(screen.getByLabelText('When done'), 'commit-push');
+    await user.type(screen.getByPlaceholderText('Task description *'), 'Update default branch');
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(api.addCosTask.mock.calls.at(-1)[0]).toMatchObject({ useWorktree: false, whenDone: 'commit-push' });
+  });
+
   it.each([
     ['PLAN.md', 'plan', 'plan'],
     ['JIRA', 'jira', 'jira'],

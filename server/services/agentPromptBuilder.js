@@ -320,6 +320,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   // Build worktree context section if applicable
   const willOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+  const whenDone = task.metadata?.whenDone === 'commit-push' ? 'commit-push' : 'leave-uncommitted';
   const claimFlow = isClaimFlowTask(task, isTruthyMetaFn);
   const prCompletion = resolvePrCompletion(task.metadata);
   // A discard (reasoning-only) worktree: the agent reasons in it but it's thrown
@@ -659,7 +660,7 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 - Never update the PortOS changelog (\`.changelog/\`) for work on managed apps — the PortOS changelog tracks PortOS core changes only
 ${(() => {
   const bullet = buildCompletionGuidelineBullet({
-    isReadOnly: isTruthyMetaFn(task.metadata?.readOnly),
+    isReadOnly: isTruthyMetaFn(task.metadata?.readOnly), whenDone,
     isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
     worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput, noChangeSuccess,
     leavePrOpen: leavesPrForHuman(task),

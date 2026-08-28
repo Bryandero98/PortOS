@@ -379,6 +379,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     else if (taskData.useWorktree === false) metadata.useWorktree = false;
     if (taskData.openPR === true) metadata.openPR = true;
     else if (taskData.openPR === false) metadata.openPR = false;
+    if (taskData.whenDone === 'commit-push' || taskData.whenDone === 'leave-uncommitted') metadata.whenDone = taskData.whenDone;
     // Default a worktree-isolated USER task to opening a PR rather than
     // auto-merging straight to the default branch — an unreviewed agent commit
     // landing on main is the more dangerous default (see the local-model eval
