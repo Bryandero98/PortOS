@@ -8,13 +8,14 @@ vi.mock('../../services/api', () => ({
   deleteLoomNode: vi.fn(),
   deleteLoomTransition: vi.fn(),
   generateImage: vi.fn(),
+  generateVideo: vi.fn(),
   updateLoomNode: vi.fn(),
   updateLoomTransition: vi.fn(),
 }));
 vi.mock('../MediaImage', () => ({ default: () => null }));
 
 import {
-  addLoomTransition, deleteLoomTransition, updateLoomNode, updateLoomTransition,
+  addLoomTransition, deleteLoomTransition, generateVideo, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import LoomNodeEditor from './LoomNodeEditor';
 
@@ -22,7 +23,7 @@ const loom = { id: 'loom-1', name: 'Example Story', format: 'prose', styleNotes:
 
 // One scene with a single existing path, plus a second scene to point at.
 const makeNodes = (transitions) => ([
-  { id: 'n1', title: 'The Gate', prose: 'You stand before it.', transitions },
+  { id: 'n1', title: 'The Gate', prose: 'You stand before it.', image: 'scene.png', imagePrompt: 'an ancient gate', videoPrompt: 'the gate slowly opens', transitions },
   { id: 'n2', title: 'Inside', prose: 'Torchlight.', transitions: [] },
 ]);
 
@@ -103,5 +104,50 @@ describe('LoomNodeEditor paths', () => {
     expect(deleteLoomTransition).toHaveBeenCalledWith('loom-1', 'ep-1', 'n1', 'tr-1', { silent: true });
     expect(onLoomUpdate).toHaveBeenCalledWith({ id: 'loom-1' });
     expect(screen.getByText('Paths out (0)')).toBeInTheDocument();
+  });
+});
+
+describe('LoomNodeEditor scene media', () => {
+  it('queues a local video from the scene prompt and rendered still', async () => {
+    const user = userEvent.setup();
+    generateVideo.mockResolvedValue({ jobId: 'video-1', status: 'queued' });
+    renderEditor();
+
+    await user.click(screen.getByRole('button', { name: 'Generate video' }));
+
+    await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
+    expect(generateVideo).toHaveBeenCalledWith({
+      prompt: 'the gate slowly opens',
+      backend: 'local',
+      mode: 'image',
+      sourceImageFile: 'scene.png',
+      disableAudio: true,
+      fableLoom: JSON.stringify({ loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'n1' }),
+    });
+  });
+
+  it('falls back to the image prompt for a scene without a video prompt', async () => {
+    const user = userEvent.setup();
+    generateVideo.mockResolvedValue({ jobId: 'video-2', status: 'queued' });
+    const nodes = makeNodes([]).map((node) => node.id === 'n1'
+      ? { ...node, imagePrompt: 'a lantern in fog', image: null, videoPrompt: '' }
+      : node);
+    render(
+      <LoomNodeEditor
+        loom={loom}
+        episode={{ id: 'ep-1', nodes }}
+        node={nodes[0]}
+        onLoomUpdate={vi.fn()}
+        onClearSelection={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Generate video' }));
+
+    await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
+    expect(generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'a lantern in fog', backend: 'local', mode: 'text', fableLoom: expect.any(String),
+    }));
+    expect(generateVideo.mock.calls[0][0]).not.toHaveProperty('sourceImageFile');
   });
 });

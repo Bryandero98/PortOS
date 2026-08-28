@@ -24,7 +24,7 @@ const getSeriesMock = vi.hoisted(() => vi.fn(async (id) => ({ id })));
 vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 
 const {
-  LOOM_LIMITS, addEpisode, addNode, addNodeTransition, attachNodeImage, createLoom,
+  LOOM_LIMITS, addEpisode, addNode, addNodeTransition, attachNodeImage, attachNodeVideo, createLoom,
   deleteEpisode, deleteLoom, deleteNode, deleteNodeTransition, getLoom,
   listLooms, listLoomSummaries, sanitizeLoom, updateEpisode, updateLoom,
   updateNode, updateNodeTransition,
@@ -414,5 +414,27 @@ describe('attachNodeImage', () => {
     expect(await attachNodeImage(loom.id, episodeId, 'node-gone', { filename: 'x.png' })).toBeNull();
     expect(await attachNodeImage(loom.id, episodeId, 'node-gone', { filename: '../x.png' })).toBeNull();
     expect(await attachNodeImage('loom-missing', episodeId, 'node-gone', { filename: 'x.png' })).toBeNull();
+  });
+});
+
+describe('attachNodeVideo', () => {
+  it('files a completed video history id onto its node', async () => {
+    const loom = await makeLoom();
+    let updated = await addEpisode(loom.id, {});
+    const episodeId = updated.episodes[0].id;
+    updated = await addNode(loom.id, episodeId, { title: 'A' });
+    const node = updated.episodes[0].nodes[0];
+
+    const attached = await attachNodeVideo(loom.id, episodeId, node.id, { videoHistoryId: 'video-1' });
+    expect(attached).toMatchObject({ id: node.id, videoHistoryId: 'video-1' });
+    expect((await getLoom(loom.id)).episodes[0].nodes[0].videoHistoryId).toBe('video-1');
+  });
+
+  it('returns null when the target or history id is unsafe', async () => {
+    const loom = await makeLoom();
+    const updated = await addEpisode(loom.id, {});
+    const episodeId = updated.episodes[0].id;
+    expect(await attachNodeVideo(loom.id, episodeId, 'node-gone', { videoHistoryId: '../video' })).toBeNull();
+    expect(await attachNodeVideo(loom.id, episodeId, 'node-gone', { videoHistoryId: 'video-1' })).toBeNull();
   });
 });

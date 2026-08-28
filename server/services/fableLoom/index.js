@@ -4,6 +4,7 @@ export {
   addNode,
   addNodeTransition,
   attachNodeImage,
+  attachNodeVideo,
   createLoom,
   deleteEpisode,
   deleteLoom,

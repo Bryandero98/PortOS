@@ -1,7 +1,7 @@
 /**
  * FableLoom scene editor — the side panel for the selected node: title/prose,
- * ending flag + label, the intent-transition list, the scene image (prompt +
- * queued render via the shared image-gen lane), and the AI branch action.
+ * ending flag + label, the intent-transition list, scene image/video prompts
+ * and previews via the shared local media lanes, and the AI branch action.
  *
  * Fields save on blur (silent PATCH, skipped when unchanged; the server
  * returns the full loom, which the parent folds into state). Paths save one
@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { GitBranch, ImagePlus, Loader2, Trash2 } from 'lucide-react';
+import { GitBranch, ImagePlus, Loader2, Trash2, Video } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import { FormField } from '../ui/FormField.jsx';
@@ -21,7 +21,7 @@ import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   addLoomTransition, branchLoomNode, deleteLoomNode, deleteLoomTransition,
-  generateImage, updateLoomNode, updateLoomTransition,
+  generateImage, generateVideo, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import { fieldClass, labelClass, sceneFieldClass } from './fieldStyles';
 import { isTeleplayFormat } from './loomFormats';
@@ -55,6 +55,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       title: node.title || '',
       prose: node.prose || '',
       imagePrompt: node.imagePrompt || '',
+      videoPrompt: node.videoPrompt || '',
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
       transitions: (node.transitions || []).map(toRow),
@@ -168,6 +169,27 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     toast.success('Scene render queued — it will attach when it completes');
   }, { errorMessage: 'Could not queue the render' });
 
+  const [runGenerateVideo, videoRendering] = useAsyncAction(async () => {
+    const prompt = form.videoPrompt.trim() || form.imagePrompt.trim();
+    if (!prompt) {
+      toast.error('Write a video or image prompt first');
+      return;
+    }
+    // Keep the motion prompt independently editable, while allowing existing
+    // image-only scenes to render a useful first clip without a migration or a
+    // second required authoring step. A rendered still seeds image-to-video.
+    await saveField('videoPrompt', form.videoPrompt.trim());
+    await generateVideo({
+      prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
+      backend: 'local',
+      mode: node.image ? 'image' : 'text',
+      ...(node.image ? { sourceImageFile: node.image } : {}),
+      disableAudio: true,
+      fableLoom: JSON.stringify({ loomId: loom.id, episodeId: episode.id, nodeId: node.id }),
+    });
+    toast.success('Scene video queued — it will attach when it completes');
+  }, { errorMessage: 'Could not queue the video render' });
+
   const handleDelete = async () => {
     const updated = await deleteLoomNode(loom.id, episode.id, node.id).catch(() => null);
     if (updated) {
@@ -280,6 +302,40 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
             src={`/data/images/${node.image}`}
             alt={form.title || 'Scene render'}
             className="mt-2 rounded max-w-full max-h-48 object-cover"
+          />
+        )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-xs font-medium text-port-text-muted">Scene video</span>
+          <button
+            type="button"
+            onClick={runGenerateVideo}
+            disabled={videoRendering || aiBlocked}
+            className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50"
+          >
+            {videoRendering ? <Loader2 size={12} className="animate-spin" /> : <Video size={12} />}
+            Generate video
+          </button>
+        </div>
+        <textarea
+          rows={2}
+          className={fieldClass}
+          placeholder="Motion prompt (falls back to the image prompt)"
+          aria-label="Video prompt"
+          value={form.videoPrompt}
+          onChange={(e) => setForm((p) => ({ ...p, videoPrompt: e.target.value }))}
+          onBlur={() => saveField('videoPrompt', form.videoPrompt)}
+        />
+        {node.videoHistoryId && (
+          <video
+            controls
+            playsInline
+            preload="metadata"
+            src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
+            aria-label={form.title || 'Scene video'}
+            className="mt-2 rounded max-w-full max-h-56 bg-black"
           />
         )}
       </div>

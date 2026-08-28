@@ -122,6 +122,7 @@ const nodeFields = {
   title: z.string().max(LOOM_LIMITS.NODE_TITLE_MAX).optional(),
   prose: z.string().max(LOOM_LIMITS.PROSE_MAX).optional(),
   imagePrompt: z.string().max(LOOM_LIMITS.IMAGE_PROMPT_MAX).optional(),
+  videoPrompt: z.string().max(LOOM_LIMITS.VIDEO_PROMPT_MAX).optional(),
   isEnding: z.boolean().optional(),
   endingLabel: z.string().max(LOOM_LIMITS.ENDING_LABEL_MAX).optional(),
   pos: z.object({ x: z.number(), y: z.number() }).nullable().optional(),
