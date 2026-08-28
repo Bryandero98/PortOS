@@ -3,9 +3,9 @@
  *
  * CRUD for looms/episodes/nodes plus the AI lanes (weave/branch/feedback/review/play)
  * and the deterministic graph validation. Every AI endpoint is a direct
- * user action in the same request (AI Provider Usage Policy). Scene images
- * ride the existing `/api/image-gen/generate` queue with a `fableLoom`
- * destination tag — there is no image endpoint here.
+ * user action in the same request (AI Provider Usage Policy). Scene media
+ * rides the shared image/video generation queues with a `fableLoom`
+ * destination tag — there are no bespoke generation endpoints here.
  */
 
 import { Router } from 'express';

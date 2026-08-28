@@ -120,7 +120,7 @@ ends, dangling transitions, unreachable endings, duplicate/empty intents —
 and renders in the editor's Structure panel via
 `GET /api/fableloom/:id/episodes/:episodeId/validate`.
 
-## Scene images
+## Scene media
 
 Each node carries an `imagePrompt`; **Generate** posts to the shared
 `/api/image-gen/generate` queue with a `fableLoom: { loomId, episodeId,
@@ -129,6 +129,13 @@ nodeId }` destination tag. The completion hook
 the node durably — even if the editor unmounted mid-render — with
 newest-render-wins per node. The loom's `styleNotes` are appended to the
 prompt for a consistent look.
+
+Each node also carries an optional `videoPrompt` and `videoHistoryId`. **Generate
+video** posts to the shared local `/api/video-gen` queue with the same
+destination tag. If the node already has a rendered image, it is sent as the
+video's first-frame conditioning image; otherwise the render is text-to-video.
+The completion hook (`server/services/fableLoomSceneVideoHook.js`) files the
+finished history id onto the node durably, with newest-render-wins per node.
 
 ## Storage
 

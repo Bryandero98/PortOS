@@ -121,6 +121,7 @@ import { initUniverseBuilderCollectionHook } from './universeBuilderCollectionHo
 import { initCatalogImageAttachHook } from './catalogImageAttachHook.js';
 import { initWritersRoomSceneImageHook } from './writersRoomSceneImageHook.js';
 import { initFableLoomSceneImageHook } from './fableLoomSceneImageHook.js';
+import { initFableLoomSceneVideoHook } from './fableLoomSceneVideoHook.js';
 import { initMusicVideoSceneImageHook } from './musicVideoSceneImageHook.js';
 import { initMusicVideoSceneVideoHook } from './musicVideoSceneVideoHook.js';
 import { initCreativeDirectorMusicBedHook } from './creativeDirectorMusicBedHook.js';
@@ -501,6 +502,9 @@ const initMediaJobDependentHooks = () => {
   // FableLoom scene-image hook — durably files a queued scene render onto its
   // loom episode's node on completion, even if the editor unmounted mid-render.
   initFableLoomSceneImageHook();
+  // FableLoom scene-video hook — durably files a queued local clip onto its
+  // loom episode's node on completion, even if the editor unmounted.
+  initFableLoomSceneVideoHook();
   // Music Video scene-image hook — durably files a queued reference-frame
   // render onto its project scene's `referenceImageId` on completion, even if
   // the director board unmounted mid-render (#1760 Phase 1b).

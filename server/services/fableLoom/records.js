@@ -3,9 +3,9 @@
  * transitions.
  *
  * A loom is a branching-narrative story: episodes hold a directed graph of
- * scene nodes; each node carries prose, an image prompt/render, and a list of
- * intent-triggered transitions the play LLM matches free-text reader input
- * against. All ids are server-minted. Every write funnels through
+ * scene nodes; each node carries prose, image/video prompts and rendered media,
+ * plus a list of intent-triggered transitions the play LLM matches free-text
+ * reader input against. All ids are server-minted. Every write funnels through
  * `mutateLoom` (per-record write queue + full re-sanitize), so a malformed
  * mutation can never persist.
  */
@@ -31,6 +31,8 @@ export { LOOM_LIMITS };
 
 const isSafeImageFilename = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpg|jpeg|webp)$/i.test(value);
+const isSafeVideoHistoryId = (value) =>
+  typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value);
 
 const nullableRef = (value) => (isStr(value) && value.trim() ? value.trim().slice(0, LOOM_LIMITS.REF_ID_MAX) : null);
 
@@ -65,6 +67,8 @@ function sanitizeNode(raw) {
     imagePrompt: trimTo(raw.imagePrompt, LOOM_LIMITS.IMAGE_PROMPT_MAX),
     image: isSafeImageFilename(raw.image) ? raw.image : null,
     imageJobId: isStr(raw.imageJobId) && raw.imageJobId ? raw.imageJobId.slice(0, 200) : null,
+    videoPrompt: trimTo(raw.videoPrompt, LOOM_LIMITS.VIDEO_PROMPT_MAX),
+    videoHistoryId: isSafeVideoHistoryId(raw.videoHistoryId) ? raw.videoHistoryId : null,
     isEnding: raw.isEnding === true,
     // The format this scene's text is actually WRITTEN in — server-set, not
     // patchable. `null` means unknown (authored before the field existed, or
@@ -365,7 +369,7 @@ export function deleteEpisode(loomId, episodeId) {
 
 // --- Nodes & transitions ----------------------------------------------------
 
-const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'isEnding', 'endingLabel', 'pos', 'transitions'];
+const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'isEnding', 'endingLabel', 'pos', 'transitions'];
 
 export function addNode(loomId, episodeId, fields = {}) {
   return mutateLoom(loomId, (loom) => {
@@ -492,6 +496,24 @@ export async function attachNodeImage(loomId, episodeId, nodeId, { filename, job
     if (!node) return null;
     node.image = filename;
     node.imageJobId = isStr(jobId) ? jobId : null;
+    episode.updatedAt = new Date().toISOString();
+    return loom;
+  }).catch(() => null);
+  return updated?.episodes.find((e) => e.id === episodeId)?.nodes.find((n) => n.id === nodeId) ?? null;
+}
+
+/**
+ * Durable video attach for the media-job completion hook. Video history ids
+ * are also the generated filenames under data/videos, but are kept as ids so
+ * the node can use the same history/media conventions as other video surfaces.
+ */
+export async function attachNodeVideo(loomId, episodeId, nodeId, { videoHistoryId }) {
+  if (!isValidLoomId(loomId) || !isSafeVideoHistoryId(videoHistoryId)) return null;
+  const updated = await mutateLoom(loomId, (loom) => {
+    const episode = loom.episodes.find((e) => e.id === episodeId);
+    const node = episode?.nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+    node.videoHistoryId = videoHistoryId;
     episode.updatedAt = new Date().toISOString();
     return loom;
   }).catch(() => null);
