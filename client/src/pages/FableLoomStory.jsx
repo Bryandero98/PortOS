@@ -161,8 +161,12 @@ export default function FableLoomStory({ view = 'graph' }) {
     return <PageSkeleton label="Loading loom" fullHeight padded sidebar={false} />;
   }
 
-  // Route normalization: no/stale episode id → first episode (or stay bare
-  // when the loom has none yet). The reserved `plan` id is the series view.
+  // Route normalization: a loom without episodes starts in series planning;
+  // an established loom opens its first episode. The reserved `plan` id is
+  // the series view.
+  if (!episodeId && !loom.episodes.length) {
+    return <Navigate to={`${basePath}/plan`} replace />;
+  }
   if (!seriesPlanOpen && !episode && loom.episodes.length) {
     return <Navigate to={episodePath(loom.episodes[0].id)} replace />;
   }

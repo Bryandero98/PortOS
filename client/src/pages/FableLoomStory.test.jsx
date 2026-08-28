@@ -53,6 +53,7 @@ const renderEditor = () => render(
   <MemoryRouter initialEntries={['/fableloom/loom-1']}>
     <Routes>
       <Route path="/fableloom/:loomId" element={<FableLoomStory />} />
+      <Route path="/fableloom/:loomId/:episodeId" element={<FableLoomStory />} />
     </Routes>
   </MemoryRouter>,
 );
@@ -62,7 +63,24 @@ beforeEach(() => {
   api.getLoom.mockResolvedValue(loom());
 });
 
-describe('FableLoomStory series backlink', () => {
+describe('FableLoomStory navigation and series backlink', () => {
+  it('opens an empty loom in the series plan before asking for episodes', async () => {
+    renderEditor();
+
+    expect(await screen.findByText('Series planning workspace')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Series plan' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: 'Add the first episode' })).toBeNull();
+  });
+
+  it('still opens the first episode for an established loom', async () => {
+    api.getLoom.mockResolvedValue(loom({ episodes: [episode()] }));
+    renderEditor();
+
+    expect(await screen.findByRole('tab', { name: '1. The First Door' }))
+      .toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText('Series planning workspace')).toBeNull();
+  });
+
   it('links back to the series a loom is soft-linked to', async () => {
     api.getLoom.mockResolvedValue(loom({ seriesId: 'ser-1' }));
     api.getPipelineSeries.mockResolvedValue({ id: 'ser-1', name: 'Example Series' });

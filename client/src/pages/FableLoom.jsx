@@ -53,7 +53,7 @@ export default function FableLoom() {
       universeId: form.universeId || null,
       seriesId: form.seriesId || null,
     }, { silent: true });
-    navigate(`/fableloom/${loom.id}`);
+    navigate(`/fableloom/${loom.id}/plan`);
   }, { errorMessage: 'Could not create the loom' });
 
   const handleCreate = (event) => {
@@ -175,7 +175,7 @@ export default function FableLoom() {
         <div className="text-center py-16 border border-dashed border-port-border rounded-lg">
           <Waypoints size={32} className="mx-auto text-port-text-muted mb-3" />
           <p className="text-sm text-port-text-muted">
-            No branching narratives yet. Create a loom, link a universe, and weave your first episode.
+            No branching narratives yet. Create a loom, shape its series plan, then weave its episodes.
           </p>
         </div>
       ) : (

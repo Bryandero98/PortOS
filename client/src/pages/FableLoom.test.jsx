@@ -73,7 +73,7 @@ describe('FableLoom index', () => {
     await waitFor(() => expect(api.createLoom).toHaveBeenCalledWith({
       name: 'Gate of Ash', logline: '', premise: '', styleNotes: '', format: 'prose', universeId: null, seriesId: null,
     }, { silent: true }));
-    expect(navigate).toHaveBeenCalledWith('/fableloom/loom-9');
+    expect(navigate).toHaveBeenCalledWith('/fableloom/loom-9/plan');
   });
 
   it('deletes a loom after inline confirmation', async () => {
