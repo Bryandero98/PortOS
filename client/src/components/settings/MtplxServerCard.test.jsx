@@ -146,10 +146,12 @@ describe('MtplxServerCard', () => {
   });
 
   it('says MTPLX starts on demand while offering an explicit Start button', async () => {
-    const handlers = await renderCard({ installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'] });
+    const handlers = await renderCard({ installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP', 'Example/Other-MTP'] });
     expect(screen.getByText(/starts on demand/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Checkpoint'), { target: { value: 'Example/Other-MTP' } });
+    fireEvent.change(screen.getByLabelText('Port'), { target: { value: '8010' } });
     fireEvent.click(screen.getByRole('button', { name: /^Start MTPLX/ }));
-    expect(handlers.onStart).toHaveBeenCalledWith({ model: null });
+    expect(handlers.onStart).toHaveBeenCalledWith({ model: 'Example/Other-MTP', port: 8010 });
   });
 
   it('will not offer to stop a server started outside PortOS', async () => {

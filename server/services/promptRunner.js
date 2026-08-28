@@ -1247,7 +1247,9 @@ async function executeProviderRunOnce({
   // (above) and any retry-fallback. This is the single chokepoint the
   // module comment promises: gating the *requested* provider at the call
   // site missed a remote/CLI primary that swaps/fails over to a local
-  // backend, defeating the VRAM/OOM serialization. No-op for cloud/CLI/TUI.
+  // backend, defeating the VRAM/OOM serialization. Non-local CLI/TUI providers
+  // remain unconstrained.
+  const attemptStartedAt = Date.now();
   return withLocalConcurrencyGate(effectiveProvider, async () => {
     // API providers run through the shared toolkit readiness hook. TUI
     // providers spawn OpenCode directly, so they need the same hook here or
@@ -1265,7 +1267,7 @@ async function executeProviderRunOnce({
           exitCode: 1,
           success: false,
           error: message,
-          startTime: Date.now(),
+          startTime: attemptStartedAt,
         });
         const error = new Error(message);
         error.effectiveProvider = effectiveProvider;
