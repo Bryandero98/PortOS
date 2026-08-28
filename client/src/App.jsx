@@ -315,6 +315,8 @@ export default function App() {
           <Route path="settings/catalog" element={<Navigate to="/catalog?settings=1" replace />} />
           {/* Legacy /settings/contacts → Comms Messages → Contacts tab */}
           <Route path="settings/contacts" element={<Navigate to="/messages/contacts" replace />} />
+          {/* Legacy /settings/signal → Comms Messages → Signal tab */}
+          <Route path="settings/signal" element={<Navigate to="/messages/signal" replace />} />
           {/* Local LLM management moved out of Settings into its own top-level
               Models section (#4736). Bookmarks and stale ⌘K history keep working. */}
           <Route path="settings/local-llm" element={<Navigate to="/models/llms" replace />} />
