@@ -344,6 +344,9 @@ Context tools remain read-only. Semantic reads and writes are independent, defau
 | GET | `/brain/ideas/:id` | Get idea |
 | PUT | `/brain/ideas/:id` | Update idea |
 | DELETE | `/brain/ideas/:id` | Delete idea |
+| GET/PUT | `/brain/ideas/idealoom/settings` | Get or update local IdeaLoom integration settings (disabled by default) |
+| GET/POST | `/brain/ideas/idealoom/lists` | List or create machine-local IdeaLoom lists |
+| GET/PUT/DELETE | `/brain/ideas/idealoom/lists/:id` | Read, update, or delete a machine-local IdeaLoom list |
 | GET | `/brain/admin` | List admin tasks |
 | POST | `/brain/admin` | Create admin task |
 | GET | `/brain/admin/:id` | Get admin task |
