@@ -88,11 +88,36 @@ describe('LoomSeriesPlan', () => {
     renderPlan({ loom: loom(), onLoomUpdate });
 
     fireEvent.click(screen.getByRole('button', { name: /regenerate full plan/i }));
+    expect(api.generateLoomSeriesPlan).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^regenerate$/i }));
 
     await waitFor(() => expect(api.generateLoomSeriesPlan).toHaveBeenCalledWith(
       'loom-1', {}, { silent: true },
     ));
     expect(onLoomUpdate).toHaveBeenCalledWith(generated);
+  });
+
+  it('adopts a generated plan over typing performed while the provider call is in flight', async () => {
+    let finishDraft;
+    api.generateLoomSeriesPlan.mockImplementation(() => new Promise((resolve) => { finishDraft = resolve; }));
+    render(<RouterProvider router={createMemoryRouter([
+      { path: '/', element: <StatefulPlan initial={loom()} /> },
+    ], { initialEntries: ['/'] })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /regenerate full plan/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^regenerate$/i }));
+    fireEvent.change(screen.getByRole('textbox', { name: /story arc/i }), {
+      target: { value: 'Typing that should not undo the requested regeneration.' },
+    });
+    const generated = loom({ seriesPlan: {
+      storyArc: 'The generated arc wins.',
+      plotPoints: [],
+      sideQuests: [],
+    } });
+    finishDraft({ loom: generated, runId: 'run-draft' });
+
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /story arc/i })).toHaveValue('The generated arc wins.'));
+    expect(screen.getByRole('button', { name: /save plan/i })).toBeDisabled();
   });
 
   it('keeps typing performed while a save response is in flight', async () => {

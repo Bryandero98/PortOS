@@ -6,11 +6,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { BrainCircuit, ChevronDown, ChevronUp, Loader2, MessageSquareText, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
+import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import toast from '../ui/Toast';
 import { FormField } from '../ui/FormField.jsx';
 import UnsavedChangesConfirm from '../ui/UnsavedChangesConfirm.jsx';
 import ProviderModelSelector from '../ProviderModelSelector';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import useProviderModels from '../../hooks/useProviderModels';
 import useUnsavedChangesGuard from '../../hooks/useUnsavedChangesGuard';
 import {
@@ -88,6 +90,16 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
     setDirty(revisionRef.current > submittedRevision);
     toast.success('Series plan saved');
   }, { errorMessage: 'Could not save series plan' });
+
+  // AI generation/feedback replaces the saved series plan as one server-owned
+  // result. Make that response authoritative over any typing that happened
+  // while the provider call was in flight; otherwise the revision guard would
+  // keep the stale local plan on screen and a later Save would undo the AI run.
+  const adoptServerPlan = (updated) => {
+    revisionRef.current = 0;
+    savedRevisionRef.current = 0;
+    onLoomUpdate(updated);
+  };
 
   const episodeOptions = loom.episodes.map((episode) => ({
     id: episode.id,
@@ -171,7 +183,7 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
           onMove={(index, direction) => moveItem('sideQuests', index, direction)}
         />
 
-        <SeriesAiEditor loom={loom} dirty={dirty} onLoomUpdate={onLoomUpdate} />
+        <SeriesAiEditor loom={loom} dirty={dirty} onLoomUpdate={adoptServerPlan} />
 
         <WholeEpisodeEditor loom={loom} dirty={dirty} onLoomUpdate={onLoomUpdate} />
       </div>
@@ -183,6 +195,7 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
   const [feedback, setFeedback] = useState('');
   const [analysis, setAnalysis] = useState(null);
   const [route, setRoute] = useState({ providerId: '', model: '', effort: '' });
+  const regenerateConfirm = useConfirmDelete();
   const { providers, loading } = useProviderModels({ allowDefault: true, silent: true, withEffort: true });
   const selectedProvider = providers.find((provider) => provider.id === route.providerId);
   const routeBody = {
@@ -215,6 +228,10 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
   const hasPlan = !!loom.seriesPlan?.storyArc?.trim()
     || !!loom.seriesPlan?.plotPoints?.length
     || !!loom.seriesPlan?.sideQuests?.length;
+  const confirmRegeneration = () => {
+    regenerateConfirm.cancelDelete();
+    if (!dirty && !busy) generatePlan();
+  };
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-4">
       <div>
@@ -245,15 +262,28 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
           These actions will use {selectedProvider.name}{effectiveModelFor(selectedProvider, route.model) ? ` (${effectiveModelFor(selectedProvider, route.model)})` : ''}.
         </p>
       ) : null}
-      <button
-        type="button"
-        onClick={generatePlan}
-        disabled={busy || dirty}
-        className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
-      >
-        {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-        {generating ? 'Drafting full plan…' : hasPlan ? 'Regenerate full plan' : 'Draft full plan'}
-      </button>
+      {hasPlan && regenerateConfirm.isConfirming('series-plan') ? (
+        <ConfirmButtonPair
+          prompt="Replace the saved plan?"
+          confirmText="Regenerate"
+          confirmIcon={Sparkles}
+          onConfirm={confirmRegeneration}
+          onCancel={regenerateConfirm.cancelDelete}
+          tone="warning"
+          className="justify-end"
+          largeTouchTargets
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => (hasPlan ? regenerateConfirm.requestDelete('series-plan') : generatePlan())}
+          disabled={busy || dirty}
+          className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
+        >
+          {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+          {generating ? 'Drafting full plan…' : hasPlan ? 'Regenerate full plan' : 'Draft full plan'}
+        </button>
+      )}
       {hasPlan ? (
         <p className="text-xs text-port-text-muted">
           Regenerating replaces the saved arc, plot points, and side quests. Episode titles,

@@ -83,6 +83,7 @@ describe('FableLoom index', () => {
       name: 'Gate of Ash', logline: '', premise: '', styleNotes: '', format: 'prose', universeId: null, seriesId: null,
     }, { silent: true }));
     expect(navigate).toHaveBeenCalledWith('/fableloom/loom-9/plan');
+    expect(api.generateLoomSeriesPlan).not.toHaveBeenCalled();
   });
 
   it('creates and drafts the full plan with the chosen provider, model, and effort', async () => {
