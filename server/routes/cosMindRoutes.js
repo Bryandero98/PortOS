@@ -169,6 +169,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
       model: profile.model || null,
       effort: profile.effort || null,
       thinkingInterface: profile.thinkingInterface,
+      wakeIntervalMinutes: profile.wakeIntervalMinutes,
     },
     capabilities,
     harness: persistentMindHarnessInfo(provider),
@@ -207,7 +208,16 @@ router.get('/mind/context', asyncHandler(async (_req, res) => {
 router.get('/mind/tools', asyncHandler(async (_req, res) => {
   const root = await loadState();
   const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
-  const taskCatalog = capabilities.createTasks ? await readPersistentMindTaskCatalog() : null;
+  const taskCatalog = capabilities.createTasks
+    ? await readPersistentMindTaskCatalog({ includeAllApps: true })
+    : null;
+  if (taskCatalog && Array.isArray(taskCatalog.apps)) {
+    const allowed = Array.isArray(capabilities.allowedAppIds) ? new Set(capabilities.allowedAppIds) : null;
+    taskCatalog.apps = taskCatalog.apps.map((app) => ({
+      ...app,
+      granted: !allowed || allowed.has(app.id),
+    }));
+  }
   res.json({
     schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
     capabilities,

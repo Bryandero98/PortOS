@@ -143,6 +143,16 @@ describe('persistent mind CoS-task capability', () => {
     expect(mocks.addTask).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5-mini' }), 'internal');
   });
 
+  it('filters the model-facing catalog while retaining all apps for the settings inventory', async () => {
+    mocks.apps.push({ id: 'second-app', name: 'Second App', repoPath: '/example/second-app' });
+
+    const filtered = await readPersistentMindTaskCatalog({ allowedAppIds: ['portos'] });
+    const inventory = await readPersistentMindTaskCatalog({ allowedAppIds: ['portos'], includeAllApps: true });
+
+    expect(filtered.apps.map((app) => app.id)).toEqual(['portos']);
+    expect(inventory.apps.map((app) => app.id)).toEqual(['portos', 'second-app']);
+  });
+
   it('omits blocked and unknown providers while publishing bounded reason-code aggregates', async () => {
     mocks.providers.push(
       { id: 'claude', name: 'Claude', type: 'cli', enabled: true, command: 'claude' },
@@ -271,6 +281,18 @@ describe('persistent mind CoS-task capability', () => {
     expect(result).toMatchObject({ success: false, error: expect.stringContaining('disabled') });
     expect(mocks.addTask).not.toHaveBeenCalled();
     expect(recordCapabilityEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a task targeting an app outside the explicit allowlist', async () => {
+    mocks.root.config.persistentMindCapabilities.allowedAppIds = [];
+    const [result] = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest()],
+      turnId: 'turn-revoked-app',
+      wake: { kind: 'message', message: { id: 'message-revoked-app' } },
+    });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('not authorized') });
+    expect(mocks.addTask).not.toHaveBeenCalled();
   });
 
   it('allows an explicit provider-default model choice', async () => {

@@ -36,7 +36,7 @@ import { getUserTimezone } from './userTimezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudgets.js';
 import { mergePersistentMindCapabilities } from '../lib/persistentMindCapabilities.js';
-import { mergePersistentMindProfile } from '../lib/persistentMindProfile.js';
+import { mergePersistentMindProfile, normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
 import { mergePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
 import { pendingCosActionReservations } from './cosAdmissionReservations.js';
@@ -167,6 +167,7 @@ import {
   shutdownPersistentMindSupervisor,
   handlePersistentMindGlobalPause,
   handlePersistentMindGlobalResume,
+  refreshPersistentMindWakeCadence,
   registerPersistentMindTurnAdapter,
   unregisterPersistentMindTurnAdapter,
 } from './persistentMindSupervisor.js';
@@ -224,6 +225,7 @@ export { getConfig } from './cosState.js';
  * Update configuration
  */
 export async function updateConfig(updates) {
+  let persistentMindWakeCadenceChanged = false;
   const config = await withStateLock(async () => {
     const state = await loadState();
     // domainAutonomy is a partial-friendly map: a PATCH that names only one
@@ -252,10 +254,13 @@ export async function updateConfig(updates) {
       state.config.domainBudgets = normalizeDomainBudgets(mergedBudgets);
     }
     if (updates.persistentMindProfile !== undefined) {
-      state.config.persistentMindProfile = mergePersistentMindProfile(
+      const nextPersistentMindProfile = mergePersistentMindProfile(
         priorPersistentMindProfile,
         updates.persistentMindProfile,
       );
+      persistentMindWakeCadenceChanged = nextPersistentMindProfile.wakeIntervalMinutes
+        !== normalizePersistentMindProfile(priorPersistentMindProfile).wakeIntervalMinutes;
+      state.config.persistentMindProfile = nextPersistentMindProfile;
     }
     if (updates.persistentMindCapabilities !== undefined) {
       state.config.persistentMindCapabilities = mergePersistentMindCapabilities(
@@ -273,6 +278,9 @@ export async function updateConfig(updates) {
     return state.config;
   });
   cosEvents.emit('config:changed', config);
+  if (persistentMindWakeCadenceChanged) {
+    await refreshPersistentMindWakeCadence();
+  }
   if (isDaemonRunning() && updates.domainAutonomy !== undefined) {
     const mode = getDomainMode(config, 'cos');
     if (mode === 'execute') await handlePersistentMindGlobalResume();

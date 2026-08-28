@@ -163,7 +163,14 @@ describe('persistent mind routes', () => {
     expect(mocks.readPersistentMindEvents).toHaveBeenCalledWith({ mindId: 'cos-persistent-mind', cursor: '12:mind-message:one', limit: 25 });
     expect(res.body).toMatchObject({
       events: [], gap: false, state: { status: 'idle' },
-      profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
+      profile: {
+        enabled: true,
+        providerId: 'demo',
+        model: 'demo-model',
+        effort: 'high',
+        thinkingInterface: 'text',
+        wakeIntervalMinutes: 30,
+      },
       capabilities: { schemaVersion: 3, createTasks: true, readPortos: false, writePortos: false, taskModelAllowlist: [] },
       harness: { type: 'api', recommendation: 'recommended' },
       imageCapability: { status: 'unknown' },
@@ -214,6 +221,22 @@ describe('persistent mind routes', () => {
     expect(res.body.tools[0].guardrails).toEqual(expect.arrayContaining([
       expect.stringMatching(/isolated-worktree/i),
     ]));
+  });
+
+  it('marks revoked managed apps without removing them from the settings inventory', async () => {
+    mocks.loadState.mockResolvedValue({ config: {
+      persistentMindCapabilities: { schemaVersion: 2, createTasks: true, allowedAppIds: [] },
+    } });
+    mocks.readPersistentMindTaskCatalog.mockResolvedValue({
+      apps: [{ id: 'demo-app', name: 'Demo App', planOnly: true }],
+      providers: [],
+    });
+
+    const res = await get('/mind/tools');
+
+    expect(res.status).toBe(200);
+    expect(res.body.taskCatalog.apps).toEqual([{ id: 'demo-app', name: 'Demo App', planOnly: true, granted: false }]);
+    expect(mocks.readPersistentMindTaskCatalog).toHaveBeenCalledWith({ includeAllApps: true });
   });
 
   it('exposes live context, system, inference, and model-residency telemetry', async () => {

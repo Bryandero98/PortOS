@@ -72,6 +72,7 @@ export default function PersistentMindTaskModelAllowlistControls({
         readPortos: capabilities?.readPortos === true,
         writePortos: capabilities?.writePortos === true,
         taskModelAllowlist: deduped,
+        ...(Array.isArray(capabilities?.allowedAppIds) ? { allowedAppIds: capabilities.allowedAppIds } : {}),
       };
       await api.updateCosConfig({ persistentMindCapabilities: next }, { silent: true });
       onSaved?.(next);

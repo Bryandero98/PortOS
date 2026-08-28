@@ -85,6 +85,7 @@ export const PERSISTENT_MIND_TASK_LIMITS = Object.freeze({
   descriptionChars: 500,
   promptChars: 12_000,
   appIdChars: 128,
+  maxAllowedAppIds: 50,
   providerIdChars: 100,
   modelChars: 200,
 });
@@ -112,6 +113,11 @@ export const persistentMindCapabilitiesSchema = portosSemanticToolGrantsSchema.e
   // entries are configured, requests must name one of these exact pairs.
   taskModelAllowlist: z.array(persistentMindTaskModelAllowlistEntrySchema)
     .max(PERSISTENT_MIND_TASK_MODEL_ALLOWLIST_LIMITS.MAX_ENTRIES).optional(),
+  // Omitted preserves the legacy grant to every runnable managed app. An
+  // explicit list lets the user narrow that grant without changing the typed
+  // task capability itself.
+  allowedAppIds: z.array(z.string().trim().min(1).max(PERSISTENT_MIND_TASK_LIMITS.appIdChars))
+    .max(PERSISTENT_MIND_TASK_LIMITS.maxAllowedAppIds).optional(),
 });
 
 export const persistentMindTaskRequestSchema = z.object({
@@ -191,6 +197,14 @@ export function normalizePersistentMindCapabilities(raw) {
   const taskModelAllowlist = source.taskModelAllowlistInvalid === true
     ? { entries: [], invalid: true }
     : normalizeTaskModelAllowlist(source.taskModelAllowlist);
+  const allowedAppIds = Array.isArray(source.allowedAppIds)
+    ? [...new Set(source.allowedAppIds
+      .filter((id) => typeof id === 'string')
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .filter((id) => id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars))]
+      .slice(0, PERSISTENT_MIND_TASK_LIMITS.maxAllowedAppIds)
+    : undefined;
   return {
     schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
     createTasks: source.createTasks === true,
@@ -200,6 +214,7 @@ export function normalizePersistentMindCapabilities(raw) {
     // unrestricted empty-list policy. This internal marker is omitted from
     // route input schemas and only affects fail-closed admission/catalog code.
     ...(taskModelAllowlist.invalid ? { taskModelAllowlistInvalid: true } : {}),
+    ...(allowedAppIds !== undefined ? { allowedAppIds } : {}),
   };
 }
 

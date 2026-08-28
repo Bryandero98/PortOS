@@ -28,6 +28,8 @@ describe('persistent mind capabilities', () => {
     expect(persistentMindCapabilitiesSchema.safeParse({ createTasks: true, readPortos: true, writePortos: false }).success).toBe(true);
     expect(persistentMindCapabilitiesSchema.safeParse({ schemaVersion: 2, createTasks: true }).success).toBe(true);
     expect(persistentMindCapabilitiesSchema.safeParse({ taskModelAllowlist: [{ providerId: 'ollama', model: 'example-local' }] }).success).toBe(true);
+    expect(persistentMindCapabilitiesSchema.safeParse({ allowedAppIds: ['example-app', 'second-app'] }).success).toBe(true);
+    expect(persistentMindCapabilitiesSchema.safeParse({ allowedAppIds: Array.from({ length: 51 }, (_, index) => `app-${index}`) }).success).toBe(false);
     expect(persistentMindCapabilitiesSchema.safeParse({ createTasks: true, shell: true }).success).toBe(false);
     expect(mergePersistentMindCapabilities({ createTasks: false }, { createTasks: true }))
       .toMatchObject({ createTasks: true, readPortos: false, writePortos: false });
@@ -51,6 +53,12 @@ describe('persistent mind capabilities', () => {
     expect(malformed.taskModelAllowlistInvalid).toBe(true);
     expect(isPersistentMindTaskModelAllowed(malformed, 'ollama', 'example-local')).toBe(false);
     expect(mergePersistentMindCapabilities(malformed, { readPortos: true }).taskModelAllowlistInvalid).toBe(true);
+  });
+
+  it('preserves legacy all-app access while normalizing an explicit app allowlist', () => {
+    expect(normalizePersistentMindCapabilities({ createTasks: true })).not.toHaveProperty('allowedAppIds');
+    expect(normalizePersistentMindCapabilities({ allowedAppIds: [' example-app ', 'example-app', '', 'second-app'] }))
+      .toMatchObject({ allowedAppIds: ['example-app', 'second-app'] });
   });
 
   it('accepts only bounded typed task requests and known PR dispositions', () => {

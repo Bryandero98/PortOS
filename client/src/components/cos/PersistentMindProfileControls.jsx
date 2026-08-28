@@ -14,7 +14,20 @@ const DEFAULT_PROFILE = {
   model: '',
   effort: '',
   thinkingInterface: 'text',
+  wakeIntervalMinutes: 30,
 };
+
+const WAKE_INTERVAL_OPTIONS = [
+  [5, 'Every 5 minutes'],
+  [15, 'Every 15 minutes'],
+  [30, 'Every 30 minutes'],
+  [60, 'Every hour'],
+  [120, 'Every 2 hours'],
+  [240, 'Every 4 hours'],
+  [480, 'Every 8 hours'],
+  [1_440, 'Every day'],
+  [10_080, 'Every week'],
+];
 
 const normalizeProfile = (profile) => ({
   ...DEFAULT_PROFILE,
@@ -31,6 +44,7 @@ export default function PersistentMindProfileControls({
   onSavingChange,
 }) {
   const enabledId = useId();
+  const wakeIntervalId = useId();
   const {
     providers,
     availableModels,
@@ -89,6 +103,7 @@ export default function PersistentMindProfileControls({
     profile?.model,
     profile?.effort,
     profile?.thinkingInterface,
+    profile?.wakeIntervalMinutes,
   ]);
 
   const save = async (patch) => {
@@ -181,6 +196,24 @@ export default function PersistentMindProfileControls({
         }}
         onEffortChange={(effort) => save({ effort })}
       />
+      <div>
+        <label htmlFor={wakeIntervalId} className="block text-sm font-medium text-port-text">Wake cadence</label>
+        <select
+          id={wakeIntervalId}
+          value={draft.wakeIntervalMinutes}
+          disabled={disabled || saving || !draft.enabled}
+          onChange={(event) => save({ wakeIntervalMinutes: Number(event.target.value) })}
+          className="mt-1 w-full rounded border border-port-border bg-port-bg px-3 py-2 text-sm text-port-text disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {!WAKE_INTERVAL_OPTIONS.some(([minutes]) => minutes === draft.wakeIntervalMinutes) && (
+            <option value={draft.wakeIntervalMinutes}>Every {draft.wakeIntervalMinutes} minutes</option>
+          )}
+          {WAKE_INTERVAL_OPTIONS.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
+        </select>
+        <p className="mt-1 text-xs text-port-text-muted">
+          Messages wake the mind immediately. This is the maximum quiet time between self-directed thoughts; the mind can ask to wake sooner, and shorter intervals use the selected provider more often.
+        </p>
+      </div>
       <ModelCapabilitySummary
         provider={selectedProvider}
         model={capabilityModel}

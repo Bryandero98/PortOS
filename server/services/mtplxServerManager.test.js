@@ -679,6 +679,10 @@ describe('mtplxServerManager', () => {
     it('does not match a CLI provider', () => {
       expect(isMtplxProvider({ type: 'cli', endpoint: 'http://127.0.0.1:8000/v1', id: 'mtplx', mtplxBacked: true })).toBe(false);
     });
+
+    it('matches an MTPLX-backed TUI provider', () => {
+      expect(isMtplxProvider({ type: 'tui', endpoint: 'http://127.0.0.1:8000/v1', id: 'mtplx-tui', mtplxBacked: true })).toBe(true);
+    });
   });
 
   describe('ensureMtplxProviderReady', () => {
