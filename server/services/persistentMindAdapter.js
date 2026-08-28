@@ -331,7 +331,9 @@ export function createPersistentMindTurnAdapter() {
         prompt,
         provider,
       });
-      const taskCatalog = taskAccess.createTasks ? await readPersistentMindTaskCatalog() : undefined;
+      const taskCatalog = taskAccess.createTasks
+        ? await readPersistentMindTaskCatalog({ allowedAppIds: taskAccess.allowedAppIds })
+        : undefined;
       const taskCapabilityPrompt = buildPersistentMindTaskCapabilityPrompt({
         enabled: taskAccess.createTasks,
         catalog: taskCatalog,

@@ -216,6 +216,22 @@ describe('persistent mind routes', () => {
     ]));
   });
 
+  it('marks revoked managed apps without removing them from the settings inventory', async () => {
+    mocks.loadState.mockResolvedValue({ config: {
+      persistentMindCapabilities: { schemaVersion: 2, createTasks: true, allowedAppIds: [] },
+    } });
+    mocks.readPersistentMindTaskCatalog.mockResolvedValue({
+      apps: [{ id: 'demo-app', name: 'Demo App', planOnly: true }],
+      providers: [],
+    });
+
+    const res = await get('/mind/tools');
+
+    expect(res.status).toBe(200);
+    expect(res.body.taskCatalog.apps).toEqual([{ id: 'demo-app', name: 'Demo App', planOnly: true, granted: false }]);
+    expect(mocks.readPersistentMindTaskCatalog).toHaveBeenCalledWith({ includeAllApps: true });
+  });
+
   it('exposes live context, system, inference, and model-residency telemetry', async () => {
     mocks.getPersistentMindState.mockResolvedValue({
       enabled: true,

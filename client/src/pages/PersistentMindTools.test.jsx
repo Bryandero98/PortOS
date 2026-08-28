@@ -79,9 +79,42 @@ describe('PersistentMindTools', () => {
     expect(await screen.findByText(/persistent-mind capabilities granted/)).toHaveTextContent('1 of 1');
     expect(screen.getByText('Granted')).toBeInTheDocument();
     expect(await screen.findByText('Available task filing choices')).toBeInTheDocument();
-    expect(screen.getByText(/Implementation or Plan & File Issue/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Implementation or Plan & File Issue/)).not.toHaveLength(0);
     expect(screen.getByText('gpt-5 · low, high')).toBeInTheDocument();
     expect(api.getPersistentMindTools).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets the user narrow task access to individual managed apps', async () => {
+    const user = userEvent.setup();
+    api.getPersistentMindTools.mockResolvedValueOnce(response({
+      capabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false },
+      tools: [{ ...response().tools[0], granted: true }],
+      taskCatalog: {
+        apps: [
+          { id: 'example-app', name: 'Example App', planOnly: false, granted: true },
+          { id: 'second-app', name: 'Second App', planOnly: true, granted: true },
+        ],
+        providers: [],
+      },
+    }));
+    renderPage();
+
+    const secondApp = await screen.findByRole('checkbox', { name: 'Second App' });
+    expect(secondApp).toBeChecked();
+    await user.click(secondApp);
+
+    await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
+      { persistentMindCapabilities: {
+        schemaVersion: 2,
+        createTasks: true,
+        readPortos: false,
+        writePortos: false,
+        allowedAppIds: ['example-app'],
+      } },
+      { silent: true },
+    ));
+    expect(secondApp).not.toBeChecked();
+    expect(screen.getByRole('link', { name: 'Example App' })).toHaveAttribute('href', '/apps/example-app/automation');
   });
 
   it('does not let a stale catalog refresh restore a revoked grant', async () => {
