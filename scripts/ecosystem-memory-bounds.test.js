@@ -45,6 +45,11 @@ const NODE_APP_CASES = APP_CASES.filter(([, app]) =>
   app.interpreter === 'node' || (!app.interpreter && /\.[cm]?js$/i.test(app.script)));
 
 describe('ecosystem.config.cjs memory bounds', () => {
+  it('restarts the development UI before CoS reports a 2048 MiB warning', () => {
+    const ui = apps.find((app) => app.name === 'portos-ui');
+    expect(ui?.max_memory_restart).toBe('1536M');
+  });
+
   it('recognizes every app as Node-interpreted (update the filter if that changes)', () => {
     expect(NODE_APP_CASES).toHaveLength(APP_CASES.length);
   });
