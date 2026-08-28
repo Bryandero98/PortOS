@@ -272,7 +272,6 @@ describe('MindTab', () => {
   });
 
   it('shows the next wake and persists a discoverable wake cadence', async () => {
-    const user = userEvent.setup();
     const nextWakeAt = new Date(Date.now() + 30 * 60_000).toISOString();
     api.getPersistentMind.mockResolvedValue(response({
       state: {
