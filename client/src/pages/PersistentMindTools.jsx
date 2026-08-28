@@ -10,6 +10,7 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [capabilitiesSaving, setCapabilitiesSaving] = useState(false);
   const requestVersion = useRef(0);
 
   const load = useCallback(() => {
@@ -36,6 +37,10 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
   const tools = Array.isArray(data?.tools) ? data.tools : [];
   const taskCatalog = data?.taskCatalog;
   const grantedCount = tools.filter((tool) => tool.granted === true).length;
+  const handleCapabilitiesSavingChange = (saving) => {
+    setCapabilitiesSaving(saving);
+    onSavingChange?.(saving);
+  };
   const updateCapabilities = (capabilities) => {
     requestVersion.current += 1;
     setData((current) => current ? {
@@ -82,17 +87,20 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
                 <div className="mt-4">
                   <PersistentMindTaskAccessControls
                     capabilities={data.capabilities}
+                    disabled={capabilitiesSaving}
                     onSaved={updateCapabilities}
-                    onSavingChange={onSavingChange}
+                    onSavingChange={handleCapabilitiesSavingChange}
                   />
                 </div>
                 <div className="mt-4">
                   <PersistentMindTaskModelAllowlistControls
                     capabilities={data.capabilities}
+                    disabled={capabilitiesSaving}
                     onSaved={(capabilities) => {
                       updateCapabilities(capabilities);
                       load();
                     }}
+                    onSavingChange={handleCapabilitiesSavingChange}
                   />
                 </div>
               </section>

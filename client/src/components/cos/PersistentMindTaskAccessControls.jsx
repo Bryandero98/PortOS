@@ -49,6 +49,7 @@ export default function PersistentMindTaskAccessControls({
     const previous = draft;
     const next = { ...draft, [key]: enabled };
     const payload = { ...next };
+    delete payload.taskModelAllowlistInvalid;
     if (draft.taskModelAllowlistInvalid) delete payload.taskModelAllowlist;
     setDraft(next);
     setSaving(true);
