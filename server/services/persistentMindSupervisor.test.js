@@ -15,6 +15,7 @@ const mock = vi.hoisted(() => ({
   acquireSlot: vi.fn(async () => ({ ok: true, release: vi.fn() })),
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
   prepareContext: vi.fn(async () => ({ text: 'bounded context', chars: 15, summaryState: 'not-needed' })),
+  updateInProgress: false,
   daemonRunning: true,
   profile: {
     ok: true,
@@ -66,6 +67,10 @@ vi.mock('./persistentMindProfile.js', () => ({
   resolvePersistentMindProfile: vi.fn(async () => mock.profile),
 }));
 
+vi.mock('./updateChecker.js', () => ({
+  isUpdateInProgress: vi.fn(() => mock.updateInProgress),
+}));
+
 const supervisor = await import('./persistentMindSupervisor.js');
 
 const makeRoot = () => ({
@@ -93,6 +98,7 @@ describe('persistent mind supervisor', () => {
     mock.emitted.length = 0;
     mock.budget = { withinBudget: true, exceeded: null };
     mock.daemonRunning = true;
+    mock.updateInProgress = false;
     mock.recordUsage.mockClear();
     mock.profile = {
       ok: true,
@@ -195,6 +201,20 @@ describe('persistent mind supervisor', () => {
     });
   });
 
+  it('rejects new image messages while a source transition is in progress', async () => {
+    mock.updateInProgress = true;
+
+    await expect(supervisor.enqueuePersistentMindMessage({
+      id: 'message-during-update',
+      images: ['attachment-example'],
+    })).resolves.toMatchObject({
+      success: false,
+      code: 'UPDATE_IN_PROGRESS',
+      status: 409,
+    });
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
+  });
+
   it('pauses before adapter preparation when the pinned profile cannot resolve', async () => {
     const prepare = vi.fn();
     await supervisor.registerPersistentMindTurnAdapter({ prepare, run: vi.fn() });
@@ -207,8 +227,21 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind).toMatchObject({ status: 'degraded', pauseReason: 'Pinned provider unavailable' });
   });
 
-  it('recovers an orphaned turn without losing or duplicating its accepted message', async () => {
-    const message = { id: 'message-1', text: 'Do not lose me.', createdAt: new Date(1).toISOString() };
+  it('recovers an orphaned image turn without losing images or duplicating acceptance', async () => {
+    const message = {
+      id: 'message-1',
+      text: 'Do not lose this image.',
+      images: [{
+        attachmentId: 'attachment-example',
+        filename: 'mind-attachment-example.png',
+        path: '/api/screenshots/mind-attachment-example.png',
+        originalName: 'diagram.png',
+        mimeType: 'image/png',
+        size: 128,
+        uploadedAt: new Date(1).toISOString(),
+      }],
+      createdAt: new Date(1).toISOString(),
+    };
     mock.root.persistentMind = {
       ...createDefaultPersistentMindState(),
       enabled: true,
@@ -236,6 +269,8 @@ describe('persistent mind supervisor', () => {
       turnId: 'turn-orphan',
       data: expect.objectContaining({ status: 'interrupted' }),
     }));
+    expect(mock.appendMindEvent.mock.calls.map(([event]) => event.kind))
+      .not.toContain('mind.message.accepted');
   });
 
   it('records pause, stop, and disable boundaries even without an active provider turn', async () => {

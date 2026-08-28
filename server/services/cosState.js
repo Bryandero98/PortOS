@@ -247,6 +247,22 @@ export async function loadState() {
   return stateCache;
 }
 
+// Read only the persisted Persistent Mind shape for source-transition safety
+// checks. Unlike loadState(), this deliberately does not replace malformed JSON
+// with defaults: an update gate must distinguish "known empty" from "could not
+// establish what is queued" before switching to an older source reader.
+export async function readPersistentMindStateForSafetyCheck() {
+  await ensureDirectories();
+  if (!existsSync(STATE_FILE)) return { trusted: true, persistentMind: null };
+  const content = await readFile(STATE_FILE, 'utf-8');
+  if (!isValidJSON(content)) return { trusted: false, persistentMind: null };
+  const state = safeJSONParse(content, null, { logError: true, context: 'CoS state safety check' });
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    return { trusted: false, persistentMind: null };
+  }
+  return { trusted: true, persistentMind: state.persistentMind };
+}
+
 export async function saveState(state) {
   await ensureDirectories();
   stateCache = state;
