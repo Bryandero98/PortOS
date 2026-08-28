@@ -591,7 +591,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 442
+          "line": 441
         },
         {
           "direction": "server-to-client",
@@ -999,7 +999,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/components/cos/tabs/MindTab.jsx",
-          "line": 311
+          "line": 325
         },
         {
           "direction": "server-to-client",
@@ -1034,7 +1034,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 314
+          "line": 313
         },
         {
           "direction": "server-to-client",
@@ -1140,7 +1140,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 405
+          "line": 404
         },
         {
           "direction": "client-to-server",
@@ -1169,7 +1169,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 386
+          "line": 385
         },
         {
           "direction": "client-to-server",
@@ -1208,7 +1208,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 367
+          "line": 366
         },
         {
           "direction": "client-to-server",
@@ -1237,7 +1237,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 375
+          "line": 374
         },
         {
           "direction": "client-to-server",
@@ -1337,7 +1337,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 419
+          "line": 418
         },
         {
           "direction": "server-to-client",
@@ -1373,7 +1373,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 436
+          "line": 435
         },
         {
           "direction": "server-to-client",
@@ -1456,7 +1456,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/components/cos/tabs/MindTab.jsx",
-          "line": 312
+          "line": 326
         },
         {
           "direction": "server-to-client",
@@ -1474,7 +1474,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/components/cos/tabs/MindTab.jsx",
-          "line": 313
+          "line": 327
         },
         {
           "direction": "server-to-client",
@@ -1515,7 +1515,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 324
+          "line": 323
         },
         {
           "direction": "server-to-client",
@@ -1559,7 +1559,7 @@
         {
           "direction": "client-to-server",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 305
+          "line": 304
         },
         {
           "direction": "server-to-client",
@@ -1618,7 +1618,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 349
+          "line": 348
         },
         {
           "direction": "server-to-client",
@@ -1641,7 +1641,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 338
+          "line": 337
         },
         {
           "direction": "server-to-client",
@@ -1682,7 +1682,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 329
+          "line": 328
         },
         {
           "direction": "server-to-client",
