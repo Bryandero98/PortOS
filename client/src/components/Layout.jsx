@@ -172,6 +172,7 @@ export const NAV_PRESENTATION = {
   '/brain/digest': { icon: Calendar },
   '/brain/feeds': { icon: Rss },
   '/brain/graph': { icon: Network },
+  '/brain/ideas': { icon: Lightbulb },
   '/brain/import': { icon: Upload },
   '/brain/inbox': { icon: MessageSquare },
   '/brain/links': { icon: Link2 },

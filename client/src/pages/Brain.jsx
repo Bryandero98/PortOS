@@ -65,6 +65,8 @@ export default function Brain() {
         return <LinksTab onRefresh={refetch} />;
       case 'memory':
         return <MemoryTab onRefresh={refetch} />;
+      case 'ideas':
+        return <MemoryTab onRefresh={refetch} fixedType="ideas" />;
       case 'notes':
         return <NotesTab onRefresh={refetch} />;
       case 'daily-log':

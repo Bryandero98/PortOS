@@ -6,6 +6,7 @@ import { MessageSquare, Database, Calendar, Rss, Shield, Users, FolderKanban, Li
 // with no padding (the rest scroll inside a padded wrapper). See issue #1177.
 export const TABS = [
   { id: 'inbox', label: 'Inbox', icon: MessageSquare },
+  { id: 'ideas', label: 'Ideas', icon: Lightbulb },
   { id: 'daily-log', label: 'Daily Log', icon: NotebookPen, fullBleed: true },
   { id: 'links', label: 'Links', icon: Link2 },
   { id: 'memory', label: 'Memory', icon: Database },
@@ -26,7 +27,6 @@ export const FULL_BLEED_TAB_IDS = new Set(TABS.filter((t) => t.fullBleed).map((t
 // Memory sub-tabs for entity types (alphabetical)
 export const MEMORY_TABS = [
   { id: 'admin', label: 'Admin', icon: ClipboardList },
-  { id: 'ideas', label: 'Ideas', icon: Lightbulb },
   { id: 'memories', label: 'Memories', icon: BookOpen },
   { id: 'people', label: 'People', icon: Users },
   { id: 'projects', label: 'Projects', icon: FolderKanban }
@@ -159,4 +159,3 @@ export const BRAIN_TYPE_HEX = {
   journals: '#14b8a6',
   songs: '#f43f5e'
 };
-
