@@ -17,6 +17,7 @@ vi.mock('../services/api', () => ({
 // The graph canvas and the rails are irrelevant to the header — stub them so
 // the suite exercises the loom → series backlink and nothing else.
 vi.mock('../components/fableloom/LoomCanvas', () => ({ default: () => <div /> }));
+vi.mock('../components/fableloom/LoomEpisodeOutline', () => ({ default: ({ episode }) => <div data-testid="episode-outline">{episode.title}</div> }));
 vi.mock('../components/fableloom/LoomNodeEditor', () => ({ default: () => <div /> }));
 vi.mock('../components/fableloom/LoomPlayPanel', () => ({ default: () => <div /> }));
 vi.mock('../components/fableloom/LoomSettingsDrawer', () => ({ default: () => <div /> }));
@@ -33,6 +34,18 @@ const loom = (fields = {}) => ({
   universeId: null,
   seriesId: null,
   episodes: [],
+  ...fields,
+});
+
+const episode = (fields = {}) => ({
+  id: 'ep-1',
+  number: 1,
+  title: 'The First Door',
+  synopsis: 'A choice waits in the dark.',
+  startNodeId: 'node-1',
+  nodes: [
+    { id: 'node-1', title: 'Threshold', prose: 'You stand before the first door.', transitions: [] },
+  ],
   ...fields,
 });
 
@@ -95,5 +108,21 @@ describe('FableLoomStory series backlink', () => {
     );
     expect(await screen.findByText('Series planning workspace')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Series plan' })).toBeInTheDocument();
+  });
+});
+
+describe('FableLoomStory episode outline route', () => {
+  it('renders the outline view at its dedicated URL without mounting the graph editor', async () => {
+    api.getLoom.mockResolvedValue(loom({ episodes: [episode()] }));
+    render(
+      <MemoryRouter initialEntries={['/fableloom/loom-1/ep-1/outline']}>
+        <Routes>
+          <Route path="/fableloom/:loomId/:episodeId/outline" element={<FableLoomStory view="outline" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('episode-outline')).toHaveTextContent('The First Door');
+    expect(screen.getByRole('tab', { name: 'Outline' })).toHaveAttribute('aria-selected', 'true');
   });
 });

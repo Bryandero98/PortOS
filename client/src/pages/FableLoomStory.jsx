@@ -2,7 +2,8 @@
  * FableLoom editor — the full-bleed visual workspace for one loom.
  *
  * URL is the source of truth: /fableloom/:loomId/plan is the series workspace;
- * /fableloom/:loomId/:episodeId/:nodeId? selects an episode and scene, and the
+ * /fableloom/:loomId/:episodeId selects an episode, /outline switches that
+ * episode to its text outline, and /:nodeId selects a scene in the graph. The
  * play drawer rides ?play=1.
  * Left: the scene-graph canvas (stacks top-to-bottom under the `lg` rail
  * breakpoint). Right rail: the selected scene's editor, or the
@@ -13,7 +14,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
-import { ArrowLeft, BookOpenText, Loader2, Plus, Settings, Sparkles, Trash2, Waypoints, Workflow as WorkflowIcon } from 'lucide-react';
+import { ArrowLeft, BookOpenText, ListTree, Loader2, Plus, Settings, Sparkles, Trash2, Waypoints, Workflow as WorkflowIcon } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Drawer from '../components/Drawer';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
@@ -24,6 +25,7 @@ import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import useContainerWidth from '../hooks/useContainerWidth';
 import LoomCanvas from '../components/fableloom/LoomCanvas';
+import LoomEpisodeOutline from '../components/fableloom/LoomEpisodeOutline';
 import LoomEpisodeFeedback from '../components/fableloom/LoomEpisodeFeedback';
 import LoomNodeEditor from '../components/fableloom/LoomNodeEditor';
 import LoomPlayPanel from '../components/fableloom/LoomPlayPanel';
@@ -37,7 +39,7 @@ import {
   updateLoomEpisode, updateLoomNode, weaveLoomEpisode,
 } from '../services/api';
 
-export default function FableLoomStory() {
+export default function FableLoomStory({ view = 'graph' }) {
   const { loomId, episodeId, nodeId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -51,6 +53,7 @@ export default function FableLoomStory() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const playOpen = searchParams.get('play') === '1';
   const seriesPlanOpen = episodeId === 'plan';
+  const outlineOpen = view === 'outline';
   // Orientation keys off the PAGE, not the canvas. The canvas is the leftover
   // after the 380px rail on `lg+`, so measuring it would stack a laptop graph
   // while the rail is still beside it.
@@ -244,6 +247,19 @@ export default function FableLoomStory() {
           >
             + Episode
           </button>
+          {episode && (
+            <TabPills
+              variant="pills"
+              size="xs"
+              ariaLabel="Episode view"
+              tabs={[
+                { id: 'graph', label: 'Graph', icon: Waypoints },
+                { id: 'outline', label: 'Outline', icon: ListTree },
+              ]}
+              activeTab={outlineOpen ? 'outline' : 'graph'}
+              onChange={(id) => navigate(id === 'outline' ? `${episodePath(episode.id)}/outline` : episodePath(episode.id))}
+            />
+          )}
         </div>
       </header>
 
@@ -265,6 +281,12 @@ export default function FableLoomStory() {
             </button>
           </div>
         </div>
+      ) : outlineOpen ? (
+        <LoomEpisodeOutline
+          loom={loom}
+          episode={episode}
+          onSelectNode={(id) => navigate(episodePath(episode.id, id))}
+        />
       ) : (
         <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
           <section className="flex-1 min-h-[55vh] lg:min-h-0 min-w-0 relative">

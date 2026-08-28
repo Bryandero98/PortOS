@@ -30,6 +30,10 @@ answers in-world without leaving the scene when nothing matches.
   intent paths, scene image) sits beside the canvas on large screens and
   below it on small ones, with a path strip for inbound/outbound intents
   when the graph is stacked. `?play=1` opens the reader drawer.
+- **`/fableloom/:loomId/:episodeId/outline`** — a text-first episode outline:
+  reachable scenes appear in story order with their authored prose, endings,
+  and reader paths. Unreachable scenes remain visible in a separate section,
+  and path destinations return to the matching scene in the visual editor.
 - **Play drawer** — the reader chat. Sessions are client-side state
   (restart is free; nothing persists server-side).
 - **Story settings drawer** — scene format (plus the rewrite pass), and the
