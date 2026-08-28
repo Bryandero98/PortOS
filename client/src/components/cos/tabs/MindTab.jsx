@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { ArrowUp, Brain, Check, CirclePause, CirclePlay, ExternalLink, ImagePlus, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload, X } from 'lucide-react';
+import { ArrowUp, Brain, Check, CirclePause, CirclePlay, Cpu, Database, ImagePlus, MessageCircle, RefreshCw, Settings2, Square, StickyNote, Upload, Wrench, X } from 'lucide-react';
 import { Link } from 'react-router';
 import useMounted from '../../../hooks/useMounted';
 import { useSocket } from '../../../hooks/useSocket';
@@ -15,8 +15,8 @@ import TabPills from '../../ui/TabPills';
 import PersistentMindContextPanel from '../PersistentMindContextPanel';
 import PersistentMindProfileControls from '../PersistentMindProfileControls';
 import PersistentMindRuntimePanel, { PersistentMindThoughtStatus } from '../PersistentMindRuntimePanel';
-import PersistentMindTaskAccessControls from '../PersistentMindTaskAccessControls';
 import PersistentMindVisibilityPanel from '../PersistentMindVisibilityPanel';
+import PersistentMindTools from '../../../pages/PersistentMindTools';
 import { readFileAsBase64, UPLOAD_IMAGE_ACCEPT, validateImageFile } from '../../../utils/fileUpload';
 
 const PAGE_LIMIT = 200;
@@ -24,11 +24,12 @@ const MAX_BACKFILL_PAGES = 5;
 const MAX_VISIBLE_EVENTS = PAGE_LIMIT * MAX_BACKFILL_PAGES;
 const MAX_MESSAGE_IMAGES = 8;
 const MAX_MESSAGE_IMAGE_BYTES = 10 * 1024 * 1024;
-const MIND_VIEWS = new Set(['conversation', 'context', 'setup']);
-const MIND_TABS = [
-  { id: 'conversation', label: 'Chat', icon: MessageCircle },
+const MIND_PANELS = new Set(['context', 'memories', 'tools', 'settings']);
+const MIND_PANEL_TABS = [
   { id: 'context', label: 'Context', icon: Brain },
-  { id: 'setup', label: 'Settings', icon: Settings2 },
+  { id: 'memories', label: 'Memories', icon: Database },
+  { id: 'tools', label: 'Tools', icon: Wrench },
+  { id: 'settings', label: 'Settings', icon: Settings2 },
 ];
 
 const ACTIVITY_KINDS = new Set([
@@ -142,7 +143,9 @@ const buildConversationItems = (events, showActivity) => {
 export default function MindTab() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedEventId = searchParams.get('event');
-  const activeView = MIND_VIEWS.has(searchParams.get('view')) ? searchParams.get('view') : 'conversation';
+  const legacyView = searchParams.get('view');
+  const requestedPanel = searchParams.get('panel') || (legacyView === 'setup' ? 'settings' : legacyView);
+  const activePanel = MIND_PANELS.has(requestedPanel) ? requestedPanel : null;
   const socket = useSocket();
   const [events, setEvents] = useState(null);
   const [mind, setMind] = useState(null);
@@ -162,7 +165,9 @@ export default function MindTab() {
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
-  const [taskAccessSaving, setTaskAccessSaving] = useState(false);
+  const [capabilitiesSaving, setCapabilitiesSaving] = useState(false);
+  const [contextRefreshKey, setContextRefreshKey] = useState(0);
+  const [visitedPanels, setVisitedPanels] = useState(() => new Set(activePanel ? [activePanel] : []));
   const [showActivity, setShowActivity] = useState(false);
   const [runtime, setRuntime] = useState(null);
   const [runtimeError, setRuntimeError] = useState(null);
@@ -185,6 +190,16 @@ export default function MindTab() {
   const annotationDraftIdRef = useRef(null);
   const messageListRef = useRef(null);
   const stickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    if (!activePanel) return;
+    setVisitedPanels((current) => {
+      if (current.has(activePanel)) return current;
+      const next = new Set(current);
+      next.add(activePanel);
+      return next;
+    });
+  }, [activePanel]);
 
   const loadHistory = useCallback(async ({ reset = false } = {}) => {
     if (loadPendingRef.current) {
@@ -515,22 +530,30 @@ export default function MindTab() {
   const selectedEvent = events?.find((event) => event.eventId === selectedEventId) || null;
   const isPaused = state?.status === 'paused';
   const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
+  const grantedCapabilityCount = Object.entries(mind?.capabilities || {})
+    .filter(([key, value]) => key !== 'schemaVersion' && value === true).length;
   const { status: imageCapabilityStatus, guidance: imageCapabilityGuidance } = imageCapability(mind);
   const imageAttachmentsUnavailable = imageCapabilityStatus === 'unsupported';
-  const setupSaving = profileSaving || taskAccessSaving;
+  const setupSaving = profileSaving || capabilitiesSaving;
   const conversationItems = buildConversationItems(events || [], showActivity);
-  const changeView = (view) => setSearchParams((current) => {
+  const openPanel = (panel) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
-    if (view === 'conversation') next.delete('view');
-    else {
-      next.set('view', view);
-      next.delete('event');
-    }
+    next.set('panel', panel);
+    next.delete('view');
+    next.delete('event');
+    return next;
+  });
+  const closePanel = () => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    next.delete('panel');
+    next.delete('view');
     return next;
   });
   const selectEvent = (eventId) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
     next.set('event', eventId);
+    next.delete('panel');
+    next.delete('view');
     return next;
   });
   const closeSelectedEvent = () => setSearchParams((current) => {
@@ -540,99 +563,45 @@ export default function MindTab() {
   });
 
   return (
-    <section aria-labelledby="mind-heading" className="mx-auto max-w-6xl space-y-4 pb-4">
-      {activeView === 'conversation' ? (
-        <h2 id="mind-heading" className="sr-only">Persistent Mind</h2>
-      ) : (
-        <header className="flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-port-accent/15 text-port-accent ring-1 ring-port-accent/30">
-              <Brain size={23} aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <h2 id="mind-heading" className="truncate text-lg font-semibold text-port-text">Persistent Mind</h2>
-              <p className="truncate text-xs text-port-text-muted">
-                {mind ? `${mind.profile?.model || 'No model'} · ${mind.profile?.providerId || 'No provider'} · machine-local` : 'Loading profile…'}
-              </p>
-            </div>
+    <section aria-labelledby="mind-heading" className="mx-auto max-w-[100rem] space-y-4 pb-4">
+      <header className="flex flex-col gap-3 rounded-2xl border border-port-border bg-port-card/70 p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-port-accent/15 text-port-accent ring-1 ring-port-accent/30">
+            <Brain size={23} aria-hidden="true" />
+            <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-port-card ${state?.started && !isPaused ? 'bg-port-success' : 'bg-port-text-muted'}`} aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h2 id="mind-heading" className="truncate text-lg font-semibold text-port-text">Persistent Mind</h2>
+            <p className="truncate text-xs text-port-text-muted">
+              {mind ? `${mind.profile?.model || 'No model'} · ${mind.profile?.providerId || 'No provider'} · machine-local` : 'Loading profile…'}
+            </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Persistent mind lifecycle">
-            <PersistentMindThoughtStatus
-              state={state}
-              model={state?.activeTurnId && state.activeTurnId === runtime?.inference?.turnId
-                ? runtime.inference.model
-                : mind?.profile?.model}
-            />
-            {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
-            {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
-            {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
-            <ActionButton label="Reload" icon={RefreshCw} pending={loading || runtimeLoading} onClick={() => {
-              void loadHistory({ reset: true });
-              void loadRuntime();
-              void loadVisibility({ refresh: true });
-            }} />
-          </div>
-        </header>
-      )}
-
-      <TabPills tabs={MIND_TABS} activeTab={activeView} onChange={changeView} variant="pills" size="sm" ariaLabel="Persistent mind view" />
+        </div>
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Persistent mind lifecycle">
+          <PersistentMindThoughtStatus
+            state={state}
+            model={state?.activeTurnId && state.activeTurnId === runtime?.inference?.turnId
+              ? runtime.inference.model
+              : mind?.profile?.model}
+          />
+          {!state?.started && <ActionButton label={profileReady ? 'Start' : 'Configure'} icon={profileReady ? CirclePlay : Settings2} pending={profileReady && lifecyclePending === 'start'} disabled={loading || setupSaving} onClick={() => (profileReady ? runLifecycle('start') : openPanel('settings'))} />}
+          {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
+          {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
+          {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
+          <ActionButton label="Reload" icon={RefreshCw} pending={loading || runtimeLoading} onClick={() => {
+            void loadHistory({ reset: true });
+            void loadRuntime();
+            void loadVisibility({ refresh: true });
+          }} />
+        </div>
+      </header>
 
       {gap && <Banner tone="warning" title="History gap detected">The saved cursor is no longer retained. The visible trace was reloaded from the newest bounded snapshot.</Banner>}
       {loadError && <Banner tone="error" title="Conversation unavailable">{loadError}. Existing messages are preserved; retry when the connection recovers.</Banner>}
       {lifecycleError && <Banner tone="error" title="Action failed">{lifecycleError}</Banner>}
 
-      {activeView !== 'conversation' && (
-        <>
-          <PersistentMindVisibilityPanel
-            visibility={visibility}
-            error={visibilityError}
-            loading={visibilityLoading}
-            onRefresh={() => loadVisibility({ refresh: true })}
-          />
-          <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} onOpenContext={() => changeView('context')} />
-        </>
-      )}
-
-      {activeView === 'setup' && (
-        <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
-          <div className="mb-3">
-            <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
-            <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
-          </div>
-          <PersistentMindProfileControls
-            profile={mind?.profile}
-            disabled={!mind}
-            onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
-            onSavingChange={setProfileSaving}
-          />
-          <div className="mt-4 border-t border-port-border pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-port-text">Agent task access</h3>
-              <Link to="/cos/tools" className="inline-flex items-center gap-1 text-xs font-medium text-port-accent hover:underline">
-                View and edit tools <ExternalLink size={13} aria-hidden="true" />
-              </Link>
-            </div>
-            <p className="mb-3 mt-1 text-xs text-port-text-muted">Choose whether this mind may turn a concrete recommendation into a typed task with its own run profile and landing gate.</p>
-            <PersistentMindTaskAccessControls
-              capabilities={mind?.capabilities}
-              disabled={!mind}
-              onSaved={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)}
-              onSavingChange={setTaskAccessSaving}
-            />
-          </div>
-          {!state?.started && (
-            <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-port-text-muted">{setupSaving ? 'Saving persistent mind settings…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
-              <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || setupSaving || !profileReady} onClick={() => runLifecycle('start')} />
-            </div>
-          )}
-        </section>
-      )}
-
-      {activeView === 'context' && <PersistentMindContextPanel />}
-
-      {activeView === 'conversation' && (
-        <section data-testid="mind-chat" aria-label="Persistent mind chat" className="flex h-[60dvh] min-h-[27rem] max-h-[48rem] flex-col overflow-hidden rounded-[1.5rem] border border-port-border bg-port-card shadow-lg shadow-black/10 sm:h-[72dvh] sm:min-h-[30rem]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
+        <section data-testid="mind-chat" aria-label="Persistent mind chat" className="flex h-[68dvh] min-h-[30rem] max-h-[54rem] flex-col overflow-hidden rounded-[1.5rem] border border-port-border bg-port-card shadow-lg shadow-black/10 sm:min-h-[34rem]">
           <header className="flex shrink-0 items-center justify-between gap-3 border-b border-port-border bg-port-card/95 px-3 py-2.5 sm:px-4">
             <div className="flex min-w-0 items-center gap-2.5">
               <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-port-accent/15 text-port-accent">
@@ -717,10 +686,79 @@ export default function MindTab() {
             </div>
           </form>
         </section>
-      )}
+
+        <aside aria-labelledby="mind-state-heading" className="space-y-3 xl:sticky xl:top-0">
+          <section className="rounded-2xl border border-port-border bg-port-card p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-port-text-muted">Live workspace</p>
+                <h3 id="mind-state-heading" className="mt-1 text-base font-semibold text-port-text">Mind state</h3>
+              </div>
+              <span className={`h-2.5 w-2.5 rounded-full ${state?.status === 'thinking' ? 'animate-pulse bg-port-accent' : state?.started && !isPaused ? 'bg-port-success' : 'bg-port-text-muted'}`} aria-hidden="true" />
+            </div>
+            <p className="mt-3 text-sm text-port-text-muted">
+              {state?.status === 'thinking' ? 'Working through the current turn.' : state?.pauseReason || (state?.started ? 'Listening for messages and scheduled wakes.' : 'Configure the AI profile to begin.')}
+            </p>
+            {state?.queuedMessageCount > 0 && <p className="mt-2 text-xs font-medium text-port-accent">{state.queuedMessageCount} queued message{state.queuedMessageCount === 1 ? '' : 's'}</p>}
+          </section>
+
+          <div className="grid grid-cols-2 gap-2 xl:grid-cols-1">
+            <MindStateButton icon={Brain} label="Context" value={runtime?.context?.approximateTokens == null ? 'Unavailable' : `~${runtime.context.approximateTokens.toLocaleString()} tokens`} detail={`${runtime?.context?.chars?.toLocaleString() || '—'} characters`} onClick={() => openPanel('context')} />
+            <MindStateButton icon={Database} label="Memories" value={runtime?.context?.memoryCount == null ? 'Unavailable' : `${runtime.context.memoryCount} accessible`} detail="Created and curated" onClick={() => openPanel('memories')} />
+            <MindStateButton icon={Wrench} label="Tools" value={grantedCapabilityCount > 0 ? `${grantedCapabilityCount} grant${grantedCapabilityCount === 1 ? '' : 's'} enabled` : 'No grants'} detail="Narrow, typed authority" onClick={() => openPanel('tools')} />
+            <MindStateButton icon={Cpu} label="Settings" value={runtime?.inference?.active ? 'Running now' : runtime?.inference?.residency?.status === 'loaded' ? 'Loaded in memory' : 'Not running'} detail={runtime?.inference?.model || mind?.profile?.model || 'Not configured'} onClick={() => openPanel('settings')} />
+          </div>
+
+          {(runtimeError || visibilityError) && <p className="rounded-xl border border-port-warning/40 bg-port-warning/10 p-3 text-xs text-port-warning">Some live status is delayed. The last successful snapshot remains visible.</p>}
+        </aside>
+      </div>
 
       <Drawer
-        open={activeView === 'conversation' && Boolean(selectedEventId)}
+        open={Boolean(activePanel)}
+        onClose={closePanel}
+        title="Mind workspace"
+        subtitle="Inspect and configure the state available to Persistent Mind"
+        size="xl"
+        closeLabel="Close mind workspace"
+        closeOnEsc={false}
+        closeOnBackdrop={false}
+      >
+        <div className="mb-4">
+          <TabPills tabs={MIND_PANEL_TABS} activeTab={activePanel || 'context'} onChange={openPanel} variant="pills" size="sm" mobileDropdown ariaLabel="Mind workspace sections" />
+        </div>
+        {(visitedPanels.has('context') || activePanel === 'context') && <div hidden={activePanel !== 'context'} className="space-y-4">
+          <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} />
+          <PersistentMindVisibilityPanel visibility={visibility} error={visibilityError} loading={visibilityLoading} onRefresh={() => loadVisibility({ refresh: true })} />
+          <PersistentMindContextPanel view="context" refreshKey={contextRefreshKey} />
+        </div>}
+        {(visitedPanels.has('memories') || activePanel === 'memories') && <div hidden={activePanel !== 'memories'}>
+          <PersistentMindContextPanel view="memories" onMemoriesChanged={() => setContextRefreshKey((current) => current + 1)} />
+        </div>}
+        {(visitedPanels.has('tools') || activePanel === 'tools') && <div hidden={activePanel !== 'tools'}>
+          <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} onSavingChange={setCapabilitiesSaving} />
+        </div>}
+        {(visitedPanels.has('settings') || activePanel === 'settings') && <section hidden={activePanel !== 'settings'} aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
+          <div className="mb-3">
+            <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
+            <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
+          </div>
+          <PersistentMindProfileControls
+            profile={mind?.profile}
+            disabled={!mind}
+            onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
+            onSavingChange={setProfileSaving}
+          />
+          {!state?.started && (
+            <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-port-text-muted">{setupSaving ? 'Saving persistent mind settings…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
+              <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || setupSaving || !profileReady} onClick={() => runLifecycle('start')} />
+            </div>
+          )}
+        </section>}
+      </Drawer>
+
+      <Drawer
+        open={Boolean(selectedEventId)}
         onClose={closeSelectedEvent}
         title={selectedEvent ? eventLabel(selectedEvent.kind) : 'Event details'}
         subtitle={selectedEvent?.at ? formatDateTime(selectedEvent.at) : undefined}
@@ -765,6 +803,18 @@ export default function MindTab() {
         )}
       </Drawer>
     </section>
+  );
+}
+
+function MindStateButton({ icon: Icon, label, value, detail, onClick }) {
+  return (
+    <button type="button" onClick={onClick} className="group rounded-2xl border border-port-border bg-port-card p-3 text-left transition-colors hover:border-port-accent/60 hover:bg-port-accent/5">
+      <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-port-text-muted group-hover:text-port-accent">
+        <Icon size={14} aria-hidden="true" /> {label}
+      </span>
+      <span className="mt-2 block text-sm font-semibold text-port-text">{value}</span>
+      <span className="mt-0.5 block truncate text-xs text-port-text-muted">{detail}</span>
+    </button>
   );
 }
 

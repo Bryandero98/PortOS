@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   getProviders: vi.fn(),
   updateCosConfig: vi.fn(),
   getPersistentMindContext: vi.fn(),
+  getPersistentMindTools: vi.fn(),
   getPersistentMindRuntime: vi.fn(),
   getPersistentMindVisibility: vi.fn(),
   createPersistentMindMemory: vi.fn(),
@@ -115,6 +116,19 @@ describe('MindTab', () => {
       rollups: [],
       harness: { type: 'api', label: 'Direct API', recommendation: 'recommended', detail: 'Structured and reliable.' },
     });
+    api.getPersistentMindTools.mockResolvedValue({
+      capabilities: { schemaVersion: 2, createTasks: false, readPortos: false, writePortos: false },
+      tools: [{
+        id: 'cos.create-task',
+        name: 'Create CoS task',
+        description: 'Queue a supervised coding task.',
+        capability: 'createTasks',
+        granted: false,
+        guardrails: ['Code review then merge', 'Merge when CI is green', 'Leave open for human review'],
+      }],
+      boundaries: ['Shell access'],
+      taskCatalog: null,
+    });
     api.getPersistentMindRuntime.mockResolvedValue({
       observedAt: '2026-08-27T12:00:00.000Z',
       inference: {
@@ -178,7 +192,7 @@ describe('MindTab', () => {
 
     expect(await screen.findByText('Conversation unavailable')).toBeInTheDocument();
     expect(screen.queryByText(/No conversation yet/)).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Settings/i })).toBeInTheDocument();
   });
 
   it('deduplicates a socket-triggered cursor backfill', async () => {
@@ -228,9 +242,11 @@ describe('MindTab', () => {
       profile: { enabled: true, providerId: 'codex', model: 'gpt-5', effort: 'high', thinkingInterface: 'text' },
     }));
     api.updateCosConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
-    renderTab('/cos/mind?view=setup');
+    renderTab('/cos/mind?panel=settings');
 
     expect(await screen.findByRole('heading', { name: 'AI profile' })).toBeInTheDocument();
+    expect(api.getPersistentMindContext).not.toHaveBeenCalled();
+    expect(api.getPersistentMindTools).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByLabelText('AI provider')).toHaveValue('codex'));
     expect(screen.getByLabelText('Model')).toHaveValue('gpt-5');
     expect(screen.getByLabelText('Thinking effort')).toHaveValue('high');
@@ -255,9 +271,22 @@ describe('MindTab', () => {
     await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
   });
 
+  it('starts a ready persistent mind directly from the dashboard header', async () => {
+    const user = userEvent.setup();
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: false, status: 'idle', pauseReason: null },
+    }));
+    renderTab();
+
+    await user.click(await screen.findByRole('button', { name: 'Start' }));
+
+    await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('dialog', { name: 'Mind workspace' })).not.toBeInTheDocument();
+  });
+
   it('persists the separate opt-in task-creation grant', async () => {
     const user = userEvent.setup();
-    renderTab('/cos/mind?view=setup');
+    renderTab('/cos/mind?panel=tools');
 
     const taskAccess = await screen.findByRole('checkbox', { name: 'Allow mind to queue CoS agent tasks' });
     expect(taskAccess).not.toBeChecked();
@@ -267,9 +296,36 @@ describe('MindTab', () => {
       { persistentMindCapabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false } },
       { silent: true },
     ));
-    expect(screen.getByText(/code review then merge/i)).toBeInTheDocument();
-    expect(screen.getByText(/merge when CI is green/i)).toBeInTheDocument();
-    expect(screen.getByText(/leave open for human review/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/code review then merge/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/merge when CI is green/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/leave open for human review/i).length).toBeGreaterThan(0);
+  });
+
+  it('reports every enabled typed-tool grant in the dashboard status', async () => {
+    api.getPersistentMind.mockResolvedValue(response({
+      capabilities: { schemaVersion: 2, createTasks: false, readPortos: true, writePortos: true },
+    }));
+    renderTab();
+
+    expect(await screen.findByText('2 grants enabled')).toBeInTheDocument();
+  });
+
+  it('keeps Start gated until a capability save finishes', async () => {
+    const user = userEvent.setup();
+    let finishSave;
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: false, status: 'idle', pauseReason: null },
+    }));
+    api.updateCosConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+    renderTab('/cos/mind?panel=tools');
+
+    const start = await screen.findByRole('button', { name: 'Start' });
+    await user.click(await screen.findByRole('checkbox', { name: 'Allow bounded PortOS reads' }));
+    expect(start).toBeDisabled();
+    expect(api.startPersistentMind).not.toHaveBeenCalled();
+
+    finishSave({ success: true });
+    await waitFor(() => expect(start).toBeEnabled());
   });
 
   it('keeps a failed message for a visible idempotent retry', async () => {
@@ -415,6 +471,7 @@ describe('MindTab', () => {
   });
 
   it('animates active thought status and shows context, system, and loaded-model telemetry', async () => {
+    const user = userEvent.setup();
     api.getPersistentMind.mockResolvedValue(response({
       state: { enabled: true, started: true, status: 'thinking', pauseReason: null, activeTurnId: 'mind-turn-1' },
     }));
@@ -434,15 +491,16 @@ describe('MindTab', () => {
         cpu: { cores: 8, loadAvg1m: 1.25 },
       },
     });
-    renderTab('/cos/mind?view=setup');
+    renderTab();
 
     const thoughtStatus = await screen.findByRole('status');
     expect(thoughtStatus).toHaveTextContent('Thinking with demo-model');
     expect(thoughtStatus).toHaveAttribute('aria-busy', 'true');
     expect(thoughtStatus.querySelector('.animate-pulse')).toBeInTheDocument();
     expect(screen.getByText('~3,000 tokens')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Context/i }));
     expect(screen.getByText('4 GB / 8 GB')).toBeInTheDocument();
-    expect(screen.getByText('Running now')).toBeInTheDocument();
+    expect(screen.getAllByText('Running now').length).toBeGreaterThan(0);
     expect(screen.getByText(/ollama · 2 GB/)).toBeInTheDocument();
   });
 
@@ -454,5 +512,60 @@ describe('MindTab', () => {
     expect(screen.getByLabelText('Identity')).toHaveValue('Resident mind');
     expect(screen.getByText('# Effective context')).toBeInTheDocument();
     expect(api.getPersistentMindContext).toHaveBeenCalledWith({ silent: true });
+  });
+
+  it('keeps conversation central while exposing created and accessible memories', async () => {
+    api.getPersistentMindContext.mockResolvedValue({
+      prompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
+      preview: { text: '# Effective context', chars: 19, approximateTokens: 5, summaryState: 'ready' },
+      memories: [{ id: 'memory-1', content: 'Prefer bounded delivery.', summary: 'Delivery preference', type: 'preference', category: 'workflow', tags: [], importance: 0.8 }],
+      rollups: [],
+      harness: null,
+    });
+    renderTab('/cos/mind?panel=memories');
+
+    expect(screen.getByTestId('mind-chat')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Memories' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('heading', { name: 'Curated memories' })).toBeInTheDocument();
+    expect(screen.getByText('Delivery preference')).toBeInTheDocument();
+  });
+
+  it('retains unsaved context drafts across workspace panels and ignores accidental dismissal', async () => {
+    const user = userEvent.setup();
+    renderTab('/cos/mind?panel=context');
+
+    const identity = await screen.findByLabelText('Identity');
+    await user.clear(identity);
+    await user.type(identity, 'Unsaved operating identity');
+    await user.click(screen.getByRole('tab', { name: 'Memories' }));
+    await user.click(screen.getByRole('tab', { name: 'Context' }));
+    expect(screen.getByLabelText('Identity')).toHaveValue('Unsaved operating identity');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.getByRole('heading', { name: 'Identity and operating prompt' })).toBeInTheDocument();
+  });
+
+  it('refreshes the effective context after a memory is created', async () => {
+    const user = userEvent.setup();
+    api.getPersistentMindContext.mockImplementation(() => Promise.resolve({
+      prompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
+      preview: {
+        text: api.getPersistentMindContext.mock.calls.length > 2 ? '# Context with new memory' : '# Original context',
+        chars: 24,
+        approximateTokens: 6,
+        summaryState: 'ready',
+      },
+      memories: [],
+      rollups: [],
+      harness: null,
+    }));
+    renderTab('/cos/mind?panel=memories');
+
+    await user.type(await screen.findByLabelText('Add a durable memory'), 'A newly curated fact');
+    await user.click(screen.getByRole('button', { name: 'Add memory' }));
+    await waitFor(() => expect(api.getPersistentMindContext.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await user.click(screen.getByRole('tab', { name: 'Context' }));
+
+    expect(await screen.findByText('# Context with new memory')).toBeInTheDocument();
   });
 });

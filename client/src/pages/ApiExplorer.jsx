@@ -330,7 +330,7 @@ function AgentToolsView() {
         <div className="rounded-xl border border-port-border bg-port-card p-4">
           <h3 className="text-sm font-medium text-white">Persistent Mind adapter</h3>
           <p className="mt-1 text-xs text-gray-500">Process-local multi-round tool loop. {catalog.stats.granted} of {catalog.stats.total} actions granted.</p>
-          <Link to="/cos/tools" className="mt-2 inline-flex items-center gap-1 text-xs text-port-accent hover:underline">Configure Mind grants <ExternalLink size={11} /></Link>
+          <Link to="/cos/mind?panel=tools" className="mt-2 inline-flex items-center gap-1 text-xs text-port-accent hover:underline">Configure Mind grants <ExternalLink size={11} /></Link>
         </div>
         <div className="rounded-xl border border-port-border bg-port-card p-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -372,7 +372,7 @@ function AgentToolsView() {
           {authority.boundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
         </ul>
       </div>
-      <Link to="/cos/tools" className="inline-flex items-center gap-1 text-sm text-port-accent hover:underline">Configure Mind Tools <ExternalLink size={13} /></Link>
+      <Link to="/cos/mind?panel=tools" className="inline-flex items-center gap-1 text-sm text-port-accent hover:underline">Configure Mind Tools <ExternalLink size={13} /></Link>
     </div>
   );
 }
