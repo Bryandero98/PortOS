@@ -5,6 +5,7 @@ const mock = vi.hoisted(() => ({
   memories: [{ id: 'memory-1', type: 'fact', content: 'A durable fact.', sourceAgentId: 'cos-persistent-mind', status: 'active' }],
   runPrompt: vi.fn(),
   stopRun: vi.fn(),
+  assertVision: vi.fn(),
   readTaskCatalog: vi.fn(),
   executeTaskRequests: vi.fn(),
   executeToolCall: vi.fn(),
@@ -17,11 +18,18 @@ const mock = vi.hoisted(() => ({
 }));
 
 vi.mock('./cosState.js', () => ({ loadState: vi.fn(async () => mock.root) }));
+vi.mock('../lib/fileUtils.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  resolveScreenshot: vi.fn((filename) => filename ? `/tmp/portos-screenshots/${filename}` : null),
+}));
 vi.mock('./persistentMindContext.js', () => ({
   createPersistentMindMemoryFromCandidate: (...args) => mock.createPersistentMindMemoryFromCandidate(...args),
   readPersistentMindMemories: vi.fn(async () => mock.memories),
 }));
-vi.mock('./promptRunner.js', () => ({ runPromptThroughProvider: (...args) => mock.runPrompt(...args) }));
+vi.mock('./promptRunner.js', () => ({
+  runPromptThroughProvider: (...args) => mock.runPrompt(...args),
+  assertVisionRunUsedImages: (...args) => mock.assertVision(...args),
+}));
 vi.mock('./runner.js', () => ({ stopRun: (...args) => mock.stopRun(...args) }));
 vi.mock('./persistentMindTaskCapability.js', () => ({
   buildPersistentMindTaskCapabilityPrompt: ({ enabled }) => `Task access: ${enabled ? 'ON' : 'OFF'}`,
@@ -49,6 +57,7 @@ beforeEach(() => {
   mock.readVisibility.mockResolvedValue({ readiness: 'ready', workspaces: [] });
   mock.executeTaskRequests.mockResolvedValue([]);
   mock.executeToolCall.mockResolvedValue({ state: 'completed', result: { ok: true, count: 1 } });
+  mock.assertVision.mockImplementation((result, provider) => result?.provider || provider);
   mock.runPrompt.mockResolvedValue({ text: JSON.stringify({
     thinkingSummary: 'I connected the new request to the durable fact.',
     message: 'Here is the answer.',
@@ -371,6 +380,35 @@ describe('persistent mind adapter', () => {
     expect(mock.runPrompt.mock.calls[1][0].prompt).toContain('intermediate round were not queued');
     expect(result.events.find((event) => event.kind === 'mind.reply')?.data.displayText).toContain('task request limit of 5');
     expect(recordCapabilityEvent.mock.calls.filter(([event]) => event.kind === 'result' && event.data.success === false)).toHaveLength(3);
+  });
+
+  it('passes every current-message image to the pinned provider and verifies consumption', async () => {
+    const imageProfile = { provider: { id: 'codex', type: 'cli', command: 'codex' }, model: 'gpt-5', effort: 'high' };
+    const wake = {
+      kind: 'message',
+      message: {
+        id: 'message-images',
+        text: 'Compare these.',
+        images: [
+          { filename: 'mind-example-one.png' },
+          { filename: 'mind-example-two.jpg' },
+        ],
+      },
+    };
+    await createPersistentMindTurnAdapter().run({
+      turnId: 'turn-images', wake, ...imageProfile,
+      signal: new AbortController().signal,
+      context: { text: '# Context' },
+    });
+    expect(mock.runPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      screenshots: expect.arrayContaining([
+        expect.stringContaining('mind-example-one.png'),
+        expect.stringContaining('mind-example-two.jpg'),
+      ]),
+      allowFallback: false,
+    }));
+    expect(mock.assertVision).toHaveBeenCalledWith(expect.any(Object), imageProfile.provider);
+    expect(mock.runPrompt.mock.calls[0][0].prompt).toContain('[2 images attached]');
   });
 
   it('executes bounded typed task requests through the supervised capability', async () => {

@@ -18,14 +18,14 @@ import { PERSISTENT_MIND_ID } from '../lib/persistentMindTrajectory.js';
 import { COS_TOOL_CALL_LIMITS, persistentMindToolCallSchema } from '../lib/cosToolContracts.js';
 import { parseLLMJSON } from '../lib/llmText.js';
 import { canonicalStringify } from '../lib/objects.js';
-import { sha256Text } from '../lib/fileUtils.js';
+import { resolveScreenshot, sha256Text } from '../lib/fileUtils.js';
 import { loadState } from './cosState.js';
 import {
   createPersistentMindMemoryFromCandidate,
   readPersistentMindMemories,
 } from './persistentMindContext.js';
 import { normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
-import { runPromptThroughProvider } from './promptRunner.js';
+import { assertVisionRunUsedImages, runPromptThroughProvider } from './promptRunner.js';
 import { stopRun } from './runner.js';
 import {
   buildPersistentMindTaskCapabilityPrompt,
@@ -206,7 +206,9 @@ export function persistentMindHarnessInfo(provider) {
 
 const currentWakeText = (wake) => {
   if (wake?.kind === 'message') {
-    return `A human message is waiting. Reply directly to it.\nmessageId=${wake.message?.id || 'unknown'}\n${wake.message?.text || ''}`;
+    const imageCount = Array.isArray(wake.message?.images) ? wake.message.images.length : 0;
+    const attachmentNote = imageCount > 0 ? `\n[${imageCount} image${imageCount === 1 ? '' : 's'} attached]` : '';
+    return `A human message is waiting. Reply directly to it.\nmessageId=${wake.message?.id || 'unknown'}\n${wake.message?.text || ''}${attachmentNote}`;
   }
   return `This is a self-directed wake. Continue one worthwhile thread from the trajectory.\nreason=${wake?.reason || 'scheduled reflection'}`;
 };
@@ -245,7 +247,7 @@ export function buildPersistentMindSummaryPrompt({ events, previousSummary }) {
   return `Summarize this older portion of one persistent mind's life in first person. Preserve concrete decisions, unresolved questions, user preferences, and causal links. Do not invent facts. Return plain text only, no heading.\n\n${previousSummary ? `Prior cumulative summary:\n${previousSummary}\n\n` : ''}New trajectory events:\n${summaryEventLines(events)}`;
 }
 
-async function runPinnedPrompt({ provider, model, effort, prompt, signal, responseSchema, heartbeat }) {
+async function runPinnedPrompt({ provider, model, effort, prompt, screenshots = [], signal, responseSchema, heartbeat }) {
   if (signal?.aborted) throw new Error(String(signal.reason || 'Persistent mind turn interrupted'));
   if (typeof heartbeat === 'function') await heartbeat();
   let activeRunId = null;
@@ -272,11 +274,15 @@ async function runPinnedPrompt({ provider, model, effort, prompt, signal, respon
     prompt,
     source: 'cos-persistent-mind',
     allowFallback: false,
+    screenshots,
     responseSchema,
     onRunCreated: (runId) => {
       activeRunId = runId;
       if (signal?.aborted) interrupt();
     },
+  }).then((result) => {
+    if (screenshots.length > 0) assertVisionRunUsedImages(result, provider);
+    return result;
   }).finally(async () => {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     signal?.removeEventListener('abort', interrupt);
@@ -332,6 +338,11 @@ export function createPersistentMindTurnAdapter() {
       });
       const visibilityPrompt = buildPersistentMindVisibilityPrompt(visibility);
       const toolCapabilityPrompt = buildPersistentMindToolPrompt(taskAccess);
+      const screenshots = (Array.isArray(wake?.message?.images) ? wake.message.images : []).map((image) => {
+        const path = resolveScreenshot(image?.filename);
+        if (!path) throw new Error('A Persistent Mind image attachment no longer resolves under the screenshots directory');
+        return path;
+      });
       const basePrompt = buildPersistentMindTurnPrompt({
         context,
         wake,
@@ -353,6 +364,7 @@ export function createPersistentMindTurnAdapter() {
           effort,
           signal,
           heartbeat,
+          screenshots,
           prompt: providerPrompt,
           responseSchema: persistentMindResponseSchema,
         });
