@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
+import { useState } from 'react';
 
 vi.mock('../../services/api', () => ({
   feedbackLoomSeriesPlan: vi.fn(),
@@ -34,6 +35,11 @@ const renderPlan = (props) => render(<RouterProvider router={createMemoryRouter(
   { path: '/', element: <LoomSeriesPlan {...props} /> },
 ], { initialEntries: ['/'] })} />);
 
+function StatefulPlan({ initial }) {
+  const [record, setRecord] = useState(initial);
+  return <LoomSeriesPlan loom={record} onLoomUpdate={setRecord} />;
+}
+
 describe('LoomSeriesPlan', () => {
   it('edits and saves the series-level plan as one patch', async () => {
     const onLoomUpdate = vi.fn();
@@ -66,5 +72,22 @@ describe('LoomSeriesPlan', () => {
     expect(await screen.findByText('The spine works.')).toBeInTheDocument();
     expect(screen.getByText('Move the reversal into episode 3')).toBeInTheDocument();
     expect(screen.getByText('Episode feedback for Pilot')).toBeInTheDocument();
+  });
+
+  it('keeps typing performed while a save response is in flight', async () => {
+    let resolveSave;
+    api.updateLoom.mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+    render(<RouterProvider router={createMemoryRouter([
+      { path: '/', element: <StatefulPlan initial={loom()} /> },
+    ], { initialEntries: ['/'] })} />);
+
+    const arc = screen.getByRole('textbox', { name: /story arc/i });
+    fireEvent.change(arc, { target: { value: 'First draft.' } });
+    fireEvent.click(screen.getByRole('button', { name: /save plan/i }));
+    fireEvent.change(arc, { target: { value: 'Typed while saving.' } });
+    resolveSave(loom({ seriesPlan: { ...loom().seriesPlan, storyArc: 'First draft.' } }));
+
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /story arc/i })).toHaveValue('Typed while saving.'));
+    expect(screen.getByRole('button', { name: /save plan/i })).toBeEnabled();
   });
 });

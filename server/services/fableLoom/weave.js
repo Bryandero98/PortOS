@@ -69,12 +69,26 @@ export async function buildCanonDigest(loom) {
   return universe ? renderCanonForPrompt(universe) : '';
 }
 
-const seriesPlanContext = (plan) => {
+const seriesPlanContext = (loom, episode) => {
+  const plan = loom.seriesPlan;
   if (!plan) return [];
-  const plotPoints = (plan.plotPoints || []).slice(0, 12).map((item, index) =>
-    `Plot point ${index + 1}: ${item.title || 'Untitled'}${item.description ? ` — ${trimTo(item.description, 300)}` : ''}`);
-  const sideQuests = (plan.sideQuests || []).slice(0, 12).map((item) =>
-    `Side quest (${item.status}): ${item.title || 'Untitled'}${item.description ? ` — ${trimTo(item.description, 300)}` : ''}`);
+  const episodeLabels = new Map(loom.episodes.map((item) => [item.id, `Episode ${item.number}: ${item.title || 'Untitled'}`]));
+  const relevantFirst = (items, matchesEpisode) => episode
+    ? [...items].sort((a, b) => Number(matchesEpisode(b, episode.id)) - Number(matchesEpisode(a, episode.id)))
+    : items;
+  const plotPoints = relevantFirst(plan.plotPoints || [], (item, id) => item.episodeId === id)
+    .slice(0, 12)
+    .map((item, index) => {
+      const assignment = item.episodeId ? ` [planned for ${episodeLabels.get(item.episodeId) || item.episodeId}]` : ' [unassigned]';
+      return `Plot point ${index + 1}${assignment}: ${item.title || 'Untitled'}${item.description ? ` — ${trimTo(item.description, 300)}` : ''}`;
+    });
+  const sideQuests = relevantFirst(plan.sideQuests || [], (item, id) => item.startEpisodeId === id || item.endEpisodeId === id)
+    .slice(0, 12)
+    .map((item) => {
+      const start = item.startEpisodeId ? episodeLabels.get(item.startEpisodeId) || item.startEpisodeId : 'unassigned';
+      const end = item.endEpisodeId ? episodeLabels.get(item.endEpisodeId) || item.endEpisodeId : 'unassigned';
+      return `Side quest (${item.status}; starts ${start}; ends ${end}): ${item.title || 'Untitled'}${item.description ? ` — ${trimTo(item.description, 300)}` : ''}`;
+    });
   return [
     plan.storyArc ? `Series arc: ${trimTo(plan.storyArc, 4000)}` : '',
     ...plotPoints,
@@ -87,23 +101,21 @@ const storyContext = (loom, episode) => [
   `Scene format: ${loomFormatLabel(loom.format)}`,
   loom.logline ? `Logline: ${loom.logline}` : '',
   loom.premise ? `Premise: ${loom.premise}` : '',
-  ...seriesPlanContext(loom.seriesPlan),
+  ...seriesPlanContext(loom, episode),
   episode ? `Episode ${episode.number}: ${episode.title || 'Untitled'}` : '',
   episode?.synopsis ? `Synopsis: ${episode.synopsis}` : '',
 ].filter(Boolean).join('\n');
 
 const seriesPlanDigest = (loom) => JSON.stringify({
   storyArc: trimTo(loom.seriesPlan?.storyArc, 6000),
-  plotPoints: (loom.seriesPlan?.plotPoints || []).slice(0, 30).map((item) => ({
-    ...item, description: trimTo(item.description, 600),
+  plotPoints: (loom.seriesPlan?.plotPoints || []).map((item) => ({
+    ...item, description: trimTo(item.description, 400),
   })),
-  omittedPlotPoints: Math.max(0, (loom.seriesPlan?.plotPoints?.length || 0) - 30),
-  sideQuests: (loom.seriesPlan?.sideQuests || []).slice(0, 30).map((item) => ({
-    ...item, description: trimTo(item.description, 600),
+  sideQuests: (loom.seriesPlan?.sideQuests || []).map((item) => ({
+    ...item, description: trimTo(item.description, 400),
   })),
-  omittedSideQuests: Math.max(0, (loom.seriesPlan?.sideQuests?.length || 0) - 30),
   episodes: loom.episodes.map(({ id, number, title, synopsis }) => ({
-    id, number, title, synopsis: trimTo(synopsis, 500),
+    id, number, title, synopsis: trimTo(synopsis, 300),
   })),
 }, null, 2);
 
@@ -433,14 +445,21 @@ export async function feedbackSeriesPlan(loomId, {
   if (!content || typeof content !== 'object') {
     throw aiShapeError('The model returned no series-plan edits');
   }
-  const patch = {};
-  if (hasOwn(content, 'storyArc') && typeof content.storyArc === 'string') patch.storyArc = content.storyArc;
-  if (hasOwn(content, 'plotPoints') && Array.isArray(content.plotPoints)) patch.plotPoints = content.plotPoints;
-  if (hasOwn(content, 'sideQuests') && Array.isArray(content.sideQuests)) patch.sideQuests = content.sideQuests;
-  if (!Object.keys(patch).length) throw aiShapeError('The model returned no usable series-plan edits');
+  const hasPlanEdit = (hasOwn(content, 'storyArc') && typeof content.storyArc === 'string')
+    || Array.isArray(content.plotPointEdits) || Array.isArray(content.plotPointOrder)
+    || Array.isArray(content.sideQuestEdits) || Array.isArray(content.sideQuestOrder);
+  if (!hasPlanEdit) throw aiShapeError('The model returned no usable series-plan edits');
 
   const updated = await mutateLoom(loomId, (current) => {
-    current.seriesPlan = { ...current.seriesPlan, ...patch };
+    const plan = { ...current.seriesPlan };
+    if (hasOwn(content, 'storyArc') && typeof content.storyArc === 'string') plan.storyArc = content.storyArc;
+    plan.plotPoints = applyPlanItemEdits(plan.plotPoints, content.plotPointEdits, content.plotPointOrder, {
+      prefix: 'plot', fields: ['title', 'description', 'episodeId'],
+    });
+    plan.sideQuests = applyPlanItemEdits(plan.sideQuests, content.sideQuestEdits, content.sideQuestOrder, {
+      prefix: 'quest', fields: ['title', 'description', 'status', 'startEpisodeId', 'endEpisodeId'],
+    });
+    current.seriesPlan = plan;
     return current;
   });
   return {
@@ -448,6 +467,39 @@ export async function feedbackSeriesPlan(loomId, {
     changes: analysisStrings(content.changes),
     runId,
   };
+}
+
+function applyPlanItemEdits(currentItems = [], rawEdits, rawOrder, { prefix, fields }) {
+  const items = currentItems.map((item) => ({ ...item }));
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const removed = new Set();
+  for (const edit of (Array.isArray(rawEdits) ? rawEdits : []).slice(0, LOOM_LIMITS.PLAN_ITEMS_MAX)) {
+    if (!edit || typeof edit !== 'object') continue;
+    if (typeof edit.id === 'string' && byId.has(edit.id)) {
+      if (edit.remove === true) {
+        removed.add(edit.id);
+        continue;
+      }
+      const item = byId.get(edit.id);
+      for (const field of fields) {
+        if (hasOwn(edit, field)) item[field] = edit[field];
+      }
+      continue;
+    }
+    if (!edit.id && edit.remove !== true) {
+      const item = { id: `${prefix}-${randomUUID()}` };
+      for (const field of fields) {
+        if (hasOwn(edit, field)) item[field] = edit[field];
+      }
+      items.push(item);
+      byId.set(item.id, item);
+    }
+  }
+  const kept = items.filter((item) => !removed.has(item.id));
+  if (!Array.isArray(rawOrder)) return kept;
+  const order = rawOrder.filter((id) => typeof id === 'string' && byId.has(id) && !removed.has(id));
+  const ranked = new Map(order.map((id, index) => [id, index]));
+  return [...kept].sort((a, b) => (ranked.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (ranked.get(b.id) ?? Number.MAX_SAFE_INTEGER));
 }
 
 // --- Play: resolve a reader's free-text intent ------------------------------

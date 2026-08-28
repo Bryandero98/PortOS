@@ -4,7 +4,7 @@
  * and editing its copy cannot race as independent PATCH requests.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BrainCircuit, ChevronDown, ChevronUp, Loader2, MessageSquareText, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { FormField } from '../ui/FormField.jsx';
@@ -30,15 +30,33 @@ const normalizePlan = (plan) => ({
 export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
   const [plan, setPlan] = useState(() => normalizePlan(loom.seriesPlan));
   const [dirty, setDirty] = useState(false);
+  const revisionRef = useRef(0);
+  const savedRevisionRef = useRef(0);
+  const loomIdRef = useRef(loom.id);
   const routeGuard = useUnsavedChangesGuard(dirty);
 
   useEffect(() => {
+    if (loomIdRef.current !== loom.id) {
+      loomIdRef.current = loom.id;
+      revisionRef.current = 0;
+      savedRevisionRef.current = 0;
+      setPlan(normalizePlan(loom.seriesPlan));
+      setDirty(false);
+      return;
+    }
+    // A save response may arrive after the author has continued typing. Keep
+    // that newer draft instead of replacing it with the just-saved snapshot.
+    if (revisionRef.current > savedRevisionRef.current) {
+      setDirty(true);
+      return;
+    }
     setPlan(normalizePlan(loom.seriesPlan));
     setDirty(false);
   }, [loom.id, loom.seriesPlan]);
 
   const changePlan = (updater) => {
     setPlan((current) => (typeof updater === 'function' ? updater(current) : updater));
+    revisionRef.current += 1;
     setDirty(true);
   };
 
@@ -61,9 +79,11 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
   });
 
   const [save, saving] = useAsyncAction(async () => {
+    const submittedRevision = revisionRef.current;
     const updated = await updateLoom(loom.id, { seriesPlan: plan }, { silent: true });
+    savedRevisionRef.current = submittedRevision;
     onLoomUpdate(updated);
-    setDirty(false);
+    setDirty(revisionRef.current > submittedRevision);
     toast.success('Series plan saved');
   }, { errorMessage: 'Could not save series plan' });
 

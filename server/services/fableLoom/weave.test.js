@@ -618,4 +618,34 @@ describe('series plan AI', () => {
     expect(result.loom.seriesPlan.plotPoints).toHaveLength(1);
     expect(result.changes).toEqual(['Raised the stakes']);
   });
+
+  it('preserves plan items outside the AI digest and patches existing items by id', async () => {
+    const { loomId, episodeId } = await setup();
+    const plotPoints = Array.from({ length: 35 }, (_, index) => ({
+      id: `plot-${index + 1}`, title: `Beat ${index + 1}`, description: `Purpose ${index + 1}`, episodeId,
+    }));
+    await updateLoom(loomId, { seriesPlan: { storyArc: 'Arc', plotPoints, sideQuests: [] } });
+    runStagedLLM.mockResolvedValueOnce({
+      content: { plotPointEdits: [{ id: 'plot-1', description: 'A sharper purpose.' }] },
+      runId: 'run-feedback',
+    });
+    const result = await feedbackSeriesPlan(loomId, { feedback: 'Sharpen the opening beat.' });
+    expect(result.loom.seriesPlan.plotPoints).toHaveLength(35);
+    expect(result.loom.seriesPlan.plotPoints[0].description).toBe('A sharper purpose.');
+    expect(result.loom.seriesPlan.plotPoints[34].title).toBe('Beat 35');
+  });
+
+  it('annotates and prioritizes episode-assigned plan beats in episode AI context', async () => {
+    const { loomId, episodeId } = await setup();
+    const manyBeats = Array.from({ length: 13 }, (_, index) => ({
+      id: `plot-${index}`, title: `Beat ${index}`, description: '', episodeId: null,
+    }));
+    manyBeats.push({ id: 'plot-relevant', title: 'Episode turn', description: '', episodeId });
+    await updateLoom(loomId, { seriesPlan: { storyArc: '', plotPoints: manyBeats, sideQuests: [] } });
+    runStagedLLM.mockResolvedValueOnce({ content: generatedGraph(), runId: 'run-weave' });
+    await weaveEpisode(loomId, episodeId, { replace: true });
+    expect(runStagedLLM).toHaveBeenCalledWith('fableloom-weave-episode', expect.objectContaining({
+      storyContext: expect.stringContaining('Plot point 1 [planned for Episode 1: Pilot]: Episode turn'),
+    }), expect.anything());
+  });
 });
