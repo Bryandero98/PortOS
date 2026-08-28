@@ -934,7 +934,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/CatalogIngest.jsx",
-          "line": 144
+          "line": 146
         },
         {
           "direction": "server-to-client",
@@ -999,7 +999,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/components/cos/tabs/MindTab.jsx",
-          "line": 285
+          "line": 311
         },
         {
           "direction": "server-to-client",
@@ -1456,7 +1456,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/components/cos/tabs/MindTab.jsx",
-          "line": 286
+          "line": 312
         },
         {
           "direction": "server-to-client",
@@ -1474,7 +1474,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/components/cos/tabs/MindTab.jsx",
-          "line": 287
+          "line": 313
         },
         {
           "direction": "server-to-client",
@@ -3658,7 +3658,7 @@
         {
           "direction": "server-to-client",
           "source": "server/routes/update.js",
-          "line": 262
+          "line": 309
         }
       ]
     },
@@ -3676,12 +3676,12 @@
         {
           "direction": "server-to-client",
           "source": "server/routes/update.js",
-          "line": 264
+          "line": 311
         },
         {
           "direction": "server-to-client",
           "source": "server/routes/update.js",
-          "line": 269
+          "line": 316
         }
       ]
     },
@@ -3699,7 +3699,7 @@
         {
           "direction": "server-to-client",
           "source": "server/routes/update.js",
-          "line": 237
+          "line": 284
         }
       ]
     },
