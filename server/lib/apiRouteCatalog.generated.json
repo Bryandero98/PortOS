@@ -22254,6 +22254,17 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/writers-room/exercises/:id/promote",
+      "mountPath": "/api/writers-room",
+      "sources": [
+        {
+          "source": "server/routes/writersRoom.js",
+          "line": 196
+        }
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/writers-room/folders",
       "mountPath": "/api/writers-room",
@@ -22348,7 +22359,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 198
+          "line": 202
         }
       ]
     },
@@ -22359,7 +22370,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 202
+          "line": 206
         }
       ]
     },
@@ -22370,7 +22381,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 208
+          "line": 212
         }
       ]
     },
@@ -22381,7 +22392,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 370
+          "line": 374
         }
       ]
     },
@@ -22392,7 +22403,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 290
+          "line": 294
         }
       ]
     },
@@ -22403,7 +22414,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 281
+          "line": 285
         }
       ]
     },
@@ -22414,7 +22425,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 306
+          "line": 310
         }
       ]
     },
@@ -22425,7 +22436,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 310
+          "line": 314
         }
       ]
     },
@@ -22436,7 +22447,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 320
+          "line": 324
         }
       ]
     },
@@ -22447,7 +22458,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 315
+          "line": 319
         }
       ]
     },
@@ -22469,7 +22480,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 271
+          "line": 275
         }
       ]
     },
@@ -22480,23 +22491,12 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 262
+          "line": 266
         }
       ]
     },
     {
       "method": "GET",
-      "path": "/api/writers-room/works/:id/objects",
-      "mountPath": "/api/writers-room",
-      "sources": [
-        {
-          "source": "server/routes/writersRoom.js",
-          "line": 346
-        }
-      ]
-    },
-    {
-      "method": "POST",
       "path": "/api/writers-room/works/:id/objects",
       "mountPath": "/api/writers-room",
       "sources": [
@@ -22507,13 +22507,24 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/writers-room/works/:id/objects",
+      "mountPath": "/api/writers-room",
+      "sources": [
+        {
+          "source": "server/routes/writersRoom.js",
+          "line": 354
+        }
+      ]
+    },
+    {
       "method": "DELETE",
       "path": "/api/writers-room/works/:id/objects/:objectId",
       "mountPath": "/api/writers-room",
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 360
+          "line": 364
         }
       ]
     },
@@ -22524,23 +22535,12 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 355
+          "line": 359
         }
       ]
     },
     {
       "method": "GET",
-      "path": "/api/writers-room/works/:id/places",
-      "mountPath": "/api/writers-room",
-      "sources": [
-        {
-          "source": "server/routes/writersRoom.js",
-          "line": 326
-        }
-      ]
-    },
-    {
-      "method": "POST",
       "path": "/api/writers-room/works/:id/places",
       "mountPath": "/api/writers-room",
       "sources": [
@@ -22551,13 +22551,24 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/writers-room/works/:id/places",
+      "mountPath": "/api/writers-room",
+      "sources": [
+        {
+          "source": "server/routes/writersRoom.js",
+          "line": 334
+        }
+      ]
+    },
+    {
       "method": "DELETE",
       "path": "/api/writers-room/works/:id/places/:placeId",
       "mountPath": "/api/writers-room",
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 340
+          "line": 344
         }
       ]
     },
@@ -22568,7 +22579,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 335
+          "line": 339
         }
       ]
     },
@@ -22579,7 +22590,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 235
+          "line": 239
         }
       ]
     },
@@ -22590,7 +22601,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 228
+          "line": 232
         }
       ]
     },
@@ -22601,7 +22612,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 251
+          "line": 255
         }
       ]
     },
@@ -22612,7 +22623,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 243
+          "line": 247
         }
       ]
     },
@@ -22623,7 +22634,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 247
+          "line": 251
         }
       ]
     },
@@ -22634,7 +22645,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 218
+          "line": 222
         }
       ]
     },
@@ -22645,7 +22656,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 239
+          "line": 243
         }
       ]
     },
@@ -22667,7 +22678,7 @@
       "sources": [
         {
           "source": "server/routes/writersRoom.js",
-          "line": 300
+          "line": 304
         }
       ]
     },
@@ -22960,8 +22971,8 @@
   ],
   "stats": {
     "mounts": 145,
-    "operations": 2071,
-    "declarations": 2074,
+    "operations": 2072,
+    "declarations": 2075,
     "sourceFiles": 224
   }
 }
