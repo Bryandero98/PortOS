@@ -104,6 +104,12 @@ export default defineConfig(({ mode }) => {
         template: 'treemap',
       }),
     ].filter(Boolean),
+    // Recharts is imported by lazy-loaded pages. Its published ESM files use
+    // bare es-toolkit/compat/* imports, so prebundle it before a lazy tab can
+    // expose those specifiers directly to the browser.
+    optimizeDeps: {
+      include: ['recharts']
+    },
     server: {
       host: '0.0.0.0',
       port: 5554,
