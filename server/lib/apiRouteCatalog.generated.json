@@ -4709,7 +4709,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 51
+          "line": 50
         }
       ]
     },
@@ -5017,7 +5017,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 300
+          "line": 272
         }
       ]
     },
@@ -5028,7 +5028,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 314
+          "line": 286
         }
       ]
     },
@@ -5039,7 +5039,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 308
+          "line": 280
         }
       ]
     },
@@ -5149,7 +5149,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 284
+          "line": 256
         }
       ]
     },
@@ -5160,7 +5160,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 290
+          "line": 262
         }
       ]
     },
@@ -5864,7 +5864,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 18
+          "line": 17
         }
       ]
     },
@@ -5875,7 +5875,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 43
+          "line": 42
         }
       ]
     },
@@ -5886,7 +5886,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 30
+          "line": 29
         }
       ]
     },
@@ -5897,7 +5897,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 24
+          "line": 23
         }
       ]
     },
@@ -5908,7 +5908,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 36
+          "line": 35
         }
       ]
     },
@@ -5919,7 +5919,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 214
+          "line": 213
         }
       ]
     },
@@ -5930,7 +5930,7 @@
       "sources": [
         {
           "source": "server/routes/cosInsightRoutes.js",
-          "line": 206
+          "line": 205
         }
       ]
     },
