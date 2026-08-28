@@ -519,6 +519,7 @@ export default function App() {
           <Route path="importer" element={<Importer />} />
           <Route path="fableloom" element={<FableLoom />} />
           <Route path="fableloom/:loomId" element={<FableLoomStory />} />
+          <Route path="fableloom/:loomId/:episodeId/outline" element={<FableLoomStory view="outline" />} />
           <Route path="fableloom/:loomId/:episodeId" element={<FableLoomStory />} />
           <Route path="fableloom/:loomId/:episodeId/:nodeId" element={<FableLoomStory />} />
           <Route path="start-story" element={<StartStory />} />
