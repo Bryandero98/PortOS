@@ -12,20 +12,18 @@ const BASE_ENV = {
 };
 
 // Read a couple of machine-local settings from .env (pm2 doesn't auto-load it
-// here): PGMODE → PostgreSQL port; PORTOS_SERVER_MAX_MEMORY / PORTOS_UI_MAX_MEMORY
-// → the restart ceilings below. An explicit process.env wins over the .env file
-// so a one-off shell override still works.
+// here): PGMODE → PostgreSQL port; PORTOS_SERVER_MAX_MEMORY → the server restart
+// ceiling below. An explicit process.env wins over the .env file so a one-off
+// shell override still works.
 const fs = require('fs');
 const envFile = path.join(__dirname, '.env');
 const readEnvValue = (content, key) => content.match(new RegExp(`^${key}=(\\S+)`, 'm'))?.[1] ?? null;
 let pgMode = 'docker';
 let envServerMaxMemory = null;
-let envUiMaxMemory = null;
 try {
   const envContent = fs.readFileSync(envFile, 'utf8');
   pgMode = readEnvValue(envContent, 'PGMODE') || pgMode;
   envServerMaxMemory = readEnvValue(envContent, 'PORTOS_SERVER_MAX_MEMORY');
-  envUiMaxMemory = readEnvValue(envContent, 'PORTOS_UI_MAX_MEMORY');
 } catch { /* no .env file — default to docker */ }
 
 // pm2 restarts portos-server when its RSS crosses this — originally a memory-leak
@@ -38,10 +36,10 @@ try {
 // restarts is still better.)
 const SERVER_MAX_MEMORY = process.env.PORTOS_SERVER_MAX_MEMORY || envServerMaxMemory || '4G';
 
-// Same idea for the Vite dev server. It had NO ceiling at all and was observed at
-// 2.7 GB after 18h of uptime — a dev server that only transforms modules on
-// demand has no business holding gigabytes.
-const UI_MAX_MEMORY = process.env.PORTOS_UI_MAX_MEMORY || envUiMaxMemory || '1G';
+// Keep the Vite ceiling fixed and distinct from the server's configurable limit.
+// Restarting the development UI is low-cost, so PM2 can self-restart it before
+// CoS's default 2048 MiB per-process memory warning threshold.
+const UI_MAX_MEMORY = '1536M';
 
 // The support daemons (autofixer, its UI, the browser bridge) idle around 45 MB.
 // A ceiling an order of magnitude above that never fires in normal operation and
@@ -58,10 +56,10 @@ const MEMORY_UNIT_MB = { K: 1 / 1024, M: 1, G: 1024 };
  * Parse a pm2 memory spec to megabytes: '512M', '4G', or a bare '4294967296'.
  *
  * The bare form is BYTES — that is pm2's own rule for an unsuffixed value, and
- * PORTOS_SERVER_MAX_MEMORY / PORTOS_UI_MAX_MEMORY are user-set, so a machine that
- * already spells its ceiling in bytes must still get a heap cap. Dropping to "no
- * cap" there would leave exactly the configuration this policy exists to fix: an
- * RSS ceiling with nothing making V8 collect beneath it.
+ * PORTOS_SERVER_MAX_MEMORY is user-set, so a machine that already spells its
+ * ceiling in bytes must still get a heap cap. Dropping to "no cap" there would
+ * leave exactly the configuration this policy exists to fix: an RSS ceiling with
+ * nothing making V8 collect beneath it.
  *
  * An unrecognized spec returns null so `memoryLimits` degrades to "no cap" rather
  * than silently inventing a wrong one.
@@ -260,8 +258,7 @@ module.exports = {
       // A restart is cheap (the browser reconnects, Vite re-warms its transform
       // cache) but not free, and this is the one app that otherwise inherits pm2's
       // `restart_delay: 0`. The damping below turns a mis-sized ceiling into slow
-      // churn instead of a tight crash loop; raise PORTOS_UI_MAX_MEMORY if a large
-      // client tree makes it fire during normal editing.
+      // churn instead of a tight crash loop.
       autorestart: true,
       max_restarts: 10,
       min_uptime: '60s',
