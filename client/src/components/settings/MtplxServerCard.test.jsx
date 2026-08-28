@@ -149,7 +149,7 @@ describe('MtplxServerCard', () => {
     const handlers = await renderCard({ installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'] });
     expect(screen.getByText(/starts on demand/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^Start MTPLX/ }));
-    expect(handlers.onStart).toHaveBeenCalledWith();
+    expect(handlers.onStart).toHaveBeenCalledWith({ model: null });
   });
 
   it('will not offer to stop a server started outside PortOS', async () => {

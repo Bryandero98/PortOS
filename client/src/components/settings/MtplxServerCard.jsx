@@ -163,7 +163,7 @@ export default function MtplxServerCard({
           </p>
           {!emptyCache && onStart && (
             <button
-              onClick={() => onStart?.()}
+              onClick={() => onStart({ model: model || null, ...(port ? { port: Number(port) } : {}) })}
               disabled={busy}
               className={`${btnClass} bg-port-success/20 hover:bg-port-success/30 text-port-success`}
               title="Start MTPLX with the cached checkpoint; no weights are downloaded"

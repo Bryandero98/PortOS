@@ -505,9 +505,9 @@ export function LocalLlmTab() {
     () => installMtplx(),
     'MTPLX installed'
   ).then(loadMtplxStatus);
-  const runtimeStartMtplx = () => runAction(
+  const runtimeStartMtplx = (launch = {}) => runAction(
     'runtime-start-mtplx',
-    () => startMtplxServer(),
+    () => startMtplxServer(launch),
     (r) => r?.online ? 'MTPLX is running' : 'MTPLX is loading its checkpoint'
   ).then(loadMtplxStatus);
   // The card can start MTPLX explicitly from its cached checkpoint, and the
@@ -943,6 +943,7 @@ export function LocalLlmTab() {
         onConfigureLlama={() => scrollTo(llamaSectionRef)}
         onConfigureMtplx={() => scrollTo(mtplxSectionRef)}
         onInstallMtplx={runtimeInstallMtplx}
+        onStartMtplx={runtimeStartMtplx}
         onStopMtplx={runtimeStopMtplx}
         onSaveStartup={saveRuntimeStartup}
         onSaveIdleWindow={saveIdleWindow}
