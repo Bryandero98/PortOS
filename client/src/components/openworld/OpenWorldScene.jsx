@@ -37,6 +37,7 @@ import OpenWorldSignalBeacons from './OpenWorldSignalBeacons';
 import OpenWorldSky from './OpenWorldSky';
 import OpenWorldGalaxySky from './OpenWorldGalaxySky';
 import OpenWorldLandscape from './OpenWorldLandscape';
+import OpenWorldClouds from './OpenWorldClouds';
 import OpenWorldNature from './OpenWorldNature';
 import OpenWorldGrass from './OpenWorldGrass';
 import OpenWorldWater from './OpenWorldWater';
@@ -385,6 +386,7 @@ function OpenWorldScene({
           would recompile every lit material 1.2s into each load. */}
       <OpenWorldLights settings={renderSettings} lightingTier={settings?.effectiveTier} />
       <OpenWorldLandscape settings={renderSettings} />
+      {palette?.lowPoly && <OpenWorldClouds settings={renderSettings} />}
       <OpenWorldNature settings={renderSettings} />
       <OpenWorldGrass settings={renderSettings} />
       <OpenWorldWater settings={renderSettings} />
