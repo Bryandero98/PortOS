@@ -176,7 +176,7 @@ async function doRunSync() {
     return null;
   });
   if (!accessToken) {
-    return { ok: false, needsAuth: true, error: 'Spotify not connected — authorize in Settings → Spotify.' };
+    return { ok: false, needsAuth: true, error: 'Spotify not connected — authorize in Brain → Spotify.' };
   }
 
   const started = Date.now();

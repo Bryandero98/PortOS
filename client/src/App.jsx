@@ -324,8 +324,8 @@ export default function App() {
           {/* Spotify/YouTube sync feed the activity Timeline, which lives in
               Brain — moved alongside it so they show up in the same sidebar
               section as the data they populate. */}
-          <Route path="settings/spotify" element={<Navigate to="/brain/spotify" replace />} />
-          <Route path="settings/youtube" element={<Navigate to="/brain/youtube" replace />} />
+          <Route path="settings/spotify" element={<RedirectWithSearch to="/brain/spotify" />} />
+          <Route path="settings/youtube" element={<RedirectWithSearch to="/brain/youtube" />} />
           <Route path="settings/:tab" element={<Settings />} />
           <Route path="api-reference" element={<Navigate to="/api-reference/catalog" replace />} />
           <Route path="api-reference/:tab" element={<ApiExplorer />} />
