@@ -116,8 +116,8 @@ describe('Layout — manifest-derived sidebar structure', () => {
     const settingsPaths = [
       '/settings/general', '/settings/ai-assignments', '/settings/api-access', '/settings/autofixer',
       '/settings/backup', '/settings/code-reviewers', '/settings/database', '/settings/features',
-      '/settings/security', '/settings/sharing', '/settings/signal', '/settings/spotify',
-      '/settings/telegram', '/settings/voice', '/settings/youtube', '/settings/mortalloom',
+      '/settings/security', '/settings/sharing', '/settings/signal',
+      '/settings/telegram', '/settings/voice', '/settings/mortalloom',
       '/openclaw', '/prompts', '/ai'
     ];
     for (const p of settingsPaths) {

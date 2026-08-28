@@ -33,12 +33,12 @@ router.get('/auth/url', asyncHandler(async (req, res) => {
 }));
 
 // OAuth redirect target — hit by a BROWSER redirect from Spotify, not the SPA —
-// so render every outcome as a redirect to the settings tab (which toasts the
-// oauthError param) instead of the JSON envelope the middleware would send.
+// so render every outcome as a redirect to the Brain Spotify tab (which toasts
+// the oauthError param) instead of the JSON envelope the middleware would send.
 router.get('/oauth/callback', asyncHandler(async (req, res) => {
   const settingsUrl = (error) => (error
-    ? `/settings/spotify?oauthError=${encodeURIComponent(error)}`
-    : '/settings/spotify?oauthConnected=1');
+    ? `/brain/spotify?oauthError=${encodeURIComponent(error)}`
+    : '/brain/spotify?oauthConnected=1');
   const { code, error: authError } = req.query;
   if (authError) return res.redirect(settingsUrl(String(authError)));
   if (!code) return res.redirect(settingsUrl('Missing authorization code'));

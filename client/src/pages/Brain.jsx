@@ -24,6 +24,8 @@ const DailyLogTab = lazy(() => import('../components/brain/tabs/DailyLogTab'));
 const ConfigTab = lazy(() => import('../components/brain/tabs/ConfigTab'));
 const ImportTab = lazy(() => import('../components/brain/tabs/ImportTab'));
 const BrainGraph = lazy(() => import('../components/brain/tabs/BrainGraph'));
+const SpotifyTab = lazy(() => import('../components/brain/tabs/SpotifyTab'));
+const YoutubeTab = lazy(() => import('../components/brain/tabs/YoutubeTab'));
 
 export default function Brain() {
   const { tab } = useParams();
@@ -77,6 +79,10 @@ export default function Brain() {
         return <TrustTab onRefresh={refetch} />;
       case 'import':
         return <ImportTab />;
+      case 'spotify':
+        return <SpotifyTab />;
+      case 'youtube':
+        return <YoutubeTab />;
       case 'config':
         return <ConfigTab onRefresh={refetch} />;
       default:
