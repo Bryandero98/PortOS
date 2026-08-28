@@ -491,6 +491,7 @@ function initialSelfWake(reason) {
   return {
     id: `wake-${randomUUID()}`,
     kind: 'self',
+    scheduleKind: 'requested',
     reason,
     sourceTurnId: reason,
     createdAt,
@@ -504,6 +505,7 @@ function quietSelfWake(turnId, quietPeriodMs = PERSISTENT_MIND_LIMITS.MAX_QUIET_
   return {
     id: `wake-${randomUUID()}`,
     kind: 'self',
+    scheduleKind: 'quiet',
     reason: QUIET_SELF_WAKE_REASON,
     sourceTurnId: turnId,
     createdAt: nowIso(),
@@ -697,6 +699,7 @@ async function completeTurn(turnId, result, generation) {
       ? {
           id: `wake-${randomUUID()}`,
           kind: 'self',
+          scheduleKind: 'requested',
           reason: String(result.selfWake.reason || 'turn requested follow-up')
             .slice(0, PERSISTENT_MIND_LIMITS.MAX_REASON_CHARS),
           sourceTurnId: turnId,
@@ -1054,7 +1057,7 @@ export async function refreshPersistentMindWakeCadence() {
     let selfWake = mind.selfWake;
     if (!selfWake && mind.queuedMessages.length === 0) {
       selfWake = quietSelfWake(mind.lastCompletedTurnId || 'cadence-change', quietPeriodMs, baseAt);
-    } else if (selfWake?.reason === QUIET_SELF_WAKE_REASON) {
+    } else if (selfWake?.scheduleKind === 'quiet') {
       selfWake = quietSelfWake(selfWake.sourceTurnId || mind.lastCompletedTurnId || 'cadence-change', quietPeriodMs, baseAt);
     } else if (selfWake && (!Number.isFinite(Date.parse(selfWake.notBefore)) || Date.parse(selfWake.notBefore) > quietDeadline)) {
       selfWake = { ...selfWake, notBefore: new Date(quietDeadline).toISOString() };
@@ -1386,6 +1389,7 @@ export async function requestPersistentMindWake({ sourceTurnId, reason, notBefor
     const selfWake = {
       id: `wake-${randomUUID()}`,
       kind: 'self',
+      scheduleKind: 'requested',
       reason: String(reason || 'self-wake').slice(0, PERSISTENT_MIND_LIMITS.MAX_REASON_CHARS),
       sourceTurnId,
       createdAt: nowIso(),

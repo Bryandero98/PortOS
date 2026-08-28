@@ -213,6 +213,7 @@ describe('persistent mind supervisor', () => {
 
     const { lastCompletedAt, selfWake } = mock.root.persistentMind;
     expect(selfWake.reason).toBe('Check again later');
+    expect(selfWake.scheduleKind).toBe('requested');
     expect(Date.parse(selfWake.notBefore) - Date.parse(lastCompletedAt)).toBe(15 * 60_000);
   });
 
@@ -228,6 +229,7 @@ describe('persistent mind supervisor', () => {
       selfWake: {
         id: 'wake-old',
         kind: 'self',
+        scheduleKind: 'quiet',
         reason: 'maximum quiet period elapsed',
         sourceTurnId: 'turn-1',
         createdAt: lastCompletedAt,
@@ -240,6 +242,34 @@ describe('persistent mind supervisor', () => {
 
     expect(Date.parse(mock.root.persistentMind.selfWake.notBefore) - Date.parse(lastCompletedAt)).toBe(60 * 60_000);
     expect(mock.scheduled.get(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID).delayMs).toBeGreaterThan(40 * 60_000);
+  });
+
+  it('does not postpone a requested wake whose reason matches the automatic wake text', async () => {
+    const lastCompletedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const requestedAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    mock.root.persistentMind = {
+      ...createDefaultPersistentMindState(),
+      enabled: true,
+      started: true,
+      status: 'waiting',
+      lastCompletedTurnId: 'turn-1',
+      lastCompletedAt,
+      selfWake: {
+        id: 'wake-requested',
+        kind: 'self',
+        scheduleKind: 'requested',
+        reason: 'maximum quiet period elapsed',
+        sourceTurnId: 'turn-1',
+        createdAt: lastCompletedAt,
+        notBefore: requestedAt,
+      },
+    };
+    mock.root.config.persistentMindProfile.wakeIntervalMinutes = 60;
+
+    await supervisor.refreshPersistentMindWakeCadence();
+
+    expect(mock.root.persistentMind.selfWake.notBefore).toBe(requestedAt);
+    expect(mock.scheduled.get(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID).delayMs).toBeLessThanOrEqual(5 * 60_000);
   });
 
   it('fails closed when a legacy completed message has no retry fingerprint', async () => {
