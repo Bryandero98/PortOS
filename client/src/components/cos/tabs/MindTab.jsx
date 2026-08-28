@@ -6,7 +6,7 @@ import useMounted from '../../../hooks/useMounted';
 import { useSocket } from '../../../hooks/useSocket';
 import { uuidv4 } from '../../../lib/uuid.js';
 import * as api from '../../../services/api';
-import { formatDateTime } from '../../../utils/formatters';
+import { formatDateTime, timeUntil } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
 import Drawer from '../../Drawer';
 import Banner from '../../ui/Banner';
@@ -700,6 +700,16 @@ export default function MindTab() {
               {state?.status === 'thinking' ? 'Working through the current turn.' : state?.pauseReason || (state?.started ? 'Listening for messages and scheduled wakes.' : 'Configure the AI profile to begin.')}
             </p>
             {state?.queuedMessageCount > 0 && <p className="mt-2 text-xs font-medium text-port-accent">{state.queuedMessageCount} queued message{state.queuedMessageCount === 1 ? '' : 's'}</p>}
+            {state?.started && state?.nextWakeAt && (
+              <button
+                type="button"
+                onClick={() => openPanel('settings')}
+                aria-label="Configure wake cadence"
+                className="mt-2 block rounded text-left text-xs text-port-text-muted hover:text-port-accent focus:outline-none focus:ring-2 focus:ring-port-accent/50"
+              >
+                Next wake <time dateTime={state.nextWakeAt} className="font-medium text-port-text">{formatDateTime(state.nextWakeAt)}</time> · {timeUntil(state.nextWakeAt)}
+              </button>
+            )}
           </section>
 
           <div className="grid grid-cols-2 gap-2 xl:grid-cols-1">
@@ -740,7 +750,7 @@ export default function MindTab() {
         {(visitedPanels.has('settings') || activePanel === 'settings') && <section hidden={activePanel !== 'settings'} aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
           <div className="mb-3">
             <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
-            <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
+            <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, effort, and wake cadence. Changes apply to the next wake and never silently fall back to another model.</p>
           </div>
           <PersistentMindProfileControls
             profile={mind?.profile}

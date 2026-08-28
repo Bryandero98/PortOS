@@ -1,5 +1,5 @@
 import { Brain, Cpu, Gauge } from 'lucide-react';
-import { formatBytes } from '../../utils/formatters.js';
+import { formatBytes, timeUntil } from '../../utils/formatters.js';
 
 const number = (value) => Number.isFinite(value) ? value.toLocaleString() : '—';
 
@@ -15,9 +15,11 @@ const residencyLabel = (runtime) => {
 
 export function PersistentMindThoughtStatus({ state, model }) {
   const thinking = state?.status === 'thinking' && Boolean(state.activeTurnId);
+  const scheduled = state?.started && state?.nextWakeAt && ['idle', 'waiting'].includes(state.status);
   const label = thinking
     ? `Thinking${model ? ` with ${model}` : ''}`
-    : state?.status === 'waiting' ? 'Waiting for the next wake'
+    : scheduled ? `Waiting · next wake ${timeUntil(state.nextWakeAt)}`
+      : state?.status === 'waiting' ? 'Waiting for the next wake'
       : state?.status === 'paused' ? 'Mind paused'
         : state?.status === 'idle' ? 'Mind idle'
           : state?.status === 'disabled' ? 'Mind disabled'

@@ -65,7 +65,7 @@ const response = (overrides = {}) => ({
   truncated: false,
   snapshot: {},
   state: { enabled: true, started: true, status: 'waiting', pauseReason: null },
-  profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
+  profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text', wakeIntervalMinutes: 30 },
   capabilities: { schemaVersion: 1, createTasks: false },
   autonomyMode: 'execute',
   ...overrides,
@@ -269,6 +269,35 @@ describe('MindTab', () => {
     await waitFor(() => expect(start).toBeEnabled());
     await user.click(start);
     await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows the next wake and persists a discoverable wake cadence', async () => {
+    const user = userEvent.setup();
+    const nextWakeAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    api.getPersistentMind.mockResolvedValue(response({
+      state: {
+        enabled: true,
+        started: true,
+        status: 'waiting',
+        pauseReason: null,
+        nextWakeAt,
+      },
+    }));
+    renderTab('/cos/mind?panel=settings');
+
+    expect(await screen.findByText(/Waiting · next wake in/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Configure wake cadence' })).toBeInTheDocument();
+    expect(document.querySelector(`time[datetime="${nextWakeAt}"]`)).toBeInTheDocument();
+    const cadence = screen.getByLabelText('Wake cadence');
+    expect(cadence).toHaveValue('30');
+    expect(cadence).toBeEnabled();
+
+    fireEvent.change(cadence, { target: { value: '60' } });
+
+    await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
+      { persistentMindProfile: expect.objectContaining({ wakeIntervalMinutes: 60 }) },
+      { silent: true },
+    ));
   });
 
   it('starts a ready persistent mind directly from the dashboard header', async () => {

@@ -250,6 +250,20 @@ describe('CoS Routes', () => {
       expect(cos.updateConfig).toHaveBeenCalledWith(updates);
     });
 
+    it('validates the persistent mind wake cadence', async () => {
+      const updates = { persistentMindProfile: { wakeIntervalMinutes: 60 } };
+      cos.updateConfig.mockResolvedValue(updates);
+
+      const accepted = await request(app).put('/api/cos/config').send(updates);
+      const rejected = await request(app).put('/api/cos/config').send({
+        persistentMindProfile: { wakeIntervalMinutes: 4 },
+      });
+
+      expect(accepted.status).toBe(200);
+      expect(cos.updateConfig).toHaveBeenCalledWith(updates);
+      expect(rejected.status).toBe(400);
+    });
+
     it.each([
       ['autonomyLevel', 'manager'],
       ['comprehensiveAppImprovement', true],
