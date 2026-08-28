@@ -112,6 +112,24 @@ export const updateBrainIdea = (id, data, options = {}) => request(`/brain/ideas
 });
 export const deleteBrainIdea = (id, options = {}) => request(`/brain/ideas/${id}`, { method: 'DELETE', ...options });
 
+// Brain - machine-local IdeaLoom lists. These deliberately use a separate
+// endpoint and record shape from native Brain ideas: list ordering and sync
+// metadata must never be flattened into the federated idea model.
+export const getIdeaLoomSettings = (options = {}) => request('/brain/ideas/idealoom/settings', options);
+export const updateIdeaLoomSettings = (data, options = {}) => request('/brain/ideas/idealoom/settings', {
+  method: 'PUT', body: JSON.stringify(data), ...options
+});
+export const getIdeaLoomLists = (options = {}) => request('/brain/ideas/idealoom/lists', options);
+export const createIdeaLoomList = (data, options = {}) => request('/brain/ideas/idealoom/lists', {
+  method: 'POST', body: JSON.stringify(data), ...options
+});
+export const updateIdeaLoomList = (id, data, options = {}) => request(`/brain/ideas/idealoom/lists/${id}`, {
+  method: 'PUT', body: JSON.stringify(data), ...options
+});
+export const deleteIdeaLoomList = (id, options = {}) => request(`/brain/ideas/idealoom/lists/${id}`, {
+  method: 'DELETE', ...options
+});
+
 // Brain - Admin
 export const getBrainAdmin = (filters) => {
   const params = new URLSearchParams();
