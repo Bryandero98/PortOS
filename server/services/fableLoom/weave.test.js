@@ -104,6 +104,10 @@ describe('weaveEpisode', () => {
     expect(stage).toBe('fableloom-weave-episode');
     expect(variables.storyContext).toContain('The Hollow Crown');
     expect(variables.guidance).toBe('darker');
+    expect(variables.existingGraph).toContain('(none');
+    expect(variables.cameraMovementCatalog).toContain('slow-dolly-in');
+    expect(variables).not.toHaveProperty('nodeTarget');
+    expect(variables).not.toHaveProperty('endingTarget');
   });
 
   it('refuses to clobber a non-empty episode without replace', async () => {

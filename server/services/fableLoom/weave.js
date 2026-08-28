@@ -19,6 +19,7 @@ import { isStr, trimTo } from '../../lib/storyBible.js';
 import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
 import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
+import { fableLoomCameraMovementCatalogForPrompt } from '../../lib/fableLoomCameraMovements.js';
 import { getUniverse } from '../universeBuilder.js';
 import { LOOM_LIMITS, findEpisode, findNode, getLoom, mutateLoom } from './records.js';
 import { asLoomFormat, loomFormatLabel, narrationFormatContract, sceneFormatContract } from './formats.js';
@@ -139,6 +140,8 @@ const generatedNodeFields = (raw) => ({
   title: raw.title,
   prose: raw.prose,
   imagePrompt: raw.imagePrompt,
+  videoPrompt: raw.videoPrompt,
+  cameraMovement: raw.cameraMovement,
   isEnding: raw.isEnding === true,
   endingLabel: raw.endingLabel,
 });
@@ -177,7 +180,7 @@ export function mapGeneratedGraph(parsed) {
 }
 
 export async function weaveEpisode(loomId, episodeId, {
-  guidance = '', nodeTarget, endingTarget, replace = false, providerId, model, effort,
+  guidance = '', replace = false, providerId, model, effort,
 } = {}) {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
@@ -189,8 +192,10 @@ export async function weaveEpisode(loomId, episodeId, {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
-    nodeTarget: String(clamp(nodeTarget, 3, 60, 12)),
-    endingTarget: String(clamp(endingTarget, 1, 12, 3)),
+    existingGraph: episode.nodes.length
+      ? describeGraphForPrompt(episode, { proseLimit: 4000 })
+      : '(none — create the episode from the story context)',
+    cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     sceneFormatContract: sceneFormatContract(loom.format),
   }, llmOptions({ providerId, model, effort }, 'fableloom-weave'));
 
@@ -225,6 +230,7 @@ export async function branchNode(loomId, episodeId, nodeId, {
     sceneTitle: node.title || 'Untitled scene',
     sceneProse: node.prose || '(no prose yet)',
     branchCount: String(count),
+    cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     guidance: guidance || '(none)',
     sceneFormatContract: sceneFormatContract(loom.format),
   }, llmOptions({ providerId, model, effort }, 'fableloom-branch'));
@@ -288,9 +294,9 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
 
 // --- Feedback: apply a conversational episode edit --------------------------
 
-const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'isEnding', 'endingLabel'];
+const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'isEnding', 'endingLabel'];
 const FEEDBACK_TRANSITION_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
-const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'endingLabel']);
+const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'endingLabel']);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -372,6 +378,7 @@ export async function feedbackEpisode(loomId, episodeId, {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none)',
     graphDigest: describeGraphForPrompt(episode, { proseLimit: 1200 }),
+    cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     feedback: instruction,
   }, llmOptions({ providerId, model, effort }, 'fableloom-feedback'));
 

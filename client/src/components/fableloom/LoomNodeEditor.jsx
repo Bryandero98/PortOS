@@ -1,8 +1,8 @@
 /**
  * FableLoom scene editor — the side panel for the selected node: title/prose,
  * ending flag + label, the intent-transition list, scene image prompt and
- * image/video previews via the shared local media lanes, and the AI branch
- * action. The authored scene text is the video prompt.
+ * image/video previews via the shared local media lanes, a known camera-move
+ * selector, a dedicated single-clip video prompt, and the AI branch action.
  *
  * Fields save on blur (silent PATCH, skipped when unchanged; the server
  * returns the full loom, which the parent folds into state). Paths save one
@@ -26,6 +26,7 @@ import {
 } from '../../services/api';
 import { fieldClass, labelClass, sceneFieldClass } from './fieldStyles';
 import { isTeleplayFormat } from './loomFormats';
+import { FABLELOOM_CAMERA_MOVEMENTS } from '../../../../server/lib/fableLoomCameraMovements.js';
 
 const toRow = (t) => ({ ...t, triggersText: (t.triggers || []).join('; ') });
 const rowToPatch = ({ targetNodeId, intent, triggersText, description }) => ({
@@ -56,6 +57,8 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       title: node.title || '',
       prose: node.prose || '',
       imagePrompt: node.imagePrompt || '',
+      videoPrompt: node.videoPrompt || '',
+      cameraMovement: node.cameraMovement || '',
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
       transitions: (node.transitions || []).map(toRow),
@@ -170,14 +173,17 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
   }, { errorMessage: 'Could not queue the render' });
 
   const [runGenerateVideo, videoRendering] = useAsyncAction(async () => {
-    const prompt = form.prose.trim();
-    if (!prompt) {
+    const authoredPrompt = form.videoPrompt.trim() || form.prose.trim();
+    if (!authoredPrompt) {
       toast.error('Write the scene first');
       return;
     }
-    // The authored scene is already the complete generation prompt, especially
-    // for teleplays where sluglines, action, and dialogue carry the full beat.
+    // Prefer the explicit single-cut direction; legacy nodes fall back to the
+    // authored scene until they are updated.
     // An existing rendered still seeds image-to-video when one is available.
+    await saveField('videoPrompt', form.videoPrompt);
+    const movement = FABLELOOM_CAMERA_MOVEMENTS.find((move) => move.value === form.cameraMovement);
+    const prompt = movement ? `${authoredPrompt}\n\nCamera direction: ${movement.prompt}` : authoredPrompt;
     await generateVideo({
       prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
       backend: 'local',
@@ -318,7 +324,36 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
             Generate video
           </button>
         </div>
-        <p className="text-xs text-port-text-muted">Uses the scene above as the video prompt.</p>
+        <div className="space-y-2">
+          <label htmlFor="loom-node-camera-movement" className={labelClass}>Camera movement</label>
+          <select
+            id="loom-node-camera-movement"
+            className={fieldClass}
+            value={form.cameraMovement}
+            onChange={(e) => {
+              setForm((p) => ({ ...p, cameraMovement: e.target.value }));
+              patchNode({ cameraMovement: e.target.value });
+            }}
+          >
+            <option value="">Choose a movement</option>
+            {form.cameraMovement && !FABLELOOM_CAMERA_MOVEMENTS.some((move) => move.value === form.cameraMovement) && (
+              <option value={form.cameraMovement}>{form.cameraMovement} (custom)</option>
+            )}
+            {FABLELOOM_CAMERA_MOVEMENTS.map((move) => (
+              <option key={move.value} value={move.value}>{move.label}</option>
+            ))}
+          </select>
+          <textarea
+            rows={3}
+            className={fieldClass}
+            placeholder="One continuous clip: action, camera move, pace, atmosphere, final beat"
+            aria-label="Video prompt"
+            value={form.videoPrompt}
+            onChange={(e) => setForm((p) => ({ ...p, videoPrompt: e.target.value }))}
+            onBlur={() => saveField('videoPrompt', form.videoPrompt)}
+          />
+          <p className="text-xs text-port-text-muted">Falls back to the scene text when no dedicated video prompt is set.</p>
+        </div>
         {node.videoHistoryId && (
           <video
             controls

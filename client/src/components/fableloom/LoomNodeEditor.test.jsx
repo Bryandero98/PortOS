@@ -26,7 +26,8 @@ const scene = 'EXT. ANCIENT GATE - NIGHT\n\nThe gate groans open.';
 const makeNodes = (transitions) => ([
   {
     id: 'n1', title: 'The Gate', prose: scene, image: 'scene.png',
-    imagePrompt: 'an ancient gate', videoPrompt: 'legacy motion prompt', transitions,
+    imagePrompt: 'an ancient gate', videoPrompt: 'The gate opens in one continuous shot.',
+    cameraMovement: 'slow-dolly-in', transitions,
   },
   { id: 'n2', title: 'Inside', prose: 'Torchlight.', transitions: [] },
 ]);
@@ -117,13 +118,13 @@ describe('LoomNodeEditor scene media', () => {
     generateVideo.mockResolvedValue({ jobId: 'video-1', status: 'queued' });
     renderEditor();
 
-    expect(screen.queryByLabelText('Video prompt')).not.toBeInTheDocument();
-    expect(screen.getByText('Uses the scene above as the video prompt.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Video prompt')).toHaveValue('The gate opens in one continuous shot.');
+    expect(screen.getByLabelText('Camera movement')).toHaveValue('slow-dolly-in');
     await user.click(screen.getByRole('button', { name: 'Generate video' }));
 
     await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
     expect(generateVideo).toHaveBeenCalledWith({
-      prompt: scene,
+      prompt: 'The gate opens in one continuous shot.\n\nCamera direction: Camera slowly moves forward toward the subject.',
       backend: 'local',
       mode: 'image',
       sourceImageFile: 'scene.png',
@@ -136,7 +137,7 @@ describe('LoomNodeEditor scene media', () => {
     const user = userEvent.setup();
     generateVideo.mockResolvedValue({ jobId: 'video-2', status: 'queued' });
     const nodes = makeNodes([]).map((node) => node.id === 'n1'
-      ? { ...node, image: null }
+      ? { ...node, image: null, videoPrompt: '', cameraMovement: '' }
       : node);
     render(
       <LoomNodeEditor
@@ -155,5 +156,17 @@ describe('LoomNodeEditor scene media', () => {
       prompt: scene, backend: 'local', mode: 'text', fableLoom: expect.any(String),
     }));
     expect(generateVideo.mock.calls[0][0]).not.toHaveProperty('sourceImageFile');
+  });
+
+  it('persists a selected camera movement from the shared vocabulary', async () => {
+    const user = userEvent.setup();
+    updateLoomNode.mockResolvedValue({ id: 'loom-1' });
+    renderEditor();
+
+    await user.selectOptions(screen.getByLabelText('Camera movement'), 'orbit-180');
+
+    await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', 'n1', { cameraMovement: 'orbit-180' }, { silent: true },
+    ));
   });
 });

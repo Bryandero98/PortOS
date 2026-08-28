@@ -82,6 +82,19 @@ describe('sanitizeLoom', () => {
     expect(loom.episodes[0].startNodeId).toBe('n1');
   });
 
+  it('preserves single-cut video direction and camera movement metadata', () => {
+    const loom = sanitizeLoom({
+      id: 'loom-1',
+      name: 'X',
+      episodes: [{ id: 'ep-1', nodes: [{
+        id: 'n1', videoPrompt: 'A figure turns as the camera arcs.', cameraMovement: 'cinematic-arc',
+      }] }],
+    });
+    expect(loom.episodes[0].nodes[0]).toMatchObject({
+      videoPrompt: 'A figure turns as the camera arcs.', cameraMovement: 'cinematic-arc',
+    });
+  });
+
   it('defaults the scene format and keeps only a known one', () => {
     expect(sanitizeLoom({ id: 'loom-1', name: 'X' }).format).toBe('prose');
     expect(sanitizeLoom({ id: 'loom-1', name: 'X', format: 'teleplay' }).format).toBe('teleplay');

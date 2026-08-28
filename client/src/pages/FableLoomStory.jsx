@@ -394,7 +394,7 @@ export default function FableLoomStory({ view = 'graph' }) {
  * controls, and episode deletion.
  */
 function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeedbackStarted, onDeleted }) {
-  const [form, setForm] = useState({ title: '', synopsis: '', guidance: '', nodeTarget: 12, endingTarget: 3 });
+  const [form, setForm] = useState({ title: '', synopsis: '', guidance: '' });
   // The weave reads server-side state (title/synopsis), so it gates on
   // in-flight meta saves per the client save-gating convention.
   const [metaSaving, setMetaSaving] = useState(0);
@@ -421,8 +421,6 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeed
   const [runWeave, weaving] = useAsyncAction(async () => {
     const result = await weaveLoomEpisode(loom.id, episode.id, {
       guidance: form.guidance,
-      nodeTarget: Number(form.nodeTarget) || 12,
-      endingTarget: Number(form.endingTarget) || 3,
       replace: hasScenes,
     }, { silent: true });
     onLoomUpdate(result.loom);
@@ -473,24 +471,9 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeed
               onChange={(e) => setForm((p) => ({ ...p, guidance: e.target.value }))}
             />
           </FormField>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="Scenes (approx.)" labelClassName={labelClass}>
-              <input
-                type="number" min={3} max={60}
-                className={fieldClass}
-                value={form.nodeTarget}
-                onChange={(e) => setForm((p) => ({ ...p, nodeTarget: e.target.value }))}
-              />
-            </FormField>
-            <FormField label="Endings" labelClassName={labelClass}>
-              <input
-                type="number" min={1} max={12}
-                className={fieldClass}
-                value={form.endingTarget}
-                onChange={(e) => setForm((p) => ({ ...p, endingTarget: e.target.value }))}
-              />
-            </FormField>
-          </div>
+          <p className="text-xs text-port-text-muted">
+            The story writer and creative director choose the number of camera-cut scenes and endings from the episode.
+          </p>
           {hasScenes && (
             <p className="text-xs text-port-warning">
               Weaving replaces this episode's {episode.nodes.length} existing scene{episode.nodes.length === 1 ? '' : 's'}.
