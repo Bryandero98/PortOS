@@ -166,6 +166,7 @@ export default function MindTab() {
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [contextRefreshKey, setContextRefreshKey] = useState(0);
+  const [visitedPanels, setVisitedPanels] = useState(() => new Set(activePanel ? [activePanel] : []));
   const [showActivity, setShowActivity] = useState(false);
   const [runtime, setRuntime] = useState(null);
   const [runtimeError, setRuntimeError] = useState(null);
@@ -188,6 +189,16 @@ export default function MindTab() {
   const annotationDraftIdRef = useRef(null);
   const messageListRef = useRef(null);
   const stickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    if (!activePanel) return;
+    setVisitedPanels((current) => {
+      if (current.has(activePanel)) return current;
+      const next = new Set(current);
+      next.add(activePanel);
+      return next;
+    });
+  }, [activePanel]);
 
   const loadHistory = useCallback(async ({ reset = false } = {}) => {
     if (loadPendingRef.current) {
@@ -712,18 +723,18 @@ export default function MindTab() {
         <div className="mb-4">
           <TabPills tabs={MIND_PANEL_TABS} activeTab={activePanel || 'context'} onChange={openPanel} variant="pills" size="sm" mobileDropdown ariaLabel="Mind workspace sections" />
         </div>
-        <div hidden={activePanel !== 'context'} className="space-y-4">
+        {(visitedPanels.has('context') || activePanel === 'context') && <div hidden={activePanel !== 'context'} className="space-y-4">
           <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} />
           <PersistentMindVisibilityPanel visibility={visibility} error={visibilityError} loading={visibilityLoading} onRefresh={() => loadVisibility({ refresh: true })} />
           <PersistentMindContextPanel view="context" refreshKey={contextRefreshKey} />
-        </div>
-        <div hidden={activePanel !== 'memories'}>
+        </div>}
+        {(visitedPanels.has('memories') || activePanel === 'memories') && <div hidden={activePanel !== 'memories'}>
           <PersistentMindContextPanel view="memories" onMemoriesChanged={() => setContextRefreshKey((current) => current + 1)} />
-        </div>
-        <div hidden={activePanel !== 'tools'}>
+        </div>}
+        {(visitedPanels.has('tools') || activePanel === 'tools') && <div hidden={activePanel !== 'tools'}>
           <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} />
-        </div>
-        <section hidden={activePanel !== 'settings'} aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
+        </div>}
+        {(visitedPanels.has('settings') || activePanel === 'settings') && <section hidden={activePanel !== 'settings'} aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
           <div className="mb-3">
             <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
             <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
@@ -740,7 +751,7 @@ export default function MindTab() {
               <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || setupSaving || !profileReady} onClick={() => runLifecycle('start')} />
             </div>
           )}
-        </section>
+        </section>}
       </Drawer>
 
       <Drawer

@@ -245,6 +245,8 @@ describe('MindTab', () => {
     renderTab('/cos/mind?panel=settings');
 
     expect(await screen.findByRole('heading', { name: 'AI profile' })).toBeInTheDocument();
+    expect(api.getPersistentMindContext).not.toHaveBeenCalled();
+    expect(api.getPersistentMindTools).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByLabelText('AI provider')).toHaveValue('codex'));
     expect(screen.getByLabelText('Model')).toHaveValue('gpt-5');
     expect(screen.getByLabelText('Thinking effort')).toHaveValue('high');
@@ -534,7 +536,7 @@ describe('MindTab', () => {
 
     await user.type(await screen.findByLabelText('Add a durable memory'), 'A newly curated fact');
     await user.click(screen.getByRole('button', { name: 'Add memory' }));
-    await waitFor(() => expect(api.getPersistentMindContext.mock.calls.length).toBeGreaterThanOrEqual(4));
+    await waitFor(() => expect(api.getPersistentMindContext.mock.calls.length).toBeGreaterThanOrEqual(2));
     await user.click(screen.getByRole('tab', { name: 'Context' }));
 
     expect(await screen.findByText('# Context with new memory')).toBeInTheDocument();
