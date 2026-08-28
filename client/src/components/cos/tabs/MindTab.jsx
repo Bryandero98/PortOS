@@ -165,6 +165,7 @@ export default function MindTab() {
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [contextRefreshKey, setContextRefreshKey] = useState(0);
   const [showActivity, setShowActivity] = useState(false);
   const [runtime, setRuntime] = useState(null);
   const [runtimeError, setRuntimeError] = useState(null);
@@ -569,7 +570,7 @@ export default function MindTab() {
               ? runtime.inference.model
               : mind?.profile?.model}
           />
-          {!state?.started && <ActionButton label={profileReady ? 'Start' : 'Configure'} icon={profileReady ? CirclePlay : Settings2} disabled={loading} onClick={() => openPanel('settings')} />}
+          {!state?.started && <ActionButton label={profileReady ? 'Start' : 'Configure'} icon={profileReady ? CirclePlay : Settings2} pending={profileReady && lifecyclePending === 'start'} disabled={loading || profileSaving} onClick={() => (profileReady ? runLifecycle('start') : openPanel('settings'))} />}
           {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
           {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
           {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
@@ -714,10 +715,10 @@ export default function MindTab() {
         <div hidden={activePanel !== 'context'} className="space-y-4">
           <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} />
           <PersistentMindVisibilityPanel visibility={visibility} error={visibilityError} loading={visibilityLoading} onRefresh={() => loadVisibility({ refresh: true })} />
-          <PersistentMindContextPanel view="context" />
+          <PersistentMindContextPanel view="context" refreshKey={contextRefreshKey} />
         </div>
         <div hidden={activePanel !== 'memories'}>
-          <PersistentMindContextPanel view="memories" />
+          <PersistentMindContextPanel view="memories" onMemoriesChanged={() => setContextRefreshKey((current) => current + 1)} />
         </div>
         <div hidden={activePanel !== 'tools'}>
           <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} />

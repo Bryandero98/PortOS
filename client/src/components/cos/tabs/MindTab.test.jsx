@@ -269,6 +269,19 @@ describe('MindTab', () => {
     await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
   });
 
+  it('starts a ready persistent mind directly from the dashboard header', async () => {
+    const user = userEvent.setup();
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: false, status: 'idle', pauseReason: null },
+    }));
+    renderTab();
+
+    await user.click(await screen.findByRole('button', { name: 'Start' }));
+
+    await waitFor(() => expect(api.startPersistentMind).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('dialog', { name: 'Mind workspace' })).not.toBeInTheDocument();
+  });
+
   it('persists the separate opt-in task-creation grant', async () => {
     const user = userEvent.setup();
     renderTab('/cos/mind?panel=tools');
@@ -501,5 +514,29 @@ describe('MindTab', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.getByRole('heading', { name: 'Identity and operating prompt' })).toBeInTheDocument();
+  });
+
+  it('refreshes the effective context after a memory is created', async () => {
+    const user = userEvent.setup();
+    api.getPersistentMindContext.mockImplementation(() => Promise.resolve({
+      prompt: { schemaVersion: 1, identity: 'Resident mind', instructions: 'Stay grounded.' },
+      preview: {
+        text: api.getPersistentMindContext.mock.calls.length > 2 ? '# Context with new memory' : '# Original context',
+        chars: 24,
+        approximateTokens: 6,
+        summaryState: 'ready',
+      },
+      memories: [],
+      rollups: [],
+      harness: null,
+    }));
+    renderTab('/cos/mind?panel=memories');
+
+    await user.type(await screen.findByLabelText('Add a durable memory'), 'A newly curated fact');
+    await user.click(screen.getByRole('button', { name: 'Add memory' }));
+    await waitFor(() => expect(api.getPersistentMindContext.mock.calls.length).toBeGreaterThanOrEqual(4));
+    await user.click(screen.getByRole('tab', { name: 'Context' }));
+
+    expect(await screen.findByText('# Context with new memory')).toBeInTheDocument();
   });
 });

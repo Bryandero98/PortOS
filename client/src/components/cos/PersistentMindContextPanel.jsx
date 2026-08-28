@@ -18,7 +18,7 @@ const harnessTone = (recommendation) => recommendation === 'recommended'
   ? 'success'
   : recommendation === 'not-recommended' ? 'warning' : 'info';
 
-export default function PersistentMindContextPanel({ view = 'all' }) {
+export default function PersistentMindContextPanel({ view = 'all', refreshKey = 0, onMemoriesChanged }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState(() => promptDraft(null));
   const [loading, setLoading] = useState(true);
@@ -37,7 +37,12 @@ export default function PersistentMindContextPanel({ view = 'all' }) {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, refreshKey]);
+
+  const refreshMemories = useCallback(async () => {
+    await load();
+    onMemoriesChanged?.();
+  }, [load, onMemoriesChanged]);
 
   const savePrompt = async () => {
     if (saving) return;
@@ -115,11 +120,11 @@ export default function PersistentMindContextPanel({ view = 'all' }) {
           <h3 id="mind-memory-heading" className="flex items-center gap-2 text-sm font-semibold text-port-text"><Database size={16} aria-hidden="true" /> Curated memories</h3>
           <p className="mt-1 text-xs text-port-text-muted">Memories created by the persistent mind and memories added here enter its bounded context automatically. You can edit them here at any time.</p>
         </div>
-        <MemoryCreator onCreated={load} />
+        <MemoryCreator onCreated={refreshMemories} />
         <div className="mt-3 space-y-2">
           {(data?.memories || []).length === 0 ? (
             <p className="rounded border border-dashed border-port-border p-4 text-center text-xs text-port-text-muted">No curated memories yet.</p>
-          ) : (data.memories || []).map((memory) => <MemoryEditor key={memory.id} memory={memory} onSaved={load} />)}
+          ) : (data.memories || []).map((memory) => <MemoryEditor key={memory.id} memory={memory} onSaved={refreshMemories} />)}
         </div>
       </section>}
 
