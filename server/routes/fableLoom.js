@@ -24,6 +24,8 @@ import {
   playTurnSchema,
   reformatSchema,
   reviewSchema,
+  seriesPlanFeedbackSchema,
+  seriesPlanReviewSchema,
   transitionCreateSchema,
   transitionPatchSchema,
   weaveSchema,
@@ -40,11 +42,13 @@ import {
   deleteNode,
   deleteNodeTransition,
   feedbackEpisode,
+  feedbackSeriesPlan,
   getLoom,
   listLoomSummaries,
   playTurn,
   reformatEpisodeScenes,
   reviewEpisode,
+  reviewSeriesPlan,
   updateEpisode,
   updateLoom,
   updateNode,
@@ -85,6 +89,18 @@ router.patch('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   await deleteLoom(req.params.id);
   res.json({ ok: true });
+}));
+
+// --- Series plan ------------------------------------------------------------
+
+router.post('/:id/plan/review', asyncHandler(async (req, res) => {
+  const input = validateRequest(seriesPlanReviewSchema, req.body);
+  res.json(await reviewSeriesPlan(req.params.id, input));
+}));
+
+router.post('/:id/plan/feedback', asyncHandler(async (req, res) => {
+  const input = validateRequest(seriesPlanFeedbackSchema, req.body);
+  res.json(await feedbackSeriesPlan(req.params.id, input));
 }));
 
 // --- Episodes ---------------------------------------------------------------

@@ -25,6 +25,26 @@ const format = z.enum(LOOM_FORMATS);
 // the runner would clamp an unknown level silently, and the door check is
 // where a typo should surface.
 const playSettings = llmRoutePinSchema.nullable();
+const planItemId = z.string().min(1).max(80).optional();
+const planEpisodeId = z.string().min(1).max(80).nullable().optional();
+const planItemFields = {
+  id: planItemId,
+  title: z.string().max(LOOM_LIMITS.PLAN_ITEM_TITLE_MAX),
+  description: z.string().max(LOOM_LIMITS.PLAN_ITEM_DESCRIPTION_MAX),
+};
+const seriesPlan = z.object({
+  storyArc: z.string().max(LOOM_LIMITS.STORY_ARC_MAX),
+  plotPoints: z.array(z.object({
+    ...planItemFields,
+    episodeId: planEpisodeId,
+  })).max(LOOM_LIMITS.PLAN_ITEMS_MAX),
+  sideQuests: z.array(z.object({
+    ...planItemFields,
+    status: z.enum(['idea', 'planned', 'active', 'resolved']),
+    startEpisodeId: planEpisodeId,
+    endEpisodeId: planEpisodeId,
+  })).max(LOOM_LIMITS.PLAN_ITEMS_MAX),
+});
 
 // Index filter. `?seriesId=` scopes the list to the looms soft-linked to one
 // pipeline series (the series detail page's "Branching narratives" card). An
@@ -41,6 +61,7 @@ export const loomCreateSchema = z.object({
   styleNotes: styleNotes.optional(),
   format: format.optional(),
   playSettings: playSettings.optional(),
+  seriesPlan: seriesPlan.optional(),
   universeId: refId.optional(),
   seriesId: refId.optional(),
 });
@@ -52,6 +73,7 @@ export const loomPatchSchema = z.object({
   styleNotes: styleNotes.optional(),
   format: format.optional(),
   playSettings: playSettings.optional(),
+  seriesPlan: seriesPlan.optional(),
   universeId: refId.optional(),
   seriesId: refId.optional(),
 });
@@ -157,6 +179,13 @@ export const reformatSchema = z.object({
 });
 
 export const feedbackSchema = z.object({
+  feedback: z.string().trim().min(1).max(LOOM_LIMITS.FEEDBACK_MAX),
+  ...llmPickFields,
+});
+
+export const seriesPlanReviewSchema = z.object({ ...llmPickFields });
+
+export const seriesPlanFeedbackSchema = z.object({
   feedback: z.string().trim().min(1).max(LOOM_LIMITS.FEEDBACK_MAX),
   ...llmPickFields,
 });
