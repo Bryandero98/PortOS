@@ -2,17 +2,17 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import migration from './309-remove-activity-streak-widget.js';
+import migration from './310-remove-activity-streak-widget.js';
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
-describe('migration 309 — remove activity streak dashboard widget', () => {
+describe('migration 310 — remove activity streak dashboard widget', () => {
   let rootDir;
   let layoutsPath;
 
   beforeEach(() => {
-    rootDir = mkdtempSync(join(tmpdir(), 'migration-309-'));
+    rootDir = mkdtempSync(join(tmpdir(), 'migration-310-'));
     mkdirSync(join(rootDir, 'data'), { recursive: true });
     layoutsPath = join(rootDir, 'data', 'dashboard-layouts.json');
   });
@@ -40,7 +40,7 @@ describe('migration 309 — remove activity streak dashboard widget', () => {
     expect(after.layouts[0].widgets).toEqual(['quick-task', 'daily-post']);
     expect(after.layouts[0].grid).toEqual([
       { id: 'quick-task', x: 0, w: 6, order: 0, h: 5 },
-      { id: 'daily-post', x: 9, w: 3, order: 1, h: 3 },
+      { id: 'daily-post', x: 9, w: 3, order: 2, h: 3 },
     ]);
     expect(after.layouts[1].widgets).toEqual(['tribe-care']);
   });

@@ -35,7 +35,7 @@ const OPEN_WORLD_REGION_COMMANDS = [
   ['wellness', 'Wellness Tower', ['wellness tower', 'health tower', 'vitals tower']],
   ['archive', 'Archive District', ['archive district', 'warehouse', 'cold storage']],
   ['quiet-corner', 'Quiet Corner', ['quiet corner', 'easter eggs']],
-  ['productivity', 'Productivity Terrace', ['productivity terrace', 'productivity', 'throughput district']],
+  ['productivity', 'Productivity Terrace', ['productivity terrace', 'productivity', 'throughput district', 'streak district']],
   ['backup-vault', 'Backup Vault', ['backup vault', 'the vault']],
   ['memory', 'Memory Quarter', ['memory quarter', 'memory district', 'knowledge district']],
   ['sprint-yard', 'Sprint Yard', ['sprint yard', 'jira yard', 'sprint district'], 'jira'],
@@ -171,7 +171,7 @@ const RAW_NAV_COMMANDS = [
   // visualization + inline schedule editor). The `workflow` aliases are kept
   // for muscle memory; the bare `timeline` alias stays with /media/timeline.
   { id: 'nav.cos.workflow', path: '/cos/workflow', label: 'Timeline', section: 'Chief of Staff', aliases: ['workflow', 'cos-workflow', 'cos-timeline', 'schedule-timeline'], keywords: ['timeline', 'schedule', 'launch order', 'run order', 'gantt', 'upcoming runs', 'overlap', 'dependencies'] },
-  { id: 'nav.cos.productivity', path: '/cos/productivity', label: 'Productivity', section: 'Chief of Staff', aliases: ['cos-productivity', 'work-patterns'] },
+  { id: 'nav.cos.productivity', path: '/cos/productivity', label: 'Productivity', section: 'Chief of Staff', aliases: ['cos-productivity', 'work-patterns', 'streaks'] },
 
   { id: 'nav.messages.inbox', path: '/messages/inbox', label: 'Inbox', section: 'Comms', aliases: ['messages', 'comms', 'comms-inbox'], keywords: ['comms', 'email', 'inbox'] },
   { id: 'nav.messages.drafts', path: '/messages/drafts', label: 'Drafts', section: 'Comms', aliases: ['drafts', 'comms-drafts'], keywords: ['comms'] },

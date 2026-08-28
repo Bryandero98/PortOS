@@ -196,7 +196,7 @@ const CosDashboardWidget = memo(function CosDashboardWidget() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {/* Today's Progress */}
         <div className="bg-port-bg/50 rounded-lg p-3">
           <div className="flex items-center gap-2 mb-1">

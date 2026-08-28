@@ -5,7 +5,7 @@
 
 import { readLayoutsDoc, writeLayoutsDoc } from './_lib.js';
 
-const LABEL = 'migration 309';
+const LABEL = 'migration 310';
 const WIDGET_ID = 'activity-streak';
 
 function removeFromLayout(layout) {
@@ -17,7 +17,7 @@ function removeFromLayout(layout) {
   if (!changed) return false;
 
   layout.widgets = widgets;
-  layout.grid = grid.map((item, order) => ({ ...item, order }));
+  layout.grid = grid;
   return true;
 }
 
