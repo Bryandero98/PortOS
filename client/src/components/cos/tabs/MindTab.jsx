@@ -27,7 +27,7 @@ const MAX_MESSAGE_IMAGE_BYTES = 10 * 1024 * 1024;
 const MIND_VIEWS = new Set(['conversation', 'context', 'setup']);
 const MIND_TABS = [
   { id: 'conversation', label: 'Chat', icon: MessageCircle },
-  { id: 'context', label: 'Memory', icon: Brain },
+  { id: 'context', label: 'Context', icon: Brain },
   { id: 'setup', label: 'Settings', icon: Settings2 },
 ];
 

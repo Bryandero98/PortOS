@@ -448,6 +448,8 @@ describe('MindTab', () => {
 
   it('loads the editable effective context from the URL-backed context view', async () => {
     renderTab('/cos/mind?view=context');
+    expect(screen.getByRole('tab', { name: 'Context' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: 'Memory' })).not.toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: 'Identity and operating prompt' })).toBeInTheDocument();
     expect(screen.getByLabelText('Identity')).toHaveValue('Resident mind');
     expect(screen.getByText('# Effective context')).toBeInTheDocument();
