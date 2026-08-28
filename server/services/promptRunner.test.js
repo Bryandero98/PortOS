@@ -27,6 +27,10 @@ vi.mock('./tuiPromptRunner.js', () => ({
   executeTuiRun: vi.fn(),
 }));
 
+vi.mock('./providerExecutionReadiness.js', () => ({
+  ensureProviderReadyForExecution: vi.fn().mockResolvedValue({ success: true }),
+}));
+
 // providers.js is a compatibility shim that throws when the toolkit hasn't
 // been initialized via setAIToolkit(). Mock it so the resolveProviderAndModel
 // tests can drive the active/by-id lookups directly. `getAllProviders` is
@@ -59,6 +63,7 @@ vi.mock('../lib/aiToolkitState.js', () => ({
 
 const runner = await import('./runner.js');
 const tuiRunner = await import('./tuiPromptRunner.js');
+const executionReadiness = await import('./providerExecutionReadiness.js');
 const providers = await import('./providers.js');
 const autoFixer = await import('./autoFixer.js');
 const toolkitState = await import('../lib/aiToolkitState.js');
@@ -642,6 +647,20 @@ describe('promptRunner — TUI provider routing', () => {
     expect(tuiRunner.executeTuiRun).toHaveBeenCalledTimes(1);
     expect(runner.executeCliRun).not.toHaveBeenCalled();
     expect(runner.executeApiRun).not.toHaveBeenCalled();
+  });
+
+  it('wakes an MTPLX-backed TUI before spawning OpenCode', async () => {
+    const provider = tuiProvider({
+      id: 'opencode-mtplx-tui',
+      mtplxBacked: true,
+      endpoint: 'http://127.0.0.1:8000/v1',
+    });
+    tuiRunner.executeTuiRun.mockImplementation(async ({ onComplete }) => onComplete({ success: true, text: 'ready' }));
+
+    await runPromptThroughProvider({ provider, prompt: 'p', source: 'test' });
+
+    expect(executionReadiness.ensureProviderReadyForExecution).toHaveBeenCalledWith(provider);
+    expect(tuiRunner.executeTuiRun).toHaveBeenCalledTimes(1);
   });
 
   it('passes cwd + timeout overrides through to executeTuiRun', async () => {

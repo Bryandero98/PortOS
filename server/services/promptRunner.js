@@ -39,6 +39,7 @@ import { createSingleFlight } from '../lib/singleFlight.js';
 import { extractJson } from '../lib/jsonExtract.js';
 import { isCreativeRunSource, withCreativeLatitude } from '../lib/creativeLatitude.js';
 import { DEFAULT_OUTPUT_RESERVE_TOKENS, estimateTokens } from '../lib/contextBudget.js';
+import { ensureProviderReadyForExecution } from './providerExecutionReadiness.js';
 
 // The fallback-lifecycle notifiers live in services/autoFixer.js, which
 // transitively pulls in services/cos.js (PM2 + fs + sockets). Importing it
@@ -1243,7 +1244,24 @@ async function executeProviderRunOnce({
   // module comment promises: gating the *requested* provider at the call
   // site missed a remote/CLI primary that swaps/fails over to a local
   // backend, defeating the VRAM/OOM serialization. No-op for cloud/CLI/TUI.
-  return withLocalConcurrencyGate(effectiveProvider, () => new Promise((resolve, reject) => {
+  return withLocalConcurrencyGate(effectiveProvider, async () => {
+    // API providers run through the shared toolkit readiness hook. TUI
+    // providers spawn OpenCode directly, so they need the same hook here or
+    // MTPLX remains stopped until after the TUI has already failed its request.
+    if (effectiveProvider.type === PROVIDER_TYPES.TUI) {
+      const ready = await ensureProviderReadyForExecution(effectiveProvider).catch((err) => ({
+        success: false,
+        error: err.message,
+      }));
+      if (!ready.success) {
+        const error = new Error(ready.error || 'Provider readiness check failed');
+        error.effectiveProvider = effectiveProvider;
+        error.effectiveModel = effectiveModel;
+        throw error;
+      }
+    }
+
+    return new Promise((resolve, reject) => {
     let text = '';
     let settled = false;
     let apiTimeoutHandle = null;
@@ -1360,7 +1378,8 @@ async function executeProviderRunOnce({
     } else {
       safeReject(new Error(`Unsupported provider type: ${effectiveProvider.type}`));
     }
-  })).finally(() => {
+    });
+  }).finally(() => {
     if (typeof onRunSettled !== 'function') return;
     try { onRunSettled(runId); } catch (err) {
       console.error(`❌ run lifecycle settle hook failed: ${err.message}`);
