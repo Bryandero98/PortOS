@@ -16,6 +16,15 @@ export const VOICE_DEFAULTS = Object.freeze({
   trigger: 'push-to-talk',
   hotkey: 'Space',
 
+  // FaceTime control-plane configuration is machine-local.  It is deliberately
+  // nested under voice rather than the federation-facing instance profile.
+  facetime: {
+    targetHandle: '',
+    targetName: '',
+    blackHole2chLabel: 'BlackHole 2ch',
+    blackHole16chLabel: 'BlackHole 16ch',
+  },
+
   stt: {
     // 'web-speech' (browser-native, zero-latency, no server process needed) is the
     // default. Falls back to 'whisper' (local whisper.cpp) for browsers without

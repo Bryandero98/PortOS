@@ -22018,7 +22018,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 120
+          "line": 130
         }
       ]
     },
@@ -22029,7 +22029,18 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 125
+          "line": 135
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/voice/facetime/status",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 181
         }
       ]
     },
@@ -22040,7 +22051,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 177
+          "line": 201
         }
       ]
     },
@@ -22084,7 +22095,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 229
+          "line": 253
         }
       ]
     },
@@ -22095,7 +22106,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 154
+          "line": 164
         }
       ]
     },
@@ -22106,7 +22117,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 190
+          "line": 214
         }
       ]
     },
@@ -22117,7 +22128,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 255
+          "line": 279
         }
       ]
     },
@@ -22128,7 +22139,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 267
+          "line": 291
         }
       ]
     },
@@ -22139,7 +22150,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 171
+          "line": 195
         }
       ]
     },
@@ -22150,7 +22161,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 279
+          "line": 303
         }
       ]
     },

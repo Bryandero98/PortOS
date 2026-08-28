@@ -4,7 +4,7 @@ import { Save, Mic, Play, Zap, RefreshCw, Globe } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import {
-  getVoiceStatus, getVoiceConfig, updateVoiceConfig, listVoices, testTts, fetchPiperVoice,
+  getVoiceStatus, getVoiceConfig, updateVoiceConfig, listVoices, testTts, fetchPiperVoice, getFaceTimeStatus, controlFaceTime,
 } from '../../services/apiVoice';
 import { getProviders, refreshProviderModels } from '../../services/apiProviders';
 import { playWav, webSpeechSupported } from '../../services/voiceClient';
@@ -12,6 +12,7 @@ import { nanoAvailability } from '../../services/browserLlm';
 import { readVoiceHidden, writeVoiceHidden } from '../../services/voiceVisibility';
 import { formatVoiceLabel } from '../../lib/voiceLabel';
 import FormField from '../ui/FormField';
+import { useInstanceFeatures } from '../../hooks/useInstanceFeatures';
 
 const SERVICE_LABELS = {
   whisper: 'Whisper (STT)',
@@ -74,6 +75,7 @@ const ServiceBadge = ({ label, probe }) => {
 const inputCls = 'w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent';
 
 export function VoiceTab() {
+  const { isFeatureEnabled } = useInstanceFeatures();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [cfg, setCfg] = useState(null);
@@ -90,6 +92,9 @@ export function VoiceTab() {
   const [refreshingModels, setRefreshingModels] = useState(false);
   // On-device (Gemini Nano) availability for the fast-resolution tier-2 pill.
   const [nanoStatus, setNanoStatus] = useState(null);
+  const [facetimeStatus, setFacetimeStatus] = useState(null);
+  const [facetimeAction, setFacetimeAction] = useState(null);
+  const [facetimeResult, setFacetimeResult] = useState(null);
 
   const toggleWidgetHidden = (next) => {
     writeVoiceHidden(next);
@@ -201,6 +206,22 @@ export function VoiceTab() {
     await refreshStatus();
   };
 
+  const refreshFaceTime = () => getFaceTimeStatus({ silent: true })
+    .then(setFacetimeStatus)
+    .catch(() => setFacetimeStatus(null));
+
+  const handleFaceTimeAction = async (action) => {
+    setFacetimeAction(action);
+    try {
+      setFacetimeResult(await controlFaceTime(action, { silent: true }));
+    } catch (err) {
+      setFacetimeResult({ ok: false, message: err.message });
+    } finally {
+      setFacetimeAction(null);
+      refreshFaceTime();
+    }
+  };
+
   const handlePreviewVoice = async (voiceName) => {
     if (!voiceName || previewingVoice) return;
     setPreviewingVoice(voiceName);
@@ -241,6 +262,9 @@ export function VoiceTab() {
   };
 
   if (loading || !cfg) return <BrailleSpinner text="Loading voice settings" />;
+
+  const facetime = cfg.facetime || {};
+  const faceTimeDirty = !facetime.targetHandle?.trim() || !facetime.targetName?.trim();
 
   const engine = cfg.tts.engine || 'kokoro';
   const sttEngine = cfg.stt.engine || 'whisper';
@@ -325,6 +349,22 @@ export function VoiceTab() {
           <ServiceBadge key={k} label={SERVICE_LABELS[k] || k} probe={probe} />
         ))}
       </div>
+
+      {isFeatureEnabled('facetime') && <section className="border border-port-border rounded-lg p-4 space-y-3">
+        <h3 className="text-base font-semibold text-white">FaceTime Audio</h3>
+        <p className="text-xs text-gray-500">Machine-local macOS call control. Save your identity before testing; it is not shared with peers.</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <FormField label="Target name"><input id="facetime-target-name" value={facetime.targetName || ''} onChange={(e) => patch('facetime.targetName', e.target.value)} className={inputCls} /></FormField>
+          <FormField label="Target handle" hint="E.164 phone number or email address."><input id="facetime-target-handle" value={facetime.targetHandle || ''} onChange={(e) => patch('facetime.targetHandle', e.target.value)} className={inputCls} /></FormField>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {['probe', 'call', 'hangup'].map((action) => <button key={action} type="button" onClick={() => handleFaceTimeAction(action)} disabled={saving || faceTimeDirty || facetimeAction !== null} className="px-3 py-2 rounded bg-port-border text-sm text-white disabled:opacity-50">{facetimeAction === action ? 'Working…' : action === 'call' ? 'Test call' : action[0].toUpperCase() + action.slice(1)}</button>)}
+          <button type="button" onClick={refreshFaceTime} className="px-3 py-2 rounded bg-port-bg border border-port-border text-sm text-white">Check setup</button>
+        </div>
+        {faceTimeDirty && <p className="text-xs text-port-warning">Set and save both identity fields before FaceTime controls are available.</p>}
+        {facetimeStatus && <ul className="text-xs text-gray-400">{Object.entries(facetimeStatus).map(([key, value]) => <li key={key}>{value.ok === 'ok' ? '✓' : '•'} {key}: {value.message}</li>)}</ul>}
+        {facetimeResult && <pre className="text-xs text-gray-400 whitespace-pre-wrap">{JSON.stringify(facetimeResult, null, 2)}</pre>}
+      </section>}
 
       <div className="flex items-start gap-3 bg-port-bg border border-port-border rounded-lg p-3">
         <Globe size={16} className="text-port-accent mt-0.5 shrink-0" />

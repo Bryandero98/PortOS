@@ -15,6 +15,10 @@ PortOS includes an optional voice assistant with support for fully local operati
 
 The TTS engine is selectable in **Settings → Voice → TTS engine**.
 
+### FaceTime Audio control plane
+
+FaceTime Audio controls are off by default and remain machine-local. On macOS, run `npm run setup:facetime`, grant the installed helper Accessibility permission in System Settings, choose the configured BlackHole devices in FaceTime, then enable **FaceTime Audio** in Settings → Features. Set a target name and E.164 phone number or email in Settings → Voice, save, and use **Probe**, **Test call**, or **Hang up**. The helper refuses ambiguous FaceTime surfaces and never uses coordinate clicks.
+
 ### Why Kokoro is the default
 
 Kokoro is a 82M-parameter frontier TTS model that runs in-process via ONNX Runtime + transformers.js — **no Python, no extra binaries, cross-platform**. Quality is significantly higher than Piper (more natural prosody, expressive pacing). First synthesis after server start has a 2–3 s cold start as the model loads; warm calls are 200–500 ms per sentence on CPU.
