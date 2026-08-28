@@ -244,15 +244,24 @@ describe('feedbackEpisode', () => {
 
   it('preserves playback mode when feedback returns an invalid placeholder', async () => {
     const { loomId, episodeId } = await setup();
-    const withNode = await addNode(loomId, episodeId, { title: 'Opening', playbackMode: 'cut' });
+    const withNode = await addNode(loomId, episodeId, {
+      title: 'Opening', playbackMode: 'cut', cameraMovement: 'slow-dolly-in',
+    });
     const nodeId = withNode.episodes[0].nodes[0].id;
     runStagedLLM.mockResolvedValue({
-      content: { scenes: [{ id: nodeId, playbackMode: 'cut or decision, only when changed', title: 'Revised' }] },
+      content: { scenes: [{
+        id: nodeId,
+        playbackMode: 'cut or decision, only when changed',
+        cameraMovement: 'slow-dolly-in, only when changed',
+        title: 'Revised',
+      }] },
     });
 
     const result = await feedbackEpisode(loomId, episodeId, { feedback: 'Revise the title.' });
 
-    expect(result.loom.episodes[0].nodes[0]).toMatchObject({ title: 'Revised', playbackMode: 'cut' });
+    expect(result.loom.episodes[0].nodes[0]).toMatchObject({
+      title: 'Revised', playbackMode: 'cut', cameraMovement: 'slow-dolly-in',
+    });
   });
 });
 

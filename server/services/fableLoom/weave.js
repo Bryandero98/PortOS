@@ -19,7 +19,11 @@ import { isStr, trimTo } from '../../lib/storyBible.js';
 import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
 import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
-import { fableLoomCameraMovementCatalogForPrompt } from '../../lib/fableLoomCameraMovements.js';
+import {
+  FABLELOOM_CAMERA_MOVEMENT_VALUES,
+  fableLoomCameraMovementCatalogForPrompt,
+  normalizeFableLoomCameraMovement,
+} from '../../lib/fableLoomCameraMovements.js';
 import { isFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
 import { getUniverse } from '../universeBuilder.js';
 import { LOOM_LIMITS, findEpisode, findNode, getLoom, mutateLoom } from './records.js';
@@ -308,7 +312,7 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
 
 const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel'];
 const FEEDBACK_TRANSITION_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
-const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'endingLabel']);
+const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'endingLabel']);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -336,6 +340,9 @@ const normalizeFeedbackPatch = (content, episode) => {
       if (!hasOwn(rawScene, key)) continue;
       if (FEEDBACK_STRING_NODE_FIELDS.has(key) && typeof value === 'string') {
         nodePatch[key] = value;
+      } else if (key === 'cameraMovement' && typeof value === 'string') {
+        const movement = normalizeFableLoomCameraMovement(value);
+        if (!movement || FABLELOOM_CAMERA_MOVEMENT_VALUES.includes(movement)) nodePatch[key] = movement;
       } else if (key === 'playbackMode' && isFableLoomPlaybackMode(value)) {
         nodePatch[key] = value;
       } else if (key === 'isEnding' && typeof value === 'boolean') {

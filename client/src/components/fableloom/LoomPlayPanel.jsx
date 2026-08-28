@@ -21,6 +21,7 @@ import { playLoomTurn } from '../../services/api';
 import { sceneProseClass } from './fieldStyles';
 
 const findNode = (episode, id) => episode?.nodes.find((n) => n.id === id) || null;
+const hasPlayableStart = (episode) => !!findNode(episode, episode?.startNodeId);
 
 // Reader-facing projection of an authored node — the OPENING scene only, which
 // the panel shows before any turn has been taken. Every later scene arrives
@@ -41,7 +42,10 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   const [playEpisodeId, setPlayEpisodeId] = useState(initialEpisode.id);
   const episode = loom.episodes?.find((item) => item.id === playEpisodeId) || initialEpisode;
   const episodeIndex = loom.episodes?.findIndex((item) => item.id === episode.id) ?? -1;
-  const nextEpisode = episodeIndex >= 0 ? loom.episodes?.[episodeIndex + 1] : null;
+  const nextEpisodeIndex = episodeIndex >= 0
+    ? (loom.episodes || []).findIndex((item, index) => index > episodeIndex && hasPlayableStart(item))
+    : -1;
+  const nextEpisode = nextEpisodeIndex >= 0 ? loom.episodes[nextEpisodeIndex] : null;
   // Anchored on scalars so an authoring echo elsewhere in the loom (a node
   // PATCH, a drag) doesn't mint a new `start` identity and wipe an
   // in-progress read-through. The trade: mid-session edits to the opening
@@ -51,19 +55,21 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
     [episode.id, episode.startNodeId],
   );
   const [scene, setScene] = useState(start);
-  const [transcript, setTranscript] = useState([]);
+  const [transcript, setTranscript] = useState(() => (start ? [{ role: 'scene', node: start }] : []));
   const [message, setMessage] = useState('');
   const [previewMode, setPreviewMode] = useState('text');
+  const [failedVideoId, setFailedVideoId] = useState(null);
   const scrollRef = useRef(null);
   // Mirrors the server's terminal rule: an ending, or a dead-end scene with
   // no paths out, ends the read-through.
   const ended = !!scene && (scene.isEnding || !scene.choices?.length);
-  const automaticCut = !!scene && scene.playbackMode === 'cut' && scene.choices?.length === 1;
+  const automaticCut = !!scene && !scene.isEnding && scene.playbackMode === 'cut' && scene.choices?.length === 1;
 
   const restart = () => {
     setScene(start);
-    setTranscript([]);
+    setTranscript(start ? [{ role: 'scene', node: start }] : []);
     setMessage('');
+    setFailedVideoId(null);
   };
 
   useEffect(() => { setPlayEpisodeId(initialEpisode.id); }, [initialEpisode.id]);
@@ -130,6 +136,11 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
     runTurn({ message: text }, history);
   };
 
+  const latestSceneTurnIndex = transcript.reduce(
+    (latest, turn, index) => (turn.role === 'scene' ? index : latest),
+    -1,
+  );
+
   if (!start) {
     return (
       <p className="p-4 text-sm text-port-text-muted">
@@ -158,7 +169,21 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {transcript.map((turn, i) => {
-          if (turn.role === 'scene') return null;
+          if (turn.role === 'scene') {
+            if (previewMode === 'video' || i === latestSceneTurnIndex) return null;
+            const historicalCut = !turn.node.isEnding
+              && turn.node.playbackMode === 'cut'
+              && turn.node.choices?.length === 1;
+            return (
+              <SceneCard
+                key={i}
+                node={turn.node}
+                format={loom.format}
+                previewMode={previewMode}
+                automaticCut={historicalCut}
+              />
+            );
+          }
           return (
             <div key={i} className={turn.role === 'reader' ? 'text-right' : ''}>
               <div
@@ -180,6 +205,8 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           previewMode={previewMode}
           onCutEnded={advanceCut}
           automaticCut={automaticCut}
+          videoFailed={failedVideoId === scene.videoHistoryId}
+          onVideoError={() => setFailedVideoId(scene.videoHistoryId)}
         />
         {ended && (
           <div className="flex items-center gap-2 justify-center text-port-success text-sm font-medium py-2">
@@ -205,14 +232,27 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           </div>
         )}
         {automaticCut && (
-          <button
-            type="button"
-            onClick={advanceCut}
-            disabled={sending || (previewMode === 'video' && !!scene.videoHistoryId)}
-            className="w-full px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
-          >
-            {sending ? 'Loading next cut…' : previewMode === 'video' && scene.videoHistoryId ? 'Video advances automatically' : 'Next cut'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={advanceCut}
+              disabled={sending || (previewMode === 'video' && !!scene.videoHistoryId && failedVideoId !== scene.videoHistoryId)}
+              className="flex-1 px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
+            >
+              {sending
+                ? 'Loading next cut…'
+                : previewMode === 'video' && scene.videoHistoryId && failedVideoId !== scene.videoHistoryId
+                  ? 'Video advances automatically'
+                  : 'Next cut'}
+            </button>
+            <button
+              type="button"
+              onClick={restart}
+              className="px-3 py-2 rounded bg-port-accent/15 text-port-accent text-sm"
+            >
+              <RotateCcw size={14} className="inline mr-1" /> Restart
+            </button>
+          </div>
         )}
         {!automaticCut && <div className="flex gap-2">
           <input
@@ -230,7 +270,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
               onClick={() => (nextEpisode ? setPlayEpisodeId(nextEpisode.id) : restart())}
               className="flex items-center gap-1.5 px-3 py-2 rounded bg-port-accent/15 text-port-accent text-sm"
             >
-              <RotateCcw size={14} /> {nextEpisode ? `Next: Episode ${nextEpisode.number || episodeIndex + 2}` : 'Play again'}
+              <RotateCcw size={14} /> {nextEpisode ? `Next: Episode ${nextEpisode.number || nextEpisodeIndex + 1}` : 'Play again'}
             </button>
           ) : (
             <button
@@ -249,9 +289,12 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   );
 }
 
-function SceneCard({ node, isOpening = false, format, previewMode, onCutEnded, automaticCut }) {
+function SceneCard({
+  node, isOpening = false, format, previewMode, onCutEnded, automaticCut,
+  videoFailed = false, onVideoError,
+}) {
   if (!node) return null;
-  const showVideo = previewMode === 'video' && node.videoHistoryId;
+  const showVideo = previewMode === 'video' && node.videoHistoryId && !videoFailed;
   const showImage = previewMode === 'image' && node.image;
   return (
     <div className="border border-port-border rounded-lg overflow-hidden bg-port-card">
@@ -264,6 +307,7 @@ function SceneCard({ node, isOpening = false, format, previewMode, onCutEnded, a
           playsInline
           loop={!automaticCut && !node.isEnding}
           onEnded={automaticCut ? onCutEnded : undefined}
+          onError={onVideoError}
           src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
           aria-label={node.title || 'Scene video'}
           className="w-full max-h-[60vh] bg-black object-contain"
@@ -278,7 +322,11 @@ function SceneCard({ node, isOpening = false, format, previewMode, onCutEnded, a
         </div>
         {previewMode === 'text' && <p className={sceneProseClass(format)}>{node.prose}</p>}
         {previewMode === 'image' && !node.image && <p className="text-sm text-port-text-muted">No storyboard image rendered for this cut yet.</p>}
-        {previewMode === 'video' && !node.videoHistoryId && <p className="text-sm text-port-text-muted">No video rendered for this cut yet.</p>}
+        {previewMode === 'video' && (!node.videoHistoryId || videoFailed) && (
+          <p className="text-sm text-port-text-muted">
+            {videoFailed ? 'The rendered video is unavailable; advance manually or retry after rendering.' : 'No video rendered for this cut yet.'}
+          </p>
+        )}
         {!node.isEnding && (
           <p className="mt-2 text-xs text-port-text-muted">
             {automaticCut ? 'Automatic cut' : 'Decision loop — waits for viewer input'}
