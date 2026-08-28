@@ -1,7 +1,8 @@
 /**
  * FableLoom scene editor — the side panel for the selected node: title/prose,
- * ending flag + label, the intent-transition list, scene image/video prompts
- * and previews via the shared local media lanes, and the AI branch action.
+ * ending flag + label, the intent-transition list, scene image prompt and
+ * image/video previews via the shared local media lanes, and the AI branch
+ * action. The authored scene text is the video prompt.
  *
  * Fields save on blur (silent PATCH, skipped when unchanged; the server
  * returns the full loom, which the parent folds into state). Paths save one
@@ -55,7 +56,6 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       title: node.title || '',
       prose: node.prose || '',
       imagePrompt: node.imagePrompt || '',
-      videoPrompt: node.videoPrompt || '',
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
       transitions: (node.transitions || []).map(toRow),
@@ -170,15 +170,14 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
   }, { errorMessage: 'Could not queue the render' });
 
   const [runGenerateVideo, videoRendering] = useAsyncAction(async () => {
-    const prompt = form.videoPrompt.trim() || form.imagePrompt.trim();
+    const prompt = form.prose.trim();
     if (!prompt) {
-      toast.error('Write a video or image prompt first');
+      toast.error('Write the scene first');
       return;
     }
-    // Keep the motion prompt independently editable, while allowing existing
-    // image-only scenes to render a useful first clip without a migration or a
-    // second required authoring step. A rendered still seeds image-to-video.
-    await saveField('videoPrompt', form.videoPrompt.trim());
+    // The authored scene is already the complete generation prompt, especially
+    // for teleplays where sluglines, action, and dialogue carry the full beat.
+    // An existing rendered still seeds image-to-video when one is available.
     await generateVideo({
       prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
       backend: 'local',
@@ -319,15 +318,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
             Generate video
           </button>
         </div>
-        <textarea
-          rows={2}
-          className={fieldClass}
-          placeholder="Motion prompt (falls back to the image prompt)"
-          aria-label="Video prompt"
-          value={form.videoPrompt}
-          onChange={(e) => setForm((p) => ({ ...p, videoPrompt: e.target.value }))}
-          onBlur={() => saveField('videoPrompt', form.videoPrompt)}
-        />
+        <p className="text-xs text-port-text-muted">Uses the scene above as the video prompt.</p>
         {node.videoHistoryId && (
           <video
             controls

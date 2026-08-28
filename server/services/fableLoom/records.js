@@ -3,11 +3,12 @@
  * transitions.
  *
  * A loom is a branching-narrative story: episodes hold a directed graph of
- * scene nodes; each node carries prose, image/video prompts and rendered media,
- * plus a list of intent-triggered transitions the play LLM matches free-text
- * reader input against. All ids are server-minted. Every write funnels through
- * `mutateLoom` (per-record write queue + full re-sanitize), so a malformed
- * mutation can never persist.
+ * scene nodes; each node carries prose, an image prompt, rendered media, and a
+ * list of intent-triggered transitions the play LLM matches against free-text
+ * reader input. Legacy video prompts remain sanitized for compatibility, while
+ * current clients use the scene text itself. All ids are server-minted. Every
+ * write funnels through `mutateLoom` (per-record write queue + full re-sanitize),
+ * so a malformed mutation can never persist.
  */
 
 import { randomUUID } from 'crypto';

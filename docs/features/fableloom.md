@@ -135,12 +135,14 @@ the node durably — even if the editor unmounted mid-render — with
 newest-render-wins per node. The loom's `styleNotes` are appended to the
 prompt for a consistent look.
 
-Each node also carries an optional `videoPrompt` and `videoHistoryId`. **Generate
-video** posts to the shared local `/api/video-gen` queue with the same
-destination tag. If the node already has a rendered image, it is sent as the
-video's first-frame conditioning image; otherwise the render is text-to-video.
-The completion hook (`server/services/fableLoomSceneVideoHook.js`) files the
-finished history id onto the node durably, with newest-render-wins per node.
+**Generate video** uses the authored scene text itself as the prompt and posts
+to the shared local `/api/video-gen` queue with the same destination tag. If the
+node already has a rendered image, it is sent as the video's first-frame
+conditioning image; otherwise the render is text-to-video. The completion hook
+(`server/services/fableLoomSceneVideoHook.js`) files the finished
+`videoHistoryId` onto the node durably, with newest-render-wins per node. The
+legacy `videoPrompt` record field remains accepted for compatibility with older
+clients, but the editor no longer asks authors to maintain a duplicate prompt.
 
 ## Storage
 
