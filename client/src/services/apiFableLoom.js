@@ -24,6 +24,13 @@ export const deleteLoom = (id, options = {}) => request(loomPath(id), {
   method: 'DELETE', ...options,
 });
 
+export const reviewLoomSeriesPlan = (id, body = {}, options = {}) => request(loomPath(id, '/plan/review'), {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+export const feedbackLoomSeriesPlan = (id, body, options = {}) => request(loomPath(id, '/plan/feedback'), {
+  method: 'POST', body: JSON.stringify(body), ...options,
+});
+
 export const addLoomEpisode = (id, body, options = {}) => request(loomPath(id, '/episodes'), {
   method: 'POST', body: JSON.stringify(body), ...options,
 });

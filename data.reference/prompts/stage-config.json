@@ -1010,6 +1010,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "fableloom-feedback-series-plan": {
+      "name": "FableLoom — Apply Series Plan Feedback",
+      "description": "Applies one conversational author instruction to a FableLoom series arc, ordered plot points, and side quests without changing episode scene graphs. Returns a sparse top-level plan patch plus a short change list.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
+    },
     "fableloom-play-turn": {
       "name": "FableLoom — Play Turn",
       "description": "Narrates one turn of an interactive read-through: matches the reader's free-text message against the current scene's intent-labeled paths (move) or responds in-world without leaving the scene (stay). Returns { action, transitionId?, narration }.",
@@ -1027,6 +1034,13 @@
     "fableloom-review": {
       "name": "FableLoom — Episode Review",
       "description": "Story-editor critique of a branching episode's narrative layer — intent clarity, branch coherence, ending payoff, scene craft, canon fit — layered over the deterministic graph checks (which run separately and are passed in so the model doesn't repeat them). Returns { summary, findings[] } with node-anchored findings.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
+    },
+    "fableloom-review-series-plan": {
+      "name": "FableLoom — Review Series Plan",
+      "description": "Holistic story-editor analysis of the series arc, ordered plot points, side-quest lifecycle, and episode outline. Returns a summary, strengths, risks, and actionable recommendations without modifying the loom.",
       "model": "heavy",
       "returnsJson": true,
       "variables": []

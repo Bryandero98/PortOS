@@ -69,14 +69,43 @@ export async function buildCanonDigest(loom) {
   return universe ? renderCanonForPrompt(universe) : '';
 }
 
+const seriesPlanContext = (plan) => {
+  if (!plan) return [];
+  const plotPoints = (plan.plotPoints || []).slice(0, 12).map((item, index) =>
+    `Plot point ${index + 1}: ${item.title || 'Untitled'}${item.description ? ` — ${trimTo(item.description, 300)}` : ''}`);
+  const sideQuests = (plan.sideQuests || []).slice(0, 12).map((item) =>
+    `Side quest (${item.status}): ${item.title || 'Untitled'}${item.description ? ` — ${trimTo(item.description, 300)}` : ''}`);
+  return [
+    plan.storyArc ? `Series arc: ${trimTo(plan.storyArc, 4000)}` : '',
+    ...plotPoints,
+    ...sideQuests,
+  ].filter(Boolean);
+};
+
 const storyContext = (loom, episode) => [
   `Story: ${loom.name}`,
   `Scene format: ${loomFormatLabel(loom.format)}`,
   loom.logline ? `Logline: ${loom.logline}` : '',
   loom.premise ? `Premise: ${loom.premise}` : '',
+  ...seriesPlanContext(loom.seriesPlan),
   episode ? `Episode ${episode.number}: ${episode.title || 'Untitled'}` : '',
   episode?.synopsis ? `Synopsis: ${episode.synopsis}` : '',
 ].filter(Boolean).join('\n');
+
+const seriesPlanDigest = (loom) => JSON.stringify({
+  storyArc: trimTo(loom.seriesPlan?.storyArc, 6000),
+  plotPoints: (loom.seriesPlan?.plotPoints || []).slice(0, 30).map((item) => ({
+    ...item, description: trimTo(item.description, 600),
+  })),
+  omittedPlotPoints: Math.max(0, (loom.seriesPlan?.plotPoints?.length || 0) - 30),
+  sideQuests: (loom.seriesPlan?.sideQuests || []).slice(0, 30).map((item) => ({
+    ...item, description: trimTo(item.description, 600),
+  })),
+  omittedSideQuests: Math.max(0, (loom.seriesPlan?.sideQuests?.length || 0) - 30),
+  episodes: loom.episodes.map(({ id, number, title, synopsis }) => ({
+    id, number, title, synopsis: trimTo(synopsis, 500),
+  })),
+}, null, 2);
 
 // --- Weave: generate a full episode graph -----------------------------------
 
@@ -348,6 +377,75 @@ export async function feedbackEpisode(loomId, episodeId, {
     loom: updated,
     episodeId,
     changedScenes: scenePatches.length,
+    runId,
+  };
+}
+
+// --- Series plan: holistic guidance and conversational editing --------------
+
+const analysisStrings = (value) => (Array.isArray(value) ? value : [])
+  .filter((item) => typeof item === 'string')
+  .map((item) => trimTo(item, 1000))
+  .filter(Boolean)
+  .slice(0, 12);
+
+/** Read-only story-editor pass over the arc, tentpole beats, side quests, and episode outline. */
+export async function reviewSeriesPlan(loomId, { providerId, model, effort } = {}) {
+  const loom = await requireLoom(loomId);
+  const canonDigest = await buildCanonDigest(loom);
+  const { content, runId } = await runStagedLLM('fableloom-review-series-plan', {
+    storyContext: storyContext(loom),
+    canonDigest: canonDigest || '(none)',
+    seriesPlanJson: seriesPlanDigest(loom),
+  }, llmOptions({ providerId, model, effort }, 'fableloom-review-series-plan'));
+  const analysis = {
+    summary: trimTo(content?.summary, 2000),
+    strengths: analysisStrings(content?.strengths),
+    risks: analysisStrings(content?.risks),
+    recommendations: analysisStrings(content?.recommendations),
+  };
+  if (!analysis.summary && !analysis.strengths.length && !analysis.risks.length && !analysis.recommendations.length) {
+    throw aiShapeError('The model returned no usable series analysis');
+  }
+  return {
+    analysis,
+    runId,
+  };
+}
+
+/** Apply one author instruction to the series-level plan without touching episode scene graphs. */
+export async function feedbackSeriesPlan(loomId, {
+  feedback, providerId, model, effort,
+} = {}) {
+  const instruction = trimTo(feedback, LOOM_LIMITS.FEEDBACK_MAX);
+  if (!instruction) {
+    throw new ServerError('Series-plan feedback is required', { status: 400, code: 'FEEDBACK_REQUIRED' });
+  }
+  const loom = await requireLoom(loomId);
+  const canonDigest = await buildCanonDigest(loom);
+  const { content, runId } = await runStagedLLM('fableloom-feedback-series-plan', {
+    storyContext: storyContext(loom),
+    canonDigest: canonDigest || '(none)',
+    seriesPlanJson: seriesPlanDigest(loom),
+    feedback: instruction,
+  }, llmOptions({ providerId, model, effort }, 'fableloom-feedback-series-plan'));
+
+  if (!content || typeof content !== 'object') {
+    throw aiShapeError('The model returned no series-plan edits');
+  }
+  const patch = {};
+  if (hasOwn(content, 'storyArc') && typeof content.storyArc === 'string') patch.storyArc = content.storyArc;
+  if (hasOwn(content, 'plotPoints') && Array.isArray(content.plotPoints)) patch.plotPoints = content.plotPoints;
+  if (hasOwn(content, 'sideQuests') && Array.isArray(content.sideQuests)) patch.sideQuests = content.sideQuests;
+  if (!Object.keys(patch).length) throw aiShapeError('The model returned no usable series-plan edits');
+
+  const updated = await mutateLoom(loomId, (current) => {
+    current.seriesPlan = { ...current.seriesPlan, ...patch };
+    return current;
+  });
+  return {
+    loom: updated,
+    changes: analysisStrings(content.changes),
     runId,
   };
 }

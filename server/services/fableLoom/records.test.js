@@ -106,6 +106,38 @@ describe('sanitizeLoom', () => {
     expect(loom.episodes[0].nodes[0].image).toBeNull();
     expect(loom.episodes[0].nodes[1].image).toBe('render.png');
   });
+
+  it('sanitizes the series plan and clears episode references that no longer resolve', () => {
+    const loom = sanitizeLoom({
+      id: 'loom-1',
+      name: 'X',
+      episodes: [{ id: 'ep-1', number: 1 }],
+      seriesPlan: {
+        storyArc: 'A long transformation.',
+        plotPoints: [{ title: 'Midpoint', description: 'The truth lands.', episodeId: 'ep-1' }],
+        sideQuests: [{ title: 'Map', description: 'Find it.', status: 'bogus', startEpisodeId: 'gone', endEpisodeId: 'ep-1' }],
+      },
+    });
+    expect(loom.seriesPlan.storyArc).toBe('A long transformation.');
+    expect(loom.seriesPlan.plotPoints[0]).toMatchObject({ title: 'Midpoint', episodeId: 'ep-1' });
+    expect(loom.seriesPlan.plotPoints[0].id).toMatch(/^plot-/);
+    expect(loom.seriesPlan.sideQuests[0]).toMatchObject({ status: 'idea', startEpisodeId: null, endEpisodeId: 'ep-1' });
+  });
+
+  it('re-mints duplicate planning ids so each editable row remains addressable', () => {
+    const loom = sanitizeLoom({
+      id: 'loom-1', name: 'X',
+      seriesPlan: {
+        storyArc: '',
+        plotPoints: [
+          { id: 'plot-same', title: 'One', description: '' },
+          { id: 'plot-same', title: 'Two', description: '' },
+        ],
+        sideQuests: [],
+      },
+    });
+    expect(new Set(loom.seriesPlan.plotPoints.map((item) => item.id)).size).toBe(2);
+  });
 });
 
 describe('loom CRUD', () => {
@@ -160,6 +192,23 @@ describe('format and play settings round-trip', () => {
     const cleared = await updateLoom(loom.id, { playSettings: null });
     expect(cleared.playSettings).toBeNull();
     expect(cleared.format).toBe('teleplay');
+  });
+});
+
+describe('series plan round-trip', () => {
+  it('persists ordered plot points and side quests without changing them on unrelated patches', async () => {
+    let loom = await makeLoom();
+    loom = await addEpisode(loom.id, { title: 'Pilot' });
+    const episodeId = loom.episodes[0].id;
+    const seriesPlan = {
+      storyArc: 'The courier learns to lead.',
+      plotPoints: [{ id: 'plot-1', title: 'Refusal', description: 'She turns away.', episodeId }],
+      sideQuests: [{ id: 'quest-1', title: 'The map', description: 'A hidden route.', status: 'planned', startEpisodeId: episodeId, endEpisodeId: null }],
+    };
+    const planned = await updateLoom(loom.id, { seriesPlan });
+    expect(planned.seriesPlan).toEqual(seriesPlan);
+    const renamed = await updateLoom(loom.id, { name: 'Renamed' });
+    expect(renamed.seriesPlan).toEqual(seriesPlan);
   });
 });
 

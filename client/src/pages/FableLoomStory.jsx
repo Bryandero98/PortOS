@@ -1,8 +1,9 @@
 /**
  * FableLoom editor — the full-bleed visual workspace for one loom.
  *
- * URL is the source of truth: /fableloom/:loomId/:episodeId/:nodeId? — the
- * selected episode and scene are route params, the play drawer rides ?play=1.
+ * URL is the source of truth: /fableloom/:loomId/plan is the series workspace;
+ * /fableloom/:loomId/:episodeId/:nodeId? selects an episode and scene, and the
+ * play drawer rides ?play=1.
  * Left: the scene-graph canvas (stacks top-to-bottom under the `lg` rail
  * breakpoint). Right rail: the selected scene's editor, or the
  * structure/review panel when nothing is selected. On small screens the
@@ -27,6 +28,7 @@ import LoomEpisodeFeedback from '../components/fableloom/LoomEpisodeFeedback';
 import LoomNodeEditor from '../components/fableloom/LoomNodeEditor';
 import LoomPlayPanel from '../components/fableloom/LoomPlayPanel';
 import LoomSettingsDrawer from '../components/fableloom/LoomSettingsDrawer';
+import LoomSeriesPlan from '../components/fableloom/LoomSeriesPlan';
 import LoomValidationPanel from '../components/fableloom/LoomValidationPanel';
 import { fieldClass, labelClass } from '../components/fableloom/fieldStyles';
 import { LOOM_ORIENTATION, LOOM_STACK_WIDTH } from '../lib/loomLayout';
@@ -48,6 +50,7 @@ export default function FableLoomStory() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const playOpen = searchParams.get('play') === '1';
+  const seriesPlanOpen = episodeId === 'plan';
   // Orientation keys off the PAGE, not the canvas. The canvas is the leftover
   // after the 380px rail on `lg+`, so measuring it would stack a laptop graph
   // while the rail is still beside it.
@@ -74,7 +77,7 @@ export default function FableLoomStory() {
     return () => { canceled = true; };
   }, [linkedSeriesId]);
 
-  const episode = loom?.episodes.find((e) => e.id === episodeId) || null;
+  const episode = seriesPlanOpen ? null : loom?.episodes.find((e) => e.id === episodeId) || null;
   const node = episode?.nodes.find((n) => n.id === nodeId) || null;
 
   const basePath = `/fableloom/${loomId}`;
@@ -156,11 +159,11 @@ export default function FableLoomStory() {
   }
 
   // Route normalization: no/stale episode id → first episode (or stay bare
-  // when the loom has none yet).
-  if (!episode && loom.episodes.length) {
+  // when the loom has none yet). The reserved `plan` id is the series view.
+  if (!seriesPlanOpen && !episode && loom.episodes.length) {
     return <Navigate to={episodePath(loom.episodes[0].id)} replace />;
   }
-  if (episodeId && !episode) {
+  if (!seriesPlanOpen && episodeId && !episode) {
     return <Navigate to={basePath} replace />;
   }
 
@@ -222,17 +225,18 @@ export default function FableLoomStory() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {loom.episodes.length > 0 && (
-            <TabPills
-              variant="pills"
-              size="sm"
-              ariaLabel="Episodes"
-              mobileDropdown
-              tabs={loom.episodes.map((e) => ({ id: e.id, label: `${e.number}. ${e.title || 'Untitled'}` }))}
-              activeTab={episodeId}
-              onChange={(id) => navigate(episodePath(id))}
-            />
-          )}
+          <TabPills
+            variant="pills"
+            size="sm"
+            ariaLabel="Series and episodes"
+            mobileDropdown
+            tabs={[
+              { id: 'plan', label: 'Series plan' },
+              ...loom.episodes.map((e) => ({ id: e.id, label: `${e.number}. ${e.title || 'Untitled'}` })),
+            ]}
+            activeTab={seriesPlanOpen ? 'plan' : episodeId}
+            onChange={(id) => navigate(episodePath(id))}
+          />
           <button
             type="button"
             onClick={handleAddEpisode}
@@ -243,7 +247,9 @@ export default function FableLoomStory() {
         </div>
       </header>
 
-      {!episode ? (
+      {seriesPlanOpen ? (
+        <LoomSeriesPlan loom={loom} onLoomUpdate={setLoom} />
+      ) : !episode ? (
         <div className="flex-1 grid place-items-center p-8 text-center">
           <div>
             <Waypoints size={32} className="mx-auto text-port-text-muted mb-3" />

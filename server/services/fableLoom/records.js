@@ -104,12 +104,58 @@ function sanitizeEpisode(raw) {
   };
 }
 
+const planItemId = (prefix, value, seenIds) => {
+  const candidate = isStr(value) && value.trim() ? value.trim().slice(0, 80) : '';
+  const id = candidate && !seenIds.has(candidate) ? candidate : `${prefix}-${randomUUID()}`;
+  seenIds.add(id);
+  return id;
+};
+
+const planEpisodeRef = (value, episodeIds) => (
+  isStr(value) && episodeIds.has(value) ? value : null
+);
+
+function sanitizeSeriesPlan(raw, episodes) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const episodeIds = new Set(episodes.map((episode) => episode.id));
+  const plotIds = new Set();
+  const questIds = new Set();
+  return {
+    storyArc: trimTo(source.storyArc, LOOM_LIMITS.STORY_ARC_MAX),
+    plotPoints: (Array.isArray(source.plotPoints) ? source.plotPoints : [])
+      .filter((item) => item && typeof item === 'object')
+      .slice(0, LOOM_LIMITS.PLAN_ITEMS_MAX)
+      .map((item) => ({
+        id: planItemId('plot', item.id, plotIds),
+        title: trimTo(item.title, LOOM_LIMITS.PLAN_ITEM_TITLE_MAX),
+        description: trimTo(item.description, LOOM_LIMITS.PLAN_ITEM_DESCRIPTION_MAX),
+        episodeId: planEpisodeRef(item.episodeId, episodeIds),
+      })),
+    sideQuests: (Array.isArray(source.sideQuests) ? source.sideQuests : [])
+      .filter((item) => item && typeof item === 'object')
+      .slice(0, LOOM_LIMITS.PLAN_ITEMS_MAX)
+      .map((item) => ({
+        id: planItemId('quest', item.id, questIds),
+        title: trimTo(item.title, LOOM_LIMITS.PLAN_ITEM_TITLE_MAX),
+        description: trimTo(item.description, LOOM_LIMITS.PLAN_ITEM_DESCRIPTION_MAX),
+        status: ['idea', 'planned', 'active', 'resolved'].includes(item.status) ? item.status : 'idea',
+        startEpisodeId: planEpisodeRef(item.startEpisodeId, episodeIds),
+        endEpisodeId: planEpisodeRef(item.endEpisodeId, episodeIds),
+      })),
+  };
+}
+
 export function sanitizeLoom(raw) {
   if (!raw || typeof raw !== 'object') return null;
   if (!isStr(raw.id) || !raw.id) return null;
   const name = trimTo(raw.name, LOOM_LIMITS.NAME_MAX);
   if (!name) return null;
   const now = new Date().toISOString();
+  const episodes = (Array.isArray(raw.episodes) ? raw.episodes : [])
+    .map(sanitizeEpisode)
+    .filter(Boolean)
+    .slice(0, LOOM_LIMITS.EPISODES_MAX)
+    .sort((a, b) => a.number - b.number || a.createdAt.localeCompare(b.createdAt));
   return {
     id: raw.id,
     schemaVersion: 1,
@@ -124,11 +170,8 @@ export function sanitizeLoom(raw) {
     playSettings: sanitizeLlmRoutePin(raw.playSettings),
     universeId: nullableRef(raw.universeId),
     seriesId: nullableRef(raw.seriesId),
-    episodes: (Array.isArray(raw.episodes) ? raw.episodes : [])
-      .map(sanitizeEpisode)
-      .filter(Boolean)
-      .slice(0, LOOM_LIMITS.EPISODES_MAX)
-      .sort((a, b) => a.number - b.number || a.createdAt.localeCompare(b.createdAt)),
+    seriesPlan: sanitizeSeriesPlan(raw.seriesPlan, episodes),
+    episodes,
     createdAt: isStr(raw.createdAt) && raw.createdAt ? raw.createdAt : now,
     updatedAt: isStr(raw.updatedAt) && raw.updatedAt ? raw.updatedAt : now,
   };
@@ -198,7 +241,7 @@ export async function getLoom(id) {
   return sanitizeLoom(await readRaw(id));
 }
 
-export async function createLoom({ name, logline, premise, styleNotes, format, playSettings, universeId, seriesId } = {}) {
+export async function createLoom({ name, logline, premise, styleNotes, format, playSettings, seriesPlan, universeId, seriesId } = {}) {
   const now = new Date().toISOString();
   await assertRefsExist({ universeId: nullableRef(universeId), seriesId: nullableRef(seriesId) });
   const loom = sanitizeLoom({
@@ -209,6 +252,7 @@ export async function createLoom({ name, logline, premise, styleNotes, format, p
     styleNotes,
     format,
     playSettings,
+    seriesPlan,
     universeId,
     seriesId,
     episodes: [],
@@ -238,7 +282,7 @@ export function mutateLoom(id, mutator) {
   });
 }
 
-const PATCH_FIELDS = ['name', 'logline', 'premise', 'styleNotes', 'format', 'playSettings', 'universeId', 'seriesId'];
+const PATCH_FIELDS = ['name', 'logline', 'premise', 'styleNotes', 'format', 'playSettings', 'seriesPlan', 'universeId', 'seriesId'];
 
 export async function updateLoom(id, patch = {}) {
   await assertRefsExist({

@@ -26,11 +26,13 @@ export {
   branchNode,
   buildCanonDigest,
   feedbackEpisode,
+  feedbackSeriesPlan,
   mapGeneratedGraph,
   playTurn,
   publicNode,
   reformatEpisodeScenes,
   reviewEpisode,
+  reviewSeriesPlan,
   weaveEpisode,
 } from './weave.js';
 export {

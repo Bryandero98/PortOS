@@ -1,0 +1,70 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider } from 'react-router';
+
+vi.mock('../../services/api', () => ({
+  feedbackLoomSeriesPlan: vi.fn(),
+  reviewLoomSeriesPlan: vi.fn(),
+  updateLoom: vi.fn(),
+}));
+vi.mock('../../hooks/useProviderModels', () => ({ default: () => ({ providers: [], loading: false }) }));
+vi.mock('../ProviderModelSelector', () => ({ default: () => <div>AI route picker</div> }));
+vi.mock('./LoomEpisodeFeedback', () => ({ default: ({ episode }) => <div>Episode feedback for {episode.title}</div> }));
+
+import * as api from '../../services/api';
+import LoomSeriesPlan from './LoomSeriesPlan';
+
+const loom = (fields = {}) => ({
+  id: 'loom-1',
+  name: 'Example Loom',
+  episodes: [{ id: 'ep-1', number: 1, title: 'Pilot' }],
+  seriesPlan: {
+    storyArc: 'An old arc.',
+    plotPoints: [{ id: 'plot-1', title: 'The turn', description: 'Everything changes.', episodeId: 'ep-1' }],
+    sideQuests: [],
+  },
+  ...fields,
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+const renderPlan = (props) => render(<RouterProvider router={createMemoryRouter([
+  { path: '/', element: <LoomSeriesPlan {...props} /> },
+], { initialEntries: ['/'] })} />);
+
+describe('LoomSeriesPlan', () => {
+  it('edits and saves the series-level plan as one patch', async () => {
+    const onLoomUpdate = vi.fn();
+    const updated = loom({ seriesPlan: { ...loom().seriesPlan, storyArc: 'A stronger arc.' } });
+    api.updateLoom.mockResolvedValue(updated);
+    renderPlan({ loom: loom(), onLoomUpdate });
+
+    fireEvent.change(screen.getByRole('textbox', { name: /story arc/i }), { target: { value: 'A stronger arc.' } });
+    expect(screen.getByRole('button', { name: /analyze series/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /save plan/i }));
+
+    await waitFor(() => expect(api.updateLoom).toHaveBeenCalledWith('loom-1', {
+      seriesPlan: expect.objectContaining({ storyArc: 'A stronger arc.' }),
+    }, { silent: true }));
+    expect(onLoomUpdate).toHaveBeenCalledWith(updated);
+  });
+
+  it('shows AI series analysis and exposes whole-episode editing outside the episode graph', async () => {
+    api.reviewLoomSeriesPlan.mockResolvedValue({
+      analysis: {
+        summary: 'The spine works.',
+        strengths: ['Clear protagonist goal'],
+        risks: ['Midpoint arrives late'],
+        recommendations: ['Move the reversal into episode 3'],
+      },
+    });
+    renderPlan({ loom: loom(), onLoomUpdate: () => {} });
+
+    fireEvent.click(screen.getByRole('button', { name: /analyze series/i }));
+    expect(await screen.findByText('The spine works.')).toBeInTheDocument();
+    expect(screen.getByText('Move the reversal into episode 3')).toBeInTheDocument();
+    expect(screen.getByText('Episode feedback for Pilot')).toBeInTheDocument();
+  });
+});

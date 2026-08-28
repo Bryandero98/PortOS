@@ -9,6 +9,7 @@ vi.mock('../services/api', () => ({
   getLoom: vi.fn(),
   getPipelineSeries: vi.fn(),
   updateLoomEpisode: vi.fn(),
+  updateLoom: vi.fn(),
   updateLoomNode: vi.fn(),
   weaveLoomEpisode: vi.fn(),
 }));
@@ -19,6 +20,7 @@ vi.mock('../components/fableloom/LoomCanvas', () => ({ default: () => <div /> })
 vi.mock('../components/fableloom/LoomNodeEditor', () => ({ default: () => <div /> }));
 vi.mock('../components/fableloom/LoomPlayPanel', () => ({ default: () => <div /> }));
 vi.mock('../components/fableloom/LoomSettingsDrawer', () => ({ default: () => <div /> }));
+vi.mock('../components/fableloom/LoomSeriesPlan', () => ({ default: () => <div>Series planning workspace</div> }));
 vi.mock('../components/fableloom/LoomValidationPanel', () => ({ default: () => <div /> }));
 
 import * as api from '../services/api';
@@ -81,5 +83,17 @@ describe('FableLoomStory series backlink', () => {
     renderEditor();
     await screen.findByText('Example Loom');
     expect(api.getPipelineSeries).not.toHaveBeenCalled();
+  });
+
+  it('keeps series planning outside the episode tabs at a dedicated URL', async () => {
+    render(
+      <MemoryRouter initialEntries={['/fableloom/loom-1/plan']}>
+        <Routes>
+          <Route path="/fableloom/:loomId/:episodeId" element={<FableLoomStory />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('Series planning workspace')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Series plan' })).toBeInTheDocument();
   });
 });

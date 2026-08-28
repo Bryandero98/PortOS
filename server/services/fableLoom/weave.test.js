@@ -25,7 +25,8 @@ vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 const { createLoom, addEpisode, addNode, mutateLoom, updateLoom, updateNode, getLoom } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
 const {
-  branchNode, buildCanonDigest, feedbackEpisode, mapGeneratedGraph, playTurn, reformatEpisodeScenes, reviewEpisode, weaveEpisode,
+  branchNode, buildCanonDigest, feedbackEpisode, feedbackSeriesPlan, mapGeneratedGraph, playTurn,
+  reformatEpisodeScenes, reviewEpisode, reviewSeriesPlan, weaveEpisode,
 } = await import('./weave.js');
 
 beforeEach(() => {
@@ -581,5 +582,40 @@ describe('buildCanonDigest', () => {
     expect(digest).not.toContain('objects:');
 
     expect(await buildCanonDigest({ universeId: null })).toBe('');
+  });
+});
+
+describe('series plan AI', () => {
+  it('returns normalized holistic analysis without mutating the loom', async () => {
+    const { loomId } = await setup();
+    runStagedLLM.mockResolvedValueOnce({
+      content: { summary: 'Strong spine.', strengths: ['Clear goal'], risks: ['Late turn'], recommendations: ['Move the turn'] },
+      runId: 'run-review',
+    });
+    const result = await reviewSeriesPlan(loomId, { providerId: 'writer' });
+    expect(result).toEqual({
+      analysis: { summary: 'Strong spine.', strengths: ['Clear goal'], risks: ['Late turn'], recommendations: ['Move the turn'] },
+      runId: 'run-review',
+    });
+    expect(runStagedLLM).toHaveBeenCalledWith('fableloom-review-series-plan', expect.objectContaining({
+      seriesPlanJson: expect.stringContaining('episodes'),
+    }), expect.objectContaining({ providerOverride: 'writer' }));
+  });
+
+  it('applies sparse series-plan feedback and preserves omitted collections', async () => {
+    const { loomId, episodeId } = await setup();
+    await updateLoom(loomId, { seriesPlan: {
+      storyArc: 'Old arc',
+      plotPoints: [{ id: 'plot-1', title: 'Turn', description: 'Old', episodeId }],
+      sideQuests: [],
+    } });
+    runStagedLLM.mockResolvedValueOnce({
+      content: { storyArc: 'New arc', changes: ['Raised the stakes'] },
+      runId: 'run-feedback',
+    });
+    const result = await feedbackSeriesPlan(loomId, { feedback: 'Raise the stakes.' });
+    expect(result.loom.seriesPlan.storyArc).toBe('New arc');
+    expect(result.loom.seriesPlan.plotPoints).toHaveLength(1);
+    expect(result.changes).toEqual(['Raised the stakes']);
   });
 });
