@@ -11,12 +11,15 @@ path with the published `fastvideo-kernel` wheel. The tested configuration uses
 four B200 GPUs; the card's alternate recipe is still multi-GPU CUDA with Triton
 and a GPU count that divides H3's 56 attention heads.
 
-FastVideo's general documentation does mention macOS/MPS and its separate
-FastMetal-QAD MLX runtime, but that is not an H3 VSA-H3 implementation. PortOS's
-existing `minimax_h3` MLX runtime targets the PipeNetwork MLX port of the base
-MiniMax H3 checkpoint, while `minimax_h3_cuda` targets the Diffusers H3 base
-pipeline. Neither is evidence that this distilled VSA checkpoint can run on
-Apple Silicon, and the current FastH3 card provides no MPS/MLX instructions.
+FastVideo's general documentation does mention macOS/MPS, and its current MPS
+guide documents a base FastH3 MLX path through `mlx_fasth3.py`; that guide also
+states that VSA is not wired into that path yet. This is distinct from the
+separate FastMetal-QAD MLX runtime and does not cover this VSA-DataFree
+checkpoint. PortOS's existing `minimax_h3` MLX runtime targets the PipeNetwork
+MLX port of the base MiniMax H3 checkpoint, while `minimax_h3_cuda` targets the
+Diffusers H3 base pipeline. None is evidence that this distilled VSA checkpoint
+can run on Apple Silicon, and its current model card provides no MPS/MLX
+instructions.
 
 ## CUDA follow-up
 
@@ -40,6 +43,7 @@ the CUDA kernel through MPS.
 
 - [FastH3 VSA data-free model card](https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree)
 - [FastVideo installation guide](https://hao-ai-lab.github.io/FastVideo/getting_started/installation/)
+- [FastVideo Apple Silicon/MPS guide](https://hao-ai-lab.github.io/FastVideo/getting_started/installation/mps/)
 - [FastVideo VSA backend documentation](https://github.com/hao-ai-lab/FastVideo/tree/main/docs/attention/vsa)
 
 Issue: [#5351](https://github.com/atomantic/PortOS/issues/5351)
