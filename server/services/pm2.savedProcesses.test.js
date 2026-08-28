@@ -105,10 +105,7 @@ describe('saveProcessList exclusions', () => {
   const seedDump = (names) =>
     writeFile(join(home, 'dump.pm2'), JSON.stringify(names.map((name) => ({ name, script: `/bin/${name}` }))));
 
-  // Regression guard for the daemon leak described at the top of this file. If a
-  // future refactor moves `pm2 save` off the mocked `spawn` seam, this assertion
-  // fails loudly here instead of quietly forking a real PM2 God Daemon per test
-  // that survives the run forever.
+  // Regression guard for the daemon leak described at the top of this file.
   it('runs `pm2 save` through the stubbed spawn seam, never a real subprocess', async () => {
     await seedDump(['portos-server']);
 

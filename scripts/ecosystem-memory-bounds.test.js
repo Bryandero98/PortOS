@@ -17,7 +17,7 @@ import path from 'path';
  * uptime — the regression these assertions exist to prevent.
  */
 const require = createRequire(import.meta.url);
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { apps } = require(path.join(repoRoot, 'ecosystem.config.cjs'));
 
 const UNIT_MB = { K: 1 / 1024, M: 1, G: 1024 };
@@ -31,21 +31,38 @@ const heapCapMB = (app) => {
   return flag ? Number(flag.split('=')[1]) : null;
 };
 
+const APP_CASES = apps.map((app) => [app.name, app]);
+
+// pm2 also manages python/go/docker/static apps, and `--max-old-space-size` is
+// meaningless for those — scope the heap-cap assertion to the Node-interpreted
+// entries so a future non-Node app doesn't force the guard to be deleted.
+const NODE_APP_CASES = APP_CASES.filter(([, app]) =>
+  app.interpreter === 'node' || (!app.interpreter && /\.[cm]?js$/i.test(app.script)));
+
 describe('ecosystem.config.cjs memory bounds', () => {
-  it.each(apps.map((app) => [app.name, app]))('%s declares a restart ceiling', (_name, app) => {
+  it('recognizes every app as Node-interpreted (update the filter if that changes)', () => {
+    expect(NODE_APP_CASES).toHaveLength(APP_CASES.length);
+  });
+
+  it.each(APP_CASES)('%s declares a restart ceiling', (_name, app) => {
     expect(toMB(app.max_memory_restart)).toBeGreaterThan(0);
   });
 
-  it.each(apps.map((app) => [app.name, app]))('%s caps V8 below that ceiling', (_name, app) => {
+  it.each(NODE_APP_CASES)('%s caps V8 below a declared restart ceiling', (_name, app) => {
+    const ceiling = toMB(app.max_memory_restart);
     const cap = heapCapMB(app);
     expect(cap).toBeGreaterThan(0);
     // Strictly below, so V8 collects first and pm2 restarts only as a last resort.
-    expect(cap).toBeLessThan(toMB(app.max_memory_restart));
+    // This is also what a `Math.max(...)` floor on the cap would break: at a small
+    // user-set ceiling the floor could raise the cap to or past it.
+    expect(cap).toBeLessThan(ceiling);
   });
 
-  // A heap cap must never reach the child processes portos-server spawns (agent
-  // CLIs, builds, media tooling) — NODE_OPTIONS is inherited, `node_args` is not.
-  it.each(apps.map((app) => [app.name, app]))('%s sets the cap via node_args, not NODE_OPTIONS', (_name, app) => {
+  // A heap cap must never reach the child processes these apps spawn (agent CLIs,
+  // builds, media tooling) — NODE_OPTIONS is inherited by children, node_args is
+  // not. server/services/pm2.js additionally strips the `node_args` key pm2
+  // re-exports into the app's own environment.
+  it.each(NODE_APP_CASES)('%s sets the cap via node_args, not NODE_OPTIONS', (_name, app) => {
     expect(app.env?.NODE_OPTIONS ?? '').not.toContain('max-old-space-size');
   });
 });

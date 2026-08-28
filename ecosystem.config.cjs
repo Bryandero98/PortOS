@@ -17,17 +17,15 @@ const BASE_ENV = {
 // so a one-off shell override still works.
 const fs = require('fs');
 const envFile = path.join(__dirname, '.env');
+const readEnvValue = (content, key) => content.match(new RegExp(`^${key}=(\\S+)`, 'm'))?.[1] ?? null;
 let pgMode = 'docker';
 let envServerMaxMemory = null;
 let envUiMaxMemory = null;
 try {
   const envContent = fs.readFileSync(envFile, 'utf8');
-  const modeMatch = envContent.match(/^PGMODE=(\w+)/m);
-  if (modeMatch) pgMode = modeMatch[1];
-  const memMatch = envContent.match(/^PORTOS_SERVER_MAX_MEMORY=(\S+)/m);
-  if (memMatch) envServerMaxMemory = memMatch[1];
-  const uiMemMatch = envContent.match(/^PORTOS_UI_MAX_MEMORY=(\S+)/m);
-  if (uiMemMatch) envUiMaxMemory = uiMemMatch[1];
+  pgMode = readEnvValue(envContent, 'PGMODE') || pgMode;
+  envServerMaxMemory = readEnvValue(envContent, 'PORTOS_SERVER_MAX_MEMORY');
+  envUiMaxMemory = readEnvValue(envContent, 'PORTOS_UI_MAX_MEMORY');
 } catch { /* no .env file — default to docker */ }
 
 // pm2 restarts portos-server when its RSS crosses this — originally a memory-leak
@@ -59,7 +57,7 @@ const MEMORY_UNIT_MB = { K: 1 / 1024, M: 1, G: 1024 };
 /**
  * Parse a pm2 memory spec ('512M', '4G', '1024') to megabytes.
  * pm2 itself defaults a bare number to bytes, but every spec here carries a unit
- * and an unrecognized one returns null so `heapCapArgs` degrades to "no cap"
+ * and an unrecognized one returns null so `memoryLimits` degrades to "no cap"
  * rather than silently inventing a wrong one.
  */
 function memorySpecToMB(spec) {
@@ -69,29 +67,41 @@ function memorySpecToMB(spec) {
 }
 
 /**
- * V8's old-space cap for a pm2 app, as `node_args`.
+ * Both memory bounds for a pm2 app: the RSS ceiling pm2 restarts at, and V8's
+ * old-space cap underneath it.
  *
- * WHY: without an explicit cap, V8 sizes the heap limit from physical memory and
- * lands at ~4 GB on any workstation. That is at or above every ceiling below, so
- * the process reaches `max_memory_restart` and gets KILLED before V8 ever feels
- * enough pressure to run the full compacting GC that would have reclaimed the
- * garbage. Capping the heap under the pm2 ceiling inverts that race: V8 collects,
- * RSS settles, and the restart stays a genuine last resort instead of the normal
- * way memory is reclaimed — which matters because a restart drops in-flight SSE
- * streams and long jobs.
+ * WHY the cap: without an explicit one, V8 sizes the heap limit from physical
+ * memory and lands at ~4 GB on any workstation. That is at or above every ceiling
+ * below, so the process reaches `max_memory_restart` and gets KILLED before V8
+ * ever feels enough pressure to run the full compacting GC that would have
+ * reclaimed the garbage. Capping the heap under the pm2 ceiling inverts that
+ * race: V8 collects, RSS settles, and the restart stays a genuine last resort
+ * instead of the normal way memory is reclaimed — which matters because a restart
+ * drops in-flight SSE streams and long jobs.
  *
- * 75% leaves room for the non-heap RSS (native buffers, sharp, the module code
- * itself) under the same ceiling.
+ * `ratio` is the gap left for the RSS that `--max-old-space-size` does NOT count:
+ * Buffers over 8 KB and ArrayBuffer backing stores are external, not old space.
+ * The default 0.75 suits a process whose bytes are mostly JS objects. Give a
+ * lower ratio to anything that moves large native buffers — portos-server runs
+ * sharp/libvips (a single 4096² RGBA `.raw().toBuffer()` is 64 MB) and decodes
+ * audio into Float32Arrays, so a heap sitting legally at its cap could still push
+ * RSS past the ceiling and get killed, i.e. the very race this exists to prevent.
  *
  * `node_args` rather than `NODE_OPTIONS` on purpose: NODE_OPTIONS is inherited by
  * every child process, so it would also shrink the heap of the agent CLIs, build
  * steps, and media tooling portos-server spawns. `node_args` applies to the
- * interpreter pm2 launches and stops there.
+ * interpreter pm2 launches and stops there. (pm2 also re-exports it into the
+ * app's own env, so `INHERITED_PM2_CONFIG_KEYS` in server/services/pm2.js strips
+ * it before PortOS shells out to `pm2 start` for a managed app.)
  */
-function heapCapArgs(restartSpec) {
+function memoryLimits(restartSpec, ratio = 0.75) {
   const ceilingMB = memorySpecToMB(restartSpec);
-  if (!ceilingMB) return [];
-  return [`--max-old-space-size=${Math.max(256, Math.floor(ceilingMB * 0.75))}`];
+  return {
+    max_memory_restart: restartSpec,
+    // No floor: a floor could raise the cap to or above a small user-set ceiling
+    // and invert the whole policy. ratio < 1 keeps the cap strictly below it.
+    node_args: ceilingMB ? [`--max-old-space-size=${Math.floor(ceilingMB * ratio)}`] : []
+  };
 }
 
 const PORTS = {
@@ -169,8 +179,10 @@ module.exports = {
       // and add `'**/data/**'` (plus `'**/node_modules'`, `'**/logs/**'`,
       // `'**/.cache/**'`, `'**/portos-stepwise-*/**'`) to `ignore_watch`.
       watch: false,
-      max_memory_restart: SERVER_MAX_MEMORY,
-      node_args: heapCapArgs(SERVER_MAX_MEMORY),
+      // 0.60, not the 0.75 default: sharp/libvips raw buffers and decoded audio
+      // are external memory the heap cap does not count, so portos-server needs a
+      // wider external margin under the same ceiling than a plain JS service.
+      ...memoryLimits(SERVER_MAX_MEMORY, 0.60),
       // PM2's default kill_timeout (1600ms) is shorter than the server's own
       // GRACEFUL_SHUTDOWN_TIMEOUT_MS (10s) force-exit in server/index.js, so if
       // shutdown ever stalls, PM2 would SIGKILL the process before its graceful
@@ -210,8 +222,7 @@ module.exports = {
       max_restarts: 5,
       min_uptime: '30s',
       restart_delay: 10000,
-      max_memory_restart: COS_MAX_MEMORY,
-      node_args: heapCapArgs(COS_MAX_MEMORY),
+      ...memoryLimits(COS_MAX_MEMORY),
       // Important: This process manages long-running agent processes
       // Keep kill_timeout high to allow graceful shutdown of agents
       kill_timeout: 30000
@@ -220,6 +231,10 @@ module.exports = {
       name: 'portos-ui',
       script: path.join(__dirname, 'client', 'node_modules', 'vite', 'bin', 'vite.js'),
       cwd: path.join(__dirname, 'client'),
+      // Explicit, unlike the inferred-from-.js default the other apps could rely
+      // on: this is the one script PortOS does not own, so pin the interpreter
+      // that node_args attach to rather than let a Vite release change it.
+      interpreter: 'node',
       log_date_format: LOG_DATE_FORMAT,
       windowsHide: IS_WIN,
       args: `--host 0.0.0.0 --port ${PORTS.UI}`,
@@ -229,13 +244,22 @@ module.exports = {
       },
       watch: false,
       // Vite's dev server keeps a module graph, a transform cache, and per-client
-      // HMR bookkeeping that all grow with session length, and it never releases
-      // them on its own. With the default (physical-memory-derived) heap limit it
-      // was measured at 2.7 GB after 18h. The heap cap makes V8 actually collect;
-      // the ceiling restarts a dev server that still runs away. A restart here is
-      // cheap — the browser reconnects and Vite re-warms its transform cache.
-      max_memory_restart: UI_MAX_MEMORY,
-      node_args: heapCapArgs(UI_MAX_MEMORY)
+      // HMR bookkeeping that all grow with session length and that it never
+      // releases on its own; with the default (physical-memory-derived) heap limit
+      // it was measured at 2.7 GB after 18h. The heap cap reaches the JS half of
+      // that — Vite 8 bundles through rolldown, whose own allocations are native
+      // and counted only by the RSS ceiling, so both bounds are load-bearing here.
+      //
+      // A restart is cheap (the browser reconnects, Vite re-warms its transform
+      // cache) but not free, and this is the one app that otherwise inherits pm2's
+      // `restart_delay: 0`. The damping below turns a mis-sized ceiling into slow
+      // churn instead of a tight crash loop; raise PORTOS_UI_MAX_MEMORY if a large
+      // client tree makes it fire during normal editing.
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: '60s',
+      restart_delay: 15000,
+      ...memoryLimits(UI_MAX_MEMORY)
     },
     {
       name: 'portos-autofixer',
@@ -254,8 +278,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: '10s',
       restart_delay: 5000,
-      max_memory_restart: HELPER_MAX_MEMORY,
-      node_args: heapCapArgs(HELPER_MAX_MEMORY)
+      ...memoryLimits(HELPER_MAX_MEMORY)
     },
     {
       name: 'portos-autofixer-ui',
@@ -273,8 +296,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: '10s',
       restart_delay: 5000,
-      max_memory_restart: HELPER_MAX_MEMORY,
-      node_args: heapCapArgs(HELPER_MAX_MEMORY)
+      ...memoryLimits(HELPER_MAX_MEMORY)
     },
     {
       name: 'portos-browser',
@@ -296,8 +318,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: '10s',
       restart_delay: 5000,
-      max_memory_restart: HELPER_MAX_MEMORY,
-      node_args: heapCapArgs(HELPER_MAX_MEMORY)
+      ...memoryLimits(HELPER_MAX_MEMORY)
     }
   ]
 };
