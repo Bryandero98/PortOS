@@ -591,7 +591,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 441
+          "line": 440
         },
         {
           "direction": "server-to-client",
@@ -1034,7 +1034,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 313
+          "line": 312
         },
         {
           "direction": "server-to-client",
@@ -1140,7 +1140,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 404
+          "line": 403
         },
         {
           "direction": "client-to-server",
@@ -1169,7 +1169,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 385
+          "line": 384
         },
         {
           "direction": "client-to-server",
@@ -1208,7 +1208,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 366
+          "line": 365
         },
         {
           "direction": "client-to-server",
@@ -1237,7 +1237,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 374
+          "line": 373
         },
         {
           "direction": "client-to-server",
@@ -1337,7 +1337,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 418
+          "line": 417
         },
         {
           "direction": "server-to-client",
@@ -1373,7 +1373,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 435
+          "line": 434
         },
         {
           "direction": "server-to-client",
@@ -1515,7 +1515,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 323
+          "line": 322
         },
         {
           "direction": "server-to-client",
@@ -1559,7 +1559,7 @@
         {
           "direction": "client-to-server",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 304
+          "line": 303
         },
         {
           "direction": "server-to-client",
@@ -1618,7 +1618,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 348
+          "line": 347
         },
         {
           "direction": "server-to-client",
@@ -1641,7 +1641,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 337
+          "line": 336
         },
         {
           "direction": "server-to-client",
@@ -1682,7 +1682,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/ChiefOfStaff.jsx",
-          "line": 328
+          "line": 327
         },
         {
           "direction": "server-to-client",
