@@ -10,6 +10,7 @@ export const ERROR_CATEGORIES = {
   RATE_LIMIT: 'rate-limit',
   USAGE_LIMIT: 'usage-limit',
   AUTH_ERROR: 'auth-error',
+  SPAWN_ERROR: 'spawn-error',
   MODEL_NOT_FOUND: 'model-not-found',
   NETWORK_ERROR: 'network-error',
   TIMEOUT: 'timeout',
@@ -144,6 +145,17 @@ const ERROR_PATTERNS = [
     requiresFallback: true,
     actionable: true,
     suggestedFix: 'Check API key configuration for this provider'
+  },
+  {
+    // A local CLI cannot be started when its executable is absent from the
+    // server process's PATH. This is a configuration/install problem, not an
+    // unknown provider failure: classifying it as spawn-error routes the
+    // diagnostic to the existing Tier-1 setup guidance.
+    pattern: /spawn\s+\S+\s+ENOENT|CLI is not installed or is not on PortOS's PATH/i,
+    category: ERROR_CATEGORIES.SPAWN_ERROR,
+    requiresFallback: true,
+    actionable: true,
+    suggestedFix: 'Install the local provider CLI and restart PortOS so its PATH includes the command.'
   },
   {
     // "model identifier is invalid" is Bedrock's wording when the runner passes
