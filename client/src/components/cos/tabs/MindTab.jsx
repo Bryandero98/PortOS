@@ -23,7 +23,7 @@ const MAX_VISIBLE_EVENTS = PAGE_LIMIT * MAX_BACKFILL_PAGES;
 const MIND_VIEWS = new Set(['conversation', 'context', 'setup']);
 const MIND_TABS = [
   { id: 'conversation', label: 'Chat', icon: MessageCircle },
-  { id: 'context', label: 'Memory', icon: Brain },
+  { id: 'context', label: 'Context', icon: Brain },
   { id: 'setup', label: 'Settings', icon: Settings2 },
 ];
 
