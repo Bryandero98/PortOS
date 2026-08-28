@@ -529,6 +529,8 @@ export default function MindTab() {
   const selectedEvent = events?.find((event) => event.eventId === selectedEventId) || null;
   const isPaused = state?.status === 'paused';
   const profileReady = Boolean(mind?.profile?.enabled && mind.profile.providerId && mind.profile.model);
+  const grantedCapabilityCount = Object.entries(mind?.capabilities || {})
+    .filter(([key, value]) => key !== 'schemaVersion' && value === true).length;
   const { status: imageCapabilityStatus, guidance: imageCapabilityGuidance } = imageCapability(mind);
   const imageAttachmentsUnavailable = imageCapabilityStatus === 'unsupported';
   const setupSaving = profileSaving;
@@ -702,7 +704,7 @@ export default function MindTab() {
           <div className="grid grid-cols-2 gap-2 xl:grid-cols-1">
             <MindStateButton icon={Brain} label="Context" value={runtime?.context?.approximateTokens == null ? 'Unavailable' : `~${runtime.context.approximateTokens.toLocaleString()} tokens`} detail={`${runtime?.context?.chars?.toLocaleString() || '—'} characters`} onClick={() => openPanel('context')} />
             <MindStateButton icon={Database} label="Memories" value={runtime?.context?.memoryCount == null ? 'Unavailable' : `${runtime.context.memoryCount} accessible`} detail="Created and curated" onClick={() => openPanel('memories')} />
-            <MindStateButton icon={Wrench} label="Tools" value={mind?.capabilities?.createTasks ? 'Task access on' : 'No grants'} detail="Narrow, typed authority" onClick={() => openPanel('tools')} />
+            <MindStateButton icon={Wrench} label="Tools" value={grantedCapabilityCount > 0 ? `${grantedCapabilityCount} grant${grantedCapabilityCount === 1 ? '' : 's'} enabled` : 'No grants'} detail="Narrow, typed authority" onClick={() => openPanel('tools')} />
             <MindStateButton icon={Cpu} label="Settings" value={runtime?.inference?.active ? 'Running now' : runtime?.inference?.residency?.status === 'loaded' ? 'Loaded in memory' : 'Not running'} detail={runtime?.inference?.model || mind?.profile?.model || 'Not configured'} onClick={() => openPanel('settings')} />
           </div>
 

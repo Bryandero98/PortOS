@@ -155,6 +155,11 @@ describe('navManifest — persistent mind dashboard', () => {
       expect(resolveNavCommand(alias)?.path).toBe('/cos/mind?panel=tools');
     },
   );
+
+  it('maps both former Mind Tools routes onto the embedded tools panel', () => {
+    const tools = NAV_COMMANDS.find((command) => command.id === 'nav.cos.mind-tools');
+    expect(tools?.previousPaths).toEqual(['/cos/tools', '/cos/mind/tools']);
+  });
 });
 
 // Feature gating hides a page from the ⌘K palette and the sidebar. A typo in a

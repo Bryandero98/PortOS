@@ -301,6 +301,15 @@ describe('MindTab', () => {
     expect(screen.getAllByText(/leave open for human review/i).length).toBeGreaterThan(0);
   });
 
+  it('reports every enabled typed-tool grant in the dashboard status', async () => {
+    api.getPersistentMind.mockResolvedValue(response({
+      capabilities: { schemaVersion: 2, createTasks: false, readPortos: true, writePortos: true },
+    }));
+    renderTab();
+
+    expect(await screen.findByText('2 grants enabled')).toBeInTheDocument();
+  });
+
   it('keeps a failed message for a visible idempotent retry', async () => {
     const user = userEvent.setup();
     api.sendPersistentMindMessage.mockRejectedValueOnce(new Error('Provider unavailable'));
