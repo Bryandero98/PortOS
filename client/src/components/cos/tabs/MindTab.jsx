@@ -165,6 +165,7 @@ export default function MindTab() {
   const [eventActionPending, setEventActionPending] = useState(null);
   const [lifecycleError, setLifecycleError] = useState(null);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [capabilitiesSaving, setCapabilitiesSaving] = useState(false);
   const [contextRefreshKey, setContextRefreshKey] = useState(0);
   const [visitedPanels, setVisitedPanels] = useState(() => new Set(activePanel ? [activePanel] : []));
   const [showActivity, setShowActivity] = useState(false);
@@ -533,7 +534,7 @@ export default function MindTab() {
     .filter(([key, value]) => key !== 'schemaVersion' && value === true).length;
   const { status: imageCapabilityStatus, guidance: imageCapabilityGuidance } = imageCapability(mind);
   const imageAttachmentsUnavailable = imageCapabilityStatus === 'unsupported';
-  const setupSaving = profileSaving;
+  const setupSaving = profileSaving || capabilitiesSaving;
   const conversationItems = buildConversationItems(events || [], showActivity);
   const openPanel = (panel) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
@@ -583,7 +584,7 @@ export default function MindTab() {
               ? runtime.inference.model
               : mind?.profile?.model}
           />
-          {!state?.started && <ActionButton label={profileReady ? 'Start' : 'Configure'} icon={profileReady ? CirclePlay : Settings2} pending={profileReady && lifecyclePending === 'start'} disabled={loading || profileSaving} onClick={() => (profileReady ? runLifecycle('start') : openPanel('settings'))} />}
+          {!state?.started && <ActionButton label={profileReady ? 'Start' : 'Configure'} icon={profileReady ? CirclePlay : Settings2} pending={profileReady && lifecyclePending === 'start'} disabled={loading || setupSaving} onClick={() => (profileReady ? runLifecycle('start') : openPanel('settings'))} />}
           {state?.started && !isPaused && <ActionButton label="Pause" icon={CirclePause} pending={lifecyclePending === 'pause'} onClick={() => runLifecycle('pause')} />}
           {state?.started && isPaused && <ActionButton label="Resume" icon={CirclePlay} pending={lifecyclePending === 'resume'} onClick={() => runLifecycle('resume')} />}
           {state?.started && <ActionButton label="Stop" icon={Square} pending={lifecyclePending === 'stop'} onClick={() => runLifecycle('stop')} />}
@@ -734,7 +735,7 @@ export default function MindTab() {
           <PersistentMindContextPanel view="memories" onMemoriesChanged={() => setContextRefreshKey((current) => current + 1)} />
         </div>}
         {(visitedPanels.has('tools') || activePanel === 'tools') && <div hidden={activePanel !== 'tools'}>
-          <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} />
+          <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} onSavingChange={setCapabilitiesSaving} />
         </div>}
         {(visitedPanels.has('settings') || activePanel === 'settings') && <section hidden={activePanel !== 'settings'} aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
           <div className="mb-3">

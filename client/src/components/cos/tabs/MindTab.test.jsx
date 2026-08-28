@@ -310,6 +310,24 @@ describe('MindTab', () => {
     expect(await screen.findByText('2 grants enabled')).toBeInTheDocument();
   });
 
+  it('keeps Start gated until a capability save finishes', async () => {
+    const user = userEvent.setup();
+    let finishSave;
+    api.getPersistentMind.mockResolvedValue(response({
+      state: { enabled: true, started: false, status: 'idle', pauseReason: null },
+    }));
+    api.updateCosConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+    renderTab('/cos/mind?panel=tools');
+
+    const start = await screen.findByRole('button', { name: 'Start' });
+    await user.click(await screen.findByRole('checkbox', { name: 'Allow bounded PortOS reads' }));
+    expect(start).toBeDisabled();
+    expect(api.startPersistentMind).not.toHaveBeenCalled();
+
+    finishSave({ success: true });
+    await waitFor(() => expect(start).toBeEnabled());
+  });
+
   it('keeps a failed message for a visible idempotent retry', async () => {
     const user = userEvent.setup();
     api.sendPersistentMindMessage.mockRejectedValueOnce(new Error('Provider unavailable'));

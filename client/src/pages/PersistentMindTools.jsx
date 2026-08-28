@@ -5,7 +5,7 @@ import BrailleSpinner from '../components/BrailleSpinner';
 import Banner from '../components/ui/Banner';
 import PersistentMindTaskAccessControls from '../components/cos/PersistentMindTaskAccessControls';
 
-export default function PersistentMindTools({ onCapabilitiesChange }) {
+export default function PersistentMindTools({ onCapabilitiesChange, onSavingChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -82,6 +82,7 @@ export default function PersistentMindTools({ onCapabilitiesChange }) {
                   <PersistentMindTaskAccessControls
                     capabilities={data.capabilities}
                     onSaved={updateCapabilities}
+                    onSavingChange={onSavingChange}
                   />
                 </div>
               </section>
