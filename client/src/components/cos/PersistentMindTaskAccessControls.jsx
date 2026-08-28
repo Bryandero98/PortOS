@@ -7,6 +7,7 @@ const normalizeCapabilities = (value) => ({
   createTasks: value?.createTasks === true,
   readPortos: value?.readPortos === true,
   writePortos: value?.writePortos === true,
+  ...(Array.isArray(value?.allowedAppIds) ? { allowedAppIds: [...new Set(value.allowedAppIds)] } : {}),
 });
 
 const OPTIONS = [
@@ -29,6 +30,7 @@ const OPTIONS = [
 
 export default function PersistentMindTaskAccessControls({
   capabilities,
+  taskCatalog,
   disabled = false,
   onSaved,
   onSavingChange,
@@ -36,10 +38,12 @@ export default function PersistentMindTaskAccessControls({
   const idPrefix = useId();
   const [draft, setDraft] = useState(() => normalizeCapabilities(capabilities));
   const [saving, setSaving] = useState(false);
+  const taskApps = Array.isArray(taskCatalog?.apps) ? taskCatalog.apps : [];
+  const allowedAppIds = Array.isArray(draft.allowedAppIds) ? draft.allowedAppIds : null;
 
   useEffect(() => {
     if (!saving) setDraft(normalizeCapabilities(capabilities));
-  }, [capabilities?.schemaVersion, capabilities?.createTasks, capabilities?.readPortos, capabilities?.writePortos, saving]);
+  }, [capabilities?.schemaVersion, capabilities?.createTasks, capabilities?.readPortos, capabilities?.writePortos, capabilities?.allowedAppIds?.join('\0'), saving]);
 
   const save = async (key, enabled) => {
     const previous = draft;
@@ -52,6 +56,29 @@ export default function PersistentMindTaskAccessControls({
       onSaved?.(next);
       const option = OPTIONS.find((candidate) => candidate.key === key);
       toast.success(`${option?.label || 'Capability'} ${enabled ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      setDraft(previous);
+      toast.error(error.message);
+    } finally {
+      setSaving(false);
+      onSavingChange?.(false);
+    }
+  };
+
+  const saveAllowedAppIds = async (appId, enabled) => {
+    const current = allowedAppIds || taskApps.map((app) => app.id);
+    const next = enabled
+      ? [...new Set([...current, appId])]
+      : current.filter((id) => id !== appId);
+    const previous = draft;
+    const nextCapabilities = { ...draft, allowedAppIds: next };
+    setDraft(nextCapabilities);
+    setSaving(true);
+    onSavingChange?.(true);
+    try {
+      await api.updateCosConfig({ persistentMindCapabilities: nextCapabilities }, { silent: true });
+      onSaved?.(nextCapabilities);
+      toast.success(`${taskApps.find((app) => app.id === appId)?.name || 'Managed app'} task access ${enabled ? 'enabled' : 'disabled'}`);
     } catch (error) {
       setDraft(previous);
       toast.error(error.message);
@@ -82,6 +109,41 @@ export default function PersistentMindTaskAccessControls({
           </div>
         );
       })}
+      {taskCatalog && (
+        <div className="border-t border-port-border pt-4">
+          <div>
+            <p className="text-sm text-port-text">Managed app access</p>
+            <p className="mt-0.5 text-xs text-port-text-muted">Choose which configured apps the task grant may target. Existing installs start with every runnable app allowed.</p>
+          </div>
+          {taskApps.length > 0 ? (
+            <div className="mt-3 space-y-3">
+              {taskApps.map((app) => {
+                const id = `${idPrefix}-app-${app.id}`;
+                const checked = allowedAppIds ? allowedAppIds.includes(app.id) : app.granted !== false;
+                return (
+                  <div key={app.id} className="flex items-start justify-between gap-4">
+                    <div>
+                      <label htmlFor={id} className="text-sm text-port-text">{app.name}</label>
+                      <p className="mt-0.5 text-xs text-port-text-muted">{app.planOnly ? 'Implementation or Plan & File Issue' : 'Implementation delivery'}</p>
+                    </div>
+                    <input
+                      id={id}
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled || saving || !draft.createTasks}
+                      onChange={(event) => saveAllowedAppIds(app.id, event.target.checked)}
+                      className="mt-1 h-4 w-4 accent-port-accent disabled:opacity-50"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="mt-3 rounded border border-dashed border-port-border p-3 text-xs text-port-text-muted">No runnable managed apps are currently configured.</p>
+          )}
+          {!draft.createTasks && <p className="mt-3 text-xs text-port-text-muted">Enable the task capability above before selecting managed apps.</p>}
+        </div>
+      )}
       <div className="rounded border border-port-border bg-port-bg/40 px-3 py-2 text-xs text-port-text-muted">
         <p className="font-medium text-port-text">Typed authority only</p>
         <p className="mt-1">Every tool has a closed input schema, explicit side-effect policy, stable request id, and normalized result. Raw PortOS routes are never accepted as tool arguments.</p>

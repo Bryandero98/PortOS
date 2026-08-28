@@ -73,6 +73,7 @@ export const PERSISTENT_MIND_TASK_LIMITS = Object.freeze({
   descriptionChars: 500,
   promptChars: 12_000,
   appIdChars: 128,
+  maxAllowedAppIds: 50,
   providerIdChars: 100,
   modelChars: 200,
 });
@@ -91,6 +92,11 @@ export const PERSISTENT_MIND_VALIDATION_CHECKS = Object.freeze([
 export const persistentMindCapabilitiesSchema = portosSemanticToolGrantsSchema.extend({
   schemaVersion: z.literal(PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION).optional(),
   createTasks: z.boolean().optional(),
+  // Omitted preserves the legacy grant to every runnable managed app. An
+  // explicit list lets the user narrow that grant without changing the typed
+  // task capability itself.
+  allowedAppIds: z.array(z.string().trim().min(1).max(PERSISTENT_MIND_TASK_LIMITS.appIdChars))
+    .max(PERSISTENT_MIND_TASK_LIMITS.maxAllowedAppIds).optional(),
 });
 
 export const persistentMindTaskRequestSchema = z.object({
@@ -138,10 +144,19 @@ export function createDefaultPersistentMindCapabilities() {
 export function normalizePersistentMindCapabilities(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const semanticGrants = normalizePortosSemanticToolGrants(source);
+  const allowedAppIds = Array.isArray(source.allowedAppIds)
+    ? [...new Set(source.allowedAppIds
+      .filter((id) => typeof id === 'string')
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .filter((id) => id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars))]
+      .slice(0, PERSISTENT_MIND_TASK_LIMITS.maxAllowedAppIds)
+    : undefined;
   return {
     schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
     createTasks: source.createTasks === true,
     ...semanticGrants,
+    ...(allowedAppIds !== undefined ? { allowedAppIds } : {}),
   };
 }
 

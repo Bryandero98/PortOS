@@ -114,7 +114,7 @@ const appCatalogEntry = async (app) => {
   };
 };
 
-export async function readPersistentMindTaskCatalog() {
+export async function readPersistentMindTaskCatalog({ allowedAppIds = null, includeAllApps = false } = {}) {
   const [apps, providers] = await Promise.all([getActiveApps(), listProviders()]);
   const runnableApps = apps
     .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
@@ -125,8 +125,12 @@ export async function readPersistentMindTaskCatalog() {
     candidates,
     deferCwdDependent: true,
   });
+  const appCatalog = await Promise.all(runnableApps.map(appCatalogEntry));
+  const allowed = Array.isArray(allowedAppIds) ? new Set(allowedAppIds) : null;
   return {
-    apps: await Promise.all(runnableApps.map(appCatalogEntry)),
+    // The tools settings page needs to see revoked apps so it can restore them;
+    // the model-facing catalog remains narrowed to the granted set.
+    apps: includeAllApps || !allowed ? appCatalog : appCatalog.filter((app) => allowed.has(app.id)),
     providers: candidates
       .filter((provider) => readiness[provider.id]?.status === 'ready')
       .map(providerCatalogEntry),
@@ -261,7 +265,10 @@ const validateChoice = async (request, apps, providers) => {
   return { app, provider, preflight, readiness };
 };
 
-async function queueOneTask({ request, taskId, apps }) {
+async function queueOneTask({ request, taskId, apps, allowedAppIds }) {
+  if (Array.isArray(allowedAppIds) && !allowedAppIds.includes(request.appId)) {
+    return { success: false, error: `Managed app '${request.appId}' is not authorized for Persistent Mind tasks; update Persistent Mind Tools permissions` };
+  }
   const existing = await getTaskById(taskId);
   if (existing) return { success: true, duplicate: true, task: existing };
   const providers = await listProviders();
@@ -325,7 +332,8 @@ export async function executePersistentMindTaskRequests({
   if (requests.length === 0) return [];
 
   const [root, apps] = await Promise.all([loadState(), getActiveApps()]);
-  const enabled = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities).createTasks;
+  const taskAccess = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+  const enabled = taskAccess.createTasks;
   const record = typeof recordCapabilityEvent === 'function'
     ? recordCapabilityEvent
     : () => Promise.resolve();
@@ -359,7 +367,7 @@ export async function executePersistentMindTaskRequests({
       ? { success: false, error: 'Persistent mind turn was interrupted before task creation' }
       : enabled
       ? await Promise.resolve()
-        .then(() => queueOneTask({ request, taskId, apps }))
+        .then(() => queueOneTask({ request, taskId, apps, allowedAppIds: taskAccess.allowedAppIds }))
         .then((value) => value, (error) => ({ success: false, error: boundedError(error) }))
       : { success: false, error: 'Persistent mind task creation access is disabled' };
     const displayText = outcome.success

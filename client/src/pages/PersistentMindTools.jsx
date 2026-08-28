@@ -40,7 +40,13 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
     setData((current) => current ? {
       ...current,
       capabilities,
-      taskCatalog: capabilities.createTasks ? current.taskCatalog : null,
+      taskCatalog: capabilities.createTasks && current.taskCatalog ? {
+        ...current.taskCatalog,
+        apps: (current.taskCatalog.apps || []).map((app) => ({
+          ...app,
+          granted: Array.isArray(capabilities.allowedAppIds) ? capabilities.allowedAppIds.includes(app.id) : true,
+        })),
+      } : null,
       tools: (current.tools || []).map((tool) => ({
         ...tool,
         granted: capabilities[tool.capability] === true,
@@ -81,6 +87,7 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
                 <div className="mt-4">
                   <PersistentMindTaskAccessControls
                     capabilities={data.capabilities}
+                    taskCatalog={taskCatalog}
                     onSaved={updateCapabilities}
                     onSavingChange={onSavingChange}
                   />
@@ -90,14 +97,15 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
               {taskCatalog && (
                 <section aria-labelledby="task-catalog-heading" className="rounded border border-port-border bg-port-card p-4">
                   <h2 id="task-catalog-heading" className="text-sm font-semibold uppercase tracking-wide text-port-text-muted">Available task filing choices</h2>
-                  <p className="mt-1 text-sm text-port-text-muted">These are the current choices the mind receives when it uses the typed task action. Repository paths and credentials are never included.</p>
+                  <p className="mt-1 text-sm text-port-text-muted">These are the current choices the mind receives when it uses the typed task action. Repository paths and credentials are never included. Use Managed app access above to change which apps are authorized.</p>
                   <div className="mt-4 grid gap-4 lg:grid-cols-2">
                     <div>
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-port-text-muted">Target apps</h3>
                       <ul className="mt-2 space-y-2 text-sm text-port-text">
                         {(taskCatalog.apps || []).map((app) => (
                           <li key={app.id} className="rounded border border-port-border px-3 py-2">
-                            <span>{app.name}</span>
+                            <Link to={`/apps/${encodeURIComponent(app.id)}/automation`} className="text-port-accent hover:underline">{app.name}</Link>
+                            <span className={`ml-2 rounded-full border px-2 py-0.5 text-[11px] ${app.granted === false ? 'border-port-border text-port-text-muted' : 'border-port-success/40 text-port-success'}`}>{app.granted === false ? 'Not authorized' : 'Authorized'}</span>
                             <span className="ml-2 text-xs text-port-text-muted">{app.planOnly ? 'Implementation or Plan & File Issue' : 'Implementation delivery'}</span>
                           </li>
                         ))}
