@@ -22,8 +22,7 @@ vi.mock('../services/productivity.js', () => ({
   getDailyTrends: vi.fn(),
   getActivityCalendar: vi.fn(),
   getOptimalTimeInfo: vi.fn(),
-  getVelocityMetrics: vi.fn(),
-  getWeekComparison: vi.fn()
+  getVelocityMetrics: vi.fn()
 }));
 
 vi.mock('../services/goalProgress.js', () => ({

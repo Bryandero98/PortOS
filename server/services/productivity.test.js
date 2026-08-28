@@ -330,52 +330,6 @@ describe('getProductivitySummary', () => {
   });
 });
 
-describe('getWeekComparison', () => {
-  const withHistory = (dailyHistory) => seed({
-    streaks: {}, hourlyPatterns: {}, dailyPatterns: {}, dailyHistory, milestones: [],
-  });
-
-  it('compares matching day ranges of this week and last week', async () => {
-    // Today is Wednesday 2026-03-18 → this week starts Sunday 2026-03-15 and
-    // last week's comparable range is Sunday 2026-03-08 through Wed 2026-03-11.
-    withHistory({
-      '2026-03-16': { tasks: 4, successes: 4, failures: 0, successRate: 100 },
-      '2026-03-18': { tasks: 2, successes: 1, failures: 1, successRate: 50 },
-      '2026-03-09': { tasks: 3, successes: 3, failures: 0, successRate: 100 },
-      // Outside last week's comparable range (Thursday) — must not be counted.
-      '2026-03-12': { tasks: 9, successes: 9, failures: 0, successRate: 100 },
-    });
-
-    expect(await productivity.getWeekComparison()).toEqual({
-      thisWeek: { tasks: 6, successes: 5, successRate: 83 },
-      lastWeek: { tasks: 3, successes: 3, successRate: 100 },
-      changePercent: 100,
-      trend: 'up',
-      daysCompared: 4,
-    });
-  });
-
-  it('reports a decline when this week trails last week', async () => {
-    withHistory({
-      '2026-03-16': { tasks: 2, successes: 2, failures: 0, successRate: 100 },
-      '2026-03-09': { tasks: 10, successes: 5, failures: 5, successRate: 50 },
-    });
-
-    const result = await productivity.getWeekComparison();
-
-    expect(result.changePercent).toBe(-80);
-    expect(result.trend).toBe('down');
-  });
-
-  it('treats a first active week as a 100% gain and a fully idle pair as neutral', async () => {
-    withHistory({ '2026-03-16': { tasks: 5, successes: 5, failures: 0, successRate: 100 } });
-    expect(await productivity.getWeekComparison()).toMatchObject({ changePercent: 100, trend: 'up' });
-
-    withHistory({});
-    expect(await productivity.getWeekComparison()).toMatchObject({ changePercent: null, trend: 'neutral' });
-  });
-});
-
 describe('getVelocityMetrics', () => {
   it('scores today against the historical active-day average', async () => {
     seed({

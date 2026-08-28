@@ -21,6 +21,8 @@ describe('throughputLevel', () => {
   });
 });
 
+// @vitest-environment node
+
 describe('velocityTier', () => {
   it('classifies present pace values and preserves absence', () => {
     expect(velocityTier(150)?.key).toBe('surging');

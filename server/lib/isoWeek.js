@@ -95,23 +95,3 @@ export function parseWeekId(weekId) {
 export function isoWeeksInYear(year) {
   return isoWeekParts(new Date(year, 11, 28)).week;
 }
-
-/**
- * True when `week2` is the ISO week immediately after `week1`.
- *
- * Across a year rollover, `week1` must be the LAST week of its own numbering
- * year — 53 in a leap-week year, 52 otherwise. A bare `week1 >= 52` check would
- * wrongly bridge `2026-W52` → `2027-W01` even though `2026-W53` sits between.
- *
- * @param {string} week1
- * @param {string} week2
- * @returns {boolean}
- */
-export function isConsecutiveWeek(week1, week2) {
-  const a = parseWeekId(week1);
-  const b = parseWeekId(week2);
-  if (!a || !b) return false;
-  if (a.year === b.year) return b.week - a.week === 1;
-  if (b.year - a.year === 1 && b.week === 1) return a.week === isoWeeksInYear(a.year);
-  return false;
-}

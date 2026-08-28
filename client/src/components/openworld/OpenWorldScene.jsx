@@ -168,8 +168,8 @@ function OpenWorldScene({
   const landmarks = useMemo(() => getResolvedLandmarks(isFeatureEnabled), [isFeatureEnabled]);
   const collectibles = useMemo(() => getCollectiblesList(isPassiveFeatureEnabled), [isPassiveFeatureEnabled]);
   const easterEggsList = useMemo(
-    () => computeEasterEggs({ character, goals, productivityData }),
-    [character, goals, productivityData]
+    () => computeEasterEggs({ character, goals }),
+    [character, goals]
   );
 
   useEffect(() => {
