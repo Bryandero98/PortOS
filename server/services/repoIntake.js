@@ -22,7 +22,7 @@
 
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { posix } from 'path';
 import * as cos from './cos.js';
 import { getAppById, PORTOS_APP_ID } from './apps.js';
 import { prepareScanReportDirectory, reportPathForId } from './malwareScanReports.js';
@@ -115,7 +115,7 @@ export const FEATURE_MAP_RELATIVE_PATH = 'docs/features/product-surfaces.md';
  * docs, and navigation.
  */
 export const resolveFeatureMapPath = (repoPath) => {
-  const candidate = join(repoPath, FEATURE_MAP_RELATIVE_PATH);
+  const candidate = posix.join(repoPath, FEATURE_MAP_RELATIVE_PATH);
   return existsSync(candidate) ? candidate : null;
 };
 
