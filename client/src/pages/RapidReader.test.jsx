@@ -117,7 +117,7 @@ describe('RapidReader reading position', () => {
 
   it('offers Accelerando section navigation after loading the book', async () => {
     api.getAccelerandoBook.mockResolvedValue(BOOK);
-    render(<RapidReaderPage />);
+    renderPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'Load Accelerando' }));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Text to read' })).toHaveValue(BOOK.text));
@@ -129,8 +129,9 @@ describe('RapidReader reading position', () => {
     expect(select).toHaveDisplayValue('Chapter · Chapter 1: Example');
   });
 
-  it('keeps the keyboard hint for desktop layouts only', () => {
-    render(<RapidReaderPage />);
+  it('keeps the keyboard hint for desktop layouts only', async () => {
+    renderPage();
+    await waitFor(() => expect(api.listRapidReaderLibrary).toHaveBeenCalled());
     fireEvent.change(screen.getByRole('textbox', { name: 'Text to read' }), { target: { value: 'one two' } });
     fireEvent.click(screen.getByRole('button', { name: 'Start reading' }));
 
