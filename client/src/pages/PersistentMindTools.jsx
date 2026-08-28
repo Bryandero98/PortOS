@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, LockKeyhole, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Link } from 'react-router';
 import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import Banner from '../components/ui/Banner';
