@@ -91,8 +91,19 @@ describe('sanitizeLoom', () => {
       }] }],
     });
     expect(loom.episodes[0].nodes[0]).toMatchObject({
-      videoPrompt: 'A figure turns as the camera arcs.', cameraMovement: 'cinematic-arc',
+      videoPrompt: 'A figure turns as the camera arcs.', cameraMovement: 'cinematic-arc', playbackMode: 'decision',
     });
+  });
+
+  it('keeps known playback modes and defaults legacy or invalid nodes to decision', () => {
+    const loom = sanitizeLoom({
+      id: 'loom-1', name: 'X', episodes: [{ id: 'ep-1', nodes: [
+        { id: 'n1', playbackMode: 'cut' },
+        { id: 'n2', playbackMode: 'unknown' },
+        { id: 'n3' },
+      ] }],
+    });
+    expect(loom.episodes[0].nodes.map((node) => node.playbackMode)).toEqual(['cut', 'decision', 'decision']);
   });
 
   it('defaults the scene format and keeps only a known one', () => {

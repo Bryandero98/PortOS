@@ -282,6 +282,18 @@ export default function LoomCanvas({
                     </g>
                   )}
                 </g>
+                {!node.isEnding && (
+                  <text
+                    x={nodeW - 10}
+                    y={nodeH - 15}
+                    textAnchor="end"
+                    className={node.playbackMode === 'cut'
+                      ? 'fill-port-accent text-[9px] font-medium pointer-events-none'
+                      : 'fill-port-warning text-[9px] font-medium pointer-events-none'}
+                  >
+                    {node.playbackMode === 'cut' ? 'Auto cut' : 'Decision loop'}
+                  </text>
+                )}
               </g>
             );
           })}

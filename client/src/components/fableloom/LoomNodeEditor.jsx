@@ -27,6 +27,7 @@ import {
 import { fieldClass, labelClass, sceneFieldClass } from './fieldStyles';
 import { isTeleplayFormat } from './loomFormats';
 import { FABLELOOM_CAMERA_MOVEMENTS } from '../../../../server/lib/fableLoomCameraMovements.js';
+import { FABLELOOM_PLAYBACK_MODES } from '../../../../server/lib/fableLoomPlayback.js';
 
 const toRow = (t) => ({ ...t, triggersText: (t.triggers || []).join('; ') });
 const rowToPatch = ({ targetNodeId, intent, triggersText, description }) => ({
@@ -59,6 +60,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       imagePrompt: node.imagePrompt || '',
       videoPrompt: node.videoPrompt || '',
       cameraMovement: node.cameraMovement || '',
+      playbackMode: node.playbackMode || 'decision',
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
       transitions: (node.transitions || []).map(toRow),
@@ -148,9 +150,15 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     onLoomUpdate(result.loom);
     // The AI writes new paths straight onto the record; this panel is keyed by
     // node.id so it never remounts to pick them up.
-    const woven = result.loom?.episodes.find((e) => e.id === episode.id)
-      ?.nodes.find((n) => n.id === node.id)?.transitions;
-    if (woven) setForm((prev) => ({ ...prev, transitions: woven.map(toRow) }));
+    const wovenNode = result.loom?.episodes.find((e) => e.id === episode.id)
+      ?.nodes.find((n) => n.id === node.id);
+    if (wovenNode) {
+      setForm((prev) => ({
+        ...prev,
+        playbackMode: wovenNode.playbackMode || 'decision',
+        transitions: (wovenNode.transitions || []).map(toRow),
+      }));
+    }
     toast.success('New branches woven');
   }, { errorMessage: 'Branching failed' });
 
@@ -252,6 +260,24 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
           onChange={(e) => setForm((p) => ({ ...p, prose: e.target.value }))}
           onBlur={() => saveField('prose', form.prose)}
         />
+      </FormField>
+
+      <FormField label="Playback behavior" labelClassName={labelClass}>
+        <select
+          className={fieldClass}
+          aria-label="Playback behavior"
+          value={form.playbackMode}
+          onChange={(e) => {
+            setForm((p) => ({ ...p, playbackMode: e.target.value }));
+            patchNode({ playbackMode: e.target.value });
+          }}
+        >
+          {FABLELOOM_PLAYBACK_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {mode === 'cut' ? 'Automatic cut — play once, then advance' : 'Decision point — loop while awaiting input'}
+            </option>
+          ))}
+        </select>
       </FormField>
 
       <div className="flex items-center gap-3">
@@ -369,7 +395,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       <div>
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs font-medium text-port-text-muted">
-            Paths out ({form.transitions.length})
+            {form.playbackMode === 'cut' ? 'Next cut' : 'Viewer paths'} ({form.transitions.length})
           </span>
           <div className="flex items-center gap-3">
             <button
@@ -393,6 +419,9 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
         </div>
         {form.isEnding && form.transitions.length > 0 && (
           <p className="text-xs text-port-warning mb-2">Endings never fire their outgoing paths.</p>
+        )}
+        {!form.isEnding && form.playbackMode === 'cut' && form.transitions.length !== 1 && (
+          <p className="text-xs text-port-error mb-2">Automatic cuts need exactly one path to the next cut.</p>
         )}
         <div className="space-y-3">
           {form.transitions.map((tr, index) => (

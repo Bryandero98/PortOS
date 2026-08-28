@@ -32,6 +32,7 @@ You are a branching-narrative designer growing new paths out of ONE scene of an 
 - A new scene may be an ending (`isEnding: true` + `endingLabel`) when the branch naturally concludes the story; otherwise write it as one continuous camera cut that ends at a decision point (its own paths will be authored later).
 - Each new scene's `imagePrompt` is one sentence of concrete visual description.
 - Each new scene's `videoPrompt` directs one renderable clip: visible action, one primary camera movement, pace, atmosphere, and final beat. Never put a cut or angle change inside it.
+- Set `playbackMode` to `cut` for a one-pass node with exactly one future Continue path, or `decision` for a seamlessly looping node that waits for viewer choice/feedback. A decision loop must depict repeatable ongoing action, not an irreversible beat.
 - Choose `cameraMovement` from this vocabulary (the stable id before the parentheses):
 
 {{cameraMovementCatalog}}
@@ -58,6 +59,7 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
         "imagePrompt": "string",
         "videoPrompt": "string",
         "cameraMovement": "slow-dolly-in",
+        "playbackMode": "decision",
         "isEnding": false,
         "endingLabel": ""
       }

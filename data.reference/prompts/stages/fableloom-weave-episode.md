@@ -24,7 +24,9 @@ When an existing graph is present, this is a reweave: preserve its story events,
 
 - Choose the node count and ending count yourself from the story's pacing, dramatic coverage, and branching needs. Never compress multiple camera cuts into one node to hit an arbitrary count.
 - Each node is exactly ONE continuous shot with one primary framing and one camera movement. Split every change of angle, framing, location, time, or camera movement into another node.
-- Use a single `Continue` transition for consecutive coverage inside the same narrative path. Reserve 2–4 distinct intent paths for genuine reader decisions. Endings must differ meaningfully in outcome and tone.
+- Set `playbackMode: "cut"` on setup/action nodes that play once and automatically feed the next camera cut. They must have exactly one `Continue` transition.
+- Set `playbackMode: "decision"` on choice or feedback nodes. Their video is designed to loop seamlessly while the experience waits for the viewer; give them 1–4 distinct intent paths. The loop must show an ongoing, repeatable situation rather than irreversible action (for example, a guard pacing a hallway while the viewer decides when to move).
+- Reserve multiple paths for genuine viewer decisions. Endings must differ meaningfully in outcome and tone.
 - Exactly one scene is the opening (`startKey`). Every scene must be reachable from it.
 - Every non-ending node needs either one `Continue` path for consecutive coverage or 2–4 outgoing paths at a genuine decision. Each path gets: an `intent` (a short imperative label, ≤10 words), 2–4 `triggers` (example free-text phrasings a reader might type), and a one-sentence `description` of where it leads (spoiler-safe).
 - Intents on the same scene must be clearly distinguishable from each other — no two paths a reader could mean with the same sentence.
@@ -55,6 +57,7 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
       "imagePrompt": "string",
       "videoPrompt": "string",
       "cameraMovement": "slow-dolly-in",
+      "playbackMode": "cut",
       "isEnding": false,
       "transitions": [
         { "targetKey": "s2", "intent": "string", "triggers": ["string"], "description": "string" }
@@ -67,6 +70,7 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
       "imagePrompt": "string",
       "videoPrompt": "string",
       "cameraMovement": "locked-off",
+      "playbackMode": "cut",
       "isEnding": true,
       "endingLabel": "string",
       "transitions": []

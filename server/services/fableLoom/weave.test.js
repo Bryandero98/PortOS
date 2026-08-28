@@ -143,6 +143,7 @@ describe('branchNode', () => {
     const ep = loom.episodes[0];
     expect(ep.nodes).toHaveLength(3);
     const source = ep.nodes.find((n) => n.id === nodeId);
+    expect(source.playbackMode).toBe('decision');
     expect(source.transitions.map((t) => t.intent)).toEqual(['scale the wall', 'bribe the guard']);
     const ending = ep.nodes.find((n) => n.title === 'A Deal');
     expect(ending).toMatchObject({ isEnding: true, endingLabel: 'Bought passage' });

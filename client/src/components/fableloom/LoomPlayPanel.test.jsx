@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 vi.mock('../../services/api', () => ({ playLoomTurn: vi.fn() }));
@@ -8,7 +8,7 @@ vi.mock('../MediaImage', () => ({ default: () => null }));
 import { playLoomTurn } from '../../services/api';
 import LoomPlayPanel from './LoomPlayPanel';
 
-const loom = { id: 'loom-1', name: 'The Hollow Crown' };
+const loom = { id: 'loom-1', name: 'The Hollow Crown', episodes: [] };
 const episode = {
   id: 'ep-1',
   startNodeId: 'n1',
@@ -117,5 +117,45 @@ describe('LoomPlayPanel', () => {
 
     await waitFor(() => expect(playLoomTurn).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByText('Nothing comes of it.')).toBeInTheDocument());
+  });
+
+  it('auto-advances a rendered cut when its video ends', async () => {
+    const cutEpisode = {
+      id: 'ep-cut', number: 1, title: 'Pilot', startNodeId: 'cut-1', nodes: [{
+        id: 'cut-1', title: 'Setup', prose: 'A door opens.', playbackMode: 'cut', videoHistoryId: 'video-1',
+        transitions: [{ id: 'continue-1', targetNodeId: 'decision-1', intent: 'Continue' }],
+      }, {
+        id: 'decision-1', title: 'Wait', prose: 'A guard paces.', playbackMode: 'decision', transitions: [],
+      }],
+    };
+    playLoomTurn.mockResolvedValue({
+      action: 'move', narration: '', ended: true,
+      node: { id: 'decision-1', title: 'Wait', prose: 'A guard paces.', playbackMode: 'decision', choices: [] },
+    });
+    const user = userEvent.setup();
+    render(<LoomPlayPanel loom={{ ...loom, episodes: [cutEpisode] }} episode={cutEpisode} />);
+    await user.selectOptions(screen.getByLabelText('Preview stage'), 'video');
+
+    fireEvent.ended(screen.getByLabelText('Setup'));
+
+    await waitFor(() => expect(playLoomTurn).toHaveBeenCalledWith(
+      'loom-1', 'ep-cut', expect.objectContaining({ nodeId: 'cut-1', transitionId: 'continue-1' }), { silent: true },
+    ));
+    await waitFor(() => expect(screen.getByText('Wait')).toBeInTheDocument());
+  });
+
+  it('loops rendered decision video while waiting for input', async () => {
+    const decisionEpisode = {
+      id: 'ep-loop', number: 1, title: 'Pilot', startNodeId: 'decision-1', nodes: [{
+        id: 'decision-1', title: 'Guard patrol', prose: 'A guard paces.', playbackMode: 'decision', videoHistoryId: 'video-loop',
+        transitions: [{ id: 'go', targetNodeId: 'end', intent: 'cross now' }],
+      }, { id: 'end', title: 'Across', isEnding: true, transitions: [] }],
+    };
+    const user = userEvent.setup();
+    render(<LoomPlayPanel loom={{ ...loom, episodes: [decisionEpisode] }} episode={decisionEpisode} />);
+    await user.selectOptions(screen.getByLabelText('Preview stage'), 'video');
+
+    expect(screen.getByLabelText('Guard patrol')).toHaveProperty('loop', true);
+    expect(screen.getByRole('button', { name: 'Take path: cross now' })).toBeInTheDocument();
   });
 });

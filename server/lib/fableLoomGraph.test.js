@@ -54,6 +54,8 @@ describe('analyzeEpisodeGraph', () => {
     expect(issues).toEqual([]);
     expect(stats).toMatchObject({
       nodeCount: 4,
+      automaticCutCount: 0,
+      decisionCount: 2,
       endingCount: 2,
       reachableCount: 4,
       reachableEndingCount: 2,
@@ -91,6 +93,22 @@ describe('analyzeEpisodeGraph', () => {
     const { issues } = analyzeEpisodeGraph(ep);
     const deadEnd = issues.find((i) => i.code === GRAPH_ISSUE_CODES.DEAD_END);
     expect(deadEnd).toMatchObject({ severity: 'error', nodeId: 'n4' });
+  });
+
+  it('requires an automatic cut to have exactly one next path', () => {
+    const none = soundEpisode();
+    none.nodes[0].playbackMode = 'cut';
+    none.nodes[0].transitions = [];
+    expect(issueCodes(none)).toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
+
+    const many = soundEpisode();
+    many.nodes[0].playbackMode = 'cut';
+    expect(issueCodes(many)).toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
+
+    const one = soundEpisode();
+    one.nodes[0].playbackMode = 'cut';
+    one.nodes[0].transitions = [tr('t1', 'n2', 'Continue')];
+    expect(issueCodes(one)).not.toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
   });
 
   it('warns on unreachable nodes and errors when no ending is reachable', () => {

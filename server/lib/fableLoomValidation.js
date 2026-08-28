@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { LOOM_LIMITS } from './fableLoomLimits.js';
 import { LOOM_FORMATS } from './fableLoomFormats.js';
+import { FABLELOOM_PLAYBACK_MODES } from './fableLoomPlayback.js';
 import { llmRoutePinSchema } from './llmRoutePin.js';
 
 const name = z.string().trim().min(1).max(LOOM_LIMITS.NAME_MAX);
@@ -124,6 +125,7 @@ const nodeFields = {
   imagePrompt: z.string().max(LOOM_LIMITS.IMAGE_PROMPT_MAX).optional(),
   videoPrompt: z.string().max(LOOM_LIMITS.VIDEO_PROMPT_MAX).optional(),
   cameraMovement: z.string().max(LOOM_LIMITS.CAMERA_MOVEMENT_MAX).optional(),
+  playbackMode: z.enum(FABLELOOM_PLAYBACK_MODES).optional(),
   isEnding: z.boolean().optional(),
   endingLabel: z.string().max(LOOM_LIMITS.ENDING_LABEL_MAX).optional(),
   pos: z.object({ x: z.number(), y: z.number() }).nullable().optional(),

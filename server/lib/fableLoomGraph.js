@@ -29,6 +29,7 @@ export const GRAPH_ISSUE_CODES = Object.freeze({
   DUPLICATE_INTENT: 'DUPLICATE_INTENT',
   ENDING_UNREACHABLE: 'ENDING_UNREACHABLE',
   SELF_LOOP: 'SELF_LOOP',
+  CUT_TRANSITION_COUNT: 'CUT_TRANSITION_COUNT',
 });
 
 /**
@@ -109,6 +110,14 @@ export function analyzeEpisodeGraph(episode) {
     if (node?.isEnding && transitions.length) {
       push(GRAPH_ISSUE_CODES.ENDING_WITH_TRANSITIONS, 'warning', `Ending "${label}" still has outgoing paths — they will never fire.`, { nodeId: node.id });
     }
+    if (!node?.isEnding && node?.playbackMode === 'cut' && transitions.length !== 1) {
+      push(
+        GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT,
+        'error',
+        `Automatic cut "${label}" must have exactly one path to the next camera cut.`,
+        { nodeId: node.id },
+      );
+    }
 
     const seenIntents = new Set();
     for (const tr of transitions) {
@@ -130,6 +139,8 @@ export function analyzeEpisodeGraph(episode) {
 
   const stats = {
     nodeCount: nodes.length,
+    automaticCutCount: nodes.filter((node) => !node?.isEnding && node?.playbackMode === 'cut').length,
+    decisionCount: nodes.filter((node) => !node?.isEnding && node?.playbackMode !== 'cut').length,
     endingCount: endings.length,
     reachableCount: depthById.size,
     reachableEndingCount: reachableEndings.length,
@@ -158,10 +169,13 @@ export function describeGraphForPrompt(episode, { proseLimit = 400 } = {}) {
     const flags = [
       node.id === episode?.startNodeId ? 'START' : null,
       node?.isEnding ? `ENDING${isStr(node?.endingLabel) ? `: ${node.endingLabel}` : ''}` : null,
+      node?.playbackMode === 'cut' ? 'AUTO CUT' : 'DECISION LOOP',
     ].filter(Boolean);
     lines.push(`[${node.id}] ${node.title || 'Untitled scene'}${flags.length ? ` (${flags.join(') (')})` : ''}`);
     const prose = typeof node.prose === 'string' ? node.prose.trim() : '';
     if (prose) lines.push(prose.length > proseLimit ? `${prose.slice(0, proseLimit)}…` : prose);
+    if (isStr(node.videoPrompt)) lines.push(`Video: ${node.videoPrompt}`);
+    if (isStr(node.cameraMovement)) lines.push(`Camera movement: ${node.cameraMovement}`);
     for (const tr of asArray(node.transitions)) {
       const triggers = asArray(tr?.triggers).filter(isStr);
       lines.push(`-> [${tr?.targetNodeId}] intent "${tr?.intent || ''}"${triggers.length ? ` (triggers: ${triggers.join('; ')})` : ''}`);

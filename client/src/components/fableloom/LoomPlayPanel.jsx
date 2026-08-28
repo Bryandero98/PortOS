@@ -1,11 +1,10 @@
 /**
  * FableLoom play panel — the reader-side chat for one episode.
  *
- * The reader types what they want to do; the play stage matches it against
- * the current scene's intent paths and either moves them (new scene prose +
- * image) or answers in-world without leaving the scene. The session lives in
- * this panel's state (current scene + transcript) — restarting is free, and
- * nothing persists server-side.
+ * Automatic-cut nodes play once and follow their single transition. Decision
+ * nodes loop their video while the reader chooses a path or types feedback.
+ * Text, storyboard-image, and rendered-video previews share the same graph
+ * traversal so authors can rehearse the experience at every production stage.
  *
  * TAPPING a path costs nothing: the turn carries the transition id, and the
  * server resolves the move straight off the authored graph — same endpoint,
@@ -31,12 +30,18 @@ const asPublic = (node) => (node ? {
   title: node.title,
   prose: node.prose,
   image: node.image,
+  videoHistoryId: node.videoHistoryId,
+  playbackMode: node.playbackMode || 'decision',
   isEnding: !!node.isEnding,
   endingLabel: node.endingLabel,
   choices: (node.transitions || []).map((t) => ({ id: t.id, intent: t.intent })),
 } : null);
 
-export default function LoomPlayPanel({ loom, episode }) {
+export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
+  const [playEpisodeId, setPlayEpisodeId] = useState(initialEpisode.id);
+  const episode = loom.episodes?.find((item) => item.id === playEpisodeId) || initialEpisode;
+  const episodeIndex = loom.episodes?.findIndex((item) => item.id === episode.id) ?? -1;
+  const nextEpisode = episodeIndex >= 0 ? loom.episodes?.[episodeIndex + 1] : null;
   // Anchored on scalars so an authoring echo elsewhere in the loom (a node
   // PATCH, a drag) doesn't mint a new `start` identity and wipe an
   // in-progress read-through. The trade: mid-session edits to the opening
@@ -48,16 +53,20 @@ export default function LoomPlayPanel({ loom, episode }) {
   const [scene, setScene] = useState(start);
   const [transcript, setTranscript] = useState([]);
   const [message, setMessage] = useState('');
+  const [previewMode, setPreviewMode] = useState('text');
   const scrollRef = useRef(null);
   // Mirrors the server's terminal rule: an ending, or a dead-end scene with
   // no paths out, ends the read-through.
   const ended = !!scene && (scene.isEnding || !scene.choices?.length);
+  const automaticCut = !!scene && scene.playbackMode === 'cut' && scene.choices?.length === 1;
 
   const restart = () => {
     setScene(start);
     setTranscript([]);
     setMessage('');
   };
+
+  useEffect(() => { setPlayEpisodeId(initialEpisode.id); }, [initialEpisode.id]);
 
   // An episode switch (or a changed opening scene) re-anchors the session.
   useEffect(() => { restart(); }, [start]);
@@ -107,6 +116,11 @@ export default function LoomPlayPanel({ loom, episode }) {
     runTurn({ transitionId: choice.id }, history);
   };
 
+  const advanceCut = () => {
+    if (sending || !automaticCut) return;
+    runTurn({ transitionId: scene.choices[0].id }, transcript);
+  };
+
   const send = () => {
     const text = message.trim();
     if (!text || sending || !scene) return;
@@ -126,10 +140,33 @@ export default function LoomPlayPanel({ loom, episode }) {
 
   return (
     <div className="flex flex-col h-full">
+      <div className="border-b border-port-border p-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium">Episode {episode.number || episodeIndex + 1 || 1}: {episode.title || 'Untitled'}</p>
+          <label htmlFor="loom-preview-mode" className="text-xs text-port-text-muted">Preview stage</label>
+        </div>
+        <select
+          id="loom-preview-mode"
+          className="bg-port-bg border border-port-border rounded px-2 py-1 text-xs"
+          value={previewMode}
+          onChange={(event) => setPreviewMode(event.target.value)}
+        >
+          <option value="text">Text</option>
+          <option value="image">Storyboard images</option>
+          <option value="video">Rendered video</option>
+        </select>
+      </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        <SceneCard node={start} isOpening format={loom.format} />
+        <SceneCard
+          node={scene}
+          isOpening={scene?.id === start.id}
+          format={loom.format}
+          previewMode={previewMode}
+          onCutEnded={advanceCut}
+          automaticCut={automaticCut}
+        />
         {transcript.map((turn, i) => {
-          if (turn.role === 'scene') return <SceneCard key={i} node={turn.node} format={loom.format} />;
+          if (turn.role === 'scene') return null;
           return (
             <div key={i} className={turn.role === 'reader' ? 'text-right' : ''}>
               <div
@@ -152,7 +189,7 @@ export default function LoomPlayPanel({ loom, episode }) {
         )}
       </div>
       <div className="border-t border-port-border p-3 space-y-2">
-        {!ended && scene?.choices?.length > 0 && (
+        {!ended && !automaticCut && scene?.choices?.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {scene.choices.filter((c) => c.intent).map((c) => (
               <button
@@ -167,7 +204,17 @@ export default function LoomPlayPanel({ loom, episode }) {
             ))}
           </div>
         )}
-        <div className="flex gap-2">
+        {automaticCut && (
+          <button
+            type="button"
+            onClick={advanceCut}
+            disabled={sending}
+            className="w-full px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
+          >
+            {sending ? 'Loading next cut…' : previewMode === 'video' && scene.videoHistoryId ? 'Video advances automatically' : 'Next cut'}
+          </button>
+        )}
+        {!automaticCut && <div className="flex gap-2">
           <input
             className="flex-1 bg-port-bg border border-port-border rounded px-3 py-2 text-sm"
             placeholder={ended ? 'The story has ended' : 'What do you do?'}
@@ -180,10 +227,10 @@ export default function LoomPlayPanel({ loom, episode }) {
           {ended ? (
             <button
               type="button"
-              onClick={restart}
+              onClick={() => (nextEpisode ? setPlayEpisodeId(nextEpisode.id) : restart())}
               className="flex items-center gap-1.5 px-3 py-2 rounded bg-port-accent/15 text-port-accent text-sm"
             >
-              <RotateCcw size={14} /> Read again
+              <RotateCcw size={14} /> {nextEpisode ? `Next: Episode ${nextEpisode.number || episodeIndex + 2}` : 'Play again'}
             </button>
           ) : (
             <button
@@ -196,24 +243,47 @@ export default function LoomPlayPanel({ loom, episode }) {
               {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
             </button>
           )}
-        </div>
+        </div>}
       </div>
     </div>
   );
 }
 
-function SceneCard({ node, isOpening = false, format }) {
+function SceneCard({ node, isOpening = false, format, previewMode, onCutEnded, automaticCut }) {
   if (!node) return null;
+  const showVideo = previewMode === 'video' && node.videoHistoryId;
+  const showImage = previewMode === 'image' && node.image;
   return (
     <div className="border border-port-border rounded-lg overflow-hidden bg-port-card">
-      {node.image && (
+      {showVideo && (
+        <video
+          key={node.videoHistoryId}
+          controls
+          autoPlay
+          muted
+          playsInline
+          loop={!automaticCut && !node.isEnding}
+          onEnded={automaticCut ? onCutEnded : undefined}
+          src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
+          aria-label={node.title || 'Scene video'}
+          className="w-full max-h-[60vh] bg-black object-contain"
+        />
+      )}
+      {showImage && (
         <MediaImage src={`/data/images/${node.image}`} alt={node.title || 'Scene'} className="w-full max-h-56 object-cover" />
       )}
       <div className="p-3">
         <div className="text-xs uppercase tracking-wide text-port-text-muted mb-1">
           {isOpening ? 'Opening' : node.isEnding ? (node.endingLabel || 'Ending') : node.title || 'Scene'}
         </div>
-        <p className={sceneProseClass(format)}>{node.prose}</p>
+        {previewMode === 'text' && <p className={sceneProseClass(format)}>{node.prose}</p>}
+        {previewMode === 'image' && !node.image && <p className="text-sm text-port-text-muted">No storyboard image rendered for this cut yet.</p>}
+        {previewMode === 'video' && !node.videoHistoryId && <p className="text-sm text-port-text-muted">No video rendered for this cut yet.</p>}
+        {!node.isEnding && (
+          <p className="mt-2 text-xs text-port-text-muted">
+            {automaticCut ? 'Automatic cut' : 'Decision loop — waits for viewer input'}
+          </p>
+        )}
       </div>
     </div>
   );

@@ -27,6 +27,7 @@ import {
 } from './store.js';
 import { LOOM_LIMITS } from './limits.js';
 import { asLoomFormat, isLoomFormat } from './formats.js';
+import { asFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
 
 export { LOOM_LIMITS };
 
@@ -70,6 +71,7 @@ function sanitizeNode(raw) {
     imageJobId: isStr(raw.imageJobId) && raw.imageJobId ? raw.imageJobId.slice(0, 200) : null,
     videoPrompt: trimTo(raw.videoPrompt, LOOM_LIMITS.VIDEO_PROMPT_MAX),
     cameraMovement: trimTo(raw.cameraMovement, LOOM_LIMITS.CAMERA_MOVEMENT_MAX),
+    playbackMode: asFableLoomPlaybackMode(raw.playbackMode),
     videoHistoryId: isSafeVideoHistoryId(raw.videoHistoryId) ? raw.videoHistoryId : null,
     isEnding: raw.isEnding === true,
     // The format this scene's text is actually WRITTEN in — server-set, not
@@ -371,7 +373,7 @@ export function deleteEpisode(loomId, episodeId) {
 
 // --- Nodes & transitions ----------------------------------------------------
 
-const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'isEnding', 'endingLabel', 'pos', 'transitions'];
+const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel', 'pos', 'transitions'];
 
 export function addNode(loomId, episodeId, fields = {}) {
   return mutateLoom(loomId, (loom) => {

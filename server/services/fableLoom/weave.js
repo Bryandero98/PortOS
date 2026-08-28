@@ -142,6 +142,7 @@ const generatedNodeFields = (raw) => ({
   imagePrompt: raw.imagePrompt,
   videoPrompt: raw.videoPrompt,
   cameraMovement: raw.cameraMovement,
+  playbackMode: raw.playbackMode,
   isEnding: raw.isEnding === true,
   endingLabel: raw.endingLabel,
 });
@@ -243,6 +244,9 @@ export async function branchNode(loomId, episodeId, nodeId, {
   const updated = await mutateLoom(loomId, (current) => {
     const ep = findEpisode(current, episodeId);
     const source = findNode(ep, nodeId);
+    // Asking for branches turns the source into an interactive choice point.
+    // This prevents an automatic cut from retaining ambiguous outgoing paths.
+    source.playbackMode = 'decision';
     for (const branch of branches) {
       if (ep.nodes.length >= LOOM_LIMITS.NODES_MAX) break;
       const newNode = { id: `node-${randomUUID()}`, ...generatedNodeFields(branch.node), format: asLoomFormat(loom.format), transitions: [], pos: null };
@@ -294,9 +298,9 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
 
 // --- Feedback: apply a conversational episode edit --------------------------
 
-const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'isEnding', 'endingLabel'];
+const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel'];
 const FEEDBACK_TRANSITION_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
-const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'endingLabel']);
+const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'endingLabel']);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -570,6 +574,8 @@ export const publicNode = (node) => ({
   title: node.title,
   prose: node.prose,
   image: node.image,
+  videoHistoryId: node.videoHistoryId,
+  playbackMode: node.playbackMode,
   isEnding: node.isEnding,
   endingLabel: node.endingLabel,
   choices: (node.transitions || []).map((t) => ({ id: t.id, intent: t.intent })),

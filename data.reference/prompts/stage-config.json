@@ -991,14 +991,14 @@
     },
     "fableloom-weave-episode": {
       "name": "FableLoom — Weave Episode Graph",
-      "description": "Generates a complete branching-narrative episode as a directed graph of single-camera-cut nodes, choosing its own node and ending counts from the story. Consecutive coverage uses Continue paths; genuine decisions use distinct intent paths. Each node includes image, video, and camera-movement direction.",
+      "description": "Generates a complete interactive-video episode as single-camera-cut nodes, choosing its own node and ending counts from the story. Automatic cuts use one Continue path; decision nodes loop while waiting on viewer intent. Each node includes image, video, and camera-movement direction.",
       "model": "heavy",
       "returnsJson": true,
       "variables": []
     },
     "fableloom-branch-node": {
       "name": "FableLoom — Branch a Scene",
-      "description": "Grows new paths out of ONE camera-cut node: each branch is a new single-shot node plus the reader intent that leads to it, including image, video, and camera-movement direction. Returns { branches[] }.",
+      "description": "Turns one camera-cut node into an interactive decision and grows new intent paths from it. Each branch is a new single-shot node with playback, image, video, and camera-movement direction. Returns { branches[] }.",
       "model": "default",
       "returnsJson": true,
       "variables": []
