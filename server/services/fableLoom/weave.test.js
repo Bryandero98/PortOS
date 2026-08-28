@@ -104,6 +104,10 @@ describe('weaveEpisode', () => {
     expect(stage).toBe('fableloom-weave-episode');
     expect(variables.storyContext).toContain('The Hollow Crown');
     expect(variables.guidance).toBe('darker');
+    expect(variables.existingGraph).toContain('(none');
+    expect(variables.cameraMovementCatalog).toContain('slow-dolly-in');
+    expect(variables).not.toHaveProperty('nodeTarget');
+    expect(variables).not.toHaveProperty('endingTarget');
   });
 
   it('refuses to clobber a non-empty episode without replace', async () => {
@@ -139,9 +143,11 @@ describe('branchNode', () => {
     const ep = loom.episodes[0];
     expect(ep.nodes).toHaveLength(3);
     const source = ep.nodes.find((n) => n.id === nodeId);
+    expect(source.playbackMode).toBe('decision');
     expect(source.transitions.map((t) => t.intent)).toEqual(['scale the wall', 'bribe the guard']);
     const ending = ep.nodes.find((n) => n.title === 'A Deal');
     expect(ending).toMatchObject({ isEnding: true, endingLabel: 'Bought passage' });
+    expect(ep.nodes.filter((n) => n.id !== nodeId).every((n) => n.playbackMode === 'decision')).toBe(true);
   });
 
   it('rejects when the model returns no usable branches', async () => {
@@ -233,6 +239,28 @@ describe('feedbackEpisode', () => {
       .rejects.toMatchObject({ code: 'AI_RESPONSE_INVALID' });
     expect((await getLoom(loomId)).episodes[0].nodes[0]).toMatchObject({
       id: withNode.episodes[0].nodes[0].id, title: 'Opening', prose: 'Original.',
+    });
+  });
+
+  it('preserves playback mode when feedback returns an invalid placeholder', async () => {
+    const { loomId, episodeId } = await setup();
+    const withNode = await addNode(loomId, episodeId, {
+      title: 'Opening', playbackMode: 'cut', cameraMovement: 'slow-dolly-in',
+    });
+    const nodeId = withNode.episodes[0].nodes[0].id;
+    runStagedLLM.mockResolvedValue({
+      content: { scenes: [{
+        id: nodeId,
+        playbackMode: 'cut or decision, only when changed',
+        cameraMovement: 'slow-dolly-in, only when changed',
+        title: 'Revised',
+      }] },
+    });
+
+    const result = await feedbackEpisode(loomId, episodeId, { feedback: 'Revise the title.' });
+
+    expect(result.loom.episodes[0].nodes[0]).toMatchObject({
+      title: 'Revised', playbackMode: 'cut', cameraMovement: 'slow-dolly-in',
     });
   });
 });

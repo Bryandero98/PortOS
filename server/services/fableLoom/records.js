@@ -3,10 +3,10 @@
  * transitions.
  *
  * A loom is a branching-narrative story: episodes hold a directed graph of
- * scene nodes; each node carries prose, an image prompt, rendered media, and a
- * list of intent-triggered transitions the play LLM matches against free-text
- * reader input. Legacy video prompts remain sanitized for compatibility, while
- * current clients use the scene text itself. All ids are server-minted. Every
+ * scene nodes; each node carries prose, image and single-clip video prompts,
+ * camera direction, rendered media, and a list of intent-triggered transitions
+ * the play LLM matches against free-text reader input. Legacy nodes without a
+ * video prompt still render from scene text. All ids are server-minted. Every
  * write funnels through `mutateLoom` (per-record write queue + full re-sanitize),
  * so a malformed mutation can never persist.
  */
@@ -27,6 +27,8 @@ import {
 } from './store.js';
 import { LOOM_LIMITS } from './limits.js';
 import { asLoomFormat, isLoomFormat } from './formats.js';
+import { asFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
+import { normalizeFableLoomCameraMovement } from '../../lib/fableLoomCameraMovements.js';
 
 export { LOOM_LIMITS };
 
@@ -69,6 +71,8 @@ function sanitizeNode(raw) {
     image: isSafeImageFilename(raw.image) ? raw.image : null,
     imageJobId: isStr(raw.imageJobId) && raw.imageJobId ? raw.imageJobId.slice(0, 200) : null,
     videoPrompt: trimTo(raw.videoPrompt, LOOM_LIMITS.VIDEO_PROMPT_MAX),
+    cameraMovement: trimTo(normalizeFableLoomCameraMovement(raw.cameraMovement), LOOM_LIMITS.CAMERA_MOVEMENT_MAX),
+    playbackMode: asFableLoomPlaybackMode(raw.playbackMode),
     videoHistoryId: isSafeVideoHistoryId(raw.videoHistoryId) ? raw.videoHistoryId : null,
     isEnding: raw.isEnding === true,
     // The format this scene's text is actually WRITTEN in — server-set, not
@@ -370,7 +374,7 @@ export function deleteEpisode(loomId, episodeId) {
 
 // --- Nodes & transitions ----------------------------------------------------
 
-const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'isEnding', 'endingLabel', 'pos', 'transitions'];
+const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel', 'pos', 'transitions'];
 
 export function addNode(loomId, episodeId, fields = {}) {
   return mutateLoom(loomId, (loom) => {

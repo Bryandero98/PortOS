@@ -15,7 +15,7 @@ vi.mock('../../services/api', () => ({
 vi.mock('../MediaImage', () => ({ default: () => null }));
 
 import {
-  addLoomTransition, deleteLoomTransition, generateVideo, updateLoomNode, updateLoomTransition,
+  addLoomTransition, branchLoomNode, deleteLoomTransition, generateVideo, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import LoomNodeEditor from './LoomNodeEditor';
 
@@ -26,7 +26,9 @@ const scene = 'EXT. ANCIENT GATE - NIGHT\n\nThe gate groans open.';
 const makeNodes = (transitions) => ([
   {
     id: 'n1', title: 'The Gate', prose: scene, image: 'scene.png',
-    imagePrompt: 'an ancient gate', videoPrompt: 'legacy motion prompt', transitions,
+    imagePrompt: 'an ancient gate', videoPrompt: 'The gate opens in one continuous shot.',
+    cameraMovement: 'slow-dolly-in', transitions,
+    playbackMode: 'decision',
   },
   { id: 'n2', title: 'Inside', prose: 'Torchlight.', transitions: [] },
 ]);
@@ -65,7 +67,7 @@ describe('LoomNodeEditor paths', () => {
       'loom-1', 'ep-1', 'n1', { targetNodeId: 'n2', intent: '' }, { silent: true },
     );
     expect(onLoomUpdate).toHaveBeenCalledWith({ id: 'loom-1' });
-    await waitFor(() => expect(screen.getByText('Paths out (1)')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Viewer paths (1)')).toBeInTheDocument());
     // The whole-array node PATCH is not how a path is added any more.
     expect(updateLoomNode).not.toHaveBeenCalled();
   });
@@ -107,7 +109,7 @@ describe('LoomNodeEditor paths', () => {
     await waitFor(() => expect(deleteLoomTransition).toHaveBeenCalledTimes(1));
     expect(deleteLoomTransition).toHaveBeenCalledWith('loom-1', 'ep-1', 'n1', 'tr-1', { silent: true });
     expect(onLoomUpdate).toHaveBeenCalledWith({ id: 'loom-1' });
-    expect(screen.getByText('Paths out (0)')).toBeInTheDocument();
+    expect(screen.getByText('Viewer paths (0)')).toBeInTheDocument();
   });
 });
 
@@ -117,13 +119,13 @@ describe('LoomNodeEditor scene media', () => {
     generateVideo.mockResolvedValue({ jobId: 'video-1', status: 'queued' });
     renderEditor();
 
-    expect(screen.queryByLabelText('Video prompt')).not.toBeInTheDocument();
-    expect(screen.getByText('Uses the scene above as the video prompt.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Video prompt')).toHaveValue('The gate opens in one continuous shot.');
+    expect(screen.getByLabelText('Camera movement')).toHaveValue('slow-dolly-in');
     await user.click(screen.getByRole('button', { name: 'Generate video' }));
 
     await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
     expect(generateVideo).toHaveBeenCalledWith({
-      prompt: scene,
+      prompt: 'The gate opens in one continuous shot.\n\nCamera direction: Camera slowly moves forward toward the subject.',
       backend: 'local',
       mode: 'image',
       sourceImageFile: 'scene.png',
@@ -136,7 +138,7 @@ describe('LoomNodeEditor scene media', () => {
     const user = userEvent.setup();
     generateVideo.mockResolvedValue({ jobId: 'video-2', status: 'queued' });
     const nodes = makeNodes([]).map((node) => node.id === 'n1'
-      ? { ...node, image: null }
+      ? { ...node, image: null, videoPrompt: '', cameraMovement: '' }
       : node);
     render(
       <LoomNodeEditor
@@ -155,5 +157,51 @@ describe('LoomNodeEditor scene media', () => {
       prompt: scene, backend: 'local', mode: 'text', fableLoom: expect.any(String),
     }));
     expect(generateVideo.mock.calls[0][0]).not.toHaveProperty('sourceImageFile');
+  });
+
+  it('persists a selected camera movement from the shared vocabulary', async () => {
+    const user = userEvent.setup();
+    updateLoomNode.mockResolvedValue({ id: 'loom-1' });
+    renderEditor();
+
+    await user.selectOptions(screen.getByLabelText('Camera movement'), 'orbit-180');
+
+    await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', 'n1', { cameraMovement: 'orbit-180' }, { silent: true },
+    ));
+  });
+
+  it('marks a scene as an automatic cut', async () => {
+    const user = userEvent.setup();
+    updateLoomNode.mockResolvedValue({ id: 'loom-1' });
+    renderEditor();
+
+    await user.selectOptions(screen.getByLabelText('Playback behavior'), 'cut');
+
+    await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', 'n1', { playbackMode: 'cut' }, { silent: true },
+    ));
+  });
+
+  it('reflects the decision mode applied when AI adds branches', async () => {
+    const user = userEvent.setup();
+    const nodes = makeNodes([existingPath]);
+    nodes[0].playbackMode = 'cut';
+    branchLoomNode.mockResolvedValue({
+      loom: { ...loom, episodes: [{ id: 'ep-1', nodes: [{ ...nodes[0], playbackMode: 'decision' }] }] },
+    });
+    render(
+      <LoomNodeEditor
+        loom={loom}
+        episode={{ id: 'ep-1', nodes }}
+        node={nodes[0]}
+        onLoomUpdate={vi.fn()}
+        onClearSelection={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Branch with AI' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Playback behavior')).toHaveValue('decision'));
   });
 });

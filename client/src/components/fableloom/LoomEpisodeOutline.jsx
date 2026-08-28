@@ -63,6 +63,9 @@ function SceneBlock({ node, number, episode, format, byId, onSelectNode }) {
                   <Flag size={11} /> {node.endingLabel || 'Ending'}
                 </span>
               )}
+              {!node.isEnding && (
+                <span>{node.playbackMode === 'cut' ? 'Automatic cut' : 'Decision loop'}</span>
+              )}
             </div>
           </div>
           <span className="shrink-0 text-[11px] text-port-text-muted">Scene {number}</span>
@@ -78,7 +81,9 @@ function SceneBlock({ node, number, episode, format, byId, onSelectNode }) {
 
         {transitions.length > 0 && (
           <div className="border-t border-port-border pt-3">
-            <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-port-text-muted">Reader paths</h4>
+            <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-port-text-muted">
+              {node.playbackMode === 'cut' ? 'Next cut' : 'Viewer paths'}
+            </h4>
             <ul className="space-y-1.5">
               {transitions.map((transition) => {
                 const target = byId.get(transition.targetNodeId);

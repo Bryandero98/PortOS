@@ -19,6 +19,12 @@ import { isStr, trimTo } from '../../lib/storyBible.js';
 import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
 import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
+import {
+  FABLELOOM_CAMERA_MOVEMENT_VALUES,
+  fableLoomCameraMovementCatalogForPrompt,
+  normalizeFableLoomCameraMovement,
+} from '../../lib/fableLoomCameraMovements.js';
+import { isFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
 import { getUniverse } from '../universeBuilder.js';
 import { LOOM_LIMITS, findEpisode, findNode, getLoom, mutateLoom } from './records.js';
 import { asLoomFormat, loomFormatLabel, narrationFormatContract, sceneFormatContract } from './formats.js';
@@ -139,6 +145,9 @@ const generatedNodeFields = (raw) => ({
   title: raw.title,
   prose: raw.prose,
   imagePrompt: raw.imagePrompt,
+  videoPrompt: raw.videoPrompt,
+  cameraMovement: raw.cameraMovement,
+  playbackMode: raw.playbackMode,
   isEnding: raw.isEnding === true,
   endingLabel: raw.endingLabel,
 });
@@ -177,7 +186,7 @@ export function mapGeneratedGraph(parsed) {
 }
 
 export async function weaveEpisode(loomId, episodeId, {
-  guidance = '', nodeTarget, endingTarget, replace = false, providerId, model, effort,
+  guidance = '', replace = false, providerId, model, effort,
 } = {}) {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
@@ -189,8 +198,10 @@ export async function weaveEpisode(loomId, episodeId, {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
-    nodeTarget: String(clamp(nodeTarget, 3, 60, 12)),
-    endingTarget: String(clamp(endingTarget, 1, 12, 3)),
+    existingGraph: episode.nodes.length
+      ? describeGraphForPrompt(episode, { proseLimit: 1200 })
+      : '(none — create the episode from the story context)',
+    cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     sceneFormatContract: sceneFormatContract(loom.format),
   }, llmOptions({ providerId, model, effort }, 'fableloom-weave'));
 
@@ -225,6 +236,7 @@ export async function branchNode(loomId, episodeId, nodeId, {
     sceneTitle: node.title || 'Untitled scene',
     sceneProse: node.prose || '(no prose yet)',
     branchCount: String(count),
+    cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     guidance: guidance || '(none)',
     sceneFormatContract: sceneFormatContract(loom.format),
   }, llmOptions({ providerId, model, effort }, 'fableloom-branch'));
@@ -237,9 +249,19 @@ export async function branchNode(loomId, episodeId, nodeId, {
   const updated = await mutateLoom(loomId, (current) => {
     const ep = findEpisode(current, episodeId);
     const source = findNode(ep, nodeId);
+    // Asking for branches turns the source into an interactive choice point.
+    // This prevents an automatic cut from retaining ambiguous outgoing paths.
+    source.playbackMode = 'decision';
     for (const branch of branches) {
       if (ep.nodes.length >= LOOM_LIMITS.NODES_MAX) break;
-      const newNode = { id: `node-${randomUUID()}`, ...generatedNodeFields(branch.node), format: asLoomFormat(loom.format), transitions: [], pos: null };
+      const newNode = {
+        id: `node-${randomUUID()}`,
+        ...generatedNodeFields(branch.node),
+        playbackMode: 'decision',
+        format: asLoomFormat(loom.format),
+        transitions: [],
+        pos: null,
+      };
       ep.nodes.push(newNode);
       source.transitions = [...(source.transitions || []), {
         targetNodeId: newNode.id,
@@ -288,9 +310,9 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
 
 // --- Feedback: apply a conversational episode edit --------------------------
 
-const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'isEnding', 'endingLabel'];
+const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel'];
 const FEEDBACK_TRANSITION_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
-const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'endingLabel']);
+const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'endingLabel']);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -317,6 +339,11 @@ const normalizeFeedbackPatch = (content, episode) => {
       const value = rawScene[key];
       if (!hasOwn(rawScene, key)) continue;
       if (FEEDBACK_STRING_NODE_FIELDS.has(key) && typeof value === 'string') {
+        nodePatch[key] = value;
+      } else if (key === 'cameraMovement' && typeof value === 'string') {
+        const movement = normalizeFableLoomCameraMovement(value);
+        if (!movement || FABLELOOM_CAMERA_MOVEMENT_VALUES.includes(movement)) nodePatch[key] = movement;
+      } else if (key === 'playbackMode' && isFableLoomPlaybackMode(value)) {
         nodePatch[key] = value;
       } else if (key === 'isEnding' && typeof value === 'boolean') {
         nodePatch[key] = value;
@@ -372,6 +399,7 @@ export async function feedbackEpisode(loomId, episodeId, {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none)',
     graphDigest: describeGraphForPrompt(episode, { proseLimit: 1200 }),
+    cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     feedback: instruction,
   }, llmOptions({ providerId, model, effort }, 'fableloom-feedback'));
 
@@ -563,6 +591,8 @@ export const publicNode = (node) => ({
   title: node.title,
   prose: node.prose,
   image: node.image,
+  videoHistoryId: node.videoHistoryId,
+  playbackMode: node.playbackMode,
   isEnding: node.isEnding,
   endingLabel: node.endingLabel,
   choices: (node.transitions || []).map((t) => ({ id: t.id, intent: t.intent })),

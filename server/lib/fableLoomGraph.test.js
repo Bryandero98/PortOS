@@ -54,6 +54,8 @@ describe('analyzeEpisodeGraph', () => {
     expect(issues).toEqual([]);
     expect(stats).toMatchObject({
       nodeCount: 4,
+      automaticCutCount: 0,
+      decisionCount: 2,
       endingCount: 2,
       reachableCount: 4,
       reachableEndingCount: 2,
@@ -91,6 +93,22 @@ describe('analyzeEpisodeGraph', () => {
     const { issues } = analyzeEpisodeGraph(ep);
     const deadEnd = issues.find((i) => i.code === GRAPH_ISSUE_CODES.DEAD_END);
     expect(deadEnd).toMatchObject({ severity: 'error', nodeId: 'n4' });
+  });
+
+  it('requires an automatic cut to have exactly one next path', () => {
+    const none = soundEpisode();
+    none.nodes[0].playbackMode = 'cut';
+    none.nodes[0].transitions = [];
+    expect(issueCodes(none)).toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
+
+    const many = soundEpisode();
+    many.nodes[0].playbackMode = 'cut';
+    expect(issueCodes(many)).toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
+
+    const one = soundEpisode();
+    one.nodes[0].playbackMode = 'cut';
+    one.nodes[0].transitions = [tr('t1', 'n2', 'Continue')];
+    expect(issueCodes(one)).not.toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
   });
 
   it('warns on unreachable nodes and errors when no ending is reachable', () => {
@@ -135,15 +153,19 @@ describe('describeGraphForPrompt', () => {
     const text = describeGraphForPrompt(soundEpisode());
     expect(text).toContain('[n1] The Gate (START)');
     expect(text).toContain('[n4] The Vault (ENDING: Treasure found)');
+    expect(text).not.toContain('The Vault (ENDING: Treasure found) (DECISION LOOP)');
     expect(text).toContain('-> [n2] intent "enter the gate"');
   });
 
-  it('truncates long prose at proseLimit', () => {
+  it('truncates long prose and video direction at proseLimit', () => {
     const ep = soundEpisode();
     ep.nodes[0].prose = 'x'.repeat(500);
+    ep.nodes[0].videoPrompt = 'y'.repeat(500);
     const text = describeGraphForPrompt(ep, { proseLimit: 100 });
     expect(text).toContain(`${'x'.repeat(100)}…`);
+    expect(text).toContain(`Video: ${'y'.repeat(100)}…`);
     expect(text).not.toContain('x'.repeat(101));
+    expect(text).not.toContain('y'.repeat(101));
   });
 
   it('includes trigger examples', () => {

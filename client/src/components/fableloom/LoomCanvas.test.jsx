@@ -29,6 +29,7 @@ describe('LoomCanvas', () => {
     expect(screen.getByLabelText('Scene: The Gate')).toBeInTheDocument();
     expect(screen.getByLabelText('Scene: Inside')).toBeInTheDocument();
     expect(screen.getByText('Opening')).toBeInTheDocument();
+    expect(screen.getByText('Decision loop')).toBeInTheDocument();
     expect(screen.getByText('Within')).toBeInTheDocument();
     expect(screen.getByText('enter the gate')).toBeInTheDocument();
   });
