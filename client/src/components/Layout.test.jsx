@@ -116,7 +116,7 @@ describe('Layout — manifest-derived sidebar structure', () => {
     const settingsPaths = [
       '/settings/general', '/settings/ai-assignments', '/settings/api-access', '/settings/autofixer',
       '/settings/backup', '/settings/code-reviewers', '/settings/database', '/settings/features',
-      '/settings/security', '/settings/sharing', '/settings/signal',
+      '/settings/security', '/settings/sharing',
       '/settings/telegram', '/settings/voice', '/settings/mortalloom',
       '/openclaw', '/prompts', '/ai'
     ];
@@ -135,7 +135,7 @@ describe('Layout — manifest-derived sidebar structure', () => {
       expect(NAV_PRESENTATION[p], `missing NAV_PRESENTATION for digital twin tab ${p}`).toBeDefined();
     }
 
-    const messageTabs = ['inbox', 'drafts', 'imessage', 'contacts', 'sync', 'config'];
+    const messageTabs = ['inbox', 'drafts', 'imessage', 'signal', 'contacts', 'sync', 'config'];
     for (const tab of messageTabs) {
       const p = `/messages/${tab}`;
       expect(NAV_PRESENTATION[p], `missing NAV_PRESENTATION for message tab ${p}`).toBeDefined();
