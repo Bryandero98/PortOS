@@ -15,7 +15,7 @@ This document is the **canonical user-facing feature inventory** for PortOS. It 
 - **PostgreSQL as Primary Datastore**: Mandatory local PostgreSQL with `pgvector` for relational records, creative catalogs, and semantic embeddings.
 - **No Cold-Bootstrap LLM Calls**: PortOS never triggers unannounced AI provider calls on server boot or startup backfills. AI invocations require explicit user action, configured recurring schedules, or active CoS tasks.
 - **Deterministic & Local Model Acceleration**: Heavy emphasis on local model execution (Ollama, LM Studio, vLLM, SGLang, llama.cpp) accelerated via speculative decoding (DSpark, DFlash 2, MTPLX) and local GPU/NPU utilization.
-- **Strict Privacy Boundaries**: Sensitive identity records (PII Vault, Organizations, Data Brokers) remain strictly machine-local and never cross the federation layer or enter general LLM context prompts.
+- **Strict Privacy Boundaries**: Sensitive identity records (PII Vault, Organizations, Data Brokers) remain strictly machine-local and never cross the federation layer or enter general LLM context prompts by default. Under an explicit double opt-in (`includePrivacyContext: true` plus fields flagged `share_with_twin`), permitted vault facts and organization/broker summaries are injected into the digital twin context for authorized Chief of Staff prompts.
 
 ---
 
@@ -28,7 +28,7 @@ Manage local applications, terminal environments, system resources, and develope
 | **Dashboard** | `/` | System overview, active agent count, PM2 process vitals, Quick Capture widget, fast jump to recent projects. | [ARCHITECTURE.md](../ARCHITECTURE.md) |
 | **Apps Manager** | `/apps`, `/apps/:id` | Managed app registry: launch, stop, restart processes, live process logs, environment variables, Git branch switcher, and per-app feature tabs. | [PM2.md](../PM2.md) |
 | **App Templates & Scaffolding** | `/templates` | Pre-configured starter stacks (React, Vite, Node, Python) and interactive project scaffolding. | [App Wizard](./app-wizard.md) |
-| **PortOS Submodules** | `/apps/portos/submodules`, `/devtools/submodules` | Git submodule management for PortOS and managed repositories, submodule update checks, and recursive synchronization. | [CONTRIBUTING.md](../CONTRIBUTING.md) |
+| **PortOS Submodules** | `/apps/portos-default/submodules`, `/devtools/submodules` | Git submodule management for PortOS and managed repositories, submodule update checks, and recursive synchronization. | [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | **Web Shell** | `/shell` | Browser-based interactive terminal multiplexer for host command execution and active debugging. | — |
 | **Process Manager** | `/devtools/processes` | Real-time PM2 process table, status inspection, memory/CPU usage, and manual process restarts. | [PM2.md](../PM2.md) |
 | **System Resources & Health** | `/system-resources/overview`, `/system-resources` | Host-level operational signals, CPU/RAM utilization, disk thresholds, top processes, and running build/commit hash validation. | [METRICS.md](../METRICS.md) |
@@ -84,7 +84,7 @@ An end-to-end creative production suite for authors, worldbuilders, filmmakers, 
 |---|---|---|---|
 | **Start a Story** | `/start-story` | Creative onboarding on-ramp: choose between guided story building, Writers Room prose, FableLoom branching narrative, or manuscript import. | — |
 | **Story Builder** | `/story-builder` | Step-by-step guided story wizard: concept ideation, universe attachment, character arc design, reader emotional mapping, and episode outlines. | — |
-| **Writers Room** | `/writers-room`, `/writers-room/works/:id` | Focused Markdown prose studio: version history, structural analysis, emotional roadmaps, and timed sprint exercises ("write for 10"). | [Writers Room](./writers-room.md) |
+| **Writers Room** | `/writers-room` | Focused Markdown prose studio: version history, structural analysis, emotional roadmaps, and timed sprint exercises ("write for 10"). | [Writers Room](./writers-room.md) |
 | **Writers Room Guide** | `/writers-room/guide` | Craft reference guide: word count standards (flash fiction to epic novel), length targets, and narrative pacing rules. | [Writers Room](./writers-room.md) |
 | **Authors Management** | `/authors` | Author personas, bylines, pen names, distinct literary writing styles, and cover metadata. | — |
 | **FableLoom** | `/fableloom` | Interactive branching fiction engine: visual story graph editor, choice tree logic, intent routing, and node-based reader. | [FableLoom](./fableloom.md) |
@@ -95,7 +95,7 @@ An end-to-end creative production suite for authors, worldbuilders, filmmakers, 
 | **Voice Fingerprint** | `/pipeline` | Prose style analytics: sentence rhythm, syntactic complexity, register consistency, and vocabulary outlier detection across chapters. | — |
 | **Prose Series Export** | `/pipeline` | Compile engine outputting formatted ePub, trade paperback interior PDF (custom trim sizes, front matter, TOC), and print-ready bundles. | — |
 | **Universes & Canon** | `/universes`, `/universes/:id` | Worldbuilding bibles: sci-fi/fantasy lore, style templates, canon entries, characters, settings, and visual consistency anchors. | — |
-| **Creative Catalog** | `/catalog`, `/catalog/settings` | Searchable relational entity database (characters, places, objects, lore, scenes) with vector search and taxonomy management. | [STORAGE.md](../STORAGE.md) |
+| **Creative Catalog** | `/catalog`, `/catalog?settings=1` | Searchable relational entity database (characters, places, objects, lore, scenes) with vector search and taxonomy management. | [STORAGE.md](../STORAGE.md) |
 | **Catalog Ingest** | `/catalog/ingest` | Paste unstructured scraps, scenes, or notes to automatically extract structured catalog ingredients. | — |
 | **Mood Boards** | `/mood-boards` | Visual pinboards, style canvases, color palettes, and conceptual reference collections. | — |
 | **Media Gen (Image & Video)** | `/media`, `/media/image`, `/media/video` | Local and federated text-to-image (Stable Diffusion, FLUX, MFLUX) and text-to-video (LTX-Video, MiniMax H3) generation. | [Video Speed Profiles](./video-speed-profiles.md), [Video Text Encoders](./video-text-encoders.md) |
@@ -123,7 +123,7 @@ Capture thoughts, build personal memory graphs, model your identity and taste, p
 |---|---|---|---|
 | **Brain Inbox & Notes** | `/brain/inbox`, `/brain/notes` | Universal thought capture, AI classification (People, Projects, Ideas, Admin), confidence scoring, note editor, and GTD reviews. | [Brain System](./brain-system.md) |
 | **Brain Links & Repo Ingest** | `/brain/links` | Link vault with automated malware scanning, web clipping, and repo study triggers. | [Brain System](./brain-system.md) |
-| **YouTube Transcripts & Ingest** | `/brain/youtube` | Captures YouTube video transcripts (collapsing auto-caption repetition), downloads audio/video, mirrors markdown to Obsidian, and queues agent tasks. | [Brain System](./brain-system.md) |
+| **YouTube Transcripts & Ingest** | `/brain/config`, `/settings/youtube` | Captures YouTube video transcripts (collapsing auto-caption repetition), downloads audio/video, mirrors markdown to Obsidian, and syncs watch history. | [Brain System](./brain-system.md) |
 | **Feeds & RSS** | `/brain/feeds` | RSS/Atom feed reader, article capture, and knowledge extraction. | — |
 | **Knowledge Graph** | `/brain/graph`, `/wiki/graph` | Interactive visual graph of entities, tags, and cross-document semantic links. | — |
 | **Daily Log & Digest** | `/brain/daily-log`, `/brain/digest` | Daily markdown journaling, automated daily summaries, and weekly GTD-style reviews. | [Brain System](./brain-system.md) |
@@ -179,7 +179,7 @@ Unified communication channels, local voice assistant, community stewardship, an
 | **Signal Integration** | `/settings/signal` | Encrypted local sync from Signal Desktop SQLCipher database. | [Messages Security](./messages-security.md) |
 | **Telegram & X (Twitter)** | `/settings/telegram`, `/x` | Social channel monitoring, outreach staging, engagement diagnostics, and shadowban checks. | — |
 | **Stacker News Stewardship** | `/stacker-news` | Community territory moderation, Bitcoin Lightning tipping, post review, and encrypted credential storage. | [Stacker News](./stacker-news.md) |
-| **OpenClaw Operator Chat** | `/openclaw`, `/settings/openclaw` | Real-time interactive operator agent runtime with streaming sessions and persistent execution. | [OpenClaw Operator Chat](./openclaw-operator-chat.md) |
+| **OpenClaw Operator Chat** | `/openclaw` | Real-time interactive operator agent runtime with streaming sessions and persistent execution. | [OpenClaw Operator Chat](./openclaw-operator-chat.md) |
 | **Evergreen Personal Wiki** | `/wiki/*` | Curated personal knowledge base with markdown editing, link graphs, and full-text search. | — |
 | **Voice Mode** | `/settings/voice` | Hands-free voice assistant with continuous VAD (AudioWorklet), speech-to-text (Whisper local or Web Speech), local LLM orchestration, text-to-speech (Kokoro-82M in-process or Piper), barge-in support, and `ui_navigate` tool execution. | [Voice Mode](./voice.md) |
 | **Ambient Display Mode** | `/ambient` | Fullscreen idle dashboard, ambient animations, system status ticker, and display screensaver. | — |
