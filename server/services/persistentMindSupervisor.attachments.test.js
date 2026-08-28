@@ -108,6 +108,7 @@ const makeRoot = () => ({
 
 describe('persistent mind image attachment lifecycle', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     mocks.root = makeRoot();
     mocks.scheduled.clear();
     mocks.emitted.length = 0;
