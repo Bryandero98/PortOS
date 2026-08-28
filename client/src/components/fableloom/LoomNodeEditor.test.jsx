@@ -19,11 +19,15 @@ import {
 } from '../../services/api';
 import LoomNodeEditor from './LoomNodeEditor';
 
-const loom = { id: 'loom-1', name: 'Example Story', format: 'prose', styleNotes: '' };
+const loom = { id: 'loom-1', name: 'Example Story', format: 'teleplay', styleNotes: '' };
+const scene = 'EXT. ANCIENT GATE - NIGHT\n\nThe gate groans open.';
 
 // One scene with a single existing path, plus a second scene to point at.
 const makeNodes = (transitions) => ([
-  { id: 'n1', title: 'The Gate', prose: 'You stand before it.', image: 'scene.png', imagePrompt: 'an ancient gate', videoPrompt: 'the gate slowly opens', transitions },
+  {
+    id: 'n1', title: 'The Gate', prose: scene, image: 'scene.png',
+    imagePrompt: 'an ancient gate', videoPrompt: 'legacy motion prompt', transitions,
+  },
   { id: 'n2', title: 'Inside', prose: 'Torchlight.', transitions: [] },
 ]);
 
@@ -108,16 +112,18 @@ describe('LoomNodeEditor paths', () => {
 });
 
 describe('LoomNodeEditor scene media', () => {
-  it('queues a local video from the scene prompt and rendered still', async () => {
+  it('queues a local video from the teleplay scene and rendered still', async () => {
     const user = userEvent.setup();
     generateVideo.mockResolvedValue({ jobId: 'video-1', status: 'queued' });
     renderEditor();
 
+    expect(screen.queryByLabelText('Video prompt')).not.toBeInTheDocument();
+    expect(screen.getByText('Uses the scene above as the video prompt.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Generate video' }));
 
     await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
     expect(generateVideo).toHaveBeenCalledWith({
-      prompt: 'the gate slowly opens',
+      prompt: scene,
       backend: 'local',
       mode: 'image',
       sourceImageFile: 'scene.png',
@@ -126,11 +132,11 @@ describe('LoomNodeEditor scene media', () => {
     });
   });
 
-  it('falls back to the image prompt for a scene without a video prompt', async () => {
+  it('uses the scene for text-to-video when no rendered still exists', async () => {
     const user = userEvent.setup();
     generateVideo.mockResolvedValue({ jobId: 'video-2', status: 'queued' });
     const nodes = makeNodes([]).map((node) => node.id === 'n1'
-      ? { ...node, imagePrompt: 'a lantern in fog', image: null, videoPrompt: '' }
+      ? { ...node, image: null }
       : node);
     render(
       <LoomNodeEditor
@@ -146,7 +152,7 @@ describe('LoomNodeEditor scene media', () => {
 
     await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
     expect(generateVideo).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: 'a lantern in fog', backend: 'local', mode: 'text', fableLoom: expect.any(String),
+      prompt: scene, backend: 'local', mode: 'text', fableLoom: expect.any(String),
     }));
     expect(generateVideo.mock.calls[0][0]).not.toHaveProperty('sourceImageFile');
   });
