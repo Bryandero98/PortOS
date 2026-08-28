@@ -169,6 +169,7 @@ router.get('/mind', asyncHandler(async (req, res) => {
       model: profile.model || null,
       effort: profile.effort || null,
       thinkingInterface: profile.thinkingInterface,
+      wakeIntervalMinutes: profile.wakeIntervalMinutes,
     },
     capabilities,
     harness: persistentMindHarnessInfo(provider),

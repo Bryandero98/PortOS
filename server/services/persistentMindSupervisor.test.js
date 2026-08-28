@@ -196,6 +196,82 @@ describe('persistent mind supervisor', () => {
     expect(mock.recordUsage).toHaveBeenCalledWith('cos', expect.objectContaining({ actions: 1 }));
   });
 
+  it('caps model-requested follow-ups at the saved maximum quiet period', async () => {
+    mock.root.config.persistentMindProfile.wakeIntervalMinutes = 15;
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: { id: 'example-cloud' } })),
+      run: vi.fn(async () => ({
+        selfWake: {
+          reason: 'Check again later',
+          notBefore: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+        },
+      })),
+    });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    await supervisor.drainPersistentMind();
+
+    const { lastCompletedAt, selfWake } = mock.root.persistentMind;
+    expect(selfWake.reason).toBe('Check again later');
+    expect(selfWake.scheduleKind).toBe('requested');
+    expect(Date.parse(selfWake.notBefore) - Date.parse(lastCompletedAt)).toBe(15 * 60_000);
+  });
+
+  it('re-arms an idle automatic wake when its saved cadence changes', async () => {
+    const lastCompletedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    mock.root.persistentMind = {
+      ...createDefaultPersistentMindState(),
+      enabled: true,
+      started: true,
+      status: 'idle',
+      lastCompletedTurnId: 'turn-1',
+      lastCompletedAt,
+      selfWake: {
+        id: 'wake-old',
+        kind: 'self',
+        scheduleKind: 'quiet',
+        reason: 'maximum quiet period elapsed',
+        sourceTurnId: 'turn-1',
+        createdAt: lastCompletedAt,
+        notBefore: new Date(Date.parse(lastCompletedAt) + 30 * 60_000).toISOString(),
+      },
+    };
+    mock.root.config.persistentMindProfile.wakeIntervalMinutes = 60;
+
+    await supervisor.refreshPersistentMindWakeCadence();
+
+    expect(Date.parse(mock.root.persistentMind.selfWake.notBefore) - Date.parse(lastCompletedAt)).toBe(60 * 60_000);
+    expect(mock.scheduled.get(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID).delayMs).toBeGreaterThan(40 * 60_000);
+  });
+
+  it('does not postpone a requested wake whose reason matches the automatic wake text', async () => {
+    const lastCompletedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const requestedAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    mock.root.persistentMind = {
+      ...createDefaultPersistentMindState(),
+      enabled: true,
+      started: true,
+      status: 'waiting',
+      lastCompletedTurnId: 'turn-1',
+      lastCompletedAt,
+      selfWake: {
+        id: 'wake-requested',
+        kind: 'self',
+        scheduleKind: 'requested',
+        reason: 'maximum quiet period elapsed',
+        sourceTurnId: 'turn-1',
+        createdAt: lastCompletedAt,
+        notBefore: requestedAt,
+      },
+    };
+    mock.root.config.persistentMindProfile.wakeIntervalMinutes = 60;
+
+    await supervisor.refreshPersistentMindWakeCadence();
+
+    expect(mock.root.persistentMind.selfWake.notBefore).toBe(requestedAt);
+    expect(mock.scheduled.get(supervisor.PERSISTENT_MIND_WAKE_EVENT_ID).delayMs).toBeLessThanOrEqual(5 * 60_000);
+  });
+
   it('fails closed when a legacy completed message has no retry fingerprint', async () => {
     mock.root.persistentMind.recentMessageIds = ['legacy-message'];
 

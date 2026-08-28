@@ -47,7 +47,7 @@ import { preparePersistentMindContext } from './persistentMindContext.js';
 import { resolvePersistentMindProfile } from './persistentMindProfile.js';
 import { isUpdateInProgress } from './updateChecker.js';
 import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
-import { normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
+import { normalizePersistentMindProfile, persistentMindWakeIntervalMs } from '../lib/persistentMindProfile.js';
 import { getProviderById } from './providers.js';
 import {
   imageCapabilityAllowsAttempt,
@@ -491,6 +491,7 @@ function initialSelfWake(reason) {
   return {
     id: `wake-${randomUUID()}`,
     kind: 'self',
+    scheduleKind: 'requested',
     reason,
     sourceTurnId: reason,
     createdAt,
@@ -498,14 +499,17 @@ function initialSelfWake(reason) {
   };
 }
 
-function quietSelfWake(turnId, notBefore = Date.now() + PERSISTENT_MIND_LIMITS.MAX_QUIET_MS) {
+const QUIET_SELF_WAKE_REASON = 'maximum quiet period elapsed';
+
+function quietSelfWake(turnId, quietPeriodMs = PERSISTENT_MIND_LIMITS.MAX_QUIET_MS, baseAt = Date.now()) {
   return {
     id: `wake-${randomUUID()}`,
     kind: 'self',
-    reason: 'maximum quiet period elapsed',
+    scheduleKind: 'quiet',
+    reason: QUIET_SELF_WAKE_REASON,
     sourceTurnId: turnId,
     createdAt: nowIso(),
-    notBefore: new Date(notBefore).toISOString(),
+    notBefore: new Date(baseAt + quietPeriodMs).toISOString(),
   };
 }
 
@@ -670,7 +674,7 @@ async function heartbeat(turnId, generation) {
 async function completeTurn(turnId, result, generation) {
   if (generation !== runtimeGeneration) return;
   const completedAt = nowIso();
-  const updated = await mutateMindState((mind) => {
+  const updated = await mutateMindState((mind, root) => {
     if (mind.activeTurn?.id !== turnId) return { mind, value: false };
     const messageId = mind.activeTurn.wake.kind === 'message'
       ? mind.activeTurn.wake.message.id
@@ -688,17 +692,26 @@ async function completeTurn(turnId, result, generation) {
           fingerprint: messageFingerprint,
         }].slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS)
       : mind.recentMessageFingerprints;
+    const quietPeriodMs = persistentMindWakeIntervalMs(root.config?.persistentMindProfile);
+    const quietDeadline = Date.parse(completedAt) + quietPeriodMs;
+    const requestedAt = Date.parse(result?.selfWake?.notBefore);
     const requestedWake = result?.selfWake && typeof result.selfWake === 'object'
       ? {
           id: `wake-${randomUUID()}`,
           kind: 'self',
+          scheduleKind: 'requested',
           reason: String(result.selfWake.reason || 'turn requested follow-up')
             .slice(0, PERSISTENT_MIND_LIMITS.MAX_REASON_CHARS),
           sourceTurnId: turnId,
           createdAt: completedAt,
-          notBefore: result.selfWake.notBefore || completedAt,
+          // A turn may request an earlier follow-up, but the saved cadence is
+          // the operator's maximum quiet period and therefore caps later asks.
+          notBefore: new Date(Math.min(
+            quietDeadline,
+            Number.isFinite(requestedAt) ? Math.max(Date.parse(completedAt), requestedAt) : Date.parse(completedAt),
+          )).toISOString(),
         }
-      : quietSelfWake(turnId);
+      : quietSelfWake(turnId, quietPeriodMs, Date.parse(completedAt));
     const hasQueuedMessages = mind.queuedMessages.length > 0;
     return {
       mind: {
@@ -1032,6 +1045,30 @@ export async function getPersistentMindState() {
   return normalizePersistentMindState(state.persistentMind);
 }
 
+/** Apply a saved cadence to the currently scheduled self-wake and timer. */
+export async function refreshPersistentMindWakeCadence() {
+  const result = await mutateMindState((mind, root) => {
+    if (!mind.started || mind.activeTurn) return { mind };
+    const quietPeriodMs = persistentMindWakeIntervalMs(root.config?.persistentMindProfile);
+    const baseAt = Number.isFinite(Date.parse(mind.lastCompletedAt))
+      ? Date.parse(mind.lastCompletedAt)
+      : Date.now();
+    const quietDeadline = baseAt + quietPeriodMs;
+    let selfWake = mind.selfWake;
+    if (!selfWake && mind.queuedMessages.length === 0) {
+      selfWake = quietSelfWake(mind.lastCompletedTurnId || 'cadence-change', quietPeriodMs, baseAt);
+    } else if (selfWake?.scheduleKind === 'quiet') {
+      selfWake = quietSelfWake(selfWake.sourceTurnId || mind.lastCompletedTurnId || 'cadence-change', quietPeriodMs, baseAt);
+    } else if (selfWake && (!Number.isFinite(Date.parse(selfWake.notBefore)) || Date.parse(selfWake.notBefore) > quietDeadline)) {
+      selfWake = { ...selfWake, notBefore: new Date(quietDeadline).toISOString() };
+    }
+    return { mind: { ...mind, selfWake } };
+  });
+  if (result.state.started) await scheduleNextWake();
+  emitMindStatus(result.state);
+  return result.state;
+}
+
 export async function setPersistentMindEnabled(enabled) {
   if (!enabled) {
     runtimeGeneration += 1;
@@ -1352,6 +1389,7 @@ export async function requestPersistentMindWake({ sourceTurnId, reason, notBefor
     const selfWake = {
       id: `wake-${randomUUID()}`,
       kind: 'self',
+      scheduleKind: 'requested',
       reason: String(reason || 'self-wake').slice(0, PERSISTENT_MIND_LIMITS.MAX_REASON_CHARS),
       sourceTurnId,
       createdAt: nowIso(),
@@ -1392,7 +1430,7 @@ export async function checkPersistentMindWatchdog() {
 export async function initializePersistentMindSupervisor() {
   supervisorStopping = false;
   await cleanupPersistentMindAttachments();
-  const recovered = await mutateMindState((mind) => {
+  const recovered = await mutateMindState((mind, root) => {
     if (!mind.enabled || !mind.started) return { mind };
     let next = mind;
     const orphanedTurnId = mind.activeTurn?.id || null;
@@ -1410,7 +1448,14 @@ export async function initializePersistentMindSupervisor() {
       };
     } else if (next.queuedMessages.length === 0 && !next.selfWake) {
       const base = next.lastCompletedAt ? Date.parse(next.lastCompletedAt) : Date.now();
-      next = { ...next, selfWake: quietSelfWake(next.lastCompletedTurnId || 'restart', base + PERSISTENT_MIND_LIMITS.MAX_QUIET_MS) };
+      next = {
+        ...next,
+        selfWake: quietSelfWake(
+          next.lastCompletedTurnId || 'restart',
+          persistentMindWakeIntervalMs(root.config?.persistentMindProfile),
+          base,
+        ),
+      };
     }
     return { mind: next, value: { orphanedTurnId, mindId: mind.mindId } };
   });

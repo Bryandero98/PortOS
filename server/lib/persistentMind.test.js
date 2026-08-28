@@ -35,6 +35,28 @@ describe('persistent mind state', () => {
     expect(state.queuedMessages).toEqual([{ id: 'm1', text: 'hello', createdAt: iso(0) }]);
   });
 
+  it('classifies unmarked legacy self-wakes as requested without trusting their reason text', () => {
+    const state = normalizePersistentMindState({
+      enabled: true,
+      started: true,
+      selfWake: {
+        id: 'w1',
+        kind: 'self',
+        reason: 'maximum quiet period elapsed',
+        sourceTurnId: 't1',
+        createdAt: iso(1),
+        notBefore: iso(2),
+      },
+    });
+
+    expect(state.selfWake).toMatchObject({ scheduleKind: 'requested' });
+    expect(normalizePersistentMindState({
+      enabled: true,
+      started: true,
+      selfWake: { ...state.selfWake, scheduleKind: 'quiet' },
+    }).selfWake).toMatchObject({ scheduleKind: 'quiet' });
+  });
+
   it('does not preserve a running status when the durable started flag is false', () => {
     const activeTurn = {
       id: 't1',

@@ -12,7 +12,7 @@ import { MAX_SCREENSHOT_BYTES } from './uploadLimits.js';
 import { sanitizeFilename } from './mimeTypes.js';
 import { isSafeFilename } from './pathSafety.js';
 
-export const PERSISTENT_MIND_SCHEMA_VERSION = 3;
+export const PERSISTENT_MIND_SCHEMA_VERSION = 4;
 
 export const PERSISTENT_MIND_IMAGE_EXTENSIONS = Object.freeze(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 export const PERSISTENT_MIND_IMAGE_MIME_TYPES = Object.freeze({
@@ -35,6 +35,7 @@ export const PERSISTENT_MIND_STATUSES = [
 ];
 
 export const PERSISTENT_MIND_WAKE_KINDS = ['message', 'self'];
+export const PERSISTENT_MIND_SELF_WAKE_SCHEDULE_KINDS = ['quiet', 'requested'];
 
 export const PERSISTENT_MIND_LIMITS = Object.freeze({
   MAX_QUEUED_MESSAGES: 100,
@@ -229,6 +230,9 @@ const sanitizeSelfWake = (value) => {
   return {
     id,
     kind: 'self',
+    scheduleKind: PERSISTENT_MIND_SELF_WAKE_SCHEDULE_KINDS.includes(value?.scheduleKind)
+      ? value.scheduleKind
+      : 'requested',
     reason,
     sourceTurnId,
     createdAt: asIso(value?.createdAt) || new Date(0).toISOString(),

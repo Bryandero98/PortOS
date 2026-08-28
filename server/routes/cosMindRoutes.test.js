@@ -163,7 +163,14 @@ describe('persistent mind routes', () => {
     expect(mocks.readPersistentMindEvents).toHaveBeenCalledWith({ mindId: 'cos-persistent-mind', cursor: '12:mind-message:one', limit: 25 });
     expect(res.body).toMatchObject({
       events: [], gap: false, state: { status: 'idle' },
-      profile: { enabled: true, providerId: 'demo', model: 'demo-model', effort: 'high', thinkingInterface: 'text' },
+      profile: {
+        enabled: true,
+        providerId: 'demo',
+        model: 'demo-model',
+        effort: 'high',
+        thinkingInterface: 'text',
+        wakeIntervalMinutes: 30,
+      },
       capabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false },
       harness: { type: 'api', recommendation: 'recommended' },
       imageCapability: { status: 'unknown' },

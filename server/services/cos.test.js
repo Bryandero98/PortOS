@@ -49,6 +49,7 @@ import {
   readEndpointCapacity,
 } from './cosLocalEndpointSlots.js';
 import { PENDING_MERGE_SWEEP_INTERVAL_MS, MAX_PENDING_MERGE_TICKS } from './prWatcher.js';
+import { PERSISTENT_MIND_SCHEMA_VERSION } from '../lib/persistentMind.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COS_SRC = readFileSync(join(__dirname, 'cos.js'), 'utf-8');
@@ -2411,7 +2412,7 @@ describe('canQueueImprovementTasks — autonomous queuing gate', () => {
 describe('persistent mind — default-off CoS state integration (#5064)', () => {
   it('adds no cold-bootstrap provider work to a fresh CoS state', () => {
     expect(DEFAULT_STATE.persistentMind).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: PERSISTENT_MIND_SCHEMA_VERSION,
       mindId: 'cos-persistent-mind',
       enabled: false,
       started: false,
