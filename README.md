@@ -431,6 +431,9 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [CoS Agent Runner](./docs/features/cos-agent-runner.md) — Isolated agent process architecture
 - [CoS Enhancement](./docs/features/cos-enhancement.md) — Hybrid search, proactive execution, error recovery
 - [MTPLX](./docs/features/mtplx.md) — Native multi-token-prediction Qwen runtime on Apple Silicon, managed as a PM2 process from Models → LLMs
+- [DFlash 2 / DSpark](./docs/features/dflash2.md) — Speculative drafting acceleration for local llama-server
+- [vLLM RTX 3090](./docs/features/qwen38-rtx3090.md) — Docker compose setup for Qwen 27B on NVIDIA RTX 3090 GPUs
+- [SGLang Qwen](./docs/features/sglang-qwen38.md) — SGLang engine configuration for Hopper/Blackwell hardware
 - [Memory System](./docs/features/memory-system.md) — Semantic memory with vector search and importance decay
 - [Digital Twin](./docs/features/digital-twin.md) — Genome, chronotype, taste, and mortality-aware goals
 - [Identity System](./docs/features/identity-system.md) — Extended identity modeling (P1-P3)
@@ -445,8 +448,10 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [Prompt Manager](./docs/features/prompt-manager.md) — Customizable AI prompt templates
 - [JIRA Sprint Manager](./docs/features/jira-sprint-manager.md) — Autonomous JIRA triage and implementation
 - [Writers Room](./docs/features/writers-room.md) — Prose-to-media writing environment with explicit AI passes
+- [FableLoom](./docs/features/fableloom.md) — Interactive branching narrative engine and graph reader
 - [Sprite Export Contract](./docs/features/sprite-export-contract.md) — What a published sprite atlas guarantees a consuming game
 - [Video Text Encoders](./docs/features/video-text-encoders.md) — Dual-encoder memory and clip conditioning for video models
+- [Video Speed Profiles](./docs/features/video-speed-profiles.md) — Fast sampling profiles and runtime acceleration for video models
 - [Music Renderer Benchmarks](./docs/features/music-renderer-benchmarks.md) — Benchmarking profiles and listening test evidence for local renderers
 - [OpenClaw](./docs/features/openclaw-operator-chat.md) — In-app operator-agent chat
 - [Stacker News](./docs/features/stacker-news.md) — Territory management and content stewardship
