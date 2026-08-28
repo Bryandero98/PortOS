@@ -523,7 +523,6 @@ function OpenWorldInner() {
       agents: (cosAgents || []).filter(a => a.status === 'running' || a.state === 'coding' || a.state === 'thinking').length,
       peers: (instances?.peers || []).filter(p => p.status === 'online').length,
       level: character?.level,
-      streak: productivityData?.currentStreak ?? productivityData?.streak,
     };
   }, [apps, cosAgents, instances, character, productivityData]);
 

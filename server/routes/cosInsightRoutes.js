@@ -14,7 +14,7 @@ import { parsePagination } from '../lib/validation.js';
 
 const router = Router();
 
-// GET /api/cos/productivity - Get productivity insights and streaks
+// GET /api/cos/productivity - Get productivity insights and work patterns
 router.get('/productivity', asyncHandler(async (req, res) => {
   const insights = await productivity.getProductivityInsights();
   res.json(insights);
@@ -210,11 +210,10 @@ router.get('/recent-tasks', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/cos/quick-summary - Get at-a-glance dashboard summary
-// Combines today's activity, streak status, next job, and pending approvals into one efficient call
+// Combines today's activity, next job, and pending approvals into one efficient call
 router.get('/quick-summary', asyncHandler(async (req, res) => {
-  const [todayActivity, productivityData, tasksData, jobStats, velocityData, weekData, optimalTime] = await Promise.all([
+  const [todayActivity, tasksData, jobStats, velocityData, weekData, optimalTime] = await Promise.all([
     cos.getTodayActivity(),
-    productivity.getProductivitySummary(),
     cos.getAllTasks(),
     autonomousJobs.getJobStats(),
     productivity.getVelocityMetrics(),
@@ -249,12 +248,6 @@ router.get('/quick-summary', asyncHandler(async (req, res) => {
       successRate: todayActivity.stats.successRate,
       timeWorked: todayActivity.time.combined,
       accomplishments: todayActivity.accomplishments || []
-    },
-    streak: {
-      current: productivityData.currentStreak,
-      longest: productivityData.longestStreak,
-      weekly: productivityData.weeklyStreak,
-      lastActive: productivityData.lastActive
     },
     velocity: {
       percentage: velocityData.velocity,

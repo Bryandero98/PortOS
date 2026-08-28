@@ -70,7 +70,7 @@ describe('CoS Insight Routes', () => {
 
   describe('GET /api/cos/productivity', () => {
     it('should return productivity insights', async () => {
-      productivity.getProductivityInsights.mockResolvedValue({ streaks: {}, efficiency: 0.8 });
+      productivity.getProductivityInsights.mockResolvedValue({ dailyPatterns: {}, efficiency: 0.8 });
 
       const response = await request(app).get('/api/cos/productivity');
 
@@ -81,12 +81,12 @@ describe('CoS Insight Routes', () => {
 
   describe('GET /api/cos/productivity/summary', () => {
     it('should return productivity summary', async () => {
-      productivity.getProductivitySummary.mockResolvedValue({ currentStreak: 5 });
+      productivity.getProductivitySummary.mockResolvedValue({ totalDays: 5 });
 
       const response = await request(app).get('/api/cos/productivity/summary');
 
       expect(response.status).toBe(200);
-      expect(response.body.currentStreak).toBe(5);
+      expect(response.body.totalDays).toBe(5);
     });
   });
 
@@ -277,9 +277,6 @@ describe('CoS Insight Routes', () => {
         lastEvaluation: Date.now(),
         accomplishments: ['Fixed bug']
       });
-      productivity.getProductivitySummary.mockResolvedValue({
-        currentStreak: 5, longestStreak: 10, weeklyStreak: 3, lastActive: Date.now()
-      });
       cos.getAllTasks.mockResolvedValue({
         user: { grouped: { pending: [] } },
         cos: { awaitingApproval: [], grouped: { pending: [] } }
@@ -296,7 +293,7 @@ describe('CoS Insight Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.today.completed).toBe(3);
-      expect(response.body.streak.current).toBe(5);
+      expect(response.body).not.toHaveProperty('streak');
       expect(response.body.velocity.percentage).toBe(120);
     });
   });
