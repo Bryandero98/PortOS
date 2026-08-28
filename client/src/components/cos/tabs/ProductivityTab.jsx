@@ -15,7 +15,7 @@ import {
   Award
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
-import { formatDateTime } from '../../../utils/formatters';
+import { formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import * as api from '../../../services/api';
 import DailyTrendsChart from '../DailyTrendsChart';
 
