@@ -103,7 +103,8 @@ PortOS/
 │   ├── browser-config.json    # Browser CDP/health configuration
 │   ├── TASKS.md               # User task file
 │   ├── COS-TASKS.md           # System task file
-│   ├── COS-GOALS.md           # Mission and goals
+│   ├── GOALS.md               # Repository mission and goals
+│   ├── docs/GOALS_OPERATIONAL.md # Operational CoS goals
 │   ├── cos/                   # CoS state and agents
 │   │   ├── state.json         # Daemon state
 │   │   └── agents/            # Agent outputs
