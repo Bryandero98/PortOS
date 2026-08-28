@@ -235,8 +235,9 @@ exercised by the suite instead of bit-rotting behind a default nobody selects.
 
 The style change keeps the operational geometry and live data mappings stable while changing
 their material language. The Vibes pass now adds grounded nature patches, a varied plaza grove,
-and planter-framed warp pads; the shared app-building grammar remains intentionally recognizable
-across both styles so a status means the same thing in either world.
+planter-framed warp pads, and a deterministic drifting cloud bank that scales with the adaptive
+render tier; the shared app-building grammar remains intentionally recognizable across both
+styles so a status means the same thing in either world.
 
 ## Critical Files
 
