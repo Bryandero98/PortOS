@@ -814,12 +814,12 @@
         {
           "direction": "server-to-client",
           "source": "server/services/calendarGoogleSync.js",
-          "line": 140
+          "line": 155
         },
         {
           "direction": "server-to-client",
           "source": "server/services/calendarGoogleSync.js",
-          "line": 209
+          "line": 243
         },
         {
           "direction": "server-to-client",
@@ -860,7 +860,7 @@
         {
           "direction": "server-to-client",
           "source": "server/services/calendarGoogleSync.js",
-          "line": 217
+          "line": 270
         },
         {
           "direction": "server-to-client",
@@ -888,12 +888,12 @@
         {
           "direction": "server-to-client",
           "source": "server/services/calendarGoogleSync.js",
-          "line": 245
+          "line": 298
         },
         {
           "direction": "server-to-client",
           "source": "server/services/calendarGoogleSync.js",
-          "line": 307
+          "line": 371
         }
       ]
     },
@@ -916,7 +916,7 @@
         {
           "direction": "server-to-client",
           "source": "server/services/calendarGoogleSync.js",
-          "line": 167
+          "line": 182
         },
         {
           "direction": "server-to-client",
