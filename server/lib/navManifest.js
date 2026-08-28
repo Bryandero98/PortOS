@@ -328,7 +328,6 @@ const RAW_NAV_COMMANDS = [
   { id: 'nav.settings.openclaw', path: '/openclaw', label: 'OpenClaw', section: 'Settings', feature: 'openclaw', aliases: ['openclaw', 'settings-openclaw'], keywords: ['operator', 'chat', 'agent', 'runtime', 'sessions', 'streaming'] },
   { id: 'nav.settings.security', path: '/settings/security', label: 'Security', section: 'Settings', aliases: ['settings-security', 'login-password', 'auth-password', 'password-settings'], keywords: ['password', 'login', 'auth', 'sign-in', 'lock', 'tailnet', 'sidecar'] },
   { id: 'nav.settings.sharing', path: '/settings/sharing', label: 'Sharing', section: 'Settings', aliases: ['settings-sharing', 'sharing-settings'], keywords: ['display name', 'bio', 'attribution', 'identity', 'source'] },
-  { id: 'nav.settings.spotify', path: '/settings/spotify', label: 'Spotify', section: 'Settings', aliases: ['settings-spotify', 'spotify', 'spotify-settings'], keywords: ['spotify', 'music', 'listening', 'recently played', 'oauth', 'timeline', 'taste', 'media'] },
   { id: 'nav.settings.telegram', path: '/settings/telegram', label: 'Telegram', section: 'Settings', aliases: ['settings-telegram', 'telegram'] },
   { id: 'nav.settings.voice', path: '/settings/voice', label: 'Voice', section: 'Settings', aliases: ['settings-voice', 'voice', 'voice-settings'], keywords: ['mic', 'microphone', 'speech', 'tts', 'whisper', 'kokoro'] },
 

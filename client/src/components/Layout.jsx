@@ -302,7 +302,6 @@ export const NAV_PRESENTATION = {
   '/ai': { icon: Bot },
   '/settings/security': { icon: Lock },
   '/settings/sharing': { icon: Share2 },
-  '/settings/spotify': { icon: Music },
   '/settings/telegram': { icon: MessageSquare },
   '/settings/voice': { icon: Mic },
   '/digital-twin/accounts': { icon: Globe },

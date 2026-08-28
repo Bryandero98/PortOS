@@ -13,8 +13,6 @@ import { GeneralTab } from '../components/settings/GeneralTab';
 import { MortalLoomTab } from '../components/settings/MortalLoomTab';
 import { SecurityTab } from '../components/settings/SecurityTab';
 import { SharingTab } from '../components/settings/SharingTab';
-import { SpotifyTab } from '../components/settings/SpotifyTab';
-import { YoutubeTab } from '../components/settings/YoutubeTab';
 import { VoiceTab } from '../components/settings/VoiceTab';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 
@@ -48,8 +46,6 @@ export default function Settings() {
       case 'features': return <InstanceFeaturesTab />;
       case 'security': return <SecurityTab />;
       case 'sharing': return <SharingTab />;
-      case 'spotify': return <SpotifyTab />;
-      case 'youtube': return <YoutubeTab />;
       case 'voice': return <VoiceTab />;
       case 'telegram': return <TelegramTab />;
       case 'mortalloom': return <MortalLoomTab />;
