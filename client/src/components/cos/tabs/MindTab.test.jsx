@@ -7,6 +7,8 @@ import { MemoryRouter } from 'react-router';
 const api = vi.hoisted(() => ({
   getPersistentMind: vi.fn(),
   sendPersistentMindMessage: vi.fn(),
+  uploadPersistentMindAttachment: vi.fn(),
+  deletePersistentMindAttachment: vi.fn(),
   addPersistentMindAnnotation: vi.fn(),
   startPersistentMind: vi.fn(),
   pausePersistentMind: vi.fn(),
@@ -80,6 +82,10 @@ describe('MindTab', () => {
     socket.reset();
     api.getPersistentMind.mockResolvedValue(response());
     api.sendPersistentMindMessage.mockResolvedValue({ success: true, duplicate: false });
+    api.uploadPersistentMindAttachment.mockResolvedValue({
+      attachmentId: 'attachment-1', filename: 'mind-attachment-1.png', path: '/api/screenshots/mind-attachment-1.png', originalName: 'diagram.png', mimeType: 'image/png', size: 4,
+    });
+    api.deletePersistentMindAttachment.mockResolvedValue({ success: true });
     api.addPersistentMindAnnotation.mockResolvedValue({ success: true, duplicate: false });
     api.startPersistentMind.mockResolvedValue({ success: true });
     api.pausePersistentMind.mockResolvedValue({ success: true });
@@ -303,6 +309,44 @@ describe('MindTab', () => {
       { id: expect.stringMatching(/^message-/), text: 'First line\nSecond line' },
       { silent: true },
     ));
+  });
+
+  it('uploads supported images, permits an image-only message, and deletes a removed upload', async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByText('Review the next bounded slice.');
+
+    const picker = screen.getByLabelText('Attach images');
+    await user.upload(picker, new File(['png'], 'diagram.png', { type: 'image/png' }));
+    await waitFor(() => expect(api.uploadPersistentMindAttachment).toHaveBeenCalledWith(
+      { filename: 'diagram.png', data: expect.any(String) }, { silent: true },
+    ));
+    expect(screen.getByRole('button', { name: 'Remove diagram.png' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(api.sendPersistentMindMessage).toHaveBeenCalledWith(
+      { id: expect.stringMatching(/^message-/), text: '', images: ['attachment-1'] }, { silent: true },
+    ));
+
+    await user.upload(picker, new File(['png'], 'diagram.png', { type: 'image/png' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove diagram.png' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Remove diagram.png' }));
+    await waitFor(() => expect(api.deletePersistentMindAttachment).toHaveBeenCalledWith('attachment-1', { silent: true }));
+  });
+
+  it('renders safe accepted image metadata and disables the image picker when unsupported', async () => {
+    api.getPersistentMind.mockResolvedValue(response({
+      imageCapability: { status: 'unsupported', guidance: 'Select a vision-capable model in Settings.' },
+      events: [event({ data: {
+        displayText: 'Please inspect this.',
+        images: [{ attachmentId: 'attachment-1', path: '/api/screenshots/mind-attachment-1.png', originalName: 'diagram.png', mimeType: 'image/png', size: 4 }],
+      } })],
+    }));
+    renderTab('/cos/mind?event=mind-message%3Amessage-1');
+
+    expect((await screen.findAllByAltText('diagram.png')).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Attach images')).toBeDisabled();
+    expect(screen.getByText(/Image attachments are unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings?tab=providers');
   });
 
   it('does not submit an IME composition commit key', async () => {

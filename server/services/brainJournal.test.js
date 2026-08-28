@@ -15,6 +15,7 @@ vi.mock('../lib/fileUtils.js', async () => {
   const actual = await vi.importActual('../lib/fileUtils.js');
   return {
     ...actual,
+    atomicWrite: vi.fn(actual.atomicWrite),
     PATHS: { ...actual.PATHS, brain: TEMP_ROOT },
   };
 });
@@ -84,6 +85,7 @@ vi.mock('./brainStorage.js', () => ({
 
 import * as journal from './brainJournal.js';
 import { brainEvents, getAll, getById } from './brainStorage.js';
+import { atomicWrite } from '../lib/fileUtils.js';
 import * as obsidian from './obsidian.js';
 
 // Pull the payload of the last emit of `name`, or undefined if it never fired.
@@ -445,6 +447,22 @@ describe('brainJournal', () => {
       // mirror per entry, which would double the call count. resyncAllToObsidian
       // passes force:true, so it still runs.
       await journal.updateSettings({ obsidianVaultId: 'v1', autoSync: false, obsidianFolder: 'Daily Log' });
+    });
+
+    it('writes all changed Obsidian locations in one sidecar save', async () => {
+      for (let i = 0; i < 3; i += 1) await journal.appendJournal(isoDay(i), `day ${i}`);
+      obsidian.upsertNote.mockResolvedValue('Daily Log/note.md');
+      atomicWrite.mockClear();
+
+      await journal.resyncAllToObsidian();
+
+      expect(atomicWrite).toHaveBeenCalledTimes(1);
+      const locations = await Promise.all([0, 1, 2].map((i) => journal.getJournal(isoDay(i))));
+      expect(locations.map(({ obsidianPath, obsidianVaultId }) => ({ obsidianPath, obsidianVaultId }))).toEqual([
+        { obsidianPath: 'Daily Log/2026-01-01.md', obsidianVaultId: 'v1' },
+        { obsidianPath: 'Daily Log/2026-01-02.md', obsidianVaultId: 'v1' },
+        { obsidianPath: 'Daily Log/2026-01-03.md', obsidianVaultId: 'v1' },
+      ]);
     });
 
     it('stops after a run of consecutive failures instead of grinding through every entry', async () => {

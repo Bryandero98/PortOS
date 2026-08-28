@@ -12,6 +12,7 @@ import toast from '../components/ui/Toast';
 import FilePickerButton from '../components/ui/FilePickerButton';
 import Modal from '../components/ui/Modal.jsx';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair.jsx';
+import UnsavedChangesConfirm from '../components/ui/UnsavedChangesConfirm.jsx';
 import {
   getCatalogIngredientDetails,
   updateCatalogIngredient,
@@ -40,6 +41,7 @@ import MediaImage from '../components/MediaImage';
 import CharacterLoraChip from '../components/loraTraining/CharacterLoraChip';
 import TagPicker from '../components/TagPicker';
 import GenericIngredientFields from '../components/GenericIngredientFields';
+import useUnsavedChangesGuard from '../hooks/useUnsavedChangesGuard';
 import { getCatalogType, CATALOG_BADGE_BY_ID, RELATION_KINDS, getRelationKind } from '../lib/catalogTypes';
 import { useCatalogTypes } from '../hooks/useCatalogTypes.jsx';
 import { timeAgo, formatDateTime } from '../utils/formatters';
@@ -109,6 +111,27 @@ export function buildGenerationPromptSeed(payload, typeDef, tags = []) {
   return seed.length > GENERATION_SEED_MAX
     ? `${seed.slice(0, GENERATION_SEED_MAX - 1).trimEnd()}…`
     : seed;
+}
+
+// Compare JSON-shaped editor values by value while ignoring object-key order.
+// A catalog payload can arrive from a peer with the same fields in a different
+// order; that is not an edit the user needs to save.
+function stableSerialize(value) {
+  return JSON.stringify(value, (_key, current) => {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return current;
+    return Object.keys(current).sort().reduce((sorted, key) => {
+      sorted[key] = current[key];
+      return sorted;
+    }, {});
+  });
+}
+
+function sameValue(left, right) {
+  return stableSerialize(left) === stableSerialize(right);
+}
+
+function ingredientPayload(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
 export default function CatalogIngredient() {
@@ -329,10 +352,23 @@ export default function CatalogIngredient() {
     });
     setSaving(false);
     if (!updated) return;
-    setRecord((prev) => ({ ...prev, ...updated }));
+    const persistedName = typeof updated.name === 'string' ? updated.name : trimmedName;
+    const persistedTags = Array.isArray(updated.tags) ? updated.tags : tags;
+    const persistedPayload = Object.hasOwn(updated, 'payload')
+      ? ingredientPayload(updated.payload)
+      : ingredientPayload(payload);
+    setRecord((prev) => ({
+      ...prev,
+      ...updated,
+      name: persistedName,
+      tags: persistedTags,
+      payload: persistedPayload,
+    }));
+    setName(persistedName);
     // The server normalizes tags through the canonical table (casing/whitespace
     // collapse), so reflect the persisted set back into the chips.
-    if (Array.isArray(updated.tags)) setTags(updated.tags);
+    setTags(persistedTags);
+    setPayload({ ...persistedPayload });
     toast.success('Saved');
     refreshRevisions();
   };
@@ -367,6 +403,19 @@ export default function CatalogIngredient() {
   const updatePayload = (key, value) => {
     setPayload((prev) => ({ ...prev, [key]: value }));
   };
+
+  const isDirty = Boolean(record && (
+    name !== (record.name || '')
+    || !sameValue(tags, Array.isArray(record.tags) ? record.tags : [])
+    || !sameValue(payload, ingredientPayload(record.payload))
+  ));
+  const routeGuard = useUnsavedChangesGuard(isDirty);
+  const discardAndExit = useCallback(() => {
+    // The parked route is leaving, so unmounting discards the local draft. Do
+    // not clear isDirty before proceeding: the shared guard auto-proceeds when
+    // a parked draft settles, which would race this explicit proceed call.
+    routeGuard.proceed();
+  }, [routeGuard]);
 
   if (loading || !record) {
     return (
@@ -413,6 +462,13 @@ export default function CatalogIngredient() {
 
   return (
     <section className="h-full overflow-y-auto p-4 md:p-6">
+      <UnsavedChangesConfirm
+        guard={routeGuard}
+        when={!saving}
+        question="Discard your unsaved changes to this ingredient?"
+        label={`Discard unsaved changes to ${record.name || 'this ingredient'}`}
+        onDiscard={discardAndExit}
+      />
       <div className="max-w-4xl mx-auto space-y-5">
         <header className="flex items-start justify-between gap-3 flex-wrap">
           <div className="flex items-start gap-3 min-w-0">
@@ -437,6 +493,7 @@ export default function CatalogIngredient() {
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 disabled:opacity-50 text-white text-sm font-medium">
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
             </button>
+            {isDirty && <span className="text-xs text-port-warning" role="status">Unsaved changes</span>}
             {armedDelete ? (
               <span className="inline-flex items-center gap-1 text-sm">
                 <span className="text-gray-400 px-1">Delete this ingredient?</span>

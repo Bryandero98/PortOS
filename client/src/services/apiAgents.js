@@ -87,6 +87,10 @@ export const getPersistentMindVisibility = (options = {}) => {
 };
 export const sendPersistentMindMessage = (body, options = {}) =>
   request('/cos/mind/messages', { method: 'POST', body: JSON.stringify(body), ...options });
+export const uploadPersistentMindAttachment = (body, options = {}) =>
+  request('/cos/mind/attachments', { method: 'POST', body: JSON.stringify(body), ...options });
+export const deletePersistentMindAttachment = (attachmentId, options = {}) =>
+  request(`/cos/mind/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE', ...options });
 export const addPersistentMindAnnotation = (body, options = {}) =>
   request('/cos/mind/annotations', { method: 'POST', body: JSON.stringify(body), ...options });
 export const startPersistentMind = (options = {}) => request('/cos/mind/start', { method: 'POST', ...options });
