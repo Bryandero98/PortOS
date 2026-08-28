@@ -310,6 +310,7 @@ describe('getProductivitySummary', () => {
       hourlyPatterns: {}, dailyPatterns: {}, dailyHistory: {},
       totals: { totalTasks: 20, successfulTasks: 18, successRate: 90, activeDays: 11, activeWeeks: 3 },
       milestones: [
+        { type: 'streak', value: 30, description: '30-day work streak' },
         { type: 'tasks', value: 10, description: 'Completed 10 tasks' },
         { type: 'tasks', value: 25, description: 'Completed 25 tasks' },
       ],

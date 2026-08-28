@@ -47,6 +47,9 @@ export async function loadProductivity() {
   // normal write removes it from disk without needing a destructive migration.
   const currentData = { ...data };
   delete currentData.streaks;
+  if (Array.isArray(currentData.milestones)) {
+    currentData.milestones = currentData.milestones.filter((milestone) => milestone?.type !== 'streak');
+  }
   // Merge with defaults to ensure all current fields exist.
   return {
     ...defaults,

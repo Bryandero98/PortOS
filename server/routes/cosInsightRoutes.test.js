@@ -12,12 +12,7 @@ vi.mock('../services/cos.js', () => ({
 }));
 
 vi.mock('../services/taskLearning.js', () => ({
-  getLearningInsights: vi.fn(),
-  estimateQueueCompletion: vi.fn()
-}));
-
-vi.mock('../services/autonomousJobs.js', () => ({
-  getJobStats: vi.fn()
+  getLearningInsights: vi.fn()
 }));
 
 vi.mock('../services/productivity.js', () => ({
@@ -48,7 +43,6 @@ vi.mock('../services/notifications.js', () => ({
 
 import * as cos from '../services/cos.js';
 import * as taskLearning from '../services/taskLearning.js';
-import * as autonomousJobs from '../services/autonomousJobs.js';
 import * as productivity from '../services/productivity.js';
 import * as goalProgress from '../services/goalProgress.js';
 import * as decisionLog from '../services/decisionLog.js';
@@ -281,19 +275,20 @@ describe('CoS Insight Routes', () => {
         user: { grouped: { pending: [] } },
         cos: { awaitingApproval: [], grouped: { pending: [] } }
       });
-      autonomousJobs.getJobStats.mockResolvedValue({ nextDue: null });
       productivity.getVelocityMetrics.mockResolvedValue({
         velocity: 120, velocityLabel: 'Above average', avgPerDay: 3, historicalDays: 30
       });
-      productivity.getWeekComparison.mockResolvedValue({ delta: 2 });
-      productivity.getOptimalTimeInfo.mockResolvedValue({ hasData: false });
-      taskLearning.estimateQueueCompletion.mockResolvedValue({ eta: null });
 
       const response = await request(app).get('/api/cos/quick-summary');
 
       expect(response.status).toBe(200);
       expect(response.body.today.completed).toBe(3);
       expect(response.body).not.toHaveProperty('streak');
+      expect(response.body).not.toHaveProperty('nextJob');
+      expect(response.body).not.toHaveProperty('weekComparison');
+      expect(response.body).not.toHaveProperty('optimalTime');
+      expect(response.body.today).not.toHaveProperty('accomplishments');
+      expect(response.body.queue).not.toHaveProperty('estimate');
       expect(response.body.velocity.percentage).toBe(120);
     });
   });
