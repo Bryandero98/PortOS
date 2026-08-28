@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, CheckCircle2, LockKeyhole, RefreshCw, ShieldCheck, Wrench } from 'lucide-react';
-import { Link } from 'react-router';
+import { CheckCircle2, LockKeyhole, RefreshCw, ShieldCheck } from 'lucide-react';
 import * as api from '../services/api';
-import PageHeader from '../components/PageHeader';
 import BrailleSpinner from '../components/BrailleSpinner';
 import Banner from '../components/ui/Banner';
 import PersistentMindTaskAccessControls from '../components/cos/PersistentMindTaskAccessControls';
 
-export default function PersistentMindTools() {
+export default function PersistentMindTools({ onCapabilitiesChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -48,25 +46,13 @@ export default function PersistentMindTools() {
         granted: capabilities[tool.capability] === true,
       })),
     } : current);
+    onCapabilitiesChange?.(capabilities);
     if (capabilities.createTasks && !data?.taskCatalog) load();
     else if (!capabilities.createTasks) setLoading(false);
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PageHeader
-        icon={Wrench}
-        title="Persistent Mind Tools"
-        subtitle="Inventory and edit the typed authority granted to the resident mind"
-        actions={(
-          <Link to="/cos/mind" className="inline-flex min-h-10 items-center gap-1.5 rounded border border-port-border px-3 text-sm text-port-text-muted hover:border-port-accent hover:text-port-accent">
-            <ArrowLeft size={15} aria-hidden="true" /> Back to mind
-          </Link>
-        )}
-      />
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-        <div className="mx-auto max-w-5xl space-y-4">
+    <div className="space-y-4">
           {error && <Banner tone="error" title="Tools unavailable">{error}. The last loaded state is preserved; retry when the connection recovers.</Banner>}
 
           {loading && !data ? (
@@ -177,8 +163,6 @@ export default function PersistentMindTools() {
               </section>
             </>
           ) : null}
-        </div>
-      </div>
     </div>
   );
 }

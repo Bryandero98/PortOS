@@ -42,7 +42,6 @@ const RunsTab = lazy(() => import('../components/cos/tabs/RunsTab'));
 // ledger read path with it.
 const RunEventsTab = lazy(() => import('../components/cos/tabs/RunEventsTab'));
 const MindTab = lazy(() => import('../components/cos/tabs/MindTab'));
-const PersistentMindTools = lazy(() => import('./PersistentMindTools'));
 // The task and agent tabs are the default CoS landing surfaces and stay eager.
 // Every other tab is loaded only when selected so the common queue view does
 // not pay for charts, memory graphs, briefing readers, or configuration forms.
@@ -1144,13 +1143,6 @@ export default function ChiefOfStaff() {
           <div role="tabpanel" id="tabpanel-mind" aria-labelledby="tab-mind">
             <Suspense fallback={<TabLoadFallback label="mind" />}>
               <MindTab />
-            </Suspense>
-          </div>
-        )}
-        {activeTab === 'tools' && (
-          <div role="tabpanel" id="tabpanel-tools" aria-labelledby="tab-tools">
-            <Suspense fallback={<TabLoadFallback label="mind tools" />}>
-              <PersistentMindTools />
             </Suspense>
           </div>
         )}
