@@ -1720,9 +1720,9 @@ If the release docs identify a separate database-backed test suite, the canonica
 
 ## Step 1: Run the canonical release workflow
 
-The PortOS Code Review Defaults rendered into \`{reviewers}\` are authoritative for this run. Use exactly that reviewer list and no other. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. PortOS-only configured reviewers still run through the Local Reviewer Procedure appended to this prompt. If the reviewer list is empty or unavailable, stop before creating or updating a release PR.
+The PortOS Code Review Defaults rendered into \`{reviewers}\` are advisory for this run. Use exactly that reviewer list and no other when review is available. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. Code review is optional: run configured reviewers when available and address valid findings, but an empty, unavailable, timed-out, malformed, no-verdict, or otherwise inconclusive review must never stop the release.
 
-Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, local review, PR creation, the configured reviewer loop, CI, merge, tagging, and the final report. If it cannot run or a configured reviewer is unavailable or inconclusive, stop and report instead of substituting another reviewer.
+Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, optional code review, PR creation, CI, merge, tagging, and the final report. Only CI is the review/merge gate; required release tests/build checks still must pass. If the workflow itself cannot run, its required tests/build checks fail, or CI fails, stop and report; do not stop or leave the release open because code review is unavailable or inconclusive.
 
 The release workflow is attached to this task by metadata so every provider receives the same bundled body and reviewer pin. Do not reimplement any of its phases in this scheduled prompt.`,
 
