@@ -476,7 +476,7 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeed
           </p>
           {hasScenes && (
             <p className="text-xs text-port-warning">
-              Weaving replaces this episode's {episode.nodes.length} existing scene{episode.nodes.length === 1 ? '' : 's'}.
+              Weaving replaces this episode's {episode.nodes.length} existing scene{episode.nodes.length === 1 ? '' : 's'} and drops their rendered stills and video clips.
             </p>
           )}
           <button

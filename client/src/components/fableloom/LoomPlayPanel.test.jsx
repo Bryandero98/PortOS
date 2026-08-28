@@ -136,6 +136,8 @@ describe('LoomPlayPanel', () => {
     render(<LoomPlayPanel loom={{ ...loom, episodes: [cutEpisode] }} episode={cutEpisode} />);
     await user.selectOptions(screen.getByLabelText('Preview stage'), 'video');
 
+    expect(screen.getByRole('button', { name: 'Video advances automatically' })).toBeDisabled();
+
     fireEvent.ended(screen.getByLabelText('Setup'));
 
     await waitFor(() => expect(playLoomTurn).toHaveBeenCalledWith(

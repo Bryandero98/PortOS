@@ -153,15 +153,19 @@ describe('describeGraphForPrompt', () => {
     const text = describeGraphForPrompt(soundEpisode());
     expect(text).toContain('[n1] The Gate (START)');
     expect(text).toContain('[n4] The Vault (ENDING: Treasure found)');
+    expect(text).not.toContain('The Vault (ENDING: Treasure found) (DECISION LOOP)');
     expect(text).toContain('-> [n2] intent "enter the gate"');
   });
 
-  it('truncates long prose at proseLimit', () => {
+  it('truncates long prose and video direction at proseLimit', () => {
     const ep = soundEpisode();
     ep.nodes[0].prose = 'x'.repeat(500);
+    ep.nodes[0].videoPrompt = 'y'.repeat(500);
     const text = describeGraphForPrompt(ep, { proseLimit: 100 });
     expect(text).toContain(`${'x'.repeat(100)}…`);
+    expect(text).toContain(`Video: ${'y'.repeat(100)}…`);
     expect(text).not.toContain('x'.repeat(101));
+    expect(text).not.toContain('y'.repeat(101));
   });
 
   it('includes trigger examples', () => {

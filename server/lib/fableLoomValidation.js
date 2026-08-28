@@ -146,8 +146,6 @@ const llmPickFields = llmRoutePinSchema.shape;
 
 export const weaveSchema = z.object({
   guidance: z.string().max(4000).optional(),
-  nodeTarget: z.number().int().min(3).max(60).optional(),
-  endingTarget: z.number().int().min(1).max(12).optional(),
   replace: z.boolean().optional(),
   ...llmPickFields,
 });

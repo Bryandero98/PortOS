@@ -191,7 +191,8 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     // An existing rendered still seeds image-to-video when one is available.
     await saveField('videoPrompt', form.videoPrompt);
     const movement = FABLELOOM_CAMERA_MOVEMENTS.find((move) => move.value === form.cameraMovement);
-    const prompt = movement ? `${authoredPrompt}\n\nCamera direction: ${movement.prompt}` : authoredPrompt;
+    const direction = movement?.prompt || form.cameraMovement.trim();
+    const prompt = direction ? `${authoredPrompt}\n\nCamera direction: ${direction}` : authoredPrompt;
     await generateVideo({
       prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
       backend: 'local',

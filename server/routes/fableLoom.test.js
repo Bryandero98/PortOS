@@ -221,17 +221,11 @@ describe('FableLoom routes', () => {
     expect(response.body.issues).toEqual([]);
   });
 
-  it('POST weave validates bounds and forwards options', async () => {
-    const invalid = await request(makeApp())
-      .post('/api/fableloom/loom-1/episodes/ep-1/weave')
-      .send({ nodeTarget: 999 });
-    expect(invalid.status).toBe(400);
-    expect(fableLoom.weaveEpisode).not.toHaveBeenCalled();
-
+  it('POST weave ignores legacy count hints and forwards current options', async () => {
     fableLoom.weaveEpisode.mockResolvedValueOnce({ loom: { id: 'loom-1' }, runId: 'r' });
     const ok = await request(makeApp())
       .post('/api/fableloom/loom-1/episodes/ep-1/weave')
-      .send({ guidance: 'darker', replace: true });
+      .send({ guidance: 'darker', replace: true, nodeTarget: 999, endingTarget: 999 });
     expect(ok.status).toBe(200);
     expect(fableLoom.weaveEpisode).toHaveBeenCalledWith('loom-1', 'ep-1', { guidance: 'darker', replace: true });
   });

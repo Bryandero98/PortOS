@@ -157,14 +157,6 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
         </select>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        <SceneCard
-          node={scene}
-          isOpening={scene?.id === start.id}
-          format={loom.format}
-          previewMode={previewMode}
-          onCutEnded={advanceCut}
-          automaticCut={automaticCut}
-        />
         {transcript.map((turn, i) => {
           if (turn.role === 'scene') return null;
           return (
@@ -181,6 +173,14 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
             </div>
           );
         })}
+        <SceneCard
+          node={scene}
+          isOpening={scene?.id === start.id}
+          format={loom.format}
+          previewMode={previewMode}
+          onCutEnded={advanceCut}
+          automaticCut={automaticCut}
+        />
         {ended && (
           <div className="flex items-center gap-2 justify-center text-port-success text-sm font-medium py-2">
             <Flag size={14} />
@@ -208,7 +208,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           <button
             type="button"
             onClick={advanceCut}
-            disabled={sending}
+            disabled={sending || (previewMode === 'video' && !!scene.videoHistoryId)}
             className="w-full px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
           >
             {sending ? 'Loading next cut…' : previewMode === 'video' && scene.videoHistoryId ? 'Video advances automatically' : 'Next cut'}

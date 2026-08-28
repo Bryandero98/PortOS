@@ -169,12 +169,14 @@ export function describeGraphForPrompt(episode, { proseLimit = 400 } = {}) {
     const flags = [
       node.id === episode?.startNodeId ? 'START' : null,
       node?.isEnding ? `ENDING${isStr(node?.endingLabel) ? `: ${node.endingLabel}` : ''}` : null,
-      node?.playbackMode === 'cut' ? 'AUTO CUT' : 'DECISION LOOP',
+      node?.isEnding ? null : (node?.playbackMode === 'cut' ? 'AUTO CUT' : 'DECISION LOOP'),
     ].filter(Boolean);
     lines.push(`[${node.id}] ${node.title || 'Untitled scene'}${flags.length ? ` (${flags.join(') (')})` : ''}`);
     const prose = typeof node.prose === 'string' ? node.prose.trim() : '';
     if (prose) lines.push(prose.length > proseLimit ? `${prose.slice(0, proseLimit)}…` : prose);
-    if (isStr(node.videoPrompt)) lines.push(`Video: ${node.videoPrompt}`);
+    if (isStr(node.videoPrompt)) {
+      lines.push(`Video: ${node.videoPrompt.length > proseLimit ? `${node.videoPrompt.slice(0, proseLimit)}…` : node.videoPrompt}`);
+    }
     if (isStr(node.cameraMovement)) lines.push(`Camera movement: ${node.cameraMovement}`);
     for (const tr of asArray(node.transitions)) {
       const triggers = asArray(tr?.triggers).filter(isStr);

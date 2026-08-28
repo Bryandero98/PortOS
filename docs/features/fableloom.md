@@ -149,6 +149,10 @@ the exactly-one-next-path contract for automatic cuts —
 and renders in the editor's Structure panel via
 `GET /api/fableloom/:id/episodes/:episodeId/validate`.
 
+Reweaving preserves story events and path meanings, but it replaces node ids;
+existing rendered stills and clips are therefore dropped. The setup drawer
+warns about that production cost before the author starts the reweave.
+
 ## Scene media
 
 Each node carries an `imagePrompt`; **Generate** posts to the shared

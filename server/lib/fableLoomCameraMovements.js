@@ -58,6 +58,16 @@ export const FABLELOOM_CAMERA_MOVEMENT_VALUES = Object.freeze(
   FABLELOOM_CAMERA_MOVEMENTS.map(({ value }) => value),
 );
 
+export const normalizeFableLoomCameraMovement = (raw) => {
+  if (typeof raw !== 'string') return '';
+  const candidate = raw.trim();
+  const normalized = candidate.toLowerCase();
+  const match = FABLELOOM_CAMERA_MOVEMENTS.find(({ value, label }) => (
+    value.toLowerCase() === normalized || label.toLowerCase() === normalized
+  ));
+  return match?.value || candidate;
+};
+
 export const fableLoomCameraMovementCatalogForPrompt = () => FABLELOOM_CAMERA_MOVEMENTS
   .map(({ value, label, prompt }) => `- ${value} (${label}): ${prompt}`)
   .join('\n');

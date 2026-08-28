@@ -20,6 +20,7 @@ import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
 import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
 import { fableLoomCameraMovementCatalogForPrompt } from '../../lib/fableLoomCameraMovements.js';
+import { isFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
 import { getUniverse } from '../universeBuilder.js';
 import { LOOM_LIMITS, findEpisode, findNode, getLoom, mutateLoom } from './records.js';
 import { asLoomFormat, loomFormatLabel, narrationFormatContract, sceneFormatContract } from './formats.js';
@@ -194,7 +195,7 @@ export async function weaveEpisode(loomId, episodeId, {
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
     existingGraph: episode.nodes.length
-      ? describeGraphForPrompt(episode, { proseLimit: 4000 })
+      ? describeGraphForPrompt(episode, { proseLimit: 1200 })
       : '(none — create the episode from the story context)',
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     sceneFormatContract: sceneFormatContract(loom.format),
@@ -249,7 +250,14 @@ export async function branchNode(loomId, episodeId, nodeId, {
     source.playbackMode = 'decision';
     for (const branch of branches) {
       if (ep.nodes.length >= LOOM_LIMITS.NODES_MAX) break;
-      const newNode = { id: `node-${randomUUID()}`, ...generatedNodeFields(branch.node), format: asLoomFormat(loom.format), transitions: [], pos: null };
+      const newNode = {
+        id: `node-${randomUUID()}`,
+        ...generatedNodeFields(branch.node),
+        playbackMode: 'decision',
+        format: asLoomFormat(loom.format),
+        transitions: [],
+        pos: null,
+      };
       ep.nodes.push(newNode);
       source.transitions = [...(source.transitions || []), {
         targetNodeId: newNode.id,
@@ -300,7 +308,7 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
 
 const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel'];
 const FEEDBACK_TRANSITION_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
-const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'endingLabel']);
+const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'endingLabel']);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -327,6 +335,8 @@ const normalizeFeedbackPatch = (content, episode) => {
       const value = rawScene[key];
       if (!hasOwn(rawScene, key)) continue;
       if (FEEDBACK_STRING_NODE_FIELDS.has(key) && typeof value === 'string') {
+        nodePatch[key] = value;
+      } else if (key === 'playbackMode' && isFableLoomPlaybackMode(value)) {
         nodePatch[key] = value;
       } else if (key === 'isEnding' && typeof value === 'boolean') {
         nodePatch[key] = value;

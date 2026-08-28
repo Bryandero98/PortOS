@@ -13,7 +13,7 @@ export const ACCEPTED_OLD_MD5 = {
 
 export const NEW_SHIPPED_MD5 = {
   'fableloom-weave-episode.md': '4c9454d1537c4ebb3becbfa04fae3ed8',
-  'fableloom-branch-node.md': 'ff5d40b3090c775fc9c1f48c2ea96bbd',
+  'fableloom-branch-node.md': 'c14e2b9c435e43a8c3b134a62cd66d08',
   'fableloom-feedback-episode.md': 'd09bb405478d24c294b0c658ef365cd1',
 };
 
