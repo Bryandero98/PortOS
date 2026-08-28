@@ -293,7 +293,7 @@ describe('MindTab', () => {
     await user.click(taskAccess);
 
     await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
-      { persistentMindCapabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false } },
+      { persistentMindCapabilities: { schemaVersion: 3, createTasks: true, readPortos: false, writePortos: false, taskModelAllowlist: [] } },
       { silent: true },
     ));
     expect(screen.getAllByText(/code review then merge/i).length).toBeGreaterThan(0);

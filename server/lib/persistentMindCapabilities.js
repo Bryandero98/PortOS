@@ -14,7 +14,19 @@ import {
   portosSemanticToolGrantsSchema,
 } from './cosToolContracts.js';
 
-export const PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION = 2;
+export const PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION = 3;
+const PREVIOUS_PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION = 2;
+
+export const PERSISTENT_MIND_TASK_MODEL_ALLOWLIST_LIMITS = Object.freeze({
+  MAX_ENTRIES: 200,
+  PROVIDER_ID_CHARS: 100,
+  MODEL_CHARS: 200,
+});
+
+const persistentMindTaskModelAllowlistEntrySchema = z.object({
+  providerId: z.string().trim().min(1).max(PERSISTENT_MIND_TASK_MODEL_ALLOWLIST_LIMITS.PROVIDER_ID_CHARS),
+  model: z.string().trim().min(1).max(PERSISTENT_MIND_TASK_MODEL_ALLOWLIST_LIMITS.MODEL_CHARS),
+}).strict();
 
 // The persistent mind has a deliberately smaller surface than ordinary CoS
 // agents. Keep this catalog beside the capability schema so the API and the UI
@@ -89,8 +101,17 @@ export const PERSISTENT_MIND_VALIDATION_CHECKS = Object.freeze([
 ]);
 
 export const persistentMindCapabilitiesSchema = portosSemanticToolGrantsSchema.extend({
-  schemaVersion: z.literal(PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION).optional(),
+  // Accept the previous wire version so an older client can still change the
+  // unrelated grants while this server normalizes the stored shape forward.
+  schemaVersion: z.union([
+    z.literal(PREVIOUS_PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION),
+    z.literal(PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION),
+  ]).optional(),
   createTasks: z.boolean().optional(),
+  // An empty list preserves the legacy unrestricted task catalog. Once any
+  // entries are configured, requests must name one of these exact pairs.
+  taskModelAllowlist: z.array(persistentMindTaskModelAllowlistEntrySchema)
+    .max(PERSISTENT_MIND_TASK_MODEL_ALLOWLIST_LIMITS.MAX_ENTRIES).optional(),
 });
 
 export const persistentMindTaskRequestSchema = z.object({
@@ -132,21 +153,66 @@ export function createDefaultPersistentMindCapabilities() {
     createTasks: false,
     readPortos: false,
     writePortos: false,
+    taskModelAllowlist: [],
   };
+}
+
+const normalizeTaskModelAllowlist = (value) => {
+  if (value === undefined) return { entries: [], invalid: false };
+  if (!Array.isArray(value) || value.length > PERSISTENT_MIND_TASK_MODEL_ALLOWLIST_LIMITS.MAX_ENTRIES) {
+    return { entries: [], invalid: true };
+  }
+  const entries = [];
+  const seen = new Set();
+  for (const candidate of value) {
+    const parsed = persistentMindTaskModelAllowlistEntrySchema.safeParse(candidate);
+    if (!parsed.success) return { entries: [], invalid: true };
+    const entry = parsed.data;
+    const key = `${entry.providerId}\0${entry.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push(entry);
+  }
+  return { entries, invalid: false };
+};
+
+export function isPersistentMindTaskModelAllowed(capabilities, providerId, model) {
+  const normalized = normalizePersistentMindCapabilities(capabilities);
+  if (normalized.taskModelAllowlistInvalid || capabilities?.taskModelAllowlistInvalid === true) return false;
+  if (normalized.taskModelAllowlist.length === 0) return true;
+  return normalized.taskModelAllowlist.some((entry) => (
+    entry.providerId === providerId && entry.model === model
+  ));
 }
 
 export function normalizePersistentMindCapabilities(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const semanticGrants = normalizePortosSemanticToolGrants(source);
+  const taskModelAllowlist = source.taskModelAllowlistInvalid === true
+    ? { entries: [], invalid: true }
+    : normalizeTaskModelAllowlist(source.taskModelAllowlist);
   return {
     schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
     createTasks: source.createTasks === true,
     ...semanticGrants,
+    taskModelAllowlist: taskModelAllowlist.entries,
+    // A malformed hand-edited persisted policy must not silently become the
+    // unrestricted empty-list policy. This internal marker is omitted from
+    // route input schemas and only affects fail-closed admission/catalog code.
+    ...(taskModelAllowlist.invalid ? { taskModelAllowlistInvalid: true } : {}),
   };
 }
 
 export function mergePersistentMindCapabilities(previous, update) {
   const prior = normalizePersistentMindCapabilities(previous);
   const patch = update && typeof update === 'object' && !Array.isArray(update) ? update : {};
-  return normalizePersistentMindCapabilities({ ...prior, ...patch });
+  const merged = { ...prior, ...patch };
+  // A valid replacement repairs a malformed persisted policy; unrelated grant
+  // updates must retain the fail-closed marker until that happens.
+  if (patch.taskModelAllowlist !== undefined) {
+    delete merged.taskModelAllowlistInvalid;
+  } else if (prior.taskModelAllowlistInvalid) {
+    delete merged.taskModelAllowlist;
+  }
+  return normalizePersistentMindCapabilities(merged);
 }

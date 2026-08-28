@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router';
 
 const api = vi.hoisted(() => ({
   getPersistentMindTools: vi.fn(),
+  getProviders: vi.fn(),
   updateCosConfig: vi.fn(),
 }));
 
@@ -43,6 +44,7 @@ describe('PersistentMindTools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getPersistentMindTools.mockResolvedValue(response());
+    api.getProviders.mockResolvedValue({ providers: [] });
     api.updateCosConfig.mockResolvedValue({ success: true });
   });
 
@@ -73,7 +75,7 @@ describe('PersistentMindTools', () => {
     await user.click(toggle);
 
     await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
-      { persistentMindCapabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false } },
+      { persistentMindCapabilities: { schemaVersion: 3, createTasks: true, readPortos: false, writePortos: false, taskModelAllowlist: [] } },
       { silent: true },
     ));
     expect(await screen.findByText(/persistent-mind capabilities granted/)).toHaveTextContent('1 of 1');

@@ -3,10 +3,14 @@ import * as api from '../../services/api';
 import toast from '../ui/Toast';
 
 const normalizeCapabilities = (value) => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   createTasks: value?.createTasks === true,
   readPortos: value?.readPortos === true,
   writePortos: value?.writePortos === true,
+  taskModelAllowlist: Array.isArray(value?.taskModelAllowlist)
+    ? value.taskModelAllowlist.map(({ providerId, model }) => ({ providerId, model }))
+    : [],
+  ...(value?.taskModelAllowlistInvalid === true ? { taskModelAllowlistInvalid: true } : {}),
 });
 
 const OPTIONS = [
@@ -39,16 +43,18 @@ export default function PersistentMindTaskAccessControls({
 
   useEffect(() => {
     if (!saving) setDraft(normalizeCapabilities(capabilities));
-  }, [capabilities?.schemaVersion, capabilities?.createTasks, capabilities?.readPortos, capabilities?.writePortos, saving]);
+  }, [capabilities?.schemaVersion, capabilities?.createTasks, capabilities?.readPortos, capabilities?.writePortos, capabilities?.taskModelAllowlist, capabilities?.taskModelAllowlistInvalid, saving]);
 
   const save = async (key, enabled) => {
     const previous = draft;
     const next = { ...draft, [key]: enabled };
+    const payload = { ...next };
+    if (draft.taskModelAllowlistInvalid) delete payload.taskModelAllowlist;
     setDraft(next);
     setSaving(true);
     onSavingChange?.(true);
     try {
-      await api.updateCosConfig({ persistentMindCapabilities: next }, { silent: true });
+      await api.updateCosConfig({ persistentMindCapabilities: payload }, { silent: true });
       onSaved?.(next);
       const option = OPTIONS.find((candidate) => candidate.key === key);
       toast.success(`${option?.label || 'Capability'} ${enabled ? 'enabled' : 'disabled'}`);
@@ -90,6 +96,9 @@ export default function PersistentMindTaskAccessControls({
         <p className="font-medium text-port-text">Task landing policy stays authoritative</p>
         <p className="mt-1">A task can run code review then merge, merge when CI is green, or leave open for human review. The selected per-task landing policy is never widened by this grant.</p>
       </div>
+      <p className="text-xs text-port-text-muted">
+        An empty model list allows every currently configured coding model. Add exact provider/model pairs below to restrict task creation to a subscription or local-only lane.
+      </p>
       <p className="text-xs text-port-text-muted">
         All grants default off. CoS autonomy, capacity, daily budgets, task review defaults, CI, and the tool-specific validation remain authoritative.
       </p>

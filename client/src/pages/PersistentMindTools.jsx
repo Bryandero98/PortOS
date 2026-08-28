@@ -4,6 +4,7 @@ import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import Banner from '../components/ui/Banner';
 import PersistentMindTaskAccessControls from '../components/cos/PersistentMindTaskAccessControls';
+import PersistentMindTaskModelAllowlistControls from '../components/cos/PersistentMindTaskModelAllowlistControls';
 
 export default function PersistentMindTools({ onCapabilitiesChange, onSavingChange }) {
   const [data, setData] = useState(null);
@@ -83,6 +84,15 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
                     capabilities={data.capabilities}
                     onSaved={updateCapabilities}
                     onSavingChange={onSavingChange}
+                  />
+                </div>
+                <div className="mt-4">
+                  <PersistentMindTaskModelAllowlistControls
+                    capabilities={data.capabilities}
+                    onSaved={(capabilities) => {
+                      updateCapabilities(capabilities);
+                      load();
+                    }}
                   />
                 </div>
               </section>
