@@ -6,6 +6,7 @@ import { readClipboard } from '../lib/clipboard';
 import {
   clearRapidReaderProgress,
   rapidReaderDocumentId,
+  rapidReaderWords,
   rapidReaderWordIndexAtCursor,
   readRapidReaderProgress,
   writeRapidReaderProgress,
@@ -50,12 +51,14 @@ export default function RapidReaderPage() {
   const [saveTitle, setSaveTitle] = useState('');
   const [url, setUrl] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [bookText, setBookText] = useState('');
+  const [bookSections, setBookSections] = useState([]);
   const textareaRef = useRef(null);
   const latestProgressRef = useRef(null);
   const lastAutoSavedWordRef = useRef(-1);
 
   const documentText = useMemo(() => text.trim(), [text]);
-  const wordCount = useMemo(() => documentText ? documentText.split(/\s+/).length : 0, [documentText]);
+  const wordCount = useMemo(() => rapidReaderWords(documentText).length, [documentText]);
   const documentIdentity = useMemo(() => ({
     documentId: rapidReaderDocumentId(documentText),
     wordCount,
@@ -89,6 +92,8 @@ export default function RapidReaderPage() {
     }
     setText(book.text);
     if (book.id === 'accelerando' && book.shelfStored !== false) setShelf((previous) => previous.some((entry) => entry.id === book.id) ? previous : [{ ...book, text: undefined }, ...previous]);
+    setBookText(book.text);
+    setBookSections(Array.isArray(book.sections) ? book.sections : []);
     setBookStatus(book.cached ? 'cached' : book.cacheStored === false ? 'downloaded-uncached' : 'downloaded');
     return book;
   });
@@ -123,7 +128,12 @@ export default function RapidReaderPage() {
     }
     latestProgressRef.current = null;
     lastAutoSavedWordRef.current = -1;
-    setActive({ text: documentText, initialWordIndex: wordIndex, ...documentIdentity });
+    setActive({
+      text: documentText,
+      initialWordIndex: wordIndex,
+      sections: documentText === bookText ? bookSections : [],
+      ...documentIdentity,
+    });
   };
 
   const persistProgress = useCallback((document, progress, updateBookmark = true) => {
@@ -190,6 +200,7 @@ export default function RapidReaderPage() {
             chunkSize={chunkSize}
             focalColor={focalColor}
             initialWordIndex={active.initialWordIndex}
+            sections={active.sections}
             autoPlay
             onClose={reset}
             onComplete={complete}
@@ -199,7 +210,7 @@ export default function RapidReaderPage() {
             onChunkSizeChange={setChunkSize}
           />
           <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
-            <span>Space = play/pause · ← → step · B bookmark · R restart · +/− WPM · Esc close</span>
+            <span className="hidden sm:inline">Space = play/pause · ← → step · B bookmark · R restart · +/− WPM · Esc close</span>
             <span>Progress also saves automatically while reading.</span>
           </div>
         </div>

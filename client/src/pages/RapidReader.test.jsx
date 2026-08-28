@@ -34,6 +34,10 @@ const BOOK = {
   text: 'A novel by Charles Stross. Chapter 1: Example.',
   wordCount: 8,
   cached: false,
+  sections: [
+    { id: 'part-1', title: 'PART 1: Example', kind: 'part', wordIndex: 0 },
+    { id: 'chapter-1', title: 'Chapter 1: Example', kind: 'chapter', wordIndex: 5 },
+  ],
 };
 
 beforeEach(() => {
@@ -109,6 +113,28 @@ describe('RapidReader reading position', () => {
 
     expect(screen.getByText(/3\/5 words/)).toBeInTheDocument();
     expect(screen.getByLabelText('Reading speed')).toHaveValue('425');
+  });
+
+  it('offers Accelerando section navigation after loading the book', async () => {
+    api.getAccelerandoBook.mockResolvedValue(BOOK);
+    render(<RapidReaderPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load Accelerando' }));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Text to read' })).toHaveValue(BOOK.text));
+    fireEvent.click(screen.getByRole('button', { name: 'Start reading' }));
+
+    const select = screen.getByRole('combobox', { name: 'Navigate sections' });
+    expect(select).toHaveDisplayValue('Part · PART 1: Example');
+    fireEvent.change(select, { target: { value: '5' } });
+    expect(select).toHaveDisplayValue('Chapter · Chapter 1: Example');
+  });
+
+  it('keeps the keyboard hint for desktop layouts only', () => {
+    render(<RapidReaderPage />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Text to read' }), { target: { value: 'one two' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start reading' }));
+
+    expect(screen.getByText(/Space = play\/pause/)).toHaveClass('hidden', 'sm:inline');
   });
 
   it('saves a bookmark from the reader and offers it after closing', async () => {

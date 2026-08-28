@@ -62,8 +62,30 @@ describe('RapidReader keyboard transport', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show two words at a time' }));
 
-    expect(container.textContent).toContain('3/4 words');
+    expect(container.textContent).toContain('3–4/4 words');
     expect(container.textContent).toContain('charlie');
+  });
+
+  it('keeps two-word frames readable and reports the full visible range', () => {
+    const { container } = renderReader({ text: 'alpha bravo charlie delta', chunkSize: 2 });
+
+    expect(container.textContent).toContain('1–2/4 words');
+    expect(container.textContent).toContain('alpha bravo');
+  });
+
+  it('jumps to a navigable section and pauses playback', () => {
+    const sections = [
+      { id: 'part-1', title: 'PART 1: Start', kind: 'part', wordIndex: 0 },
+      { id: 'chapter-1', title: 'Chapter 1: Alpha', kind: 'chapter', wordIndex: 2 },
+    ];
+    const { container } = renderReader({ text: 'one two three four', sections, autoPlay: true });
+    const select = screen.getByRole('combobox', { name: 'Navigate sections' });
+
+    fireEvent.change(select, { target: { value: '2' } });
+
+    expect(select).toHaveValue('2');
+    expect(container.textContent).toContain('Chapter · Chapter 1: Alpha');
+    expect(screen.getByLabelText('Play')).toBeInTheDocument();
   });
 
   it('saves the current canonical position from the bookmark button or B key', () => {

@@ -61,6 +61,25 @@ describe('extractAccelerandoText', () => {
   });
 });
 
+describe('extractAccelerandoSections', () => {
+  it('extracts Parts and Chapters with reader word offsets', () => {
+    const html = `<div id="book">
+      <p>A novel by Charles Stross</p>
+      <h2><a name="PART1">PART 1: Start</a></h2>
+      <p>Opening text.</p>
+      <h3><a name="ChapterOne">Chapter 1: Alpha</a></h3>
+      <p>Chapter text.</p>
+    </div>`;
+    const text = 'A novel by Charles Stross PART 1: Start Opening text. Chapter 1: Alpha Chapter text.';
+    const sections = service.extractAccelerandoSections(html, text);
+
+    expect(sections).toEqual([
+      { id: 'part-1-start-1', title: 'PART 1: Start', kind: 'part', wordIndex: 5 },
+      { id: 'chapter-1-alpha-2', title: 'Chapter 1: Alpha', kind: 'chapter', wordIndex: 10 },
+    ]);
+  });
+});
+
 describe('getAccelerandoBook', () => {
   it('fetches the fixed official source and caches the raw edition', async () => {
     fetchPublicText.mockResolvedValue(SOURCE_HTML);
@@ -76,6 +95,9 @@ describe('getAccelerandoBook', () => {
       licenseUrl: 'https://creativecommons.org/licenses/by-nc-nd/2.5/',
       cached: false,
       wordCount: expect.any(Number),
+      sections: expect.arrayContaining([
+        expect.objectContaining({ title: 'Chapter 1: Example', kind: 'chapter' }),
+      ]),
     });
     expect(fetchPublicText).toHaveBeenCalledWith(
       service.ACCELERANDO_BOOK.sourceUrl,
