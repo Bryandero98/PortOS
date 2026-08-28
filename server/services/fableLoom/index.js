@@ -28,6 +28,7 @@ export {
   buildCanonDigest,
   feedbackEpisode,
   feedbackSeriesPlan,
+  generateSeriesPlan,
   mapGeneratedGraph,
   playTurn,
   publicNode,

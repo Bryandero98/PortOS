@@ -25,6 +25,7 @@ import {
   reformatSchema,
   reviewSchema,
   seriesPlanFeedbackSchema,
+  seriesPlanGenerateSchema,
   seriesPlanReviewSchema,
   transitionCreateSchema,
   transitionPatchSchema,
@@ -43,6 +44,7 @@ import {
   deleteNodeTransition,
   feedbackEpisode,
   feedbackSeriesPlan,
+  generateSeriesPlan,
   getLoom,
   listLoomSummaries,
   playTurn,
@@ -92,6 +94,11 @@ router.delete('/:id', asyncHandler(async (req, res) => {
 }));
 
 // --- Series plan ------------------------------------------------------------
+
+router.post('/:id/plan/generate', asyncHandler(async (req, res) => {
+  const input = validateRequest(seriesPlanGenerateSchema, req.body);
+  res.json(await generateSeriesPlan(req.params.id, input));
+}));
 
 router.post('/:id/plan/review', asyncHandler(async (req, res) => {
   const input = validateRequest(seriesPlanReviewSchema, req.body);

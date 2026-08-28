@@ -40,6 +40,9 @@
   "fableloom-feedback-series-plan": [
     "server/services/fableLoom/weave.js"
   ],
+  "fableloom-generate-series-plan": [
+    "server/services/fableLoom/weave.js"
+  ],
   "fableloom-play-turn": [
     "server/services/fableLoom/weave.js"
   ],

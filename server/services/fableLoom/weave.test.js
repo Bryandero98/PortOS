@@ -25,7 +25,7 @@ vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 const { createLoom, addEpisode, addNode, mutateLoom, updateLoom, updateNode, getLoom } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
 const {
-  branchNode, buildCanonDigest, feedbackEpisode, feedbackSeriesPlan, mapGeneratedGraph, playTurn,
+  branchNode, buildCanonDigest, feedbackEpisode, feedbackSeriesPlan, generateSeriesPlan, mapGeneratedGraph, playTurn,
   reformatEpisodeScenes, reviewEpisode, reviewSeriesPlan, weaveEpisode,
 } = await import('./weave.js');
 
@@ -586,6 +586,83 @@ describe('buildCanonDigest', () => {
 });
 
 describe('series plan AI', () => {
+  it('drafts and persists a complete scaffold while preserving episode records', async () => {
+    const { loomId, episodeId } = await setup();
+    getUniverseMock.mockResolvedValueOnce({
+      characters: [{ name: 'Mara', description: 'a courier who fears command' }],
+    });
+    runStagedLLM.mockResolvedValueOnce({
+      content: {
+        storyArc: 'Mara accepts responsibility for the city she once fled.',
+        plotPoints: [
+          { title: 'The summons', description: 'The crown chooses Mara.', episodeId },
+          { title: 'The false road', description: 'A tempting escape closes.', episodeId: 'invented-episode' },
+        ],
+        sideQuests: [{
+          title: 'The missing map', description: 'A rival becomes an ally.', status: 'planned',
+          startEpisodeId: episodeId, endEpisodeId: null,
+        }],
+      },
+      runId: 'run-draft',
+    });
+
+    const result = await generateSeriesPlan(loomId, {
+      providerId: 'writer', model: 'large', effort: 'high',
+    });
+
+    expect(result.runId).toBe('run-draft');
+    expect(result.loom.seriesPlan.storyArc).toContain('accepts responsibility');
+    expect(result.loom.seriesPlan.plotPoints).toHaveLength(2);
+    expect(result.loom.seriesPlan.plotPoints.every((item) => item.id.startsWith('plot-'))).toBe(true);
+    expect(result.loom.seriesPlan.plotPoints[1].episodeId).toBeNull();
+    expect(result.loom.seriesPlan.sideQuests[0]).toMatchObject({
+      title: 'The missing map', startEpisodeId: episodeId,
+    });
+    expect(result.loom.episodes).toHaveLength(1);
+    expect(result.loom.episodes[0]).toMatchObject({ id: episodeId, title: 'Pilot', synopsis: 'A crown wakes.' });
+    expect(runStagedLLM).toHaveBeenCalledWith('fableloom-generate-series-plan', expect.objectContaining({
+      storyContext: expect.stringContaining('The Hollow Crown'),
+      canonDigest: expect.stringContaining('Mara'),
+      seriesPlanJson: expect.stringContaining(episodeId),
+    }), expect.objectContaining({
+      providerOverride: 'writer', modelOverride: 'large', effortOverride: 'high',
+    }));
+  });
+
+  it('rejects an incomplete generated scaffold without replacing the saved plan', async () => {
+    const { loomId } = await setup();
+    await updateLoom(loomId, { seriesPlan: {
+      storyArc: 'Saved arc', plotPoints: [], sideQuests: [],
+    } });
+    runStagedLLM.mockResolvedValueOnce({
+      content: { storyArc: 'Partial arc', plotPoints: [{ title: 'A beat' }], sideQuests: [] },
+    });
+
+    await expect(generateSeriesPlan(loomId)).rejects.toMatchObject({ code: 'AI_RESPONSE_INVALID' });
+    expect((await getLoom(loomId)).seriesPlan.storyArc).toBe('Saved arc');
+  });
+
+  it('does not overwrite story inputs saved while the provider call is in flight', async () => {
+    const { loomId } = await setup();
+    let finishDraft;
+    runStagedLLM.mockImplementationOnce(() => new Promise((resolve) => { finishDraft = resolve; }));
+    const generation = generateSeriesPlan(loomId);
+    await vi.waitFor(() => expect(runStagedLLM).toHaveBeenCalledOnce());
+    await updateLoom(loomId, { premise: 'A newer premise saved during the draft.' });
+    finishDraft({
+      content: {
+        storyArc: 'A stale arc.',
+        plotPoints: [{ title: 'Old beat', description: 'Based on stale context.' }],
+        sideQuests: [{ title: 'Old thread', description: 'Also stale.' }],
+      },
+    });
+
+    await expect(generation).rejects.toMatchObject({ code: 'LOOM_CHANGED_DURING_GENERATION' });
+    const current = await getLoom(loomId);
+    expect(current.premise).toBe('A newer premise saved during the draft.');
+    expect(current.seriesPlan.storyArc).toBe('');
+  });
+
   it('returns normalized holistic analysis without mutating the loom', async () => {
     const { loomId } = await setup();
     runStagedLLM.mockResolvedValueOnce({
