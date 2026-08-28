@@ -321,6 +321,11 @@ export default function App() {
           {/* Embeddings moved into Models with the rest of the model management
               (#4728) — it picks a model, not a preference. */}
           <Route path="settings/embeddings" element={<Navigate to="/models/embeddings" replace />} />
+          {/* Spotify/YouTube sync feed the activity Timeline, which lives in
+              Brain — moved alongside it so they show up in the same sidebar
+              section as the data they populate. */}
+          <Route path="settings/spotify" element={<Navigate to="/brain/spotify" replace />} />
+          <Route path="settings/youtube" element={<Navigate to="/brain/youtube" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
           <Route path="api-reference" element={<Navigate to="/api-reference/catalog" replace />} />
           <Route path="api-reference/:tab" element={<ApiExplorer />} />

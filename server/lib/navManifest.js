@@ -185,6 +185,11 @@ const RAW_NAV_COMMANDS = [
   { id: 'nav.x', path: '/x', label: 'X', section: 'Comms', aliases: ['x', 'x-com', 'twitter', 'comms-x'], keywords: ['comms', 'social', 'reach', 'engagement', 'shadowban', 'diagnostics'] },
   { id: 'nav.timeline', path: '/timeline', label: 'Timeline', section: 'Brain', aliases: ['activity-timeline', 'activity', 'my-day', 'life-log', 'life-timeline'], keywords: ['human activity', 'life log', 'timeline', 'messages', 'calendar', 'history', 'what did i do', 'daily', 'import', 'backfill', 'whatsapp', 'spotify', 'discord', 'youtube'] },
   { id: 'nav.tribe', path: '/tribe', label: 'Tribe', section: 'Brain', aliases: ['tribe', 'relationships', 'relationship-manager', 'people'], keywords: ['dunbar', 'friends', 'family', 'network', 'social graph', 'care cadence'] },
+  // Moved out of Settings into Brain (alongside Timeline, which these feed) —
+  // ids kept stable since they're opaque, persisted palette-history values;
+  // only the path and section move, per the /models/* precedent above.
+  { id: 'nav.settings.spotify', path: '/brain/spotify', label: 'Spotify', section: 'Brain', previousPaths: ['/settings/spotify'], aliases: ['settings-spotify', 'spotify', 'spotify-settings', 'brain-spotify'], keywords: ['spotify', 'music', 'listening', 'recently played', 'oauth', 'timeline', 'taste', 'media'] },
+  { id: 'nav.settings.youtube', path: '/brain/youtube', label: 'YouTube', section: 'Brain', previousPaths: ['/settings/youtube'], aliases: ['settings-youtube', 'youtube', 'youtube-settings', 'brain-youtube'], keywords: ['youtube', 'watch history', 'video', 'scrape', 'takeout', 'timeline', 'taste', 'media'] },
 
   { id: 'nav.devtools.agents', path: '/devtools/agents', label: 'AI Agents', section: 'Dev Tools', aliases: ['ai-agents', 'devtools'] },
   { id: 'nav.browser', path: '/browser', label: 'Browser', section: 'Dev Tools', aliases: ['browser'] },
@@ -323,10 +328,8 @@ const RAW_NAV_COMMANDS = [
   { id: 'nav.settings.security', path: '/settings/security', label: 'Security', section: 'Settings', aliases: ['settings-security', 'login-password', 'auth-password', 'password-settings'], keywords: ['password', 'login', 'auth', 'sign-in', 'lock', 'tailnet', 'sidecar'] },
   { id: 'nav.settings.sharing', path: '/settings/sharing', label: 'Sharing', section: 'Settings', aliases: ['settings-sharing', 'sharing-settings'], keywords: ['display name', 'bio', 'attribution', 'identity', 'source'] },
   { id: 'nav.settings.signal', path: '/settings/signal', label: 'Signal', section: 'Settings', aliases: ['settings-signal', 'signal', 'signal-settings'], keywords: ['signal', 'signal desktop', 'messages', 'sqlcipher', 'chat', 'tribe', 'timeline', 'encrypted', 'keychain'] },
-  { id: 'nav.settings.spotify', path: '/settings/spotify', label: 'Spotify', section: 'Settings', aliases: ['settings-spotify', 'spotify', 'spotify-settings'], keywords: ['spotify', 'music', 'listening', 'recently played', 'oauth', 'timeline', 'taste', 'media'] },
   { id: 'nav.settings.telegram', path: '/settings/telegram', label: 'Telegram', section: 'Settings', aliases: ['settings-telegram', 'telegram'] },
   { id: 'nav.settings.voice', path: '/settings/voice', label: 'Voice', section: 'Settings', aliases: ['settings-voice', 'voice', 'voice-settings'], keywords: ['mic', 'microphone', 'speech', 'tts', 'whisper', 'kokoro'] },
-  { id: 'nav.settings.youtube', path: '/settings/youtube', label: 'YouTube', section: 'Settings', aliases: ['settings-youtube', 'youtube', 'youtube-settings'], keywords: ['youtube', 'watch history', 'video', 'scrape', 'takeout', 'timeline', 'taste', 'media'] },
 
   { id: 'nav.ambient', path: '/ambient', label: 'Ambient', section: 'Dev Tools', aliases: ['ambient', 'ambient-mode', 'ambient mode'], keywords: ['idle', 'background', 'display', 'screensaver', 'fullscreen'] },
   { id: 'nav.capabilities', path: '/capabilities', label: 'Capabilities', section: 'Dev Tools', aliases: ['capabilities', 'capability-map', 'integrations'], keywords: ['status', 'setup', 'checklist', 'connected systems', 'integrations', 'providers', 'health overview'] },

@@ -1,4 +1,4 @@
-import { MessageSquare, Database, Calendar, Rss, Shield, Users, FolderKanban, Lightbulb, ClipboardList, Settings, Link2, BookOpen, Network, FileText, NotebookPen, Upload, Target, BookText, Music } from 'lucide-react';
+import { MessageSquare, Database, Calendar, Rss, Shield, Users, FolderKanban, Lightbulb, ClipboardList, Settings, Link2, BookOpen, Network, FileText, NotebookPen, Upload, Target, BookText, Music, Video } from 'lucide-react';
 
 // Main navigation tabs.
 // `fullBleed: true` marks a tab that fills the available height and owns its
@@ -15,6 +15,8 @@ export const TABS = [
   { id: 'feeds', label: 'Feeds', icon: Rss },
   { id: 'trust', label: 'Trust', icon: Shield },
   { id: 'import', label: 'Import', icon: Upload },
+  { id: 'spotify', label: 'Spotify', icon: Music },
+  { id: 'youtube', label: 'YouTube', icon: Video },
   { id: 'config', label: 'Config', icon: Settings }
 ];
 

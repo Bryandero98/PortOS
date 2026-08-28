@@ -123,7 +123,7 @@ Capture thoughts, build personal memory graphs, model your identity and taste, p
 |---|---|---|---|
 | **Brain Inbox & Notes** | `/brain/inbox`, `/brain/notes` | Universal thought capture, AI classification (People, Projects, Ideas, Admin), confidence scoring, note editor, and GTD reviews. | [Brain System](./brain-system.md) |
 | **Brain Links & Repo Ingest** | `/brain/links` | Link vault with automated malware scanning, web clipping, and repo study triggers. | [Brain System](./brain-system.md) |
-| **YouTube Transcripts & Ingest** | `/brain/config`, `/settings/youtube` | Captures YouTube video transcripts (collapsing auto-caption repetition), downloads audio/video, mirrors markdown to Obsidian, and syncs watch history. | [Brain System](./brain-system.md) |
+| **YouTube Transcripts & Ingest** | `/brain/config`, `/brain/youtube` | Captures YouTube video transcripts (collapsing auto-caption repetition), downloads audio/video, mirrors markdown to Obsidian, and syncs watch history. | [Brain System](./brain-system.md) |
 | **Feeds & RSS** | `/brain/feeds` | RSS/Atom feed reader, article capture, and knowledge extraction. | — |
 | **Knowledge Graph** | `/brain/graph`, `/wiki/graph` | Interactive visual graph of entities, tags, and cross-document semantic links. | — |
 | **Daily Log & Digest** | `/brain/daily-log`, `/brain/digest` | Daily markdown journaling, automated daily summaries, and weekly GTD-style reviews. | [Brain System](./brain-system.md) |
