@@ -55,15 +55,22 @@ const COS_MAX_MEMORY = '2G';
 const MEMORY_UNIT_MB = { K: 1 / 1024, M: 1, G: 1024 };
 
 /**
- * Parse a pm2 memory spec ('512M', '4G', '1024') to megabytes.
- * pm2 itself defaults a bare number to bytes, but every spec here carries a unit
- * and an unrecognized one returns null so `memoryLimits` degrades to "no cap"
- * rather than silently inventing a wrong one.
+ * Parse a pm2 memory spec to megabytes: '512M', '4G', or a bare '4294967296'.
+ *
+ * The bare form is BYTES — that is pm2's own rule for an unsuffixed value, and
+ * PORTOS_SERVER_MAX_MEMORY / PORTOS_UI_MAX_MEMORY are user-set, so a machine that
+ * already spells its ceiling in bytes must still get a heap cap. Dropping to "no
+ * cap" there would leave exactly the configuration this policy exists to fix: an
+ * RSS ceiling with nothing making V8 collect beneath it.
+ *
+ * An unrecognized spec returns null so `memoryLimits` degrades to "no cap" rather
+ * than silently inventing a wrong one.
  */
 function memorySpecToMB(spec) {
-  const match = String(spec).trim().match(/^(\d+(?:\.\d+)?)\s*([KMG])B?$/i);
+  const match = String(spec).trim().match(/^(\d+(?:\.\d+)?)\s*([KMG])?B?$/i);
   if (!match) return null;
-  return Math.round(Number(match[1]) * MEMORY_UNIT_MB[match[2].toUpperCase()]);
+  const unitMB = match[2] ? MEMORY_UNIT_MB[match[2].toUpperCase()] : 1 / (1024 * 1024);
+  return Math.round(Number(match[1]) * unitMB);
 }
 
 /**

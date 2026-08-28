@@ -18,12 +18,17 @@ import path from 'path';
  */
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const { apps } = require(path.join(repoRoot, 'ecosystem.config.cjs'));
+const configPath = path.join(repoRoot, 'ecosystem.config.cjs');
+const { apps } = require(configPath);
 
+// Deliberately a SECOND implementation of the config's own parser, not an import
+// of it: a guard that reuses the parser under test agrees with itself and can no
+// longer fail. A bare number is bytes, per pm2.
 const UNIT_MB = { K: 1 / 1024, M: 1, G: 1024 };
 const toMB = (spec) => {
-  const match = String(spec).trim().match(/^(\d+(?:\.\d+)?)\s*([KMG])B?$/i);
-  return match ? Number(match[1]) * UNIT_MB[match[2].toUpperCase()] : null;
+  const match = String(spec).trim().match(/^(\d+(?:\.\d+)?)\s*([KMG])?B?$/i);
+  if (!match) return null;
+  return Number(match[1]) * (match[2] ? UNIT_MB[match[2].toUpperCase()] : 1 / (1024 * 1024));
 };
 
 const heapCapMB = (app) => {
@@ -56,6 +61,30 @@ describe('ecosystem.config.cjs memory bounds', () => {
     // This is also what a `Math.max(...)` floor on the cap would break: at a small
     // user-set ceiling the floor could raise the cap to or past it.
     expect(cap).toBeLessThan(ceiling);
+  });
+
+  // The ceilings are user-overridable via env, and pm2 accepts a BARE NUMBER as
+  // bytes — the form a machine that tuned this before the heap cap existed is
+  // most likely to already have. A parser that only understood '4G' returned no
+  // cap there, leaving precisely the un-collected-heap-under-an-RSS-ceiling setup
+  // this policy exists to fix. Asserted through a real config load rather than
+  // against the parser directly, so it observes what pm2 would actually receive.
+  it('still caps V8 when the ceiling is spelled in pm2 bare bytes', () => {
+    const previous = process.env.PORTOS_SERVER_MAX_MEMORY;
+    process.env.PORTOS_SERVER_MAX_MEMORY = '4294967296'; // 4 GB, in bytes
+    try {
+      delete require.cache[require.resolve(configPath)];
+      const server = require(configPath).apps.find((a) => a.name === 'portos-server');
+      expect(server.max_memory_restart).toBe('4294967296');
+      expect(heapCapMB(server)).toBeGreaterThan(0);
+      expect(heapCapMB(server)).toBeLessThan(4096);
+    } finally {
+      if (previous === undefined) delete process.env.PORTOS_SERVER_MAX_MEMORY;
+      else process.env.PORTOS_SERVER_MAX_MEMORY = previous;
+      // Drop the env-poisoned module so the shared `apps` above stays authoritative
+      // for any later require of the config in this process.
+      delete require.cache[require.resolve(configPath)];
+    }
   });
 
   // A heap cap must never reach the child processes these apps spawn (agent CLIs,
