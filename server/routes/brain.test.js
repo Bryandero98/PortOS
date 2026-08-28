@@ -78,6 +78,16 @@ vi.mock('../services/brain.js', () => ({
   deleteBucketAndUnlinkChildren: vi.fn()
 }));
 
+vi.mock('../services/idealoomLists.js', () => ({
+  getSettings: vi.fn(),
+  updateSettings: vi.fn(),
+  listLists: vi.fn(),
+  getList: vi.fn(),
+  createList: vi.fn(),
+  updateList: vi.fn(),
+  deleteList: vi.fn()
+}));
+
 // Mock the brain graph service
 vi.mock('../services/brainGraph.js', () => ({
   getBrainGraphSearchIndex: vi.fn(),
@@ -134,6 +144,7 @@ vi.mock('../services/brainJournal.js', () => ({
 
 // Import mocked modules
 import * as brainService from '../services/brain.js';
+import * as ideaLoomLists from '../services/idealoomLists.js';
 import { getBrainGraphSearchIndex, getBrainGraphOverview, getBrainGraphNeighborhood } from '../services/brainGraph.js';
 import { syncAllBrainData, getEmbeddingCoverage } from '../services/brainMemoryBridge.js';
 import { getChangesSince } from '../services/brainSyncLog.js';
@@ -149,6 +160,32 @@ describe('Brain Routes', () => {
     app.use(express.json());
     app.use('/api/brain', brainRoutes);
     vi.clearAllMocks();
+  });
+
+  describe('IdeaLoom local lists', () => {
+    const listInput = {
+      prompt: 'Find practical improvements', title: 'Practical improvements',
+      category: 'product', ideas: ['Improve empty states']
+    };
+
+    it('uses the static settings route before the native idea id route', async () => {
+      ideaLoomLists.getSettings.mockResolvedValue({ enabled: false, obsidianVaultId: null, autoSync: false });
+      const response = await request(app).get('/api/brain/ideas/idealoom/settings');
+      expect(response.status).toBe(200);
+      expect(response.body.enabled).toBe(false);
+      expect(brainService.getIdeaById).not.toHaveBeenCalled();
+    });
+
+    it('validates local list CRUD input and preserves native Brain ideas', async () => {
+      ideaLoomLists.createList.mockResolvedValue({ id: 'c17c0284-b7de-4db6-a09c-7f735f0fd501', ...listInput, status: 'draft' });
+      const created = await request(app).post('/api/brain/ideas/idealoom/lists').send(listInput);
+      expect(created.status).toBe(201);
+      expect(ideaLoomLists.createList).toHaveBeenCalledWith({ ...listInput, status: 'draft' });
+      expect(brainService.createIdea).not.toHaveBeenCalled();
+
+      const rejected = await request(app).post('/api/brain/ideas/idealoom/lists').send({ ...listInput, ideas: [''] });
+      expect(rejected.status).toBe(400);
+    });
   });
 
   // ===========================================================================
