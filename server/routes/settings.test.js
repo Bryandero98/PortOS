@@ -38,8 +38,15 @@ vi.mock('../services/mediaJobQueue/index.js', () => ({
   CODEX_PARALLEL_MAX: 8,
   CODEX_PARALLEL_DEFAULT: 2,
 }));
+vi.mock('../services/datadog.js', () => ({
+  hasConfiguredInstances: vi.fn(async () => false),
+}));
+vi.mock('../services/jira.js', () => ({
+  hasConfiguredInstances: vi.fn(async () => false),
+}));
 
 import settingsRoutes from './settings.js';
+import { hasConfiguredInstances as hasConfiguredDatadogInstances } from '../services/datadog.js';
 
 const buildApp = () => {
   const app = express();
@@ -103,15 +110,24 @@ describe('Settings routes — instance feature participation', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'post', label: 'POST', enabled: true }));
-    // Integration-backed features ride the same list; with nothing configured
-    // they resolve off, which is what hides their nav entries.
-    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'datadog', enabled: false }));
-    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'jira', enabled: false }));
+    // Integration-backed features ride the same list; the suite pins their
+    // detector responses so this default is independent of this host's setup.
+    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'datadog', enabled: false, source: 'auto' }));
+    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'jira', enabled: false, source: 'auto' }));
     // GSD remains enabled by default so existing app planning tabs stay
     // available unless the install explicitly opts out.
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'gsd', enabled: true }));
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'openclaw', enabled: true }));
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'health', enabled: true }));
+  });
+
+  it('lists an integration-backed feature as auto-enabled when its detector finds configuration', async () => {
+    hasConfiguredDatadogInstances.mockResolvedValueOnce(true);
+
+    const res = await request(buildApp()).get('/api/settings/features');
+
+    expect(res.status).toBe(200);
+    expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'datadog', enabled: true, source: 'auto' }));
   });
 
   it('updates one feature without replacing unrelated settings', async () => {
