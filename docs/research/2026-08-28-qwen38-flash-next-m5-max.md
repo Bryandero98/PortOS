@@ -42,7 +42,7 @@ Apple-Silicon conversion into the machine-local PortOS model area:
 uv venv --python 3.11 ~/.portos/qwen38-flash-mlx
 uv pip install --python ~/.portos/qwen38-flash-mlx/bin/python \
   mlx-vlm==0.6.17 jinja2
-hf download Vontra/Qwen3.8-Flash-Next-MLX-4bit \
+~/.portos/qwen38-flash-mlx/bin/hf download Vontra/Qwen3.8-Flash-Next-MLX-4bit \
   --local-dir ~/.portos/models/Qwen3.8-Flash-Next-MLX-4bit \
   --max-workers 4
 ```
