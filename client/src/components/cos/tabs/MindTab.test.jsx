@@ -289,7 +289,7 @@ describe('MindTab', () => {
     expect(document.querySelector(`time[datetime="${nextWakeAt}"]`)).toBeInTheDocument();
     const cadence = screen.getByLabelText('Wake cadence');
     expect(cadence).toHaveValue('30');
-    expect(cadence).toBeEnabled();
+    await waitFor(() => expect(screen.getByLabelText('Wake cadence')).toBeEnabled());
 
     fireEvent.change(cadence, { target: { value: '60' } });
 
@@ -321,7 +321,7 @@ describe('MindTab', () => {
     await user.click(taskAccess);
 
     await waitFor(() => expect(api.updateCosConfig).toHaveBeenCalledWith(
-      { persistentMindCapabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false } },
+      { persistentMindCapabilities: { schemaVersion: 3, createTasks: true, readPortos: false, writePortos: false, taskModelAllowlist: [] } },
       { silent: true },
     ));
     expect(screen.getAllByText(/code review then merge/i).length).toBeGreaterThan(0);

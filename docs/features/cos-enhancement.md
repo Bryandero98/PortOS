@@ -125,6 +125,12 @@ valid for GitHub/GitLab apps and is normalized to the existing unattended
 after inference, so stale prompts, disabled providers, invented model ids, and
 unsupported trackers fail closed.
 
+Task model selection can be restricted in Persistent Mind Tools with an exact
+provider/model allowlist. An empty list preserves the unrestricted catalog; a
+non-empty list is applied to both the model choices sent to the mind and the
+server-side queue admission check, which supports subscription-specific or
+local-only task lanes. A removed or malformed allowlist fails closed.
+
 `GET /api/cos/mind/tools` returns the authority inventory and, when task access is
 granted, the same redacted task catalog used in the mind prompt. This keeps the
 Mind Tools UI and the model-facing contract discoverable without granting the

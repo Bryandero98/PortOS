@@ -111,6 +111,38 @@ describe('persistent mind CoS-task capability', () => {
     expect(prompt).not.toContain('command');
   });
 
+  it('publishes only allowlisted task models and rejects a model outside the policy', async () => {
+    mocks.root.config.persistentMindCapabilities.taskModelAllowlist = [
+      { providerId: 'codex', model: 'gpt-5-mini' },
+    ];
+    const catalog = await readPersistentMindTaskCatalog();
+    expect(catalog.providers).toEqual([expect.objectContaining({
+      id: 'codex',
+      models: [{ id: 'gpt-5-mini', efforts: expect.any(Array) }],
+    })]);
+
+    const [result] = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest({ model: 'gpt-5' })],
+      turnId: 'turn-model-policy',
+      wake: { kind: 'message', message: { id: 'message-model-policy' } },
+    });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('not allowed') });
+    expect(mocks.addTask).not.toHaveBeenCalled();
+  });
+
+  it('allows a configured pair after the policy is narrowed', async () => {
+    mocks.root.config.persistentMindCapabilities.taskModelAllowlist = [
+      { providerId: 'codex', model: 'gpt-5-mini' },
+    ];
+    const [result] = await executePersistentMindTaskRequests({
+      taskRequests: [taskRequest({ model: 'gpt-5-mini' })],
+      turnId: 'turn-model-policy-allowed',
+      wake: { kind: 'message', message: { id: 'message-model-policy-allowed' } },
+    });
+    expect(result).toMatchObject({ success: true });
+    expect(mocks.addTask).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5-mini' }), 'internal');
+  });
+
   it('filters the model-facing catalog while retaining all apps for the settings inventory', async () => {
     mocks.apps.push({ id: 'second-app', name: 'Second App', repoPath: '/example/second-app' });
 

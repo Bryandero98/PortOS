@@ -171,7 +171,7 @@ describe('persistent mind routes', () => {
         thinkingInterface: 'text',
         wakeIntervalMinutes: 30,
       },
-      capabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false },
+      capabilities: { schemaVersion: 3, createTasks: true, readPortos: false, writePortos: false, taskModelAllowlist: [] },
       harness: { type: 'api', recommendation: 'recommended' },
       imageCapability: { status: 'unknown' },
       autonomyMode: 'execute',
@@ -205,8 +205,8 @@ describe('persistent mind routes', () => {
     const res = await get('/mind/tools');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      schemaVersion: 2,
-      capabilities: { schemaVersion: 2, createTasks: true, readPortos: false, writePortos: false },
+      schemaVersion: 3,
+      capabilities: { schemaVersion: 3, createTasks: true, readPortos: false, writePortos: false, taskModelAllowlist: [] },
       boundaries: expect.arrayContaining([expect.stringMatching(/arbitrary shell/i)]),
       tools: expect.arrayContaining([
         expect.objectContaining({ id: 'cos.create-task', capability: 'createTasks', granted: true, defaultEnabled: false }),

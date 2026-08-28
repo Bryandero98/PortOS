@@ -9,6 +9,7 @@
 
 import {
   PERSISTENT_MIND_TASK_LIMITS,
+  isPersistentMindTaskModelAllowed,
   normalizePersistentMindCapabilities,
   persistentMindTaskRequestSchema,
 } from '../lib/persistentMindCapabilities.js';
@@ -83,8 +84,11 @@ const selectableModelIds = (provider) => {
   return [...new Set(withDefault)].slice(0, MAX_CATALOG_MODELS);
 };
 
-const providerCatalogEntry = (provider) => {
-  const models = selectableModelIds(provider);
+const providerCatalogEntry = (provider, capabilities) => {
+  const policy = normalizePersistentMindCapabilities(capabilities);
+  const models = selectableModelIds(provider)
+    .filter((model) => isPersistentMindTaskModelAllowed(capabilities, provider.id, model));
+  if ((policy.taskModelAllowlist.length > 0 || policy.taskModelAllowlistInvalid) && models.length === 0) return null;
   return {
     id: provider.id,
     name: String(provider.name || provider.id).slice(0, 100),
@@ -114,8 +118,10 @@ const appCatalogEntry = async (app) => {
   };
 };
 
-export async function readPersistentMindTaskCatalog({ allowedAppIds = null, includeAllApps = false } = {}) {
-  const [apps, providers] = await Promise.all([getActiveApps(), listProviders()]);
+export async function readPersistentMindTaskCatalog({ allowedAppIds, includeAllApps = false } = {}) {
+  const [apps, providers, root] = await Promise.all([getActiveApps(), listProviders(), loadState()]);
+  const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+  const effectiveAllowedAppIds = Array.isArray(allowedAppIds) ? allowedAppIds : capabilities.allowedAppIds;
   const runnableApps = apps
     .filter((app) => isRunnableApp(app) && typeof app?.id === 'string' && app.id
       && app.id.length <= PERSISTENT_MIND_TASK_LIMITS.appIdChars)
@@ -126,14 +132,15 @@ export async function readPersistentMindTaskCatalog({ allowedAppIds = null, incl
     deferCwdDependent: true,
   });
   const appCatalog = await Promise.all(runnableApps.map(appCatalogEntry));
-  const allowed = Array.isArray(allowedAppIds) ? new Set(allowedAppIds) : null;
+  const allowed = Array.isArray(effectiveAllowedAppIds) ? new Set(effectiveAllowedAppIds) : null;
   return {
     // The tools settings page needs to see revoked apps so it can restore them;
     // the model-facing catalog remains narrowed to the granted set.
     apps: includeAllApps || !allowed ? appCatalog : appCatalog.filter((app) => allowed.has(app.id)),
     providers: candidates
       .filter((provider) => readiness[provider.id]?.status === 'ready')
-      .map(providerCatalogEntry),
+      .map((provider) => providerCatalogEntry(provider, capabilities))
+      .filter(Boolean),
     providerReadiness: providerReadinessSummary(candidates, readiness),
   };
 }
@@ -187,7 +194,7 @@ Task creation access is OFF. Return an empty taskRequests array. You may recomme
   return `# CoS agent task capability
 Task creation access is ON. You may request up to ${PERSISTENT_MIND_TASK_LIMITS.maxPerTurn} internal CoS agent tasks when the current wake calls for concrete delegated work. Implementation tasks run in an isolated worktree, open a pull request, and are auto-approved into the normal CoS scheduler. Plan-only tasks use the issue-only planning contract described below. The scheduler still enforces capacity, autonomy, and budget gates.
 
-For each task, choose one configured app, provider, model (or "" for the provider's configured default), supported effort (or "" for the provider default), and exactly one PR completion policy:
+For each task, choose one configured app, provider, model, supported effort (or "" for the provider default), and exactly one PR completion policy. If the task model allowlist below is non-empty, only its exact provider/model pairs are permitted; do not use a provider default or another model:
 - "review-then-merge": run the configured code-review loop, then merge only when its gate passes.
 - "merge-on-green": skip code review and merge after CI is green.
 - "leave-open": open the PR and wait for a human to review and merge it.
@@ -227,7 +234,7 @@ const readinessError = (providerId, verdict) => {
   return `Provider '${providerId}' is not ready (${reasonCodes}); check Settings > AI Providers`;
 };
 
-const validateChoice = async (request, apps, providers) => {
+const validateChoice = async (request, apps, providers, capabilities) => {
   const app = apps.find((candidate) => candidate.id === request.appId && isRunnableApp(candidate));
   if (!app) return { error: `App '${request.appId}' has no configured repository` };
   const provider = providers.find((candidate) => (
@@ -242,6 +249,9 @@ const validateChoice = async (request, apps, providers) => {
   const models = selectableModelIds(provider);
   if (request.model && !models.includes(request.model)) {
     return { error: `Model '${request.model}' is not configured for provider '${request.providerId}'` };
+  }
+  if (!isPersistentMindTaskModelAllowed(capabilities, request.providerId, request.model)) {
+    return { error: `Model '${request.model}' is not allowed for persistent mind tasks on provider '${request.providerId}'` };
   }
   const efforts = effortLevelsForProvider(provider, request.model || null) || [];
   if (request.effort && !efforts.includes(request.effort)) {
@@ -271,8 +281,10 @@ async function queueOneTask({ request, taskId, apps, allowedAppIds }) {
   }
   const existing = await getTaskById(taskId);
   if (existing) return { success: true, duplicate: true, task: existing };
-  const providers = await listProviders();
-  const choice = await validateChoice(request, apps, providers);
+  const [providers, root] = await Promise.all([listProviders(), loadState()]);
+  const capabilities = normalizePersistentMindCapabilities(root.config?.persistentMindCapabilities);
+  if (!capabilities.createTasks) return { success: false, error: 'Persistent mind task creation access is disabled' };
+  const choice = await validateChoice(request, apps, providers, capabilities);
   if (choice.error) return { success: false, error: choice.error };
   const planOnly = request.planOnly === true;
   const task = await addTask({

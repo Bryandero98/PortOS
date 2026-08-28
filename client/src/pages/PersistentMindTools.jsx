@@ -5,11 +5,13 @@ import * as api from '../services/api';
 import BrailleSpinner from '../components/BrailleSpinner';
 import Banner from '../components/ui/Banner';
 import PersistentMindTaskAccessControls from '../components/cos/PersistentMindTaskAccessControls';
+import PersistentMindTaskModelAllowlistControls from '../components/cos/PersistentMindTaskModelAllowlistControls';
 
 export default function PersistentMindTools({ onCapabilitiesChange, onSavingChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [capabilitiesSaving, setCapabilitiesSaving] = useState(false);
   const requestVersion = useRef(0);
 
   const load = useCallback(() => {
@@ -36,6 +38,10 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
   const tools = Array.isArray(data?.tools) ? data.tools : [];
   const taskCatalog = data?.taskCatalog;
   const grantedCount = tools.filter((tool) => tool.granted === true).length;
+  const handleCapabilitiesSavingChange = (saving) => {
+    setCapabilitiesSaving(saving);
+    onSavingChange?.(saving);
+  };
   const updateCapabilities = (capabilities) => {
     requestVersion.current += 1;
     setData((current) => current ? {
@@ -88,9 +94,21 @@ export default function PersistentMindTools({ onCapabilitiesChange, onSavingChan
                 <div className="mt-4">
                   <PersistentMindTaskAccessControls
                     capabilities={data.capabilities}
+                    disabled={capabilitiesSaving}
                     taskCatalog={taskCatalog}
                     onSaved={updateCapabilities}
-                    onSavingChange={onSavingChange}
+                    onSavingChange={handleCapabilitiesSavingChange}
+                  />
+                </div>
+                <div className="mt-4">
+                  <PersistentMindTaskModelAllowlistControls
+                    capabilities={data.capabilities}
+                    disabled={capabilitiesSaving}
+                    onSaved={(capabilities) => {
+                      updateCapabilities(capabilities);
+                      load();
+                    }}
+                    onSavingChange={handleCapabilitiesSavingChange}
                   />
                 </div>
               </section>
