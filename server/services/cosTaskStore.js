@@ -379,6 +379,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     else if (taskData.useWorktree === false) metadata.useWorktree = false;
     if (taskData.openPR === true) metadata.openPR = true;
     else if (taskData.openPR === false) metadata.openPR = false;
+    if (taskData.whenDone === 'commit-push' || taskData.whenDone === 'leave-uncommitted') metadata.whenDone = taskData.whenDone;
     // Default a worktree-isolated USER task to opening a PR rather than
     // auto-merging straight to the default branch — an unreviewed agent commit
     // landing on main is the more dangerous default (see the local-model eval
@@ -387,7 +388,7 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // always wins, and internal/system tasks (autopilot, self-improvement) keep
     // their existing auto-merge behavior so automation isn't silently gated on a
     // human merging a PR.
-    else if (taskData.useWorktree === true && taskType === 'user') metadata.openPR = true;
+    else if (taskData.openPR === undefined && taskData.useWorktree === true && taskType === 'user') metadata.openPR = true;
     // Claim prompts own their forge lifecycle in a separately-created
     // claim/<item> worktree. Keep this marker independent from openPR: false is
     // still required to stop CoS from provisioning a second worktree.
