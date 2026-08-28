@@ -26,7 +26,7 @@
  * stay honest about what the runner actually executed.
  */
 
-import { createRun, executeApiRun, executeCliRun, extractBakedModel, hasModelFlag, stopRun, patchRunMetadata } from './runner.js';
+import { createRun, executeApiRun, executeCliRun, extractBakedModel, hasModelFlag, stopRun, patchRunMetadata, finalizeRunRecord } from './runner.js';
 import { getActiveProvider, getProviderById, getAllProviders } from './providers.js';
 import { executeTuiRun } from './tuiPromptRunner.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -39,6 +39,7 @@ import { createSingleFlight } from '../lib/singleFlight.js';
 import { extractJson } from '../lib/jsonExtract.js';
 import { isCreativeRunSource, withCreativeLatitude } from '../lib/creativeLatitude.js';
 import { DEFAULT_OUTPUT_RESERVE_TOKENS, estimateTokens } from '../lib/contextBudget.js';
+import { ensureProviderReadyForExecution } from './providerExecutionReadiness.js';
 
 // The fallback-lifecycle notifiers live in services/autoFixer.js, which
 // transitively pulls in services/cos.js (PM2 + fs + sockets). Importing it
@@ -83,7 +84,9 @@ export function buildRequestCapabilities({ prompt, screenshots, outputReserveTok
 // regardless — and, if the backend is configured for parallelism
 // (OLLAMA_NUM_PARALLEL > 1), it loads N model contexts at once and can spike
 // VRAM into an OOM/thrash. Cloud HTTP and CLI/TUI providers have no such
-// constraint. So we cap concurrent IN-FLIGHT calls per LOCAL endpoint and queue
+// constraint. Local TUI providers still share this gate because their readiness
+// hook can start the same daemon before the PTY is spawned. So we cap concurrent
+// IN-FLIGHT calls per LOCAL endpoint and queue
 // the rest (FIFO). Default 1 (serialize); a beefy box can lift it with
 // LOCAL_LLM_MAX_CONCURRENCY. Keyed by endpoint so two distinct local servers
 // still run in parallel with each other.
@@ -119,11 +122,13 @@ function releaseLocalSlot(endpoint) {
   else gate.active = Math.max(0, gate.active - 1);
 }
 
-// Run `fn` under the local-endpoint gate when `provider` is a local API backend;
-// otherwise run it immediately (cloud / CLI / TUI are unconstrained).
+// Run `fn` under the local-endpoint gate when `provider` is a local API or TUI
+// backend; otherwise run it immediately (cloud / non-local CLI/TUI are
+// unconstrained).
 export async function withLocalConcurrencyGate(provider, fn) {
   const endpoint = provider?.endpoint;
-  if (!(provider?.type === PROVIDER_TYPES.API && isLocalEndpoint(endpoint))) return fn();
+  const isLocalProvider = provider?.type === PROVIDER_TYPES.API || provider?.type === PROVIDER_TYPES.TUI;
+  if (!(isLocalProvider && isLocalEndpoint(endpoint))) return fn();
   await acquireLocalSlot(endpoint);
   try {
     return await fn();
@@ -1242,8 +1247,36 @@ async function executeProviderRunOnce({
   // (above) and any retry-fallback. This is the single chokepoint the
   // module comment promises: gating the *requested* provider at the call
   // site missed a remote/CLI primary that swaps/fails over to a local
-  // backend, defeating the VRAM/OOM serialization. No-op for cloud/CLI/TUI.
-  return withLocalConcurrencyGate(effectiveProvider, () => new Promise((resolve, reject) => {
+  // backend, defeating the VRAM/OOM serialization. Non-local CLI/TUI providers
+  // remain unconstrained.
+  const attemptStartedAt = Date.now();
+  return withLocalConcurrencyGate(effectiveProvider, async () => {
+    // API providers run through the shared toolkit readiness hook. TUI
+    // providers spawn OpenCode directly, so they need the same hook here or
+    // MTPLX remains stopped until after the TUI has already failed its request.
+    if (effectiveProvider.type === PROVIDER_TYPES.TUI) {
+      const ready = await ensureProviderReadyForExecution(effectiveProvider).catch((err) => ({
+        success: false,
+        error: err.message,
+      }));
+      if (!ready.success) {
+        const message = ready.error || 'Provider readiness check failed';
+        await finalizeRunRecord({
+          runId,
+          output: '',
+          exitCode: 1,
+          success: false,
+          error: message,
+          startTime: attemptStartedAt,
+        });
+        const error = new Error(message);
+        error.effectiveProvider = effectiveProvider;
+        error.effectiveModel = effectiveModel;
+        throw error;
+      }
+    }
+
+    return new Promise((resolve, reject) => {
     let text = '';
     let settled = false;
     let apiTimeoutHandle = null;
@@ -1360,7 +1393,8 @@ async function executeProviderRunOnce({
     } else {
       safeReject(new Error(`Unsupported provider type: ${effectiveProvider.type}`));
     }
-  })).finally(() => {
+    });
+  }).finally(() => {
     if (typeof onRunSettled !== 'function') return;
     try { onRunSettled(runId); } catch (err) {
       console.error(`❌ run lifecycle settle hook failed: ${err.message}`);

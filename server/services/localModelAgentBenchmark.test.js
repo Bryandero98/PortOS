@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { join } from 'path';
 vi.mock('./providers.js', () => ({ getProviderById: vi.fn() }));
+vi.mock('./providerExecutionReadiness.js', () => ({ ensureProviderReadyForExecution: vi.fn().mockResolvedValue({ success: true }) }));
 vi.mock('./tuiPromptRunner.js', () => ({ executeTuiRun: vi.fn() }));
 vi.mock('./runner.js', () => ({ getRunsPath: vi.fn(() => '/tmp/portos-benchmark-runs') }));
 vi.mock('../lib/providerModels.js', () => ({
@@ -9,6 +10,7 @@ vi.mock('../lib/providerModels.js', () => ({
 }));
 
 import { getProviderById } from './providers.js';
+import { ensureProviderReadyForExecution } from './providerExecutionReadiness.js';
 import { executeTuiRun } from './tuiPromptRunner.js';
 import {
   buildOpenCodeAgentBenchmarkPrompt,
@@ -113,6 +115,25 @@ describe('runOpenCodeAgentBenchmark', () => {
       completed: true,
       measurementMode: 'pty-tui',
     });
+  });
+
+  it('wakes the MTPLX daemon before running its TUI benchmark', async () => {
+    getProviderById.mockResolvedValue({
+      id: 'opencode-mtplx-tui',
+      type: 'tui',
+      command: 'opencode',
+      args: [],
+      mtplxBacked: true,
+      endpoint: 'http://127.0.0.1:8000/v1',
+    });
+
+    await runOpenCodeAgentBenchmark({ backend: 'mtplx', modelId: 'mtplx-qwen38-27b-optimized-speed' });
+
+    expect(ensureProviderReadyForExecution).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'opencode-mtplx-tui',
+      mtplxBacked: true,
+    }));
+    expect(executeTuiRun).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a model outside the three explicit benchmark targets', async () => {

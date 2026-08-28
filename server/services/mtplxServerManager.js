@@ -841,7 +841,10 @@ export async function ensureMtplxRunning() {
  * it is this install's business.
  */
 export function isMtplxProvider(provider) {
-  if (!provider || provider.type !== 'api') return false;
+  // API providers reach MTPLX directly, while OpenCode TUI providers carry
+  // the same local endpoint and need the exact same lazy wake-up before the
+  // TUI is spawned.
+  if (!provider || !['api', 'tui'].includes(provider.type)) return false;
   if (!isLocalInstanceEndpoint(provider.endpoint)) return false;
   // `localRuntimeKind`, not `localBackendForProvider` — the latter only ever
   // answers 'ollama'/'lmstudio' (it maps those two catalog ports), so it reports
