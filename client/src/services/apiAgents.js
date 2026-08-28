@@ -67,6 +67,19 @@ export const getPersistentMind = (filters = {}, options = {}) =>
   request(`/cos/mind${runEventQuery(filters)}`, options);
 export const getPersistentMindContext = (options = {}) => request('/cos/mind/context', options);
 export const getPersistentMindTools = (options = {}) => request('/cos/mind/tools', options);
+export const getCosToolCatalog = ({ scope = 'all', format = 'portos', intent, ...options } = {}) => {
+  const params = new URLSearchParams({ scope, format });
+  if (intent) params.set('intent', intent);
+  return request(`/cos/tools?${params}`, options);
+};
+export const callCosTool = (call, options = {}) => request('/cos/tools/call', {
+  method: 'POST',
+  body: JSON.stringify(call),
+  ...options,
+  headers: { 'Idempotency-Key': call.requestId, ...(options.headers || {}) },
+});
+export const getCosToolCall = (requestId, options = {}) =>
+  request(`/cos/tools/calls/${encodeURIComponent(requestId)}`, options);
 export const getPersistentMindRuntime = (options = {}) => request('/cos/mind/runtime', options);
 export const getPersistentMindVisibility = (options = {}) => {
   const { refresh, ...requestOptions } = options;
@@ -74,6 +87,10 @@ export const getPersistentMindVisibility = (options = {}) => {
 };
 export const sendPersistentMindMessage = (body, options = {}) =>
   request('/cos/mind/messages', { method: 'POST', body: JSON.stringify(body), ...options });
+export const uploadPersistentMindAttachment = (body, options = {}) =>
+  request('/cos/mind/attachments', { method: 'POST', body: JSON.stringify(body), ...options });
+export const deletePersistentMindAttachment = (attachmentId, options = {}) =>
+  request(`/cos/mind/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE', ...options });
 export const addPersistentMindAnnotation = (body, options = {}) =>
   request('/cos/mind/annotations', { method: 'POST', body: JSON.stringify(body), ...options });
 export const startPersistentMind = (options = {}) => request('/cos/mind/start', { method: 'POST', ...options });

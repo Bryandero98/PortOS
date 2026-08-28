@@ -2475,3 +2475,11 @@ describe('pending-merge sweep — own timer, not the evaluation cadence (#3630)'
     expect(hours).toBe(6);
   });
 });
+
+describe('CoS startup — single-flight recovery', () => {
+  it('shares the full boot promise across concurrent start callers', () => {
+    expect(COS_SRC).toMatch(/let daemonStartPromise = null/);
+    expect(COS_SRC).toMatch(/daemonStartPromise = runStart\(\)\.finally\(\(\) => \{\s*daemonStartPromise = null;/);
+    expect(COS_SRC).toMatch(/export function start\(\) \{[\s\S]*?return daemonStartPromise;\s*\}/);
+  });
+});

@@ -15,6 +15,7 @@ const mock = vi.hoisted(() => ({
   acquireSlot: vi.fn(async () => ({ ok: true, release: vi.fn() })),
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
   prepareContext: vi.fn(async () => ({ text: 'bounded context', chars: 15, summaryState: 'not-needed' })),
+  updateInProgress: false,
   daemonRunning: true,
   profile: {
     ok: true,
@@ -23,6 +24,7 @@ const mock = vi.hoisted(() => ({
     effort: 'high',
     thinkingInterface: 'text',
   },
+  imageCapability: { status: 'supported', reason: 'Supported.' },
 }));
 
 vi.mock('./cosState.js', () => ({
@@ -65,6 +67,16 @@ vi.mock('./persistentMindContext.js', () => ({
 vi.mock('./persistentMindProfile.js', () => ({
   resolvePersistentMindProfile: vi.fn(async () => mock.profile),
 }));
+vi.mock('./providers.js', () => ({ getProviderById: vi.fn(async () => mock.profile.provider) }));
+vi.mock('./persistentMindImageCapability.js', () => ({
+  resolvePersistentMindImageCapability: vi.fn(async () => mock.imageCapability),
+  imageCapabilityAllowsAttempt: (capability, provider) => capability?.status === 'supported'
+    || (capability?.status === 'unknown' && provider?.type === 'api'),
+}));
+
+vi.mock('./updateChecker.js', () => ({
+  isUpdateInProgress: vi.fn(() => mock.updateInProgress),
+}));
 
 const supervisor = await import('./persistentMindSupervisor.js');
 
@@ -93,14 +105,16 @@ describe('persistent mind supervisor', () => {
     mock.emitted.length = 0;
     mock.budget = { withinBudget: true, exceeded: null };
     mock.daemonRunning = true;
+    mock.updateInProgress = false;
     mock.recordUsage.mockClear();
     mock.profile = {
       ok: true,
-      provider: { id: 'example-cloud' },
+      provider: { id: 'example-cloud', type: 'api' },
       model: 'example-model',
       effort: 'high',
       thinkingInterface: 'text',
     };
+    mock.imageCapability = { status: 'supported', reason: 'Supported.' };
     mock.acquireSlot.mockReset();
     mock.acquireSlot.mockResolvedValue({ ok: true, release: vi.fn() });
     mock.appendMindEvent.mockClear();
@@ -169,7 +183,7 @@ describe('persistent mind supervisor', () => {
 
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
-      profile: expect.objectContaining({ provider: { id: 'example-cloud' }, model: 'example-model', effort: 'high' }),
+      profile: expect.objectContaining({ provider: expect.objectContaining({ id: 'example-cloud' }), model: 'example-model', effort: 'high' }),
     }));
     expect(mock.acquireSlot).toHaveBeenCalledTimes(1);
     expect(mock.root.persistentMind.activeTurn).toBeNull();
@@ -195,6 +209,20 @@ describe('persistent mind supervisor', () => {
     });
   });
 
+  it('rejects new image messages while a source transition is in progress', async () => {
+    mock.updateInProgress = true;
+
+    await expect(supervisor.enqueuePersistentMindMessage({
+      id: 'message-during-update',
+      images: ['attachment-example'],
+    })).resolves.toMatchObject({
+      success: false,
+      code: 'UPDATE_IN_PROGRESS',
+      status: 409,
+    });
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
+  });
+
   it('pauses before adapter preparation when the pinned profile cannot resolve', async () => {
     const prepare = vi.fn();
     await supervisor.registerPersistentMindTurnAdapter({ prepare, run: vi.fn() });
@@ -207,8 +235,21 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind).toMatchObject({ status: 'degraded', pauseReason: 'Pinned provider unavailable' });
   });
 
-  it('recovers an orphaned turn without losing or duplicating its accepted message', async () => {
-    const message = { id: 'message-1', text: 'Do not lose me.', createdAt: new Date(1).toISOString() };
+  it('recovers an orphaned image turn without losing images or duplicating acceptance', async () => {
+    const message = {
+      id: 'message-1',
+      text: 'Do not lose this image.',
+      images: [{
+        attachmentId: 'attachment-example',
+        filename: 'mind-attachment-example.png',
+        path: '/api/screenshots/mind-attachment-example.png',
+        originalName: 'diagram.png',
+        mimeType: 'image/png',
+        size: 128,
+        uploadedAt: new Date(1).toISOString(),
+      }],
+      createdAt: new Date(1).toISOString(),
+    };
     mock.root.persistentMind = {
       ...createDefaultPersistentMindState(),
       enabled: true,
@@ -236,6 +277,8 @@ describe('persistent mind supervisor', () => {
       turnId: 'turn-orphan',
       data: expect.objectContaining({ status: 'interrupted' }),
     }));
+    expect(mock.appendMindEvent.mock.calls.map(([event]) => event.kind))
+      .not.toContain('mind.message.accepted');
   });
 
   it('records pause, stop, and disable boundaries even without an active provider turn', async () => {
@@ -276,6 +319,30 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
     expect(mock.root.persistentMind.nextEligibleWakeAt).not.toBeNull();
     expect(mock.acquireSlot).not.toHaveBeenCalled();
+  });
+
+  it('revalidates image capability before inference and retains the claimed message', async () => {
+    const run = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({
+      prepare: vi.fn(async () => ({ ok: true, provider: mock.profile.provider })),
+      run,
+    });
+    mock.root.persistentMind = {
+      ...mock.root.persistentMind,
+      enabled: true,
+      started: true,
+      status: 'waiting',
+      queuedMessages: [{
+        id: 'message-image', text: '', createdAt: new Date().toISOString(),
+        images: [{ attachmentId: 'attachment-1', filename: 'mind-example.png', originalName: 'example.png', mimeType: 'image/png', size: 10, uploadedAt: new Date().toISOString() }],
+      }],
+    };
+    mock.imageCapability = { status: 'unsupported', reason: 'The pinned model is now text-only.' };
+    await supervisor.drainPersistentMind();
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.status).toBe('degraded');
+    expect(mock.root.persistentMind.pauseReason).toBe('The pinned model is now text-only.');
+    expect(mock.root.persistentMind.queuedMessages.map((message) => message.id)).toEqual(['message-image']);
   });
 
   it('holds queued work durably when the CoS budget is exhausted', async () => {

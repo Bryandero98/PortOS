@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { join } from 'node:path';
 import { PERSISTENT_MIND_LIMITS, createDefaultPersistentMindState } from '../lib/persistentMind.js';
 
 const mocks = vi.hoisted(() => ({
@@ -16,8 +17,9 @@ const mocks = vi.hoisted(() => ({
   readFile: vi.fn(),
   unlink: vi.fn(),
   appendMindEvent: vi.fn(async (event) => ({ appended: true, event })),
-  prepareContext: vi.fn(async () => ({ text: '', chars: 0, summaryState: 'empty' })),
   acquireSlot: vi.fn(async () => ({ ok: true, release: vi.fn() })),
+  updateInProgress: false,
+  imageCapability: { status: 'supported', reason: 'Supported.' },
 }));
 
 vi.mock('./cosState.js', () => ({
@@ -25,6 +27,10 @@ vi.mock('./cosState.js', () => ({
   saveState: vi.fn(async (state) => { mocks.root = state; }),
   withStateLock: vi.fn(async (fn) => fn()),
   isDaemonRunning: vi.fn(() => true),
+}));
+
+vi.mock('./updateChecker.js', () => ({
+  isUpdateInProgress: vi.fn(() => mocks.updateInProgress),
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
@@ -83,6 +89,12 @@ vi.mock('./persistentMindProfile.js', () => ({
     effort: 'high',
   })),
 }));
+vi.mock('./providers.js', () => ({ getProviderById: vi.fn(async () => ({ id: 'example-cloud', type: 'api' })) }));
+vi.mock('./persistentMindImageCapability.js', () => ({
+  resolvePersistentMindImageCapability: vi.fn(async () => mocks.imageCapability),
+  imageCapabilityAllowsAttempt: (capability, provider) => capability?.status === 'supported'
+    || (capability?.status === 'unknown' && provider?.type === 'api'),
+}));
 
 const supervisor = await import('./persistentMindSupervisor.js');
 
@@ -93,23 +105,29 @@ const uploadRecord = (overrides = {}) => ({
   originalName: 'diagram.png',
   mimeType: 'image/png',
   size: PNG.length,
-  uploadedAt: '2026-08-27T00:00:00.000Z',
-  expiresAt: '2026-08-28T00:00:00.000Z',
+  uploadedAt: new Date(Date.now() - 60_000).toISOString(),
+  expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
   ...overrides,
 });
 
 const makeRoot = () => ({
   paused: false,
-  config: { domainAutonomy: { cos: 'execute' }, maxConcurrentAgents: 3 },
+  config: {
+    domainAutonomy: { cos: 'execute' },
+    maxConcurrentAgents: 3,
+    persistentMindProfile: { enabled: true, providerId: 'example-cloud', model: 'example-model', effort: 'high' },
+  },
   agents: {},
   persistentMind: createDefaultPersistentMindState(),
 });
 
 describe('persistent mind image attachment lifecycle', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     mocks.root = makeRoot();
     mocks.scheduled.clear();
     mocks.emitted.length = 0;
+    mocks.updateInProgress = false;
     mocks.saveImageUpload.mockReset();
     mocks.saveImageUpload.mockResolvedValue({
       filename: 'mind-attachment-1.png',
@@ -135,7 +153,18 @@ describe('persistent mind image attachment lifecycle', () => {
     mocks.unlink.mockResolvedValue(undefined);
     mocks.appendMindEvent.mockClear();
     mocks.acquireSlot.mockClear();
+    mocks.imageCapability = { status: 'supported', reason: 'Supported.' };
     supervisor.__resetPersistentMindSupervisorForTests();
+  });
+
+  it('rejects attachment uploads while a source transition is in progress', async () => {
+    mocks.updateInProgress = true;
+
+    await expect(supervisor.createPersistentMindAttachment({
+      filename: 'diagram.png',
+      data: PNG.toString('base64'),
+    })).resolves.toMatchObject({ success: false, code: 'UPDATE_IN_PROGRESS', status: 409 });
+    expect(mocks.saveImageUpload).not.toHaveBeenCalled();
   });
 
   it('stores a safe pending record, claims it atomically, and preserves it on retry', async () => {
@@ -193,6 +222,20 @@ describe('persistent mind image attachment lifecycle', () => {
     expect(retry).toEqual({ success: true, duplicate: true, messageId: 'message-1' });
     expect(mocks.root.persistentMind.queuedMessages).toHaveLength(1);
     expect(mocks.appendMindEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects known text-only providers before claiming a pending attachment', async () => {
+    const uploaded = await supervisor.createPersistentMindAttachment({ filename: 'diagram.png', data: 'encoded-image' });
+    mocks.imageCapability = { status: 'unsupported', reason: 'The pinned model is text-only.' };
+    await expect(supervisor.enqueuePersistentMindMessage({
+      id: 'message-text-only', images: [uploaded.attachment.attachmentId],
+    })).resolves.toMatchObject({
+      success: false,
+      code: 'IMAGE_CAPABILITY_UNSUPPORTED',
+      status: 422,
+    });
+    expect(mocks.root.persistentMind.queuedMessages).toEqual([]);
+    expect(mocks.root.persistentMind.pendingAttachments[0].claimedBy).toBeNull();
   });
 
   it('removes the pending marker when image persistence rejects', async () => {
@@ -259,7 +302,7 @@ describe('persistent mind image attachment lifecycle', () => {
     await expect(supervisor.cleanupPersistentMindAttachments({ now }))
       .resolves.toMatchObject({ success: true, removed: 1, examined: 1 });
     expect(mocks.unlink).toHaveBeenNthCalledWith(1, '/tmp/portos-mind-attachments/mind-orphan-diagram.png');
-    expect(mocks.unlink).toHaveBeenNthCalledWith(2, '/tmp/portos-mind-attachments/.mind-pending-orphan');
+    expect(mocks.unlink).toHaveBeenNthCalledWith(2, join('/tmp/portos-mind-attachments', '.mind-pending-orphan'));
     expect(mocks.unlink).toHaveBeenCalledTimes(2);
   });
 
@@ -277,7 +320,7 @@ describe('persistent mind image attachment lifecycle', () => {
 
   it('cleans a pending upload whose stored bytes fail validation', async () => {
     mocks.root.persistentMind.pendingAttachments = [uploadRecord({ expiresAt: '2026-08-28T00:00:00.000Z' })];
-    mocks.detectImageFormat.mockReturnValue(null);
+    mocks.detectImageFormat.mockReturnValueOnce(null);
 
     await expect(supervisor.cleanupPersistentMindAttachments({ now: Date.parse('2026-08-27T00:00:00.000Z') }))
       .resolves.toMatchObject({ success: true, removed: 1, examined: 1 });

@@ -644,6 +644,60 @@ export async function updateMany(type, updates) {
 }
 
 /**
+ * Apply a batch whose records can be persisted independently and whose sync
+ * entries should be appended together. Per-record queues still protect each
+ * record's read-modify-write, while Promise.allSettled lets successful writes
+ * reach the batch log before a failed sibling is surfaced to the caller.
+ */
+async function updateManyWithBatchLog(type, updates) {
+  const store = storeFor(type);
+  const results = await Promise.allSettled(updates.map(({ id, ...fields }) => {
+    if (!store.isValidId(id)) return null;
+    return store.queueRecordWrite(id, async () => {
+      const existing = await store.loadOne(id);
+      if (!existing || isTombstone(existing)) return null;
+
+      const record = {
+        ...existing,
+        ...fields,
+        // Preserve immutable fields, exactly as update() does.
+        originInstanceId: existing.originInstanceId,
+        createdAt: existing.createdAt,
+        updatedAt: now()
+      };
+
+      await store.saveOneNow(id, record);
+      return { id, record };
+    });
+  }));
+  const failures = results.filter(({ status }) => status === 'rejected');
+  const applied = results
+    .filter(({ status }) => status === 'fulfilled')
+    .map(({ value }) => value)
+    .filter(Boolean);
+
+  for (const { id, record } of applied) {
+    brainEvents.emit(`${type}:upserted`, { id, record: { id, ...record } });
+  }
+
+  if (applied.length > 0) {
+    await brainSyncLog.appendChanges(applied.map(({ id, record }) => ({
+      op: 'update',
+      type,
+      id,
+      record,
+      originInstanceId: record.originInstanceId,
+    }))).catch(err => console.error(`⚠️ Sync log batch append failed for ${type}: ${err.message}`));
+  }
+
+  if (failures.length > 0) throw failures[0].reason;
+  if (applied.length === 0) return [];
+
+  console.log(`🧠 Updated ${applied.length} ${type} records in one batch`);
+  return applied.map(({ id, record }) => ({ id, ...record }));
+}
+
+/**
  * Delete a record
  */
 export async function remove(type, id) {
@@ -1064,6 +1118,9 @@ export const getBuckets = (filters) => filters ? query('buckets', filters) : get
 export const getBucketById = (id) => getById('buckets', id);
 export const createBucket = (data) => create('buckets', data);
 export const updateBucket = (id, data) => update('buckets', id, data);
+// Bucket order changes are one user gesture; persist the independent records
+// together and append their federation entries with one sync-log write.
+export const reorderBuckets = (updates) => updateManyWithBatchLog('buckets', updates);
 export const deleteBucket = (id) => remove('buckets', id);
 
 // =============================================================================
