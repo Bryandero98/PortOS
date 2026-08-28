@@ -9,18 +9,22 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Plus, Trash2, Waypoints } from 'lucide-react';
+import { Plus, Sparkles, Trash2, Waypoints } from 'lucide-react';
+import ProviderModelSelector from '../components/ProviderModelSelector';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import { FormField } from '../components/ui/FormField.jsx';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
+import useProviderModels from '../hooks/useProviderModels';
+import toast from '../components/ui/Toast';
 import { timeAgo } from '../utils/formatters';
+import { effectiveModelFor, effortAwareModelOptions } from '../utils/providers';
 import { fieldClass, labelClass } from '../components/fableloom/fieldStyles';
 import { LOOM_FORMATS, isTeleplayFormat, loomFormatLabel } from '../components/fableloom/loomFormats';
 import {
-  createLoom, deleteLoom, listLooms, listPipelineSeries, listUniverses,
+  createLoom, deleteLoom, generateLoomSeriesPlan, listLooms, listPipelineSeries, listUniverses,
 } from '../services/api';
 
 const emptyForm = () => ({ name: '', logline: '', premise: '', styleNotes: '', format: 'prose', universeId: '', seriesId: '' });
@@ -32,6 +36,10 @@ export default function FableLoom() {
   const [series, setSeries] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm());
+  const [planRoute, setPlanRoute] = useState({ providerId: '', model: '', effort: '' });
+  const { providers, loading: providersLoading } = useProviderModels({
+    allowDefault: true, enabled: showForm, silent: true, withEffort: true,
+  });
   const del = useConfirmDelete();
 
   useEffect(() => {
@@ -43,7 +51,14 @@ export default function FableLoom() {
   const universeNames = useMemo(() => new Map(universes.map((u) => [u.id, u.name])), [universes]);
   const seriesNames = useMemo(() => new Map(series.map((s) => [s.id, s.name])), [series]);
 
-  const [runCreate, creating] = useAsyncAction(async () => {
+  const planProvider = providers.find((provider) => provider.id === planRoute.providerId);
+  const planRouteBody = {
+    ...(planRoute.providerId ? { providerId: planRoute.providerId } : {}),
+    ...(planRoute.model ? { model: planRoute.model } : {}),
+    ...(planRoute.effort ? { effort: planRoute.effort } : {}),
+  };
+
+  const [runCreate, creating] = useAsyncAction(async (draftPlan = false) => {
     const loom = await createLoom({
       name: form.name.trim(),
       logline: form.logline,
@@ -53,13 +68,21 @@ export default function FableLoom() {
       universeId: form.universeId || null,
       seriesId: form.seriesId || null,
     }, { silent: true });
+    if (draftPlan) {
+      const generated = await generateLoomSeriesPlan(loom.id, planRouteBody, { silent: true })
+        .catch((error) => {
+          toast.error(`Loom created, but plan drafting failed: ${error.message}`);
+          return null;
+        });
+      if (generated) toast.success('Loom created with a full series-plan draft');
+    }
     navigate(`/fableloom/${loom.id}/plan`);
   }, { errorMessage: 'Could not create the loom' });
 
   const handleCreate = (event) => {
     event.preventDefault();
     if (!form.name.trim() || creating) return;
-    runCreate();
+    runCreate(event.nativeEvent.submitter?.value === 'draft');
   };
 
   const handleDelete = async (id) => {
@@ -157,13 +180,54 @@ export default function FableLoom() {
               placeholder="e.g. painterly, muted palette, storybook illustration"
             />
           </FormField>
-          <div className="flex justify-end">
+          <section className="border-t border-port-border pt-3 space-y-2">
+            <div>
+              <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                <Sparkles size={14} className="text-port-accent" /> AI series-plan draft
+              </h3>
+              <p className="text-xs text-port-text-muted mt-1">
+                Optionally draft the complete arc, ordered plot points, and side quests from
+                these story details and the linked universe canon.
+              </p>
+            </div>
+            <ProviderModelSelector
+              providers={providers}
+              selectedProviderId={planRoute.providerId}
+              selectedModel={planRoute.model}
+              availableModels={effortAwareModelOptions(planProvider, planRoute.model)}
+              onProviderChange={(providerId) => setPlanRoute({ providerId, model: '', effort: '' })}
+              onModelChange={(model) => setPlanRoute((current) => ({ ...current, model }))}
+              effort={planRoute.effort}
+              onEffortChange={(effort) => setPlanRoute((current) => ({ ...current, effort }))}
+              label="Plan AI provider"
+              disabled={creating || providersLoading}
+              modelDisabled={creating || providersLoading}
+              emptyProviderOption="Default (series-plan stage or active provider)"
+              emptyModelOption="Default model"
+              alwaysShowModel={!!planRoute.providerId}
+            />
+            {planProvider ? (
+              <p className="text-xs text-port-text-muted">
+                The draft will use {planProvider.name}{effectiveModelFor(planProvider, planRoute.model) ? ` (${effectiveModelFor(planProvider, planRoute.model)})` : ''}.
+              </p>
+            ) : null}
+          </section>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
             <button
               type="submit"
+              value="empty"
               disabled={creating || !form.name.trim()}
-              className="px-4 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
+              className="px-4 py-2 rounded border border-port-border text-sm hover:border-port-accent disabled:opacity-50"
             >
               {creating ? 'Creating…' : 'Create loom'}
+            </button>
+            <button
+              type="submit"
+              value="draft"
+              disabled={creating || providersLoading || !form.name.trim()}
+              className="flex items-center justify-center gap-1.5 px-4 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
+            >
+              <Sparkles size={14} /> {creating ? 'Creating…' : 'Create & draft plan'}
             </button>
           </div>
         </form>

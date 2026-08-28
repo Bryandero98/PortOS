@@ -13,7 +13,9 @@ import ProviderModelSelector from '../ProviderModelSelector';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useProviderModels from '../../hooks/useProviderModels';
 import useUnsavedChangesGuard from '../../hooks/useUnsavedChangesGuard';
-import { feedbackLoomSeriesPlan, reviewLoomSeriesPlan, updateLoom } from '../../services/api';
+import {
+  feedbackLoomSeriesPlan, generateLoomSeriesPlan, reviewLoomSeriesPlan, updateLoom,
+} from '../../services/api';
 import { uuidv4 } from '../../lib/uuid.js';
 import { effectiveModelFor, effortAwareModelOptions } from '../../utils/providers';
 import LoomEpisodeFeedback from './LoomEpisodeFeedback';
@@ -194,6 +196,13 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
     setAnalysis(result.analysis);
   }, { errorMessage: 'Series analysis failed' });
 
+  const [generatePlan, generating] = useAsyncAction(async () => {
+    const result = await generateLoomSeriesPlan(loom.id, routeBody, { silent: true });
+    onLoomUpdate(result.loom);
+    setAnalysis(null);
+    toast.success('Full series plan drafted');
+  }, { errorMessage: 'Series-plan drafting failed' });
+
   const [applyFeedback, applying] = useAsyncAction(async () => {
     const result = await feedbackLoomSeriesPlan(loom.id, { feedback: feedback.trim(), ...routeBody }, { silent: true });
     onLoomUpdate(result.loom);
@@ -202,7 +211,10 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
     toast.success(result.changes?.[0] || 'Series plan updated');
   }, { errorMessage: 'Series-plan feedback failed' });
 
-  const busy = reviewing || applying;
+  const busy = generating || reviewing || applying;
+  const hasPlan = !!loom.seriesPlan?.storyArc?.trim()
+    || !!loom.seriesPlan?.plotPoints?.length
+    || !!loom.seriesPlan?.sideQuests?.length;
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-4">
       <div>
@@ -231,6 +243,21 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
       {selectedProvider ? (
         <p className="text-xs text-port-text-muted">
           These actions will use {selectedProvider.name}{effectiveModelFor(selectedProvider, route.model) ? ` (${effectiveModelFor(selectedProvider, route.model)})` : ''}.
+        </p>
+      ) : null}
+      <button
+        type="button"
+        onClick={generatePlan}
+        disabled={busy || dirty}
+        className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
+      >
+        {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+        {generating ? 'Drafting full plan…' : hasPlan ? 'Regenerate full plan' : 'Draft full plan'}
+      </button>
+      {hasPlan ? (
+        <p className="text-xs text-port-text-muted">
+          Regenerating replaces the saved arc, plot points, and side quests. Episode titles,
+          synopses, scenes, and paths stay untouched.
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">

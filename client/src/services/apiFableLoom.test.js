@@ -43,7 +43,12 @@ describe('apiFableLoom', () => {
     });
   });
 
-  it('posts series-plan analysis and feedback', async () => {
+  it('posts series-plan generation, analysis, and feedback', async () => {
+    await api.generateLoomSeriesPlan('loom-1', { providerId: 'writer', effort: 'high' }, { silent: true });
+    expect(request).toHaveBeenCalledWith('/fableloom/loom-1/plan/generate', {
+      method: 'POST', body: JSON.stringify({ providerId: 'writer', effort: 'high' }), silent: true,
+    });
+
     await api.reviewLoomSeriesPlan('loom/1', { providerId: 'writer' }, { silent: true });
     expect(request).toHaveBeenCalledWith('/fableloom/loom%2F1/plan/review', {
       method: 'POST', body: JSON.stringify({ providerId: 'writer' }), silent: true,

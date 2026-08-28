@@ -112,6 +112,7 @@ in the request body beats both.
 
 | Stage | What it does |
 |---|---|
+| `fableloom-generate-series-plan` | Drafts the full series arc, ordered plot points, and side quests from the loom metadata, linked-universe canon, and episode outline. |
 | `fableloom-weave-episode` | Generates a full episode graph (scenes, intents, triggers, endings) from the loom premise + episode synopsis + linked-universe canon. |
 | `fableloom-branch-node` | Grows N new intent-labeled branches out of one scene. |
 | `fableloom-play-turn` | Resolves one reader message: `move` through a matched transition or `stay` with in-world narration. |

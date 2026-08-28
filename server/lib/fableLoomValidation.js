@@ -186,6 +186,8 @@ export const feedbackSchema = z.object({
 
 export const seriesPlanReviewSchema = z.object({ ...llmPickFields });
 
+export const seriesPlanGenerateSchema = z.object({ ...llmPickFields });
+
 export const seriesPlanFeedbackSchema = z.object({
   feedback: z.string().trim().min(1).max(LOOM_LIMITS.FEEDBACK_MAX),
   ...llmPickFields,

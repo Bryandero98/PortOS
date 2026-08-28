@@ -119,6 +119,19 @@ const seriesPlanDigest = (loom) => JSON.stringify({
   })),
 }, null, 2);
 
+// A full-plan draft replaces the whole scaffold after a potentially slow
+// provider call. Capture every authored input the stage read so a save made
+// while that call is in flight cannot be overwritten by a stale response.
+const seriesPlanGenerationFingerprint = (loom) => JSON.stringify({
+  name: loom.name,
+  logline: loom.logline,
+  premise: loom.premise,
+  format: loom.format,
+  universeId: loom.universeId,
+  seriesPlan: loom.seriesPlan,
+  episodes: loom.episodes.map(({ id, number, title, synopsis }) => ({ id, number, title, synopsis })),
+});
+
 // --- Weave: generate a full episode graph -----------------------------------
 
 // Raw generated node fields, passed through for the sanitizer to trim/cap.
@@ -393,13 +406,53 @@ export async function feedbackEpisode(loomId, episodeId, {
   };
 }
 
-// --- Series plan: holistic guidance and conversational editing --------------
+// --- Series plan: generation, holistic guidance, and conversational editing --
 
 const analysisStrings = (value) => (Array.isArray(value) ? value : [])
   .filter((item) => typeof item === 'string')
   .map((item) => trimTo(item, 1000))
   .filter(Boolean)
   .slice(0, 12);
+
+/**
+ * Draft the complete series-level scaffold from the story metadata, linked
+ * universe canon, current episode outline, and any useful ideas already in the
+ * plan. This intentionally replaces only `seriesPlan`; episode records and
+ * scene graphs remain untouched.
+ */
+export async function generateSeriesPlan(loomId, { providerId, model, effort } = {}) {
+  const loom = await requireLoom(loomId);
+  const sourceFingerprint = seriesPlanGenerationFingerprint(loom);
+  const canonDigest = await buildCanonDigest(loom);
+  const { content, runId } = await runStagedLLM('fableloom-generate-series-plan', {
+    storyContext: storyContext(loom),
+    canonDigest: canonDigest || '(none — invent only what the premise needs)',
+    seriesPlanJson: seriesPlanDigest(loom),
+  }, llmOptions({ providerId, model, effort }, 'fableloom-generate-series-plan'));
+
+  const storyArc = isStr(content?.storyArc) ? content.storyArc : '';
+  const isUsablePlanItem = (item) => item && typeof item === 'object'
+    && ((isStr(item.title) && item.title.trim()) || (isStr(item.description) && item.description.trim()));
+  const plotPoints = (Array.isArray(content?.plotPoints) ? content.plotPoints : [])
+    .filter(isUsablePlanItem);
+  const sideQuests = (Array.isArray(content?.sideQuests) ? content.sideQuests : [])
+    .filter(isUsablePlanItem);
+  if (!storyArc.trim() || !plotPoints.length || !sideQuests.length) {
+    throw aiShapeError('The model did not return a complete series-plan scaffold');
+  }
+
+  const updated = await mutateLoom(loomId, (current) => {
+    if (seriesPlanGenerationFingerprint(current) !== sourceFingerprint) {
+      throw new ServerError('The story changed while its plan was being drafted', {
+        status: 409,
+        code: 'LOOM_CHANGED_DURING_GENERATION',
+      });
+    }
+    current.seriesPlan = { storyArc, plotPoints, sideQuests };
+    return current;
+  });
+  return { loom: updated, runId };
+}
 
 /** Read-only story-editor pass over the arc, tentpole beats, side quests, and episode outline. */
 export async function reviewSeriesPlan(loomId, { providerId, model, effort } = {}) {

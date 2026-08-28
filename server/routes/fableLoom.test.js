@@ -15,6 +15,7 @@ vi.mock('../services/fableLoom/index.js', () => ({
   deleteNodeTransition: vi.fn(),
   feedbackEpisode: vi.fn(),
   feedbackSeriesPlan: vi.fn(),
+  generateSeriesPlan: vi.fn(),
   getLoom: vi.fn(),
   listLoomSummaries: vi.fn(async () => []),
   playTurn: vi.fn(),
@@ -97,7 +98,16 @@ describe('FableLoom routes', () => {
     expect(fableLoom.updateLoom).toHaveBeenCalledWith('loom-1', { name: 'Y' });
   });
 
-  it('reviews and conversationally edits the series plan', async () => {
+  it('generates, reviews, and conversationally edits the series plan', async () => {
+    fableLoom.generateSeriesPlan.mockResolvedValueOnce({ loom: { id: 'loom-1' }, runId: 'run-draft' });
+    const generated = await request(makeApp())
+      .post('/api/fableloom/loom-1/plan/generate')
+      .send({ providerId: 'writer', model: 'large', effort: 'high' });
+    expect(generated.status).toBe(200);
+    expect(fableLoom.generateSeriesPlan).toHaveBeenCalledWith('loom-1', {
+      providerId: 'writer', model: 'large', effort: 'high',
+    });
+
     fableLoom.reviewSeriesPlan.mockResolvedValueOnce({ analysis: { summary: 'Coherent.' } });
     const reviewed = await request(makeApp())
       .post('/api/fableloom/loom-1/plan/review')

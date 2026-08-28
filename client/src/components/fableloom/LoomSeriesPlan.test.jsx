@@ -5,6 +5,7 @@ import { useState } from 'react';
 
 vi.mock('../../services/api', () => ({
   feedbackLoomSeriesPlan: vi.fn(),
+  generateLoomSeriesPlan: vi.fn(),
   reviewLoomSeriesPlan: vi.fn(),
   updateLoom: vi.fn(),
 }));
@@ -72,6 +73,26 @@ describe('LoomSeriesPlan', () => {
     expect(await screen.findByText('The spine works.')).toBeInTheDocument();
     expect(screen.getByText('Move the reversal into episode 3')).toBeInTheDocument();
     expect(screen.getByText('Episode feedback for Pilot')).toBeInTheDocument();
+  });
+
+  it('regenerates the whole saved scaffold through the selected AI route without touching episodes locally', async () => {
+    const onLoomUpdate = vi.fn();
+    const generated = loom({
+      seriesPlan: {
+        storyArc: 'A generated arc.',
+        plotPoints: [{ id: 'plot-new', title: 'New turn', description: 'The cost lands.', episodeId: 'ep-1' }],
+        sideQuests: [{ id: 'quest-new', title: 'Lost map', description: 'Find it.', status: 'planned', startEpisodeId: 'ep-1', endEpisodeId: null }],
+      },
+    });
+    api.generateLoomSeriesPlan.mockResolvedValue({ loom: generated, runId: 'run-draft' });
+    renderPlan({ loom: loom(), onLoomUpdate });
+
+    fireEvent.click(screen.getByRole('button', { name: /regenerate full plan/i }));
+
+    await waitFor(() => expect(api.generateLoomSeriesPlan).toHaveBeenCalledWith(
+      'loom-1', {}, { silent: true },
+    ));
+    expect(onLoomUpdate).toHaveBeenCalledWith(generated);
   });
 
   it('keeps typing performed while a save response is in flight', async () => {
