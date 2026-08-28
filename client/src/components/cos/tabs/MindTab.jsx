@@ -705,39 +705,41 @@ export default function MindTab() {
         subtitle="Inspect and configure the state available to Persistent Mind"
         size="xl"
         closeLabel="Close mind workspace"
+        closeOnEsc={false}
+        closeOnBackdrop={false}
       >
         <div className="mb-4">
           <TabPills tabs={MIND_PANEL_TABS} activeTab={activePanel || 'context'} onChange={openPanel} variant="pills" size="sm" mobileDropdown ariaLabel="Mind workspace sections" />
         </div>
-        {activePanel === 'context' && (
-          <div className="space-y-4">
-            <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} />
-            <PersistentMindVisibilityPanel visibility={visibility} error={visibilityError} loading={visibilityLoading} onRefresh={() => loadVisibility({ refresh: true })} />
-            <PersistentMindContextPanel view="context" />
+        <div hidden={activePanel !== 'context'} className="space-y-4">
+          <PersistentMindRuntimePanel runtime={runtime} error={runtimeError} loading={runtimeLoading} />
+          <PersistentMindVisibilityPanel visibility={visibility} error={visibilityError} loading={visibilityLoading} onRefresh={() => loadVisibility({ refresh: true })} />
+          <PersistentMindContextPanel view="context" />
+        </div>
+        <div hidden={activePanel !== 'memories'}>
+          <PersistentMindContextPanel view="memories" />
+        </div>
+        <div hidden={activePanel !== 'tools'}>
+          <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} />
+        </div>
+        <section hidden={activePanel !== 'settings'} aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
+          <div className="mb-3">
+            <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
+            <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
           </div>
-        )}
-        {activePanel === 'memories' && <PersistentMindContextPanel view="memories" />}
-        {activePanel === 'tools' && <PersistentMindTools onCapabilitiesChange={(capabilities) => setMind((current) => current ? { ...current, capabilities } : current)} />}
-        {activePanel === 'settings' && (
-          <section aria-labelledby="mind-profile-heading" className="rounded border border-port-border bg-port-card p-4">
-            <div className="mb-3">
-              <h3 id="mind-profile-heading" className="text-sm font-semibold text-port-text">AI profile</h3>
-              <p className="mt-1 text-xs text-port-text-muted">Pin the provider, model, and effort used on every wake. Changes apply to the next wake and never silently fall back to another model.</p>
+          <PersistentMindProfileControls
+            profile={mind?.profile}
+            disabled={!mind}
+            onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
+            onSavingChange={setProfileSaving}
+          />
+          {!state?.started && (
+            <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-port-text-muted">{setupSaving ? 'Saving persistent mind settings…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
+              <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || setupSaving || !profileReady} onClick={() => runLifecycle('start')} />
             </div>
-            <PersistentMindProfileControls
-              profile={mind?.profile}
-              disabled={!mind}
-              onSaved={(profile) => setMind((current) => current ? { ...current, profile } : current)}
-              onSavingChange={setProfileSaving}
-            />
-            {!state?.started && (
-              <div className="mt-4 flex flex-col gap-2 border-t border-port-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-port-text-muted">{setupSaving ? 'Saving persistent mind settings…' : profileReady ? 'The saved AI profile is ready.' : 'Enable the profile and select both an AI provider and model to start.'}</p>
-                <ActionButton label="Start persistent mind" icon={CirclePlay} pending={lifecyclePending === 'start'} disabled={loading || setupSaving || !profileReady} onClick={() => runLifecycle('start')} />
-              </div>
-            )}
-          </section>
-        )}
+          )}
+        </section>
       </Drawer>
 
       <Drawer

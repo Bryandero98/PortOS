@@ -487,4 +487,19 @@ describe('MindTab', () => {
     expect(await screen.findByRole('heading', { name: 'Curated memories' })).toBeInTheDocument();
     expect(screen.getByText('Delivery preference')).toBeInTheDocument();
   });
+
+  it('retains unsaved context drafts across workspace panels and ignores accidental dismissal', async () => {
+    const user = userEvent.setup();
+    renderTab('/cos/mind?panel=context');
+
+    const identity = await screen.findByLabelText('Identity');
+    await user.clear(identity);
+    await user.type(identity, 'Unsaved operating identity');
+    await user.click(screen.getByRole('tab', { name: 'Memories' }));
+    await user.click(screen.getByRole('tab', { name: 'Context' }));
+    expect(screen.getByLabelText('Identity')).toHaveValue('Unsaved operating identity');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.getByRole('heading', { name: 'Identity and operating prompt' })).toBeInTheDocument();
+  });
 });
