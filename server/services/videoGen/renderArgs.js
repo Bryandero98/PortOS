@@ -50,6 +50,10 @@ import {
   FASTVIDEO_VENV_PYTHON,
   FASTVIDEO_HELPER_SCRIPT,
   FASTVIDEO_REPO_DIR,
+  LTX25_CUDA_VENV_PYTHON,
+  LTX25_CUDA_HELPER_SCRIPT,
+  WAN22_CUDA_VENV_PYTHON,
+  WAN22_CUDA_HELPER_SCRIPT,
   BYOV_RUNTIME_INFO,
   videoLoraUnsupportedError,
   routesToWindowsHelper,
@@ -607,6 +611,33 @@ const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negat
   return { bin: WAN22_VENV_PYTHON, args };
 };
 
+const buildWan22CudaArgs = ({ model, wanModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
+  assertByovRuntimeInstalled('wan22_cuda');
+  assertRenderModeContract({ model, mode, sourceImagePath });
+  if (!model?.repo || !model?.revision || !wanModelPath) {
+    throw new ServerError(
+      `Wan 2.2 CUDA model "${model?.id || 'unknown'}" is missing its pinned snapshot.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const args = [
+    WAN22_CUDA_HELPER_SCRIPT,
+    '--model-repo', model.repo,
+    '--model-revision', model.revision,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--steps', String(steps),
+    '--guidance', String(guidance ?? 5),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  if (negativePrompt) args.push('--negative-prompt', negativePrompt);
+  return { bin: WAN22_CUDA_VENV_PYTHON, args };
+};
+
 // Everything every H3 builder must clear before it starts assembling argv:
 // the venv is installed, the mode/source combination is legal, H3's fixed
 // controls were not overridden, and the entry carries its pin. The two lanes
@@ -836,6 +867,49 @@ const buildMiniMaxH3CudaArgs = ({ model, prompt, negativePrompt, width, height, 
   return { bin: MINIMAX_H3_CUDA_VENV_PYTHON, args };
 };
 
+const buildLtx25CudaArgs = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, mode, imageStrength, disableAudio, outputPath }) => {
+  assertByovRuntimeInstalled('ltx25_cuda');
+  assertRenderModeContract({ model, mode, sourceImagePath });
+  if (!model?.repo || !model?.revision) {
+    throw new ServerError(
+      `LTX-2.5 model "${model?.id || 'unknown'}" is missing its pinned repo or revision.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  const files = Array.isArray(model.repoFiles)
+    ? model.repoFiles.filter((file) => typeof file === 'string' && file)
+    : [];
+  if (files.length === 0) {
+    throw new ServerError(
+      `LTX-2.5 model "${model.id}" is missing its split checkpoint file list.`,
+      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
+  if (negativePrompt) {
+    throw new ServerError(
+      'The distilled LTX-2.5 CUDA pipeline does not consume a negative prompt.',
+      { status: 400, code: 'VIDEO_NEGATIVE_PROMPT_UNSUPPORTED' },
+    );
+  }
+  const args = [
+    LTX25_CUDA_HELPER_SCRIPT,
+    '--model-repo', model.repo,
+    '--model-revision', model.revision,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--steps', String(steps),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  for (const file of files) args.push('--repo-file', file);
+  if (sourceImagePath) args.push('--image', sourceImagePath, '--image-strength', String(imageStrength ?? 1));
+  if (disableAudio) args.push('--disable-audio');
+  return { bin: LTX25_CUDA_VENV_PYTHON, args };
+};
+
 export const buildMiniMaxH3Ref2vaArgs = ({
   model, ref2vaModelPath, prompt, negativePrompt, width, height, numFrames, fps,
   steps, seed, sourceImagePath, audioFilePath, audioStartSec, mode, tiling,
@@ -947,6 +1021,9 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
   if (model.runtime === 'wan22') {
     return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
   }
+  if (model.runtime === 'wan22_cuda') {
+    return buildWan22CudaArgs({ model, wanModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
+  }
   if (model.runtime === 'minimax_h3') {
     return buildMiniMaxH3Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath, previewDir, loras, textEncoder, draftDecoder });
   }
@@ -959,6 +1036,9 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
       fps, steps, seed, sourceImagePath, audioFilePath, audioStartSec, mode,
       tiling, disableAudio, outputPath, ffmpegPath, ffprobePath,
     });
+  }
+  if (model.runtime === 'ltx25_cuda') {
+    return buildLtx25CudaArgs({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, mode, imageStrength, disableAudio, outputPath });
   }
   // Migration 315 removes the shipped Hunyuan profile, but a user-repointed
   // or peer-synced historical entry may still declare its retired runtime.

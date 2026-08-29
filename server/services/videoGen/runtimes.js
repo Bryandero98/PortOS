@@ -113,6 +113,20 @@ export const FASTVIDEO_VENV_PYTHON = join(homedir(), '.portos', 'fastvideo', '.v
 export const FASTVIDEO_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_fastvideo.py');
 export const FASTVIDEO_REPO_DIR = join(homedir(), '.portos', 'fastvideo');
 
+// LTX-2.5 on CUDA — the official Lightricks ltx-core / ltx-pipelines runtime.
+export const LTX25_CUDA_REPO_DIR = join(homedir(), '.portos', 'ltx-2.5-cuda');
+export const LTX25_CUDA_VENV_PYTHON = process.platform === 'win32'
+  ? join(LTX25_CUDA_REPO_DIR, '.venv', 'Scripts', 'python.exe')
+  : join(LTX25_CUDA_REPO_DIR, '.venv', 'bin', 'python3');
+export const LTX25_CUDA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx25_cuda.py');
+
+// Wan 2.2 TI2V 5B on CUDA — official Diffusers checkpoint.
+export const WAN22_CUDA_REPO_DIR = join(homedir(), '.portos', 'wan2.2-cuda');
+export const WAN22_CUDA_VENV_PYTHON = process.platform === 'win32'
+  ? join(WAN22_CUDA_REPO_DIR, '.venv', 'Scripts', 'python.exe')
+  : join(WAN22_CUDA_REPO_DIR, '.venv', 'bin', 'python3');
+export const WAN22_CUDA_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_wan22_cuda.py');
+
 // Standalone runtime-fingerprint probe (scripts/runtime_fingerprint.py). Run in
 // each installed BYOV venv by resolveRuntimeFingerprint() to surface resolved
 // package versions on GET /api/video-gen/status without running a render. Shares
@@ -223,6 +237,32 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     importProbe: 'import torch; from diffusers import MiniMaxH3Transformer3DModel; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference; import torchao; assert torch.cuda.is_available(), "no CUDA device"',
     // Mirror scripts/generate_minimax_h3_cuda.py's emit_runtime_fingerprint list.
     fingerprintPackages: ['torch', 'diffusers', 'transformers', 'torchao', 'accelerate', 'huggingface-hub'],
+  },
+  ltx25_cuda: {
+    id: 'ltx25_cuda',
+    label: 'LTX-2.5 CUDA',
+    venvPython: LTX25_CUDA_VENV_PYTHON,
+    repoDir: LTX25_CUDA_REPO_DIR,
+    installEnvVar: 'INSTALL_LTX25_CUDA',
+    cacheOnly: true,
+    killProcessGroup: true,
+    repoUrl: 'https://github.com/Lightricks/LTX-2',
+    installSourceLabel: 'official Lightricks ltx-core / ltx-pipelines packages',
+    importProbe: 'import sys, torch; import ltx_core, ltx_pipelines; from ltx_pipelines.distilled import DistilledPipeline; assert torch.cuda.is_available(), "no CUDA device"; assert sys.platform != "win32" or torch.__version__ == "2.10.0+cu128", f"expected torch 2.10.0+cu128 on Windows, got {torch.__version__}"',
+    fingerprintPackages: ['torch', 'ltx-core', 'ltx-pipelines', 'transformers', 'accelerate', 'huggingface-hub'],
+  },
+  wan22_cuda: {
+    id: 'wan22_cuda',
+    label: 'Wan 2.2 CUDA',
+    venvPython: WAN22_CUDA_VENV_PYTHON,
+    repoDir: WAN22_CUDA_REPO_DIR,
+    installEnvVar: 'INSTALL_WAN22_CUDA',
+    cacheOnly: true,
+    killProcessGroup: true,
+    repoUrl: 'https://huggingface.co/docs/diffusers/main/api/pipelines/wan',
+    installSourceLabel: 'pinned Diffusers and CUDA PyTorch packages',
+    importProbe: 'import torch, hf_xet; from diffusers import AutoencoderKLWan, WanPipeline; assert torch.cuda.is_available(), "no CUDA device"',
+    fingerprintPackages: ['torch', 'diffusers', 'transformers', 'accelerate', 'huggingface-hub', 'hf-xet'],
   },
   wan22: {
     id: 'wan22',

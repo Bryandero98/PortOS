@@ -170,7 +170,7 @@ export async function validateVideoRetryParams(params = {}) {
     });
     if (controlError) throw controlError;
   }
-  if (model.runtime === 'wan22') {
+  if (model.runtime === 'wan22' || model.runtime === 'wan22_cuda') {
     const frameStride = Number(model.frameStride);
     if (Number.isFinite(frameStride) && frameStride > 0 && (Number(numFrames) - 1) % frameStride !== 0) {
       throw new ServerError(
@@ -638,7 +638,7 @@ async function resolvePreparedParams({
   // request schema can express (the mode side is the shared gate above). Mirror
   // the worker's frame-grid guard here so a direct API caller cannot persist a
   // job that is already known to fail.
-  if (effectiveModel?.runtime === 'wan22') {
+  if (effectiveModel?.runtime === 'wan22' || effectiveModel?.runtime === 'wan22_cuda') {
     const numFrames = body.numFrames != null ? Number(body.numFrames) : DEFAULT_NUM_FRAMES;
     const frameStride = Number(effectiveModel.frameStride);
     if (Number.isFinite(frameStride) && frameStride > 0 && (numFrames - 1) % frameStride !== 0) {

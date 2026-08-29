@@ -150,11 +150,31 @@ vi.mock('../../lib/mediaModels.js', async () => {
       memoryProfiles: [{ id: 'int8-lean', name: 'int8, leaf-level', minMemoryGb: 1, minVramGb: 12, unified: false }],
     },
     {
+      id: 'ltx25_cuda_distilled', name: 'LTX-2.5 CUDA Distilled', runtime: 'ltx25_cuda',
+      repo: 'Lightricks/LTX-2.5',
+      revision: 'bf86adedf518142442575d1ce2e767b7d01c8c76',
+      repoFiles: [
+        'diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors',
+        'text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors',
+      ],
+      supportedModes: ['text', 'image'], defaultFrames: 121, fpsOptions: [24],
+      steps: 8, guidance: 1, samplerLocked: true,
+      supportsNegativePrompt: false, supportsDisableAudio: true,
+    },
+    {
       id: 'wan22_ti2v_5b', name: 'Wan TI2V', runtime: 'wan22',
       repo: 'AbstractFramework/wan2.2-ti2v-5b-diffusers-8bit',
       revision: '6875952a110b6bdbcfc00d72b1d89a8e02ab0fc3',
       supportedModes: ['text', 'image'], frameStride: 4, steps: 25, guidance: 5,
       guidance2: null, flowShift: 3, solver: 'unipc',
+    },
+    {
+      id: 'wan22_cuda_ti2v_5b', name: 'Wan TI2V CUDA', runtime: 'wan22_cuda',
+      repo: 'Wan-AI/Wan2.2-TI2V-5B-Diffusers',
+      revision: 'b8fff7315c768468a5333511427288870b2e9635',
+      supportedModes: ['text'], frameStride: 4, defaultFrames: 81,
+      defaultWidth: 1280, defaultHeight: 704, resolutionStep: 16,
+      defaultFrames: 121, steps: 50, guidance: 5,
     },
     {
       id: 'wan22_t2v_a14b_lightning', name: 'Wan T2V Lightning', runtime: 'wan22',
@@ -4466,6 +4486,123 @@ describe('generateVideo — MiniMax H3 CUDA contract', () => {
 
     const [, args] = cudaCall(spawnMock);
     expect(args).not.toContain('--offload-profile');
+  });
+});
+
+describe('generateVideo — LTX-2.5 CUDA contract', () => {
+  const ltx25Call = (spawnMock) => spawnMock.mock.calls.find(([, args]) => (
+    Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_ltx25_cuda.py')
+  ));
+
+  it('dispatches a cache-only first-frame render through the dedicated streamed runtime', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'ltx25-cuda-args',
+      modelId: 'ltx25_cuda_distilled',
+      prompt: 'a fox watches the rain',
+      width: 768, height: 512, numFrames: 121, fps: 24,
+      steps: 99, guidanceScale: 12, mode: 'image',
+      sourceImagePath: '/mock/source.png', imageStrength: 0.7,
+      disableAudio: true,
+    });
+
+    const call = ltx25Call(spawnMock);
+    expect(call).toBeDefined();
+    const [bin, args, options] = call;
+    expect(String(bin)).toContain(join('.portos', 'ltx-2.5-cuda'));
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('Lightricks/LTX-2.5');
+    expect(args[args.indexOf('--model-revision') + 1])
+      .toBe('bf86adedf518142442575d1ce2e767b7d01c8c76');
+    expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    expect(args).not.toContain('--guidance');
+    expect(basename(args[args.indexOf('--image') + 1]))
+      .toBe('resized-src-ltx25-cuda-args.png');
+    expect(args[args.indexOf('--image-strength') + 1]).toBe('0.7');
+    expect(args).toContain('--disable-audio');
+    expect(args.flatMap((arg, i) => (arg === '--repo-file' ? [args[i + 1]] : []))).toEqual([
+      'diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors',
+      'text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors',
+    ]);
+    expect(options.env).toMatchObject({
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+    });
+    expect(options.killProcessGroup).toBe(true);
+  });
+
+  it('rejects image mode without a source at the render boundary', async () => {
+    await expect(generateVideo({
+      jobId: 'ltx25-cuda-missing-image',
+      modelId: 'ltx25_cuda_distilled',
+      prompt: 'a fox watches the rain',
+      mode: 'image',
+    })).rejects.toMatchObject({ code: 'LTX25_CUDA_I2V_REQUIRES_IMAGE' });
+  });
+
+  it('promotes a staged upload before enforcing the image contract', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'ltx25-cuda-staged-image',
+      modelId: 'ltx25_cuda_distilled',
+      prompt: 'a fox watches the rain',
+      mode: 'image', uploadedTempPath: '/mock/upload.png',
+    });
+
+    const [, args] = ltx25Call(spawnMock);
+    expect(basename(args[args.indexOf('--image') + 1]))
+      .toBe('resized-src-ltx25-cuda-staged-image.png');
+  });
+});
+
+describe('generateVideo — Wan 2.2 CUDA contract', () => {
+  it('dispatches a pinned, cache-only text render through the dedicated CUDA runtime', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'wan22-cuda-args',
+      modelId: 'wan22_cuda_ti2v_5b',
+      prompt: 'a fox watches the rain',
+      negativePrompt: 'text, watermark',
+      width: 832, height: 480, numFrames: 81, fps: 24,
+      steps: 12, guidanceScale: 4.5, mode: 'text',
+    });
+
+    const call = spawnMock.mock.calls.find(([, args]) => (
+      Array.isArray(args) && args.some((arg) => basename(String(arg)) === 'generate_wan22_cuda.py')
+    ));
+    expect(call).toBeDefined();
+    const [bin, args, options] = call;
+    expect(String(bin)).toContain(join('.portos', 'wan2.2-cuda'));
+    expect(args[args.indexOf('--model-repo') + 1]).toBe('Wan-AI/Wan2.2-TI2V-5B-Diffusers');
+    expect(args[args.indexOf('--model-revision') + 1])
+      .toBe('b8fff7315c768468a5333511427288870b2e9635');
+    expect(args[args.indexOf('--steps') + 1]).toBe('12');
+    expect(args[args.indexOf('--guidance') + 1]).toBe('4.5');
+    expect(args[args.indexOf('--negative-prompt') + 1]).toBe('text, watermark');
+    expect(options.env).toMatchObject({
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_OFFLINE: '1',
+      TRANSFORMERS_OFFLINE: '1',
+    });
+    expect(options.killProcessGroup).toBe(true);
+  });
+
+  it('rejects image mode even when a source is supplied', async () => {
+    await expect(generateVideo({
+      jobId: 'wan22-cuda-image',
+      modelId: 'wan22_cuda_ti2v_5b',
+      prompt: 'a fox watches the rain',
+      mode: 'image', sourceImagePath: '/mock/source.png',
+    })).rejects.toMatchObject({ code: 'WAN22_MODE_UNSUPPORTED' });
   });
 });
 

@@ -204,7 +204,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   numFrames = numFrames ?? model.defaultFrames ?? DEFAULT_NUM_FRAMES;
   let wanModelPath = null;
   const wanRequiredWeights = [];
-  if (model.runtime === 'wan22') {
+  if (model.runtime === 'wan22' || model.runtime === 'wan22_cuda') {
     const frameStride = Number(model.frameStride);
     if (Number.isFinite(frameStride) && frameStride > 0 && (Number(numFrames) - 1) % frameStride !== 0) {
       throw new ServerError(

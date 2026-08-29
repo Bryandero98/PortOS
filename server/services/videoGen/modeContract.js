@@ -92,6 +92,42 @@ const MINIMAX_H3_REF2VA_CONTRACT = Object.freeze({
   }),
 });
 
+const WAN22_CONTRACT = Object.freeze({
+  codePrefix: 'WAN22',
+  chainCode: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE',
+  // No ceiling: MLX-Gen's Wan CLI takes whatever the profile declares, and
+  // resolveVideoSupportedModes narrows an entry that declares nothing to the
+  // wan22 row (text + image) rather than leaving it unconstrained.
+  modeCeiling: null,
+  // The wan22 lane rejects multi-keyframe / extend / audio / IC inputs by
+  // runtime elsewhere, so folding them in here would double-report.
+  extraConditioningUnsupported: false,
+  messages: {
+    modeUnsupported: ({ model, requestedMode }) => `${model.name} does not support ${requestedMode}-to-video. Choose a compatible Wan model.`,
+    textSourceConflict: () => 'Wan 2.2 text-to-video cannot consume a source image — switch to image mode or remove the source.',
+    // Two phrasings, one rule: before staging, the caller can still supply an
+    // upload; after resolution, the gallery pick they *did* supply didn't
+    // resolve, and "upload one" would be misleading advice.
+    imageRequiresFirst: ({ sourceResolved }) => (sourceResolved
+      ? 'Wan 2.2 image-to-video requires a resolvable source image — choose an existing gallery image or upload one.'
+      : 'Wan 2.2 image-to-video requires a source image — upload one before running this model.'),
+  },
+});
+
+// The CUDA helper currently exposes text generation only. Keep the existing
+// Wan error contract, but cap hand-edited or peer-synced registry entries at
+// the modes the helper can actually represent on its command line.
+const WAN22_CUDA_CONTRACT = Object.freeze({
+  ...WAN22_CONTRACT,
+  modeCeiling: VIDEO_RUNTIME_MODES.wan22_cuda,
+});
+
+const LTX25_CUDA_CONTRACT = Object.freeze({
+  codePrefix: 'LTX25_CUDA',
+  modeCeiling: VIDEO_RUNTIME_MODES.ltx25_cuda,
+  extraConditioningUnsupported: false,
+});
+
 /**
  * The per-runtime rows. `modeCeiling` is the set of modes the *helper* has
  * arguments for — a `null` ceiling means the registry entry's `supportedModes`
@@ -101,27 +137,9 @@ const MINIMAX_H3_REF2VA_CONTRACT = Object.freeze({
  * them.
  */
 const VIDEO_MODE_CONTRACTS = Object.freeze({
-  wan22: {
-    codePrefix: 'WAN22',
-    chainCode: 'WAN22_CHAIN_REQUIRES_IMAGE_MODE',
-    // No ceiling: MLX-Gen's Wan CLI takes whatever the profile declares, and
-    // resolveVideoSupportedModes narrows an entry that declares nothing to the
-    // wan22 row (text + image) rather than leaving it unconstrained.
-    modeCeiling: null,
-    // The wan22 lane rejects multi-keyframe / extend / audio / IC inputs by
-    // runtime elsewhere, so folding them in here would double-report.
-    extraConditioningUnsupported: false,
-    messages: {
-      modeUnsupported: ({ model, requestedMode }) => `${model.name} does not support ${requestedMode}-to-video. Choose a compatible Wan model.`,
-      textSourceConflict: () => 'Wan 2.2 text-to-video cannot consume a source image — switch to image mode or remove the source.',
-      // Two phrasings, one rule: before staging, the caller can still supply an
-      // upload; after resolution, the gallery pick they *did* supply didn't
-      // resolve, and "upload one" would be misleading advice.
-      imageRequiresFirst: ({ sourceResolved }) => (sourceResolved
-        ? 'Wan 2.2 image-to-video requires a resolvable source image — choose an existing gallery image or upload one.'
-        : 'Wan 2.2 image-to-video requires a source image — upload one before running this model.'),
-    },
-  },
+  wan22: WAN22_CONTRACT,
+  wan22_cuda: WAN22_CUDA_CONTRACT,
+  ltx25_cuda: LTX25_CUDA_CONTRACT,
   fastvideo: {
     codePrefix: 'FASTVIDEO',
     chainCode: 'FASTVIDEO_CHAIN_REQUIRES_IMAGE_MODE',
