@@ -171,4 +171,14 @@ describe('syncYoutubePlaylists', () => {
 
     expect(mocks.evaluateOnPage.mock.calls[1][1]).toContain('PL-second');
   });
+
+  it('does not overwrite an unreadable prior snapshot', async () => {
+    mocks.readJSONFile.mockRejectedValueOnce(new Error('EIO'));
+    mocks.evaluateOnPage.mockReset().mockResolvedValueOnce({ signedOut: false, playlists: [{ id: 'PL-example', name: 'Example playlist' }] });
+
+    const result = await syncYoutubePlaylists();
+
+    expect(result).toMatchObject({ ok: false, status: 'snapshot-unreadable' });
+    expect(mocks.atomicWrite).not.toHaveBeenCalled();
+  });
 });

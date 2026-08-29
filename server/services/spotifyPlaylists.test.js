@@ -139,4 +139,13 @@ describe('syncSpotifyPlaylists', () => {
     expect(result).toMatchObject({ ok: false, playlistCount: 0, failed: 1 });
     expect(mocks.sleep).not.toHaveBeenCalled();
   });
+
+  it('does not overwrite an unreadable prior snapshot', async () => {
+    mocks.readJSONFile.mockRejectedValueOnce(new Error('EIO'));
+
+    const result = await syncSpotifyPlaylists();
+
+    expect(result).toMatchObject({ ok: false, status: 'snapshot-unreadable' });
+    expect(mocks.atomicWrite).not.toHaveBeenCalled();
+  });
 });

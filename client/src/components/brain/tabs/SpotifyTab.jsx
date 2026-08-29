@@ -124,7 +124,9 @@ export function SpotifyTab() {
     setPlaylistsSyncing(true);
     const result = await syncSpotifyPlaylists({ silent: true }).catch(() => ({ ok: false, error: 'Playlist sync failed' }));
     setPlaylistsSyncing(false);
-    if (result?.playlistCount !== undefined) {
+    if (!result?.ok && result?.error) {
+      toast.error(result.error);
+    } else if (result?.playlistCount !== undefined) {
       await loadPlaylists();
       if (result.ok) toast.success(`Synced ${result.playlistCount} playlist(s) and ${result.trackCount} track(s)`);
       else toast.error(`Playlist sync completed with ${result.failed || 0} warning(s)`);

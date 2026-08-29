@@ -86,7 +86,8 @@ async function fetchJson(url, accessToken) {
       headers: { Authorization: `Bearer ${accessToken}` },
     }, REQUEST_TIMEOUT_MS);
     if (!response.ok && response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
-      const retryAfter = Number(response.headers?.get?.('retry-after'));
+      const retryAfterHeader = response.headers?.get?.('retry-after');
+      const retryAfter = retryAfterHeader == null ? NaN : Number(retryAfterHeader);
       const waitMs = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 1000;
       if (waitMs > MAX_RATE_LIMIT_WAIT_MS) throw new Error(`Spotify rate limited; retry after ${retryAfter}s`);
       await sleep(waitMs);
@@ -123,7 +124,7 @@ async function fetchPlaylist(playlist, accessToken) {
 }
 
 export async function getStoredPlaylists() {
-  return readJSONFile(PLAYLISTS_FILE, null);
+  return readJSONFile(PLAYLISTS_FILE, null, { strict: true });
 }
 
 let syncInFlight = null;
@@ -143,7 +144,13 @@ async function doSyncSpotifyPlaylists() {
     return { ok: false, needsAuth: true, error: 'Spotify not connected — authorize in Brain → Spotify.' };
   }
 
-  const previous = await getStoredPlaylists();
+  const storedResult = await getStoredPlaylists()
+    .then((value) => ({ value }))
+    .catch((error) => ({ error }));
+  if (storedResult.error) {
+    return { ok: false, status: 'snapshot-unreadable', error: 'Could not read the stored Spotify playlist snapshot; not overwriting it.' };
+  }
+  const previous = storedResult.value;
   const playlistResult = await fetchPages('/me/playlists', accessToken)
     .then((value) => ({ value }))
     .catch((error) => ({ error }));

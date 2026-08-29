@@ -146,7 +146,7 @@ async function loadPage(url) {
 }
 
 export async function getStoredYoutubePlaylists() {
-  return readJSONFile(PLAYLISTS_FILE, null);
+  return readJSONFile(PLAYLISTS_FILE, null, { strict: true });
 }
 
 let syncInFlight = null;
@@ -173,7 +173,13 @@ async function doSyncYoutubePlaylists() {
     return { ok: false, status: 'auth-required', needsAuth: true, error: 'Signed out of YouTube', remediation: 'Log into YouTube in the managed browser, then sync playlists again.' };
   }
 
-  const previous = await getStoredYoutubePlaylists();
+  const storedResult = await getStoredYoutubePlaylists()
+    .then((value) => ({ value }))
+    .catch((error) => ({ error }));
+  if (storedResult.error) {
+    return { ok: false, status: 'snapshot-unreadable', error: 'Could not read the stored YouTube playlist snapshot; not overwriting it.' };
+  }
+  const previous = storedResult.value;
   const playlists = [];
   const warnings = [];
   const sourcePlaylists = extracted.playlists.filter((playlist) => playlist?.id && playlist?.name);
