@@ -8,11 +8,12 @@ import {
 
 // Fake registry entries — never a real install's media-models.json.
 const wan = (supportedModes) => ({ runtime: 'wan22', name: 'Example Wan Profile', supportedModes });
+const fv = (supportedModes) => ({ runtime: 'fastvideo', name: 'Example FastVideo Model', supportedModes });
 const h3 = (supportedModes) => ({ runtime: 'minimax_h3', name: 'Example H3', supportedModes });
 
 describe('videoModeContractError — shared gate', () => {
   it('gates exactly the runtimes that declare a contract row', () => {
-    expect([...VIDEO_MODE_GATED_RUNTIMES].sort()).toEqual(['minimax_h3', 'minimax_h3_cuda', 'wan22']);
+    expect([...VIDEO_MODE_GATED_RUNTIMES].sort()).toEqual(['fastvideo', 'minimax_h3', 'minimax_h3_cuda', 'wan22']);
   });
 
   it.each(['ltx2', 'mlx_video', 'hunyuan', undefined])('leaves the %s runtime ungated', (runtime) => {
@@ -76,6 +77,35 @@ describe('videoModeContractError — wan22 codes and messages', () => {
       model: wan(['image']), mode: 'image', hasFirstImage: true,
       keyframes: [{ path: '/mock/a.png', index: 0 }], audioFile: '/mock/a.wav',
     })).toBeNull();
+  });
+});
+
+describe('videoModeContractError — fastvideo codes and messages', () => {
+  it('rejects a mode the profile does not declare', () => {
+    const err = videoModeContractError({ model: fv(['text']), mode: 'image', hasFirstImage: true });
+    expect(err).toMatchObject({ status: 400, code: 'FASTVIDEO_MODE_UNSUPPORTED' });
+    expect(err.message).toContain('Example FastVideo Model does not support image-to-video');
+  });
+
+  it('resolves an entry with no declared supportedModes from its runtime', () => {
+    expect(videoModeContractError({ model: fv(undefined), mode: 'text' })).toBeNull();
+    expect(videoModeContractError({ model: fv(undefined), mode: 'fflf' }))
+      .toMatchObject({ code: 'FASTVIDEO_MODE_UNSUPPORTED' });
+  });
+
+  it('rejects text mode carrying a source image', () => {
+    expect(videoModeContractError({ model: fv(['text', 'image']), mode: 'text', hasFirstImage: true }))
+      .toMatchObject({ code: 'FASTVIDEO_TEXT_MODE_SOURCE_CONFLICT' });
+  });
+
+  it('phrases the missing-source message for the boundary that asked', () => {
+    const staged = videoModeContractError({ model: fv(['image']), mode: 'image' });
+    expect(staged).toMatchObject({ code: 'FASTVIDEO_I2V_REQUIRES_IMAGE' });
+    expect(staged.message).toContain('upload one before running this model');
+
+    const resolved = videoModeContractError({ model: fv(['image']), mode: 'image', sourceResolved: true });
+    expect(resolved).toMatchObject({ code: 'FASTVIDEO_I2V_REQUIRES_IMAGE' });
+    expect(resolved.message).toContain('choose an existing gallery image or upload one');
   });
 });
 

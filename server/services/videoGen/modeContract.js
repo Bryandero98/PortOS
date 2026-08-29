@@ -108,6 +108,19 @@ const VIDEO_MODE_CONTRACTS = Object.freeze({
         : 'Wan 2.2 image-to-video requires a source image — upload one before running this model.'),
     },
   },
+  fastvideo: {
+    codePrefix: 'FASTVIDEO',
+    chainCode: 'FASTVIDEO_CHAIN_REQUIRES_IMAGE_MODE',
+    modeCeiling: null,
+    extraConditioningUnsupported: false,
+    messages: {
+      modeUnsupported: ({ model, requestedMode }) => `${model.name} does not support ${requestedMode}-to-video. Choose a compatible FastVideo model.`,
+      textSourceConflict: () => 'FastVideo text-to-video cannot consume a source image — switch to image mode or remove the source.',
+      imageRequiresFirst: ({ sourceResolved }) => (sourceResolved
+        ? 'FastVideo image-to-video requires a resolvable source image — choose an existing gallery image or upload one.'
+        : 'FastVideo image-to-video requires a source image — upload one before running this model.'),
+    },
+  },
   minimax_h3: MINIMAX_H3_CONTRACT,
   minimax_h3_cuda: MINIMAX_H3_CONTRACT,
 });

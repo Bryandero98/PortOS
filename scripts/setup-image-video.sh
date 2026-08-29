@@ -11,6 +11,7 @@
 #   INSTALL_VIDEO  '1' to also install mlx_video for LTX video generation (default: 1 on macOS, 0 on Windows)
 #   INSTALL_LTX2   '1' to also clone + uv-sync dgrauet/ltx-2-mlx at ~/.portos/ltx-2-mlx for the second-gen LTX-2.3 pipeline (proper keyframe interpolation, true video extend, audio-to-video). Default: 0; opt in with INSTALL_LTX2=1.
 #   INSTALL_LTX25  '1' to clone + uv-sync MrMofer's ltx-2.5 fork at ~/.portos/ltx-2.5-mlx (Apple Silicon). The 2.3 pin cannot load LTX-2.5 weights. Default: 0.
+#   INSTALL_FASTVIDEO '1' to clone hao-ai-lab/FastVideo at ~/.portos/fastvideo and build an MLX venv for native Apple Silicon video generation (FastMetal models). Default: 0; opt in with INSTALL_FASTVIDEO=1.
 #   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx (Apple Silicon). Weights remain a separate explicit Video Gen download. Default: 0.
 #   INSTALL_MINIMAX_H3_CUDA '1' to install the MiniMax H3 CUDA runtime at ~/.portos/minimax-h3-cuda (Windows + NVIDIA), via diffusers' MiniMaxH3ModularPipeline. Weights remain a separate explicit Video Gen download (~144 GB). Default: 0.
 #   INSTALL_FLUX2  '1' to also bootstrap a separate venv at ~/.portos/venv-flux2 for FLUX.2-klein (default: 1 on macOS, 0 elsewhere)
@@ -108,7 +109,7 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}"
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}"
 # "no BYOV runtime was requested" = the concatenation contains no non-zero
 # character. Matching a literal string of zeros instead made this a counting
 # exercise that the string and the variable list had to agree on — and they had
@@ -353,6 +354,52 @@ if [[ "$INSTALL_LTX25" == "1" ]]; then
     "Re-run with: rm -rf ${LTX25_DIR}/.venv && bash $0" \
     "${LTX25_PY}" -c "import ltx_pipelines_mlx"
   echo "✅ ltx-2.5-mlx venv ready: ${LTX25_PY}"
+fi
+
+INSTALL_FASTVIDEO="${INSTALL_FASTVIDEO:-0}"
+if [[ "$INSTALL_FASTVIDEO" == "1" ]]; then
+  # FastVideo provides native Apple Silicon inference for Wan and FastMetal models
+  # via MLX/Metal. Reached only when the user chooses Install/Repair in Video Gen.
+  if ! is_macos || [[ "$(uname -m)" != "arm64" ]]; then
+    echo "❌ FastVideo MLX requires an Apple-Silicon Mac." >&2
+    exit 1
+  fi
+  if ! have git; then
+    echo "❌ INSTALL_FASTVIDEO=1 requires git." >&2
+    exit 1
+  fi
+
+  FASTVIDEO_UV_TOOL_DIR="${HOME}/.portos/tools/uv-0.8.14"
+  FASTVIDEO_UV="${FASTVIDEO_UV_TOOL_DIR}/bin/uv"
+  if [[ ! -x "$FASTVIDEO_UV" ]] || [[ "$("$FASTVIDEO_UV" --version 2>/dev/null || true)" != "uv 0.8.14" ]]; then
+    echo "📦 Bootstrapping pinned uv 0.8.14 for FastVideo..."
+    "$PYTHON_BIN" -m venv --clear "$FASTVIDEO_UV_TOOL_DIR"
+    "${FASTVIDEO_UV_TOOL_DIR}/bin/python3" -m pip install --disable-pip-version-check "uv==0.8.14"
+  fi
+
+  FASTVIDEO_PIN="${FASTVIDEO_PIN:-main}"
+  FASTVIDEO_DIR="${HOME}/.portos/fastvideo"
+  FASTVIDEO_PY="${FASTVIDEO_DIR}/.venv/bin/python3"
+  mkdir -p "${HOME}/.portos"
+  if [[ ! -d "${FASTVIDEO_DIR}/.git" ]]; then
+    echo "📦 Cloning hao-ai-lab/FastVideo..."
+    git clone https://github.com/hao-ai-lab/FastVideo.git "${FASTVIDEO_DIR}"
+  else
+    echo "📦 Fetching FastVideo updates..."
+    (cd "${FASTVIDEO_DIR}" && git fetch origin)
+  fi
+  git_checkout_pin "${FASTVIDEO_DIR}" "${FASTVIDEO_PIN}"
+  if [[ ! -x "${FASTVIDEO_PY}" ]]; then
+    echo "📦 Creating FastVideo venv with Python 3.11..."
+    (cd "${FASTVIDEO_DIR}" && "$FASTVIDEO_UV" venv --python 3.11)
+  fi
+  echo "📦 Installing FastVideo MLX packages (uv pip install -e '.[mlx]')..."
+  (cd "${FASTVIDEO_DIR}" && "$FASTVIDEO_UV" pip install -e '.[mlx]')
+  probe_or_fail \
+    "FastVideo synced but the runtime import failed." \
+    "Use Repair / Upgrade from the Video Gen runtime panel to retry." \
+    "${FASTVIDEO_PY}" -c "import fastvideo; import mlx.core"
+  echo "✅ FastVideo MLX runtime ready: ${FASTVIDEO_PY}"
 fi
 
 INSTALL_WAN22="${INSTALL_WAN22:-0}"
@@ -963,6 +1010,9 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
 fi
 if [[ "$INSTALL_LTX25" == "1" ]]; then
   echo "   LTX-2.5:   ${HOME}/.portos/ltx-2.5-mlx/.venv/bin/python3 (MrMofer ltx25 fork @ ${LTX25_PIN:0:12})"
+fi
+if [[ "$INSTALL_FASTVIDEO" == "1" ]]; then
+  echo "   FastVideo MLX: ${HOME}/.portos/fastvideo/.venv/bin/python3 (FastVideo @ ${FASTVIDEO_PIN:0:12})"
 fi
 if [[ "$INSTALL_WAN22" == "1" ]]; then
   echo "   Wan 2.2:  ${HOME}/.portos/mlx-gen/.venv/bin/python3 (MLX-Gen @ ${WAN22_PIN:0:12})"

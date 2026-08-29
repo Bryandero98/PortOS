@@ -378,6 +378,27 @@ describe('MiniMax H3 CUDA offload profiles', () => {
   });
 });
 
+describe('fastvideo runtime registration', () => {
+  const info = BYOV_RUNTIME_INFO.fastvideo;
+
+  it('is a BYOV runtime with its own venv', () => {
+    expect(BYOV_VIDEO_RUNTIMES.has('fastvideo')).toBe(true);
+    expect(info.installEnvVar).toBe('INSTALL_FASTVIDEO');
+    for (const part of ['.portos', 'fastvideo', '.venv']) expect(info.venvPython).toContain(part);
+    for (const part of ['.portos', 'fastvideo']) expect(info.repoDir).toContain(part);
+  });
+
+  it('probes for fastvideo and mlx.core', () => {
+    expect(info.importProbe).toContain('fastvideo');
+    expect(info.importProbe).toContain('mlx.core');
+  });
+
+  it('never reports LoRA capability', async () => {
+    expect(byovRuntimeLoraCapable('fastvideo')).toBe(false);
+    await expect(resolveByovRuntimeLoraCapable('fastvideo')).resolves.toBe(false);
+  });
+});
+
 // Execution facts read off the registry rather than re-derived from a runtime id
 // at the spawn site, so a new cache-only runtime is a table line, not an edit to
 // the child-spawn path. Absent means off, as with every other optional key here.
@@ -387,11 +408,13 @@ describe('runtime execution flags', () => {
     expect(runtimeIsCacheOnly('minimax_h3_cuda')).toBe(true);
     expect(runtimeIsCacheOnly('ltx2')).toBe(false);
     expect(runtimeIsCacheOnly('wan22')).toBe(false);
+    expect(runtimeIsCacheOnly('fastvideo')).toBe(false);
     expect(runtimeIsCacheOnly(undefined)).toBe(false);
   });
 
   it('reports group-kill for the runners that spawn children of their own', () => {
     expect(runtimeNeedsProcessGroupKill('wan22')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('fastvideo')).toBe(true);
     expect(runtimeNeedsProcessGroupKill('minimax_h3')).toBe(true);
     expect(runtimeNeedsProcessGroupKill('minimax_h3_cuda')).toBe(true);
     expect(runtimeNeedsProcessGroupKill('ltx2')).toBe(false);

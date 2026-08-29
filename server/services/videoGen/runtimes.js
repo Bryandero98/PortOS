@@ -93,6 +93,11 @@ export const HUNYUAN_VENV_PYTHON = join(homedir(), '.portos', 'hunyuan-video-mlx
 export const HUNYUAN_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_hunyuan.py');
 export const HUNYUAN_REPO_DIR = join(homedir(), '.portos', 'hunyuan-video-mlx');
 
+// FastVideo MLX runtime — Hao AI Lab's FastVideo / FastMetal Apple Silicon framework.
+export const FASTVIDEO_VENV_PYTHON = join(homedir(), '.portos', 'fastvideo', '.venv', 'bin', 'python3');
+export const FASTVIDEO_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_fastvideo.py');
+export const FASTVIDEO_REPO_DIR = join(homedir(), '.portos', 'fastvideo');
+
 // Standalone runtime-fingerprint probe (scripts/runtime_fingerprint.py). Run in
 // each installed BYOV venv by resolveRuntimeFingerprint() to surface resolved
 // package versions on GET /api/video-gen/status without running a render. Shares
@@ -239,6 +244,18 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     pinEnvVar: 'LTX25_PIN',
     importProbe: 'import ltx_pipelines_mlx',
     fingerprintPackages: ['ltx_pipelines_mlx', 'ltx_core_mlx', 'mlx', 'mlx_metal'],
+  },
+  fastvideo: {
+    id: 'fastvideo',
+    label: 'FastVideo MLX',
+    venvPython: FASTVIDEO_VENV_PYTHON,
+    repoDir: FASTVIDEO_REPO_DIR,
+    installEnvVar: 'INSTALL_FASTVIDEO',
+    killProcessGroup: true,
+    repoUrl: 'https://github.com/hao-ai-lab/FastVideo',
+    pinEnvVar: 'FASTVIDEO_PIN',
+    importProbe: 'import fastvideo; import mlx.core',
+    fingerprintPackages: ['fastvideo', 'mlx', 'mlx_metal', 'torch', 'transformers', 'huggingface-hub'],
   },
 });
 

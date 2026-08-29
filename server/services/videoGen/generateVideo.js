@@ -237,6 +237,23 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       }
     }
   }
+  if (model.runtime === 'fastvideo') {
+    if (typeof model.revision === 'string' && model.revision) {
+      const baseCache = await inspectModelCache(model.repo, { revision: model.revision });
+      if (!baseCache.cached || !baseCache.snapshotPath) {
+        throw new ServerError(
+          `${model.name} revision ${model.revision.slice(0, 8)} is not fully cached. Download or repair it in Video Gen before rendering.`,
+          { status: 400, code: 'FASTVIDEO_MODEL_NOT_CACHED' },
+        );
+      }
+      wanModelPath = baseCache.snapshotPath;
+    } else {
+      const baseCache = await inspectModelCache(model.repo);
+      if (baseCache.cached && baseCache.snapshotPath) {
+        wanModelPath = baseCache.snapshotPath;
+      }
+    }
+  }
   // Pinned LTX family entries (LTX-2.5 today) must render the verified
   // snapshot, not whatever `main` snapshot_download would follow. Unpinned
   // 2.3 entries keep passing the repo id so the helper's existing Hub resolve
