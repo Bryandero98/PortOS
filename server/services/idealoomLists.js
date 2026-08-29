@@ -92,5 +92,13 @@ export async function updateList(id, updates) {
 
 export async function deleteList(id) {
   if (!store.isValidId(id)) return false;
-  return store.deleteOne(id);
+  // deleteOne is idempotent and resolves to undefined, so it cannot tell the
+  // route whether anything was actually removed — returning it directly made
+  // every DELETE answer 404. Probe for the record inside the same per-id write
+  // queue as the removal so the existence check cannot race a concurrent write.
+  return store.queueRecordWrite(id, async () => {
+    if (!await store.loadOne(id)) return false;
+    await store.deleteOneNow(id);
+    return true;
+  });
 }
