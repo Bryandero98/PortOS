@@ -240,11 +240,11 @@ function coerceFormFields(body) {
     const raw = Array.isArray(body.referenceStrengths) ? body.referenceStrengths : [body.referenceStrengths];
     body.referenceStrengths = raw.map((v) => (typeof v === 'string' && v !== '' ? Number(v) : v));
   }
-  // LoRA fields are repeated multipart keys (one per selected LoRA). A SINGLE
-  // selected LoRA arrives as a bare string, not a one-element array — wrap it
-  // so Zod's `z.array(...)` accepts it. `loraScales` numbers also arrive as
-  // strings, so coerce element-wise like referenceStrengths above.
-  for (const f of ['loraFilenames', 'loraPaths']) {
+  // Array fields are repeated multipart keys. A single selected value arrives
+  // as a bare string, not a one-element array — wrap it so Zod accepts it.
+  // `loraScales` numbers also arrive as strings, so coerce element-wise like
+  // referenceStrengths above.
+  for (const f of ['loraFilenames', 'loraPaths', 'referenceImageFiles']) {
     if (body[f] != null && !Array.isArray(body[f])) body[f] = [body[f]];
   }
   if (body.loraScales != null) {

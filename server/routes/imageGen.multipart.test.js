@@ -240,6 +240,41 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     expect(params.referenceImageFiles).toBeUndefined();
   });
 
+  it('returns the stable missing-reference code for a gallery image that no longer exists', async () => {
+    mockedSettings = { imageGen: { mode: 'codex', codex: { enabled: true } } };
+
+    const res = await postJson(app, '/api/image-gen/generate', {
+      prompt: 'the same scout from a new camera angle',
+      referenceImageFiles: ['missing-shot.png'],
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('REFERENCE_IMAGE_NOT_FOUND');
+    expect(enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than four named and uploaded references before staging uploads', async () => {
+    mockedSettings = { imageGen: { mode: 'codex', codex: { enabled: true } } };
+    await Promise.all(['prior-a.png', 'prior-b.png']
+      .map((filename) => writeFile(join(imagesSandbox, filename), PNG_FIXTURE)));
+
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'the same scout from a new camera angle' },
+      { name: 'referenceImageFiles', value: 'prior-a.png' },
+      { name: 'referenceImageFiles', value: 'prior-b.png' },
+      { name: 'referenceImage1', filename: 'a.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage2', filename: 'b.png', contentType: 'image/png', value: PNG_FIXTURE },
+      { name: 'referenceImage3', filename: 'c.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('TOO_MANY_REFERENCE_IMAGES');
+    expect(enqueueJob).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const refDirContents = await readdir(refsSandbox).catch(() => []);
+    expect(refDirContents.filter((filename) => filename.startsWith('ref-'))).toHaveLength(0);
+  });
+
   it('packs only the filled slots (gaps in the slot numbering collapse to a packed array)', async () => {
     const res = await postMultipart(app, '/api/image-gen/generate', [
       { name: 'prompt', value: 'sparse multi-ref' },
