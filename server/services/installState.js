@@ -194,7 +194,22 @@ async function detectSubmodules(rootDir, {
     ['submodule', 'status', '--recursive'],
     rootDir,
     { ignoreExitCode: true }
-  )
+  ),
+  isAheadOfPin = async ({ commit, path }) => {
+    const pinned = await execGit(
+      ['rev-parse', `HEAD:${path}`],
+      rootDir,
+      { ignoreExitCode: true }
+    );
+    const pinnedSha = pinned.exitCode === 0 ? pinned.stdout.trim() : '';
+    if (!pinnedSha) return false;
+    const ancestor = await execGit(
+      ['merge-base', '--is-ancestor', pinnedSha, commit],
+      join(rootDir, path),
+      { ignoreExitCode: true }
+    );
+    return ancestor.exitCode === 0;
+  }
 } = {}) {
   const result = await getStatus();
   if (result?.exitCode !== 0 || typeof result?.stdout !== 'string') {
@@ -209,7 +224,17 @@ async function detectSubmodules(rootDir, {
     return { stale: null, paths: null };
   }
 
-  const paths = parsed.filter(entry => entry.statusChar !== ' ').map(entry => entry.path);
+  const paths = [];
+  for (const entry of parsed) {
+    if (entry.statusChar === ' ') continue;
+    // The Submodules tab intentionally supports checking out the latest remote
+    // commit without committing the parent pointer. Git reports that as `+`,
+    // but it is not a half-finished update when the checkout descends from the
+    // pin. A behind/divergent `+`, `-` (uninitialized), or `U` (conflicted)
+    // still needs Reconcile. Comparison failures stay conservative (stale).
+    if (entry.statusChar === '+' && await isAheadOfPin(entry).catch(() => false)) continue;
+    paths.push(entry.path);
+  }
   return { stale: paths.length > 0, paths };
 }
 
@@ -241,7 +266,12 @@ export async function getInstallState({
   listPending = () => isWorktreeRoot(migrationRootDir)
     ? Promise.resolve([])
     : listPendingMigrations({ rootDir: migrationRootDir }),
-  getSubmoduleState = () => detectSubmodules(rootDir),
+  // A CoS worktree cannot switch to its own main branch, and intentionally
+  // leaves submodules uninitialized. Offering Reconcile there would be a
+  // permanent false action, so preserve unknown rather than reporting stale.
+  getSubmoduleState = () => isWorktreeRoot(rootDir)
+    ? Promise.resolve({ stale: null, paths: null })
+    : detectSubmodules(rootDir),
 } = {}) {
   const currentCommit = await getCurrentCommit().catch(() => null);
 

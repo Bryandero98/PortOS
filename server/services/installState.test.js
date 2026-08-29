@@ -296,10 +296,37 @@ describe('getInstallState — submodules', () => {
       ].join('\n')
     });
 
-    expect(await __internal.detectSubmodules(ROOT, { getStatus })).toEqual({
+    expect(await __internal.detectSubmodules(ROOT, {
+      getStatus,
+      isAheadOfPin: async () => false,
+    })).toEqual({
       stale: true,
       paths: ['lib/different', 'lib/missing', 'lib/conflicted']
     });
+  });
+
+  it('does not flag a deliberate remote update ahead of the pinned commit', async () => {
+    const isAheadOfPin = vi.fn(async () => true);
+    const state = await __internal.detectSubmodules(ROOT, {
+      getStatus: async () => ({ exitCode: 0, stdout: '+def5678 lib/ahead (heads/main)\n' }),
+      isAheadOfPin,
+    });
+
+    expect(state).toEqual({ stale: false, paths: [] });
+    expect(isAheadOfPin).toHaveBeenCalledWith({
+      statusChar: '+',
+      commit: 'def5678',
+      path: 'lib/ahead',
+    });
+  });
+
+  it('reports submodule state as unknown in a CoS worktree', async () => {
+    const worktreeRoot = join(ROOT, 'data', 'cos', 'worktrees', 'agent-abc');
+    const { getSubmoduleState, ...opts } = syncedOpts({ rootDir: worktreeRoot });
+    const state = await getInstallState(opts);
+
+    expect(state.submodules).toEqual({ stale: null, paths: null });
+    expect(state.outOfSync).toBe(false);
   });
 
   it('returns unknown for failed or malformed git status output', async () => {
