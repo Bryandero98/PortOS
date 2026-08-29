@@ -136,4 +136,17 @@ describe('LoomSeriesPlan', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: /story arc/i })).toHaveValue('Typed while saving.'));
     expect(screen.getByRole('button', { name: /save plan/i })).toBeEnabled();
   });
+
+  it('renders AI tools and save plan within the persistent desktop rail beside the story content', () => {
+    renderPlan({ loom: loom(), onLoomUpdate: () => {} });
+    const rightRail = screen.getByRole('complementary', { name: /ai tools and actions/i });
+    expect(rightRail).toBeInTheDocument();
+    expect(rightRail.className).toContain('lg:sticky');
+    expect(rightRail.className).toContain('lg:top-0');
+
+    // Confirm actions and AI tools reside within the right rail
+    expect(rightRail).toContainElement(screen.getByRole('button', { name: /save plan/i }));
+    expect(rightRail).toContainElement(screen.getByRole('button', { name: /analyze series/i }));
+    expect(rightRail).toContainElement(screen.getByRole('button', { name: /(draft|regenerate) full plan/i }));
+  });
 });
