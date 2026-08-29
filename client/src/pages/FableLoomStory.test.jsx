@@ -292,8 +292,8 @@ describe('FableLoomStory scene media lifecycle', () => {
 
     await waitFor(() => expect(api.generateImage).toHaveBeenCalledWith({
       prompt: 'the same scout crosses into the observatory',
-      initImageFile: 'threshold.png',
-      initImageStrength: 0.4,
+      referenceImageFiles: ['threshold.png'],
+      referenceStrengths: [0.4],
       fableLoom: { loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-2' },
     }, { silent: true }));
   });
@@ -326,7 +326,7 @@ describe('FableLoomStory scene media lifecycle', () => {
     await user.click(await screen.findByRole('button', { name: 'Canvas generate second image' }));
 
     await waitFor(() => expect(api.generateImage).toHaveBeenCalledTimes(2));
-    expect(api.generateImage.mock.calls[0][0]).toMatchObject({ initImageFile: 'threshold.png' });
+    expect(api.generateImage.mock.calls[0][0]).toMatchObject({ referenceImageFiles: ['threshold.png'] });
     expect(api.generateImage.mock.calls[1]).toEqual([{
       prompt: 'the scout enters the observatory',
       fableLoom: { loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-2' },

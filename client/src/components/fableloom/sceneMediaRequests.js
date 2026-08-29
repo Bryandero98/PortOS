@@ -17,8 +17,8 @@ const withLoomStyle = (prompt, styleNotes) => {
   return notes ? `${prompt}\n\nStyle: ${notes}` : prompt;
 };
 
-// Match Image Gen's established i2i default: strong enough to carry likeness
-// and environment forward without pinning the next shot to the same pose.
+// Keep enough reference influence to carry likeness and environment forward
+// without asking the model to preserve the prior shot's composition.
 export const FABLELOOM_CONTINUITY_STRENGTH = 0.4;
 
 /**
@@ -48,8 +48,8 @@ export function buildFableLoomImageRequest({ loom, episode, episodeId, node, sty
     prompt: styled.prompt,
     ...(styled.negativePrompt ? { negativePrompt: styled.negativePrompt } : {}),
     ...(priorImage ? {
-      initImageFile: priorImage,
-      initImageStrength: FABLELOOM_CONTINUITY_STRENGTH,
+      referenceImageFiles: [priorImage],
+      referenceStrengths: [FABLELOOM_CONTINUITY_STRENGTH],
     } : {}),
     fableLoom: { loomId: loom.id, episodeId, nodeId: node.id },
   };
