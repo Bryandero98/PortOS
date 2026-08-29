@@ -33,6 +33,21 @@ The entry is at the top of `git stash list`. When already on `main`, pre-checkou
 
 **So: an in-app or CLI update run from a feature branch will leave your checkout on `main` with your work parked in the stash.** Commit your work before updating if you would rather not deal with that — pushing alone does not help, since the stash covers uncommitted changes.
 
+### Submodules follow the pulled parent revision
+
+After pulling `main`, both platform scripts run:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+The sync step refreshes each checkout's local submodule metadata from the newly pulled `.gitmodules`; the update step initializes missing modules and restores every recursive checkout to the commit pinned by PortOS. It intentionally does **not** use `--remote`: a release consumes the reviewed gitlink commit, not an unreviewed newer submodule head.
+
+All restart-triggering UI actions (`Update Now`, `Sync Fork & Update`, both “from Fork As-Is” variants, and the reconcile variants) launch `update.sh` or `update.ps1`, so they inherit this exact sequence. `Sync Fork Only` remains intentionally different: it only fast-forwards the GitHub fork and does not touch the local checkout.
+
+`GET /api/update/status` also compares recursive submodule checkouts with their pinned revisions. An uninitialized, conflicted, behind, or divergent module marks the install out of sync, making the existing Reconcile control available even when no newer release is waiting. A checkout deliberately advanced through the Submodules tab is not treated as stale, and CoS worktrees report submodule state as unknown because they intentionally leave submodules uninitialized and cannot run the primary-checkout update flow.
+
 To prevent that confusion, `POST /api/update/execute` rejects fork runs with **412 `FORK_SYNC_REQUIRED`** unless either:
 
 - the request body sets `acknowledgeFork: true`, or
