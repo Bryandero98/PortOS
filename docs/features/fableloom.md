@@ -161,7 +161,13 @@ nodeId }` destination tag. The completion hook
 (`server/services/fableLoomSceneImageHook.js`) files the finished render onto
 the node durably — even if the editor unmounted mid-render — with
 newest-render-wins per node. The loom's `styleNotes` are appended to the
-prompt for a consistent look.
+prompt for a consistent look. When a direct incoming scene already has a
+rendered still, its gallery filename is also sent as the next scene's init
+image at `0.4` strength. Graph edges, not node-array adjacency, define which
+shot is prior; at a convergence the first rendered incoming scene in stable
+episode order is the deterministic authoring-time source because there is no
+active reader path yet. Opening scenes and scenes without a rendered incoming
+neighbor remain text-to-image.
 
 **Generate video** prefers the node's dedicated single-clip `videoPrompt`, adds
 the selected movement's production direction from the shared camera registry,
@@ -174,6 +180,11 @@ otherwise the render is text-to-video. The completion hook
 `videoHistoryId` onto the node durably, with newest-render-wins per node.
 Decision videos are authored as seamless loops; automatic-cut videos land on
 a final beat that hands cleanly to the next node.
+
+The broader character/environment canon-reference design, including structured
+scene bindings, provider input budgets, prompt compilation, provenance, and
+branch convergence, is specified in
+[`docs/plans/2026-08-29-fableloom-visual-continuity.md`](../plans/2026-08-29-fableloom-visual-continuity.md).
 
 ## Storage
 

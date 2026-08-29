@@ -33,6 +33,15 @@ vi.mock('../components/fableloom/LoomCanvas', () => ({
       >
         Canvas generate image
       </button>
+      {episode.nodes[1] && (
+        <button
+          type="button"
+          disabled={generationDisabled}
+          onClick={() => onGenerateImage(episode.nodes[1])}
+        >
+          Canvas generate second image
+        </button>
+      )}
       <span data-testid="canvas-image-status">{mediaJobs[episode.nodes[0].id]?.image?.status || 'idle'}</span>
       <span data-testid="canvas-image-filename">{episode.nodes[0].image || 'none'}</span>
     </div>
@@ -253,5 +262,39 @@ describe('FableLoomStory scene media lifecycle', () => {
       .toHaveTextContent('finished-scene.png'));
     expect(screen.getByTestId('canvas-image-status')).toHaveTextContent('idle');
     expect(toastMocks.success).toHaveBeenCalledWith('Scene image ready');
+  });
+
+  it('passes the rendered incoming shot into the next scene image request', async () => {
+    const user = userEvent.setup();
+    api.getLoom.mockResolvedValue(loom({
+      episodes: [episode({
+        nodes: [
+          {
+            id: 'node-1',
+            title: 'Threshold',
+            imagePrompt: 'an ancient gate',
+            image: 'threshold.png',
+            transitions: [{ id: 'tr-1', targetNodeId: 'node-2', intent: 'Continue' }],
+          },
+          {
+            id: 'node-2',
+            title: 'Beyond',
+            imagePrompt: 'the same scout crosses into the observatory',
+            transitions: [],
+          },
+        ],
+      })],
+    }));
+    api.generateImage.mockResolvedValue({ jobId: 'image-job-2', status: 'queued' });
+    renderEditor();
+
+    await user.click(await screen.findByRole('button', { name: 'Canvas generate second image' }));
+
+    await waitFor(() => expect(api.generateImage).toHaveBeenCalledWith({
+      prompt: 'the same scout crosses into the observatory',
+      initImageFile: 'threshold.png',
+      initImageStrength: 0.4,
+      fableLoom: { loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-2' },
+    }, { silent: true }));
   });
 });

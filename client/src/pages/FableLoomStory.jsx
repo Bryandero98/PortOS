@@ -222,7 +222,7 @@ export default function FableLoomStory({ view = 'graph' }) {
 
     setSceneMediaJob(targetNode.id, 'image', { jobId: null, status: 'submitting', progress: 0 });
     const queued = await generateImage(buildFableLoomImageRequest({
-      loom, episodeId, node: targetNode, stylePreset: sceneStylePreset,
+      loom, episode, episodeId, node: targetNode, stylePreset: sceneStylePreset,
     }), { silent: true }).catch((err) => {
       setSceneMediaJob(targetNode.id, 'image', {
         jobId: null, status: 'failed', progress: 0, error: err.message || 'Could not start the render',
@@ -259,7 +259,7 @@ export default function FableLoomStory({ view = 'graph' }) {
     });
     toast.success('Scene image queued');
     return queued;
-  }, [applySceneMedia, episodeId, generationDisabledReason, loom, sceneStylePreset, setSceneMediaJob, styleContextLoading, styleContextUnavailable]);
+  }, [applySceneMedia, episode, episodeId, generationDisabledReason, loom, sceneStylePreset, setSceneMediaJob, styleContextLoading, styleContextUnavailable]);
 
   const queueSceneVideo = useCallback(async (targetNode) => {
     const prompt = (targetNode?.videoPrompt || '').trim() || (targetNode?.prose || '').trim();
