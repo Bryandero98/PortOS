@@ -1,8 +1,9 @@
 /**
  * FableLoom canvas — the visual editor for one episode's scene graph.
  *
- * Renders scene nodes as SVG cards with intent-labeled transition edges —
- * placement, orientation, and orthogonal routing come from `layoutLoomGraph`.
+ * Renders scene nodes as SVG cards with intent-labeled decision edges and
+ * compact, unlabeled automatic cuts. Placement, orientation, and orthogonal
+ * routing come from `layoutLoomGraph`.
  * The canvas measures itself for card wrapping. Flow direction comes from
  * the parent when it knows the page breakpoint (editor rail beside vs
  * under); otherwise `pickLoomOrientation` keys off canvas width.
@@ -180,7 +181,7 @@ export default function LoomCanvas({
                     onSelectNode?.(edge.targetId);
                   }}
                 />
-                {edge.intent && (
+                {edge.intent && edge.showLabel !== false && (
                   <text
                     x={edge.labelX}
                     y={edge.labelY}
