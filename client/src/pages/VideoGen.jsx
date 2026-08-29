@@ -788,7 +788,7 @@ export default function VideoGen() {
   };
 
   // `status.connected` reflects the LEGACY mlx_video pythonPath health. BYOV
-  // runtimes (ltx2/wan22/hunyuan) resolve their own venv inside the service
+  // runtimes resolve their own venv inside the service
   // layer, so a missing legacy pythonPath must NOT block them — gate only on
   // `byovRuntimeMissing` for those models. Without this, a user who installed
   // ONLY a BYOV runtime via the modal would stay stuck behind a "not

@@ -94,11 +94,11 @@ vi.mock('../services/videoGen/local.js', () => ({
   // the keyframe-index clamp. Mock returns the real default so the status
   // shape test sees a concrete number.
   resolveFflfLtx2PixelBudget: vi.fn(() => 704 * 448 * 25),
-  // The route gates pythonPath enforcement on this allowlist (ltx2/wan22/
-  // hunyuan bring their own venv). Mirror the real export so the
+  // The route gates pythonPath enforcement on this allowlist (BYOV runtimes
+  // bring their own venv). Mirror the real export so the
   // "accepts BYOV-runtime when pythonPath missing" case passes and the
   // negative case (legacy mlx_video model) still 400s.
-  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3', 'hunyuan']),
+  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3']),
   // The route's /status response now surfaces the BYOV runtime list so the
   // client can drop its hardcoded copy. Mirror the real shape — only the
   // `id` and a couple of UI-display fields are read by /status.
@@ -123,7 +123,6 @@ vi.mock('../services/videoGen/local.js', () => ({
       expectedRevision: '2452f0c12edcc8886eebf15772205ce9c417a618',
       repoUrl: 'x', repoDir: '/tmp',
     },
-    hunyuan: { id: 'hunyuan', label: 'HunyuanVideo MLX', venvPython: '/tmp/hunyuan.py', installEnvVar: 'INSTALL_HUNYUAN', repoUrl: 'x', repoDir: '/tmp' },
   },
   ...runtimeProbes,
   // /status now surfaces a runtime block (host chip/os + per-runtime versions).
@@ -1576,13 +1575,13 @@ describe('videoGen routes', () => {
     // Pre-enqueue config validation: without pythonPath the queue would
     // accept the job, return 200/queued, then fail asynchronously over SSE
     // and pollute the persisted queue with a doomed entry. Skipped for
-    // ltx2/wan22/hunyuan runtimes which bring their own venv (see the
+    // BYOV runtimes which bring their own venv (see the
     // BYOV_RUNTIMES allowlist mirrored in services/videoGen/local.js).
     it('rejects 400 VIDEO_GEN_NOT_CONFIGURED when pythonPath is missing and the model needs it', async () => {
       const settingsMock = await import('../services/settings.js');
       settingsMock.getSettings.mockResolvedValueOnce({ imageGen: { local: {} } });
       // Override the default `ltx2` mock with a legacy mlx_video runtime so
-      // the pythonPath gate actually fires — ltx2/wan22/hunyuan are exempt.
+      // the pythonPath gate actually fires — BYOV runtimes are exempt.
       videoGenService.listVideoModels.mockReturnValueOnce([
         { id: 'legacy_mlx', name: 'legacy mlx_video', runtime: 'mlx_video' },
       ]);
@@ -1592,7 +1591,7 @@ describe('videoGen routes', () => {
       expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
     });
 
-    // The matching positive case: an ltx2/wan22/hunyuan model bypasses the
+    // The matching positive case: a BYOV model bypasses the
     // pythonPath gate because buildArgs resolves its own venv.
     it('accepts a BYOV-runtime model (ltx2) when pythonPath is missing', async () => {
       const settingsMock = await import('../services/settings.js');

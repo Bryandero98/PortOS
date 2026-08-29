@@ -100,7 +100,7 @@ mkdir -p "${PORTOS_DATA}/videos"
 mkdir -p "${PORTOS_DATA}/video-thumbnails"
 
 # When the user only wants a specific BYOV runtime (set via INSTALL_LTX2 /
-# INSTALL_WAN22 / INSTALL_HUNYUAN / INSTALL_MINIMAX_H3 / INSTALL_MINIMAX_H3_CUDA — or one of the self-contained MUSIC venvs
+# INSTALL_WAN22 / INSTALL_MINIMAX_H3 / INSTALL_MINIMAX_H3_CUDA — or one of the self-contained MUSIC venvs
 # INSTALL_MUSICGEN / INSTALL_AUDIOLDM2 / INSTALL_ACESTEP / INSTALL_ACESTEP15 / INSTALL_MINIMAX_MUSIC3_MLX — typically from the
 # in-app installer), skip the mflux + legacy mlx_video preamble. Those
 # bring-your-own-venv runtimes are self-contained and don't depend on mflux;
@@ -109,7 +109,7 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}"
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}"
 # "no BYOV runtime was requested" = the concatenation contains no non-zero
 # character. Matching a literal string of zeros instead made this a counting
 # exercise that the string and the variable list had to agree on — and they had
@@ -573,64 +573,6 @@ if [[ "$INSTALL_MINIMAX_H3_CUDA" == "1" ]]; then
   echo "✅ MiniMax H3 CUDA runtime ready: ${MINIMAX_H3_CUDA_PY}"
   echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
   echo "   That download is ~144 GB, and rendering needs ~24 GB VRAM plus ~75 GB of system RAM for offloaded weights."
-fi
-
-INSTALL_HUNYUAN="${INSTALL_HUNYUAN:-0}"
-if [[ "$INSTALL_HUNYUAN" == "1" ]]; then
-  # gaurav-nelson/HunyuanVideo_MLX — community MLX port of Tencent's
-  # HunyuanVideo (13B). ~60 GB resident at bf16. Practical only with the
-  # 4-bit Gemma text encoder + everything else evicted (see the Memory
-  # Management panel under Settings → Local LLMs).
-  #
-  # EXPERIMENTAL — same caveat as Wan 2.2: the clone is pinned (HUNYUAN_PIN
-  # below) for reproducible installs, but bumping that pin can still drift
-  # sample_video.py args. If it does, flip `hunyuan_video` broken in
-  # data/media-models.json and update scripts/generate_hunyuan.py.
-  if ! have uv; then
-    echo "❌ INSTALL_HUNYUAN=1 requires the 'uv' Python installer." >&2
-    exit 1
-  fi
-  if ! have git; then
-    echo "❌ INSTALL_HUNYUAN=1 requires git." >&2
-    exit 1
-  fi
-  # Pinned to a known-good commit (the repo's HEAD as of 2026-06-02). Floating
-  # `main` on a community-maintained port means every new install gets whatever
-  # HEAD is that day — a pin keeps installs reproducible. To upgrade: bump this
-  # SHA and verify with PortOS's video gen smoke tests. Set HUNYUAN_PIN=main to
-  # bypass the pin and track upstream HEAD for development.
-  HUNYUAN_PIN="${HUNYUAN_PIN:-d5ec346aac3322066c1f1cb149830d1246dbe6dd}"
-  HUNYUAN_DIR="${HOME}/.portos/hunyuan-video-mlx"
-  HUNYUAN_PY="${HUNYUAN_DIR}/.venv/bin/python3"
-  mkdir -p "${HOME}/.portos"
-  if [[ ! -d "${HUNYUAN_DIR}/.git" ]]; then
-    echo "📦 Cloning gaurav-nelson/HunyuanVideo_MLX..."
-    git clone --progress https://github.com/gaurav-nelson/HunyuanVideo_MLX.git "${HUNYUAN_DIR}"
-  else
-    echo "📦 Fetching HunyuanVideo_MLX updates..."
-    (cd "${HUNYUAN_DIR}" && git fetch --progress origin)
-  fi
-  git_checkout_pin "${HUNYUAN_DIR}" "${HUNYUAN_PIN}"
-  if [[ ! -x "${HUNYUAN_PY}" ]]; then
-    echo "📦 Creating HunyuanVideo_MLX venv with Python 3.11..."
-    (cd "${HUNYUAN_DIR}" && uv venv --python 3.11)
-  fi
-  # Upstream gaurav-nelson ships requirements as `requirements_mps.txt` (the
-  # MPS-specific variant — there's no plain `requirements.txt`). Prefer the
-  # MPS one when present, then plain `requirements.txt`, then fall back to
-  # `uv sync` for repos that use pyproject + lockfile instead.
-  HUNYUAN_REQS=""
-  for cand in requirements_mps.txt requirements.txt; do
-    if [[ -f "${HUNYUAN_DIR}/${cand}" ]]; then HUNYUAN_REQS="$cand"; break; fi
-  done
-  if [[ -n "$HUNYUAN_REQS" ]]; then
-    echo "📦 Installing HunyuanVideo_MLX requirements from ${HUNYUAN_REQS}..."
-    (cd "${HUNYUAN_DIR}" && uv pip install -r "$HUNYUAN_REQS")
-  else
-    echo "📦 Syncing HunyuanVideo_MLX packages..."
-    (cd "${HUNYUAN_DIR}" && uv sync)
-  fi
-  echo "✅ HunyuanVideo_MLX venv ready: ${HUNYUAN_PY}"
 fi
 
 INSTALL_MUSICGEN="${INSTALL_MUSICGEN:-0}"

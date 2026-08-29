@@ -83,7 +83,7 @@ os.environ.setdefault("LTX2_GEMMA_EVAL_EVERY", "1")
 # Sibling import: parse_user_loras is shared with generate_av_lora.py (the
 # mlx_video LoRA runtime) so the strict --user-loras validation lives in one
 # place. sys.path[0] is already this dir when run as a script; insert defensively
-# (mirrors generate_hunyuan.py). _runner_common is stdlib-only at import time, so
+# for direct and imported execution. _runner_common is stdlib-only at import time, so
 # this is safe from the ltx-2-mlx venv (no torch pulled in).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runner_common import emit_runtime_fingerprint, parse_user_loras, write_stepwise_preview  # noqa: E402

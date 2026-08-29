@@ -16,7 +16,7 @@ describe('videoModeContractError — shared gate', () => {
     expect([...VIDEO_MODE_GATED_RUNTIMES].sort()).toEqual(['fastvideo', 'minimax_h3', 'minimax_h3_cuda', 'wan22']);
   });
 
-  it.each(['ltx2', 'mlx_video', 'hunyuan', undefined])('leaves the %s runtime ungated', (runtime) => {
+  it.each(['ltx2', 'mlx_video', undefined])('leaves the %s runtime ungated', (runtime) => {
     expect(videoModeContractError({
       model: { runtime, name: 'Example Model' }, mode: 'extend', hasFirstImage: true,
     })).toBeNull();

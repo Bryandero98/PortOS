@@ -139,8 +139,8 @@ const isPresent = (value) => (Array.isArray(value) ? value.length > 0 : Boolean(
 /**
  * The one video mode/source contract, driven by `model.supportedModes`. Returns
  * a ServerError to throw, or null when the request is legal (including for a
- * runtime that declares no row — ltx2, mlx_video and hunyuan gate their modes
- * through their own helpers).
+ * runtime that declares no row — ltx2 and mlx_video gate their modes through
+ * their own helpers).
  *
  * `supportedModes` comes off the registry entry (resolved from the runtime table
  * when the entry declares none) so the picker and the API agree even on an
