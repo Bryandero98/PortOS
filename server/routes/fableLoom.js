@@ -131,7 +131,10 @@ router.get('/:id/episodes/:episodeId/validate', asyncHandler(async (req, res) =>
   const loom = await getLoom(req.params.id);
   const episode = loom?.episodes.find((e) => e.id === req.params.episodeId);
   if (!episode) throw new ServerError('Episode not found', { status: 404, code: 'NOT_FOUND' });
-  res.json(analyzeEpisodeGraph(episode));
+  res.json(analyzeEpisodeGraph(episode, {
+    participationMode: loom.participationMode,
+    requireAudienceIntroduction: episode.id === loom.episodes[0]?.id,
+  }));
 }));
 
 // --- Nodes ------------------------------------------------------------------

@@ -83,6 +83,7 @@ export * as editorial from './editorial/index.js';
 export * from './fableLoomGraph.js';
 export * from './fableLoomCameraMovements.js';
 export * from './fableLoomPlayback.js';
+export * from './fableLoomParticipation.js';
 export * from './fableLoomLimits.js';
 export * from './fableLoomFormats.js';
 export * from './scenePrompt.js';

@@ -10,7 +10,7 @@ vi.mock('../../hooks/useProviderModels', () => ({ default: () => ({ providers: [
 vi.mock('../ProviderModelSelector', () => ({ default: () => null }));
 vi.mock('../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
-import { reformatLoomEpisode } from '../../services/api';
+import { reformatLoomEpisode, updateLoom } from '../../services/api';
 import toast from '../ui/Toast';
 import LoomSettingsDrawer from './LoomSettingsDrawer';
 
@@ -157,5 +157,26 @@ describe('LoomSettingsDrawer rewrite', () => {
     renderDrawer(makeLoom([{ id: 'ep-1', title: 'Pilot', nodes: [scene('s1', 'teleplay')] }]));
     expect(screen.queryByRole('button', { name: /^Rewrite/ })).not.toBeInTheDocument();
     expect(screen.getByText(/Every scene you have is already written as teleplay/)).toBeInTheDocument();
+  });
+});
+
+describe('LoomSettingsDrawer audience participation', () => {
+  it('saves the helper role together with its required communication medium', async () => {
+    updateLoom.mockResolvedValue({
+      ...makeLoom([]),
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A silver mirror.',
+    });
+    const user = userEvent.setup();
+    renderDrawer({ ...makeLoom([]), participationMode: 'protagonist' });
+
+    await user.selectOptions(screen.getByLabelText('Audience role'), 'helper');
+    await user.type(screen.getByLabelText('Communication medium'), 'A silver mirror.');
+    await user.tab();
+
+    await waitFor(() => expect(updateLoom).toHaveBeenCalledWith('loom-1', {
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A silver mirror.',
+    }, { silent: true }));
   });
 });

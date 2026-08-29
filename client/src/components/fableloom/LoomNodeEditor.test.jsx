@@ -52,6 +52,25 @@ const renderEditor = (transitions = [existingPath]) => {
   return { onLoomUpdate, onGenerateImage, onGenerateVideo };
 };
 
+const renderHelperEditor = () => {
+  const nodes = makeNodes([existingPath]);
+  nodes[0].audienceConnection = 'connected';
+  const helperLoom = {
+    ...loom,
+    participationMode: 'helper',
+    audienceCommunicationMedium: 'a field radio',
+  };
+  render(
+    <LoomNodeEditor
+      loom={helperLoom}
+      episode={{ id: 'ep-1', startNodeId: 'n1', nodes }}
+      node={nodes[0]}
+      onLoomUpdate={vi.fn()}
+      onClearSelection={() => {}}
+    />,
+  );
+};
+
 beforeEach(() => vi.clearAllMocks());
 
 describe('LoomNodeEditor paths', () => {
@@ -177,6 +196,21 @@ describe('LoomNodeEditor scene media', () => {
 
     await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
       'loom-1', 'ep-1', 'n1', { playbackMode: 'cut' }, { silent: true },
+    ));
+  });
+
+  it('turns a helper scene into an automatic cut when its audience channel disconnects', async () => {
+    const user = userEvent.setup();
+    updateLoomNode.mockResolvedValue({ id: 'loom-1' });
+    renderHelperEditor();
+
+    expect(screen.getByText(/hear the audience through a field radio/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('Audience connection'), 'disconnected');
+
+    await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', 'n1',
+      { audienceConnection: 'disconnected', playbackMode: 'cut' },
+      { silent: true },
     ));
   });
 
