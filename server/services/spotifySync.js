@@ -253,11 +253,11 @@ async function doRunSync() {
 }
 
 // Status for the settings UI: config + cursor state + auth status (no API call).
-export async function getStatus() {
+export async function getStatus(options = {}) {
   const [config, state, auth] = await Promise.all([
     getSpotifyConfig(),
     readSyncState(),
-    getAuthStatus(),
+    getAuthStatus(options),
   ]);
   return { config, state, auth };
 }

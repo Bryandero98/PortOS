@@ -19301,7 +19301,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 56
+          "line": 71
         }
       ]
     },
@@ -19312,7 +19312,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 19
+          "line": 34
         }
       ]
     },
@@ -19323,7 +19323,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 30
+          "line": 45
         }
       ]
     },
@@ -19334,7 +19334,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 38
+          "line": 53
         }
       ]
     },
@@ -19345,7 +19345,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 13
+          "line": 28
         }
       ]
     },
@@ -19356,7 +19356,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 63
+          "line": 78
         }
       ]
     },

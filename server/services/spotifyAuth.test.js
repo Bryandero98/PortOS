@@ -80,6 +80,15 @@ describe('spotifyAuth pure helpers', () => {
       expect(getRedirectUri()).toBe('https://example.test/api/spotify/oauth/callback');
     });
 
+    it('uses a request origin when the caller supplies the public URL', () => {
+      delete process.env.SPOTIFY_REDIRECT_URI;
+      delete process.env.PUBLIC_HOST;
+      process.env.PORT = '5555';
+
+      expect(getRedirectUri({ origin: 'https://host-example.ts.net:5555/' }))
+        .toBe('https://host-example.ts.net:5555/api/spotify/oauth/callback');
+    });
+
     it('builds the callback path from PUBLIC_HOST/PORT otherwise', () => {
       delete process.env.SPOTIFY_REDIRECT_URI;
       process.env.PUBLIC_HOST = 'myhost';
