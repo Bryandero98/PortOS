@@ -82,6 +82,16 @@ describe('IdeaLoom Markdown contract', () => {
     });
   });
 
+  it('round-trips a literal Prompt heading without consuming the first idea', () => {
+    const original = list({ prompt: 'Prompt', help: '' });
+    const parsed = parseIdeaLoomMarkdown(renderIdeaLoomMarkdown(original));
+
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: true,
+      list: expect.objectContaining({ prompt: 'Prompt', ideas: original.ideas }),
+    }));
+  });
+
   it('rejects malformed metadata and non-dense numbered ideas', () => {
     const rendered = renderIdeaLoomMarkdown(list());
     expect(parseIdeaLoomMarkdown(rendered.replace(`id: "${LIST_ID}"`, 'id: "not-a-uuid"')).ok).toBe(false);
@@ -89,6 +99,10 @@ describe('IdeaLoom Markdown contract', () => {
     expect(parseIdeaLoomMarkdown(rendered.replace('1. First idea\n2. Second idea', '1. First idea\n3. Second idea')).error)
       .toMatch(/dense/);
     expect(parseIdeaLoomMarkdown('---\nid: "' + LIST_ID + '"\n---\n# Prompt').ok).toBe(false);
+    expect(parseIdeaLoomMarkdown(rendered.replace('  - "idea-loom"', '  - "other-note"')).error)
+      .toMatch(/idea-loom/);
+    expect(parseIdeaLoomMarkdown(rendered.replace(`title: "Next steps: \\\"small\\\""`, `title: "${'x'.repeat(201)}"`)).error)
+      .toMatch(/limits/);
   });
 });
 

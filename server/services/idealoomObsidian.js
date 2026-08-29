@@ -12,6 +12,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import * as obsidian from './obsidian.js';
 import * as ideaLoomLists from './idealoomLists.js';
+import { ideaLoomListInputSchema } from '../lib/brainValidation.js';
 
 export const IDEA_LOOM_FOLDER = 'Idea Loom';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -115,9 +116,15 @@ const parseBody = (lines) => {
   let prompt = lines[headingIndex].replace(/^#{1,6}\s+/, '').trim();
   let cursor = headingIndex + 1;
   if (prompt.toLowerCase() === 'prompt') {
-    while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
-    prompt = lines[cursor]?.trim() || '';
-    cursor += 1;
+    let nextContentIndex = cursor;
+    while (nextContentIndex < lines.length && !lines[nextContentIndex].trim()) nextContentIndex += 1;
+    const nextContent = lines[nextContentIndex]?.trim();
+    // IdeaLoom sometimes uses a literal "Prompt" heading. Do not consume the
+    // first numbered idea as prompt text in that valid, empty-help shape.
+    if (nextContent && !NUMBERED_IDEA_RE.test(nextContent)) {
+      prompt = nextContent;
+      cursor = nextContentIndex + 1;
+    }
   }
   if (!prompt || prompt.startsWith('#')) return { error: 'missing prompt text' };
 
@@ -166,6 +173,18 @@ export function parseIdeaLoomMarkdown(content) {
 
   const body = parseBody(lines.slice(frontmatter.end + 1));
   if (body.error) return { ok: false, error: body.error };
+  if (!Array.isArray(values.tags) || !values.tags.some((tag) => tag.toLowerCase() === 'idea-loom')) {
+    return { ok: false, error: 'missing idea-loom tag' };
+  }
+  const validated = ideaLoomListInputSchema.safeParse({
+    prompt: body.prompt,
+    title: values.title,
+    category: values.category,
+    status: values.status,
+    help: body.help || undefined,
+    ideas: body.ideas,
+  });
+  if (!validated.success) return { ok: false, error: 'list exceeds supported limits' };
   return {
     ok: true,
     list: {
@@ -366,12 +385,13 @@ export async function exportToObsidian({ listId } = {}) {
     addResult(result, 'failed', { id: listId, reason: 'list-not-found' });
     return result;
   }
-  const outcomes = await Promise.allSettled(selected.map((list) => exportOne(exchange.settings.obsidianVaultId, list)));
-  outcomes.forEach((entry, index) => {
-    const list = selected[index];
+  // Path allocation checks the vault before writing. Keep exports sequential so
+  // two lists with the same generated date/title cannot choose the same path.
+  for (const list of selected) {
+    const [entry] = await Promise.allSettled([exportOne(exchange.settings.obsidianVaultId, list)]);
     if (entry.status === 'rejected') addResult(result, 'failed', { id: list.id, reason: entry.reason?.message || 'write failed' });
     else if (entry.value.kind === 'exported') addResult(result, 'exported', entry.value);
     else addResult(result, entry.value.kind, { id: list.id, ...entry.value });
-  });
+  }
   return result;
 }
