@@ -24,6 +24,10 @@ You are a branching-narrative designer growing new paths out of ONE scene of an 
 
 {{guidance}}
 
+## Audience participation
+
+{{participationContract}}
+
 ## Design contract
 
 - Create exactly {{branchCount}} new branches out of this scene. Each branch is a NEW scene plus the intent that leads to it.
@@ -33,6 +37,7 @@ You are a branching-narrative designer growing new paths out of ONE scene of an 
 - Each new scene's `imagePrompt` is one sentence of concrete visual description.
 - Each new scene's `videoPrompt` directs one renderable clip: visible action, one primary camera movement, pace, atmosphere, and final beat. Never put a cut or angle change inside it.
 - Set `playbackMode` to `decision`: a newly branched node has no outgoing path yet, so it must wait for viewer choice/feedback. Its loop must depict repeatable ongoing action, not an irreversible beat.
+- Set `audienceConnection` to `connected`. Branching is only available where this story's audience can participate through its configured role or communication channel.
 - Choose `cameraMovement` from this vocabulary (the stable id before the parentheses):
 
 {{cameraMovementCatalog}}
@@ -60,6 +65,7 @@ Return ONLY valid JSON matching this shape — no prose, no markdown fence, no c
         "videoPrompt": "string",
         "cameraMovement": "slow-dolly-in",
         "playbackMode": "decision",
+        "audienceConnection": "connected",
         "isEnding": false,
         "endingLabel": ""
       }

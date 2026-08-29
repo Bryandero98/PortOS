@@ -37,6 +37,49 @@ describe('LoomPlayPanel', () => {
     expect(screen.getByRole('button', { name: 'Take path: enter the gate' })).toBeInTheDocument();
   });
 
+  it('keeps a helper audience passive and follows the first canon path until the channel connects', async () => {
+    const user = userEvent.setup();
+    const helperEpisode = {
+      id: 'ep-helper', startNodeId: 'opening', nodes: [{
+        id: 'opening', title: 'Opening', prose: 'The protagonist walks alone.',
+        playbackMode: 'cut', audienceConnection: 'disconnected',
+        transitions: [
+          { id: 'continue', targetNodeId: 'radio', intent: 'Continue' },
+          { id: 'legacy-choice', targetNodeId: 'other', intent: 'Legacy choice' },
+        ],
+      }, {
+        id: 'radio', title: 'Radio', prose: 'The radio crackles.',
+        playbackMode: 'decision', audienceConnection: 'connected',
+        transitions: [{ id: 'answer', targetNodeId: 'end', intent: 'warn them' }],
+      }],
+    };
+    playLoomTurn.mockResolvedValue({
+      action: 'move', resolvedBy: 'graph', narration: '', ended: false,
+      node: {
+        id: 'radio', title: 'Radio', prose: 'The radio crackles.',
+        playbackMode: 'decision', audienceConnection: 'connected', choices: [],
+      },
+    });
+    render(<LoomPlayPanel
+      loom={{
+        ...loom,
+        participationMode: 'helper',
+        audienceCommunicationMedium: 'the crystal radio',
+        episodes: [helperEpisode],
+      }}
+      episode={helperEpisode}
+    />);
+
+    expect(screen.getByText(/Connection unavailable/)).toHaveTextContent('the crystal radio');
+    expect(screen.queryByLabelText('Your action')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Take path: Continue' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next cut' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Next cut' }));
+    await waitFor(() => expect(playLoomTurn).toHaveBeenCalledWith(
+      'loom-1', 'ep-helper', expect.objectContaining({ transitionId: 'continue' }), { silent: true },
+    ));
+  });
+
   it('sends a tapped path as a transition id, not as free text to match', async () => {
     const user = userEvent.setup();
     playLoomTurn.mockResolvedValue({

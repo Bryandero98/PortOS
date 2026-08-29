@@ -9,12 +9,18 @@ import { z } from 'zod';
 import { LOOM_LIMITS } from './fableLoomLimits.js';
 import { LOOM_FORMATS } from './fableLoomFormats.js';
 import { FABLELOOM_PLAYBACK_MODES } from './fableLoomPlayback.js';
+import {
+  FABLELOOM_AUDIENCE_CONNECTION_STATES,
+  FABLELOOM_PARTICIPATION_MODES,
+} from './fableLoomParticipation.js';
 import { llmRoutePinSchema } from './llmRoutePin.js';
 
 const name = z.string().trim().min(1).max(LOOM_LIMITS.NAME_MAX);
 const logline = z.string().max(LOOM_LIMITS.LOGLINE_MAX);
 const premise = z.string().max(LOOM_LIMITS.PREMISE_MAX);
 const styleNotes = z.string().max(LOOM_LIMITS.STYLE_NOTES_MAX);
+const participationMode = z.enum(FABLELOOM_PARTICIPATION_MODES);
+const audienceCommunicationMedium = z.string().max(LOOM_LIMITS.AUDIENCE_COMMUNICATION_MEDIUM_MAX);
 const refId = z.string().max(LOOM_LIMITS.REF_ID_MAX).nullable();
 const title = z.string().max(LOOM_LIMITS.EPISODE_TITLE_MAX);
 const synopsis = z.string().max(LOOM_LIMITS.SYNOPSIS_MAX);
@@ -60,6 +66,8 @@ export const loomCreateSchema = z.object({
   logline: logline.optional(),
   premise: premise.optional(),
   styleNotes: styleNotes.optional(),
+  participationMode: participationMode.optional(),
+  audienceCommunicationMedium: audienceCommunicationMedium.optional(),
   format: format.optional(),
   playSettings: playSettings.optional(),
   seriesPlan: seriesPlan.optional(),
@@ -72,6 +80,8 @@ export const loomPatchSchema = z.object({
   logline: logline.optional(),
   premise: premise.optional(),
   styleNotes: styleNotes.optional(),
+  participationMode: participationMode.optional(),
+  audienceCommunicationMedium: audienceCommunicationMedium.optional(),
   format: format.optional(),
   playSettings: playSettings.optional(),
   seriesPlan: seriesPlan.optional(),
@@ -126,6 +136,7 @@ const nodeFields = {
   videoPrompt: z.string().max(LOOM_LIMITS.VIDEO_PROMPT_MAX).optional(),
   cameraMovement: z.string().max(LOOM_LIMITS.CAMERA_MOVEMENT_MAX).optional(),
   playbackMode: z.enum(FABLELOOM_PLAYBACK_MODES).optional(),
+  audienceConnection: z.enum(FABLELOOM_AUDIENCE_CONNECTION_STATES).optional(),
   isEnding: z.boolean().optional(),
   endingLabel: z.string().max(LOOM_LIMITS.ENDING_LABEL_MAX).optional(),
   pos: z.object({ x: z.number(), y: z.number() }).nullable().optional(),

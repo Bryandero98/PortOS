@@ -30,6 +30,7 @@ const looms = [
     logline: 'A crown that remembers.',
     universeId: 'uni-1',
     seriesId: null,
+    participationMode: 'helper',
     updatedAt: '2026-08-20T00:00:00Z',
     episodeCount: 1,
     sceneCount: 3,
@@ -60,6 +61,7 @@ describe('FableLoom index', () => {
     expect(screen.getByText('1 episode')).toBeInTheDocument();
     expect(screen.getByText('3 scenes')).toBeInTheDocument();
     expect(screen.getByText('2 endings')).toBeInTheDocument();
+    expect(screen.getByText('Audience helper')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('Aria Verse')).toBeInTheDocument());
   });
 
@@ -77,10 +79,13 @@ describe('FableLoom index', () => {
 
     await user.click(screen.getByRole('button', { name: /New loom/ }));
     await user.type(screen.getByLabelText('Name'), 'Gate of Ash');
+    await user.type(screen.getByLabelText('Audience communication medium'), 'A crystal radio.');
     await user.click(screen.getByRole('button', { name: 'Create loom' }));
 
     await waitFor(() => expect(api.createLoom).toHaveBeenCalledWith({
-      name: 'Gate of Ash', logline: '', premise: '', styleNotes: '', format: 'prose', universeId: null, seriesId: null,
+      name: 'Gate of Ash', logline: '', premise: '', styleNotes: '', format: 'prose',
+      participationMode: 'helper', audienceCommunicationMedium: 'A crystal radio.',
+      universeId: null, seriesId: null,
     }, { silent: true }));
     expect(navigate).toHaveBeenCalledWith('/fableloom/loom-9/plan');
     expect(api.generateLoomSeriesPlan).not.toHaveBeenCalled();
@@ -95,6 +100,7 @@ describe('FableLoom index', () => {
 
     await user.click(screen.getByRole('button', { name: /New loom/ }));
     await user.type(screen.getByLabelText('Name'), 'Gate of Ash');
+    await user.type(screen.getByLabelText('Audience communication medium'), 'A crystal radio.');
     await user.selectOptions(await screen.findByLabelText('Plan AI provider'), 'codex');
     await user.selectOptions(screen.getByLabelText('Model'), 'gpt-5.6');
     await user.selectOptions(screen.getByLabelText('Thinking effort'), 'high');

@@ -28,6 +28,11 @@ import {
 import { LOOM_LIMITS } from './limits.js';
 import { asLoomFormat, isLoomFormat } from './formats.js';
 import { asFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
+import {
+  FABLELOOM_LEGACY_PARTICIPATION_MODE,
+  asFableLoomAudienceConnection,
+  asFableLoomParticipationMode,
+} from '../../lib/fableLoomParticipation.js';
 import { normalizeFableLoomCameraMovement } from '../../lib/fableLoomCameraMovements.js';
 
 export { LOOM_LIMITS };
@@ -73,6 +78,7 @@ function sanitizeNode(raw) {
     videoPrompt: trimTo(raw.videoPrompt, LOOM_LIMITS.VIDEO_PROMPT_MAX),
     cameraMovement: trimTo(normalizeFableLoomCameraMovement(raw.cameraMovement), LOOM_LIMITS.CAMERA_MOVEMENT_MAX),
     playbackMode: asFableLoomPlaybackMode(raw.playbackMode),
+    audienceConnection: asFableLoomAudienceConnection(raw.audienceConnection),
     videoHistoryId: isSafeVideoHistoryId(raw.videoHistoryId) ? raw.videoHistoryId : null,
     isEnding: raw.isEnding === true,
     // The format this scene's text is actually WRITTEN in — server-set, not
@@ -172,6 +178,11 @@ export function sanitizeLoom(raw) {
     logline: trimTo(raw.logline, LOOM_LIMITS.LOGLINE_MAX),
     premise: trimTo(raw.premise, LOOM_LIMITS.PREMISE_MAX),
     styleNotes: trimTo(raw.styleNotes, LOOM_LIMITS.STYLE_NOTES_MAX),
+    participationMode: asFableLoomParticipationMode(raw.participationMode),
+    audienceCommunicationMedium: trimTo(
+      raw.audienceCommunicationMedium,
+      LOOM_LIMITS.AUDIENCE_COMMUNICATION_MEDIUM_MAX,
+    ),
     format: asLoomFormat(raw.format),
     // The loom's route pin for the play stage — which provider/model/effort
     // turns a reader's free text into a path. An unset dimension stays null
@@ -230,11 +241,16 @@ export async function listLooms() {
 export async function listLoomSummaries({ seriesId: scopeSeriesId } = {}) {
   const looms = await listLooms();
   const scoped = scopeSeriesId ? looms.filter((loom) => loom.seriesId === scopeSeriesId) : looms;
-  return scoped.map(({ id, name, logline, format, universeId, seriesId, createdAt, updatedAt, episodes }) => ({
+  return scoped.map(({
+    id, name, logline, format, participationMode, audienceCommunicationMedium,
+    universeId, seriesId, createdAt, updatedAt, episodes,
+  }) => ({
     id,
     name,
     logline,
     format,
+    participationMode,
+    audienceCommunicationMedium,
     universeId,
     seriesId,
     createdAt,
@@ -250,8 +266,23 @@ export async function getLoom(id) {
   return sanitizeLoom(await readRaw(id));
 }
 
-export async function createLoom({ name, logline, premise, styleNotes, format, playSettings, seriesPlan, universeId, seriesId } = {}) {
+const assertParticipationConfigured = ({ participationMode, audienceCommunicationMedium }) => {
+  if (asFableLoomParticipationMode(participationMode) === 'helper'
+    && !trimTo(audienceCommunicationMedium, LOOM_LIMITS.AUDIENCE_COMMUNICATION_MEDIUM_MAX)) {
+    throw new ServerError('Helper stories need an audience communication medium', {
+      status: 400,
+      code: 'AUDIENCE_MEDIUM_REQUIRED',
+    });
+  }
+};
+
+export async function createLoom({
+  name, logline, premise, styleNotes, format, playSettings, seriesPlan,
+  participationMode = FABLELOOM_LEGACY_PARTICIPATION_MODE,
+  audienceCommunicationMedium, universeId, seriesId,
+} = {}) {
   const now = new Date().toISOString();
+  assertParticipationConfigured({ participationMode, audienceCommunicationMedium });
   await assertRefsExist({ universeId: nullableRef(universeId), seriesId: nullableRef(seriesId) });
   const loom = sanitizeLoom({
     id: `loom-${randomUUID()}`,
@@ -259,6 +290,8 @@ export async function createLoom({ name, logline, premise, styleNotes, format, p
     logline,
     premise,
     styleNotes,
+    participationMode,
+    audienceCommunicationMedium,
     format,
     playSettings,
     seriesPlan,
@@ -291,7 +324,10 @@ export function mutateLoom(id, mutator) {
   });
 }
 
-const PATCH_FIELDS = ['name', 'logline', 'premise', 'styleNotes', 'format', 'playSettings', 'seriesPlan', 'universeId', 'seriesId'];
+const PATCH_FIELDS = [
+  'name', 'logline', 'premise', 'styleNotes', 'format', 'playSettings', 'seriesPlan',
+  'participationMode', 'audienceCommunicationMedium', 'universeId', 'seriesId',
+];
 
 export async function updateLoom(id, patch = {}) {
   await assertRefsExist({
@@ -303,6 +339,7 @@ export async function updateLoom(id, patch = {}) {
     for (const key of PATCH_FIELDS) {
       if (key in patch) next[key] = patch[key];
     }
+    assertParticipationConfigured(next);
     return next;
   });
 }
@@ -374,7 +411,10 @@ export function deleteEpisode(loomId, episodeId) {
 
 // --- Nodes & transitions ----------------------------------------------------
 
-const NODE_PATCH_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel', 'pos', 'transitions'];
+const NODE_PATCH_FIELDS = [
+  'title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode',
+  'audienceConnection', 'isEnding', 'endingLabel', 'pos', 'transitions',
+];
 
 export function addNode(loomId, episodeId, fields = {}) {
   return mutateLoom(loomId, (loom) => {
@@ -383,6 +423,11 @@ export function addNode(loomId, episodeId, fields = {}) {
       throw new ServerError('Scene limit reached', { status: 400, code: 'LIMIT_REACHED' });
     }
     const node = { id: `node-${randomUUID()}`, ...fields };
+    if (asFableLoomParticipationMode(loom.participationMode) === 'helper'
+      && asFableLoomAudienceConnection(fields.audienceConnection) !== 'connected'
+      && !('playbackMode' in fields)) {
+      node.playbackMode = 'cut';
+    }
     episode.nodes.push(node);
     if (!episode.startNodeId) episode.startNodeId = node.id;
     // Optionally wire the new node in as a branch of an existing one. The

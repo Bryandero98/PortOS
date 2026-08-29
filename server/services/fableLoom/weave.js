@@ -18,18 +18,27 @@ import { runStagedLLM } from '../stageRunner.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
 import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
-import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
+import { GRAPH_ISSUE_CODES, analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
 import {
   FABLELOOM_CAMERA_MOVEMENT_VALUES,
   fableLoomCameraMovementCatalogForPrompt,
   normalizeFableLoomCameraMovement,
 } from '../../lib/fableLoomCameraMovements.js';
 import { isFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
+import {
+  asFableLoomAudienceConnection,
+  audienceCanParticipate,
+  participationContractForPrompt,
+} from '../../lib/fableLoomParticipation.js';
 import { getUniverse } from '../universeBuilder.js';
 import { LOOM_LIMITS, findEpisode, findNode, getLoom, mutateLoom } from './records.js';
 import { asLoomFormat, loomFormatLabel, narrationFormatContract, sceneFormatContract } from './formats.js';
 
 const TRANSCRIPT_TURNS_MAX = 12;
+const AUDIENCE_GRAPH_ERROR_CODES = new Set([
+  GRAPH_ISSUE_CODES.NO_AUDIENCE_CONNECTION,
+  GRAPH_ISSUE_CODES.DISCONNECTED_DECISION,
+]);
 
 const clamp = (value, min, max, fallback) =>
   (Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback);
@@ -102,9 +111,18 @@ const seriesPlanContext = (loom, episode) => {
   ].filter(Boolean);
 };
 
+const requiresAudienceIntroduction = (loom, episode) => (
+  !episode || episode.id === loom.episodes[0]?.id
+);
+
+const audienceContract = (loom, episode) => participationContractForPrompt(loom, {
+  requiresIntroduction: requiresAudienceIntroduction(loom, episode),
+});
+
 const storyContext = (loom, episode) => [
   `Story: ${loom.name}`,
   `Scene format: ${loomFormatLabel(loom.format)}`,
+  `Audience participation: ${audienceContract(loom, episode)}`,
   loom.logline ? `Logline: ${loom.logline}` : '',
   loom.premise ? `Premise: ${loom.premise}` : '',
   ...seriesPlanContext(loom, episode),
@@ -148,6 +166,7 @@ const generatedNodeFields = (raw) => ({
   videoPrompt: raw.videoPrompt,
   cameraMovement: raw.cameraMovement,
   playbackMode: raw.playbackMode,
+  audienceConnection: raw.audienceConnection,
   isEnding: raw.isEnding === true,
   endingLabel: raw.endingLabel,
 });
@@ -199,13 +218,30 @@ export async function weaveEpisode(loomId, episodeId, {
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
     existingGraph: episode.nodes.length
-      ? describeGraphForPrompt(episode, { proseLimit: 1200 })
+      ? describeGraphForPrompt(episode, { proseLimit: 1200, participationMode: loom.participationMode })
       : '(none — create the episode from the story context)',
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     sceneFormatContract: sceneFormatContract(loom.format),
+    participationContract: audienceContract(loom, episode),
   }, llmOptions({ providerId, model, effort }, 'fableloom-weave'));
 
   const { nodes, startNodeId } = mapGeneratedGraph(content);
+  if (loom.participationMode === 'helper') {
+    const audienceErrors = analyzeEpisodeGraph(
+      { ...episode, nodes, startNodeId },
+      {
+        participationMode: 'helper',
+        requireAudienceIntroduction: requiresAudienceIntroduction(loom, episode),
+      },
+    ).issues.filter((issue) => issue.severity === 'error' && (
+      AUDIENCE_GRAPH_ERROR_CODES.has(issue.code)
+      || (issue.code === GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT
+        && nodes.find((node) => node.id === issue.nodeId)?.audienceConnection !== 'connected')
+    ));
+    if (audienceErrors.length) {
+      throw aiShapeError(`The model returned an invalid audience connection graph: ${audienceErrors[0].message}`);
+    }
+  }
   const updated = await mutateLoom(loomId, (current) => {
     const ep = findEpisode(current, episodeId);
     // Stamped with the format they were generated in, so a later reformat can
@@ -226,19 +262,29 @@ export async function branchNode(loomId, episodeId, nodeId, {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
   const node = findNode(episode, nodeId);
+  if (!audienceCanParticipate(loom, node)) {
+    throw new ServerError('The audience cannot branch this scene until its communication channel is connected', {
+      status: 409,
+      code: 'AUDIENCE_DISCONNECTED',
+    });
+  }
   const count = clamp(branchCount, 1, 4, 2);
 
   const canonDigest = await buildCanonDigest(loom);
   const { content, runId } = await runStagedLLM('fableloom-branch-node', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
-    graphDigest: describeGraphForPrompt(episode, { proseLimit: 200 }),
+    graphDigest: describeGraphForPrompt(episode, {
+      proseLimit: 200,
+      participationMode: loom.participationMode,
+    }),
     sceneTitle: node.title || 'Untitled scene',
     sceneProse: node.prose || '(no prose yet)',
     branchCount: String(count),
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     guidance: guidance || '(none)',
     sceneFormatContract: sceneFormatContract(loom.format),
+    participationContract: audienceContract(loom, episode),
   }, llmOptions({ providerId, model, effort }, 'fableloom-branch'));
 
   const branches = Array.isArray(content?.branches)
@@ -258,6 +304,7 @@ export async function branchNode(loomId, episodeId, nodeId, {
         id: `node-${randomUUID()}`,
         ...generatedNodeFields(branch.node),
         playbackMode: 'decision',
+        audienceConnection: 'connected',
         format: asLoomFormat(loom.format),
         transitions: [],
         pos: null,
@@ -283,10 +330,13 @@ const REVIEW_SEVERITIES = new Set(['high', 'medium', 'low']);
 export async function reviewEpisode(loomId, episodeId, { providerId, model, effort } = {}) {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
-  const structural = analyzeEpisodeGraph(episode);
+  const structural = analyzeEpisodeGraph(episode, {
+    participationMode: loom.participationMode,
+    requireAudienceIntroduction: requiresAudienceIntroduction(loom, episode),
+  });
   const { content, runId } = await runStagedLLM('fableloom-review', {
     storyContext: storyContext(loom, episode),
-    graphDigest: describeGraphForPrompt(episode),
+    graphDigest: describeGraphForPrompt(episode, { participationMode: loom.participationMode }),
     structuralDigest: structural.issues.length
       ? structural.issues.map((i) => `- [${i.severity}] ${i.message}`).join('\n')
       : '(no structural issues)',
@@ -310,7 +360,10 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
 
 // --- Feedback: apply a conversational episode edit --------------------------
 
-const FEEDBACK_NODE_FIELDS = ['title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode', 'isEnding', 'endingLabel'];
+const FEEDBACK_NODE_FIELDS = [
+  'title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode',
+  'audienceConnection', 'isEnding', 'endingLabel',
+];
 const FEEDBACK_TRANSITION_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
 const FEEDBACK_STRING_NODE_FIELDS = new Set(['title', 'prose', 'imagePrompt', 'videoPrompt', 'endingLabel']);
 
@@ -344,6 +397,8 @@ const normalizeFeedbackPatch = (content, episode) => {
         const movement = normalizeFableLoomCameraMovement(value);
         if (!movement || FABLELOOM_CAMERA_MOVEMENT_VALUES.includes(movement)) nodePatch[key] = movement;
       } else if (key === 'playbackMode' && isFableLoomPlaybackMode(value)) {
+        nodePatch[key] = value;
+      } else if (key === 'audienceConnection' && ['connected', 'disconnected'].includes(value)) {
         nodePatch[key] = value;
       } else if (key === 'isEnding' && typeof value === 'boolean') {
         nodePatch[key] = value;
@@ -398,7 +453,10 @@ export async function feedbackEpisode(loomId, episodeId, {
   const { content, runId } = await runStagedLLM('fableloom-feedback-episode', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none)',
-    graphDigest: describeGraphForPrompt(episode, { proseLimit: 1200 }),
+    graphDigest: describeGraphForPrompt(episode, {
+      proseLimit: 1200,
+      participationMode: loom.participationMode,
+    }),
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     feedback: instruction,
   }, llmOptions({ providerId, model, effort }, 'fableloom-feedback'));
@@ -593,6 +651,7 @@ export const publicNode = (node) => ({
   image: node.image,
   videoHistoryId: node.videoHistoryId,
   playbackMode: node.playbackMode,
+  audienceConnection: asFableLoomAudienceConnection(node.audienceConnection),
   isEnding: node.isEnding,
   endingLabel: node.endingLabel,
   choices: (node.transitions || []).map((t) => ({ id: t.id, intent: t.intent })),
@@ -624,11 +683,24 @@ export async function playTurn(loomId, episodeId, {
   }
 
   if (transitionId) {
-    const taken = node.transitions.find((t) => t.id === transitionId);
+    const interactive = audienceCanParticipate(loom, node);
+    const taken = interactive
+      ? node.transitions.find((t) => t.id === transitionId)
+      : node.transitions[0];
     if (!taken) {
       throw new ServerError('That path is not on this scene', { status: 400, code: 'INVALID_TRANSITION' });
     }
-    return moveResult(episode, node, taken, { narration: '', resolvedBy: 'choice' });
+    return moveResult(episode, node, taken, {
+      narration: '',
+      resolvedBy: interactive ? 'choice' : 'graph',
+    });
+  }
+
+  if (!audienceCanParticipate(loom, node)) {
+    throw new ServerError('The audience communication channel is not connected in this scene', {
+      status: 409,
+      code: 'AUDIENCE_DISCONNECTED',
+    });
   }
 
   const choicesDigest = node.transitions.map((t) => [

@@ -26,8 +26,12 @@ import { LOOM_FORMATS, isTeleplayFormat, loomFormatLabel } from '../components/f
 import {
   createLoom, deleteLoom, generateLoomSeriesPlan, listLooms, listPipelineSeries, listUniverses,
 } from '../services/api';
+import { FABLELOOM_PARTICIPATION_MODES } from '../../../server/lib/fableLoomParticipation.js';
 
-const emptyForm = () => ({ name: '', logline: '', premise: '', styleNotes: '', format: 'prose', universeId: '', seriesId: '' });
+const emptyForm = () => ({
+  name: '', logline: '', premise: '', styleNotes: '', format: 'prose',
+  participationMode: 'helper', audienceCommunicationMedium: '', universeId: '', seriesId: '',
+});
 
 export default function FableLoom() {
   const navigate = useNavigate();
@@ -65,6 +69,8 @@ export default function FableLoom() {
       premise: form.premise,
       styleNotes: form.styleNotes,
       format: form.format,
+      participationMode: form.participationMode,
+      audienceCommunicationMedium: form.participationMode === 'helper' ? form.audienceCommunicationMedium.trim() : '',
       universeId: form.universeId || null,
       seriesId: form.seriesId || null,
     }, { silent: true });
@@ -141,6 +147,31 @@ export default function FableLoom() {
                 {LOOM_FORMATS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
               </select>
             </FormField>
+            <FormField label="Audience role" labelClassName={labelClass}>
+              <select
+                className={fieldClass}
+                value={form.participationMode}
+                onChange={(e) => setForm((p) => ({ ...p, participationMode: e.target.value }))}
+              >
+                {FABLELOOM_PARTICIPATION_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {mode === 'helper' ? 'Audience helps the protagonist' : 'Audience acts as the protagonist'}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            {form.participationMode === 'helper' && (
+              <FormField label="Audience communication medium" labelClassName={labelClass}>
+                <textarea
+                  rows={2}
+                  className={fieldClass}
+                  value={form.audienceCommunicationMedium}
+                  onChange={(e) => setForm((p) => ({ ...p, audienceCommunicationMedium: e.target.value }))}
+                  placeholder="e.g. a cracked field radio the protagonist activates in the opening"
+                  required
+                />
+              </FormField>
+            )}
             <FormField label="Universe (canon + style for AI)" labelClassName={labelClass}>
               <select
                 className={fieldClass}
@@ -216,7 +247,7 @@ export default function FableLoom() {
             <button
               type="submit"
               value="empty"
-              disabled={creating || !form.name.trim()}
+              disabled={creating || !form.name.trim() || (form.participationMode === 'helper' && !form.audienceCommunicationMedium.trim())}
               className="px-4 py-2 rounded border border-port-border text-sm hover:border-port-accent disabled:opacity-50"
             >
               {creating ? 'Creating…' : 'Create loom'}
@@ -224,7 +255,7 @@ export default function FableLoom() {
             <button
               type="submit"
               value="draft"
-              disabled={creating || providersLoading || !form.name.trim()}
+              disabled={creating || providersLoading || !form.name.trim() || (form.participationMode === 'helper' && !form.audienceCommunicationMedium.trim())}
               className="flex items-center justify-center gap-1.5 px-4 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
             >
               <Sparkles size={14} /> {creating ? 'Creating…' : 'Create & draft plan'}
@@ -287,6 +318,7 @@ export default function FableLoom() {
                 {seriesNames.has(loom.seriesId) && (
                   <Pill tone="muted">{seriesNames.get(loom.seriesId)}</Pill>
                 )}
+                {loom.participationMode === 'helper' && <Pill tone="accent" bordered={false}>Audience helper</Pill>}
                 {isTeleplayFormat(loom.format) && <Pill tone="muted">{loomFormatLabel(loom.format)}</Pill>}
                 <span className="ml-auto">{timeAgo(loom.updatedAt)}</span>
               </div>

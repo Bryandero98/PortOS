@@ -112,6 +112,15 @@ describe('sanitizeLoom', () => {
     expect(sanitizeLoom({ id: 'loom-1', name: 'X', format: 'haiku' }).format).toBe('prose');
   });
 
+  it('preserves legacy protagonist behavior and defaults old scenes to a disconnected channel', () => {
+    const loom = sanitizeLoom({
+      id: 'loom-1', name: 'X', episodes: [{ id: 'ep-1', nodes: [{ id: 'n1' }] }],
+    });
+    expect(loom.participationMode).toBe('protagonist');
+    expect(loom.audienceCommunicationMedium).toBe('');
+    expect(loom.episodes[0].nodes[0].audienceConnection).toBe('disconnected');
+  });
+
   it('keeps a partial play pin but collapses an all-empty one to null', () => {
     const pinned = sanitizeLoom({
       id: 'loom-1', name: 'X', playSettings: { providerId: '  claude  ', model: '', effort: null },
@@ -216,6 +225,33 @@ describe('format and play settings round-trip', () => {
     const cleared = await updateLoom(loom.id, { playSettings: null });
     expect(cleared.playSettings).toBeNull();
     expect(cleared.format).toBe('teleplay');
+  });
+});
+
+describe('audience participation round-trip', () => {
+  it('requires a communication medium in helper mode and persists connection state', async () => {
+    await expect(makeLoom({ participationMode: 'helper' }))
+      .rejects.toMatchObject({ code: 'AUDIENCE_MEDIUM_REQUIRED' });
+
+    let loom = await makeLoom({
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A hand-cranked radio carried by the protagonist.',
+    });
+    expect(loom).toMatchObject({
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A hand-cranked radio carried by the protagonist.',
+    });
+    loom = await addEpisode(loom.id, { title: 'Pilot' });
+    loom = await addNode(loom.id, loom.episodes[0].id);
+    expect(loom.episodes[0].nodes[0]).toMatchObject({
+      audienceConnection: 'disconnected',
+      playbackMode: 'cut',
+    });
+    loom = await addNode(loom.id, loom.episodes[0].id, { audienceConnection: 'connected' });
+    expect(loom.episodes[0].nodes[1].audienceConnection).toBe('connected');
+
+    await expect(updateLoom(loom.id, { audienceCommunicationMedium: '' }))
+      .rejects.toMatchObject({ code: 'AUDIENCE_MEDIUM_REQUIRED' });
   });
 });
 

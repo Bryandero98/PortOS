@@ -111,6 +111,49 @@ describe('analyzeEpisodeGraph', () => {
     expect(issueCodes(one)).not.toContain(GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT);
   });
 
+  it('requires helper stories to connect near the opening and blocks disconnected decisions', () => {
+    const neverConnected = soundEpisode();
+    neverConnected.nodes[0].playbackMode = 'cut';
+    neverConnected.nodes[0].transitions = [tr('t1', 'n2', 'Continue')];
+    const disconnectedCodes = analyzeEpisodeGraph(neverConnected, {
+      participationMode: 'helper', requireAudienceIntroduction: true,
+    })
+      .issues.map((issue) => issue.code);
+    expect(disconnectedCodes).toContain(GRAPH_ISSUE_CODES.NO_AUDIENCE_CONNECTION);
+    expect(disconnectedCodes).toContain(GRAPH_ISSUE_CODES.DISCONNECTED_DECISION);
+
+    const connected = soundEpisode();
+    connected.nodes[0].playbackMode = 'cut';
+    connected.nodes[0].transitions = [tr('t1', 'n2', 'Continue')];
+    connected.nodes[1].audienceConnection = 'connected';
+    connected.nodes[1].playbackMode = 'decision';
+    const connectedCodes = analyzeEpisodeGraph(connected, {
+      participationMode: 'helper', requireAudienceIntroduction: true,
+    })
+      .issues.map((issue) => issue.code);
+    expect(connectedCodes).not.toContain(GRAPH_ISSUE_CODES.NO_AUDIENCE_CONNECTION);
+    expect(connectedCodes).not.toContain(GRAPH_ISSUE_CODES.DISCONNECTED_DECISION);
+  });
+
+  it('warns when a helper audience is not connected until after the opening sequence', () => {
+    const nodes = Array.from({ length: 6 }, (_, index) => ({
+      id: `n${index}`,
+      title: `Scene ${index}`,
+      playbackMode: index < 4 ? 'cut' : 'decision',
+      audienceConnection: index === 4 ? 'connected' : 'disconnected',
+      isEnding: index === 5,
+      transitions: index === 5 ? [] : [tr(`t${index}`, `n${index + 1}`, 'Continue')],
+    }));
+    const { issues } = analyzeEpisodeGraph({ startNodeId: 'n0', nodes }, {
+      participationMode: 'helper', requireAudienceIntroduction: true,
+    });
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: GRAPH_ISSUE_CODES.LATE_AUDIENCE_CONNECTION,
+      severity: 'warning',
+      nodeId: 'n4',
+    }));
+  });
+
   it('warns on unreachable nodes and errors when no ending is reachable', () => {
     const ep = soundEpisode();
     ep.nodes.push({ id: 'n9', title: 'Orphan', transitions: [tr('t9', 'n4', 'onward')] });
@@ -172,5 +215,14 @@ describe('describeGraphForPrompt', () => {
     const ep = soundEpisode();
     ep.nodes[0].transitions[0].triggers = ['go in', 'open the gate'];
     expect(describeGraphForPrompt(ep)).toContain('(triggers: go in; open the gate)');
+  });
+
+  it('renders connection flags only for helper stories', () => {
+    const ep = soundEpisode();
+    ep.nodes[0].audienceConnection = 'connected';
+    expect(describeGraphForPrompt(ep, { participationMode: 'helper' }))
+      .toContain('(START) (DECISION LOOP) (AUDIENCE CONNECTED)');
+    expect(describeGraphForPrompt(ep)).not.toContain('AUDIENCE CONNECTED');
+    expect(describeGraphForPrompt(ep)).not.toContain('AUDIENCE DISCONNECTED');
   });
 });

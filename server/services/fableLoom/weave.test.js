@@ -106,6 +106,7 @@ describe('weaveEpisode', () => {
     expect(variables.guidance).toBe('darker');
     expect(variables.existingGraph).toContain('(none');
     expect(variables.cameraMovementCatalog).toContain('slow-dolly-in');
+    expect(variables.participationContract).toContain('audience acts as the protagonist');
     expect(variables).not.toHaveProperty('nodeTarget');
     expect(variables).not.toHaveProperty('endingTarget');
   });
@@ -119,6 +120,38 @@ describe('weaveEpisode', () => {
     runStagedLLM.mockResolvedValue({ content: generatedGraph(), runId: 'run-2' });
     const { loom } = await weaveEpisode(loomId, episodeId, { replace: true });
     expect(loom.episodes[0].nodes).toHaveLength(3);
+  });
+
+  it('rejects a helper weave that offers decisions before establishing its audience channel', async () => {
+    const { loomId, episodeId } = await setup();
+    await updateLoom(loomId, {
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A pocket radio.',
+    });
+    runStagedLLM.mockResolvedValue({ content: generatedGraph(), runId: 'run-disconnected' });
+
+    await expect(weaveEpisode(loomId, episodeId))
+      .rejects.toMatchObject({ code: 'AI_RESPONSE_INVALID' });
+    expect((await getLoom(loomId)).episodes[0].nodes).toEqual([]);
+  });
+
+  it('persists the first helper invitation and its connected decision scenes', async () => {
+    const { loomId, episodeId } = await setup();
+    await updateLoom(loomId, {
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A pocket radio.',
+    });
+    const graph = generatedGraph();
+    graph.nodes[0].playbackMode = 'cut';
+    graph.nodes[0].audienceConnection = 'disconnected';
+    graph.nodes[0].transitions = [graph.nodes[0].transitions[0]];
+    graph.nodes[1].playbackMode = 'decision';
+    graph.nodes[1].audienceConnection = 'connected';
+    runStagedLLM.mockResolvedValue({ content: graph, runId: 'run-connected' });
+
+    const result = await weaveEpisode(loomId, episodeId);
+    expect(result.loom.episodes[0].nodes.map((node) => node.audienceConnection))
+      .toEqual(['disconnected', 'connected', 'disconnected']);
   });
 });
 
@@ -156,6 +189,19 @@ describe('branchNode', () => {
     runStagedLLM.mockResolvedValue({ content: { branches: [] }, runId: 'r' });
     await expect(branchNode(loomId, episodeId, withNode.episodes[0].nodes[0].id, {}))
       .rejects.toMatchObject({ code: 'AI_RESPONSE_INVALID' });
+  });
+
+  it('does not create audience branches while a helper story is disconnected', async () => {
+    const { loomId, episodeId } = await setup();
+    await updateLoom(loomId, {
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A pocket radio.',
+    });
+    const withNode = await addNode(loomId, episodeId, { title: 'Silent opening', audienceConnection: 'disconnected' });
+
+    await expect(branchNode(loomId, episodeId, withNode.episodes[0].nodes[0].id, {}))
+      .rejects.toMatchObject({ code: 'AUDIENCE_DISCONNECTED' });
+    expect(runStagedLLM).not.toHaveBeenCalled();
   });
 });
 
@@ -321,6 +367,32 @@ describe('playTurn', () => {
       action: 'move', resolvedBy: 'choice', narration: '', ended: true,
     });
     expect(result.node.id).toBe(insideId);
+    expect(runStagedLLM).not.toHaveBeenCalled();
+  });
+
+  it('locks typed audience input out while a helper channel is disconnected but permits canon advance', async () => {
+    const { loomId, episodeId, gate: originalGate, insideId } = await playSetup();
+    await updateLoom(loomId, {
+      participationMode: 'helper',
+      audienceCommunicationMedium: 'A pocket radio.',
+    });
+    await updateNode(loomId, episodeId, originalGate.id, {
+      playbackMode: 'cut', audienceConnection: 'disconnected',
+    });
+    await mutateLoom(loomId, (loom) => {
+      const gate = loom.episodes[0].nodes.find((node) => node.id === originalGate.id);
+      gate.transitions.push({ id: 'alternate-path', targetNodeId: insideId, intent: 'Choose a different route' });
+      return loom;
+    });
+    const gate = (await getLoom(loomId)).episodes[0].nodes.find((node) => node.id === originalGate.id);
+
+    await expect(playTurn(loomId, episodeId, { nodeId: gate.id, message: 'Can you hear me?' }))
+      .rejects.toMatchObject({ code: 'AUDIENCE_DISCONNECTED' });
+    const advanced = await playTurn(loomId, episodeId, {
+      nodeId: gate.id, transitionId: 'alternate-path',
+    });
+    expect(advanced).toMatchObject({ action: 'move', resolvedBy: 'graph' });
+    expect(advanced.node.id).toBe(insideId);
     expect(runStagedLLM).not.toHaveBeenCalled();
   });
 

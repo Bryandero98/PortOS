@@ -5,16 +5,16 @@ A loom progresses from a text teleplay, through storyboard stills, to rendered
 video clips without changing its graph. Each node is one comic-panel-like
 camera cut and one eventual video file. Automatic cuts play once and continue;
 decision nodes loop while the viewer chooses a path or gives free-text
-feedback. A loom holds one or more ordered episodes, and the Play surface can
+feedback—when that story's audience role permits it. A loom holds one or more ordered episodes, and the Play surface can
 rehearse the same experience at any of those three production stages.
 
 ## Concepts
 
 | Term | Meaning |
 |---|---|
-| **Loom** | A branching-narrative story (`loom-*`): name/logline/premise, scene `format`, optional `playSettings` pin, optional `universeId` + `seriesId` links, episodes. |
+| **Loom** | A branching-narrative story (`loom-*`): name/logline/premise, scene `format`, audience `participationMode`, helper `audienceCommunicationMedium`, optional `playSettings` pin, optional `universeId` + `seriesId` links, episodes. |
 | **Episode** | One playable graph (`ep-*`): title, synopsis (feeds generation), `startNodeId`, nodes. |
-| **Scene node** | One camera cut (`node-*`): teleplay/prose, image prompt/render, single-clip video prompt/render, camera movement, `playbackMode`, ending state, transitions. |
+| **Scene node** | One camera cut (`node-*`): teleplay/prose, image prompt/render, single-clip video prompt/render, camera movement, `playbackMode`, `audienceConnection`, ending state, transitions. |
 | **Transition** | An intent-labeled edge (`tr-*`): `intent`, `triggers` (example phrasings), spoiler-safe `description`, `targetNodeId`. |
 
 ## Playback contract
@@ -35,6 +35,27 @@ transitions, playback leaves the loop, and automatic cuts can resume.
 The deterministic validator rejects an automatic cut without exactly one next
 path. Legacy nodes default to `decision`; an upgrade therefore never starts
 auto-advancing an existing choice story without an author edit or reweave.
+
+## Audience participation
+
+Every loom chooses one of two roles:
+
+- **Helper (the new-story default and primary experience).** The protagonist
+  has independent agency. The audience enters the fiction as themselves and
+  advises the protagonist through a configured medium such as a radio,
+  telepathic link, magic device, or phone.
+- **Protagonist.** The audience directly chooses the protagonist's actions,
+  preserving classic choose-your-own-adventure behavior. Looms created before
+  this setting existed read as protagonist mode for compatibility.
+
+Helper stories annotate every scene with `audienceConnection`. The opening is
+passive canon (`disconnected`) until the story visibly activates the configured
+medium close to the beginning and invites the audience to participate. Only a
+`connected` scene may wait at a decision loop or accept typed input. If the
+medium is lost, stolen, broken, or jammed, disconnected scenes continue through
+their single automatic canon path until a later scene restores the connection.
+The graph validator flags helper episodes that never connect, connect too late,
+or expose a decision while disconnected.
 
 ## Surfaces
 
@@ -58,8 +79,8 @@ auto-advancing an existing choice story without an author edit or reweave.
   rendered decision nodes loop. At an episode ending the player continues to
   the next ordered episode, allowing a full loom/series read-through. Sessions
   are client-side state (restart is free; nothing persists server-side).
-- **Story settings drawer** — scene format (plus the rewrite pass), and the
-  narrator's provider/model/effort pin.
+- **Story settings drawer** — audience role and communication medium, scene
+  format (plus the rewrite pass), and the narrator's provider/model/effort pin.
 - **Series detail page** (`/pipeline/series/:seriesId`) — a "Branching
   narratives" card lists the looms linked to that series (counts + a link into
   the editor) and spawns a new one pre-linked to the series and its universe.
@@ -123,7 +144,8 @@ path) or `transitionId` (a path the reader named outright). The second lane
 resolves straight off the authored graph — no provider call, no wait — and
 answers `resolvedBy: 'choice'`. Tapping a chip and automatic cut advancement
 both send that cheap lane, so neither costs an LLM call. Only typed free text
-at a decision loop reaches `fableloom-play-turn`. Automatic nodes do not expose
+at an available decision loop reaches `fableloom-play-turn`. Automatic nodes
+and disconnected helper scenes do not expose
 the text box: their one path is production sequencing, not a viewer decision.
 
 Which provider maps typed input is the loom's own `playSettings`
@@ -136,7 +158,7 @@ in the request body beats both.
 | Stage | What it does |
 |---|---|
 | `fableloom-generate-series-plan` | Drafts the full series arc, ordered plot points, and side quests from the loom metadata, linked-universe canon, and episode outline. |
-| `fableloom-weave-episode` | Generates or reweaves a full episode as single-camera-cut nodes. The story writer/creative director chooses node and ending counts, marks automatic cuts vs decision loops, and assigns camera/video direction. A reweave sees and preserves the existing story graph while splitting multi-cut scenes. |
+| `fableloom-weave-episode` | Generates or reweaves a full episode as single-camera-cut nodes. The story writer/creative director chooses node and ending counts, establishes the configured audience role/medium near the opening, tracks connection availability, marks automatic cuts vs decision loops, and assigns camera/video direction. A reweave sees and preserves the existing story graph while splitting multi-cut scenes. |
 | `fableloom-branch-node` | Grows N new intent-labeled single-cut branches with playback and camera direction. |
 | `fableloom-play-turn` | Resolves one reader message: `move` through a matched transition or `stay` with in-world narration. |
 | `fableloom-review` | Story-editor critique (intent clarity, branch coherence, ending payoff) layered over the deterministic checks. |
@@ -144,8 +166,8 @@ in the request body beats both.
 
 Deterministic graph validation (no LLM) lives in
 `server/lib/fableLoomGraph.js` — reachability from the opening scene, dead
-ends, dangling transitions, unreachable endings, duplicate/empty intents, and
-the exactly-one-next-path contract for automatic cuts —
+ends, dangling transitions, unreachable endings, duplicate/empty intents,
+audience-connection availability, and the exactly-one-next-path contract for automatic cuts —
 and renders in the editor's Structure panel via
 `GET /api/fableloom/:id/episodes/:episodeId/validate`.
 

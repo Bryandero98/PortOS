@@ -28,6 +28,7 @@ import { isTeleplayFormat } from './loomFormats';
 import LoomSceneMedia from './LoomSceneMedia';
 import { FABLELOOM_CAMERA_MOVEMENTS } from '../../../../server/lib/fableLoomCameraMovements.js';
 import { FABLELOOM_PLAYBACK_MODES } from '../../../../server/lib/fableLoomPlayback.js';
+import { FABLELOOM_AUDIENCE_CONNECTION_STATES } from '../../../../server/lib/fableLoomParticipation.js';
 
 const toRow = (t) => ({ ...t, triggersText: (t.triggers || []).join('; ') });
 const rowToPatch = ({ targetNodeId, intent, triggersText, description }) => ({
@@ -65,6 +66,7 @@ export default function LoomNodeEditor({
       videoPrompt: node.videoPrompt || '',
       cameraMovement: node.cameraMovement || '',
       playbackMode: node.playbackMode || 'decision',
+      audienceConnection: node.audienceConnection || 'disconnected',
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
       transitions: (node.transitions || []).map(toRow),
@@ -205,6 +207,8 @@ export default function LoomNodeEditor({
 
   if (!form) return null;
   const aiBlocked = pendingSaves > 0;
+  const helperMode = loom.participationMode === 'helper';
+  const audienceConnected = !helperMode || form.audienceConnection === 'connected';
 
   return (
     <div className="space-y-4 p-4">
@@ -265,12 +269,43 @@ export default function LoomNodeEditor({
           }}
         >
           {FABLELOOM_PLAYBACK_MODES.map((mode) => (
-            <option key={mode} value={mode}>
+            <option key={mode} value={mode} disabled={helperMode && !audienceConnected && mode === 'decision'}>
               {mode === 'cut' ? 'Automatic cut — play once, then advance' : 'Decision point — loop while awaiting input'}
             </option>
           ))}
         </select>
       </FormField>
+
+      {helperMode && (
+        <FormField label="Audience connection" labelClassName={labelClass}>
+          <select
+            className={fieldClass}
+            aria-label="Audience connection"
+            value={form.audienceConnection}
+            onChange={(event) => {
+              const audienceConnection = event.target.value;
+              const nextPlaybackMode = audienceConnection === 'disconnected' ? 'cut' : form.playbackMode;
+              setForm((current) => ({
+                ...current,
+                audienceConnection,
+                playbackMode: nextPlaybackMode,
+              }));
+              patchNode({ audienceConnection, playbackMode: nextPlaybackMode });
+            }}
+          >
+            {FABLELOOM_AUDIENCE_CONNECTION_STATES.map((state) => (
+              <option key={state} value={state}>
+                {state === 'connected' ? 'Connected — audience can help' : 'Disconnected — passive canon only'}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-port-text-muted mt-1">
+            {form.audienceConnection === 'connected'
+              ? `The protagonist can hear the audience through ${loom.audienceCommunicationMedium || 'the configured medium'}.`
+              : 'The audience watches but cannot choose until the communication medium is activated or restored.'}
+          </p>
+        </FormField>
+      )}
 
       <div className="flex items-center gap-3">
         <label className="flex items-center gap-2 text-sm" htmlFor="loom-node-ending">
@@ -366,7 +401,8 @@ export default function LoomNodeEditor({
             <button
               type="button"
               onClick={runBranch}
-              disabled={branching || aiBlocked}
+              disabled={branching || aiBlocked || !audienceConnected}
+              title={!audienceConnected ? 'Connect the audience communication medium before adding decision branches' : undefined}
               className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50"
             >
               {branching ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />}

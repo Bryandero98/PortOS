@@ -19,6 +19,7 @@ import MediaImage from '../MediaImage';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { playLoomTurn } from '../../services/api';
 import { sceneProseClass } from './fieldStyles';
+import { audienceCanParticipate } from '../../../../server/lib/fableLoomParticipation.js';
 
 const findNode = (episode, id) => episode?.nodes.find((n) => n.id === id) || null;
 const hasPlayableStart = (episode) => !!findNode(episode, episode?.startNodeId);
@@ -33,6 +34,7 @@ const asPublic = (node) => (node ? {
   image: node.image,
   videoHistoryId: node.videoHistoryId,
   playbackMode: node.playbackMode || 'decision',
+  audienceConnection: node.audienceConnection || 'disconnected',
   isEnding: !!node.isEnding,
   endingLabel: node.endingLabel,
   choices: (node.transitions || []).map((t) => ({ id: t.id, intent: t.intent })),
@@ -63,7 +65,10 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   // Mirrors the server's terminal rule: an ending, or a dead-end scene with
   // no paths out, ends the read-through.
   const ended = !!scene && (scene.isEnding || !scene.choices?.length);
-  const automaticCut = !!scene && !scene.isEnding && scene.playbackMode === 'cut' && scene.choices?.length === 1;
+  const audienceConnected = audienceCanParticipate(loom, scene);
+  const automaticCut = !!scene && !scene.isEnding
+    && scene.choices?.length > 0
+    && (!audienceConnected || (scene.playbackMode === 'cut' && scene.choices.length === 1));
 
   const restart = () => {
     setScene(start);
@@ -172,8 +177,9 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           if (turn.role === 'scene') {
             if (previewMode === 'video' || i === latestSceneTurnIndex) return null;
             const historicalCut = !turn.node.isEnding
-              && turn.node.playbackMode === 'cut'
-              && turn.node.choices?.length === 1;
+              && turn.node.choices?.length > 0
+              && (!audienceCanParticipate(loom, turn.node)
+                || (turn.node.playbackMode === 'cut' && turn.node.choices.length === 1));
             return (
               <SceneCard
                 key={i}
@@ -181,6 +187,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
                 format={loom.format}
                 previewMode={previewMode}
                 automaticCut={historicalCut}
+                helperMode={loom.participationMode === 'helper'}
               />
             );
           }
@@ -205,6 +212,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           previewMode={previewMode}
           onCutEnded={advanceCut}
           automaticCut={automaticCut}
+          helperMode={loom.participationMode === 'helper'}
           videoFailed={failedVideoId === scene.videoHistoryId}
           onVideoError={() => setFailedVideoId(scene.videoHistoryId)}
         />
@@ -216,7 +224,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
         )}
       </div>
       <div className="border-t border-port-border p-3 space-y-2">
-        {!ended && !automaticCut && scene?.choices?.length > 0 && (
+        {!ended && audienceConnected && !automaticCut && scene?.choices?.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {scene.choices.filter((c) => c.intent).map((c) => (
               <button
@@ -254,10 +262,17 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
             </button>
           </div>
         )}
-        {!automaticCut && <div className="flex gap-2">
+        {!ended && !audienceConnected && (
+          <p className="text-xs text-port-text-muted" role="status">
+            Connection unavailable — the story follows its canon path until {loom.audienceCommunicationMedium || 'the audience channel'} is restored.
+          </p>
+        )}
+        {!automaticCut && (ended || audienceConnected) && <div className="flex gap-2">
           <input
             className="flex-1 bg-port-bg border border-port-border rounded px-3 py-2 text-sm"
-            placeholder={ended ? 'The story has ended' : 'What do you do?'}
+            placeholder={ended
+              ? 'The story has ended'
+              : loom.participationMode === 'helper' ? 'What do you tell the protagonist?' : 'What do you do?'}
             aria-label="Your action"
             value={message}
             disabled={ended || sending}
@@ -291,7 +306,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
 
 function SceneCard({
   node, isOpening = false, format, previewMode, onCutEnded, automaticCut,
-  videoFailed = false, onVideoError,
+  helperMode = false, videoFailed = false, onVideoError,
 }) {
   if (!node) return null;
   const showVideo = previewMode === 'video' && node.videoHistoryId && !videoFailed;
@@ -329,7 +344,13 @@ function SceneCard({
         )}
         {!node.isEnding && (
           <p className="mt-2 text-xs text-port-text-muted">
-            {automaticCut ? 'Automatic cut' : 'Decision loop — waits for viewer input'}
+            {automaticCut
+              ? 'Automatic cut'
+              : helperMode && node.audienceConnection !== 'connected'
+                ? 'Canon path — audience disconnected'
+                : node.audienceConnection === 'connected'
+                  ? 'Audience connected — waits for input'
+                  : 'Decision loop — waits for viewer input'}
           </p>
         )}
       </div>
