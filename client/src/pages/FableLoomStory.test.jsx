@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import userEvent from '@testing-library/user-event';
 
-const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), warning: vi.fn() }));
 vi.mock('../components/ui/Toast', () => ({ default: toastMocks }));
 
 vi.mock('../services/api', () => ({
@@ -33,6 +33,15 @@ vi.mock('../components/fableloom/LoomCanvas', () => ({
       >
         Canvas generate image
       </button>
+      {episode.nodes[1] && (
+        <button
+          type="button"
+          disabled={generationDisabled}
+          onClick={() => onGenerateImage(episode.nodes[1])}
+        >
+          Canvas generate second image
+        </button>
+      )}
       <span data-testid="canvas-image-status">{mediaJobs[episode.nodes[0].id]?.image?.status || 'idle'}</span>
       <span data-testid="canvas-image-filename">{episode.nodes[0].image || 'none'}</span>
     </div>
@@ -253,5 +262,77 @@ describe('FableLoomStory scene media lifecycle', () => {
       .toHaveTextContent('finished-scene.png'));
     expect(screen.getByTestId('canvas-image-status')).toHaveTextContent('idle');
     expect(toastMocks.success).toHaveBeenCalledWith('Scene image ready');
+  });
+
+  it('passes the rendered incoming shot into the next scene image request', async () => {
+    const user = userEvent.setup();
+    api.getLoom.mockResolvedValue(loom({
+      episodes: [episode({
+        nodes: [
+          {
+            id: 'node-1',
+            title: 'Threshold',
+            imagePrompt: 'an ancient gate',
+            image: 'threshold.png',
+            transitions: [{ id: 'tr-1', targetNodeId: 'node-2', intent: 'Continue' }],
+          },
+          {
+            id: 'node-2',
+            title: 'Beyond',
+            imagePrompt: 'the same scout crosses into the observatory',
+            transitions: [],
+          },
+        ],
+      })],
+    }));
+    api.generateImage.mockResolvedValue({ jobId: 'image-job-2', status: 'queued' });
+    renderEditor();
+
+    await user.click(await screen.findByRole('button', { name: 'Canvas generate second image' }));
+
+    await waitFor(() => expect(api.generateImage).toHaveBeenCalledWith({
+      prompt: 'the same scout crosses into the observatory',
+      initImageFile: 'threshold.png',
+      initImageStrength: 0.4,
+      fableLoom: { loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-2' },
+    }, { silent: true }));
+  });
+
+  it('retries without continuity when the configured backend cannot accept the prior shot', async () => {
+    const user = userEvent.setup();
+    api.getLoom.mockResolvedValue(loom({
+      episodes: [episode({
+        nodes: [
+          {
+            id: 'node-1',
+            image: 'threshold.png',
+            transitions: [{ id: 'tr-1', targetNodeId: 'node-2', intent: 'Continue' }],
+          },
+          {
+            id: 'node-2',
+            imagePrompt: 'the scout enters the observatory',
+            transitions: [],
+          },
+        ],
+      })],
+    }));
+    api.generateImage
+      .mockRejectedValueOnce(Object.assign(new Error('Text-to-image only'), {
+        code: 'IMAGE_EDIT_UNSUPPORTED_MODE',
+      }))
+      .mockResolvedValueOnce({ jobId: 'image-job-fallback', status: 'queued' });
+    renderEditor();
+
+    await user.click(await screen.findByRole('button', { name: 'Canvas generate second image' }));
+
+    await waitFor(() => expect(api.generateImage).toHaveBeenCalledTimes(2));
+    expect(api.generateImage.mock.calls[0][0]).toMatchObject({ initImageFile: 'threshold.png' });
+    expect(api.generateImage.mock.calls[1]).toEqual([{
+      prompt: 'the scout enters the observatory',
+      fableLoom: { loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-2' },
+    }, { silent: true }]);
+    expect(toastMocks.warning).toHaveBeenCalledWith(
+      'The current image backend cannot use the prior shot — rendering this scene without continuity conditioning',
+    );
   });
 });

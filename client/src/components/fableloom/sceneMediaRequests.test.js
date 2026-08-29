@@ -17,6 +17,45 @@ describe('FableLoom scene media request composition', () => {
     });
   });
 
+  it('conditions an image on its rendered direct predecessor, not an unrelated adjacent scene', () => {
+    const target = { id: 'node-3', imagePrompt: 'the scout enters a crystal observatory' };
+    const episode = {
+      nodes: [
+        { id: 'node-unrelated', image: 'nearby.png', transitions: [] },
+        {
+          id: 'node-1',
+          image: 'prior-shot.png',
+          transitions: [{ id: 'tr-1', targetNodeId: target.id }],
+        },
+        target,
+      ],
+    };
+
+    expect(buildFableLoomImageRequest({ loom, episode, episodeId: 'ep-1', node: target }))
+      .toMatchObject({
+        initImageFile: 'prior-shot.png',
+        initImageStrength: 0.4,
+      });
+  });
+
+  it('keeps an opening scene text-to-image when a loop points back to it', () => {
+    const opening = { id: 'node-1', imagePrompt: 'the opening shot', transitions: [] };
+    const episode = {
+      startNodeId: opening.id,
+      nodes: [
+        opening,
+        {
+          id: 'node-ending',
+          image: 'finale.png',
+          transitions: [{ id: 'tr-loop', targetNodeId: opening.id }],
+        },
+      ],
+    };
+
+    expect(buildFableLoomImageRequest({ loom, episode, episodeId: 'ep-1', node: opening }))
+      .not.toHaveProperty('initImageFile');
+  });
+
   it('builds image-to-video direction from the shared camera vocabulary', () => {
     expect(buildFableLoomVideoRequest({
       loom,

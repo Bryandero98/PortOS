@@ -45,6 +45,11 @@ import {
   weaveLoomEpisode,
 } from '../services/api';
 
+const CONTINUITY_FALLBACK_CODES = new Set([
+  'IMAGE_EDIT_UNSUPPORTED_MODE',
+  'INIT_IMAGE_NOT_FOUND',
+]);
+
 export default function FableLoomStory({ view = 'graph' }) {
   const { loomId, episodeId, nodeId } = useParams();
   const navigate = useNavigate();
@@ -221,16 +226,33 @@ export default function FableLoomStory({ view = 'graph' }) {
     }
 
     setSceneMediaJob(targetNode.id, 'image', { jobId: null, status: 'submitting', progress: 0 });
-    const queued = await generateImage(buildFableLoomImageRequest({
-      loom, episodeId, node: targetNode, stylePreset: sceneStylePreset,
-    }), { silent: true }).catch((err) => {
-      setSceneMediaJob(targetNode.id, 'image', {
-        jobId: null, status: 'failed', progress: 0, error: err.message || 'Could not start the render',
-      });
-      toast.error(`Could not start scene image: ${err.message || 'Render request failed'}`);
-      return null;
+    const imageRequest = (includeContinuity) => buildFableLoomImageRequest({
+      loom,
+      episode: includeContinuity ? episode : null,
+      episodeId,
+      node: targetNode,
+      stylePreset: sceneStylePreset,
     });
+    let continuityFallbackCode = null;
+    const queued = await generateImage(imageRequest(true), { silent: true })
+      .catch((err) => {
+        if (!CONTINUITY_FALLBACK_CODES.has(err.code)) throw err;
+        continuityFallbackCode = err.code;
+        return generateImage(imageRequest(false), { silent: true });
+      })
+      .catch((err) => {
+        setSceneMediaJob(targetNode.id, 'image', {
+          jobId: null, status: 'failed', progress: 0, error: err.message || 'Could not start the render',
+        });
+        toast.error(`Could not start scene image: ${err.message || 'Render request failed'}`);
+        return null;
+      });
     if (!queued) return null;
+    if (continuityFallbackCode) {
+      toast.warning(continuityFallbackCode === 'INIT_IMAGE_NOT_FOUND'
+        ? 'The prior shot image is missing — rendering this scene without continuity conditioning'
+        : 'The current image backend cannot use the prior shot — rendering this scene without continuity conditioning');
+    }
     // External SD-API renders synchronously: its generationId identifies the
     // completed request, not a media-job record. The server has already filed
     // the image onto the scene, so swap the preview immediately and do not
@@ -259,7 +281,7 @@ export default function FableLoomStory({ view = 'graph' }) {
     });
     toast.success('Scene image queued');
     return queued;
-  }, [applySceneMedia, episodeId, generationDisabledReason, loom, sceneStylePreset, setSceneMediaJob, styleContextLoading, styleContextUnavailable]);
+  }, [applySceneMedia, episode, episodeId, generationDisabledReason, loom, sceneStylePreset, setSceneMediaJob, styleContextLoading, styleContextUnavailable]);
 
   const queueSceneVideo = useCallback(async (targetNode) => {
     const prompt = (targetNode?.videoPrompt || '').trim() || (targetNode?.prose || '').trim();

@@ -5,6 +5,8 @@
  * page owner. Keeping request composition here makes their image/video prompts
  * identical: the canonical universe/series style preset leads, the scene owns
  * the subject/action, and loom-local direction remains an explicit suffix.
+ * Image generation also conditions on a rendered direct predecessor when one
+ * exists, preserving visual continuity across adjacent graph shots.
  */
 
 import { composeStyledPrompt } from '../../lib/composeStyledPrompt';
@@ -15,12 +17,40 @@ const withLoomStyle = (prompt, styleNotes) => {
   return notes ? `${prompt}\n\nStyle: ${notes}` : prompt;
 };
 
-export function buildFableLoomImageRequest({ loom, episodeId, node, stylePreset = null }) {
+// Match Image Gen's established i2i default: strong enough to carry likeness
+// and environment forward without pinning the next shot to the same pose.
+export const FABLELOOM_CONTINUITY_STRENGTH = 0.4;
+
+/**
+ * Resolve the still from a direct incoming graph neighbor. Storage order is
+ * the deterministic tie-break at a convergence because a shared target node
+ * has no active reader path while it is being authored. Self-loops never seed
+ * themselves, and unrelated adjacent array entries are not "prior" shots.
+ */
+export function findFableLoomPriorImage(episode, nodeId) {
+  const nodes = Array.isArray(episode?.nodes) ? episode.nodes : [];
+  if (!nodeId || episode?.startNodeId === nodeId) return null;
+  const predecessor = nodes.find((candidate) => (
+    candidate?.id !== nodeId
+    && typeof candidate?.image === 'string'
+    && candidate.image.trim()
+    && Array.isArray(candidate.transitions)
+    && candidate.transitions.some((transition) => transition?.targetNodeId === nodeId)
+  ));
+  return predecessor?.image.trim() || null;
+}
+
+export function buildFableLoomImageRequest({ loom, episode, episodeId, node, stylePreset = null }) {
   const authoredPrompt = withLoomStyle((node?.imagePrompt || '').trim(), loom?.styleNotes);
   const styled = composeStyledPrompt(authoredPrompt, '', stylePreset);
+  const priorImage = findFableLoomPriorImage(episode, node?.id);
   return {
     prompt: styled.prompt,
     ...(styled.negativePrompt ? { negativePrompt: styled.negativePrompt } : {}),
+    ...(priorImage ? {
+      initImageFile: priorImage,
+      initImageStrength: FABLELOOM_CONTINUITY_STRENGTH,
+    } : {}),
     fableLoom: { loomId: loom.id, episodeId, nodeId: node.id },
   };
 }
