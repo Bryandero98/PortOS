@@ -207,7 +207,9 @@ describe('FableLoomStory mobile scene details', () => {
     expect(sheet).toHaveClass('absolute', 'bottom-0', 'rounded-t-2xl', 'lg:static');
     expect(screen.getByText('Editing scene: Threshold')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Close scene details' }));
+    const close = screen.getByRole('button', { name: 'Close scene details' });
+    expect(close).toHaveClass('min-h-[56px]', 'min-w-[56px]');
+    await user.click(close);
 
     await waitFor(() => expect(screen.queryByTestId('scene-details-sheet')).not.toBeInTheDocument());
     expect(screen.getByTestId('loom-validation-rail')).toBeInTheDocument();
