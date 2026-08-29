@@ -4,8 +4,14 @@ import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import { partialWithoutDefaults } from '../lib/zodCompat.js';
-import { ideaLoomListInputSchema, ideaLoomSettingsInputSchema } from '../lib/brainValidation.js';
+import {
+  ideaLoomImportInputSchema,
+  ideaLoomListInputSchema,
+  ideaLoomSettingsInputSchema,
+  ideaLoomSyncInputSchema,
+} from '../lib/brainValidation.js';
 import * as ideaLoomLists from '../services/idealoomLists.js';
+import * as ideaLoomObsidian from '../services/idealoomObsidian.js';
 
 const router = Router();
 
@@ -16,6 +22,16 @@ router.get('/ideas/idealoom/settings', asyncHandler(async (_req, res) => {
 router.put('/ideas/idealoom/settings', asyncHandler(async (req, res) => {
   const updates = validateRequest(partialWithoutDefaults(ideaLoomSettingsInputSchema), req.body);
   res.json(await ideaLoomLists.updateSettings(updates));
+}));
+
+router.post('/ideas/idealoom/import', asyncHandler(async (req, res) => {
+  validateRequest(ideaLoomImportInputSchema, req.body);
+  res.json(await ideaLoomObsidian.importFromObsidian());
+}));
+
+router.post('/ideas/idealoom/sync', asyncHandler(async (req, res) => {
+  const { listId } = validateRequest(ideaLoomSyncInputSchema, req.body);
+  res.json(await ideaLoomObsidian.exportToObsidian({ listId }));
 }));
 
 router.get('/ideas/idealoom/lists', asyncHandler(async (_req, res) => {

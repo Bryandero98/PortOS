@@ -129,6 +129,12 @@ export const updateIdeaLoomList = (id, data, options = {}) => request(`/brain/id
 export const deleteIdeaLoomList = (id, options = {}) => request(`/brain/ideas/idealoom/lists/${id}`, {
   method: 'DELETE', ...options
 });
+export const importIdeaLoomFromObsidian = (options = {}) => request('/brain/ideas/idealoom/import', {
+  method: 'POST', body: JSON.stringify({}), ...options
+});
+export const syncIdeaLoomToObsidian = (listId, options = {}) => request('/brain/ideas/idealoom/sync', {
+  method: 'POST', body: JSON.stringify(listId ? { listId } : {}), ...options
+});
 
 // Brain - Admin
 export const getBrainAdmin = (filters) => {

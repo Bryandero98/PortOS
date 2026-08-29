@@ -2437,13 +2437,24 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/brain/ideas/idealoom/import",
+      "mountPath": "/api/brain",
+      "sources": [
+        {
+          "source": "server/routes/brainIdeaLoom.js",
+          "line": 27
+        }
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/brain/ideas/idealoom/lists",
       "mountPath": "/api/brain",
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 21
+          "line": 37
         }
       ]
     },
@@ -2454,7 +2465,7 @@
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 25
+          "line": 41
         }
       ]
     },
@@ -2465,7 +2476,7 @@
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 43
+          "line": 59
         }
       ]
     },
@@ -2476,7 +2487,7 @@
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 30
+          "line": 46
         }
       ]
     },
@@ -2487,7 +2498,7 @@
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 36
+          "line": 52
         }
       ]
     },
@@ -2498,7 +2509,7 @@
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 12
+          "line": 18
         }
       ]
     },
@@ -2509,7 +2520,18 @@
       "sources": [
         {
           "source": "server/routes/brainIdeaLoom.js",
-          "line": 16
+          "line": 22
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/brain/ideas/idealoom/sync",
+      "mountPath": "/api/brain",
+      "sources": [
+        {
+          "source": "server/routes/brainIdeaLoom.js",
+          "line": 32
         }
       ]
     },
@@ -23125,8 +23147,8 @@
   ],
   "stats": {
     "mounts": 145,
-    "operations": 2086,
-    "declarations": 2089,
+    "operations": 2088,
+    "declarations": 2091,
     "sourceFiles": 225
   }
 }

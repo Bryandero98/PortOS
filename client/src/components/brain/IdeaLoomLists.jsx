@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, CheckCircle2, Plus, Save, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, Download, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
@@ -49,6 +49,8 @@ export default function IdeaLoomLists() {
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState(null);
   const [ideaText, setIdeaText] = useState('');
+  const [exchangeBusy, setExchangeBusy] = useState(false);
+  const [exchangeResult, setExchangeResult] = useState(null);
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
 
   const select = useCallback((id) => updateParams({ list: id }), [updateParams]);
@@ -126,6 +128,22 @@ export default function IdeaLoomLists() {
     setIdeaText('');
   };
 
+  const runExchange = async (action, successMessage) => {
+    setExchangeBusy(true);
+    const result = await action().catch((error) => {
+      toast.error(error.message || 'IdeaLoom exchange failed');
+      return null;
+    });
+    setExchangeBusy(false);
+    if (!result) return;
+    const counts = result.counts || result;
+    setExchangeResult(counts);
+    const problems = ['conflicted', 'malformed', 'unavailable', 'failed'].reduce((total, key) => total + (counts[key] || 0), 0);
+    if (problems) toast.error(`${successMessage} with ${problems} issue${problems === 1 ? '' : 's'}`);
+    else toast.success(successMessage);
+    await load();
+  };
+
   if (loading) return <p className="py-8 text-center text-gray-500">Loading IdeaLoom lists…</p>;
 
   return (
@@ -136,6 +154,11 @@ export default function IdeaLoomLists() {
           <button type="button" onClick={() => { setDraft(emptyList()); select(null); }} className="min-h-[44px] rounded px-3 text-sm text-port-accent hover:bg-port-accent/10" aria-label="Create IdeaLoom list"><Plus size={16} /></button>
         </div>
         {notice && <p role="status" className="mb-3 rounded bg-port-warning/10 p-2 text-xs text-port-warning">{notice}</p>}
+        {!notice && <div className="mb-3 flex flex-wrap gap-2">
+          <button type="button" disabled={exchangeBusy} onClick={() => runExchange(() => api.importIdeaLoomFromObsidian({ silent: true }), 'IdeaLoom import complete')} className="flex min-h-[44px] items-center gap-2 rounded border border-port-border px-3 text-xs text-gray-300 hover:bg-port-border/50 disabled:opacity-50"><Download size={14} />Import from Obsidian</button>
+          <button type="button" disabled={exchangeBusy} onClick={() => runExchange(() => api.syncIdeaLoomToObsidian(null, { silent: true }), 'IdeaLoom export complete')} className="flex min-h-[44px] items-center gap-2 rounded border border-port-border px-3 text-xs text-gray-300 hover:bg-port-border/50 disabled:opacity-50"><Upload size={14} />Export to Obsidian</button>
+        </div>}
+        {exchangeResult && <p role="status" className="mb-3 text-xs text-gray-400">Last exchange: {exchangeResult.imported || 0} imported · {exchangeResult.exported || 0} exported · {exchangeResult.skipped || 0} skipped · {exchangeResult.conflicted || 0} conflicted · {exchangeResult.malformed || 0} malformed · {exchangeResult.unavailable || 0} unavailable · {exchangeResult.failed || 0} failed</p>}
         <div className="space-y-1">
           {lists.map((list) => <button key={list.id} type="button" onClick={() => select(list.id)} className={`w-full rounded p-3 text-left ${selected?.id === list.id ? 'bg-port-accent/20 text-white' : 'text-gray-300 hover:bg-port-border/50'}`}>
             <span className="block truncate text-sm font-medium">{list.title}</span><span className="text-xs text-gray-500">{list.status === 'completed' ? 'Completed' : 'Draft'} · {(list.ideas || []).length} ideas</span>
