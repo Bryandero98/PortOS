@@ -65,6 +65,16 @@ a hangup.
 `Caller` and `PortOS`. The call audio is never persisted, and the configured
 handle never appears in the transcript or its metadata.
 
+**Calls PortOS places on its own.** Two opt-in paths can dial without you
+asking: the Persistent Mind's `voice.call-user` grant, and the
+critical-notification escalation in **Settings → Voice**. Both are off by
+default and share one gate and one budget — never while a browser tab can speak
+the message, never inside voice quiet hours, at most 3 calls per rolling 24
+hours and at least 30 minutes apart, counted in durable state so a restart
+cannot reset them. Escalation additionally fires only for a `critical`
+notification that is *still unread* after `escalateAfterMinutes`. See
+[Chief of Staff enhancement → Persistent Mind phone calls](./cos-enhancement.md#persistent-mind-phone-calls).
+
 ### Why Kokoro is the default
 
 Kokoro is a 82M-parameter frontier TTS model that runs in-process via ONNX Runtime + transformers.js — **no Python, no extra binaries, cross-platform**. Quality is significantly higher than Piper (more natural prosody, expressive pacing). First synthesis after server start has a 2–3 s cold start as the model loads; warm calls are 200–500 ms per sentence on CPU.

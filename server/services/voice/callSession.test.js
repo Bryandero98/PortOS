@@ -13,6 +13,7 @@ import {
   attachHost,
   detachHost,
   endCall,
+  getCallContext,
   getCallState,
   markSpeaking,
   noteCallerSpeech,
@@ -20,6 +21,7 @@ import {
   recordTurn,
   setCallStateListener,
   startCall,
+  takeCallOpeningLine,
 } from './callSession.js';
 
 const socket = (id = 'host-1') => ({ id, connected: true, emit: vi.fn() });
@@ -29,6 +31,7 @@ let probe;
 let call;
 let hangup;
 let appendJournal;
+let enqueueMindMessage;
 
 const install = (overrides = {}) => {
   clock = 1_000_000;
@@ -36,7 +39,8 @@ const install = (overrides = {}) => {
   call = vi.fn().mockResolvedValue({ state: 'dialing' });
   hangup = vi.fn().mockResolvedValue({ state: 'ended' });
   appendJournal = vi.fn().mockResolvedValue({});
-  __setCallSessionDeps({ probe, call, hangup, appendJournal, now: () => clock, ...overrides });
+  enqueueMindMessage = vi.fn().mockResolvedValue({ success: true });
+  __setCallSessionDeps({ probe, call, hangup, appendJournal, enqueueMindMessage, now: () => clock, ...overrides });
 };
 
 beforeEach(() => {
@@ -256,5 +260,82 @@ describe('FaceTime call session', () => {
   it('ignores turns recorded outside a call', () => {
     expect(recordTurn('caller', 'nobody is listening')).toMatchObject({ turns: 0 });
     expect(noteCallerSpeech()).toMatchObject({ active: false });
+  });
+
+  it('hands the opening line over exactly once, however often state is broadcast', async () => {
+    // `voice:call:state` is a broadcast and fires on every transition, so a
+    // non-consuming read would make the call host say the line twice.
+    attachHost(socket());
+    await startCall({ openingLine: '  This is PortOS about your backups.  ', origin: 'mind' });
+
+    expect(takeCallOpeningLine()).toBe('This is PortOS about your backups.');
+    expect(takeCallOpeningLine()).toBe('');
+  });
+
+  it('carries a mind briefing only for the call the mind placed', async () => {
+    attachHost(socket());
+    await startCall({ openingLine: 'Hello', context: '# Persistent mind identity', origin: 'mind' });
+    expect(getCallContext()).toBe('# Persistent mind identity');
+
+    await endCall('remote-hangup');
+    // No call, no briefing — the pipeline must not keep applying it to the
+    // widget's ordinary turns.
+    expect(getCallContext()).toBeNull();
+
+    await startCall({ openingLine: 'Hello' });
+    expect(getCallContext()).toBeNull();
+  });
+
+  it('gives a mind-placed call back to the mind as a message, and a user call not at all', async () => {
+    attachHost(socket());
+    await startCall({ openingLine: 'This is PortOS.', origin: 'mind' });
+    probe.mockResolvedValue({ state: 'connected' });
+    await pollCall();
+    recordTurn('assistant', 'This is PortOS.');
+    recordTurn('caller', 'Got it, thanks.');
+
+    await endCall('caller-silent');
+
+    expect(enqueueMindMessage).toHaveBeenCalledTimes(1);
+    const [text] = enqueueMindMessage.mock.calls[0];
+    expect(text).toContain('caller-silent');
+    expect(text).toContain('Caller: Got it, thanks.');
+
+    enqueueMindMessage.mockClear();
+    attachHost(socket());
+    await startCall();
+    recordTurn('caller', 'Just me calling in.');
+    await endCall('remote-hangup');
+    expect(enqueueMindMessage).not.toHaveBeenCalled();
+    expect(appendJournal).toHaveBeenCalledTimes(2);
+  });
+
+  it('tells the mind about a call nobody picked up', async () => {
+    // An empty transcript is the one case where silence is the news: without
+    // this the mind would never learn the call went unanswered and could dial
+    // again to say the same thing.
+    attachHost(socket());
+    await startCall({ openingLine: 'This is PortOS.', origin: 'mind' });
+
+    await endCall('caller-silent');
+
+    expect(enqueueMindMessage).toHaveBeenCalledTimes(1);
+    expect(enqueueMindMessage.mock.calls[0][0]).toContain('nothing said');
+    expect(appendJournal).not.toHaveBeenCalled();
+  });
+
+  it('still ends cleanly when the mind handoff fails', async () => {
+    // The handoff is telemetry for the next wake; losing it must not strand the
+    // session in a state that blocks the next call.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    enqueueMindMessage.mockRejectedValue(new Error('mind queue full'));
+    attachHost(socket());
+    await startCall({ openingLine: 'Hello', origin: 'mind' });
+    recordTurn('caller', 'Hi');
+
+    await endCall('remote-hangup');
+
+    expect(getCallState()).toMatchObject({ state: 'idle', active: false });
+    consoleError.mockRestore();
   });
 });
