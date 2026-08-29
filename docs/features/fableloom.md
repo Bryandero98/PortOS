@@ -217,16 +217,20 @@ branch convergence, is specified in
 ## Storage
 
 `fableloom_stories` (db-primary; one row per loom, full record in `data`
-JSONB, `universe_id`/`series_id` mirrored as soft refs). **Machine-local — no
-federation**: no dataSync category, no sync cursor, hard deletes (same posture
-as Games / Writers Room). Service: `server/services/fableLoom/` (records /
-weave / store / db); routes: `server/routes/fableLoom.js` (`/api/fableloom`).
+JSONB, `universe_id`/`series_id` mirrored as soft refs). The opt-in
+**FableLoom** sharing category uses per-record peer subscriptions rather than
+the snapshot loop: creates auto-subscribe to eligible peers, edits push the
+whole sanitized loom under LWW, and deletes travel as tombstones. Scene image
+and video bytes ride hashed asset manifests; true three-way story conflicts
+archive the losing local version for restore from Sharing > Conflicts. Service:
+`server/services/fableLoom/` (records / weave / store / db); routes:
+`server/routes/fableLoom.js` (`/api/fableloom`).
 
 ## Relationship to the series pipeline
 
 A loom can *link* to a pipeline series (`seriesId`) but is its own record
 type — branching narratives don't run the linear issue/stage pipeline
-(manuscript formats, autopilot, federation semantics don't apply to a graph).
+(manuscript formats and linear-stage autopilot don't apply to a graph).
 There is deliberately **no `seriesType: 'branching'` enum** on
 `pipeline_series`: a scene graph has no linear stage chain, and a type enum
 would force a special case into every pipeline surface. The integration is a

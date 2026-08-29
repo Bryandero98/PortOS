@@ -26,19 +26,29 @@ vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 const {
   LOOM_LIMITS, addEpisode, addNode, addNodeTransition, attachNodeImage, attachNodeVideo, createLoom,
   deleteEpisode, deleteLoom, deleteNode, deleteNodeTransition, getLoom,
-  listLooms, listLoomSummaries, sanitizeLoom, updateEpisode, updateLoom,
+  listLooms, listLoomSummaries, mergeLoomsFromSync, pruneTombstonedLooms,
+  restoreLoom, sanitizeLoom, updateEpisode, updateLoom,
   updateNode, updateNodeTransition,
 } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
+const conflictJournal = await import('../../lib/conflictJournal.js');
+const { registerSubscriptionAdapter, __resetSubscriptionAdapter } = await import('../sharing/recordEvents.js');
+const autoSubscribeMock = vi.fn(async () => []);
 
 beforeEach(() => {
   rmSync(join(TEST_DATA_ROOT, 'fableloom'), { recursive: true, force: true });
+  rmSync(join(TEST_DATA_ROOT, 'sharing'), { recursive: true, force: true });
+  rmSync(join(TEST_DATA_ROOT, 'conflict-journal'), { recursive: true, force: true });
+  conflictJournal.__resetBaseHashCacheForTests();
   _resetFableLoomBackend();
   getUniverseMock.mockClear().mockImplementation(async (id) => ({ id }));
   getSeriesMock.mockClear().mockImplementation(async (id) => ({ id }));
+  autoSubscribeMock.mockClear();
+  registerSubscriptionAdapter({ autoSubscribeRecordToAllPeers: autoSubscribeMock });
 });
 
 afterAll(() => {
+  __resetSubscriptionAdapter();
   rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
 });
 
@@ -178,6 +188,7 @@ describe('loom CRUD', () => {
     const loom = await makeLoom({ logline: 'A crown that remembers.', universeId: 'uni-1' });
     expect(loom.id).toMatch(/^loom-/);
     expect(loom.universeId).toBe('uni-1');
+    expect(autoSubscribeMock).toHaveBeenCalledWith('fableLoom', loom.id);
 
     expect((await listLooms()).map((l) => l.id)).toEqual([loom.id]);
 
@@ -189,6 +200,87 @@ describe('loom CRUD', () => {
 
     await deleteLoom(loom.id);
     expect(await getLoom(loom.id)).toBeNull();
+    expect(await getLoom(loom.id, { includeDeleted: true })).toMatchObject({
+      id: loom.id,
+      deleted: true,
+    });
+    expect(await listLooms()).toEqual([]);
+    expect(await listLooms({ includeDeleted: true })).toHaveLength(1);
+  });
+
+  it('merges peer records by updatedAt and lets tombstones converge', async () => {
+    const local = await makeLoom({ name: 'Local draft' });
+    const newer = {
+      ...local,
+      name: 'Peer draft',
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    };
+    expect(await mergeLoomsFromSync([newer])).toEqual({ applied: true, count: 1 });
+    expect((await getLoom(local.id)).name).toBe('Peer draft');
+
+    const stale = { ...newer, name: 'Stale peer draft', updatedAt: '2000-01-01T00:00:00.000Z' };
+    expect(await mergeLoomsFromSync([stale])).toEqual({ applied: false, count: 0 });
+    expect((await getLoom(local.id)).name).toBe('Peer draft');
+
+    const tombstone = {
+      ...newer,
+      deleted: true,
+      deletedAt: '2100-01-01T00:00:00.000Z',
+      updatedAt: '2100-01-01T00:00:00.000Z',
+    };
+    expect(await mergeLoomsFromSync([tombstone])).toEqual({ applied: true, count: 1 });
+    expect(await getLoom(local.id)).toBeNull();
+  });
+
+  it('journals divergent story edits and can restore the authored snapshot', async () => {
+    const local = await makeLoom({ name: 'Local story', premise: 'Local premise' });
+    const base = { ...local, name: 'Shared story', premise: 'Shared premise' };
+    await conflictJournal.setSyncBaseHash(
+      'fableLoom',
+      local.id,
+      conflictJournal.contentHashForRecord('fableLoom', base),
+    );
+
+    const remote = {
+      ...local,
+      name: 'Remote story',
+      premise: 'Remote premise',
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    };
+    await mergeLoomsFromSync([remote], {
+      source: { via: 'peer-push', peerId: 'peer-example' },
+    });
+
+    const entries = await conflictJournal.conflictJournalStore().loadAll();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      recordKind: 'fableLoom',
+      recordId: local.id,
+      source: { via: 'peer-push', peerId: 'peer-example' },
+      localSnapshot: { name: 'Local story', premise: 'Local premise' },
+      remoteSnapshot: { name: 'Remote story', premise: 'Remote premise' },
+    });
+
+    await restoreLoom(local.id, entries[0].localSnapshot);
+    expect(await getLoom(local.id)).toMatchObject({
+      name: 'Local story',
+      premise: 'Local premise',
+    });
+  });
+
+  it('hard-prunes only tombstones older than the safe federation cutoff', async () => {
+    const loom = await makeLoom();
+    await mergeLoomsFromSync([{
+      ...loom,
+      deleted: true,
+      deletedAt: '2099-01-01T00:00:00.000Z',
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    }]);
+    expect(await conflictJournal.getSyncBaseHash('fableLoom', loom.id)).not.toBeNull();
+    expect(await pruneTombstonedLooms(Date.parse('2999-01-01T00:00:00.000Z')))
+      .toEqual({ pruned: 1 });
+    expect(await getLoom(loom.id, { includeDeleted: true })).toBeNull();
+    expect(await conflictJournal.getSyncBaseHash('fableLoom', loom.id)).toBeNull();
   });
 
   it('rejects creating a loom without a name', async () => {
