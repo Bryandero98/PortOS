@@ -12,6 +12,11 @@ vi.mock(import('../services/voice/config.js'), async (importOriginal) => {
   };
 });
 
+// The call host speaks its opening line through the real TTS entry point;
+// stub it so the suite never loads a speech model.
+vi.mock('../services/voice/tts.js', () => ({
+  synthesize: vi.fn(async (text) => ({ wav: Buffer.from(`wav:${text}`), latencyMs: 1 })),
+}));
 // Meeting capture transcribes over the network (whisper.cpp's HTTP server);
 // stub it so the capture-routing tests below run offline and deterministically.
 vi.mock('../services/voice/stt.js', () => ({ transcribe: vi.fn() }));
@@ -23,7 +28,13 @@ const {
   __resetVoiceOutput,
 } = await import('../services/voice/voiceOutput.js');
 const { transcribe } = await import('../services/voice/stt.js');
-const { attachHost: attachCallHost, __resetCallSession } = await import('../services/voice/callSession.js');
+const {
+  attachHost: attachCallHost,
+  __resetCallSession,
+  __setCallSessionDeps,
+  pollCall,
+  startCall,
+} = await import('../services/voice/callSession.js');
 const {
   __resetCaptureSession,
   __setCaptureSessionDeps,
@@ -266,6 +277,54 @@ describe('voice:output single-recipient wiring', () => {
 
     a.fire('disconnect');
     expect(getVoiceOutputSocket()).toBe(b);
+  });
+});
+
+describe('call host opening line', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    __resetCallSession();
+    __setCallSessionDeps({
+      probe: vi.fn(async () => ({ state: 'connected' })),
+      call: vi.fn(async () => ({ state: 'dialing' })),
+      hangup: vi.fn(async () => ({ state: 'ended' })),
+      appendJournal: vi.fn(async () => ({})),
+      enqueueMindMessage: vi.fn(async () => ({})),
+    });
+  });
+
+  it('speaks the line into the call once the far end picks up, and only once', async () => {
+    // This is the end of the mind's call path: without it a placed call
+    // connects to silence and the user hears nothing at all.
+    const host = makeFakeSocket();
+    registerVoiceHandlers(host);
+    await host.fire('voice:call:attach');
+
+    await startCall({ openingLine: 'This is PortOS about your backups.', origin: 'mind' });
+    await pollCall();
+    await flush();
+
+    const spoken = host.emitted.filter((e) => e.event === 'voice:call:tts');
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0].payload.sentence).toBe('This is PortOS about your backups.');
+
+    // Every state transition re-broadcasts; the line must not be repeated.
+    await pollCall();
+    await flush();
+    expect(host.emitted.filter((e) => e.event === 'voice:call:tts')).toHaveLength(1);
+  });
+
+  it('says nothing extra on a call the user placed themselves', async () => {
+    const host = makeFakeSocket();
+    registerVoiceHandlers(host);
+    await host.fire('voice:call:attach');
+
+    await startCall();
+    await pollCall();
+    await flush();
+
+    expect(host.emitted.filter((e) => e.event === 'voice:call:tts')).toHaveLength(0);
   });
 });
 

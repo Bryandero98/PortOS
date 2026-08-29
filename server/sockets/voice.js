@@ -31,6 +31,7 @@ import { CALL_AUDIO_SAMPLE_RATE, createCallEndpointer, pcmToFloat } from '../ser
 import {
   attachHost,
   detachHost,
+  getCallContext,
   getCallHost,
   isCallActive,
   markListening,
@@ -38,7 +39,9 @@ import {
   noteCallerSpeech,
   recordTurn,
   setCallStateListener,
+  takeCallOpeningLine,
 } from '../services/voice/callSession.js';
+import { synthesize } from '../services/voice/tts.js';
 import {
   attachCaptureHost,
   detachCaptureHost,
@@ -395,7 +398,37 @@ export const registerVoiceHandlers = (socket) => {
   // ---------------------------------------------------------------------------
   const call = { endpointer: null, busy: false };
 
-  const emitCallState = (snapshot) => socket.emit('voice:call:state', snapshot);
+  // Speak the line the caller was rung to hear, once, as soon as the far end
+  // picks up. Without this a mind-placed call connects to silence and the user
+  // says "hello?" into a bot that has not been told why it is on the phone.
+  const deliverOpeningLine = async () => {
+    // Busy is checked BEFORE consuming: taking the line while a turn is in
+    // flight would drop it for good. Leaving it pending means the next state
+    // emit (that turn's own markListening) retries it.
+    if (call.busy) return;
+    const line = takeCallOpeningLine();
+    if (!line) return;
+    call.busy = true;
+    markSpeaking();
+    try {
+      const { wav, latencyMs } = await synthesize(line);
+      socket.emit('voice:call:tts', { sentence: line, wav, latencyMs });
+      recordTurn('assistant', line);
+    } finally {
+      call.busy = false;
+      markListening();
+    }
+  };
+
+  const emitCallState = (snapshot) => {
+    socket.emit('voice:call:state', snapshot);
+    // 'listening' is the first state the poll reaches once the helper reports a
+    // connected call. `takeCallOpeningLine` is consume-once, so the repeated
+    // state emits this broadcast produces cannot repeat the line.
+    if (snapshot?.state === 'listening') {
+      deliverOpeningLine().catch((err) => console.error(`❌ voice call: opening line failed: ${err.message}`));
+    }
+  };
 
   const runCallUtterance = async (utterance) => {
     call.busy = true;
@@ -407,6 +440,9 @@ export const registerVoiceHandlers = (socket) => {
         mimeType: 'audio/wav',
         history: state.history,
         state,
+        // A mind-placed call carries the mind's own briefing, so the voice on
+        // the phone continues that conversation instead of answering cold.
+        systemContext: getCallContext(),
         // The pipeline speaks the widget's event vocabulary; only the audio is
         // re-addressed, so persona, tools, and the confirm gate are unchanged.
         emit: (event, data) => {

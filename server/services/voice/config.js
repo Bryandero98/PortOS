@@ -25,6 +25,11 @@ export const VOICE_DEFAULTS = Object.freeze({
     blackHole16chLabel: 'BlackHole 16ch',
     // Hard ceiling on one call, so a line left open cannot run all day.
     maxCallMinutes: 15,
+    // Escalate an unread critical notification to a phone call when no browser
+    // tab can speak it. OFF by default: enabling the FaceTime feature must not
+    // by itself make an install start ringing the user.
+    escalateCritical: false,
+    escalateAfterMinutes: 10,
   },
 
   stt: {

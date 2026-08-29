@@ -37,6 +37,13 @@ const initialState = () => ({
   lastVoiceAt: null,
   endedReason: null,
   transcript: [],
+  // Set only for a call PortOS placed on its own initiative. `origin` decides
+  // whether the transcript is handed back to the persistent mind afterwards;
+  // `openingLine` is what the call host speaks the moment the far end picks up
+  // (consumed once, so a state re-emit cannot make it say it twice).
+  origin: 'user',
+  openingLine: '',
+  context: null,
 });
 
 let session = initialState();
@@ -46,11 +53,27 @@ let listener = null;
 
 // Injectable so the state machine can be driven with stubs and fake timers
 // instead of a real helper and a real call.
-let deps = { probe: facetimeBridge.probe, call: facetimeBridge.call, hangup: facetimeBridge.hangup, appendJournal, now: Date.now };
+// Imported lazily: the persistent-mind supervisor pulls in a large service
+// graph, and a call the mind did not place never needs it.
+const enqueueMindMessage = async (text) => {
+  const { enqueuePersistentMindMessage } = await import('../persistentMindSupervisor.js');
+  return enqueuePersistentMindMessage({ text });
+};
+
+const defaultDeps = () => ({
+  probe: facetimeBridge.probe,
+  call: facetimeBridge.call,
+  hangup: facetimeBridge.hangup,
+  appendJournal,
+  enqueueMindMessage,
+  now: Date.now,
+});
+
+let deps = defaultDeps();
 
 /** Test seam — override the helper/clock, or restore the real ones. */
 export const __setCallSessionDeps = (overrides = {}) => {
-  deps = { probe: facetimeBridge.probe, call: facetimeBridge.call, hangup: facetimeBridge.hangup, appendJournal, now: Date.now, ...overrides };
+  deps = { ...defaultDeps(), ...overrides };
 };
 
 const publicState = () => ({
@@ -80,6 +103,24 @@ export const setCallStateListener = (fn) => { listener = fn; };
 export const getCallState = () => publicState();
 export const getCallHost = () => host;
 export const isCallActive = () => publicState().active;
+
+/**
+ * The bounded briefing the caller-side turns run with, or null for a call the
+ * user placed themselves. Read per turn so the pipeline stays stateless.
+ */
+export const getCallContext = () => (publicState().active ? session.context : null);
+
+/**
+ * Take the pending opening line, clearing it. Consume-once on purpose: the
+ * host speaks it on the first `connected` observation, and `voice:call:state`
+ * is broadcast more than once per call.
+ */
+export function takeCallOpeningLine() {
+  if (!publicState().active) return '';
+  const line = session.openingLine;
+  session.openingLine = '';
+  return line;
+}
 
 /**
  * Claim the single call-host slot.
@@ -163,11 +204,19 @@ const startPolling = () => {
 /**
  * Place a call. Fails closed when nothing can carry the audio.
  */
-export async function startCall({ openingLine = '', context = null } = {}) {
+export async function startCall({ openingLine = '', context = null, origin = 'user' } = {}) {
   if (!host) return { ok: false, reason: 'no-call-host' };
   if (publicState().active) return { ok: false, reason: 'call-in-progress' };
 
-  session = { ...initialState(), state: 'dialing', startedAt: deps.now(), lastVoiceAt: deps.now() };
+  session = {
+    ...initialState(),
+    state: 'dialing',
+    startedAt: deps.now(),
+    lastVoiceAt: deps.now(),
+    origin: origin === 'mind' ? 'mind' : 'user',
+    openingLine: typeof openingLine === 'string' ? openingLine.trim() : '',
+    context: typeof context === 'string' && context.trim() ? context : null,
+  };
   emitState();
   try {
     await deps.call();
@@ -177,7 +226,7 @@ export async function startCall({ openingLine = '', context = null } = {}) {
     return { ok: false, reason: 'dial-failed', message: error.message };
   }
   startPolling();
-  return { ok: true, state: publicState(), openingLine, context };
+  return { ok: true, state: publicState(), openingLine: session.openingLine, context: session.context };
 }
 
 /** Record one side of the conversation. Speaker labels only — never the handle. */
@@ -203,6 +252,11 @@ const renderTranscript = (transcript) => transcript
   .map((turn) => `${turn.speaker === 'assistant' ? 'PortOS' : 'Caller'}: ${turn.text}`)
   .join('\n');
 
+// Cap on the transcript handed back to the persistent mind. A call is short by
+// construction (maxCallMinutes), but the mind's message queue is durable state,
+// so the bound is enforced here rather than trusted.
+const MIND_TRANSCRIPT_MAX_CHARS = 6_000;
+
 /**
  * End the call and write the transcript down.
  *
@@ -213,6 +267,7 @@ export async function endCall(reason = 'ended') {
   if (session.state === 'idle') return publicState();
   stopPolling();
   const transcript = session.transcript;
+  const origin = session.origin;
   session.endedReason = reason;
   setState('ended');
 
@@ -230,6 +285,24 @@ export async function endCall(reason = 'ended') {
       await deps.appendJournal(await getToday(), `FaceTime Audio call\n${renderTranscript(transcript)}`, { source: 'voice' });
     } catch (error) {
       console.error(`❌ voice call: journal append failed: ${error.message}`);
+    }
+  }
+
+  // A call the mind placed is one half of a conversation it started, so the
+  // outcome goes back into its queue as a message. Without this the next wake
+  // would have no idea the call happened and could call again to say the same
+  // thing — including after a call nobody picked up, which is exactly when an
+  // empty transcript would otherwise leave it uninformed. Best-effort for the
+  // same reason the journal append is.
+  if (origin === 'mind') {
+    try {
+      await deps.enqueueMindMessage(
+        `Outcome of the FaceTime Audio call you placed (ended: ${reason}):\n${
+          transcript.length ? renderTranscript(transcript) : 'The call ended with nothing said.'
+        }`.slice(0, MIND_TRANSCRIPT_MAX_CHARS),
+      );
+    } catch (error) {
+      console.error(`❌ voice call: mind transcript handoff failed: ${error.message}`);
     }
   }
 
