@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { createHash } from 'crypto';
 
 vi.mock('./obsidian.js', () => ({
   getVaultById: vi.fn(),
@@ -102,6 +103,13 @@ describe('IdeaLoom Markdown contract', () => {
     }));
   });
 
+  it('accepts harmless Obsidian Properties metadata', () => {
+    const rendered = renderIdeaLoomMarkdown(list());
+    const withProperties = rendered.replace('title:', 'aliases:\n  - "Example alias"\ntitle:');
+
+    expect(parseIdeaLoomMarkdown(withProperties)).toEqual(expect.objectContaining({ ok: true }));
+  });
+
   it('rejects malformed metadata and non-dense numbered ideas', () => {
     const rendered = renderIdeaLoomMarkdown(list());
     expect(parseIdeaLoomMarkdown(rendered.replace(`id: "${LIST_ID}"`, 'id: "not-a-uuid"')).ok).toBe(false);
@@ -183,7 +191,15 @@ describe('IdeaLoom Obsidian exchange', () => {
     expect(lists.updateSyncMetadata).toHaveBeenCalledWith(LIST_ID, expect.objectContaining({ notePath: expect.stringContaining('Idea Loom/') }));
 
     const importedPath = 'Idea Loom/2026-01-01-original-name.md';
-    lists.listLists.mockResolvedValue([local, list({ id: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d', sync: { notePath: importedPath } })]);
+    const importedList = list({ id: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d' });
+    lists.listLists.mockResolvedValue([local, {
+      ...importedList,
+      sync: {
+        notePath: importedPath,
+        lastKnownContentHash: createHash('sha256').update(renderIdeaLoomMarkdown(importedList), 'utf8').digest('hex'),
+        lastImportedAt: importedList.updatedAt,
+      },
+    }]);
     obsidian.getNote.mockImplementation(async (_id, path) => path === importedPath
       ? { content: renderIdeaLoomMarkdown(list({ id: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d' })) }
       : { error: 'NOTE_NOT_FOUND' });
@@ -193,5 +209,26 @@ describe('IdeaLoom Obsidian exchange', () => {
     const exported = await exportToObsidian({ listId: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d' });
     expect(exported.counts.exported).toBe(1);
     expect(obsidian.updateNote).toHaveBeenCalledWith('0f6c6a6f-8c16-4c7d-9a8b-2e2f6f2cb4d1', importedPath, expect.any(String));
+  });
+
+  it('does not overwrite a note changed on both sides', async () => {
+    const base = renderIdeaLoomMarkdown(list());
+    const external = renderIdeaLoomMarkdown(list({ ideas: ['External edit'] }));
+    const importedPath = 'Idea Loom/2026-01-01-original-name.md';
+    const local = list({
+      updatedAt: '2026-08-29T12:00:00.000Z',
+      sync: {
+        notePath: importedPath,
+        lastKnownContentHash: createHash('sha256').update(base, 'utf8').digest('hex'),
+        lastImportedAt: '2026-08-29T11:00:00.000Z',
+      },
+    });
+    lists.listLists.mockResolvedValue([local]);
+    obsidian.getNote.mockResolvedValue({ content: external });
+
+    const result = await exportToObsidian();
+
+    expect(result.counts).toMatchObject({ conflicted: 1, exported: 0 });
+    expect(obsidian.updateNote).not.toHaveBeenCalled();
   });
 });

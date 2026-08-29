@@ -97,6 +97,19 @@ const parseFrontmatter = (lines) => {
       continue;
     }
     if (indent) return { error: `unexpected indentation at line ${index + 1}` };
+    if (!rawValue.trim()) {
+      let propertyIndex = index + 1;
+      const propertyValues = [];
+      while (propertyIndex < end && /^\s+-\s+/.test(lines[propertyIndex])) {
+        const propertyValue = decodeScalar(lines[propertyIndex].replace(/^\s+-\s+/, ''));
+        if (propertyValue === null) return { error: `invalid ${key} property at line ${propertyIndex + 1}` };
+        propertyValues.push(propertyValue);
+        propertyIndex += 1;
+      }
+      values[key] = propertyValues.length ? propertyValues : '';
+      index = propertyIndex - 1;
+      continue;
+    }
     if (key === 'tags' && rawValue.trim().startsWith('[') && rawValue.trim().endsWith(']')) {
       const inner = rawValue.trim().slice(1, -1).trim();
       values.tags = inner ? inner.split(',').map((entry) => decodeScalar(entry)).filter(Boolean).map((tag) => tag.replace(/^#/, '')) : [];
@@ -353,7 +366,9 @@ const writeNote = async (vaultId, notePath, content) => {
   if (existing?.error === 'NOTE_EVICTED') return { kind: 'unavailable', reason: 'note-unavailable' };
   if (existing?.error && existing.error !== 'NOTE_NOT_FOUND') return { kind: 'failed', reason: existing.error };
   const parsedExisting = existing?.content ? parseIdeaLoomMarkdown(existing.content) : null;
-  if (parsedExisting?.ok && parsedExisting.list.id !== undefined) return { kind: 'existing', id: parsedExisting.list.id };
+  if (parsedExisting?.ok && parsedExisting.list.id !== undefined) {
+    return { kind: 'existing', id: parsedExisting.list.id, content: existing.content };
+  }
   if (existing?.content) return { kind: 'existing', id: null };
   const created = await obsidian.createNote(vaultId, notePath, content);
   if (!created?.error) return { kind: 'written' };
@@ -374,6 +389,11 @@ const exportOne = async (vaultId, list) => {
   }
   if (pathResult.kind === 'existing') {
     if (pathResult.id !== list.id) return { kind: 'failed', reason: 'note-path-owned-by-another-list', notePath };
+    const remoteChanged = hashContent(pathResult.content) !== list.sync?.lastKnownContentHash;
+    const lastLocalSync = list.sync?.lastImportedAt || list.sync?.lastExportedAt;
+    const localChanged = !lastLocalSync || list.updatedAt > lastLocalSync;
+    if (remoteChanged && localChanged) return { kind: 'conflicted', reason: 'both-sides-changed', notePath };
+    if (remoteChanged) return { kind: 'skipped', reason: 'external-change', notePath };
     const updated = await obsidian.updateNote(vaultId, notePath, content);
     if (updated?.error === 'NOTE_EVICTED') return { kind: 'unavailable', reason: 'note-unavailable', notePath };
     if (updated?.error) return { kind: 'failed', reason: updated.error, notePath };
