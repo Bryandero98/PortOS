@@ -117,4 +117,26 @@ describe('syncSpotifyPlaylists', () => {
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(3);
     expect(mocks.sleep).toHaveBeenCalledWith(0);
   });
+
+  it('keeps the prior library when Spotify returns an empty playlist list', async () => {
+    mocks.readJSONFile.mockResolvedValue({ playlists: [normalizeSpotifyPlaylist(playlist)] });
+    mocks.fetchWithTimeout.mockReset().mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [] }) });
+
+    const result = await syncSpotifyPlaylists();
+
+    expect(result).toMatchObject({ ok: false, status: 'list-empty', playlistCount: 1, scanned: 0 });
+    expect(mocks.atomicWrite).not.toHaveBeenCalled();
+  });
+
+  it('stops instead of sleeping past the rate-limit wait bound', async () => {
+    mocks.fetchWithTimeout
+      .mockReset()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [playlist] }) })
+      .mockResolvedValueOnce({ ok: false, status: 429, headers: { get: () => '11' }, json: async () => ({}) });
+
+    const result = await syncSpotifyPlaylists();
+
+    expect(result).toMatchObject({ ok: false, playlistCount: 0, failed: 1 });
+    expect(mocks.sleep).not.toHaveBeenCalled();
+  });
 });

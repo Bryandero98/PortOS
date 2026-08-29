@@ -188,16 +188,26 @@ async function doSyncYoutubePlaylists() {
     };
   }
   const deadline = Date.now() + MAX_SYNC_MS;
-  for (let index = 0; index < sourcePlaylists.length; index += 1) {
-    const rawPlaylist = sourcePlaylists[index];
+  const cursorIndex = previous?.nextPlaylistId
+    ? sourcePlaylists.findIndex((playlist) => playlist.id === previous.nextPlaylistId)
+    : -1;
+  const orderedPlaylists = cursorIndex > 0
+    ? [...sourcePlaylists.slice(cursorIndex), ...sourcePlaylists.slice(0, cursorIndex)]
+    : sourcePlaylists;
+  let nextPlaylistId = null;
+  let scanned = 0;
+  for (let index = 0; index < orderedPlaylists.length; index += 1) {
+    const rawPlaylist = orderedPlaylists[index];
     if (Date.now() >= deadline) {
+      nextPlaylistId = rawPlaylist.id;
       warnings.push(`Sync stopped after ${Math.round(MAX_SYNC_MS / 60000)} minutes; remaining playlists were not refreshed`);
-      sourcePlaylists.slice(index).forEach((remaining) => {
+      orderedPlaylists.slice(index).forEach((remaining) => {
         const stale = previous?.playlists?.find((playlist) => playlist.id === remaining.id);
-        if (stale) playlists.push(stale);
+        playlists.push(stale || normalizeYoutubePlaylist(remaining, []));
       });
       break;
     }
+    scanned += 1;
     // Do not use the evaluate result as the navigation verdict: CDP can report
     // a context error while the requested navigation is already in progress.
     await evaluateOnPage(loaded.page, `location.assign(${JSON.stringify(`${PLAYLIST_URL}${encodeURIComponent(rawPlaylist.id)}`)}); true`).catch(() => null);
@@ -238,6 +248,7 @@ async function doSyncYoutubePlaylists() {
     syncedAt: new Date().toISOString(),
     playlists,
     warnings,
+    ...(nextPlaylistId ? { nextPlaylistId } : {}),
   };
   await ensureDir(dataPath('youtube'));
   await atomicWrite(PLAYLISTS_FILE, snapshot);
@@ -246,7 +257,7 @@ async function doSyncYoutubePlaylists() {
   const result = {
     ok: warnings.length === 0,
     ...summary,
-    scanned: sourcePlaylists.length,
+    scanned,
     failed: warnings.length,
     ...(warnings.length ? { warnings } : {}),
   };

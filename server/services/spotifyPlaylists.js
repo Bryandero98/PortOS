@@ -15,6 +15,7 @@ const REQUEST_TIMEOUT_MS = 15000;
 const PAGE_LIMIT = 50;
 const PLAYLIST_BATCH_SIZE = 5;
 const MAX_RATE_LIMIT_RETRIES = 2;
+const MAX_RATE_LIMIT_WAIT_MS = 10000;
 const PLAYLISTS_FILE = dataPath('spotify', 'playlists.json');
 const SNAPSHOT_VERSION = 1;
 
@@ -86,7 +87,9 @@ async function fetchJson(url, accessToken) {
     }, REQUEST_TIMEOUT_MS);
     if (!response.ok && response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
       const retryAfter = Number(response.headers?.get?.('retry-after'));
-      await sleep(Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 1000);
+      const waitMs = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 1000;
+      if (waitMs > MAX_RATE_LIMIT_WAIT_MS) throw new Error(`Spotify rate limited; retry after ${retryAfter}s`);
+      await sleep(waitMs);
       continue;
     }
     const payload = await response.json().catch(() => ({}));
@@ -150,6 +153,16 @@ async function doSyncSpotifyPlaylists() {
     return { ok: false, error: error.message };
   }
   const playlistSummaries = playlistResult.value.filter((playlist) => playlist?.id && playlist?.name);
+  if (!playlistSummaries.length && previous?.playlists?.length) {
+    return {
+      ok: false,
+      status: 'list-empty',
+      error: 'No playlists returned — keeping the previous snapshot.',
+      ...playlistSnapshotSummary(previous),
+      scanned: 0,
+      failed: 0,
+    };
+  }
 
   const results = [];
   for (let index = 0; index < playlistSummaries.length; index += PLAYLIST_BATCH_SIZE) {

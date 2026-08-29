@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   findOrOpenPage: vi.fn(), listCdpPages: vi.fn(), isAuthPage: vi.fn(), evaluateOnPage: vi.fn(), readJSONFile: vi.fn(), ensureDir: vi.fn(), atomicWrite: vi.fn(),
@@ -29,6 +29,8 @@ describe('YouTube playlist normalization', () => {
 });
 
 describe('syncYoutubePlaylists', () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.findOrOpenPage.mockResolvedValue({ id: 'page-1', url: 'https://www.youtube.com/feed/playlists' });
@@ -125,5 +127,48 @@ describe('syncYoutubePlaylists', () => {
     expect(result).toMatchObject({ ok: false, playlistCount: 1, videoCount: 90, failed: 1 });
     expect(result.warnings).toEqual(['Example playlist: only read 1 of 90 video(s)']);
     expect(mocks.atomicWrite).toHaveBeenCalledWith('/tmp/youtube/playlists.json', expect.objectContaining({ playlists: [stale] }));
+  });
+
+  it('resumes a timed-out sync from the first unrefreshed playlist', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(120000);
+    const playlists = [
+      { id: 'PL-first', name: 'First playlist', videoCount: 1 },
+      { id: 'PL-second', name: 'Second playlist', videoCount: 2 },
+    ];
+    mocks.evaluateOnPage
+      .mockReset()
+      .mockResolvedValueOnce({ signedOut: false, playlists })
+      .mockResolvedValueOnce(null);
+
+    const result = await syncYoutubePlaylists();
+
+    expect(result).toMatchObject({ ok: false, scanned: 0, playlistCount: 2, videoCount: 0 });
+    expect(result.warnings).toEqual(['Sync stopped after 2 minutes; remaining playlists were not refreshed']);
+    expect(mocks.atomicWrite).toHaveBeenCalledWith('/tmp/youtube/playlists.json', expect.objectContaining({
+      nextPlaylistId: 'PL-first',
+      playlists: [
+        expect.objectContaining({ id: 'PL-first', videos: [] }),
+        expect.objectContaining({ id: 'PL-second', videos: [] }),
+      ],
+    }));
+    now.mockRestore();
+  });
+
+  it('starts the next sync at the persisted playlist cursor', async () => {
+    mocks.readJSONFile.mockResolvedValue({ nextPlaylistId: 'PL-second', playlists: [] });
+    mocks.evaluateOnPage
+      .mockReset()
+      .mockResolvedValueOnce({ signedOut: false, playlists: [
+        { id: 'PL-first', name: 'First playlist' },
+        { id: 'PL-second', name: 'Second playlist' },
+      ] })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ signedOut: false, videos: [] })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ signedOut: false, videos: [] });
+
+    await syncYoutubePlaylists();
+
+    expect(mocks.evaluateOnPage.mock.calls[1][1]).toContain('PL-second');
   });
 });
