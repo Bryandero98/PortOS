@@ -24,6 +24,8 @@ const REDIRECTS = {
   imessage: '/messages/imessage?settings=1',
   signal: '/messages/signal',
   catalog: '/catalog?settings=1',
+  spotify: '/brain/spotify',
+  youtube: '/brain/youtube',
 };
 
 export default function Settings() {

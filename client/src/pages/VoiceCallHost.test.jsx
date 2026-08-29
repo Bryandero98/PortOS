@@ -18,8 +18,6 @@ import socket from '../services/socket';
 import VoiceCallHost from './VoiceCallHost';
 
 const grantCapabilities = () => {
-  vi.stubGlobal('MediaStreamTrackProcessor', function processor() {});
-  vi.stubGlobal('MediaStreamTrackGenerator', function generator() {});
   vi.stubGlobal('AudioWorkletNode', function worklet() {});
   window.HTMLMediaElement.prototype.setSinkId = () => Promise.resolve();
   navigator.mediaDevices = { enumerateDevices: vi.fn(), getUserMedia: vi.fn() };
@@ -48,15 +46,15 @@ describe('VoiceCallHost', () => {
   });
 
   it('names every missing browser API at once instead of one per reload', async () => {
-    vi.stubGlobal('MediaStreamTrackProcessor', undefined);
     vi.stubGlobal('AudioWorkletNode', undefined);
+    window.HTMLMediaElement.prototype.setSinkId = undefined;
     render(<VoiceCallHost />, { wrapper: MemoryRouter });
 
     await act(async () => { fireEvent.click(screen.getByText('Attach call host')); });
 
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/MediaStreamTrackProcessor/);
     expect(alert.textContent).toMatch(/AudioWorklet/);
+    expect(alert.textContent).toMatch(/setSinkId/);
     // Nothing was opened and nothing was claimed on a browser that cannot do it.
     expect(navigator.mediaDevices.enumerateDevices).not.toHaveBeenCalled();
     expect(socket.emit).not.toHaveBeenCalledWith('voice:call:attach');

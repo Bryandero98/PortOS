@@ -12,8 +12,6 @@ import {
 } from './callAudioBridge.js';
 
 const fullScope = () => ({
-  MediaStreamTrackProcessor: function processor() {},
-  MediaStreamTrackGenerator: function generator() {},
   AudioWorkletNode: function worklet() {},
   HTMLMediaElement: { prototype: { setSinkId: () => {} } },
   navigator: { mediaDevices: { enumerateDevices: () => {} }, locks: { request: () => {} } },
@@ -31,8 +29,6 @@ describe('call host capability probe', () => {
   });
 
   it.each([
-    ['MediaStreamTrackProcessor'],
-    ['MediaStreamTrackGenerator'],
     ['AudioWorklet'],
     ['mediaDevices.enumerateDevices'],
     ['HTMLMediaElement.setSinkId'],
@@ -49,7 +45,7 @@ describe('call host capability probe', () => {
   });
 
   it('reports every gap at once rather than one per reload', () => {
-    expect(missingCallHostApis({})).toHaveLength(6);
+    expect(missingCallHostApis({})).toHaveLength(4);
   });
 });
 

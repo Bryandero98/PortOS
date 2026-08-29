@@ -22,8 +22,6 @@ export const CALL_FRAME_SAMPLES = 320;
 // reply into BlackHole 2ch; without it the assistant would talk to the room
 // instead of into the call.
 const REQUIRED_APIS = Object.freeze([
-  { name: 'MediaStreamTrackProcessor', test: (scope) => typeof scope?.MediaStreamTrackProcessor === 'function' },
-  { name: 'MediaStreamTrackGenerator', test: (scope) => typeof scope?.MediaStreamTrackGenerator === 'function' },
   { name: 'AudioWorklet', test: (scope) => typeof scope?.AudioWorkletNode === 'function' },
   { name: 'mediaDevices.enumerateDevices', test: (scope) => typeof scope?.navigator?.mediaDevices?.enumerateDevices === 'function' },
   { name: 'HTMLMediaElement.setSinkId', test: (scope) => typeof scope?.HTMLMediaElement?.prototype?.setSinkId === 'function' },

@@ -27,6 +27,8 @@ describe('Settings — retired tabs redirect to their new home', () => {
     ['/settings/imessage', '/messages/imessage?settings=1'],
     ['/settings/signal', '/messages/signal'],
     ['/settings/catalog', '/catalog?settings=1'],
+    ['/settings/spotify', '/brain/spotify'],
+    ['/settings/youtube', '/brain/youtube'],
   ])('%s → %s', (from, to) => {
     render(
       <MemoryRouter initialEntries={[from]}>

@@ -112,6 +112,12 @@ describe('IdeaLoom Markdown contract', () => {
       .toEqual(expect.objectContaining({ ok: true }));
   });
 
+  it('accepts YAML flow-sequence tags alongside the block-list and bare-scalar shapes', () => {
+    const rendered = renderIdeaLoomMarkdown(list());
+    const withFlowTags = rendered.replace('tags:\n  - "idea-loom"', 'tags: [idea-loom, other-note]');
+    expect(parseIdeaLoomMarkdown(withFlowTags)).toEqual(expect.objectContaining({ ok: true }));
+  });
+
   it('rejects malformed metadata and non-dense numbered ideas', () => {
     const rendered = renderIdeaLoomMarkdown(list());
     expect(parseIdeaLoomMarkdown(rendered.replace(`id: "${LIST_ID}"`, 'id: "not-a-uuid"')).ok).toBe(false);

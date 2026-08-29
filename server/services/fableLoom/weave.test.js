@@ -379,12 +379,22 @@ describe('playTurn', () => {
     await updateNode(loomId, episodeId, originalGate.id, {
       playbackMode: 'cut', audienceConnection: 'disconnected',
     });
+    // `elsewhereId` deliberately targets a DIFFERENT node than transitions[0]
+    // (insideId): a non-interactive scene resolves via the graph's own first
+    // transition, not the caller's requested transitionId, and asserting
+    // against insideId only pins that if the alternate path leads somewhere
+    // else — otherwise both paths land on the same node and the assertion
+    // can't distinguish "used transitions[0]" from "honored transitionId".
+    const withElsewhere = await addNode(loomId, episodeId, { title: 'Elsewhere', prose: 'Fog.', fromNodeId: originalGate.id, fromIntent: 'go the other way' });
+    const elsewhereId = withElsewhere.episodes[0].nodes.find((n) => n.title === 'Elsewhere').id;
     await mutateLoom(loomId, (loom) => {
       const gate = loom.episodes[0].nodes.find((node) => node.id === originalGate.id);
-      gate.transitions.push({ id: 'alternate-path', targetNodeId: insideId, intent: 'Choose a different route' });
+      gate.transitions = gate.transitions.filter((t) => t.targetNodeId !== elsewhereId);
+      gate.transitions.push({ id: 'alternate-path', targetNodeId: elsewhereId, intent: 'Choose a different route' });
       return loom;
     });
     const gate = (await getLoom(loomId)).episodes[0].nodes.find((node) => node.id === originalGate.id);
+    expect(gate.transitions[0].targetNodeId).toBe(insideId);
 
     await expect(playTurn(loomId, episodeId, { nodeId: gate.id, message: 'Can you hear me?' }))
       .rejects.toMatchObject({ code: 'AUDIENCE_DISCONNECTED' });
