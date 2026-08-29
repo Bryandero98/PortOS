@@ -122,7 +122,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiSharing.js` | Share buckets + federation sync. |
 | `apiRounds.js` | Rounds workbench CRUD (a cappella round writing + arranging voice layers + learning tracking). |
 | `apiSongbook.js` | SongBook repertoire tracker (`/songbook` — Brain `songs` entity): song CRUD + stage PATCH, `practiceSong(id, quality)` (logs a 0..5-graded practice run; the server owns the SM-2 advance and the resulting `stage`/`practice`), URL import draft, and attachments (base64 upload, present-flag list, raw serve URL via `songAttachmentUrl`). |
-| `apiPeerSync.js` | Per-record peer sync subscriptions (universe + series → other PortOS instances over Tailnet). |
+| `apiPeerSync.js` | Per-record federated sync subscriptions, integrity checks, and manual push/pull controls (including Universe, Pipeline, Media Collections, and FableLoom). |
 | `apiSyncReview.js` | Sync hygiene: duplicate-record detection + smart merge (universe/series) and the non-blocking edit-conflict journal (list/resolve). Surfaced in Sharing → Duplicates / Conflicts. |
 
 ## Tools / integrations

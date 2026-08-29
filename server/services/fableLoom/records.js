@@ -15,8 +15,23 @@ import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
 import { sanitizeLlmRoutePin } from '../../lib/llmRoutePin.js';
+import { compareNewerWins } from '../../lib/lwwTimestamp.js';
+import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
+import {
+  contentHashForRecord,
+  deleteSyncBaseHash,
+  flushBaseHashes,
+  maybeJournalBeforeOverwrite,
+  setSyncBaseHash,
+  withBaseHashFlushBatch,
+} from '../../lib/conflictJournal.js';
 import { getUniverse } from '../universeBuilder.js';
 import { getSeries } from '../pipeline/series.js';
+import {
+  autoSubscribeRecordToAllPeers,
+  emitRecordDeleted,
+  emitRecordUpdated,
+} from '../sharing/recordEvents.js';
 import {
   deleteRaw,
   isValidLoomId,
@@ -166,6 +181,7 @@ export function sanitizeLoom(raw) {
   const name = trimTo(raw.name, LOOM_LIMITS.NAME_MAX);
   if (!name) return null;
   const now = new Date().toISOString();
+  const { deleted, deletedAt } = sanitizeSoftDeleteFields(raw);
   const episodes = (Array.isArray(raw.episodes) ? raw.episodes : [])
     .map(sanitizeEpisode)
     .filter(Boolean)
@@ -194,6 +210,8 @@ export function sanitizeLoom(raw) {
     episodes,
     createdAt: isStr(raw.createdAt) && raw.createdAt ? raw.createdAt : now,
     updatedAt: isStr(raw.updatedAt) && raw.updatedAt ? raw.updatedAt : now,
+    deleted,
+    deletedAt,
   };
 }
 
@@ -220,13 +238,14 @@ async function assertRefsExist({ universeId, seriesId } = {}) {
 const requireLoomRaw = async (id) => {
   if (!isValidLoomId(id)) throw notFound();
   const loom = sanitizeLoom(await readRaw(id));
-  if (!loom) throw notFound();
+  if (!loom || loom.deleted) throw notFound();
   return loom;
 };
 
-export async function listLooms() {
+export async function listLooms({ includeDeleted = false } = {}) {
   const records = (await listRaw()).map(sanitizeLoom).filter(Boolean);
-  return records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name));
+  const visible = includeDeleted ? records : records.filter((loom) => !loom.deleted);
+  return visible.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name));
 }
 
 /**
@@ -261,9 +280,10 @@ export async function listLoomSummaries({ seriesId: scopeSeriesId } = {}) {
   }));
 }
 
-export async function getLoom(id) {
+export async function getLoom(id, { includeDeleted = false } = {}) {
   if (!isValidLoomId(id)) return null;
-  return sanitizeLoom(await readRaw(id));
+  const loom = sanitizeLoom(await readRaw(id));
+  return loom && (includeDeleted || !loom.deleted) ? loom : null;
 }
 
 const assertParticipationConfigured = ({ participationMode, audienceCommunicationMedium }) => {
@@ -303,6 +323,8 @@ export async function createLoom({
   });
   if (!loom) throw new ServerError('Loom needs a name', { status: 400, code: 'VALIDATION_ERROR' });
   await writeRaw(loom.id, loom);
+  emitRecordUpdated('fableLoom', loom.id);
+  autoSubscribeRecordToAllPeers('fableLoom', loom.id).catch(() => {});
   return loom;
 }
 
@@ -311,22 +333,29 @@ export async function createLoom({
  * (or a falsy value to skip the write). The result is re-sanitized before
  * persisting so a mutation can never store a malformed record.
  */
-export function mutateLoom(id, mutator) {
+export async function mutateLoom(id, mutator) {
   if (!isValidLoomId(id)) throw notFound();
-  return queueLoomWrite(id, async () => {
+  const result = await queueLoomWrite(id, async () => {
     const current = await requireLoomRaw(id);
     const changed = await mutator(current);
-    if (!changed) return current;
+    if (!changed) return { loom: current, changed: false };
     const next = sanitizeLoom({ ...changed, id, updatedAt: new Date().toISOString() });
     if (!next) throw new ServerError('Invalid loom record', { status: 400, code: 'VALIDATION_ERROR' });
     await writeRaw(id, next);
-    return next;
+    return { loom: next, changed: true };
   });
+  if (result.changed) emitRecordUpdated('fableLoom', id);
+  return result.loom;
 }
 
 const PATCH_FIELDS = [
   'name', 'logline', 'premise', 'styleNotes', 'format', 'playSettings', 'seriesPlan',
   'participationMode', 'audienceCommunicationMedium', 'universeId', 'seriesId',
+];
+
+const RESTORABLE_FIELDS = [
+  'name', 'logline', 'premise', 'styleNotes', 'format', 'playSettings', 'seriesPlan',
+  'participationMode', 'audienceCommunicationMedium', 'episodes',
 ];
 
 export async function updateLoom(id, patch = {}) {
@@ -344,9 +373,96 @@ export async function updateLoom(id, patch = {}) {
   });
 }
 
+/** Reapply a conflict snapshot through the normal mutation/push lifecycle. */
+export function restoreLoom(id, patch = {}) {
+  return mutateLoom(id, (loom) => {
+    const next = { ...loom };
+    for (const key of RESTORABLE_FIELDS) {
+      if (key in patch) next[key] = patch[key];
+    }
+    assertParticipationConfigured(next);
+    return next;
+  });
+}
+
 export async function deleteLoom(id) {
-  await requireLoomRaw(id);
-  await deleteRaw(id);
+  if (!isValidLoomId(id)) throw notFound();
+  await queueLoomWrite(id, async () => {
+    const current = await requireLoomRaw(id);
+    const now = new Date().toISOString();
+    await writeRaw(id, sanitizeLoom({
+      ...current,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+    }));
+  });
+  emitRecordDeleted('fableLoom', id);
+}
+
+/**
+ * Merge FableLoom records received from a federated peer. Records are
+ * sanitized before persistence, unioned by id, and resolved by whole-record
+ * LWW on `updatedAt`; tombstones travel through the same path.
+ */
+export async function mergeLoomsFromSync(
+  remoteLooms,
+  { source = { via: 'sync', peerId: null } } = {},
+) {
+  if (!Array.isArray(remoteLooms)) return { applied: false, count: 0 };
+  const byId = new Map();
+  for (const raw of remoteLooms) {
+    const remote = sanitizeLoom(raw);
+    if (!remote || !isValidLoomId(remote.id) || byId.has(remote.id)) continue;
+    byId.set(remote.id, remote);
+  }
+  let changed = 0;
+  for (const remote of byId.values()) {
+    const applied = await queueLoomWrite(remote.id, async () => {
+      const local = sanitizeLoom(await readRaw(remote.id));
+      if (local && !compareNewerWins(remote.updatedAt, local.updatedAt)) return false;
+      if (local) {
+        await maybeJournalBeforeOverwrite({
+          kind: 'fableLoom', id: remote.id, local, remote, source,
+        });
+      } else {
+        await setSyncBaseHash(
+          'fableLoom',
+          remote.id,
+          contentHashForRecord('fableLoom', remote),
+        );
+      }
+      await writeRaw(remote.id, remote);
+      return true;
+    });
+    if (applied) changed += 1;
+  }
+  await flushBaseHashes();
+  if (changed > 0) console.log(`🧶 FableLoom sync: merged ${changed} loom(s)`);
+  return { applied: changed > 0, count: changed };
+}
+
+/** Hard-prune tombstones only after the shared federation GC computes a safe cutoff. */
+export async function pruneTombstonedLooms(olderThanMs) {
+  if (!Number.isFinite(olderThanMs)) return { pruned: 0 };
+  const candidates = (await listLooms({ includeDeleted: true }))
+    .filter((loom) => loom.deleted && Number.isFinite(Date.parse(loom.deletedAt))
+      && Date.parse(loom.deletedAt) < olderThanMs);
+  let pruned = 0;
+  await withBaseHashFlushBatch(async () => {
+    for (const candidate of candidates) {
+      const removed = await queueLoomWrite(candidate.id, async () => {
+        const current = sanitizeLoom(await readRaw(candidate.id));
+        const deletedAtMs = Date.parse(current?.deletedAt || '');
+        if (!current?.deleted || !Number.isFinite(deletedAtMs) || deletedAtMs >= olderThanMs) return false;
+        await deleteRaw(candidate.id);
+        await deleteSyncBaseHash('fableLoom', candidate.id);
+        return true;
+      });
+      if (removed) pruned += 1;
+    }
+  });
+  return { pruned };
 }
 
 // --- Episodes ---------------------------------------------------------------

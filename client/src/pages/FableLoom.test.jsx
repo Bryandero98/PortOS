@@ -12,6 +12,9 @@ vi.mock('../services/api', () => ({
   listUniverses: vi.fn(),
   listPipelineSeries: vi.fn(),
 }));
+vi.mock('../components/sharing/SyncToPeerButton', () => ({
+  default: ({ recordKind, recordId }) => <button type="button">sync {recordKind} {recordId}</button>,
+}));
 
 const navigate = vi.fn();
 vi.mock('react-router', async (importOriginal) => {
@@ -62,6 +65,7 @@ describe('FableLoom index', () => {
     expect(screen.getByText('3 scenes')).toBeInTheDocument();
     expect(screen.getByText('2 endings')).toBeInTheDocument();
     expect(screen.getByText('Audience helper')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'sync fableLoom loom-1' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('Aria Verse')).toBeInTheDocument());
   });
 

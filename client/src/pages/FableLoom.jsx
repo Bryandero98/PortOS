@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router';
 import { Plus, Sparkles, Trash2, Waypoints } from 'lucide-react';
 import ProviderModelSelector from '../components/ProviderModelSelector';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
+import SyncToPeerButton from '../components/sharing/SyncToPeerButton';
 import { FormField } from '../components/ui/FormField.jsx';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import Pill from '../components/ui/Pill';
@@ -290,22 +291,25 @@ export default function FableLoom() {
                   {loom.logline && <p className="text-xs text-port-text-muted mt-0.5 line-clamp-2">{loom.logline}</p>}
                 </div>
                 <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} role="none">
-                  {del.isConfirming(loom.id) ? (
-                    <ConfirmButtonPair
-                      prompt="Delete?"
-                      onConfirm={() => handleDelete(loom.id)}
-                      onCancel={del.cancelDelete}
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      aria-label={`Delete ${loom.name}`}
-                      onClick={() => del.requestDelete(loom.id)}
-                      className="text-port-text-muted hover:text-port-error p-1"
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    <SyncToPeerButton recordKind="fableLoom" recordId={loom.id} compact />
+                    {del.isConfirming(loom.id) ? (
+                      <ConfirmButtonPair
+                        prompt="Delete?"
+                        onConfirm={() => handleDelete(loom.id)}
+                        onCancel={del.cancelDelete}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${loom.name}`}
+                        onClick={() => del.requestDelete(loom.id)}
+                        className="text-port-text-muted hover:text-port-error p-1"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-3 mt-3 text-xs text-port-text-muted flex-wrap">

@@ -2457,7 +2457,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1422
+          "line": 1423
         },
         {
           "direction": "server-to-client",
@@ -2475,7 +2475,7 @@
         {
           "direction": "client-to-server",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1418
+          "line": 1419
         },
         {
           "direction": "client-to-server",
@@ -2506,7 +2506,7 @@
         {
           "direction": "client-to-server",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1430
+          "line": 1431
         },
         {
           "direction": "client-to-server",
@@ -3568,7 +3568,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1183
+          "line": 1184
         },
         {
           "direction": "server-to-client",
@@ -3586,7 +3586,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1184
+          "line": 1185
         },
         {
           "direction": "server-to-client",
@@ -3604,7 +3604,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1191
+          "line": 1192
         },
         {
           "direction": "server-to-client",
@@ -4382,7 +4382,7 @@
         {
           "direction": "server-to-client",
           "source": "client/src/pages/Instances.jsx",
-          "line": 1144
+          "line": 1145
         },
         {
           "direction": "server-to-client",
