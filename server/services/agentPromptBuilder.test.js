@@ -2828,6 +2828,18 @@ describe('buildReviewLoopFollowUpSection — CLI reviewer procedure inlining', (
     // Still emits the base invocation step so the loop is not broken.
     expect(out).toMatch(/codex/);
   });
+
+  it('keeps review rounds focused on material findings and diminishing returns', () => {
+    const out = buildReviewLoopFollowUpSection(
+      { ...baseMeta, reviewLoopReviewers: ['claude'] },
+      { verbose: false, localAgentLoopBody: null }
+    );
+    expect(out).toContain('directly affected contracts only');
+    expect(out).toContain('concrete wrong outcome');
+    expect(out).toContain('only substantive fixes do');
+    expect(out).toContain('skip repository-wide audits');
+    expect(out).toContain('This affects looping only, not clean/partial verdicts');
+  });
 });
 
 describe('buildReviewLoopFollowUpSection — reviewer slug → CLI binary', () => {

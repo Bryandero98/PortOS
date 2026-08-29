@@ -462,6 +462,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
       ? 'Copilot is configured after another reviewer, so the system did NOT pre-request it — request the Copilot review yourself when you reach its turn (after the earlier reviewers’ fixes are pushed), and invoke the other reviewers yourself.'
       : 'The system did NOT pre-request a reviewer because no Copilot review leads the order — you must request/invoke each configured reviewer yourself against the PR diff.';
   const repeatedCommentsNote = '**Repeated comments:** If a fresh review round only re-raises feedback you intentionally rejected (with a reply explaining why), treat that round as clean and move on.';
+  const reviewScopeNote = '**Review scope and convergence:** review this change and directly affected contracts only. Report material issues with concrete wrong outcomes; skip repository-wide audits, style, refactoring preferences, speculation, and nits. Marginal findings alone do not earn another round; only substantive fixes do. This affects looping only, not clean/partial verdicts for stop-mode or cross-phase gates: record what the reviewer reported and what you committed.';
   // Challenge protocol (#2471): auto-invoke the bounded worker↔reviewer dispute
   // from the review loop. When a reviewer's BLOCKING finding is a false positive,
   // the agent disputes it once via POST /challenge instead of silently complying
@@ -493,7 +494,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
   const localStatePersistenceNote = localOnly
     ? '**State persistence:** shell calls do not share variables. Reload state before each reviewer, preserve it while persisting `LOCAL_REVIEWER_START_SHA`; reload before commit/stop calculations and the final aggregate. Any read/write failure blocks publication.'
     : '';
-  const extraNotes = [crossPhaseStopModeNote, stopModeNote, applyNote, maxRoundsNote, missingCliNote, optionalReviewNote, localRebaseConflictNote, localStatePersistenceNote].filter(Boolean);
+  const extraNotes = [reviewScopeNote, crossPhaseStopModeNote, stopModeNote, applyNote, maxRoundsNote, missingCliNote, optionalReviewNote, localRebaseConflictNote, localStatePersistenceNote].filter(Boolean);
 
   // Inline slashdo's local-agent review loop when a spawnable CLI reviewer is
   // configured. This is the maintained, precise recipe — exact per-CLI headless
