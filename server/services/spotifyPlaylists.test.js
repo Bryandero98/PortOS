@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  getAccessToken: vi.fn(), fetchWithTimeout: vi.fn(), readJSONFile: vi.fn(), ensureDir: vi.fn(), atomicWrite: vi.fn(),
+  getAccessToken: vi.fn(), fetchWithTimeout: vi.fn(), readJSONFile: vi.fn(), ensureDir: vi.fn(), atomicWrite: vi.fn(), sleep: vi.fn(),
 }));
 
 vi.mock('./spotifyAuth.js', () => ({ getAccessToken: (...args) => mocks.getAccessToken(...args) }));
 vi.mock('../lib/fetchWithTimeout.js', () => ({ fetchWithTimeout: (...args) => mocks.fetchWithTimeout(...args) }));
 vi.mock('../lib/fileUtils.js', () => ({
   dataPath: (...parts) => `/tmp/${parts.join('/')}`, readJSONFile: (...args) => mocks.readJSONFile(...args),
-  ensureDir: (...args) => mocks.ensureDir(...args), atomicWrite: (...args) => mocks.atomicWrite(...args),
+  ensureDir: (...args) => mocks.ensureDir(...args), atomicWrite: (...args) => mocks.atomicWrite(...args), sleep: (...args) => mocks.sleep(...args),
 }));
 
 import { normalizeSpotifyPlaylist, normalizeSpotifyTrack, playlistSnapshotSummary, syncSpotifyPlaylists } from './spotifyPlaylists.js';
@@ -102,5 +102,19 @@ describe('syncSpotifyPlaylists', () => {
 
     expect(result).toMatchObject({ ok: true, playlistCount: 1, trackCount: 1, scanned: 1 });
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries rate-limited playlist item requests before recording a failure', async () => {
+    mocks.fetchWithTimeout
+      .mockReset()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [playlist] }) })
+      .mockResolvedValueOnce({ ok: false, status: 429, headers: { get: () => '0' }, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [trackItem] }) });
+
+    const result = await syncSpotifyPlaylists();
+
+    expect(result).toMatchObject({ ok: true, playlistCount: 1, trackCount: 1 });
+    expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(3);
+    expect(mocks.sleep).toHaveBeenCalledWith(0);
   });
 });

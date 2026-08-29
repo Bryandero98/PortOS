@@ -6,7 +6,7 @@
  * URLs, and service links) under data/spotify/; raw API responses never leave
  * the request and this snapshot is not part of federation.
  */
-import { dataPath, ensureDir, atomicWrite, readJSONFile } from '../lib/fileUtils.js';
+import { dataPath, ensureDir, atomicWrite, readJSONFile, sleep } from '../lib/fileUtils.js';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
 import { getAccessToken } from './spotifyAuth.js';
 
@@ -14,6 +14,7 @@ const API_BASE = 'https://api.spotify.com/v1';
 const REQUEST_TIMEOUT_MS = 15000;
 const PAGE_LIMIT = 50;
 const PLAYLIST_BATCH_SIZE = 5;
+const MAX_RATE_LIMIT_RETRIES = 2;
 const PLAYLISTS_FILE = dataPath('spotify', 'playlists.json');
 const SNAPSHOT_VERSION = 1;
 
@@ -79,14 +80,21 @@ export function playlistSnapshotSummary(snapshot) {
 }
 
 async function fetchJson(url, accessToken) {
-  const response = await fetchWithTimeout(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  }, REQUEST_TIMEOUT_MS);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(`Spotify API returned ${response.status}${payload?.error?.message ? `: ${payload.error.message}` : ''}`);
+  for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt += 1) {
+    const response = await fetchWithTimeout(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }, REQUEST_TIMEOUT_MS);
+    if (!response.ok && response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+      const retryAfter = Number(response.headers?.get?.('retry-after'));
+      await sleep(Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 1000);
+      continue;
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`Spotify API returned ${response.status}${payload?.error?.message ? `: ${payload.error.message}` : ''}`);
+    }
+    return payload;
   }
-  return payload;
 }
 
 async function fetchPages(path, accessToken) {

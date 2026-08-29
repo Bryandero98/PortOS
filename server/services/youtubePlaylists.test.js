@@ -77,17 +77,19 @@ describe('syncYoutubePlaylists', () => {
     expect(mocks.atomicWrite).not.toHaveBeenCalled();
   });
 
-  it('retains a stale playlist when navigation fails', async () => {
+  it('retains a stale playlist when navigation closes the CDP context', async () => {
     const stale = { id: 'PL-example', name: 'Example playlist', videoCount: 1, videos: [{ id: 'video-1' }] };
     mocks.readJSONFile.mockResolvedValue({ playlists: [stale] });
     mocks.evaluateOnPage
       .mockReset()
       .mockResolvedValueOnce({ signedOut: false, playlists: [{ id: stale.id, name: stale.name, videoCount: 1 }] })
-      .mockResolvedValueOnce(false);
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
 
     const result = await syncYoutubePlaylists();
 
     expect(result).toMatchObject({ ok: false, playlistCount: 1, videoCount: 1, failed: 1 });
+    expect(result.warnings).toEqual(['Example playlist: could not read videos']);
     expect(mocks.atomicWrite).toHaveBeenCalledWith('/tmp/youtube/playlists.json', expect.objectContaining({ playlists: [stale] }));
   });
 
@@ -104,5 +106,24 @@ describe('syncYoutubePlaylists', () => {
 
     expect(result).toMatchObject({ ok: false, playlistCount: 1, videoCount: 1, failed: 1 });
     expect(result.warnings).toEqual(['Example playlist: no videos read']);
+  });
+
+  it('retains a complete prior snapshot when the page only hydrates a small fraction', async () => {
+    const stale = {
+      id: 'PL-example', name: 'Example playlist', videoCount: 90,
+      videos: Array.from({ length: 90 }, (_, index) => ({ id: `video-${index}` })),
+    };
+    mocks.readJSONFile.mockResolvedValue({ playlists: [stale] });
+    mocks.evaluateOnPage
+      .mockReset()
+      .mockResolvedValueOnce({ signedOut: false, playlists: [{ id: stale.id, name: stale.name, videoCount: 90 }] })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ signedOut: false, videos: [{ id: 'video-1', title: 'Example video' }] });
+
+    const result = await syncYoutubePlaylists();
+
+    expect(result).toMatchObject({ ok: false, playlistCount: 1, videoCount: 90, failed: 1 });
+    expect(result.warnings).toEqual(['Example playlist: only read 1 of 90 video(s)']);
+    expect(mocks.atomicWrite).toHaveBeenCalledWith('/tmp/youtube/playlists.json', expect.objectContaining({ playlists: [stale] }));
   });
 });

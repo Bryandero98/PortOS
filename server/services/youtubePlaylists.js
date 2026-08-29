@@ -16,6 +16,7 @@ const SNAPSHOT_VERSION = 1;
 const MAX_PLAYLISTS = 100;
 const MAX_VIDEOS_PER_PLAYLIST = 200;
 const NAV_SETTLE_MS = 2500;
+const MAX_SYNC_MS = 2 * 60 * 1000;
 
 export function normalizeYoutubeVideo(raw) {
   if (!raw?.id || !raw?.title) return null;
@@ -133,8 +134,9 @@ async function loadPage(url) {
   let page = await findOrOpenPage(url).catch(() => null);
   if (!page || isAuthPage(page)) return { page: null, status: page ? 'auth-required' : 'no-browser' };
   if (!/\/feed\/playlists/.test(page.url || '')) {
-    const navigated = await evaluateOnPage(page, `location.assign(${JSON.stringify(url)}); true`).catch(() => false);
-    if (!navigated) return { page: null, status: 'navigation-failed' };
+    // A navigation can tear down the CDP execution context after location.assign
+    // runs, which makes evaluateOnPage resolve null even though the page moved.
+    await evaluateOnPage(page, `location.assign(${JSON.stringify(url)}); true`).catch(() => null);
     await sleep(NAV_SETTLE_MS);
     const refreshed = (await listCdpPages().catch(() => [])).find((candidate) => candidate.id === page.id);
     if (refreshed) page = refreshed;
@@ -185,15 +187,23 @@ async function doSyncYoutubePlaylists() {
       failed: 0,
     };
   }
-  for (const rawPlaylist of sourcePlaylists) {
-    const navigated = await evaluateOnPage(loaded.page, `location.assign(${JSON.stringify(`${PLAYLIST_URL}${encodeURIComponent(rawPlaylist.id)}`)}); true`).catch(() => false);
-    if (!navigated) {
-      warnings.push(`${rawPlaylist.name || 'Playlist'}: could not open playlist`);
-      const stale = previous?.playlists?.find((playlist) => playlist.id === rawPlaylist.id);
-      if (stale) playlists.push(stale);
-      continue;
+  const deadline = Date.now() + MAX_SYNC_MS;
+  for (let index = 0; index < sourcePlaylists.length; index += 1) {
+    const rawPlaylist = sourcePlaylists[index];
+    if (Date.now() >= deadline) {
+      warnings.push(`Sync stopped after ${Math.round(MAX_SYNC_MS / 60000)} minutes; remaining playlists were not refreshed`);
+      sourcePlaylists.slice(index).forEach((remaining) => {
+        const stale = previous?.playlists?.find((playlist) => playlist.id === remaining.id);
+        if (stale) playlists.push(stale);
+      });
+      break;
     }
+    // Do not use the evaluate result as the navigation verdict: CDP can report
+    // a context error while the requested navigation is already in progress.
+    await evaluateOnPage(loaded.page, `location.assign(${JSON.stringify(`${PLAYLIST_URL}${encodeURIComponent(rawPlaylist.id)}`)}); true`).catch(() => null);
     await sleep(NAV_SETTLE_MS);
+    const refreshed = (await listCdpPages().catch(() => [])).find((candidate) => candidate.id === loaded.page.id);
+    if (refreshed) loaded.page = refreshed;
     const detail = await evaluateOnPage(loaded.page, buildPlaylistVideosExtractionScript()).catch(() => null);
     if (!detail || !Array.isArray(detail.videos) || detail.signedOut) {
       warnings.push(`${rawPlaylist.name || 'Playlist'}: could not read videos`);
@@ -201,13 +211,24 @@ async function doSyncYoutubePlaylists() {
       if (stale) playlists.push(stale);
       continue;
     }
-    if (!detail.videos.length && Number.isFinite(rawPlaylist.videoCount) && rawPlaylist.videoCount > 0) {
+    const normalizedVideos = detail.videos.map(normalizeYoutubeVideo).filter(Boolean);
+    if (!normalizedVideos.length && Number.isFinite(rawPlaylist.videoCount) && rawPlaylist.videoCount > 0) {
       warnings.push(`${rawPlaylist.name || 'Playlist'}: no videos read`);
       const stale = previous?.playlists?.find((playlist) => playlist.id === rawPlaylist.id);
       if (stale) playlists.push(stale);
       continue;
     }
-    const normalizedVideos = detail.videos.map(normalizeYoutubeVideo).filter(Boolean);
+    const expectedVideoCount = Number.isFinite(rawPlaylist.videoCount)
+      ? Math.min(rawPlaylist.videoCount, MAX_VIDEOS_PER_PLAYLIST)
+      : 0;
+    if (expectedVideoCount > 0 && normalizedVideos.length < expectedVideoCount * 0.5) {
+      warnings.push(`${rawPlaylist.name || 'Playlist'}: only read ${normalizedVideos.length} of ${expectedVideoCount} video(s)`);
+      const stale = previous?.playlists?.find((playlist) => playlist.id === rawPlaylist.id);
+      if (stale) {
+        playlists.push(stale);
+        continue;
+      }
+    }
     const playlist = normalizeYoutubePlaylist(rawPlaylist, normalizedVideos);
     if (playlist) playlists.push(playlist);
   }
