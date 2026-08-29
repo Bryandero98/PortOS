@@ -287,10 +287,10 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${LTX2_DIR}/.git" ]]; then
     echo "📦 Cloning dgrauet/ltx-2-mlx (pinned to ${LTX2_PIN:0:12})..."
-    git clone https://github.com/dgrauet/ltx-2-mlx.git "${LTX2_DIR}"
+    git clone --progress https://github.com/dgrauet/ltx-2-mlx.git "${LTX2_DIR}"
   else
     echo "📦 Fetching ltx-2-mlx updates..."
-    (cd "${LTX2_DIR}" && git fetch origin)
+    (cd "${LTX2_DIR}" && git fetch --progress origin)
   fi
   echo "📦 Checking out pinned commit ${LTX2_PIN:0:12}..."
   git_checkout_pin "${LTX2_DIR}" "${LTX2_PIN}"
@@ -336,10 +336,10 @@ if [[ "$INSTALL_LTX25" == "1" ]]; then
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${LTX25_DIR}/.git" ]]; then
     echo "📦 Cloning MrMoferFRAN/ltx-2-mlx (pinned to ${LTX25_PIN:0:12})..."
-    git clone https://github.com/MrMoferFRAN/ltx-2-mlx.git "${LTX25_DIR}"
+    git clone --progress https://github.com/MrMoferFRAN/ltx-2-mlx.git "${LTX25_DIR}"
   else
     echo "📦 Fetching ltx-2.5-mlx updates..."
-    (cd "${LTX25_DIR}" && git fetch origin)
+    (cd "${LTX25_DIR}" && git fetch --progress origin)
   fi
   echo "📦 Checking out pinned commit ${LTX25_PIN:0:12}..."
   git_checkout_pin "${LTX25_DIR}" "${LTX25_PIN}"
@@ -383,10 +383,10 @@ if [[ "$INSTALL_FASTVIDEO" == "1" ]]; then
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${FASTVIDEO_DIR}/.git" ]]; then
     echo "📦 Cloning hao-ai-lab/FastVideo..."
-    git clone https://github.com/hao-ai-lab/FastVideo.git "${FASTVIDEO_DIR}"
+    git clone --progress https://github.com/hao-ai-lab/FastVideo.git "${FASTVIDEO_DIR}"
   else
     echo "📦 Fetching FastVideo updates..."
-    (cd "${FASTVIDEO_DIR}" && git fetch origin)
+    (cd "${FASTVIDEO_DIR}" && git fetch --progress origin)
   fi
   git_checkout_pin "${FASTVIDEO_DIR}" "${FASTVIDEO_PIN}"
   if [[ ! -x "${FASTVIDEO_PY}" ]]; then
@@ -434,10 +434,10 @@ if [[ "$INSTALL_WAN22" == "1" ]]; then
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${WAN22_DIR}/.git" ]]; then
     echo "📦 Cloning MLX-Gen..."
-    git clone https://github.com/lpalbou/mlx-gen.git "${WAN22_DIR}"
+    git clone --progress https://github.com/lpalbou/mlx-gen.git "${WAN22_DIR}"
   else
     echo "📦 Fetching MLX-Gen updates..."
-    (cd "${WAN22_DIR}" && git fetch origin)
+    (cd "${WAN22_DIR}" && git fetch --progress origin)
   fi
   git_checkout_pin "${WAN22_DIR}" "${WAN22_PIN}"
   if [[ ! -x "${WAN22_PY}" ]]; then
@@ -484,10 +484,10 @@ if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${MINIMAX_H3_DIR}/.git" ]]; then
     echo "📦 Cloning MiniMax H3 MLX..."
-    git clone https://github.com/PipeNetwork/minimax-h3-mlx.git "$MINIMAX_H3_DIR"
+    git clone --progress https://github.com/PipeNetwork/minimax-h3-mlx.git "$MINIMAX_H3_DIR"
   else
     echo "📦 Fetching MiniMax H3 MLX updates..."
-    git -C "$MINIMAX_H3_DIR" fetch origin
+    git -C "$MINIMAX_H3_DIR" fetch --progress origin
   fi
   git_checkout_pin "$MINIMAX_H3_DIR" "$MINIMAX_H3_PIN"
   # This runtime imports directly from the checkout, so HEAD alone is not an
@@ -605,10 +605,10 @@ if [[ "$INSTALL_HUNYUAN" == "1" ]]; then
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${HUNYUAN_DIR}/.git" ]]; then
     echo "📦 Cloning gaurav-nelson/HunyuanVideo_MLX..."
-    git clone https://github.com/gaurav-nelson/HunyuanVideo_MLX.git "${HUNYUAN_DIR}"
+    git clone --progress https://github.com/gaurav-nelson/HunyuanVideo_MLX.git "${HUNYUAN_DIR}"
   else
     echo "📦 Fetching HunyuanVideo_MLX updates..."
-    (cd "${HUNYUAN_DIR}" && git fetch origin)
+    (cd "${HUNYUAN_DIR}" && git fetch --progress origin)
   fi
   git_checkout_pin "${HUNYUAN_DIR}" "${HUNYUAN_PIN}"
   if [[ ! -x "${HUNYUAN_PY}" ]]; then
@@ -656,7 +656,7 @@ if [[ "$INSTALL_MUSICGEN" == "1" ]]; then
 
     if [[ ! -d "${MLX_EXAMPLES_DIR}/.git" ]]; then
       echo "📦 Cloning ml-explore/mlx-examples → ${MLX_EXAMPLES_DIR}..."
-      git clone https://github.com/ml-explore/mlx-examples.git "${MLX_EXAMPLES_DIR}"
+      git clone --progress https://github.com/ml-explore/mlx-examples.git "${MLX_EXAMPLES_DIR}"
     fi
     # Pin to a known commit when MLX_EXAMPLES_PIN is set to a SHA; default
     # 'main' tracks HEAD (the musicgen example is stable, but a pin keeps new

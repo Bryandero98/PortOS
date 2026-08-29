@@ -132,3 +132,29 @@ describe('setup-image-video venv layout handling (issue #4200)', () => {
     expect(abortProbeBlocks).toEqual([]);
   });
 });
+
+describe('setup-image-video clone/fetch progress reporting', () => {
+  // The runtime installer streams the script's stdout AND stderr to the Video
+  // Gen install modal, splitting on bare \r so progress redraws surface as log
+  // lines. git only writes that progress when stderr is a TTY, which it never
+  // is under the installer — so a clone without --progress prints its "Cloning
+  // into ..." line and then nothing at all until it finishes. On FastVideo
+  // (~434MB) that is a ~10 minute silent gap the UI cannot distinguish from a
+  // hung install.
+  it('passes --progress to every clone', () => {
+    const silentClones = source
+      .split('\n')
+      .filter((line) => /^\s*git clone\b/.test(line) && !line.includes('--progress'));
+
+    expect(silentClones).toEqual([]);
+  });
+
+  it('passes --progress to every fetch that is not deliberately quiet', () => {
+    const silentFetches = source
+      .split('\n')
+      .filter((line) => /\bgit\b.*\bfetch\b/.test(line) && !/^\s*#/.test(line))
+      .filter((line) => !line.includes('--progress') && !line.includes('--quiet'));
+
+    expect(silentFetches).toEqual([]);
+  });
+});
