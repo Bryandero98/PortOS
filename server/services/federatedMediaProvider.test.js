@@ -211,13 +211,28 @@ describe('federated media provider authorization', () => {
       status: 503,
       code: 'MEDIA_PROVIDER_DISABLED',
       severity: 'warning',
-      message: 'Federated media provider is disabled for peer "Example Peer"',
+      message: 'Federated media provider is disabled — refused request from peer "Example Peer"',
+      responseMessage: 'Federated media provider is disabled',
     });
     await expect(authorizeFederatedMediaPeer(req)).rejects.toMatchObject({
       status: 503,
       code: 'MEDIA_PROVIDER_DISABLED',
       severity: 'error',
-      message: 'Federated media provider is disabled for peer "Example Peer"',
+      message: 'Federated media provider is disabled — refused request from peer "Example Peer"',
+      responseMessage: 'Federated media provider is disabled',
+    });
+
+    // Provider config stays hidden until the caller proves both its credential
+    // and registered peer identity, even when the provider is disabled.
+    await expect(authorizeFederatedMediaPeer({
+      ...req,
+      portosAuthContext: { enabled: true, authenticated: false, method: null },
+    })).rejects.toMatchObject({
+      status: 403, code: 'MEDIA_PROVIDER_PEER_AUTH_REQUIRED',
+    });
+    state.peer = null;
+    await expect(authorizeFederatedMediaPeer(req)).rejects.toMatchObject({
+      status: 403, code: 'MEDIA_PROVIDER_PEER_FORBIDDEN',
     });
   });
 });

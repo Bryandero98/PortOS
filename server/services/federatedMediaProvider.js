@@ -319,10 +319,11 @@ export function normalizeFederatedMediaProviderConfig(settings) {
  * global error-toast channel. Job/asset requests keep normal error severity.
  */
 export async function authorizeFederatedMediaPeer(req, { statusProbe = false } = {}) {
-  const deny = (message, code, status = 503) => {
+  const deny = (message, code, status = 503, { responseMessage } = {}) => {
     throw new ServerError(message, {
       status,
       code,
+      ...(responseMessage ? { responseMessage } : {}),
       ...(statusProbe ? { severity: 'warning' } : {}),
     });
   };
@@ -347,13 +348,13 @@ export async function authorizeFederatedMediaPeer(req, { statusProbe = false } =
   }
   const config = normalizeFederatedMediaProviderConfig(await getSettings());
   if (!config.enabled) {
-    const peerLabel = typeof peer.name === 'string' && peer.name.trim()
-      ? `peer "${peer.name.trim()}"`
-      : 'the requesting peer';
+    const peerName = typeof peer.name === 'string' ? peer.name.trim().replace(/\s+/g, ' ') : '';
+    const peerLabel = peerName ? `peer "${peerName}"` : `peer ${callerId.slice(0, 8)}…`;
     deny(
-      `Federated media provider is disabled for ${peerLabel}`,
+      `Federated media provider is disabled — refused request from ${peerLabel}`,
       'MEDIA_PROVIDER_DISABLED',
       503,
+      { responseMessage: 'Federated media provider is disabled' },
     );
   }
   return { callerId, config };
