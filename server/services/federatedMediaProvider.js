@@ -313,22 +313,48 @@ export function normalizeFederatedMediaProviderConfig(settings) {
  * The provider is stricter than ordinary federation reads: it never inherits
  * authGate's auth-off bypass and never accepts a browser session. A verified
  * Basic credential plus a registered, enabled caller is required every time.
+ * Status discovery is expected to encounter disabled or misconfigured peers,
+ * so callers can mark those denials as warnings: the HTTP response still tells
+ * the consumer exactly why discovery failed, but it stays off this provider's
+ * global error-toast channel. Job/asset requests keep normal error severity.
  */
-export async function authorizeFederatedMediaPeer(req) {
-  const config = normalizeFederatedMediaProviderConfig(await getSettings());
-  if (!config.enabled) {
-    unavailable('Federated media provider is disabled', 'MEDIA_PROVIDER_DISABLED');
-  }
+export async function authorizeFederatedMediaPeer(req, { statusProbe = false } = {}) {
+  const deny = (message, code, status = 503) => {
+    throw new ServerError(message, {
+      status,
+      code,
+      ...(statusProbe ? { severity: 'warning' } : {}),
+    });
+  };
   if (req.portosAuthContext?.method !== 'basic' || req.portosAuthContext?.authenticated !== true) {
-    unavailable('Verified peer Basic authentication is required', 'MEDIA_PROVIDER_PEER_AUTH_REQUIRED', 403);
+    deny(
+      'Verified peer Basic authentication is required',
+      'MEDIA_PROVIDER_PEER_AUTH_REQUIRED',
+      403,
+    );
   }
   const callerId = readCallerInstanceId(req);
   if (!callerId) {
-    unavailable('A peer instance id is required', 'MEDIA_PROVIDER_PEER_ID_REQUIRED', 403);
+    deny('A peer instance id is required', 'MEDIA_PROVIDER_PEER_ID_REQUIRED', 403);
   }
   const peer = await findPeerById(callerId);
   if (!peer || peer.enabled === false) {
-    unavailable('The caller is not an enabled registered peer', 'MEDIA_PROVIDER_PEER_FORBIDDEN', 403);
+    deny(
+      'The caller is not an enabled registered peer',
+      'MEDIA_PROVIDER_PEER_FORBIDDEN',
+      403,
+    );
+  }
+  const config = normalizeFederatedMediaProviderConfig(await getSettings());
+  if (!config.enabled) {
+    const peerLabel = typeof peer.name === 'string' && peer.name.trim()
+      ? `peer "${peer.name.trim()}"`
+      : 'the requesting peer';
+    deny(
+      `Federated media provider is disabled for ${peerLabel}`,
+      'MEDIA_PROVIDER_DISABLED',
+      503,
+    );
   }
   return { callerId, config };
 }
