@@ -9120,7 +9120,7 @@
       "sources": [
         {
           "source": "server/routes/federatedMedia.js",
-          "line": 66
+          "line": 70
         }
       ]
     },
@@ -9131,7 +9131,7 @@
       "sources": [
         {
           "source": "server/routes/federatedMedia.js",
-          "line": 79
+          "line": 83
         }
       ]
     },
@@ -9142,7 +9142,7 @@
       "sources": [
         {
           "source": "server/routes/federatedMedia.js",
-          "line": 85
+          "line": 89
         }
       ]
     },
@@ -9153,7 +9153,7 @@
       "sources": [
         {
           "source": "server/routes/federatedMedia.js",
-          "line": 96
+          "line": 100
         }
       ]
     },
@@ -9164,7 +9164,7 @@
       "sources": [
         {
           "source": "server/routes/federatedMedia.js",
-          "line": 102
+          "line": 106
         }
       ]
     },
@@ -9175,7 +9175,7 @@
       "sources": [
         {
           "source": "server/routes/federatedMedia.js",
-          "line": 108
+          "line": 112
         }
       ]
     },
