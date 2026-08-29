@@ -163,3 +163,82 @@ describe('CharacterDetailEditor — character framework (#2175)', () => {
     expect(screen.getByDisplayValue('I only matter if I win')).toBeInTheDocument();
   });
 });
+
+describe('CharacterDetailEditor — production package (#5378)', () => {
+  it('marks a voice-canon revision as approved', () => {
+    const onPatch = vi.fn();
+    render(<CharacterDetailEditor entry={ARIA} characters={[ARIA]} onPatch={onPatch} />);
+    fireEvent.click(screen.getByRole('button', { name: /Voice canon/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Candidate revision/i }));
+    expect(onPatch).toHaveBeenCalledWith({
+      voiceCanon: { version: 1, approved: true },
+    });
+  });
+
+  it('adds an identity reference as a candidate and surfaces missing required roles', () => {
+    const onPatch = vi.fn();
+    render(<CharacterDetailEditor entry={{ ...ARIA, imageRefs: ['neutral.png'] }} characters={[ARIA]} onPatch={onPatch} />);
+    fireEvent.click(screen.getByRole('button', { name: /Identity pack/i }));
+    expect(screen.getByText(/Missing: neutral, profile, full-body/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Add reference/i }));
+    expect(onPatch).toHaveBeenCalledWith({
+      identityPack: { assets: [{ imageRef: 'neutral.png', role: 'neutral', approved: false }] },
+    });
+  });
+
+  it('revokes approval when an approved voice revision changes', () => {
+    const onPatch = vi.fn();
+    render(<CharacterDetailEditor entry={{
+      ...ARIA,
+      voiceCanon: { version: 2, description: 'measured', approved: true },
+    }} characters={[ARIA]} onPatch={onPatch} />);
+    fireEvent.click(screen.getByRole('button', { name: /Voice canon/i }));
+    const description = screen.getByRole('textbox', { name: /voice canon description/i });
+    fireEvent.change(description, { target: { value: 'more urgent' } });
+    fireEvent.blur(description);
+    expect(onPatch).toHaveBeenCalledWith({
+      voiceCanon: { version: 2, description: 'more urgent', approved: false },
+    });
+  });
+
+  it('returns a replacement identity asset to candidate state', () => {
+    const onPatch = vi.fn();
+    render(<CharacterDetailEditor entry={{
+      ...ARIA,
+      imageRefs: ['neutral.png', 'replacement.png'],
+      identityPack: { assets: [{ imageRef: 'neutral.png', role: 'neutral', approved: true }] },
+    }} characters={[ARIA]} onPatch={onPatch} />);
+    fireEvent.click(screen.getByRole('button', { name: /Identity pack/i }));
+    fireEvent.change(screen.getByRole('combobox', { name: /identity asset 1 image/i }), {
+      target: { value: 'replacement.png' },
+    });
+    expect(onPatch).toHaveBeenCalledWith({
+      identityPack: { assets: [{ imageRef: 'replacement.png', role: 'neutral', approved: false }] },
+    });
+  });
+
+  it('adds only a complete pronunciation row', () => {
+    const onPatch = vi.fn();
+    render(<CharacterDetailEditor entry={ARIA} characters={[ARIA]} onPatch={onPatch} />);
+    fireEvent.click(screen.getByRole('button', { name: /Voice canon/i }));
+
+    const addButton = screen.getByRole('button', { name: /Add pronunciation/i });
+    fireEvent.change(screen.getByRole('textbox', { name: /new pronunciation term/i }), {
+      target: { value: 'Aster' },
+    });
+    expect(addButton).toBeDisabled();
+    expect(onPatch).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: /new pronunciation value/i }), {
+      target: { value: 'AS-ter' },
+    });
+    fireEvent.click(addButton);
+    expect(onPatch).toHaveBeenCalledWith({
+      voiceCanon: {
+        version: 1,
+        approved: false,
+        pronunciations: [{ term: 'Aster', pronunciation: 'AS-ter' }],
+      },
+    });
+  });
+});
