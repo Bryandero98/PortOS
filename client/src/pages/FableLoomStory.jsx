@@ -47,7 +47,8 @@ import {
 
 const CONTINUITY_FALLBACK_CODES = new Set([
   'IMAGE_EDIT_UNSUPPORTED_MODE',
-  'INIT_IMAGE_NOT_FOUND',
+  'REFERENCE_IMAGE_NOT_FOUND',
+  'REFERENCE_IMAGES_FLUX2_ONLY',
 ]);
 
 export default function FableLoomStory({ view = 'graph' }) {
@@ -249,7 +250,7 @@ export default function FableLoomStory({ view = 'graph' }) {
       });
     if (!queued) return null;
     if (continuityFallbackCode) {
-      toast.warning(continuityFallbackCode === 'INIT_IMAGE_NOT_FOUND'
+      toast.warning(continuityFallbackCode === 'REFERENCE_IMAGE_NOT_FOUND'
         ? 'The prior shot image is missing — rendering this scene without continuity conditioning'
         : 'The current image backend cannot use the prior shot — rendering this scene without continuity conditioning');
     }

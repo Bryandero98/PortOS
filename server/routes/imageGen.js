@@ -56,6 +56,8 @@ const MAX_LORAS = 8;
 const MAX_REFERENCE_IMAGES = 4;
 const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;
 const updatePromptSchema = z.object({ prompt: z.string().max(MAX_PROMPT_LENGTH) });
+const galleryImageFilenameSchema = (label) => z.string().max(256)
+  .regex(/^[^/\\]+\.(png|jpg|jpeg|webp)$/i, `${label} must be a basename ending in png/jpg/jpeg/webp`);
 
 router.get('/style-presets', (_req, res) => res.json(STYLE_PRESETS));
 
@@ -94,16 +96,18 @@ const generateSchema = z.object({
   // i2i: pick an existing gallery image (basename) as the init image. If
   // initImage was uploaded via multipart, this is ignored in favor of the
   // upload. Strength: 0.0 = ignore source, 1.0 = max influence.
-  initImageFile: z.string().max(256).regex(/^[^/\\]+\.(png|jpg|jpeg|webp)$/i, 'init image must be a basename ending in png/jpg/jpeg/webp').optional(),
+  initImageFile: galleryImageFilenameSchema('init image').optional(),
   initImageStrength: z.number().min(0).max(1).optional(),
   // Multi-reference image conditioning. Up to 4 reference images are uploaded
-  // as separate multipart fields `referenceImage1` … `referenceImage4`;
+  // as separate multipart fields `referenceImage1` … `referenceImage4`, or
+  // named from the existing gallery through JSON `referenceImageFiles`;
   // `referenceStrengths` is a parallel array of weights (0.0 = ignore the
-  // reference, 1.0 = full influence). The schema only constrains the strengths
-  // array — file presence is enforced at the upload layer, and the route
-  // pairs filled slots with their strengths positionally. Strengths are honored
+  // reference, 1.0 = full influence), ordered as named files then uploads.
+  // Uploaded file presence is enforced at the upload layer, and the route
+  // pairs all surviving slots with their strengths positionally. Strengths are honored
   // numerically only by local FLUX.2; the cloud CLIs expose no per-reference
   // weight, so they receive the paths alone.
+  referenceImageFiles: z.array(galleryImageFilenameSchema('reference image')).max(MAX_REFERENCE_IMAGES).optional(),
   referenceStrengths: z.array(z.number().min(0).max(1)).max(MAX_REFERENCE_IMAGES).optional(),
   // Per-render override of the cleaners. When omitted, the route inherits
   // from `settings.imageGen.{mode}.{cleanC2PA,denoise}`. Explicit booleans
@@ -236,11 +240,11 @@ function coerceFormFields(body) {
     const raw = Array.isArray(body.referenceStrengths) ? body.referenceStrengths : [body.referenceStrengths];
     body.referenceStrengths = raw.map((v) => (typeof v === 'string' && v !== '' ? Number(v) : v));
   }
-  // LoRA fields are repeated multipart keys (one per selected LoRA). A SINGLE
-  // selected LoRA arrives as a bare string, not a one-element array — wrap it
-  // so Zod's `z.array(...)` accepts it. `loraScales` numbers also arrive as
-  // strings, so coerce element-wise like referenceStrengths above.
-  for (const f of ['loraFilenames', 'loraPaths']) {
+  // Array fields are repeated multipart keys. A single selected value arrives
+  // as a bare string, not a one-element array — wrap it so Zod accepts it.
+  // `loraScales` numbers also arrive as strings, so coerce element-wise like
+  // referenceStrengths above.
+  for (const f of ['loraFilenames', 'loraPaths', 'referenceImageFiles']) {
     if (body[f] != null && !Array.isArray(body[f])) body[f] = [body[f]];
   }
   if (body.loraScales != null) {

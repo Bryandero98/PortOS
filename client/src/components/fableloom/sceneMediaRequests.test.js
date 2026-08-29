@@ -33,8 +33,8 @@ describe('FableLoom scene media request composition', () => {
 
     expect(buildFableLoomImageRequest({ loom, episode, episodeId: 'ep-1', node: target }))
       .toMatchObject({
-        initImageFile: 'prior-shot.png',
-        initImageStrength: 0.4,
+        referenceImageFiles: ['prior-shot.png'],
+        referenceStrengths: [0.4],
       });
   });
 
