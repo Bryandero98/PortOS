@@ -20,6 +20,10 @@ vi.mock('../services/voice/tts.js', () => ({
 // Meeting capture transcribes over the network (whisper.cpp's HTTP server);
 // stub it so the capture-routing tests below run offline and deterministically.
 vi.mock('../services/voice/stt.js', () => ({ transcribe: vi.fn() }));
+// The call-host audio path (runCallUtterance) drives the full LLM/tools
+// pipeline; stub it so the barge-in test below can observe exactly what
+// signal a call turn was given without a real STT/LLM/TTS round trip.
+vi.mock('../services/voice/pipeline.js', () => ({ runTurn: vi.fn(async () => ({})) }));
 
 const { truncateOnWordBoundary, registerVoiceHandlers } = await import('./voice.js');
 const {
@@ -28,6 +32,7 @@ const {
   __resetVoiceOutput,
 } = await import('../services/voice/voiceOutput.js');
 const { transcribe } = await import('../services/voice/stt.js');
+const { runTurn } = await import('../services/voice/pipeline.js');
 const {
   attachHost: attachCallHost,
   __resetCallSession,
@@ -481,5 +486,43 @@ describe('voice:capture socket handlers (meeting capture)', () => {
     registerVoiceHandlers(socket);
     expect(() => socket.fire('voice:call:audio', { pcm: loudFrame() })).not.toThrow();
     expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it('barge-in aborts the in-flight call turn\'s own signal, not just the widget state.ctrl', async () => {
+    // Regression: runCallUtterance previously ran the phone-call pipeline
+    // with no AbortController at all (state.ctrl belongs to the
+    // browser-widget voice:turn/voice:text path), so the barge-in handler's
+    // `state.ctrl?.abort()` was a no-op for calls — the caller talking over
+    // a reply never actually cancelled it.
+    const socket = makeFakeSocket();
+    registerVoiceHandlers(socket);
+    await socket.fire('voice:call:attach');
+
+    let capturedSignal;
+    let releaseFirstTurn;
+    runTurn.mockImplementationOnce(({ signal }) => {
+      capturedSignal = signal;
+      return new Promise((resolve) => { releaseFirstTurn = resolve; });
+    });
+
+    // First utterance: loud frames start a turn, then silence endpoints it —
+    // runCallUtterance fires and stays pending (call.busy === true).
+    for (let i = 0; i < 14; i += 1) socket.fire('voice:call:audio', { pcm: loudFrame() });
+    for (let i = 0; i < 36; i += 1) socket.fire('voice:call:audio', { pcm: silentFrame() });
+    await flushMicrotasks();
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal.aborted).toBe(false);
+
+    // Caller talks over the still-in-flight reply — the endpointer reports
+    // speaking again while call.busy is true.
+    socket.fire('voice:call:audio', { pcm: loudFrame() });
+    await flushMicrotasks();
+
+    expect(capturedSignal.aborted).toBe(true);
+    expect(socket.emitted.some((e) => e.event === 'voice:interrupt' && e.payload.reason === 'barge-in')).toBe(true);
+
+    releaseFirstTurn({});
+    await flushMicrotasks();
   });
 });

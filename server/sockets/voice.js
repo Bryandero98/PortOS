@@ -397,7 +397,7 @@ export const registerVoiceHandlers = (socket) => {
   // `runTurn` utterances the microphone produces, and the destination of the
   // reply, which is played into the call rather than out of the speakers.
   // ---------------------------------------------------------------------------
-  const call = { endpointer: null, busy: false };
+  const call = { endpointer: null, busy: false, ctrl: null };
 
   // Speak the line the caller was rung to hear, once, as soon as the far end
   // picks up. Without this a mind-placed call connects to silence and the user
@@ -434,6 +434,9 @@ export const registerVoiceHandlers = (socket) => {
   const runCallUtterance = async (utterance) => {
     call.busy = true;
     markSpeaking();
+    call.ctrl?.abort();
+    call.ctrl = new AbortController();
+    const { signal } = call.ctrl;
     let spoken = '';
     try {
       await runTurn({
@@ -441,12 +444,14 @@ export const registerVoiceHandlers = (socket) => {
         mimeType: 'audio/wav',
         history: state.history,
         state,
+        signal,
         // A mind-placed call carries the mind's own briefing, so the voice on
         // the phone continues that conversation instead of answering cold.
         systemContext: getCallContext(),
         // The pipeline speaks the widget's event vocabulary; only the audio is
         // re-addressed, so persona, tools, and the confirm gate are unchanged.
         emit: (event, data) => {
+          if (signal.aborted) return;
           if (event === 'voice:tts:audio') {
             spoken = data?.sentence || spoken;
             socket.emit('voice:call:tts', data);
@@ -456,8 +461,10 @@ export const registerVoiceHandlers = (socket) => {
           socket.emit(event, data);
         },
       });
+      if (signal.aborted) return;
       if (spoken) recordTurn('assistant', spoken);
     } catch (err) {
+      if (signal.aborted) return;
       console.error(`📞 call turn failed: ${err.message}`);
       socket.emit('voice:error', { stage: 'call', message: err.message });
     } finally {
@@ -510,7 +517,7 @@ export const registerVoiceHandlers = (socket) => {
         // Barge-in: the caller talking over a reply cancels it, exactly as
         // pressing the widget's interrupt does.
         if (call.endpointer.speaking && call.busy) {
-          state.ctrl?.abort();
+          call.ctrl?.abort();
           state.pendingDestructive = null;
           socket.emit('voice:interrupt', { reason: 'barge-in' });
         }
@@ -634,6 +641,7 @@ export const registerVoiceHandlers = (socket) => {
     // keeps exactly one home.
     releaseVoiceOutput(socket);
     state.ctrl?.abort();
+    call.ctrl?.abort();
     // Abort any pending UI refresh waiters so their turns don't hang.
     const waiters = state.uiWaiters;
     state.uiWaiters = [];
