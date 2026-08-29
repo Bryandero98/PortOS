@@ -586,15 +586,15 @@ export default function FableLoomStory({ view = 'graph' }) {
               : { '--dvh-cap': '45vh', '--dvh-cap-dynamic': '45dvh' }}
           >
             {node && (
-              <div className="relative flex shrink-0 items-center justify-center border-b border-port-border px-4 py-2 lg:hidden">
+              <div className="relative flex min-h-[4.5rem] shrink-0 items-center justify-center border-b border-port-border px-4 py-3 lg:hidden">
                 <span className="h-1 w-10 rounded-full bg-port-border" aria-hidden="true" />
                 <button
                   type="button"
                   onClick={clearNodeSelection}
                   aria-label="Close scene details"
-                  className="absolute right-2 top-1/2 flex min-h-[44px] min-w-[44px] -translate-y-1/2 items-center justify-center rounded-lg text-port-text-muted hover:bg-port-border/50 hover:text-port-text"
+                  className="absolute right-3 top-1/2 flex min-h-[56px] min-w-[56px] -translate-y-1/2 items-center justify-center rounded-xl text-port-text-muted hover:bg-port-border/50 hover:text-port-text"
                 >
-                  <X size={18} />
+                  <X size={24} />
                 </button>
               </div>
             )}

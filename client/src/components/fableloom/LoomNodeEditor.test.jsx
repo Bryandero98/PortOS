@@ -12,7 +12,7 @@ vi.mock('../../services/api', () => ({
 }));
 
 import {
-  addLoomTransition, branchLoomNode, deleteLoomTransition, updateLoomNode, updateLoomTransition,
+  addLoomTransition, branchLoomNode, deleteLoomNode, deleteLoomTransition, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import LoomNodeEditor from './LoomNodeEditor';
 
@@ -79,6 +79,34 @@ const renderHelperEditor = () => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('LoomNodeEditor paths', () => {
+  it('requires confirmation before deleting a scene', async () => {
+    const user = userEvent.setup();
+    const onClearSelection = vi.fn();
+    const nodes = makeNodes([]);
+    deleteLoomNode.mockResolvedValue({ id: 'loom-1' });
+    render(
+      <LoomNodeEditor
+        loom={loom}
+        episode={{ id: 'ep-1', startNodeId: 'n1', nodes }}
+        node={nodes[0]}
+        onLoomUpdate={vi.fn()}
+        onClearSelection={onClearSelection}
+      />,
+    );
+
+    const trash = screen.getByRole('button', { name: 'Delete scene' });
+    expect(trash).toHaveClass('min-h-[44px]', 'min-w-[44px]');
+    await user.click(trash);
+
+    expect(deleteLoomNode).not.toHaveBeenCalled();
+    expect(screen.getByRole('group')).toHaveTextContent('Delete scene?');
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleteLoomNode).toHaveBeenCalledWith('loom-1', 'ep-1', 'n1'));
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
   it('creates a path server-side first, so the new row already carries its id', async () => {
     const user = userEvent.setup();
     const minted = { id: 'tr-9', targetNodeId: 'n2', intent: '', triggers: [], description: '' };
@@ -314,4 +342,3 @@ describe('LoomNodeEditor scene media', () => {
     expect(screen.getByText(/Tip: Render dialogue separately/)).toBeInTheDocument();
   });
 });
-

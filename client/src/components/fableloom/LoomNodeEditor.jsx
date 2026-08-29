@@ -252,12 +252,17 @@ export default function LoomNodeEditor({
           )}
         </div>
         {del.isConfirming(node.id) ? (
-          <ConfirmButtonPair prompt="Delete scene?" onConfirm={handleDelete} onCancel={del.cancelDelete} />
+          <ConfirmButtonPair
+            prompt="Delete scene?"
+            onConfirm={() => del.confirmDelete(handleDelete)}
+            onCancel={del.cancelDelete}
+            largeTouchTargets
+          />
         ) : (
           <button
             type="button"
             onClick={() => del.requestDelete(node.id)}
-            className="text-port-text-muted hover:text-port-error"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-port-text-muted hover:bg-port-error/10 hover:text-port-error"
             aria-label="Delete scene"
           >
             <Trash2 size={16} />
