@@ -108,6 +108,8 @@ describe('IdeaLoom Markdown contract', () => {
     const withProperties = rendered.replace('title:', 'aliases:\n  - "Example alias"\ntitle:');
 
     expect(parseIdeaLoomMarkdown(withProperties)).toEqual(expect.objectContaining({ ok: true }));
+    expect(parseIdeaLoomMarkdown(withProperties.replace('tags:\n  - "idea-loom"', 'tags: idea-loom')))
+      .toEqual(expect.objectContaining({ ok: true }));
   });
 
   it('rejects malformed metadata and non-dense numbered ideas', () => {

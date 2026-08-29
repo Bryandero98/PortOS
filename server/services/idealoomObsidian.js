@@ -119,6 +119,12 @@ const parseFrontmatter = (lines) => {
       index = propertyIndex - 1;
       continue;
     }
+    if (key === 'tags') {
+      const tag = decodeScalar(rawValue);
+      if (tag === null) return { error: `invalid tags at line ${index + 1}` };
+      values.tags = [tag.replace(/^#/, '')];
+      continue;
+    }
     if (key === 'tags' && rawValue.trim().startsWith('[') && rawValue.trim().endsWith(']')) {
       const inner = rawValue.trim().slice(1, -1).trim();
       values.tags = inner ? inner.split(',').map((entry) => decodeScalar(entry)).filter(Boolean).map((tag) => tag.replace(/^#/, '')) : [];

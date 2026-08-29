@@ -223,10 +223,13 @@ numbered Markdown shape, uses a date/title filename for new lists, and keeps an
 imported filename stable.
 
 The exchange result includes counts and per-note details for imported,
-exported, skipped, malformed, unavailable, and failed work. List records and
-vault identifiers remain under `data/brain/idealoom-lists/` and never enter
-Brain federation or the memory bridge. Conflict-safe reconciliation and
-automatic-sync behavior are intentionally handled by the follow-up sync slice.
+exported, skipped, conflicted, malformed, unavailable, and failed work. When a
+note and its local list both changed since the last exchange, import and export
+fail closed with a conflict result rather than overwriting either side. List
+records and vault identifiers remain under `data/brain/idealoom-lists/` and
+never enter Brain federation or the memory bridge. Automatic-sync behavior and
+user-directed conflict resolution are intentionally handled by the follow-up
+sync slice.
 
 ## Implementation Files
 
