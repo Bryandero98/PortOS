@@ -393,15 +393,18 @@ describe('federatedMediaSupports', () => {
     expect(federatedMediaDeclaresFeatures({ features: 'lyrics' })).toBe(false);
   });
 
-  // Gating is identical for both "no"s; only a MESSAGE may distinguish them,
-  // and which missing signal indicts the peer's build differs per feature.
+  // Gating is identical for both "no"s; only a MESSAGE may distinguish them.
+  // A present status without a list proves a lyrics peer predates the status-root
+  // vocabulary, but not input-assets support because that signal is per-model.
   it('attributes a denial to the build only where the missing signal proves it', () => {
     const withBlock = capability({ inputAssets: { roles: ['initImage'] } });
     // A published list that omits the feature is a positive denial either way.
     expect(federatedMediaDeniesFeature({ features: [] }, 'lyrics', capability())).toBe(true);
     expect(federatedMediaDeniesFeature({ features: ['lyrics'] }, 'inputAssets', withBlock)).toBe(true);
-    // No list and no capability-level tell leaves the build version unknown.
-    expect(federatedMediaDeniesFeature({}, 'lyrics', capability())).toBe(false);
+    // A present status without a list is an old-build denial for lyrics now that
+    // every supported lyrics peer publishes the status-root vocabulary.
+    expect(federatedMediaDeniesFeature({}, 'lyrics', capability())).toBe(true);
+    expect(federatedMediaDeniesFeature(null, 'lyrics', capability())).toBe(false);
     // ...while an absent inputAssets block is ambiguous — a healthy peer may
     // speak conditioning and simply have a text-only model configured, so it
     // must not be told to update itself.

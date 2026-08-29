@@ -471,8 +471,8 @@ router.post('/generate', asyncHandler(async (req, res) => {
       }
       if (!federatedMediaSupports(resolved.status, 'lyrics', capability)) {
         // `federatedMediaDeniesFeature` keeps message selection separate from
-        // the shared fail-closed gate, so only a positively published feature
-        // vocabulary is described as a build-level denial here.
+        // the shared fail-closed gate: a present pre-vocabulary status is also
+        // a build-level denial for lyrics, while a missing status is unknown.
         throw new ServerError(
           federatedMediaDeniesFeature(resolved.status, 'lyrics', capability)
             ? 'The selected peer runs a PortOS build that cannot carry lyrics to its provider. Update the peer, or render this track locally.'

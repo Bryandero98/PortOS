@@ -695,6 +695,23 @@ describe('music routes', () => {
     expect(mediaQueue.enqueue).not.toHaveBeenCalled();
   });
 
+  it('POST /generate identifies a peer build that omits the lyrics feature', async () => {
+    const peer = { id: '00000000-0000-4000-8000-000000000001', enabled: true };
+    remoteProvider.peers = [peer];
+    remoteProvider.resolve.mockResolvedValueOnce({
+      peer,
+      capability: remoteLyricCapability({ lyrics: true }),
+      status: { features: ['inputAssets'] },
+    });
+
+    const r = await request(app).post('/api/music/generate').send(remoteLyricRequest(peer));
+
+    expect(r.status).toBe(400);
+    expect(r.body.code).toBe('MEDIA_PROVIDER_LYRICS_UNSUPPORTED');
+    expect(r.body.error).toContain('Update the peer');
+    expect(mediaQueue.enqueue).not.toHaveBeenCalled();
+  });
+
   it('POST /generate accepts lyrics from a peer that advertises only the status-root feature', async () => {
     const peer = { id: '00000000-0000-4000-8000-000000000001', enabled: true };
     remoteProvider.peers = [peer];

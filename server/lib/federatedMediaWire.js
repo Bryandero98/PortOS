@@ -393,9 +393,9 @@ const federatedMediaFeaturesSchema = z.array(z.unknown()).max(256)
 // previous build advertises that genuinely per-model fact in the capability
 // block. A published list WINS over it outright rather than being OR'd with it
 // — a peer that told us its whole vocabulary and left this feature out has
-// positively denied it. `decisive` records whether a FAILING legacy tell proves
-// the peer's build is old; the input-assets block is not decisive because a
-// healthy peer may simply have a text-only model configured.
+// positively denied it. The input-assets block cannot prove that the peer's
+// build is old because a healthy peer may simply have a text-only model
+// configured.
 //
 // Both gate identically; only a message that blames the BUILD may distinguish
 // them. See federatedMediaDeniesFeature.
@@ -411,7 +411,7 @@ const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze(Object.assign(Object.c
   // its own array-excluding record guard, and a malformed `inputAssets: []`
   // reading true here and false there is exactly the provider/consumer
   // disagreement this helper exists to prevent.
-  inputAssets: { tell: (capability) => isPlainObject(capability?.inputAssets), decisive: false },
+  inputAssets: { tell: (capability) => isPlainObject(capability?.inputAssets) },
 }));
 
 /**
@@ -445,9 +445,8 @@ export function federatedMediaDeclaresFeatures(status) {
  * `federatedMediaSupports` flattens two different "no"s, because both must gate
  * the same way: a peer that published a list and left the feature out has
  * POSITIVELY denied it, while a peer that published no list may simply predate
- * the list — or, for an ambiguous feature, speak it and have nothing configured
- * that uses it. Only a MESSAGE may distinguish them, and telling a healthy peer
- * to update itself is worse than giving the generic remedy.
+ * the list. A present status with no list proves that a peer predates the
+ * status-root feature vocabulary for `lyrics`; an absent status does not.
  *
  * @param {object|null} status - a validated provider status payload
  * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
@@ -458,7 +457,7 @@ export function federatedMediaDeclaresFeatures(status) {
 export function federatedMediaDeniesFeature(status, feature, capability = null) {
   if (federatedMediaSupports(status, feature, capability)) return false;
   return federatedMediaDeclaresFeatures(status)
-    || FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.decisive === true;
+    || (feature === 'lyrics' && isPlainObject(status));
 }
 
 // Strip unknown fields from peer responses before persisting or exposing them
