@@ -76,15 +76,25 @@ export default function LoomSceneMedia({
   const buttonClass = compact
     ? 'inline-flex min-w-0 items-center justify-center gap-1 rounded border border-port-border bg-port-bg/80 px-1.5 py-1 text-[9px] text-port-text hover:border-port-accent hover:text-port-accent disabled:opacity-45'
     : 'inline-flex items-center justify-center gap-1.5 rounded border border-port-border px-2.5 py-1.5 text-xs text-port-text hover:border-port-accent hover:text-port-accent disabled:opacity-45';
+  // WebKit paints positioned HTML inside a transformed SVG foreignObject at
+  // the SVG origin. Compact media lives in that exact shape, so overlap its
+  // preview/status with one grid cell instead of relative/absolute positioning.
+  const previewClass = compact
+    ? 'grid flex-1 min-h-0 overflow-hidden rounded border border-port-border bg-port-bg'
+    : 'relative min-h-0 overflow-hidden rounded border border-port-border bg-port-bg aspect-video max-h-56';
+  const previewItemClass = compact ? 'col-start-1 row-start-1 min-h-0' : '';
+  const noticePositionClass = compact
+    ? 'col-start-1 row-start-1 self-end'
+    : 'absolute inset-x-0 bottom-0';
 
   return (
     <div className={compact ? 'flex h-full min-h-0 flex-col gap-1' : 'space-y-2'}>
-      <div className={`relative min-h-0 overflow-hidden rounded border border-port-border bg-port-bg ${compact ? 'flex-1' : 'aspect-video max-h-56'}`}>
+      <div className={previewClass}>
         {showFinalVideo ? (
           <video
             src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
             aria-label={`${title} video preview`}
-            className="h-full w-full object-cover"
+            className={`${previewItemClass} h-full w-full object-cover`}
             controls={!compact}
             autoPlay={compact}
             muted={compact}
@@ -98,33 +108,33 @@ export default function LoomSceneMedia({
           <img
             src={`data:image/png;base64,${liveFrame}`}
             alt={`${title} ${activeKind} generation preview`}
-            className="h-full w-full object-cover"
+            className={`${previewItemClass} h-full w-full object-cover`}
           />
         ) : showStill ? (
           <MediaImage
             src={`/data/images/${node.image}`}
             alt={`${title} image preview`}
-            className="h-full w-full object-cover"
+            className={`${previewItemClass} h-full w-full object-cover`}
           />
         ) : showSpinner ? (
-          <div className="grid h-full min-h-16 place-items-center text-port-accent">
+          <div className={`${previewItemClass} grid h-full min-h-16 place-items-center text-port-accent`}>
             <Loader2 size={compact ? 16 : 22} className="animate-spin" aria-hidden="true" />
           </div>
         ) : (
-          <div className="flex h-full min-h-16 flex-col items-center justify-center gap-1 text-port-text-muted">
+          <div className={`${previewItemClass} flex h-full min-h-16 flex-col items-center justify-center gap-1 text-port-text-muted`}>
             <ImagePlus size={compact ? 15 : 22} aria-hidden="true" />
             <span className={compact ? 'text-[9px]' : 'text-xs'}>No scene media yet</span>
           </div>
         )}
 
         {activeLabel && (
-          <div className="port-media-overlay absolute inset-x-0 bottom-0 px-2 py-1 text-center text-[9px] font-medium" role="status">
+          <div className={`port-media-overlay ${noticePositionClass} px-2 py-1 text-center text-[9px] font-medium`} role="status">
             {activeLabel}
           </div>
         )}
         {noticeLabel && (
           <div
-            className="port-media-overlay-strong absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 px-2 py-1 text-[9px] font-medium text-port-error"
+            className={`port-media-overlay-strong ${noticePositionClass} flex items-center justify-center gap-1 px-2 py-1 text-[9px] font-medium text-port-error`}
             role={compact ? 'alert' : undefined}
             title={noticeJob.error || noticeLabel}
           >

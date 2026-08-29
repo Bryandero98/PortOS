@@ -123,6 +123,24 @@ describe('LoomCanvas', () => {
     expect(screen.getAllByRole('button', { name: 'Generate image' })[0]).toBeEnabled();
   });
 
+  it('keeps compact preview layers statically positioned inside the SVG node for WebKit', () => {
+    render(
+      <LoomCanvas
+        episode={episode()}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateImage={() => {}}
+        onGenerateVideo={() => {}}
+        mediaJobs={{ n1: { image: { jobId: 'image-1', status: 'running', progress: 0.42, currentImage: 'AAAA' } } }}
+      />,
+    );
+
+    const preview = screen.getByAltText('The Gate image generation preview').parentElement;
+    expect(preview).toHaveClass('grid');
+    expect(preview).not.toHaveClass('relative');
+    expect(screen.getByText('Generating image 42%')).not.toHaveClass('absolute');
+  });
+
   it('selects a node on keyboard activation', () => {
     const onSelectNode = vi.fn();
     render(<LoomCanvas episode={episode()} selectedNodeId={null} onSelectNode={onSelectNode} />);
