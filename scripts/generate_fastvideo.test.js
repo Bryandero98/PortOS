@@ -7,6 +7,7 @@ import { resolveTestPython } from '../server/lib/testHelper.js';
 const script = join(dirname(fileURLToPath(import.meta.url)), 'generate_fastvideo.py');
 const pyBin = resolveTestPython();
 const runPython = (source) => execFileSync(pyBin, ['-c', source, script], { encoding: 'utf8' });
+const lines = (output) => output.trim().split('\n').map((line) => line.trimEnd());
 
 const importRunner = [
   'import importlib.util, sys',
@@ -25,7 +26,7 @@ describe.skipIf(!pyBin)('generate_fastvideo.py', () => {
       'print(runner.translate_line("denoising step 3 / 3 complete"))',
     ].join('\n')}`);
 
-    expect(output.trim().split('\n')).toEqual([
+    expect(lines(output)).toEqual([
       'STATUS:FastVideo: Loading checkpoint: 100%|##########| 10/10',
       'STAGE:fastvideo:step:1:3:denoising step 1/3',
       'STAGE:fastvideo:step:3:3:denoising step 3/3',
@@ -38,7 +39,7 @@ describe.skipIf(!pyBin)('generate_fastvideo.py', () => {
       'print(runner.translate_line("100%|##########| 1/1"))',
     ].join('\n')}`);
 
-    expect(output.trim().split('\n')).toEqual([
+    expect(lines(output)).toEqual([
       'STATUS:Loading pipeline step 3/3',
       'STATUS:FastVideo: 100%|##########| 1/1',
     ]);
