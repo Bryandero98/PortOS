@@ -166,6 +166,27 @@ describe('IdeaLoom Obsidian exchange', () => {
     expect(lists.upsertImportedList).toHaveBeenCalledOnce();
   });
 
+  it('reports an import conflict instead of overwriting local edits', async () => {
+    const base = renderIdeaLoomMarkdown(list());
+    const external = renderIdeaLoomMarkdown(list({ ideas: ['External edit'] }));
+    const importedPath = note().path;
+    obsidian.scanVault.mockResolvedValue({ vault: { path: vaultRoot }, notes: [note()], skippedUnavailable: 0 });
+    obsidian.getNote.mockResolvedValue({ content: external });
+    lists.getList.mockResolvedValue({
+      ...list({ updatedAt: '2026-08-29T12:00:00.000Z' }),
+      sync: {
+        notePath: importedPath,
+        lastKnownContentHash: createHash('sha256').update(base, 'utf8').digest('hex'),
+        lastImportedAt: '2026-08-29T11:00:00.000Z',
+      },
+    });
+
+    const result = await importFromObsidian();
+
+    expect(result.counts).toMatchObject({ conflicted: 1, imported: 0 });
+    expect(lists.upsertImportedList).not.toHaveBeenCalled();
+  });
+
   it('skips duplicate UUIDs without importing either note', async () => {
     const valid = renderIdeaLoomMarkdown(list());
     const first = note();

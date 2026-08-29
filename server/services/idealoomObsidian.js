@@ -41,6 +41,15 @@ const isIsoDate = (value) => typeof value === 'string'
   && value.length > 0
   && !Number.isNaN(Date.parse(value));
 
+const latestSyncTime = (sync) => [sync?.lastImportedAt, sync?.lastExportedAt]
+  .filter(isIsoDate)
+  .reduce((latest, value) => (!latest || Date.parse(value) > Date.parse(latest) ? value : latest), null);
+
+const hasLocalChanges = (list) => {
+  const lastSync = latestSyncTime(list.sync);
+  return !lastSync || Date.parse(list.updatedAt) > Date.parse(lastSync);
+};
+
 const decodeScalar = (value) => {
   const trimmed = value.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
@@ -162,12 +171,12 @@ const parseBody = (lines) => {
     }
     const match = NUMBERED_IDEA_RE.exec(line.trim());
     if (section === 'help') {
-      helpLines.push(line.trim());
+      helpLines.push(line);
       continue;
     }
     if (!match) {
       if (sawIdea || section === 'ideas') return { error: `invalid numbered idea at line ${cursor + 1}` };
-      helpLines.push(line.trim());
+      helpLines.push(line);
       continue;
     }
     section = 'ideas';
@@ -246,7 +255,7 @@ export function renderIdeaLoomMarkdown(list) {
     '---',
     `# ${String(list.prompt).replace(/[\r\n]+/g, ' ').trim()}`,
   ];
-  if (list.help?.trim()) lines.push('', '## Help', list.help.trim());
+  if (list.help?.trim()) lines.push('', '## Help', String(list.help));
   if (list.ideas?.length) {
     lines.push('', '## Ideas', ...list.ideas.map((idea, index) => `${index + 1}. ${String(idea).replace(/[\r\n]+/g, ' ').trim()}`));
   }
@@ -336,6 +345,11 @@ export async function importFromObsidian() {
     if (existing?.sync?.notePath === note.notePath && existing.sync?.lastKnownContentHash === note.contentHash) {
       return { kind: 'skipped', path: note.notePath, reason: 'unchanged', id: note.id };
     }
+    if (existing?.sync?.lastKnownContentHash
+      && existing.sync.lastKnownContentHash !== note.contentHash
+      && hasLocalChanges(existing)) {
+      return { kind: 'conflicted', path: note.notePath, reason: 'both-sides-changed', id: note.id };
+    }
     await ideaLoomLists.upsertImportedList(note.id, {
       prompt: note.prompt,
       title: note.title,
@@ -390,8 +404,7 @@ const exportOne = async (vaultId, list) => {
   if (pathResult.kind === 'existing') {
     if (pathResult.id !== list.id) return { kind: 'failed', reason: 'note-path-owned-by-another-list', notePath };
     const remoteChanged = hashContent(pathResult.content) !== list.sync?.lastKnownContentHash;
-    const lastLocalSync = list.sync?.lastImportedAt || list.sync?.lastExportedAt;
-    const localChanged = !lastLocalSync || list.updatedAt > lastLocalSync;
+    const localChanged = hasLocalChanges(list);
     if (remoteChanged && localChanged) return { kind: 'conflicted', reason: 'both-sides-changed', notePath };
     if (remoteChanged) return { kind: 'skipped', reason: 'external-change', notePath };
     const updated = await obsidian.updateNote(vaultId, notePath, content);
