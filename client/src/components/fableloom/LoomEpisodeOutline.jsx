@@ -2,13 +2,14 @@
  * FableLoom episode outline — a text-first reading order for an episode graph.
  *
  * Reachable scenes are ordered breadth-first from the opening scene so the
- * outline follows the same progression as the graph layout. Every scene keeps
- * its authored prose and intent paths visible; selecting a path returns to the
+ * outline follows the same progression as the graph layout. Scene titles and
+ * metadata stay visible in the tree while authored prose and intent paths are
+ * available behind collapsed disclosures; selecting a path returns to the
  * visual editor with that scene selected.
  */
 
 import { useMemo } from 'react';
-import { ArrowRight, Flag, Play, Waypoints } from 'lucide-react';
+import { ArrowRight, ChevronRight, Flag, Play, Waypoints } from 'lucide-react';
 import { sceneProseClass } from './fieldStyles';
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -52,67 +53,76 @@ function SceneBlock({ node, number, episode, format, byId, onSelectNode }) {
       <span className="absolute left-0 top-1 flex h-6 w-6 items-center justify-center rounded-full border border-port-border bg-port-card text-[10px] font-semibold text-port-text-muted sm:h-7 sm:w-7">
         {number}
       </span>
-      <article className="rounded-lg border border-port-border bg-port-card p-4 space-y-3">
-        <header className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="font-semibold text-port-text break-words">{node.title || 'Untitled scene'}</h3>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-port-text-muted">
-              {isStart && <span className="inline-flex items-center gap-1 text-port-accent"><Play size={11} /> Opening</span>}
-              {node.isEnding && (
-                <span className="inline-flex items-center gap-1 text-port-success">
-                  <Flag size={11} /> {node.endingLabel || 'Ending'}
-                </span>
-              )}
-              {!node.isEnding && (
-                <span>{node.playbackMode === 'cut' ? 'Automatic cut' : 'Decision loop'}</span>
-              )}
+      <details className="group rounded-lg border border-port-border bg-port-card">
+        <summary className="flex list-none items-start justify-between gap-3 p-4 text-left hover:bg-port-bg/30 [&::-webkit-details-marker]:hidden">
+          <div className="flex min-w-0 items-start gap-2">
+            <ChevronRight
+              size={16}
+              className="mt-0.5 shrink-0 text-port-text-muted transition-transform group-open:rotate-90"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <h3 className="font-semibold text-port-text break-words">{node.title || 'Untitled scene'}</h3>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-port-text-muted">
+                {isStart && <span className="inline-flex items-center gap-1 text-port-accent"><Play size={11} /> Opening</span>}
+                {node.isEnding && (
+                  <span className="inline-flex items-center gap-1 text-port-success">
+                    <Flag size={11} /> {node.endingLabel || 'Ending'}
+                  </span>
+                )}
+                {!node.isEnding && (
+                  <span>{node.playbackMode === 'cut' ? 'Automatic cut' : 'Decision loop'}</span>
+                )}
+              </div>
             </div>
           </div>
           <span className="shrink-0 text-[11px] text-port-text-muted">Scene {number}</span>
-        </header>
+        </summary>
 
-        {node.prose?.trim() ? (
-          <div className={`${sceneProseClass(format)} text-port-text`}>
-            {node.prose}
-          </div>
-        ) : (
-          <p className="text-sm italic text-port-text-muted">No scene text yet.</p>
-        )}
+        <div className="space-y-3 border-t border-port-border p-4">
+          {node.prose?.trim() ? (
+            <div className={`${sceneProseClass(format)} text-port-text`}>
+              {node.prose}
+            </div>
+          ) : (
+            <p className="text-sm italic text-port-text-muted">No scene text yet.</p>
+          )}
 
-        {transitions.length > 0 && (
-          <div className="border-t border-port-border pt-3">
-            <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-port-text-muted">
-              {node.playbackMode === 'cut' ? 'Next cut' : 'Viewer paths'}
-            </h4>
-            <ul className="space-y-1.5">
-              {transitions.map((transition) => {
-                const target = byId.get(transition.targetNodeId);
-                return (
-                  <li key={transition.id || `${node.id}-${transition.targetNodeId}-${transition.intent}`} className="flex items-start gap-2 text-xs">
-                    <ArrowRight size={13} className="mt-0.5 shrink-0 text-port-accent" />
-                    <span className="min-w-0">
-                      <span className="font-medium">{transition.intent || 'Unlabeled path'}</span>
-                      {transition.description && <span className="text-port-text-muted"> — {transition.description}</span>}
-                      {' '}
-                      {target ? (
-                        <button
-                          type="button"
-                          onClick={() => onSelectNode?.(target.id)}
-                          className="text-port-accent hover:underline"
-                        >
-                          Scene {target.number}: {target.title || 'Untitled scene'}
-                        </button>
-                      ) : (
-                        <span className="text-port-error">Missing scene</span>
-                      )}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-      </article>
+          {transitions.length > 0 && (
+            <div className="border-t border-port-border pt-3">
+              <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-port-text-muted">
+                {node.playbackMode === 'cut' ? 'Next cut' : 'Viewer paths'}
+              </h4>
+              <ul className="space-y-1.5">
+                {transitions.map((transition) => {
+                  const target = byId.get(transition.targetNodeId);
+                  return (
+                    <li key={transition.id || `${node.id}-${transition.targetNodeId}-${transition.intent}`} className="flex items-start gap-2 text-xs">
+                      <ArrowRight size={13} className="mt-0.5 shrink-0 text-port-accent" />
+                      <span className="min-w-0">
+                        <span className="font-medium">{transition.intent || 'Unlabeled path'}</span>
+                        {transition.description && <span className="text-port-text-muted"> — {transition.description}</span>}
+                        {' '}
+                        {target ? (
+                          <button
+                            type="button"
+                            onClick={() => onSelectNode?.(target.id)}
+                            className="text-port-accent hover:underline"
+                          >
+                            Scene {target.number}: {target.title || 'Untitled scene'}
+                          </button>
+                        ) : (
+                          <span className="text-port-error">Missing scene</span>
+                        )}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
+      </details>
     </li>
   );
 }
