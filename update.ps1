@@ -232,8 +232,14 @@ if ($prePullSha) {
 $global:LASTEXITCODE = 0
 Write-SafeHost ""
 
-# Update submodules (slash-do and any others)
-Step "submodules" "running" "Updating submodules..."
+# Refresh local submodule metadata from the just-pulled .gitmodules before
+# checking out the commits pinned by PortOS. Without sync, a URL/path change in
+# .gitmodules can leave an older instance trying to initialize from stale local
+# git config. Deliberately omit --remote: the parent commit is the release
+# contract, not whichever submodule commit happens to be newest upstream.
+Step "submodules" "running" "Synchronizing and updating submodules..."
+Invoke-Logged git submodule sync --recursive
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Invoke-Logged git submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Step "submodules" "done" "Submodules updated"

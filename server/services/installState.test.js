@@ -71,6 +71,7 @@ function syncedOpts(overrides = {}) {
     }),
     clientSourceNewer: async () => false,
     listPending: async () => [],
+    getSubmoduleState: async () => ({ stale: false, paths: [] }),
     ...overrides
   };
 }
@@ -260,6 +261,54 @@ describe('getInstallState — pending migrations', () => {
     expect(state.pendingMigrations.files).toEqual(['099-foo.js']);
     expect(state.outOfSync).toBe(true);
     expect(listPendingMigrations).toHaveBeenCalledWith({ rootDir: ROOT });
+  });
+});
+
+describe('getInstallState — submodules', () => {
+  it('flags a checkout that differs from the parent-pinned commit', async () => {
+    const state = await getInstallState(syncedOpts({
+      getSubmoduleState: async () => ({ stale: true, paths: ['lib/example'] })
+    }));
+
+    expect(state.submodules).toEqual({ stale: true, paths: ['lib/example'] });
+    expect(state.outOfSync).toBe(true);
+  });
+
+  it('distinguishes an unavailable status check from an authoritative empty result', async () => {
+    const unknown = await getInstallState(syncedOpts({
+      getSubmoduleState: async () => { throw new Error('git unavailable'); }
+    }));
+    const empty = await getInstallState(syncedOpts());
+
+    expect(unknown.submodules).toEqual({ stale: null, paths: null });
+    expect(unknown.outOfSync).toBe(false);
+    expect(empty.submodules).toEqual({ stale: false, paths: [] });
+  });
+
+  it('parses recursive git status prefixes without trimming the in-sync marker', async () => {
+    const getStatus = async () => ({
+      exitCode: 0,
+      stdout: [
+        ' abc1234 lib/current (heads/main)',
+        '+def5678 lib/different (heads/main)',
+        '-123abcd lib/missing',
+        'U456def0 lib/conflicted',
+      ].join('\n')
+    });
+
+    expect(await __internal.detectSubmodules(ROOT, { getStatus })).toEqual({
+      stale: true,
+      paths: ['lib/different', 'lib/missing', 'lib/conflicted']
+    });
+  });
+
+  it('returns unknown for failed or malformed git status output', async () => {
+    expect(await __internal.detectSubmodules(ROOT, {
+      getStatus: async () => ({ exitCode: 128, stdout: '' })
+    })).toEqual({ stale: null, paths: null });
+    expect(await __internal.detectSubmodules(ROOT, {
+      getStatus: async () => ({ exitCode: 0, stdout: 'unexpected output' })
+    })).toEqual({ stale: null, paths: null });
   });
 });
 
