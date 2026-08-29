@@ -19389,7 +19389,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 71
+          "line": 87
         }
       ]
     },
@@ -19400,7 +19400,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 34
+          "line": 46
         }
       ]
     },
@@ -19411,7 +19411,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 45
+          "line": 57
         }
       ]
     },
@@ -19422,7 +19422,29 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 53
+          "line": 65
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/spotify/playlists",
+      "mountPath": "/api/spotify",
+      "sources": [
+        {
+          "source": "server/routes/spotify.js",
+          "line": 35
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/spotify/playlists/sync",
+      "mountPath": "/api/spotify",
+      "sources": [
+        {
+          "source": "server/routes/spotify.js",
+          "line": 41
         }
       ]
     },
@@ -19433,7 +19455,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 28
+          "line": 29
         }
       ]
     },
@@ -19444,7 +19466,7 @@
       "sources": [
         {
           "source": "server/routes/spotify.js",
-          "line": 78
+          "line": 94
         }
       ]
     },
@@ -23256,12 +23278,34 @@
     },
     {
       "method": "GET",
+      "path": "/api/youtube/playlists",
+      "mountPath": "/api/youtube",
+      "sources": [
+        {
+          "source": "server/routes/youtube.js",
+          "line": 26
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/youtube/playlists/sync",
+      "mountPath": "/api/youtube",
+      "sources": [
+        {
+          "source": "server/routes/youtube.js",
+          "line": 33
+        }
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/youtube/setup-check",
       "mountPath": "/api/youtube",
       "sources": [
         {
           "source": "server/routes/youtube.js",
-          "line": 11
+          "line": 12
         }
       ]
     },
@@ -23272,7 +23316,7 @@
       "sources": [
         {
           "source": "server/routes/youtube.js",
-          "line": 18
+          "line": 19
         }
       ]
     },
@@ -23283,7 +23327,7 @@
       "sources": [
         {
           "source": "server/routes/youtube.js",
-          "line": 25
+          "line": 39
         }
       ]
     },
