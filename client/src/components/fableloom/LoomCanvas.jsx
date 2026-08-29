@@ -21,6 +21,7 @@ import useContainerWidth from '../../hooks/useContainerWidth';
 import {
   layoutLoomGraph, LOOM_EDGE_LABEL_MAX, LOOM_ORIENTATION,
 } from '../../lib/loomLayout';
+import LoomSceneMedia from './LoomSceneMedia';
 
 const DRAG_THRESHOLD_PX = 4;
 
@@ -37,6 +38,8 @@ const startOfPath = (d) => {
 export default function LoomCanvas({
   episode, selectedNodeId, onSelectNode, onMoveNode,
   viewportWidth: viewportWidthProp, orientation: orientationProp,
+  mediaJobs = {}, onGenerateImage, onGenerateVideo,
+  generationDisabled = false, generationDisabledReason = '',
 }) {
   // An in-flight drag lives entirely outside React state: the dragged <g>'s
   // transform is mutated directly per pointermove, and the position commits
@@ -246,24 +249,25 @@ export default function LoomCanvas({
                     selected ? 'stroke-port-accent' : 'stroke-port-border'
                   }`}
                 />
-                {node.image && (
-                  <image
-                    href={`/data/images/${node.image}`}
-                    x={8} y={26} width={54} height={nodeH - 34}
-                    preserveAspectRatio="xMidYMid slice"
-                  />
-                )}
                 <text x={10} y={17} className="fill-port-text text-[11px] font-semibold pointer-events-none">
                   {truncate(node.title || 'Untitled scene', titleMax)}
                 </text>
                 <foreignObject
-                  x={node.image ? 68 : 10}
+                  x={8}
                   y={24}
-                  width={nodeW - (node.image ? 78 : 20)}
+                  width={nodeW - 16}
                   height={nodeH - 48}
                 >
-                  <div className="text-[10px] leading-snug text-port-text-muted overflow-hidden h-full pointer-events-none">
-                    {truncate(node.prose, stacked ? 80 : 110)}
+                  <div className="h-full" xmlns="http://www.w3.org/1999/xhtml">
+                    <LoomSceneMedia
+                      node={node}
+                      jobs={mediaJobs[node.id]}
+                      onGenerateImage={onGenerateImage}
+                      onGenerateVideo={onGenerateVideo}
+                      compact
+                      generationDisabled={generationDisabled}
+                      generationDisabledReason={generationDisabledReason}
+                    />
                   </div>
                 </foreignObject>
                 <g transform={`translate(10, ${nodeH - 16})`} className="pointer-events-none">

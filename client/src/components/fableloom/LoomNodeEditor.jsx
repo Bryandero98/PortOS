@@ -13,19 +13,19 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { GitBranch, ImagePlus, Loader2, Trash2, Video } from 'lucide-react';
+import { GitBranch, Loader2, Trash2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import { FormField } from '../ui/FormField.jsx';
-import MediaImage from '../MediaImage';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   addLoomTransition, branchLoomNode, deleteLoomNode, deleteLoomTransition,
-  generateImage, generateVideo, updateLoomNode, updateLoomTransition,
+  updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import { fieldClass, labelClass, sceneFieldClass } from './fieldStyles';
 import { isTeleplayFormat } from './loomFormats';
+import LoomSceneMedia from './LoomSceneMedia';
 import { FABLELOOM_CAMERA_MOVEMENTS } from '../../../../server/lib/fableLoomCameraMovements.js';
 import { FABLELOOM_PLAYBACK_MODES } from '../../../../server/lib/fableLoomPlayback.js';
 
@@ -37,7 +37,11 @@ const rowToPatch = ({ targetNodeId, intent, triggersText, description }) => ({
   description: description || '',
 });
 
-export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onClearSelection, onMakeStart }) {
+export default function LoomNodeEditor({
+  loom, episode, node, onLoomUpdate, onClearSelection, onMakeStart,
+  mediaJobs = {}, onGenerateImage, onGenerateVideo,
+  generationDisabled = false, generationDisabledReason = '',
+}) {
   const [form, setForm] = useState(null);
   // In-flight blur-saves; the AI buttons (which read server-side state) stay
   // disabled until every pending save settles.
@@ -162,7 +166,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     toast.success('New branches woven');
   }, { errorMessage: 'Branching failed' });
 
-  const [runGenerateImage, rendering] = useAsyncAction(async () => {
+  const runGenerateImage = async () => {
     const prompt = form.imagePrompt.trim();
     if (!prompt) {
       toast.error('Write an image prompt first');
@@ -173,36 +177,23 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     // files the finished image onto this node even if the page unmounts
     // mid-render.
     await saveField('imagePrompt', prompt);
-    await generateImage({
-      prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
-      fableLoom: { loomId: loom.id, episodeId: episode.id, nodeId: node.id },
-    }, { silent: true });
-    toast.success('Scene render queued — it will attach when it completes');
-  }, { errorMessage: 'Could not queue the render' });
+    await onGenerateImage?.({ ...node, imagePrompt: prompt });
+  };
 
-  const [runGenerateVideo, videoRendering] = useAsyncAction(async () => {
+  const runGenerateVideo = async () => {
     const authoredPrompt = form.videoPrompt.trim() || form.prose.trim();
     if (!authoredPrompt) {
       toast.error('Write the scene first');
       return;
     }
-    // Prefer the explicit single-cut direction; legacy nodes fall back to the
-    // authored scene until they are updated.
-    // An existing rendered still seeds image-to-video when one is available.
     await saveField('videoPrompt', form.videoPrompt);
-    const movement = FABLELOOM_CAMERA_MOVEMENTS.find((move) => move.value === form.cameraMovement);
-    const direction = movement?.prompt || form.cameraMovement.trim();
-    const prompt = direction ? `${authoredPrompt}\n\nCamera direction: ${direction}` : authoredPrompt;
-    await generateVideo({
-      prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
-      backend: 'local',
-      mode: node.image ? 'image' : 'text',
-      ...(node.image ? { sourceImageFile: node.image } : {}),
-      disableAudio: true,
-      fableLoom: JSON.stringify({ loomId: loom.id, episodeId: episode.id, nodeId: node.id }),
+    await onGenerateVideo?.({
+      ...node,
+      prose: form.prose,
+      videoPrompt: form.videoPrompt,
+      cameraMovement: form.cameraMovement,
     });
-    toast.success('Scene video queued — it will attach when it completes');
-  }, { errorMessage: 'Could not queue the video render' });
+  };
 
   const handleDelete = async () => {
     const updated = await deleteLoomNode(loom.id, episode.id, node.id).catch(() => null);
@@ -308,18 +299,19 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       )}
 
       <div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-xs font-medium text-port-text-muted">Scene image</span>
-          <button
-            type="button"
-            onClick={runGenerateImage}
-            disabled={rendering || aiBlocked}
-            className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50"
-          >
-            {rendering ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
-            Generate
-          </button>
-        </div>
+        <span className="mb-1 block text-xs font-medium text-port-text-muted">Scene media</span>
+        <LoomSceneMedia
+          node={node}
+          jobs={mediaJobs}
+          onGenerateImage={runGenerateImage}
+          onGenerateVideo={runGenerateVideo}
+          generationDisabled={aiBlocked || generationDisabled}
+          generationDisabledReason={aiBlocked ? 'Wait for scene changes to save' : generationDisabledReason}
+        />
+      </div>
+
+      <div>
+        <span className="mb-1 block text-xs font-medium text-port-text-muted">Scene image prompt</span>
         <textarea
           rows={2}
           className={fieldClass}
@@ -329,28 +321,10 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
           onChange={(e) => setForm((p) => ({ ...p, imagePrompt: e.target.value }))}
           onBlur={() => saveField('imagePrompt', form.imagePrompt)}
         />
-        {node.image && (
-          <MediaImage
-            src={`/data/images/${node.image}`}
-            alt={form.title || 'Scene render'}
-            className="mt-2 rounded max-w-full max-h-48 object-cover"
-          />
-        )}
       </div>
 
       <div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-xs font-medium text-port-text-muted">Scene video</span>
-          <button
-            type="button"
-            onClick={runGenerateVideo}
-            disabled={videoRendering || aiBlocked}
-            className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50"
-          >
-            {videoRendering ? <Loader2 size={12} className="animate-spin" /> : <Video size={12} />}
-            Generate video
-          </button>
-        </div>
+        <span className="mb-1 block text-xs font-medium text-port-text-muted">Scene video prompt</span>
         <div className="space-y-2">
           <label htmlFor="loom-node-camera-movement" className={labelClass}>Camera movement</label>
           <select
@@ -381,16 +355,6 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
           />
           <p className="text-xs text-port-text-muted">Falls back to the scene text when no dedicated video prompt is set.</p>
         </div>
-        {node.videoHistoryId && (
-          <video
-            controls
-            playsInline
-            preload="metadata"
-            src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
-            aria-label={form.title || 'Scene video'}
-            className="mt-2 rounded max-w-full max-h-56 bg-black"
-          />
-        )}
       </div>
 
       <div>

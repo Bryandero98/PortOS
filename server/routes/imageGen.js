@@ -45,6 +45,7 @@ import { getSettings } from '../services/settings.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 import { collectRemoteInputAssets } from '../services/federatedMedia/inputAssets.js';
 import { buildFederatedMediaRequest } from '../lib/federatedMediaRequest.js';
+import { attachNodeImage } from '../services/fableLoom/records.js';
 
 const router = Router();
 
@@ -162,8 +163,8 @@ const generateSchema = z.object({
   // (`fableLoomSceneImageHook`) files the finished render onto that loom
   // episode's scene node — durably, even if the editor unmounted mid-render.
   // Only the async local/Codex lanes ride the queue; the synchronous external
-  // SD-API lane returns the filename inline and the client PATCHes the node.
-  // Rides into job.params untouched via `...params`. JSON-only.
+  // SD-API lane is attached directly by this route after generation. Rides
+  // into job.params untouched via `...params`. JSON-only.
   fableLoom: z.object({
     loomId: z.string().min(1).max(200),
     episodeId: z.string().min(1).max(200),
@@ -541,7 +542,16 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
       model: selectedModel?.id || params.modelId || 'dev',
     }));
   }
-  res.json(await imageGen.generateImage(params));
+  const result = await imageGen.generateImage(params);
+  if (params.fableLoom && result?.filename) {
+    await attachNodeImage(
+      params.fableLoom.loomId,
+      params.fableLoom.episodeId,
+      params.fableLoom.nodeId,
+      { filename: result.filename, jobId: result.generationId },
+    );
+  }
+  res.json(result);
 }));
 
 router.post('/avatar', asyncHandler(async (req, res) => {

@@ -24,7 +24,10 @@
  */
 
 export const LOOM_NODE_W = 200;
-export const LOOM_NODE_H = 112;
+// Tall enough for the scene's visual preview + always-visible image/video
+// controls. The graph is a visual editor, so media is the card's primary body
+// rather than a thumbnail squeezed beside prose.
+export const LOOM_NODE_H = 184;
 /** Longest intent text drawn on an edge before it is ellipsized. */
 export const LOOM_EDGE_LABEL_MAX = 24;
 export const LOOM_ORIENTATION = Object.freeze({ LR: 'lr', TB: 'tb' });
