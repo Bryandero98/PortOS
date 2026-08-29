@@ -21,7 +21,12 @@ import useFieldDraft from '../../hooks/useFieldDraft';
 import useRowDraft from '../../hooks/useRowDraft';
 import usePendingListRows from '../../hooks/usePendingListRows';
 import useAsyncAction from '../../hooks/useAsyncAction';
-import { listVoiceProfiles, promoteVoicePreset, renderVoiceProfileBenchmark } from '../../services/apiVoice';
+import {
+  listVoiceEngines,
+  listVoiceProfiles,
+  promoteVoicePreset,
+  renderVoiceProfileBenchmark,
+} from '../../services/apiVoice';
 import VoicePicker from '../voice/VoicePicker';
 import CollapsibleSection from '../ui/CollapsibleSection';
 
@@ -754,6 +759,7 @@ function VoiceProfileSection({ universeId, entry, disabled }) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(Boolean(universeId));
   const [loadError, setLoadError] = useState(null);
+  const [engineCapability, setEngineCapability] = useState(null);
   const loadGeneration = useRef(0);
   useEffect(() => {
     let cancelled = false;
@@ -780,6 +786,21 @@ function VoiceProfileSection({ universeId, entry, disabled }) {
       });
     return () => { cancelled = true; };
   }, [universeId, entry?.id]);
+
+  useEffect(() => {
+    if (!universeId) return undefined;
+    let cancelled = false;
+    listVoiceEngines({ silent: true })
+      .then((result) => {
+        if (cancelled) return;
+        const engine = entry?.voiceId?.split(':')[0];
+        setEngineCapability((result?.engines || []).find((item) => item.id === engine) || null);
+      })
+      .catch(() => {
+        if (!cancelled) setEngineCapability(null);
+      });
+    return () => { cancelled = true; };
+  }, [universeId, entry?.voiceId]);
 
   const [promote, promoting] = useAsyncAction(async () => {
     // A pending initial fetch must not erase the user action that just won.
@@ -832,8 +853,28 @@ function VoiceProfileSection({ universeId, entry, disabled }) {
         </button>
       </div>
       <p className="text-[10px] leading-snug text-gray-500">
-        Kokoro and Piper support preset selection plus rate only. Pitch and formant controls are intentionally unavailable until a compatible local backend and formant-preserving transform are installed.
+        {engineCapability?.unavailableControls
+          || 'Kokoro and Piper support preset selection plus rate only. Pitch and formant controls are intentionally unavailable until a compatible local backend and formant-preserving transform are installed.'}
       </p>
+      {profile?.benchmark?.lines?.length ? (
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-gray-500">Fixed benchmark renders</p>
+          {profile.benchmark.lines.map((line, index) => (
+            <div key={line.filename} className="flex items-center gap-2">
+              <span className="w-4 shrink-0 text-[10px] text-gray-600">{index + 1}</span>
+              <audio
+                controls
+                preload="none"
+                src={`/data/${line.filename.split('/').map(encodeURIComponent).join('/')}`}
+                aria-label={`Voice benchmark ${line.key || index + 1}`}
+                className="h-7 min-w-0 flex-1"
+              >
+                <track kind="captions" />
+              </audio>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </BoxedSection>
   );
 }

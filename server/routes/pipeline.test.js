@@ -2735,6 +2735,26 @@ describe('pipeline routes', () => {
       expect(issAfter.body.stages.audio.lines[0].audioFilename).toMatch(/^vo-mock-/);
     });
 
+    it('keeps local voice profile provenance out of the federated issue record', async () => {
+      const audio = await import('../services/pipeline/audio.js');
+      audio.synthesizeToFile.mockResolvedValueOnce({
+        filename: 'vo-local-profile.wav', latencyMs: 5, engine: 'kokoro',
+        provenance: {
+          profileId: 'voice-profile-1', profileRevision: 2, engine: 'kokoro',
+          modelRevision: 'kokoro-test:q8', effectiveControls: { rate: 1 },
+        },
+      });
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      await request(app).post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`).send({});
+      const rendered = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/lines/0/render`)
+        .send({});
+      expect(rendered.status).toBe(200);
+      const reread = await request(app).get(`/api/pipeline/issues/${iss.id}`);
+      expect(reread.body.stages.audio.lines[0]).not.toHaveProperty('voiceProvenance');
+    });
+
     it('POST /audio/lines/:idx/render 404s for out-of-range index', async () => {
       const app = makeApp();
       const iss = await seedIssueWithStoryboards(app);

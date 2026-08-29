@@ -16,6 +16,7 @@ export const listVoiceProfiles = ({ universeId, characterId } = {}, options) => 
   const query = params.toString();
   return api.get(`/voice/profiles${query ? `?${query}` : ''}`, options);
 };
+export const listVoiceEngines = (options) => api.get('/voice/engines', options);
 export const promoteVoicePreset = (payload, options) => api.post('/voice/profiles/preset', payload, options);
 export const renderVoiceProfileBenchmark = (profileId, options) => api.post(
   `/voice/profiles/${encodeURIComponent(profileId)}/benchmark`, {}, options,

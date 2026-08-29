@@ -246,7 +246,6 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
     ...line,
     audioJobId: null,
     audioFilename: synthResult.filename,
-    ...(synthResult.provenance ? { voiceProvenance: synthResult.provenance } : {}),
   };
   const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
     status: 'edited',

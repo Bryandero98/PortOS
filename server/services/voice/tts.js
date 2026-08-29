@@ -6,7 +6,7 @@ import { synthesizePiper, listPiperVoices } from './tts-piper.js';
 import { findPiperVoice } from './piper-voices.js';
 import { isKokoroVoice } from './kokoro-voices.js';
 import { getProfileForSynthesis } from './profiles.js';
-import { which } from './bootstrap.js';
+import { whichFirst } from '../../lib/processEnv.js';
 import { ServerError } from '../../lib/errorHandler.js';
 
 // Single source of truth for the supported TTS engine names. Imported by
@@ -23,7 +23,7 @@ let voiceTransformProbe = null;
 
 const probeVoiceTransforms = () => {
   if (!voiceTransformProbe) {
-    voiceTransformProbe = which('rubberband').then((rubberband) => ({
+    voiceTransformProbe = whichFirst('rubberband').then((rubberband) => ({
       rubberband: Boolean(rubberband),
     }));
   }

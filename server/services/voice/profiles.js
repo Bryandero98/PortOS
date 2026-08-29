@@ -216,7 +216,7 @@ async function getBoundProfile(universeId, characterId) {
   const { rows } = await query(
     `SELECT data FROM voice_profiles
      WHERE universe_id = $1 AND character_id = $2
-     ORDER BY updated_at DESC, id DESC LIMIT 1`,
+     ORDER BY (approval_status = 'approved') DESC, updated_at DESC, id DESC LIMIT 1`,
     [universeId, characterId],
   );
   return sanitizeVoiceProfile(rows[0]?.data);

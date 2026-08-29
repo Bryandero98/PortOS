@@ -6,12 +6,14 @@ import CharacterDetailEditor from './CharacterDetailEditor';
 // tests don't care about.
 vi.mock('../voice/VoicePicker', () => ({ default: () => null }));
 vi.mock('../../services/apiVoice', () => ({
+  listVoiceEngines: vi.fn().mockResolvedValue({ engines: [] }),
   listVoiceProfiles: vi.fn(),
   promoteVoicePreset: vi.fn(),
   renderVoiceProfileBenchmark: vi.fn(),
 }));
 
 import {
+  listVoiceEngines,
   listVoiceProfiles,
   promoteVoicePreset,
 } from '../../services/apiVoice';
@@ -176,6 +178,7 @@ describe('CharacterDetailEditor — character framework (#2175)', () => {
 
 describe('CharacterDetailEditor — production package (#5378)', () => {
   it('keeps the empty local-profile state distinct and promotes a portable preset locally', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
     listVoiceProfiles.mockResolvedValue({ profiles: [] });
     promoteVoicePreset.mockResolvedValueOnce({
       profile: {
@@ -193,6 +196,24 @@ describe('CharacterDetailEditor — production package (#5378)', () => {
       universeId: 'uni-1', characterId: 'chr-aria', characterName: 'Aria', voiceId: 'kokoro:af_heart',
     }, { silent: true }));
     expect(await screen.findByRole('button', { name: /Re-promote selected preset/i })).toBeInTheDocument();
+  });
+
+  it('plays persisted local benchmark renders through the voice-profile asset mount', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
+    listVoiceProfiles.mockResolvedValue({
+      profiles: [{
+        id: 'voice-profile-1', version: 1, voiceId: 'kokoro:af_heart', modelRevision: 'kokoro-test:q8',
+        delivery: { rate: 1 }, approval: { status: 'approved' },
+        benchmark: { lines: [{ key: 'identity', filename: 'voice-profiles/voice-profile-1/benchmarks/v1/01-identity.wav' }] },
+      }],
+    });
+    render(<CharacterDetailEditor
+      entry={{ ...ARIA, voiceId: 'kokoro:af_heart' }} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+    expect(await screen.findByLabelText(/Voice benchmark identity/i)).toHaveAttribute(
+      'src', '/data/voice-profiles/voice-profile-1/benchmarks/v1/01-identity.wav',
+    );
   });
 
   it('marks a voice-canon revision as approved', () => {
