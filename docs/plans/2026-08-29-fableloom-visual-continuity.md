@@ -246,6 +246,9 @@ the recorded manifest and refuses if an asset has been removed. This keeps
 
 - Condition a scene image on the first rendered direct predecessor.
 - Use graph edges, exclude self-loops, and leave openings text-to-image.
+- Warn and retry text-to-image when the backend cannot edit or the predecessor
+  file is stale, preserving the existing render path until typed capability
+  checks land.
 - Cover request composition and the editor-to-API boundary.
 
 ### Phase 1 — structured visual bindings and compiler

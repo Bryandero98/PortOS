@@ -38,6 +38,24 @@ describe('FableLoom scene media request composition', () => {
       });
   });
 
+  it('keeps an opening scene text-to-image when a loop points back to it', () => {
+    const opening = { id: 'node-1', imagePrompt: 'the opening shot', transitions: [] };
+    const episode = {
+      startNodeId: opening.id,
+      nodes: [
+        opening,
+        {
+          id: 'node-ending',
+          image: 'finale.png',
+          transitions: [{ id: 'tr-loop', targetNodeId: opening.id }],
+        },
+      ],
+    };
+
+    expect(buildFableLoomImageRequest({ loom, episode, episodeId: 'ep-1', node: opening }))
+      .not.toHaveProperty('initImageFile');
+  });
+
   it('builds image-to-video direction from the shared camera vocabulary', () => {
     expect(buildFableLoomVideoRequest({
       loom,

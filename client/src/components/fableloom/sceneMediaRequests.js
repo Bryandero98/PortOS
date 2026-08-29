@@ -29,6 +29,7 @@ export const FABLELOOM_CONTINUITY_STRENGTH = 0.4;
  */
 export function findFableLoomPriorImage(episode, nodeId) {
   const nodes = Array.isArray(episode?.nodes) ? episode.nodes : [];
+  if (!nodeId || episode?.startNodeId === nodeId) return null;
   const predecessor = nodes.find((candidate) => (
     candidate?.id !== nodeId
     && typeof candidate?.image === 'string'

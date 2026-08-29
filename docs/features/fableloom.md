@@ -169,6 +169,12 @@ episode order is the deterministic authoring-time source because there is no
 active reader path yet. Opening scenes and scenes without a rendered incoming
 neighbor remain text-to-image.
 
+Continuity conditioning is best-effort for the current stopgap: if the active
+backend is text-to-image-only, or the predecessor's gallery file has since been
+removed, the editor warns and retries the scene without the init image rather
+than blocking production. Canon-locked generation will replace that fallback
+with an explicit capability gate in the planned typed-reference workflow.
+
 **Generate video** prefers the node's dedicated single-clip `videoPrompt`, adds
 the selected movement's production direction from the shared camera registry,
 and falls back to scene text for legacy nodes. The registry includes dolly,
