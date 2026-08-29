@@ -11,7 +11,6 @@ vi.mock('../../services/api', () => ({
 }));
 vi.mock('../../hooks/useProviderModels', () => ({ default: () => ({ providers: [], loading: false }) }));
 vi.mock('../ProviderModelSelector', () => ({ default: () => <div>AI route picker</div> }));
-vi.mock('./LoomEpisodeFeedback', () => ({ default: ({ episode }) => <div>Episode feedback for {episode.title}</div> }));
 
 import * as api from '../../services/api';
 import LoomSeriesPlan from './LoomSeriesPlan';
@@ -58,7 +57,7 @@ describe('LoomSeriesPlan', () => {
     expect(onLoomUpdate).toHaveBeenCalledWith(updated);
   });
 
-  it('shows AI series analysis and exposes whole-episode editing outside the episode graph', async () => {
+  it('shows AI series analysis and recommendations for the outline', async () => {
     api.reviewLoomSeriesPlan.mockResolvedValue({
       analysis: {
         summary: 'The spine works.',
@@ -72,7 +71,31 @@ describe('LoomSeriesPlan', () => {
     fireEvent.click(screen.getByRole('button', { name: /analyze series/i }));
     expect(await screen.findByText('The spine works.')).toBeInTheDocument();
     expect(screen.getByText('Move the reversal into episode 3')).toBeInTheDocument();
-    expect(screen.getByText('Episode feedback for Pilot')).toBeInTheDocument();
+  });
+
+  it('applies AI editing feedback to revise the entire series outline and plot points', async () => {
+    const onLoomUpdate = vi.fn();
+    const updated = loom({
+      seriesPlan: {
+        storyArc: 'Revised arc.',
+        plotPoints: [{ id: 'plot-1', title: 'Moved turn', description: 'Changes earlier.', episodeId: 'ep-1' }],
+        sideQuests: [],
+      },
+    });
+    api.feedbackLoomSeriesPlan.mockResolvedValue({ loom: updated, changes: ['Shifted plot point turn'] });
+    renderPlan({ loom: loom(), onLoomUpdate });
+
+    fireEvent.change(screen.getByRole('textbox', { name: /edit outline & plot points/i }), {
+      target: { value: 'Move the turn to episode 1 and raise stakes.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /apply guidance to plan/i }));
+
+    await waitFor(() => expect(api.feedbackLoomSeriesPlan).toHaveBeenCalledWith(
+      'loom-1',
+      { feedback: 'Move the turn to episode 1 and raise stakes.' },
+      { silent: true },
+    ));
+    expect(onLoomUpdate).toHaveBeenCalledWith(updated);
   });
 
   it('regenerates the whole saved scaffold through the selected AI route without touching episodes locally', async () => {

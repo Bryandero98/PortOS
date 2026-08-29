@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { BrainCircuit, ChevronDown, ChevronUp, Loader2, MessageSquareText, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
+import { BrainCircuit, ChevronDown, ChevronUp, Loader2, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import toast from '../ui/Toast';
 import { FormField } from '../ui/FormField.jsx';
@@ -20,7 +20,6 @@ import {
 } from '../../services/api';
 import { uuidv4 } from '../../lib/uuid.js';
 import { effectiveModelFor, effortAwareModelOptions } from '../../utils/providers';
-import LoomEpisodeFeedback from './LoomEpisodeFeedback';
 import { fieldClass, labelClass } from './fieldStyles';
 
 const newItemId = (prefix) => `${prefix}-${uuidv4()}`;
@@ -198,8 +197,6 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
             </div>
 
             <SeriesAiEditor loom={loom} dirty={dirty} onLoomUpdate={adoptServerPlan} />
-
-            <WholeEpisodeEditor loom={loom} dirty={dirty} onLoomUpdate={onLoomUpdate} />
           </aside>
         </div>
       </div>
@@ -251,9 +248,9 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-4">
       <div>
-        <h3 className="font-semibold flex items-center gap-2"><BrainCircuit size={16} className="text-port-accent" /> AI story editor</h3>
+        <h3 className="font-semibold flex items-center gap-2"><BrainCircuit size={16} className="text-port-accent" /> AI outline editor</h3>
         <p className="text-xs text-port-text-muted mt-1">
-          Analyze the complete arc or describe an edit to apply across the series plan.
+          Draft, analyze, and edit the story arc, plot points, and side quests across the entire series.
         </p>
       </div>
       <ProviderModelSelector
@@ -318,15 +315,15 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
         </button>
       </div>
       <FormField
-        label="Editing guidance"
-        hint="For example: Move the betrayal earlier, make the midpoint irreversible, and resolve the courier side quest in episode 6."
+        label="Edit outline & plot points"
+        hint="Ask the AI to refine or restructure plot points, story beats, or side quests across the entire series."
         labelClassName={labelClass}
       >
         <textarea
           rows={4}
           className={fieldClass}
           value={feedback}
-          placeholder="Describe the arc, plot-point, or side-quest changes you want…"
+          placeholder="Describe how to revise the arc, plot points, or side quests across the series…"
           onChange={(event) => setFeedback(event.target.value)}
           disabled={busy}
         />
@@ -364,43 +361,6 @@ function SeriesAnalysis({ analysis }) {
           </ul>
         </div>
       ) : null)}
-    </div>
-  );
-}
-
-function WholeEpisodeEditor({ loom, dirty, onLoomUpdate }) {
-  const [episodeId, setEpisodeId] = useState(loom.episodes[0]?.id || '');
-  useEffect(() => {
-    if (!loom.episodes.some((episode) => episode.id === episodeId)) setEpisodeId(loom.episodes[0]?.id || '');
-  }, [episodeId, loom.episodes]);
-  const episode = loom.episodes.find((candidate) => candidate.id === episodeId);
-  return (
-    <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-3">
-      <div>
-        <h3 className="font-semibold flex items-center gap-2"><MessageSquareText size={16} className="text-port-accent" /> Edit a whole episode</h3>
-        <p className="text-xs text-port-text-muted mt-1">
-          Apply one instruction across an episode's title, synopsis, existing scenes, and path language.
-        </p>
-      </div>
-      {episode ? (
-        <>
-          <PlanSelect
-            label="Episode"
-            value={episodeId}
-            onChange={setEpisodeId}
-            options={loom.episodes.map((item) => ({ id: item.id, label: `${item.number}. ${item.title || 'Untitled'}` }))}
-          />
-          <LoomEpisodeFeedback
-            key={episode.id}
-            open
-            loom={loom}
-            episode={episode}
-            onLoomUpdate={onLoomUpdate}
-            disabled={dirty}
-          />
-          {dirty ? <p className="text-xs text-port-warning">Save the series plan before editing an episode with AI.</p> : null}
-        </>
-      ) : <p className="text-sm text-port-text-muted">Add an episode to use whole-episode AI editing.</p>}
     </div>
   );
 }
