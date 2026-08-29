@@ -107,6 +107,7 @@ def main() -> int:
         "--width", str(args.width),
         "--height", str(args.height),
         "--num-frames", str(args.num_frames),
+        "--num-inference-steps", str(args.steps),
         "--fps", str(args.fps),
         "--seed", str(args.seed),
         "--output-path", str(args.output),
