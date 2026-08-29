@@ -23,6 +23,7 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import TabPills from '../components/ui/TabPills';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
+import useFableLoomAiRun from '../hooks/useFableLoomAiRun';
 import useContainerWidth from '../hooks/useContainerWidth';
 import LoomCanvas from '../components/fableloom/LoomCanvas';
 import LoomEpisodeOutline from '../components/fableloom/LoomEpisodeOutline';
@@ -33,6 +34,7 @@ import LoomPlayPanel from '../components/fableloom/LoomPlayPanel';
 import LoomSettingsDrawer from '../components/fableloom/LoomSettingsDrawer';
 import LoomSeriesPlan from '../components/fableloom/LoomSeriesPlan';
 import LoomValidationPanel from '../components/fableloom/LoomValidationPanel';
+import LoomAiRunStatus from '../components/fableloom/LoomAiRunStatus';
 import { fieldClass, labelClass } from '../components/fableloom/fieldStyles';
 import {
   buildFableLoomImageRequest, buildFableLoomVideoRequest,
@@ -640,6 +642,7 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeed
   // in-flight meta saves per the client save-gating convention.
   const [metaSaving, setMetaSaving] = useState(0);
   const [feedbackRunning, setFeedbackRunning] = useState(false);
+  const { run: aiRun, begin: beginAiRun, fail: failAiRun } = useFableLoomAiRun();
   const del = useConfirmDelete();
   const hasScenes = episode.nodes.length > 0;
 
@@ -660,10 +663,15 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeed
   };
 
   const [runWeave, weaving] = useAsyncAction(async () => {
+    const operationId = beginAiRun();
     const result = await weaveLoomEpisode(loom.id, episode.id, {
       guidance: form.guidance,
       replace: hasScenes,
-    }, { silent: true });
+      operationId,
+    }, { silent: true }).catch((error) => {
+      failAiRun(error.message);
+      throw error;
+    });
     onLoomUpdate(result.loom);
     toast.success('Episode woven');
     onClose();
@@ -729,6 +737,7 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onFeed
             {weaving ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
             {weaving ? 'Weaving…' : hasScenes ? 'Reweave episode' : 'Weave episode'}
           </button>
+          <LoomAiRunStatus run={aiRun} />
         </div>
 
         <LoomEpisodeFeedback

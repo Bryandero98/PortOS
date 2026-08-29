@@ -10,6 +10,9 @@ vi.mock('../../services/api', () => ({
   updateLoom: vi.fn(),
 }));
 vi.mock('../../hooks/useProviderModels', () => ({ default: () => ({ providers: [], loading: false }) }));
+vi.mock('../../services/socket', () => ({
+  default: { on: vi.fn(), off: vi.fn() },
+}));
 vi.mock('../ProviderModelSelector', () => ({ default: () => <div>AI route picker</div> }));
 
 import * as api from '../../services/api';
@@ -92,7 +95,10 @@ describe('LoomSeriesPlan', () => {
 
     await waitFor(() => expect(api.feedbackLoomSeriesPlan).toHaveBeenCalledWith(
       'loom-1',
-      { feedback: 'Move the turn to episode 1 and raise stakes.' },
+      expect.objectContaining({
+        feedback: 'Move the turn to episode 1 and raise stakes.',
+        operationId: expect.any(String),
+      }),
       { silent: true },
     ));
     expect(onLoomUpdate).toHaveBeenCalledWith(updated);
@@ -115,7 +121,7 @@ describe('LoomSeriesPlan', () => {
     fireEvent.click(screen.getByRole('button', { name: /^regenerate$/i }));
 
     await waitFor(() => expect(api.generateLoomSeriesPlan).toHaveBeenCalledWith(
-      'loom-1', {}, { silent: true },
+      'loom-1', { operationId: expect.any(String) }, { silent: true },
     ));
     expect(onLoomUpdate).toHaveBeenCalledWith(generated);
   });

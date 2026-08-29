@@ -212,20 +212,21 @@ export const nodePatchSchema = z.object(nodeFields);
 
 // A per-call pick carries the same three dimensions as the saved pin.
 const llmPickFields = llmRoutePinSchema.shape;
+const aiRunFields = { ...llmPickFields, operationId: z.string().uuid().optional() };
 
 export const weaveSchema = z.object({
   guidance: z.string().max(4000).optional(),
   replace: z.boolean().optional(),
-  ...llmPickFields,
+  ...aiRunFields,
 });
 
 export const branchSchema = z.object({
   guidance: z.string().max(4000).optional(),
   branchCount: z.number().int().min(1).max(4).optional(),
-  ...llmPickFields,
+  ...aiRunFields,
 });
 
-export const reviewSchema = z.object({ ...llmPickFields });
+export const reviewSchema = z.object({ ...aiRunFields });
 
 // A turn is EITHER a reader's free text (matched to a path by the play stage)
 // or a path the reader took outright — a tapped choice needs no intent
@@ -238,7 +239,7 @@ export const playTurnSchema = z.object({
     role: z.enum(['reader', 'narrator']),
     text: z.string().max(4000),
   })).max(50).optional(),
-  ...llmPickFields,
+  ...aiRunFields,
 }).refine((body) => body.message || body.transitionId, {
   message: 'A play turn needs either a message or a transitionId',
   path: ['message'],
@@ -246,21 +247,21 @@ export const playTurnSchema = z.object({
 
 export const reformatSchema = z.object({
   format,
-  ...llmPickFields,
+  ...aiRunFields,
 });
 
 export const feedbackSchema = z.object({
   feedback: z.string().trim().min(1).max(LOOM_LIMITS.FEEDBACK_MAX),
-  ...llmPickFields,
+  ...aiRunFields,
 });
 
-export const seriesPlanReviewSchema = z.object({ ...llmPickFields });
+export const seriesPlanReviewSchema = z.object({ ...aiRunFields });
 
-export const seriesPlanGenerateSchema = z.object({ ...llmPickFields });
+export const seriesPlanGenerateSchema = z.object({ ...aiRunFields });
 
 export const seriesPlanFeedbackSchema = z.object({
   feedback: z.string().trim().min(1).max(LOOM_LIMITS.FEEDBACK_MAX),
-  ...llmPickFields,
+  ...aiRunFields,
 });
 
 export const hostedSessionCreateSchema = z.object({
@@ -275,4 +276,3 @@ export const hostedSessionPatchSchema = z.object({
   playbackPhase: z.enum(['entry', 'hold', 'exit', 'ended']).optional(),
   activeHoldIndex: z.number().int().min(0).max(10).optional(),
 });
-
