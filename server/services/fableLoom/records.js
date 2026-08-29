@@ -59,8 +59,6 @@ export { LOOM_LIMITS };
 
 const isSafeImageFilename = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpg|jpeg|webp)$/i.test(value);
-const isSafeVideoHistoryId = (value) =>
-  typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value);
 
 const nullableRef = (value) => (isStr(value) && value.trim() ? value.trim().slice(0, LOOM_LIMITS.REF_ID_MAX) : null);
 
