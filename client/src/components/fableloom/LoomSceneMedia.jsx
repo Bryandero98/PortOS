@@ -80,21 +80,21 @@ export default function LoomSceneMedia({
   // the SVG origin. Compact media lives in that exact shape, so overlap its
   // preview/status with one grid cell instead of relative/absolute positioning.
   const previewClass = compact
-    ? 'grid flex-1 min-h-0 overflow-hidden rounded border border-port-border bg-port-bg'
+    ? 'grid flex-1 min-h-0 min-w-0 overflow-hidden rounded border border-port-border bg-port-bg'
     : 'relative min-h-0 overflow-hidden rounded border border-port-border bg-port-bg aspect-video max-h-56';
-  const previewItemClass = compact ? 'col-start-1 row-start-1 min-h-0' : '';
+  const previewItemClass = compact ? 'col-start-1 row-start-1 min-h-0 min-w-0' : '';
   const noticePositionClass = compact
     ? 'col-start-1 row-start-1 self-end'
     : 'absolute inset-x-0 bottom-0';
 
   return (
-    <div className={compact ? 'flex h-full min-h-0 flex-col gap-1' : 'space-y-2'}>
+    <div className={compact ? 'flex h-full w-full min-h-0 min-w-0 flex-col gap-1' : 'space-y-2'}>
       <div className={previewClass}>
         {showFinalVideo ? (
           <video
             src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
             aria-label={`${title} video preview`}
-            className={`${previewItemClass} h-full w-full object-cover`}
+            className={`${previewItemClass} block h-full w-full object-cover`}
             controls={!compact}
             autoPlay={compact}
             muted={compact}
@@ -108,13 +108,13 @@ export default function LoomSceneMedia({
           <img
             src={`data:image/png;base64,${liveFrame}`}
             alt={`${title} ${activeKind} generation preview`}
-            className={`${previewItemClass} h-full w-full object-cover`}
+            className={`${previewItemClass} block h-full w-full object-cover`}
           />
         ) : showStill ? (
           <MediaImage
             src={`/data/images/${node.image}`}
             alt={`${title} image preview`}
-            className={`${previewItemClass} h-full w-full object-cover`}
+            className={`${previewItemClass} block h-full w-full object-cover`}
           />
         ) : showSpinner ? (
           <div className={`${previewItemClass} grid h-full min-h-16 place-items-center text-port-accent`}>
