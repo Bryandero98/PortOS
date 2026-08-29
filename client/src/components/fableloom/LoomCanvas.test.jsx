@@ -136,8 +136,12 @@ describe('LoomCanvas', () => {
     );
 
     const preview = screen.getByAltText('The Gate image generation preview').parentElement;
+    const mediaHost = screen.getByLabelText('Scene: The Gate').querySelector('foreignObject > div');
+    expect(mediaHost).toHaveClass('h-full', 'w-full', 'min-w-0', 'overflow-hidden');
     expect(preview).toHaveClass('grid');
+    expect(preview).toHaveClass('min-w-0');
     expect(preview).not.toHaveClass('relative');
+    expect(screen.getByAltText('The Gate image generation preview')).toHaveClass('block', 'min-w-0');
     expect(screen.getByText('Generating image 42%')).not.toHaveClass('absolute');
 
     rerender(

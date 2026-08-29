@@ -259,7 +259,7 @@ export default function LoomCanvas({
                   width={nodeW - 16}
                   height={nodeH - 48}
                 >
-                  <div className="h-full" xmlns="http://www.w3.org/1999/xhtml">
+                  <div className="h-full w-full min-w-0 overflow-hidden" xmlns="http://www.w3.org/1999/xhtml">
                     <LoomSceneMedia
                       node={node}
                       jobs={mediaJobs[node.id]}
