@@ -490,6 +490,96 @@
           "estimatedDownloadGb": 39.8,
           "reviewedAt": "2026-08-09"
         }
+      },
+      {
+        "id": "fastmetal_1_3b_qad",
+        "name": "FastMetal 1.3B QAD (~3.5 GB download, 8+ GB RAM, 3-step)",
+        "repo": "FastVideo/FastMetal-1.3B-QAD",
+        "runtime": "fastvideo",
+        "supportedModes": [
+          "text"
+        ],
+        "defaultWidth": 832,
+        "defaultHeight": 480,
+        "defaultFrames": 81,
+        "memoryGb": 8,
+        "steps": 3,
+        "guidance": 1,
+        "samplerLocked": true,
+        "samplerNote": "FastMetal models are DMD2-distilled 3-step models with affine INT8 quantization.",
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/FastVideo/FastMetal-1.3B-QAD",
+          "weightsLicense": {
+            "name": "Apache-2.0",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/hao-ai-lab/FastVideo/blob/main/LICENSE"
+          },
+          "estimatedDownloadGb": 3.5,
+          "reviewedAt": "2026-08-09"
+        }
+      },
+      {
+        "id": "fastmetal_5b_qad",
+        "name": "FastMetal 5B QAD (~10 GB download, 16+ GB RAM, 3-step)",
+        "repo": "FastVideo/FastMetal-5B-QAD",
+        "runtime": "fastvideo",
+        "supportedModes": [
+          "text"
+        ],
+        "defaultWidth": 1280,
+        "defaultHeight": 720,
+        "defaultFrames": 81,
+        "memoryGb": 16,
+        "steps": 3,
+        "guidance": 1,
+        "samplerLocked": true,
+        "samplerNote": "FastMetal models are DMD2-distilled 3-step models with affine INT8 quantization.",
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/FastVideo/FastMetal-5B-QAD",
+          "weightsLicense": {
+            "name": "Apache-2.0",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/hao-ai-lab/FastVideo/blob/main/LICENSE"
+          },
+          "estimatedDownloadGb": 10.2,
+          "reviewedAt": "2026-08-09"
+        }
+      },
+      {
+        "id": "fastmetal_14b_qad",
+        "name": "FastMetal 14B QAD (~25 GB download, 36+ GB RAM, 3-step)",
+        "repo": "FastVideo/FastMetal-14B-QAD",
+        "runtime": "fastvideo",
+        "supportedModes": [
+          "text"
+        ],
+        "defaultWidth": 1280,
+        "defaultHeight": 720,
+        "defaultFrames": 81,
+        "memoryGb": 36,
+        "steps": 3,
+        "guidance": 1,
+        "samplerLocked": true,
+        "samplerNote": "FastMetal models are DMD2-distilled 3-step models with affine INT8 quantization.",
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/FastVideo/FastMetal-14B-QAD",
+          "weightsLicense": {
+            "name": "Apache-2.0",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/hao-ai-lab/FastVideo/blob/main/LICENSE"
+          },
+          "estimatedDownloadGb": 25.4,
+          "reviewedAt": "2026-08-09"
+        }
       }
     ],
     "cuda": [

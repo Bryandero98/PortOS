@@ -73,6 +73,10 @@ const RUNTIME_LICENSE = {
     name: 'Tencent Hunyuan Community License',
     url: 'https://github.com/gaurav-nelson/HunyuanVideo_MLX/blob/main/LICENSE.txt',
   },
+  fastvideo: {
+    name: 'Apache-2.0',
+    url: 'https://github.com/hao-ai-lab/FastVideo/blob/main/LICENSE',
+  },
 };
 
 // Informational territory facts for ModelDisclosure — not an execution gate.
@@ -268,6 +272,36 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
       weightsLicense: TENCENT_HUNYUAN_WEIGHTS,
       runtimeLicense: RUNTIME_LICENSE.hunyuan,
       estimatedDownloadGb: 39.8,
+      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
+    },
+  },
+  fastmetal_1_3b_qad: {
+    shippedRepo: 'FastVideo/FastMetal-1.3B-QAD',
+    disclosure: {
+      modelCardUrl: hfModelCard('FastVideo/FastMetal-1.3B-QAD'),
+      weightsLicense: APACHE_2,
+      runtimeLicense: RUNTIME_LICENSE.fastvideo,
+      estimatedDownloadGb: 3.5,
+      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
+    },
+  },
+  fastmetal_5b_qad: {
+    shippedRepo: 'FastVideo/FastMetal-5B-QAD',
+    disclosure: {
+      modelCardUrl: hfModelCard('FastVideo/FastMetal-5B-QAD'),
+      weightsLicense: APACHE_2,
+      runtimeLicense: RUNTIME_LICENSE.fastvideo,
+      estimatedDownloadGb: 10.2,
+      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
+    },
+  },
+  fastmetal_14b_qad: {
+    shippedRepo: 'FastVideo/FastMetal-14B-QAD',
+    disclosure: {
+      modelCardUrl: hfModelCard('FastVideo/FastMetal-14B-QAD'),
+      weightsLicense: APACHE_2,
+      runtimeLicense: RUNTIME_LICENSE.fastvideo,
+      estimatedDownloadGb: 25.4,
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
   },

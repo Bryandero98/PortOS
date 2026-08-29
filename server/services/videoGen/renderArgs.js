@@ -40,6 +40,9 @@ import {
   HUNYUAN_VENV_PYTHON,
   HUNYUAN_HELPER_SCRIPT,
   HUNYUAN_REPO_DIR,
+  FASTVIDEO_VENV_PYTHON,
+  FASTVIDEO_HELPER_SCRIPT,
+  FASTVIDEO_REPO_DIR,
   BYOV_RUNTIME_INFO,
   videoLoraUnsupportedError,
   routesToWindowsHelper,
@@ -539,6 +542,32 @@ export const assertRenderModeContract = ({
   if (err) throw err;
 };
 
+// Build args for the FastVideo MLX helper on Apple Silicon.
+export const buildFastVideoArgs = ({
+  model, fastvideoModelPath, prompt, negativePrompt, width, height,
+  numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath,
+}) => {
+  assertByovRuntimeInstalled('fastvideo');
+  assertRenderModeContract({ model, mode, sourceImagePath });
+  const args = [
+    FASTVIDEO_HELPER_SCRIPT,
+    '--repo-dir', FASTVIDEO_REPO_DIR,
+    '--model-root', fastvideoModelPath || model.repo,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--steps', String(steps),
+    '--guidance', String(guidance ?? 1.0),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  if (negativePrompt) args.push('--negative-prompt', negativePrompt);
+  if (sourceImagePath) args.push('--image', sourceImagePath);
+  return { bin: FASTVIDEO_VENV_PYTHON, args };
+};
+
 // Build args for the pinned MLX-Gen Wan CLI. The helper itself never downloads:
 // all base + profile weights must already be present through the UI flow.
 const buildWan22Args = ({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
@@ -832,6 +861,9 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
         { status: 400, code: 'LORAS_REQUIRE_LTX2' },
       )
       : videoLoraUnsupportedError(model, modelId);
+  }
+  if (model.runtime === 'fastvideo') {
+    return buildFastVideoArgs({ model, fastvideoModelPath: wanModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });
   }
   if (model.runtime === 'wan22') {
     return buildWan22Args({ model, wanModelPath, wanRequiredWeights, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, mode, outputPath });

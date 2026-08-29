@@ -79,6 +79,9 @@ const detectVideoRuntime = (blob) => {
   if (/\bwan[\s._-]?2|wan-ai\b/.test(blob) || /\bwan2\.\d/.test(blob)) {
     return { runtime: 'wan22', installHint: 'INSTALL_WAN22=1 bash scripts/setup-image-video.sh' };
   }
+  if (/fastvideo|fastmetal/i.test(blob)) {
+    return { runtime: 'fastvideo', installHint: 'INSTALL_FASTVIDEO=1 bash scripts/setup-image-video.sh' };
+  }
   if (/hunyuan/.test(blob)) {
     return { runtime: 'hunyuan', installHint: 'INSTALL_HUNYUAN=1 bash scripts/setup-image-video.sh' };
   }
