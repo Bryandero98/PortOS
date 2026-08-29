@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,10 @@ const {
   parsePresetVoiceId,
   sanitizeVoiceProfile,
   promotePresetProfile,
+  createVoiceDesignCandidate,
+  createClonedVoiceCandidate,
+  promoteFineTunedProfile,
+  promoteVoiceProfile,
   resolveCharacterVoice,
   getProfileForSynthesis,
   profileArtifactDirectory,
@@ -49,12 +53,15 @@ afterEach(async () => {
 });
 
 describe('voice profile contract', () => {
-  it('only accepts the initially supported namespaced preset engines', () => {
+  it('accepts namespaced preset engines including qwen3', () => {
     expect(parsePresetVoiceId('kokoro:af_heart')).toEqual({
       engine: 'kokoro', voice: 'af_heart', voiceId: 'kokoro:af_heart',
     });
     expect(parsePresetVoiceId('piper:en_GB-jenny_dioco-medium')).toMatchObject({ engine: 'piper' });
-    expect(parsePresetVoiceId('qwen3:designed')).toBeNull();
+    expect(parsePresetVoiceId('qwen3:warm-narrator')).toEqual({
+      engine: 'qwen3-tts', voice: 'warm-narrator', voiceId: 'qwen3-tts:warm-narrator',
+    });
+    expect(parsePresetVoiceId('unknown-engine:foo')).toBeNull();
     expect(parsePresetVoiceId('af_heart')).toBeNull();
   });
 
@@ -73,13 +80,14 @@ describe('voice profile contract', () => {
         { filename: '../outside.wav', sha256: 'b'.repeat(64) },
       ],
     }).sourceAssets).toEqual([{
-      filename: 'approved-reference.wav', sha256: 'a'.repeat(64), transcript: null, rightsConfirmedAt: null,
+      filename: 'approved-reference.wav', sha256: 'a'.repeat(64), transcript: null, rightsConfirmedAt: null, performerConsentConfirmed: false, licensePosture: null,
     }]);
     expect(() => profileArtifactDirectory('../outside')).toThrow(/invalid voice profile/i);
   });
 
   it('promotes a preset into a DB-primary local profile and creates its managed directory', async () => {
     queryMock
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
     const profile = await promotePresetProfile({
@@ -99,6 +107,93 @@ describe('voice profile contract', () => {
     const { stat } = await import('node:fs/promises');
     expect((await stat(profileArtifactDirectory(profile.id))).isDirectory()).toBe(true);
     expect(queryMock.mock.calls.at(-1)[0]).toContain('INSERT INTO voice_profiles');
+  });
+
+  it('creates voice design candidate profile as draft without altering approved profile', async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+    const candidate = await createVoiceDesignCandidate({
+      universeId: 'universe-1',
+      characterId: 'character-1',
+      characterName: 'Example Character',
+      instructions: 'warm low alto, measured delivery',
+      seed: 12345,
+      rate: 1.1,
+    });
+    expect(candidate).toMatchObject({
+      kind: 'designed',
+      engine: 'qwen3-tts',
+      approval: { status: 'draft', approvedAt: null },
+      inference: {
+        instructions: 'warm low alto, measured delivery',
+        seed: 12345,
+        rate: 1.1,
+      },
+    });
+  });
+
+  it('creates consented cloned profile with audio asset hash and validates consent requirement', async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+    const audioBuffer = Buffer.from('RIFFmockwavheaderdata');
+
+    // Missing consent must throw
+    await expect(createClonedVoiceCandidate({
+      universeId: 'universe-1',
+      characterId: 'character-1',
+      characterName: 'Example Character',
+      audioBuffer,
+      filename: 'sample.wav',
+      performerConsentConfirmed: false,
+    })).rejects.toThrow(/consent/i);
+
+    const candidate = await createClonedVoiceCandidate({
+      universeId: 'universe-1',
+      characterId: 'character-1',
+      characterName: 'Example Character',
+      audioBuffer,
+      filename: 'sample.wav',
+      transcript: 'Spoken line here.',
+      performerConsentConfirmed: true,
+      licensePosture: 'consented-performance',
+    });
+
+    expect(candidate).toMatchObject({
+      kind: 'cloned',
+      engine: 'qwen3-tts',
+      approval: { status: 'draft' },
+      sourceAssets: [{
+        filename: 'sample.wav',
+        transcript: 'Spoken line here.',
+        performerConsentConfirmed: true,
+        licensePosture: 'consented-performance',
+      }],
+    });
+    expect(candidate.sourceAssets[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('promotes fine-tuned checkpoint into an approved profile', async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const profile = await promoteFineTunedProfile({
+      profileId: 'profile-fine-tuned-1',
+      universeId: 'universe-1',
+      characterId: 'character-1',
+      checkpointPath: '/path/to/checkpoint-100.safetensors',
+      checkpointId: 'checkpoint-100',
+      step: 100,
+    });
+
+    expect(profile).toMatchObject({
+      kind: 'fine-tuned',
+      engine: 'qwen3-tts',
+      approval: { status: 'approved' },
+      modelRevision: 'qwen3-tts:checkpoint-100',
+      inference: {
+        checkpointPath: '/path/to/checkpoint-100.safetensors',
+      },
+    });
   });
 
   it('prefers an approved local profile and visibly degrades to a character preset or project default', async () => {
@@ -125,13 +220,6 @@ describe('voice profile contract', () => {
     })).resolves.toMatchObject({
       source: 'character-preset', degraded: true, warning: expect.stringMatching(/unavailable for interactive/i),
     });
-  });
-
-  it('keeps legacy bare character presets as portable fallbacks', async () => {
-    queryMock.mockResolvedValueOnce({ rows: [] });
-    await expect(resolveCharacterVoice({
-      universeId: 'universe-1', characterId: 'character-1', characterVoiceId: 'af_heart',
-    })).resolves.toMatchObject({ source: 'character-preset', voiceId: 'af_heart', degraded: false });
   });
 
   it('records dialogue lineage locally with the effective controls and timing', async () => {

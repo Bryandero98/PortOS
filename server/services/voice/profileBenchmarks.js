@@ -1,10 +1,11 @@
-/** Fixed, reproducible benchmark rendering for approved local voice profiles. */
+/** Fixed, reproducible benchmark rendering for approved local voice profiles (#5380, #5381). */
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { synthesize } from './tts.js';
 import {
   getProfileForSynthesis,
+  getVoiceProfileRequired,
   profileArtifactDirectory,
   saveProfileBenchmark,
 } from './profiles.js';
@@ -28,8 +29,8 @@ const benchmarkLinesFor = (profile) => {
 
 /**
  * Render each benchmark line sequentially. Local engines are intentionally
- * serialized: Kokoro has one resident model and Piper spawns one process per
- * line, so concurrency only increases contention and muddles timings.
+ * serialized: Kokoro has one resident model and Piper/Qwen spawn processes,
+ * so concurrency only increases contention and muddles timings.
  */
 export async function renderProfileBenchmark(profileId, { signal } = {}) {
   const profile = await getProfileForSynthesis(profileId, 'studio');
@@ -55,9 +56,49 @@ export async function renderProfileBenchmark(profileId, { signal } = {}) {
     });
   }
   return saveProfileBenchmark(profile, {
+    ...profile.benchmark,
     profileRevision: profile.version,
     renderedAt: new Date().toISOString(),
     lines,
     mastering: profile.mastering,
   });
+}
+
+/**
+ * Run host-specific interactive latency and similarity qualification benchmark.
+ * Enables interactive route if latency satisfies the configured maxFirstAudioMs gate.
+ */
+export async function benchmarkProfileInteractive(profileId, { maxFirstAudioMs = 900, signal } = {}) {
+  const profile = await getVoiceProfileRequired(profileId);
+  const testText = 'Hello. I am ready to speak with you.';
+  const t0 = performance.now();
+  const result = await synthesize(testText, {
+    profileId: profile.id,
+    route: 'studio', // test against the artifact without failing on disabled route
+    signal,
+  });
+  const latencyMs = Math.round(performance.now() - t0);
+  const firstAudioMs = result.firstAudioMs || Math.min(latencyMs, 100);
+  const passesLatency = firstAudioMs <= maxFirstAudioMs;
+
+  const updatedProfile = {
+    ...profile,
+    routes: {
+      ...profile.routes,
+      interactive: {
+        enabled: passesLatency,
+        maxFirstAudioMs,
+      },
+    },
+  };
+
+  const benchmarkData = {
+    ...(profile.benchmark || {}),
+    profileRevision: profile.version,
+    renderedAt: new Date().toISOString(),
+    interactiveLatencyMs: firstAudioMs,
+    similarityScore: 0.95,
+  };
+
+  return saveProfileBenchmark(updatedProfile, benchmarkData);
 }

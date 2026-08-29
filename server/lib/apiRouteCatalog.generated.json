@@ -15764,7 +15764,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 285
+          "line": 321
         }
       ]
     },
@@ -15775,7 +15775,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 577
+          "line": 613
         }
       ]
     },
@@ -15786,7 +15786,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 294
+          "line": 330
         }
       ]
     },
@@ -16127,7 +16127,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 507
+          "line": 543
         }
       ]
     },
@@ -16138,7 +16138,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 453
+          "line": 489
         }
       ]
     },
@@ -16149,7 +16149,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 117
+          "line": 122
         }
       ]
     },
@@ -16160,7 +16160,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 159
+          "line": 164
         }
       ]
     },
@@ -16171,7 +16171,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 197
+          "line": 202
         }
       ]
     },
@@ -16182,7 +16182,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 423
+          "line": 459
         }
       ]
     },
@@ -16193,7 +16193,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 397
+          "line": 433
         }
       ]
     },
@@ -16204,7 +16204,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 341
+          "line": 377
         }
       ]
     },
@@ -16215,7 +16215,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 367
+          "line": 403
         }
       ]
     },
@@ -17458,7 +17458,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 105
+          "line": 110
         }
       ]
     },
@@ -17469,7 +17469,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 54
+          "line": 59
         }
       ]
     },
@@ -17480,7 +17480,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 86
+          "line": 91
         }
       ]
     },
@@ -17491,7 +17491,7 @@
       "sources": [
         {
           "source": "server/routes/pipeline/audio.js",
-          "line": 42
+          "line": 47
         }
       ]
     },
@@ -22211,12 +22211,23 @@
     },
     {
       "method": "GET",
+      "path": "/api/voice/engines",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 266
+        }
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/voice/facetime/status",
       "mountPath": "/api/voice",
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 185
+          "line": 178
         }
       ]
     },
@@ -22227,7 +22238,128 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 205
+          "line": 377
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/voice/profiles",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 271
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/:id/benchmark",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 320
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/:id/benchmark-interactive",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 327
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/voice/profiles/:id/fine-tune/:jobId",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 342
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/:id/fine-tune/:jobId/cancel",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 348
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/:id/fine-tune/:jobId/promote",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 354
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/:id/fine-tune/start",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 335
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/:id/promote",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 312
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/clone",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 298
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/design",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 291
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/profiles/preset",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 277
         }
       ]
     },
@@ -22266,12 +22398,34 @@
     },
     {
       "method": "POST",
+      "path": "/api/voice/qwen3/download-model",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 370
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/voice/qwen3/status",
+      "mountPath": "/api/voice",
+      "sources": [
+        {
+          "source": "server/routes/voice.js",
+          "line": 366
+        }
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/voice/speak",
       "mountPath": "/api/voice",
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 257
+          "line": 411
         }
       ]
     },
@@ -22282,7 +22436,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 168
+          "line": 164
         }
       ]
     },
@@ -22293,7 +22447,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 218
+          "line": 388
         }
       ]
     },
@@ -22304,7 +22458,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 283
+          "line": 431
         }
       ]
     },
@@ -22315,7 +22469,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 295
+          "line": 441
         }
       ]
     },
@@ -22326,7 +22480,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 199
+          "line": 189
         }
       ]
     },
@@ -22337,7 +22491,7 @@
       "sources": [
         {
           "source": "server/routes/voice.js",
-          "line": 307
+          "line": 448
         }
       ]
     },
@@ -23158,8 +23312,8 @@
   ],
   "stats": {
     "mounts": 145,
-    "operations": 2089,
-    "declarations": 2092,
+    "operations": 2103,
+    "declarations": 2106,
     "sourceFiles": 225
   }
 }

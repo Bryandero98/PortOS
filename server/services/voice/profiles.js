@@ -1,20 +1,21 @@
 /**
- * Machine-local character voice profiles (#5380).
+ * Machine-local character voice profiles (#5380, #5381).
  *
  * Universe characters retain only portable voice direction and their legacy
  * namespaced preset id. This module owns the local, DB-primary binding that
  * can be promoted independently on each install, plus the managed directory
- * that holds benchmark renders and future engine artifacts.
+ * that holds benchmark renders, training runs, and local engine artifacts.
  */
 
-import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { query } from '../../lib/db.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS } from '../../lib/paths.js';
 
-export const VOICE_PROFILE_ENGINES = new Set(['kokoro', 'piper']);
+export const VOICE_PROFILE_ENGINES = new Set(['kokoro', 'piper', 'qwen3-tts']);
+export const VOICE_PROFILE_KINDS = new Set(['preset', 'designed', 'cloned', 'fine-tuned']);
 export const VOICE_PROFILE_ROUTES = new Set(['studio', 'interactive']);
 
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
@@ -24,9 +25,6 @@ const MAX_REVISION = 240;
 const MAX_BENCHMARK_LINES = 12;
 const MAX_RENDER_ID = 160;
 const DEFAULT_DELIVERY = Object.freeze({ rate: 1, pitchSemitones: null, formantSemitones: null });
-// This initial preset wrapper deliberately makes no opaque DSP changes. Naming
-// the no-op is still useful provenance: an old render can be distinguished
-// from a later profile revision that does add a supported mastering step.
 const DEFAULT_MASTERING = Object.freeze({ chain: ['preset-output:unprocessed'] });
 const SAFE_ASSET_BASENAME = /^[a-z0-9][a-z0-9._-]{0,159}$/i;
 
@@ -40,13 +38,17 @@ export function parsePresetVoiceId(voiceId) {
   const match = /^([a-z][a-z0-9-]*):([^:\s]+)$/i.exec(value);
   if (!match) return null;
   const engine = match[1].toLowerCase();
-  if (!VOICE_PROFILE_ENGINES.has(engine)) return null;
-  return { engine, voice: match[2], voiceId: `${engine}:${match[2]}` };
+  const normalizedEngine = engine === 'qwen3' ? 'qwen3-tts' : engine;
+  if (!VOICE_PROFILE_ENGINES.has(normalizedEngine)) return null;
+  return { engine: normalizedEngine, voice: match[2], voiceId: `${normalizedEngine}:${match[2]}` };
 }
 
 const sanitizeRoutes = (raw) => Object.fromEntries(
   [...VOICE_PROFILE_ROUTES].map((route) => [route, {
     enabled: raw?.[route]?.enabled === true,
+    maxFirstAudioMs: Number.isFinite(raw?.[route]?.maxFirstAudioMs)
+      ? Math.max(50, Math.round(raw[route].maxFirstAudioMs))
+      : (route === 'interactive' ? 900 : null),
   }]),
 );
 
@@ -54,21 +56,23 @@ const boundedNumber = (value, min, max, fallback) =>
   Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 
 const sanitizeDelivery = (raw) => ({
-  // Rate is implemented by both preset engines. Pitch/formant are intentionally
-  // represented as null rather than zero: zero would claim that an unavailable
-  // transform was applied, while null makes the disabled state explicit.
   rate: boundedNumber(raw?.rate, 0.25, 4, DEFAULT_DELIVERY.rate),
   pitchSemitones: null,
   formantSemitones: null,
 });
 
 const sanitizeMastering = (raw) => ({
-  // An explicit empty chain means the profile applies no extra mastering;
-  // an absent chain gets the named initial preset-output wrapper. Keeping the
-  // two states distinct makes future mastering adapters reproducible.
   chain: Array.isArray(raw?.chain)
     ? raw.chain.map((step) => trim(step, 80)).filter(Boolean).slice(0, 12)
     : [...DEFAULT_MASTERING.chain],
+});
+
+const sanitizeInference = (raw) => ({
+  seed: Number.isInteger(raw?.seed) ? raw.seed : 42,
+  instructions: trim(raw?.instructions, 2000) || null,
+  rate: boundedNumber(raw?.rate, 0.25, 4, 1.0),
+  checkpointPath: trim(raw?.checkpointPath, 500) || null,
+  modelId: trim(raw?.modelId, 160) || null,
 });
 
 const sanitizeBenchmark = (raw) => {
@@ -95,6 +99,8 @@ const sanitizeBenchmark = (raw) => {
     renderedAt,
     lines,
     mastering: sanitizeMastering(raw.mastering),
+    interactiveLatencyMs: Number.isFinite(raw.interactiveLatencyMs) ? Math.round(raw.interactiveLatencyMs) : null,
+    similarityScore: Number.isFinite(raw.similarityScore) ? Number(raw.similarityScore.toFixed(3)) : null,
   };
 };
 
@@ -107,6 +113,8 @@ const sanitizeSourceAssets = (raw) => Array.isArray(raw)
       sha256: /^[a-f0-9]{64}$/i.test(trim(asset?.sha256, 64)) ? trim(asset.sha256, 64).toLowerCase() : null,
       transcript: trim(asset?.transcript, 4000) || null,
       rightsConfirmedAt: trim(asset?.rightsConfirmedAt, 64) || null,
+      performerConsentConfirmed: asset?.performerConsentConfirmed === true,
+      licensePosture: trim(asset?.licensePosture, 160) || null,
     };
   }).filter(Boolean).slice(0, 24)
   : [];
@@ -117,26 +125,31 @@ export function sanitizeVoiceProfile(raw) {
   const id = trim(raw.id, 80);
   const universeId = trim(raw?.binding?.universeId, MAX_ID);
   const characterId = trim(raw?.binding?.characterId, MAX_ID);
-  const preset = parsePresetVoiceId(raw.voiceId);
-  if (!PROFILE_ID_RE.test(id) || !universeId || !characterId || !preset) return null;
+  const kind = VOICE_PROFILE_KINDS.has(raw.kind) ? raw.kind : 'preset';
+  const engine = VOICE_PROFILE_ENGINES.has(raw.engine)
+    ? raw.engine
+    : (parsePresetVoiceId(raw.voiceId)?.engine || 'kokoro');
+
+  if (!PROFILE_ID_RE.test(id) || !universeId || !characterId) return null;
 
   const approvalStatus = raw?.approval?.status === 'approved'
     ? 'approved'
     : raw?.approval?.status === 'retired' ? 'retired' : 'draft';
   const createdAt = trim(raw.createdAt, 64) || timestamp();
   const updatedAt = trim(raw.updatedAt, 64) || createdAt;
+  const voiceId = trim(raw.voiceId, MAX_ID) || `${engine}:${kind}`;
+
   return {
     id,
     version: positiveInteger(raw.version),
     binding: { universeId, characterId },
     label: trim(raw.label, MAX_LABEL) || null,
-    kind: 'preset',
-    engine: preset.engine,
-    voiceId: preset.voiceId,
-    modelRevision: trim(raw.modelRevision, MAX_REVISION) || 'configured-preset',
-    // Preset profiles start empty. The same shape is ready for future,
-    // user-supplied source recordings without ever accepting a path string.
+    kind,
+    engine,
+    voiceId,
+    modelRevision: trim(raw.modelRevision, MAX_REVISION) || (engine === 'qwen3-tts' ? 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign' : 'configured-preset'),
     sourceAssets: sanitizeSourceAssets(raw.sourceAssets),
+    inference: sanitizeInference(raw.inference),
     routes: sanitizeRoutes(raw.routes),
     delivery: sanitizeDelivery(raw.delivery),
     mastering: sanitizeMastering(raw.mastering),
@@ -224,9 +237,248 @@ async function getBoundProfile(universeId, characterId) {
 }
 
 /**
- * Explicitly promote a selected Kokoro/Piper preset to the local character
- * binding. Re-promoting a different preset increments its reproducible
- * revision; the universe record itself remains untouched and federatable.
+ * Retire existing approved profiles for a character when promoting a new profile.
+ */
+async function supersedeApprovedProfiles(universeId, characterId, exceptProfileId) {
+  const { rows } = await query(
+    `SELECT data FROM voice_profiles
+     WHERE universe_id = $1 AND character_id = $2 AND approval_status = 'approved' AND id != $3`,
+    [universeId, characterId, exceptProfileId],
+  );
+  for (const row of rows) {
+    const item = sanitizeVoiceProfile(row.data);
+    if (item) {
+      const updated = sanitizeVoiceProfile({
+        ...item,
+        approval: { ...item.approval, status: 'retired' },
+        updatedAt: timestamp(),
+      });
+      await persist(updated);
+    }
+  }
+}
+
+/**
+ * Create a candidate Voice Design profile without changing the approved character voice.
+ */
+export async function createVoiceDesignCandidate({
+  universeId,
+  characterId,
+  characterName = '',
+  instructions = '',
+  seed = 42,
+  modelId = 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign',
+  delivery = DEFAULT_DELIVERY,
+  rate = 1.0,
+} = {}) {
+  const universe = trim(universeId, MAX_ID);
+  const character = trim(characterId, MAX_ID);
+  if (!universe || !character) {
+    throw new ServerError('universeId and characterId are required', { status: 400 });
+  }
+
+  const profileId = randomUUID();
+  const now = timestamp();
+  const next = sanitizeVoiceProfile({
+    id: profileId,
+    version: 1,
+    binding: { universeId: universe, characterId: character },
+    label: trim(characterName, MAX_LABEL) || null,
+    kind: 'designed',
+    engine: 'qwen3-tts',
+    voiceId: `qwen3:design-${profileId.slice(0, 8)}`,
+    modelRevision: trim(modelId, MAX_REVISION) || 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign',
+    sourceAssets: [],
+    inference: {
+      seed: Number.isInteger(seed) ? seed : 42,
+      instructions: trim(instructions, 2000),
+      rate: boundedNumber(rate, 0.25, 4, 1.0),
+      modelId,
+    },
+    routes: { studio: { enabled: true }, interactive: { enabled: false, maxFirstAudioMs: 900 } },
+    delivery: { ...DEFAULT_DELIVERY, rate: boundedNumber(rate, 0.25, 4, 1.0) },
+    mastering: DEFAULT_MASTERING,
+    approval: {
+      status: 'draft',
+      approvedAt: null,
+      benchmarkRevision: 1,
+    },
+    benchmark: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await mkdir(profileDirectory(profileId), { recursive: true });
+  return persist(next);
+}
+
+/**
+ * Create a candidate Consented Cloned profile with source audio and confirmed consent.
+ */
+export async function createClonedVoiceCandidate({
+  universeId,
+  characterId,
+  characterName = '',
+  audioBuffer,
+  filename,
+  transcript = '',
+  performerConsentConfirmed = false,
+  licensePosture = 'consented-performance',
+  modelId = 'Qwen/Qwen3-TTS-12Hz-1.7B-Base',
+  rate = 1.0,
+} = {}) {
+  const universe = trim(universeId, MAX_ID);
+  const character = trim(characterId, MAX_ID);
+  const cleanFilename = trim(filename, 160);
+
+  if (!universe || !character) {
+    throw new ServerError('universeId and characterId are required', { status: 400 });
+  }
+  if (!audioBuffer || !Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
+    throw new ServerError('Audio recording buffer is required for cloning', { status: 400 });
+  }
+  if (!SAFE_ASSET_BASENAME.test(cleanFilename)) {
+    throw new ServerError('Invalid audio asset filename', { status: 400 });
+  }
+  if (performerConsentConfirmed !== true) {
+    throw new ServerError('Voice cloning requires explicit performer consent confirmation', {
+      status: 400,
+      code: 'CONSENT_REQUIRED',
+    });
+  }
+
+  const profileId = randomUUID();
+  const profileDir = profileDirectory(profileId);
+  const sourceDir = join(profileDir, 'source');
+  await mkdir(sourceDir, { recursive: true });
+
+  const safePath = join(sourceDir, cleanFilename);
+  await writeFile(safePath, audioBuffer);
+
+  const sha256 = createHash('sha256').update(audioBuffer).digest('hex');
+  const now = timestamp();
+
+  const sourceAssets = [{
+    filename: cleanFilename,
+    sha256,
+    transcript: trim(transcript, 4000) || null,
+    rightsConfirmedAt: now,
+    performerConsentConfirmed: true,
+    licensePosture: trim(licensePosture, 160) || 'consented-performance',
+  }];
+
+  const next = sanitizeVoiceProfile({
+    id: profileId,
+    version: 1,
+    binding: { universeId: universe, characterId: character },
+    label: trim(characterName, MAX_LABEL) || null,
+    kind: 'cloned',
+    engine: 'qwen3-tts',
+    voiceId: `qwen3:clone-${profileId.slice(0, 8)}`,
+    modelRevision: trim(modelId, MAX_REVISION) || 'Qwen/Qwen3-TTS-12Hz-1.7B-Base',
+    sourceAssets,
+    inference: {
+      seed: 42,
+      instructions: null,
+      rate: boundedNumber(rate, 0.25, 4, 1.0),
+      modelId,
+    },
+    routes: { studio: { enabled: true }, interactive: { enabled: false, maxFirstAudioMs: 900 } },
+    delivery: { ...DEFAULT_DELIVERY, rate: boundedNumber(rate, 0.25, 4, 1.0) },
+    mastering: DEFAULT_MASTERING,
+    approval: {
+      status: 'draft',
+      approvedAt: null,
+      benchmarkRevision: 1,
+    },
+    benchmark: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return persist(next);
+}
+
+/**
+ * Promote a fine-tuned checkpoint artifact into an approved voice profile.
+ */
+export async function promoteFineTunedProfile({
+  profileId,
+  universeId,
+  characterId,
+  checkpointPath,
+  checkpointId,
+  modelRevision = null,
+  step = 100,
+} = {}) {
+  const current = await getVoiceProfile(profileId);
+  const now = timestamp();
+  const id = current?.id || randomUUID();
+  const next = sanitizeVoiceProfile({
+    ...current,
+    id,
+    version: current ? current.version + 1 : 1,
+    binding: { universeId, characterId },
+    label: current?.label || null,
+    kind: 'fine-tuned',
+    engine: 'qwen3-tts',
+    voiceId: `qwen3:fine-tuned-step-${step}`,
+    modelRevision: trim(modelRevision, MAX_REVISION) || `qwen3-tts:checkpoint-${step}`,
+    inference: {
+      ...current?.inference,
+      checkpointPath,
+    },
+    routes: { studio: { enabled: true }, interactive: { enabled: false, maxFirstAudioMs: 900 } },
+    delivery: current?.delivery || DEFAULT_DELIVERY,
+    mastering: current?.mastering || DEFAULT_MASTERING,
+    approval: {
+      status: 'approved',
+      approvedAt: now,
+      benchmarkRevision: current ? current.approval.benchmarkRevision + 1 : 1,
+    },
+    benchmark: null,
+    createdAt: current?.createdAt || now,
+    updatedAt: now,
+  });
+
+  await mkdir(profileDirectory(next.id), { recursive: true });
+  await supersedeApprovedProfiles(universeId, characterId, next.id);
+  return persist(next);
+}
+
+/**
+ * Explicitly promote any draft or candidate profile to approved status.
+ */
+export async function promoteVoiceProfile(profileId, { routes = null } = {}) {
+  const current = await getVoiceProfileRequired(profileId);
+  const now = timestamp();
+
+  const nextRoutes = routes ? sanitizeRoutes(routes) : {
+    studio: { enabled: true },
+    interactive: {
+      enabled: current.routes.interactive?.enabled === true,
+      maxFirstAudioMs: current.routes.interactive?.maxFirstAudioMs || 900,
+    },
+  };
+
+  const next = sanitizeVoiceProfile({
+    ...current,
+    version: current.approval.status === 'approved' ? current.version : current.version + 1,
+    routes: nextRoutes,
+    approval: {
+      status: 'approved',
+      approvedAt: now,
+      benchmarkRevision: current.approval.benchmarkRevision || 1,
+    },
+    updatedAt: now,
+  });
+
+  await supersedeApprovedProfiles(current.binding.universeId, current.binding.characterId, next.id);
+  return persist(next);
+}
+
+/**
+ * Explicitly promote a selected Kokoro/Piper preset to the local character binding.
  */
 export async function promotePresetProfile({
   universeId,
@@ -240,7 +492,7 @@ export async function promotePresetProfile({
   const character = trim(characterId, MAX_ID);
   const preset = parsePresetVoiceId(voiceId);
   if (!universe || !character || !preset) {
-    throw new ServerError('A universe, character, and Kokoro/Piper preset are required', {
+    throw new ServerError('A universe, character, and valid preset are required', {
       status: 400,
       code: 'VOICE_PROFILE_INVALID_PRESET',
     });
@@ -248,9 +500,10 @@ export async function promotePresetProfile({
   const current = await getBoundProfile(universe, character);
   const samePreset = current?.voiceId === preset.voiceId;
   const now = timestamp();
+  const profileId = current?.id || randomUUID();
   const next = sanitizeVoiceProfile({
     ...current,
-    id: current?.id || randomUUID(),
+    id: profileId,
     version: current ? (samePreset ? current.version : current.version + 1) : 1,
     binding: { universeId: universe, characterId: character },
     label: trim(characterName, MAX_LABEL) || current?.label || null,
@@ -258,7 +511,7 @@ export async function promotePresetProfile({
     engine: preset.engine,
     voiceId: preset.voiceId,
     modelRevision: trim(modelRevision, MAX_REVISION) || 'configured-preset',
-    routes: current?.routes || { studio: { enabled: true }, interactive: { enabled: true } },
+    routes: current?.routes || { studio: { enabled: true }, interactive: { enabled: true, maxFirstAudioMs: 900 } },
     delivery: current?.delivery || delivery,
     mastering: current?.mastering || DEFAULT_MASTERING,
     approval: {
@@ -271,6 +524,7 @@ export async function promotePresetProfile({
     updatedAt: now,
   });
   await mkdir(profileDirectory(next.id), { recursive: true });
+  await supersedeApprovedProfiles(universe, character, next.id);
   return persist(next);
 }
 
@@ -285,9 +539,7 @@ export async function saveProfileBenchmark(profile, benchmark) {
 }
 
 /**
- * Keep line-level profile provenance in the local database rather than in a
- * federated pipeline issue. One row follows the latest render of each line,
- * including the output filename so it cannot be mistaken for an older WAV.
+ * Record line-level provenance in database.
  */
 export async function recordVoiceProfileRender({
   issueId,
@@ -338,7 +590,6 @@ export async function recordVoiceProfileRender({
   );
 }
 
-/** Clear stale local lineage when a later render uses a portable/default voice. */
 export async function clearVoiceProfileRender({ issueId, lineId } = {}) {
   const issue = trim(issueId, MAX_RENDER_ID);
   const line = trim(lineId, MAX_RENDER_ID);
@@ -367,11 +618,6 @@ export async function getProfileForSynthesis(id, route = 'studio') {
   return profile;
 }
 
-/**
- * Resolve a local profile before portable character/default voice fallbacks.
- * `degraded` is explicit so a peer without the local profile never looks like
- * it has silently honoured a character's approved local voice.
- */
 export async function resolveCharacterVoice({
   universeId,
   characterId,
@@ -400,9 +646,6 @@ export async function resolveCharacterVoice({
     unavailableProfile = profiles.find((item) => item.approval.status === 'approved') || null;
   }
   const preset = parsePresetVoiceId(characterVoiceId);
-  // Legacy character records stored a bare engine voice name. It remains a
-  // valid portable fallback even though it is less descriptive than a modern
-  // `kokoro:` / `piper:` preset id.
   const legacyVoice = trim(characterVoiceId, MAX_ID);
   if (preset || legacyVoice) {
     return {
