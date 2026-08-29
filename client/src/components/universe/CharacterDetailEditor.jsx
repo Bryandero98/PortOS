@@ -31,9 +31,6 @@ import {
   promoteVoiceProfile,
   benchmarkProfileInteractive,
   startFineTuningJob,
-  getFineTuningJobStatus,
-  cancelFineTuningJob,
-  promoteFineTunedCheckpoint,
 } from '../../services/apiVoice';
 import VoicePicker from '../voice/VoicePicker';
 import CollapsibleSection from '../ui/CollapsibleSection';
@@ -768,7 +765,7 @@ function VoiceProfileSection({ universeId, entry, disabled }) {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(Boolean(universeId));
   const [loadError, setLoadError] = useState(null);
-  const [engineCapability, setEngineCapability] = useState(null);
+  const [_engineCapability, setEngineCapability] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
 
   // Voice Design form state
@@ -781,7 +778,7 @@ function VoiceProfileSection({ universeId, entry, disabled }) {
   const [cloneFileName, setCloneFileName] = useState('');
   const [cloneTranscript, setCloneTranscript] = useState('');
   const [cloneConsentConfirmed, setCloneConsentConfirmed] = useState(false);
-  const [cloneLicensePosture, setCloneLicensePosture] = useState('consented-performance');
+  const [cloneLicensePosture, _setCloneLicensePosture] = useState('consented-performance');
 
   // Fine-tuning state
   const [fineTuneEpochs, setFineTuneEpochs] = useState(5);
@@ -922,7 +919,7 @@ function VoiceProfileSection({ universeId, entry, disabled }) {
 
   if (!universeId) return null;
   const approved = profile?.approval?.status === 'approved';
-  const benchmarkCount = profile?.benchmark?.lines?.length || 0;
+  const _benchmarkCount = profile?.benchmark?.lines?.length || 0;
   const profileState = approved ? `approved v${profile.version} (${profile.kind})` : profile?.approval?.status || 'not promoted';
 
   return (

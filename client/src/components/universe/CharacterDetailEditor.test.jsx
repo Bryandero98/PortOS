@@ -21,11 +21,8 @@ vi.mock('../../services/apiVoice', () => ({
 import {
   listVoiceEngines,
   listVoiceProfiles,
-  promotePresetProfile,
   promoteVoicePreset,
   createVoiceDesignCandidate,
-  createClonedVoiceCandidate,
-  promoteVoiceProfile,
   benchmarkProfileInteractive,
 } from '../../services/apiVoice';
 
