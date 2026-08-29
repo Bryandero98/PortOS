@@ -141,7 +141,7 @@ async function doSyncSpotifyPlaylists() {
     console.error(`❌ Spotify playlist list failed: ${error.message}`);
     return { ok: false, error: error.message };
   }
-  const playlistSummaries = playlistResult.value;
+  const playlistSummaries = playlistResult.value.filter((playlist) => playlist?.id && playlist?.name);
 
   const results = [];
   for (let index = 0; index < playlistSummaries.length; index += PLAYLIST_BATCH_SIZE) {

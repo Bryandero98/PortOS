@@ -76,4 +76,33 @@ describe('syncYoutubePlaylists', () => {
     expect(result).toMatchObject({ ok: false, status: 'extraction-empty', playlistCount: 1, videoCount: 1 });
     expect(mocks.atomicWrite).not.toHaveBeenCalled();
   });
+
+  it('retains a stale playlist when navigation fails', async () => {
+    const stale = { id: 'PL-example', name: 'Example playlist', videoCount: 1, videos: [{ id: 'video-1' }] };
+    mocks.readJSONFile.mockResolvedValue({ playlists: [stale] });
+    mocks.evaluateOnPage
+      .mockReset()
+      .mockResolvedValueOnce({ signedOut: false, playlists: [{ id: stale.id, name: stale.name, videoCount: 1 }] })
+      .mockResolvedValueOnce(false);
+
+    const result = await syncYoutubePlaylists();
+
+    expect(result).toMatchObject({ ok: false, playlistCount: 1, videoCount: 1, failed: 1 });
+    expect(mocks.atomicWrite).toHaveBeenCalledWith('/tmp/youtube/playlists.json', expect.objectContaining({ playlists: [stale] }));
+  });
+
+  it('retains a stale playlist when a known non-empty page scrapes no videos', async () => {
+    const stale = { id: 'PL-example', name: 'Example playlist', videoCount: 1, videos: [{ id: 'video-1' }] };
+    mocks.readJSONFile.mockResolvedValue({ playlists: [stale] });
+    mocks.evaluateOnPage
+      .mockReset()
+      .mockResolvedValueOnce({ signedOut: false, playlists: [{ id: stale.id, name: stale.name, videoCount: 1 }] })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ signedOut: false, videos: [] });
+
+    const result = await syncYoutubePlaylists();
+
+    expect(result).toMatchObject({ ok: false, playlistCount: 1, videoCount: 1, failed: 1 });
+    expect(result.warnings).toEqual(['Example playlist: no videos read']);
+  });
 });

@@ -91,4 +91,16 @@ describe('syncSpotifyPlaylists', () => {
 
     expect(maximumActive).toBe(5);
   });
+
+  it('skips unresolved playlist entries before fetching items', async () => {
+    mocks.fetchWithTimeout
+      .mockReset()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 2, items: [null, playlist] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [trackItem] }) });
+
+    const result = await syncSpotifyPlaylists();
+
+    expect(result).toMatchObject({ ok: true, playlistCount: 1, trackCount: 1, scanned: 1 });
+    expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(2);
+  });
 });

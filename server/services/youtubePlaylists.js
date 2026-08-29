@@ -189,12 +189,20 @@ async function doSyncYoutubePlaylists() {
     const navigated = await evaluateOnPage(loaded.page, `location.assign(${JSON.stringify(`${PLAYLIST_URL}${encodeURIComponent(rawPlaylist.id)}`)}); true`).catch(() => false);
     if (!navigated) {
       warnings.push(`${rawPlaylist.name || 'Playlist'}: could not open playlist`);
+      const stale = previous?.playlists?.find((playlist) => playlist.id === rawPlaylist.id);
+      if (stale) playlists.push(stale);
       continue;
     }
     await sleep(NAV_SETTLE_MS);
     const detail = await evaluateOnPage(loaded.page, buildPlaylistVideosExtractionScript()).catch(() => null);
     if (!detail || !Array.isArray(detail.videos) || detail.signedOut) {
       warnings.push(`${rawPlaylist.name || 'Playlist'}: could not read videos`);
+      const stale = previous?.playlists?.find((playlist) => playlist.id === rawPlaylist.id);
+      if (stale) playlists.push(stale);
+      continue;
+    }
+    if (!detail.videos.length && Number.isFinite(rawPlaylist.videoCount) && rawPlaylist.videoCount > 0) {
+      warnings.push(`${rawPlaylist.name || 'Playlist'}: no videos read`);
       const stale = previous?.playlists?.find((playlist) => playlist.id === rawPlaylist.id);
       if (stale) playlists.push(stale);
       continue;

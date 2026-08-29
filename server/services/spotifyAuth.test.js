@@ -238,7 +238,7 @@ describe('handleCallback', () => {
     while (mocks.fetchWithTimeout.mock.calls.length === 0) await new Promise((resolve) => setTimeout(resolve, 0));
     resolveFetch({ ok: true, json: async () => ({ access_token: 'fresh', refresh_token: 'refresh', expires_in: 3600 }) });
 
-    await expect(Promise.all([first, second])).resolves.toEqual([{ success: true }, { success: true }]);
+    await expect(Promise.all([first, second])).resolves.toEqual([{ success: true }, { success: true, duplicate: true }]);
     await expect(handleCallback('one-time-code')).resolves.toMatchObject({ success: true, duplicate: true });
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
   });

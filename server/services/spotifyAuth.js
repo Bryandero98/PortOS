@@ -209,7 +209,7 @@ export async function handleCallback(code, options = {}) {
     return { ...prior.result, duplicate: true };
   }
   const active = callbackInFlight.get(key);
-  if (active) return active;
+  if (active) return active.then((result) => ({ ...result, duplicate: true }));
   const promise = processCallback(code, options).then((result) => {
     completedCallbacks.set(key, { completedAt: Date.now(), result });
     for (const [cachedKey, cached] of completedCallbacks) {
