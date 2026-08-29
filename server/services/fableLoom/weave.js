@@ -650,6 +650,8 @@ export const publicNode = (node) => ({
   prose: node.prose,
   image: node.image,
   videoHistoryId: node.videoHistoryId,
+  playbackAssets: node.playbackAssets || null,
+  interactionWindow: node.interactionWindow || null,
   playbackMode: node.playbackMode,
   audienceConnection: asFableLoomAudienceConnection(node.audienceConnection),
   isEnding: node.isEnding,

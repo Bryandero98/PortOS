@@ -14,12 +14,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, RotateCcw, Send, Flag } from 'lucide-react';
+import { Loader2, RotateCcw, Send, Flag, Volume2, Mic, CheckCircle2, AlertCircle } from 'lucide-react';
 import MediaImage from '../MediaImage';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { playLoomTurn } from '../../services/api';
 import { sceneProseClass } from './fieldStyles';
 import { audienceCanParticipate } from '../../../../server/lib/fableLoomParticipation.js';
+import { resolvePlaybackPhaseAsset } from '../../../../server/lib/fableLoomPlayback.js';
 
 const findNode = (episode, id) => episode?.nodes.find((n) => n.id === id) || null;
 const hasPlayableStart = (episode) => !!findNode(episode, episode?.startNodeId);
@@ -33,12 +34,25 @@ const asPublic = (node) => (node ? {
   prose: node.prose,
   image: node.image,
   videoHistoryId: node.videoHistoryId,
+  playbackAssets: node.playbackAssets || null,
+  interactionWindow: node.interactionWindow || null,
   playbackMode: node.playbackMode || 'decision',
   audienceConnection: node.audienceConnection || 'disconnected',
   isEnding: !!node.isEnding,
   endingLabel: node.endingLabel,
   choices: (node.transitions || []).map((t) => ({ id: t.id, intent: t.intent })),
 } : null);
+
+const initialPhaseForNode = (node) => {
+  if (!node) return 'ended';
+  if (node.isEnding) return 'ended';
+  if (node.playbackAssets?.entryVideoHistoryId) return 'entry';
+  if (node.playbackAssets?.holdLoopVideoHistoryIds?.length) return 'hold';
+  if (node.videoHistoryId) {
+    return node.playbackMode === 'cut' ? 'entry' : 'hold';
+  }
+  return 'hold';
+};
 
 export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   const [playEpisodeId, setPlayEpisodeId] = useState(initialEpisode.id);
@@ -57,10 +71,14 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
     [episode.id, episode.startNodeId],
   );
   const [scene, setScene] = useState(start);
+  const [playbackPhase, setPlaybackPhase] = useState(() => initialPhaseForNode(start));
+  const [activeHoldIndex, setActiveHoldIndex] = useState(0);
+  const [pendingTransition, setPendingTransition] = useState(null);
   const [transcript, setTranscript] = useState(() => (start ? [{ role: 'scene', node: start }] : []));
   const [message, setMessage] = useState('');
   const [previewMode, setPreviewMode] = useState('text');
   const [failedVideoId, setFailedVideoId] = useState(null);
+  const [showInspector, setShowInspector] = useState(false);
   const scrollRef = useRef(null);
   // Mirrors the server's terminal rule: an ending, or a dead-end scene with
   // no paths out, ends the read-through.
@@ -70,8 +88,19 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
     && scene.choices?.length > 0
     && (!audienceConnected || (scene.playbackMode === 'cut' && scene.choices.length === 1));
 
+  // Resolve current active video asset and occupancy
+  const currentAsset = useMemo(() => resolvePlaybackPhaseAsset({
+    node: scene,
+    phase: playbackPhase,
+    activeHoldIndex,
+    transitionId: pendingTransition?.id || null,
+  }), [scene, playbackPhase, activeHoldIndex, pendingTransition]);
+
   const restart = () => {
     setScene(start);
+    setPlaybackPhase(initialPhaseForNode(start));
+    setActiveHoldIndex(0);
+    setPendingTransition(null);
     setTranscript(start ? [{ role: 'scene', node: start }] : []);
     setMessage('');
     setFailedVideoId(null);
@@ -106,6 +135,9 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
     if (result.narration) additions.push({ role: 'narrator', text: result.narration });
     if (result.action === 'move' && result.node) {
       setScene(result.node);
+      setPlaybackPhase(initialPhaseForNode(result.node));
+      setActiveHoldIndex(0);
+      setPendingTransition(null);
       additions.push({ role: 'scene', node: result.node });
     }
     // A turn that moves nowhere and says nothing would read as the app
@@ -118,18 +150,48 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   }, { errorMessage: 'The narrator lost the thread — try again' });
 
   // Tapping a path: the reader already named the transition, so the turn
-  // carries its id and the server moves them without an intent-matching call.
+  // carries its id. If a transition-specific exit clip exists, rehearse the exit
+  // clip before committing the move.
   const takePath = (choice) => {
     if (sending || !scene) return;
     setMessage('');
     const history = [...transcript, { role: 'reader', text: choice.intent }];
     setTranscript(history);
-    runTurn({ transitionId: choice.id }, history);
+
+    const hasExitClip = Boolean(scene.playbackAssets?.exitByTransition?.[choice.id]);
+    if (hasExitClip && previewMode === 'video') {
+      setPendingTransition(choice);
+      setPlaybackPhase('exit');
+    } else {
+      runTurn({ transitionId: choice.id }, history);
+    }
   };
 
   const advanceCut = () => {
     if (sending || !automaticCut) return;
     runTurn({ transitionId: scene.choices[0].id }, transcript);
+  };
+
+  const handleVideoEnded = () => {
+    if (playbackPhase === 'entry') {
+      if (automaticCut) {
+        advanceCut();
+      } else {
+        setPlaybackPhase('hold');
+        setActiveHoldIndex(0);
+      }
+    } else if (playbackPhase === 'hold') {
+      const holdLoops = scene?.playbackAssets?.holdLoopVideoHistoryIds || [];
+      if (holdLoops.length > 1) {
+        setActiveHoldIndex((prev) => (prev + 1) % holdLoops.length);
+      }
+    } else if (playbackPhase === 'exit') {
+      if (pendingTransition) {
+        const choice = pendingTransition;
+        setPendingTransition(null);
+        runTurn({ transitionId: choice.id }, transcript);
+      }
+    }
   };
 
   const send = () => {
@@ -154,12 +216,25 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
     );
   }
 
+  const liveVoiceActive = Boolean(
+    scene?.interactionWindow?.enabled && audienceConnected && currentAsset.safeForLiveVoice && playbackPhase === 'hold',
+  );
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-port-border p-3 flex items-center justify-between gap-3">
         <div>
           <p className="text-xs font-medium">Episode {episode.number || episodeIndex + 1 || 1}: {episode.title || 'Untitled'}</p>
-          <label htmlFor="loom-preview-mode" className="text-xs text-port-text-muted">Preview stage</label>
+          <div className="flex items-center gap-2 mt-0.5">
+            <label htmlFor="loom-preview-mode" className="text-xs text-port-text-muted">Preview stage</label>
+            <button
+              type="button"
+              onClick={() => setShowInspector((prev) => !prev)}
+              className="text-[10px] text-port-accent hover:underline"
+            >
+              {showInspector ? 'Hide rehearsal' : 'Rehearsal details'}
+            </button>
+          </div>
         </div>
         <select
           id="loom-preview-mode"
@@ -172,6 +247,58 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           <option value="video">Rendered video</option>
         </select>
       </div>
+
+      {showInspector && (
+        <div className="bg-port-card/60 border-b border-port-border p-2.5 text-xs space-y-1.5" role="region" aria-label="Playback rehearsal">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold uppercase tracking-wider text-[10px] text-port-text-muted">Phase:</span>
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium uppercase ${
+              playbackPhase === 'hold' ? 'bg-port-accent/20 text-port-accent' :
+              playbackPhase === 'entry' ? 'bg-blue-500/20 text-blue-400' :
+              playbackPhase === 'exit' ? 'bg-amber-500/20 text-amber-400' :
+              'bg-port-bg border border-port-border text-port-text-muted'
+            }`}>
+              {playbackPhase}
+            </span>
+            {currentAsset.videoHistoryId && (
+              <span className="text-[10px] font-mono text-port-text-muted truncate max-w-[140px]" title={currentAsset.videoHistoryId}>
+                Asset: {currentAsset.videoHistoryId}
+              </span>
+            )}
+            {scene.interactionWindow?.enabled && (
+              <span className="flex items-center gap-1 text-[10px]">
+                {currentAsset.safeForLiveVoice ? (
+                  <span className="text-port-success flex items-center gap-0.5">
+                    <CheckCircle2 size={11} /> Safe for live voice
+                  </span>
+                ) : (
+                  <span className="text-port-error flex items-center gap-0.5">
+                    <AlertCircle size={11} /> Unsafe (dialogue/blocking)
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+          {scene.interactionWindow?.enabled && (
+            <div className="text-[10px] text-port-text-muted flex items-center gap-2">
+              <span>Duck level: {scene.interactionWindow.ambientDuckDb ?? -8} dB</span>
+              <span>Presence: {scene.interactionWindow.protagonistPresence || 'offscreen'}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {liveVoiceActive && (
+        <div className="bg-port-accent/10 border-b border-port-accent/30 px-3 py-1.5 text-xs flex items-center justify-between text-port-accent" role="status">
+          <span className="flex items-center gap-1.5 font-medium">
+            <Mic size={13} className="animate-pulse" /> Off-screen voice window open
+          </span>
+          <span className="flex items-center gap-1 text-[10px] text-port-text-muted">
+            <Volume2 size={11} /> Ambience ducked {scene?.interactionWindow?.ambientDuckDb ?? -8} dB
+          </span>
+        </div>
+      )}
+
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {transcript.map((turn, i) => {
           if (turn.role === 'scene') {
@@ -210,11 +337,13 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           isOpening={scene?.id === start.id}
           format={loom.format}
           previewMode={previewMode}
-          onCutEnded={advanceCut}
+          onCutEnded={handleVideoEnded}
+          playbackPhase={playbackPhase}
+          activeAsset={currentAsset}
           automaticCut={automaticCut}
           helperMode={loom.participationMode === 'helper'}
-          videoFailed={!!scene.videoHistoryId && failedVideoId === scene.videoHistoryId}
-          onVideoError={() => setFailedVideoId(scene.videoHistoryId)}
+          videoFailed={Boolean(currentAsset.videoHistoryId && failedVideoId === currentAsset.videoHistoryId)}
+          onVideoError={() => setFailedVideoId(currentAsset.videoHistoryId)}
         />
         {ended && (
           <div className="flex items-center gap-2 justify-center text-port-success text-sm font-medium py-2">
@@ -244,12 +373,12 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
             <button
               type="button"
               onClick={advanceCut}
-              disabled={sending || (previewMode === 'video' && !!scene.videoHistoryId && failedVideoId !== scene.videoHistoryId)}
+              disabled={sending || (previewMode === 'video' && Boolean(currentAsset.videoHistoryId) && failedVideoId !== currentAsset.videoHistoryId)}
               className="flex-1 px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
             >
               {sending
                 ? 'Loading next cut…'
-                : previewMode === 'video' && scene.videoHistoryId && failedVideoId !== scene.videoHistoryId
+                : previewMode === 'video' && currentAsset.videoHistoryId && failedVideoId !== currentAsset.videoHistoryId
                   ? 'Video advances automatically'
                   : 'Next cut'}
             </button>
@@ -306,24 +435,31 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
 
 function SceneCard({
   node, isOpening = false, format, previewMode, onCutEnded, automaticCut,
+  playbackPhase = 'hold', activeAsset = null,
   helperMode = false, videoFailed = false, onVideoError,
 }) {
   if (!node) return null;
-  const showVideo = previewMode === 'video' && node.videoHistoryId && !videoFailed;
+  const videoId = activeAsset?.videoHistoryId || node.videoHistoryId || null;
+  const showVideo = previewMode === 'video' && Boolean(videoId) && !videoFailed;
   const showImage = previewMode === 'image' && node.image;
+
+  // Decision nodes with single hold loop loop natively; otherwise ended event rotates or advances phase
+  const holdLoopCount = node.playbackAssets?.holdLoopVideoHistoryIds?.length || 0;
+  const shouldLoopNatively = !automaticCut && !node.isEnding && playbackPhase === 'hold' && holdLoopCount <= 1;
+
   return (
     <div className="border border-port-border rounded-lg overflow-hidden bg-port-card">
       {showVideo && (
         <video
-          key={node.videoHistoryId}
+          key={videoId}
           controls
           autoPlay
           muted
           playsInline
-          loop={!automaticCut && !node.isEnding}
-          onEnded={automaticCut ? onCutEnded : undefined}
+          loop={shouldLoopNatively}
+          onEnded={onCutEnded}
           onError={onVideoError}
-          src={`/data/videos/${encodeURIComponent(node.videoHistoryId)}.mp4`}
+          src={`/data/videos/${encodeURIComponent(videoId)}.mp4`}
           aria-label={node.title || 'Scene video'}
           className="w-full max-h-[60vh] bg-black object-contain"
         />
@@ -337,7 +473,7 @@ function SceneCard({
         </div>
         {previewMode === 'text' && <p className={sceneProseClass(format)}>{node.prose}</p>}
         {previewMode === 'image' && !node.image && <p className="text-sm text-port-text-muted">No storyboard image rendered for this cut yet.</p>}
-        {previewMode === 'video' && (!node.videoHistoryId || videoFailed) && (
+        {previewMode === 'video' && (!videoId || videoFailed) && (
           <p className="text-sm text-port-text-muted">
             {videoFailed ? 'The rendered video is unavailable; advance manually or retry after rendering.' : 'No video rendered for this cut yet.'}
           </p>
@@ -357,3 +493,4 @@ function SceneCard({
     </div>
   );
 }
+

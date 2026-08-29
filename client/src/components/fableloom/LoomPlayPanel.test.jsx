@@ -273,4 +273,114 @@ describe('LoomPlayPanel', () => {
     expect(screen.getByRole('button', { name: 'Play again' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next: Episode 2' })).not.toBeInTheDocument();
   });
+
+  it('rehearses entry clip, transitions to hold loop on ended, and displays live voice status', async () => {
+    const user = userEvent.setup();
+    const productionEpisode = {
+      id: 'ep-prod', number: 1, title: 'Production Pilot', startNodeId: 'node-prod',
+      nodes: [{
+        id: 'node-prod',
+        title: 'Courtyard',
+        prose: 'You arrive at the courtyard.',
+        playbackAssets: {
+          entryVideoHistoryId: 'vid-entry-1',
+          holdLoopVideoHistoryIds: ['vid-hold-1', 'vid-hold-2'],
+          exitByTransition: { 'tr-gate': 'vid-exit-gate' },
+          audioOccupancy: {
+            'vid-hold-1': { durationMs: 6000, music: [{ startMs: 0, endMs: 6000 }] },
+            'vid-hold-2': { durationMs: 6000, music: [{ startMs: 0, endMs: 6000 }] },
+          },
+        },
+        interactionWindow: {
+          enabled: true,
+          protagonistCharacterId: 'char-maya',
+          protagonistPresence: 'offscreen',
+          ambientDuckDb: -10,
+        },
+        transitions: [{ id: 'tr-gate', targetNodeId: 'node-inside', intent: 'open the gate' }],
+      }, {
+        id: 'node-inside',
+        title: 'Inside Sanctum',
+        prose: 'Inside the quiet hall.',
+        isEnding: true,
+        transitions: [],
+      }],
+    };
+
+    render(<LoomPlayPanel loom={{ ...loom, episodes: [productionEpisode] }} episode={productionEpisode} />);
+    await user.selectOptions(screen.getByLabelText('Preview stage'), 'video');
+
+    // Initially plays entry clip
+    const video = screen.getByLabelText('Courtyard');
+    expect(video.getAttribute('src')).toContain('vid-entry-1');
+
+    // When entry video ends, advances to hold loop
+    fireEvent.ended(video);
+
+    // Now playing hold loop vid-hold-1 and live voice status is displayed
+    await waitFor(() => {
+      const updatedVideo = screen.getByLabelText('Courtyard');
+      expect(updatedVideo.getAttribute('src')).toContain('vid-hold-1');
+    });
+
+    expect(screen.getByText('Off-screen voice window open')).toBeInTheDocument();
+    expect(screen.getByText(/Ambience ducked -10 dB/)).toBeInTheDocument();
+
+    // Loop ended again -> rotates to vid-hold-2
+    fireEvent.ended(screen.getByLabelText('Courtyard'));
+    await waitFor(() => {
+      const rotatedVideo = screen.getByLabelText('Courtyard');
+      expect(rotatedVideo.getAttribute('src')).toContain('vid-hold-2');
+    });
+
+    // Tap path 'open the gate' -> starts exit clip vid-exit-gate
+    playLoomTurn.mockResolvedValue({
+      action: 'move', narration: '', ended: true,
+      node: { id: 'node-inside', title: 'Inside Sanctum', prose: 'Inside the quiet hall.', isEnding: true, choices: [] },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Take path: open the gate' }));
+
+    // Rehearses exit clip before sending turn
+    await waitFor(() => {
+      const exitVideo = screen.getByLabelText('Courtyard');
+      expect(exitVideo.getAttribute('src')).toContain('vid-exit-gate');
+    });
+
+    // Exit video ends -> finishes turn and enters next node
+    fireEvent.ended(screen.getByLabelText('Courtyard'));
+
+    await waitFor(() => expect(playLoomTurn).toHaveBeenCalledWith(
+      'loom-1', 'ep-prod', expect.objectContaining({ transitionId: 'tr-gate' }), { silent: true },
+    ));
+    await waitFor(() => expect(screen.getByText('Ending')).toBeInTheDocument());
+  });
+
+  it('shows rehearsal details with inspector drawer', async () => {
+    const user = userEvent.setup();
+    const episodeWithOccupancy = {
+      id: 'ep-occ', number: 1, title: 'Occupancy', startNodeId: 'node-1',
+      nodes: [{
+        id: 'node-1',
+        title: 'Hall',
+        prose: 'A quiet hall.',
+        playbackAssets: {
+          entryVideoHistoryId: 'vid-entry-hall',
+          audioOccupancy: {
+            'vid-entry-hall': { durationMs: 4000, safeForLiveVoice: true },
+          },
+        },
+        interactionWindow: { enabled: true, ambientDuckDb: -8 },
+        transitions: [],
+      }],
+    };
+
+    render(<LoomPlayPanel loom={{ ...loom, episodes: [episodeWithOccupancy] }} episode={episodeWithOccupancy} />);
+    await user.click(screen.getByRole('button', { name: 'Rehearsal details' }));
+
+    expect(screen.getByRole('region', { name: 'Playback rehearsal' })).toBeInTheDocument();
+    expect(screen.getByText(/Duck level: -8 dB/)).toBeInTheDocument();
+    expect(screen.getByText(/Asset: vid-entry-hall/)).toBeInTheDocument();
+  });
 });
+

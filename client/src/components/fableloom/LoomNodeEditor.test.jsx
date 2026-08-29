@@ -235,4 +235,55 @@ describe('LoomNodeEditor scene media', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Playback behavior')).toHaveValue('decision'));
   });
+
+  it('toggles live interaction window and patches node', async () => {
+    const user = userEvent.setup();
+    updateLoomNode.mockResolvedValue({ id: 'loom-1' });
+    renderEditor();
+
+    const checkbox = screen.getByLabelText('Live conversation window (off-screen voice)');
+    expect(checkbox).not.toBeChecked();
+
+    await user.click(checkbox);
+
+    await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', 'n1',
+      {
+        interactionWindow: expect.objectContaining({
+          enabled: true,
+        }),
+      },
+      { silent: true },
+    ));
+
+    expect(screen.getByLabelText('Protagonist Character ID')).toBeInTheDocument();
+    expect(screen.getByLabelText('Protagonist presence')).toBeInTheDocument();
+  });
+
+  it('displays production readiness findings for unsafe hold loop dialogue', () => {
+    const nodes = makeNodes([existingPath]);
+    nodes[0].interactionWindow = { enabled: true, protagonistCharacterId: 'char-1' };
+    nodes[0].playbackAssets = {
+      holdLoopVideoHistoryIds: ['vid-hold-1'],
+      audioOccupancy: {
+        'vid-hold-1': {
+          characterDialogue: [{ startMs: 0, endMs: 2000 }],
+        },
+      },
+    };
+
+    render(
+      <LoomNodeEditor
+        loom={loom}
+        episode={{ id: 'ep-1', nodes }}
+        node={nodes[0]}
+        onLoomUpdate={vi.fn()}
+        onClearSelection={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/contains rendered character dialogue/)).toBeInTheDocument();
+    expect(screen.getByText(/Tip: Render dialogue separately/)).toBeInTheDocument();
+  });
 });
+

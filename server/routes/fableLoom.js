@@ -33,6 +33,11 @@ import {
 } from '../lib/fableLoomValidation.js';
 import { analyzeEpisodeGraph } from '../lib/fableLoomGraph.js';
 import {
+  inspectEpisodeProductionReadiness,
+  inspectNodeProductionReadiness,
+} from '../lib/fableLoomPlayback.js';
+import { getUniverse } from '../services/universeBuilder.js';
+import {
   addEpisode,
   addNode,
   addNodeTransition,
@@ -126,15 +131,30 @@ router.delete('/:id/episodes/:episodeId', asyncHandler(async (req, res) => {
   res.json(await deleteEpisode(req.params.id, req.params.episodeId));
 }));
 
-// Deterministic graph validation — no LLM.
+// Deterministic graph validation and production readiness — no LLM.
 router.get('/:id/episodes/:episodeId/validate', asyncHandler(async (req, res) => {
   const loom = await getLoom(req.params.id);
   const episode = loom?.episodes.find((e) => e.id === req.params.episodeId);
   if (!episode) throw new ServerError('Episode not found', { status: 404, code: 'NOT_FOUND' });
-  res.json(analyzeEpisodeGraph(episode, {
+  const universe = loom.universeId ? await getUniverse(loom.universeId).catch(() => null) : null;
+  const graphAnalysis = analyzeEpisodeGraph(episode, {
     participationMode: loom.participationMode,
     requireAudienceIntroduction: episode.id === loom.episodes[0]?.id,
-  }));
+  });
+  const productionReadiness = inspectEpisodeProductionReadiness(episode, { universe, loom });
+  res.json({
+    ...graphAnalysis,
+    productionReadiness,
+  });
+}));
+
+router.get('/:id/episodes/:episodeId/nodes/:nodeId/readiness', asyncHandler(async (req, res) => {
+  const loom = await getLoom(req.params.id);
+  const episode = loom?.episodes.find((e) => e.id === req.params.episodeId);
+  const node = episode?.nodes.find((n) => n.id === req.params.nodeId);
+  if (!loom || !episode || !node) throw new ServerError('Scene not found', { status: 404, code: 'NOT_FOUND' });
+  const universe = loom.universeId ? await getUniverse(loom.universeId).catch(() => null) : null;
+  res.json(inspectNodeProductionReadiness(node, { universe, loom }));
 }));
 
 // --- Nodes ------------------------------------------------------------------
