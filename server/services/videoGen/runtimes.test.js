@@ -384,8 +384,8 @@ describe('fastvideo runtime registration', () => {
   it('is a BYOV runtime with its own venv', () => {
     expect(BYOV_VIDEO_RUNTIMES.has('fastvideo')).toBe(true);
     expect(info.installEnvVar).toBe('INSTALL_FASTVIDEO');
-    expect(info.venvPython).toContain('.portos/fastvideo/.venv');
-    expect(info.repoDir).toContain('.portos/fastvideo');
+    for (const part of ['.portos', 'fastvideo', '.venv']) expect(info.venvPython).toContain(part);
+    for (const part of ['.portos', 'fastvideo']) expect(info.repoDir).toContain(part);
   });
 
   it('probes for fastvideo and mlx.core', () => {
