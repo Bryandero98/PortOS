@@ -435,6 +435,7 @@ describe('codeReview helpers', () => {
       expect(body.messages[0].role).toBe('system')
       expect(body.messages[0].content).toContain('at most five')
       expect(body.messages[0].content).toContain('concrete wrong outcome')
+      expect(body.messages[0].content).toContain('Omit a severity heading')
       expect(body.messages[0].content).not.toContain('## Nits')
       expect(body.messages[1].content).toContain('diff --git a b')
     })

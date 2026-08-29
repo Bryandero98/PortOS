@@ -249,7 +249,7 @@ const CODE_REVIEW_SYSTEM_PROMPT = `You are a careful senior code reviewer. The u
 ## Blocking
 ## Recommended
 
-For each finding, name the file:line (when known) and explain the concrete wrong outcome + suggested fix in one or two sentences. If you find nothing actionable, reply with exactly: \`No findings.\``
+For each finding, name the file:line (when known) and explain the concrete wrong outcome + suggested fix in one or two sentences. Omit a severity heading when it has no findings. If you find nothing actionable, reply with exactly: \`No findings.\``
 
 /**
  * Run a single code-review request against the configured local-LLM backend.

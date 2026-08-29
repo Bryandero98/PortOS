@@ -2836,8 +2836,9 @@ describe('buildReviewLoopFollowUpSection — CLI reviewer procedure inlining', (
     );
     expect(out).toContain('directly affected contracts only');
     expect(out).toContain('concrete wrong outcome');
-    expect(out).toContain('only a substantive fix earns another round');
-    expect(out).toContain('do not expand into a repository-wide audit');
+    expect(out).toContain('only substantive fixes do');
+    expect(out).toContain('skip repository-wide audits');
+    expect(out).toContain('This affects looping only, not clean/partial verdicts');
   });
 });
 
