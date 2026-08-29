@@ -401,10 +401,6 @@ async function configuredAudioCapabilities(config) {
       maxDurationSec: engine?.maxDurationSec ?? null,
       defaultDurationSec: engine?.defaultDurationSec ?? null,
       lyrics: engine?.lyrics === true,
-      // Overlap-release duplicate of the status-root `lyrics` feature (#4826).
-      // Always equal to `lyrics` because it never carried a per-model fact;
-      // drop it once no supported peer reads the legacy field.
-      acceptsLyrics: engine?.lyrics === true,
       inputAssets: null,
       autoDuration: engine?.autoDuration === true,
       frameStride: null,
@@ -495,7 +491,6 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
       maxDurationSec: null,
       defaultDurationSec: null,
       lyrics: false,
-      acceptsLyrics: false,
       inputAssets: federatedInputAssetsBlock(kind, model),
       autoDuration: false,
       frameStride,
