@@ -18,6 +18,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runner_common import emit_runtime_fingerprint, establish_process_group  # noqa: E402
 
 
+_DENOISE_STEP_PATTERN = re.compile(
+    r'\bdenois(?:e|ing)\s+step\s*(\d+)\s*/\s*(\d+)\b', re.IGNORECASE,
+)
+_PERCENT_PATTERN = re.compile(r'\d+%')
+
+
+def translate_line(line: str) -> str:
+    """Translate one upstream output line into PortOS's progress protocol."""
+    step_match = _DENOISE_STEP_PATTERN.search(line)
+    if step_match:
+        cur, total = int(step_match.group(1)), int(step_match.group(2))
+        return f"STAGE:fastvideo:step:{cur}:{total}:denoising step {cur}/{total}"
+    if _PERCENT_PATTERN.search(line):
+        return f"STATUS:FastVideo: {line}"
+    if "loading" in line.lower() or "encoding" in line.lower():
+        return f"STATUS:{line}"
+    return line
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PortOS FastVideo MLX helper")
     p.add_argument("--repo-dir", default=None, help="Path to cloned FastVideo repo")
@@ -88,6 +107,9 @@ def main() -> int:
         "--width", str(args.width),
         "--height", str(args.height),
         "--num-frames", str(args.num_frames),
+        "--num-inference-steps", str(args.steps),
+        "--fps", str(args.fps),
+        "--seed", str(args.seed),
         "--output-path", str(args.output),
     ]
     if args.fast:
@@ -115,28 +137,16 @@ def main() -> int:
     )
 
     assert proc.stdout is not None
-    # Parse output lines and map to STAGE: / STATUS: protocols
-    step_pattern = re.compile(r'(?:step|Step)\s*(\d+)[/:](\d+)', re.IGNORECASE)
-    percent_pattern = re.compile(r'(\d+)%')
-
+    # Parse output lines and map to STAGE: / STATUS: protocols. Only the
+    # upstream denoising-step message represents render progress. Startup
+    # model-loading bars also contain percentages (often ending at 100%) and
+    # must remain status output or the generic server parser will report them
+    # as completed rendering.
     for raw in proc.stdout:
         line = raw.rstrip()
         if not line:
             continue
-
-        step_match = step_pattern.search(line)
-        if step_match:
-            cur, total = int(step_match.group(1)), int(step_match.group(2))
-            print(f"STAGE:fastvideo:step:{cur}:{total}:denoising step {cur}/{total}", file=sys.stderr, flush=True)
-        else:
-            pct_match = percent_pattern.search(line)
-            if pct_match:
-                pct = int(pct_match.group(1))
-                print(f"STAGE:fastvideo:step:{pct}:100:generating {pct}%", file=sys.stderr, flush=True)
-            elif "loading" in line.lower() or "encoding" in line.lower():
-                print(f"STATUS:{line}", file=sys.stderr, flush=True)
-            else:
-                print(line, file=sys.stderr, flush=True)
+        print(translate_line(line), file=sys.stderr, flush=True)
 
     return_code = proc.wait()
     if return_code != 0:
