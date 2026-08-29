@@ -26,7 +26,15 @@ vi.mock('../services/voice/bootstrap.js', () => ({
 vi.mock('../services/voice/tts.js', () => ({
   synthesize: vi.fn(),
   listVoices: vi.fn(),
+  listVoiceEngines: vi.fn(),
   VALID_ENGINES: new Set(['kokoro', 'piper']),
+}));
+vi.mock('../services/voice/profiles.js', () => ({
+  listVoiceProfiles: vi.fn(),
+  promotePresetProfile: vi.fn(),
+}));
+vi.mock('../services/voice/profileBenchmarks.js', () => ({
+  renderProfileBenchmark: vi.fn(),
 }));
 // GET /api/voice/tts/status + POST /api/voice/tts/unload destructure these at
 // module load — mock them so the route resolves without spinning up Kokoro.
@@ -56,6 +64,8 @@ import * as config from '../services/voice/config.js';
 import * as health from '../services/voice/health.js';
 import * as bootstrap from '../services/voice/bootstrap.js';
 import * as tts from '../services/voice/tts.js';
+import * as voiceProfiles from '../services/voice/profiles.js';
+import * as profileBenchmarks from '../services/voice/profileBenchmarks.js';
 import { ServerError } from '../lib/errorHandler.js';
 import * as piperVoices from '../services/voice/piper-voices.js';
 import * as proactiveSpeech from '../services/voice/proactiveSpeech.js';
@@ -72,7 +82,7 @@ errorEvents.on('error', () => {});
 const DEFAULT_CFG = {
   enabled: false,
   stt: { engine: 'web-speech', endpoint: 'http://127.0.0.1:5562' },
-  tts: { engine: 'kokoro' },
+  tts: { engine: 'kokoro', rate: 1, kokoro: { modelId: 'kokoro-test', dtype: 'q8' } },
 };
 
 const buildApp = ({ io = { emit: () => {} } } = {}) => {
@@ -91,6 +101,42 @@ describe('Voice Routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     config.getVoiceConfig.mockResolvedValue(DEFAULT_CFG);
+  });
+
+  describe('machine-local voice profiles', () => {
+    it('reports the preset engine capability contract', async () => {
+      tts.listVoiceEngines.mockResolvedValue([{ id: 'kokoro', capabilities: { preset: true, formant: false } }]);
+      const res = await request(buildApp()).get('/api/voice/engines');
+      expect(res.status).toBe(200);
+      expect(res.body.engines).toEqual([{ id: 'kokoro', capabilities: { preset: true, formant: false } }]);
+    });
+
+    it('lists only the requested machine-local character binding', async () => {
+      voiceProfiles.listVoiceProfiles.mockResolvedValue([{ id: 'voice-profile-1' }]);
+      const res = await request(buildApp()).get('/api/voice/profiles?universeId=uni-1&characterId=char-1');
+      expect(res.status).toBe(200);
+      expect(voiceProfiles.listVoiceProfiles).toHaveBeenCalledWith({ universeId: 'uni-1', characterId: 'char-1' });
+      expect(res.body.profiles).toEqual([{ id: 'voice-profile-1' }]);
+    });
+
+    it('promotes a preset with the current local model and delivery provenance', async () => {
+      voiceProfiles.promotePresetProfile.mockResolvedValue({ id: 'voice-profile-1' });
+      const res = await request(buildApp()).post('/api/voice/profiles/preset').send({
+        universeId: 'uni-1', characterId: 'char-1', voiceId: 'kokoro:af_heart',
+      });
+      expect(res.status).toBe(201);
+      expect(voiceProfiles.promotePresetProfile).toHaveBeenCalledWith(expect.objectContaining({
+        modelRevision: 'kokoro-test:q8', delivery: { rate: 1 },
+      }));
+      expect(res.body).toEqual({ profile: { id: 'voice-profile-1' } });
+    });
+
+    it('runs fixed benchmarks only for a valid profile id', async () => {
+      profileBenchmarks.renderProfileBenchmark.mockResolvedValue({ id: 'voice-profile-1' });
+      const res = await request(buildApp()).post('/api/voice/profiles/voice-profile-1/benchmark').send({});
+      expect(res.status).toBe(200);
+      expect(profileBenchmarks.renderProfileBenchmark).toHaveBeenCalledWith('voice-profile-1');
+    });
   });
 
   describe('GET /api/voice/config', () => {

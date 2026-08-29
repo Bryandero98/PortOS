@@ -1,10 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import CharacterDetailEditor from './CharacterDetailEditor';
 
 // Mock VoicePicker — it pulls in the voice API/socket layer the relationship
 // tests don't care about.
 vi.mock('../voice/VoicePicker', () => ({ default: () => null }));
+vi.mock('../../services/apiVoice', () => ({
+  listVoiceProfiles: vi.fn(),
+  promoteVoicePreset: vi.fn(),
+  renderVoiceProfileBenchmark: vi.fn(),
+}));
+
+import {
+  listVoiceProfiles,
+  promoteVoicePreset,
+} from '../../services/apiVoice';
 
 const ARIA = { id: 'chr-aria', name: 'Aria' };
 const BRAM = { id: 'chr-bram', name: 'Bram' };
@@ -165,6 +175,26 @@ describe('CharacterDetailEditor — character framework (#2175)', () => {
 });
 
 describe('CharacterDetailEditor — production package (#5378)', () => {
+  it('keeps the empty local-profile state distinct and promotes a portable preset locally', async () => {
+    listVoiceProfiles.mockResolvedValue({ profiles: [] });
+    promoteVoicePreset.mockResolvedValueOnce({
+      profile: {
+        id: 'voice-profile-1', version: 1, voiceId: 'kokoro:af_heart', modelRevision: 'kokoro-test:q8',
+        delivery: { rate: 1 }, approval: { status: 'approved' }, benchmark: null,
+      },
+    });
+    render(<CharacterDetailEditor
+      entry={{ ...ARIA, voiceId: 'kokoro:af_heart' }} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+    expect(await screen.findByText(/Promote the selected Kokoro or Piper preset/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Promote selected preset/i }));
+    await waitFor(() => expect(promoteVoicePreset).toHaveBeenCalledWith({
+      universeId: 'uni-1', characterId: 'chr-aria', characterName: 'Aria', voiceId: 'kokoro:af_heart',
+    }, { silent: true }));
+    expect(await screen.findByRole('button', { name: /Re-promote selected preset/i })).toBeInTheDocument();
+  });
+
   it('marks a voice-canon revision as approved', () => {
     const onPatch = vi.fn();
     render(<CharacterDetailEditor entry={ARIA} characters={[ARIA]} onPatch={onPatch} />);

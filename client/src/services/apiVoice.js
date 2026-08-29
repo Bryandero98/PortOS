@@ -9,6 +9,17 @@ export const getVoiceConfig = (options) => api.get('/voice/config', options);
 export const updateVoiceConfig = (patch, options) => api.put('/voice/config', patch, options);
 export const listVoices = (engine, options) => api.get(`/voice/voices${engine ? `?engine=${engine}` : ''}`, options);
 export const fetchPiperVoice = (voice, options) => api.post('/voice/piper/fetch', { voice }, options);
+export const listVoiceProfiles = ({ universeId, characterId } = {}, options) => {
+  const params = new URLSearchParams();
+  if (universeId) params.set('universeId', universeId);
+  if (characterId) params.set('characterId', characterId);
+  const query = params.toString();
+  return api.get(`/voice/profiles${query ? `?${query}` : ''}`, options);
+};
+export const promoteVoicePreset = (payload, options) => api.post('/voice/profiles/preset', payload, options);
+export const renderVoiceProfileBenchmark = (profileId, options) => api.post(
+  `/voice/profiles/${encodeURIComponent(profileId)}/benchmark`, {}, options,
+);
 
 // Returns the raw WAV bytes of the test utterance. Optional `voice` and
 // `engine` overrides let the voice-picker preview audition a voice from a

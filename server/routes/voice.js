@@ -13,7 +13,9 @@ import { getVoiceConfig, updateVoiceConfig } from '../services/voice/config.js';
 import { checkAll, invalidateHealthCache } from '../services/voice/health.js';
 import * as facetimeBridge from '../services/voice/facetimeBridge.js';
 import { reconcile, verifyBinaries, verifyModels, downloadPiperVoice, startWhisper, stopWhisper } from '../services/voice/bootstrap.js';
-import { synthesize, listVoices, VALID_ENGINES } from '../services/voice/tts.js';
+import { synthesize, listVoices, listVoiceEngines, VALID_ENGINES } from '../services/voice/tts.js';
+import { listVoiceProfiles, promotePresetProfile } from '../services/voice/profiles.js';
+import { renderProfileBenchmark } from '../services/voice/profileBenchmarks.js';
 import { readyState as kokoroReadyState, unloadKokoro, loadedModelKey as kokoroLoadedKey } from '../services/voice/tts-kokoro.js';
 import { findPiperVoice } from '../services/voice/piper-voices.js';
 import { speakProactive, HHMM_RE, MAX_PROACTIVE_TEXT_LEN } from '../services/voice/proactiveSpeech.js';
@@ -198,6 +200,51 @@ for (const command of ['probe', 'call', 'hangup']) {
 // page preview a different engine's voices without saving first.
 router.get('/voices', asyncHandler(async (req, res) => {
   res.json(await listVoices(validEngine(req.query?.engine)));
+}));
+
+const voiceProfileListSchema = z.object({
+  universeId: z.string().trim().min(1).max(160).optional(),
+  characterId: z.string().trim().min(1).max(160).optional(),
+}).strict();
+const promotePresetProfileSchema = z.object({
+  universeId: z.string().trim().min(1).max(160),
+  characterId: z.string().trim().min(1).max(160),
+  characterName: z.string().trim().max(160).optional(),
+  voiceId: z.string().trim().min(1).max(160),
+}).strict();
+const profileIdParamsSchema = z.object({
+  id: z.string().trim().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
+}).strict();
+
+// The profile endpoints live behind the normal /api/voice auth gate. Unlike
+// `/api/voice/public`, they expose local binding metadata and benchmark
+// artifacts, so they are never externally reopened by apiAccess.voice.
+router.get('/engines', asyncHandler(async (_req, res) => {
+  res.json({ engines: await listVoiceEngines() });
+}));
+
+router.get('/profiles', asyncHandler(async (req, res) => {
+  const filters = validateRequest(voiceProfileListSchema, req.query || {});
+  res.json({ profiles: await listVoiceProfiles(filters) });
+}));
+
+router.post('/profiles/preset', asyncHandler(async (req, res) => {
+  const body = validateRequest(promotePresetProfileSchema, req.body || {});
+  const cfg = await getVoiceConfig();
+  const profile = await promotePresetProfile({
+    ...body,
+    modelRevision: /^kokoro:/i.test(body.voiceId)
+      ? `${cfg.tts.kokoro?.modelId || 'configured'}:${cfg.tts.kokoro?.dtype || 'configured'}`
+      : `piper:${body.voiceId.slice('piper:'.length)}`,
+    delivery: { rate: cfg.tts?.rate },
+  });
+  res.status(201).json({ profile });
+}));
+
+router.post('/profiles/:id/benchmark', asyncHandler(async (req, res) => {
+  const { id: profileId } = validateRequest(profileIdParamsSchema, req.params);
+  const profile = await renderProfileBenchmark(profileId);
+  res.json({ profile });
 }));
 
 // POST /api/voice/piper/fetch — download a single Piper voice on demand.

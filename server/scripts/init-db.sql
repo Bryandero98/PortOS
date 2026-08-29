@@ -922,6 +922,21 @@ CREATE TABLE IF NOT EXISTS universes (
 CREATE INDEX IF NOT EXISTS idx_universes_live ON universes (deleted) WHERE deleted = FALSE;
 CREATE INDEX IF NOT EXISTS idx_universes_updated ON universes (updated_at);
 
+-- Machine-local character voice profiles (#5380). Portable character voice
+-- direction stays in the federated universe record; profile bindings, local
+-- preset/artifact metadata, and rendered benchmark provenance stay here.
+CREATE TABLE IF NOT EXISTS voice_profiles (
+  id TEXT PRIMARY KEY,
+  universe_id TEXT NOT NULL,
+  character_id TEXT NOT NULL,
+  approval_status TEXT NOT NULL DEFAULT 'draft' CHECK (approval_status IN ('draft', 'approved', 'retired')),
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_voice_profiles_binding ON voice_profiles (universe_id, character_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_profiles_approved_binding ON voice_profiles (universe_id, character_id) WHERE approval_status = 'approved';
+
 -- Universe render-history log (issue #1014). The type-level `config.runs[]` array
 -- collectionStore kept in data/universes/index.json (capped 200, NEVER federated
 -- — per-peer local) becomes its own table. `universe_id` is a soft ref (no FK):

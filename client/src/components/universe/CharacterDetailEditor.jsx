@@ -10,16 +10,18 @@
  * only knows the field shape.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Plus, Trash2, WandSparkles, Loader2,
   Palette, Hand, Smile, Package, BookOpen, Eye, Activity, Users, Swords,
-  Drama, KeyRound, Mic, Images, BadgeCheck,
+  Drama, KeyRound, Mic, Images, BadgeCheck, Play,
 } from 'lucide-react';
 import { BIBLE_LIMITS as L } from '../../lib/bibleLimits';
 import useFieldDraft from '../../hooks/useFieldDraft';
 import useRowDraft from '../../hooks/useRowDraft';
 import usePendingListRows from '../../hooks/usePendingListRows';
+import useAsyncAction from '../../hooks/useAsyncAction';
+import { listVoiceProfiles, promoteVoicePreset, renderVoiceProfileBenchmark } from '../../services/apiVoice';
 import VoicePicker from '../voice/VoicePicker';
 import CollapsibleSection from '../ui/CollapsibleSection';
 
@@ -748,6 +750,94 @@ function VoiceCanonSection({ entry, onPatch, disabled }) {
   );
 }
 
+function VoiceProfileSection({ universeId, entry, disabled }) {
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(Boolean(universeId));
+  const [loadError, setLoadError] = useState(null);
+  const loadGeneration = useRef(0);
+  useEffect(() => {
+    let cancelled = false;
+    const generation = ++loadGeneration.current;
+    if (!universeId || !entry?.id) {
+      setProfile(null);
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
+    setLoading(true);
+    listVoiceProfiles({ universeId, characterId: entry.id }, { silent: true })
+      .then((result) => {
+        if (cancelled || generation !== loadGeneration.current) return;
+        setProfile(Array.isArray(result?.profiles) ? result.profiles[0] || null : null);
+        setLoadError(null);
+      })
+      .catch((err) => {
+        if (!cancelled && generation === loadGeneration.current) {
+          setLoadError(err?.message || 'Failed to load the local voice profile');
+        }
+      })
+      .finally(() => {
+        if (!cancelled && generation === loadGeneration.current) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [universeId, entry?.id]);
+
+  const [promote, promoting] = useAsyncAction(async () => {
+    // A pending initial fetch must not erase the user action that just won.
+    loadGeneration.current += 1;
+    const result = await promoteVoicePreset({
+      universeId,
+      characterId: entry.id,
+      characterName: entry.name || '',
+      voiceId: entry.voiceId,
+    }, { silent: true });
+    setProfile(result?.profile || null);
+    return result;
+  }, { errorMessage: 'Could not promote the selected preset' });
+
+  const [renderBenchmark, renderingBenchmark] = useAsyncAction(async () => {
+    const result = await renderVoiceProfileBenchmark(profile.id, { silent: true });
+    setProfile(result?.profile || profile);
+    return result;
+  }, { errorMessage: 'Could not render the voice benchmark' });
+
+  if (!universeId) return null;
+  const approved = profile?.approval?.status === 'approved';
+  const benchmarkCount = profile?.benchmark?.lines?.length || 0;
+  const profileState = approved ? `approved v${profile.version}` : profile?.approval?.status || 'not promoted';
+  return (
+    <BoxedSection icon={Mic} label="Local voice profile" summary={loading ? 'loading' : profileState}>
+      <p className="text-[10px] leading-snug text-gray-500">
+        This machine-local profile wins over the portable preset binding. It never writes a profile id into the synced Universe record.
+      </p>
+      {loadError ? <p className="text-[10px] text-port-error">{loadError}</p> : null}
+      {approved ? (
+        <p className="text-[10px] text-gray-400">
+          {profile.voiceId} · {profile.modelRevision} · rate {profile.delivery?.rate ?? 1} · benchmark {benchmarkCount ? `${benchmarkCount} lines rendered` : 'not rendered'}
+        </p>
+      ) : profile ? (
+        <p className="text-[10px] text-gray-500">This local profile is {profileState}; it is unavailable for synthesis until explicitly approved.</p>
+      ) : <p className="text-[10px] text-gray-500">Promote the selected Kokoro or Piper preset to give this character a stable local voice.</p>}
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          type="button" onClick={promote} disabled={disabled || promoting || !entry.voiceId}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border border-port-border text-gray-400 hover:text-white hover:border-gray-500 disabled:opacity-40"
+        >
+          <BadgeCheck size={10} /> {approved ? 'Re-promote selected preset' : 'Promote selected preset'}
+        </button>
+        <button
+          type="button" onClick={renderBenchmark} disabled={disabled || renderingBenchmark || !approved}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border border-port-border text-gray-400 hover:text-white hover:border-gray-500 disabled:opacity-40"
+        >
+          {renderingBenchmark ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />} Render fixed benchmark
+        </button>
+      </div>
+      <p className="text-[10px] leading-snug text-gray-500">
+        Kokoro and Piper support preset selection plus rate only. Pitch and formant controls are intentionally unavailable until a compatible local backend and formant-preserving transform are installed.
+      </p>
+    </BoxedSection>
+  );
+}
+
 function IdentityPackSection({ entry, onPatch, disabled }) {
   const pack = entry.identityPack || {};
   const assets = Array.isArray(pack.assets) ? pack.assets : [];
@@ -817,7 +907,7 @@ function IdentityPackSection({ entry, onPatch, disabled }) {
   );
 }
 
-export default function CharacterDetailEditor({ entry, onPatch, onExpand, expanding = false, disabled = false, characters = [] }) {
+export default function CharacterDetailEditor({ entry, universeId = null, onPatch, onExpand, expanding = false, disabled = false, characters = [] }) {
   if (!entry) return null;
 
   const patchField = (name, value) => onPatch?.({ [name]: value });
@@ -881,6 +971,8 @@ export default function CharacterDetailEditor({ entry, onPatch, onExpand, expand
       />
 
       <VoiceCanonSection entry={entry} onPatch={onPatch} disabled={disabled} />
+
+      <VoiceProfileSection universeId={universeId} entry={entry} disabled={disabled} />
 
       <IdentityPackSection entry={entry} onPatch={onPatch} disabled={disabled} />
 

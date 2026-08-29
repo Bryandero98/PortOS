@@ -461,11 +461,37 @@ export const sanitizeLineOffset = (raw) => {
   if (!Number.isFinite(n) || n < 0) return null;
   return Math.min(n, AUDIO_LINE_OFFSET_MAX_SEC);
 };
+
+// Render provenance is local production evidence, not a portable voice binding:
+// it records which approved local revision created a WAV without writing a
+// machine-local profile id back into the federated Universe character record.
+const sanitizeVoiceProvenance = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const profileId = trimTo(raw.profileId, 80);
+  const engine = trimTo(raw.engine, 32);
+  if (!profileId || !engine) return null;
+  return {
+    profileId,
+    profileRevision: Number.isInteger(raw.profileRevision) && raw.profileRevision > 0 ? raw.profileRevision : null,
+    engine,
+    modelRevision: trimTo(raw.modelRevision, 240) || null,
+    effectiveControls: {
+      rate: Number.isFinite(raw?.effectiveControls?.rate) ? raw.effectiveControls.rate : null,
+    },
+    mastering: {
+      chain: Array.isArray(raw?.mastering?.chain)
+        ? raw.mastering.chain.map((step) => trimTo(step, 80)).filter(Boolean).slice(0, 12)
+        : [],
+    },
+  };
+};
+
 const sanitizeAudioLine = (raw, i) => {
   if (!raw || typeof raw !== 'object') return null;
   const text = trimTo(raw.text, AUDIO_LINE_TEXT_MAX);
   if (!text) return null;
   const id = trimTo(raw.id, AUDIO_LINE_ID_MAX) || `line-${String(i + 1).padStart(3, '0')}`;
+  const voiceProvenance = sanitizeVoiceProvenance(raw.voiceProvenance);
   return {
     id,
     characterId: trimTo(raw.characterId, 80) || null,
@@ -479,6 +505,7 @@ const sanitizeAudioLine = (raw, i) => {
     // Per-line start offset for muxing VO into the stitched episode (Phase
     // 4d.2). null until the user (or a future auto-spacer) places it.
     offsetSec: sanitizeLineOffset(raw.offsetSec),
+    ...(voiceProvenance ? { voiceProvenance } : {}),
   };
 };
 

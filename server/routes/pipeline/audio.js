@@ -15,6 +15,7 @@ import { resolveSeriesLlmOverride } from '../../lib/seriesLlmOverride.js';
 import { listAllVoices, synthesizeToFile, parseVoiceId, extractDialogueLines, resolveVoiceForLine } from '../../services/pipeline/audio.js';
 import { narrateProse } from '../../services/pipeline/manuscriptNarration.js';
 import { synthesize as synthesizeVoice } from '../../services/voice/tts.js';
+import { resolveCharacterVoice } from '../../services/voice/profiles.js';
 import {
   listMusicLibrary,
   importUploadedTrack,
@@ -218,18 +219,34 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
   // every per-line render pays two file reads it doesn't use.
   const needsCanon = !body.voiceId?.trim() && !line.voiceIdOverride && line.characterId;
   let canon = null;
+  let series = null;
   if (needsCanon) {
-    const series = await seriesSvc.getSeries(issue.seriesId).catch(() => null);
+    series = await seriesSvc.getSeries(issue.seriesId).catch(() => null);
     if (series) canon = await getSeriesCanon(series);
   }
-  const voiceId = resolveVoiceForLine(line, canon, { explicit: body.voiceId });
-  const synthResult = await synthesizeToFile({ text: line.text, voiceId })
+  const characterVoiceId = resolveVoiceForLine(line, canon, { explicit: body.voiceId });
+  const profileResolution = needsCanon && series?.universeId
+    ? await resolveCharacterVoice({
+      universeId: series.universeId,
+      characterId: line.characterId,
+      characterVoiceId,
+      route: 'studio',
+    })
+    : null;
+  const voiceId = profileResolution?.voiceId ?? characterVoiceId;
+  const synthResult = await synthesizeToFile({
+    text: line.text,
+    voiceId,
+    profileId: profileResolution?.profileId || undefined,
+    route: 'studio',
+  })
     .catch((err) => { throw mapServiceError(err); });
   const nextLines = [...lines];
   nextLines[lineIdx] = {
     ...line,
     audioJobId: null,
     audioFilename: synthResult.filename,
+    ...(synthResult.provenance ? { voiceProvenance: synthResult.provenance } : {}),
   };
   const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
     status: 'edited',
@@ -241,6 +258,10 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
     filename: synthResult.filename,
     engine: synthResult.engine,
     voiceId: synthResult.voiceId || voiceId,
+    profileId: synthResult.profileId,
+    profileRevision: synthResult.profileRevision,
+    degradedVoiceBinding: profileResolution?.degraded || false,
+    voiceWarning: profileResolution?.warning || null,
   });
 }));
 
