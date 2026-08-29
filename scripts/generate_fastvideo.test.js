@@ -26,7 +26,7 @@ describe.skipIf(!pyBin)('generate_fastvideo.py', () => {
     ].join('\n')}`);
 
     expect(output.trim().split('\n')).toEqual([
-      'STATUS:FastVideo startup progress: Loading checkpoint: 100%|##########| 10/10',
+      'STATUS:FastVideo: Loading checkpoint: 100%|##########| 10/10',
       'STAGE:fastvideo:step:1:3:denoising step 1/3',
       'STAGE:fastvideo:step:3:3:denoising step 3/3',
     ]);
@@ -40,7 +40,7 @@ describe.skipIf(!pyBin)('generate_fastvideo.py', () => {
 
     expect(output.trim().split('\n')).toEqual([
       'STATUS:Loading pipeline step 3/3',
-      'STATUS:FastVideo startup progress: 100%|##########| 1/1',
+      'STATUS:FastVideo: 100%|##########| 1/1',
     ]);
   });
 });

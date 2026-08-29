@@ -31,7 +31,7 @@ def translate_line(line: str) -> str:
         cur, total = int(step_match.group(1)), int(step_match.group(2))
         return f"STAGE:fastvideo:step:{cur}:{total}:denoising step {cur}/{total}"
     if _PERCENT_PATTERN.search(line):
-        return f"STATUS:FastVideo startup progress: {line}"
+        return f"STATUS:FastVideo: {line}"
     if "loading" in line.lower() or "encoding" in line.lower():
         return f"STATUS:{line}"
     return line
@@ -107,7 +107,8 @@ def main() -> int:
         "--width", str(args.width),
         "--height", str(args.height),
         "--num-frames", str(args.num_frames),
-        "--num-inference-steps", str(args.steps),
+        "--fps", str(args.fps),
+        "--seed", str(args.seed),
         "--output-path", str(args.output),
     ]
     if args.fast:
