@@ -213,7 +213,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           onCutEnded={advanceCut}
           automaticCut={automaticCut}
           helperMode={loom.participationMode === 'helper'}
-          videoFailed={failedVideoId === scene.videoHistoryId}
+          videoFailed={!!scene.videoHistoryId && failedVideoId === scene.videoHistoryId}
           onVideoError={() => setFailedVideoId(scene.videoHistoryId)}
         />
         {ended && (

@@ -224,6 +224,25 @@ describe('LoomPlayPanel', () => {
     expect(screen.getByRole('button', { name: 'Restart' })).toBeEnabled();
   });
 
+  it('shows "not rendered yet" rather than "unavailable" for a scene that was never rendered', async () => {
+    // Regression: failedVideoId starts at null and the server also sends
+    // videoHistoryId: null for an unrendered scene, so a naive
+    // `failedVideoId === scene.videoHistoryId` comparison was `null === null`
+    // -> true, mislabeling every never-rendered scene as a failed render.
+    const cutEpisode = {
+      id: 'ep-cut-none', startNodeId: 'cut-1', nodes: [{
+        id: 'cut-1', title: 'Setup', prose: 'A door opens.', playbackMode: 'cut', videoHistoryId: null,
+        transitions: [{ id: 'continue-1', targetNodeId: 'next', intent: 'Continue' }],
+      }, { id: 'next', isEnding: true, transitions: [] }],
+    };
+    const user = userEvent.setup();
+    render(<LoomPlayPanel loom={{ ...loom, episodes: [cutEpisode] }} episode={cutEpisode} />);
+    await user.selectOptions(screen.getByLabelText('Preview stage'), 'video');
+
+    expect(screen.getByText('No video rendered for this cut yet.')).toBeInTheDocument();
+    expect(screen.queryByText('The rendered video is unavailable; advance manually or retry after rendering.')).not.toBeInTheDocument();
+  });
+
   it('continues to the next playable episode and resets the transcript', async () => {
     const first = {
       id: 'ep-1', number: 1, title: 'One', startNodeId: 'end-1',
