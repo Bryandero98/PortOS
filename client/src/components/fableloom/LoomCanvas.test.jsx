@@ -124,7 +124,7 @@ describe('LoomCanvas', () => {
   });
 
   it('keeps compact preview layers statically positioned inside the SVG node for WebKit', () => {
-    render(
+    const { rerender } = render(
       <LoomCanvas
         episode={episode()}
         selectedNodeId={null}
@@ -139,6 +139,19 @@ describe('LoomCanvas', () => {
     expect(preview).toHaveClass('grid');
     expect(preview).not.toHaveClass('relative');
     expect(screen.getByText('Generating image 42%')).not.toHaveClass('absolute');
+
+    rerender(
+      <LoomCanvas
+        episode={episode()}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateImage={() => {}}
+        onGenerateVideo={() => {}}
+        mediaJobs={{ n1: { image: { jobId: 'image-1', status: 'failed', error: 'Synthetic failure' } } }}
+      />,
+    );
+    expect(screen.getByRole('alert')).not.toHaveClass('absolute');
+    expect(screen.getByRole('alert')).toHaveClass('self-end');
   });
 
   it('selects a node on keyboard activation', () => {
