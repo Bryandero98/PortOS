@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { BrainCircuit, ChevronDown, ChevronUp, Loader2, MessageSquareText, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
+import { BrainCircuit, ChevronDown, ChevronUp, Loader2, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import toast from '../ui/Toast';
 import { FormField } from '../ui/FormField.jsx';
@@ -20,7 +20,6 @@ import {
 } from '../../services/api';
 import { uuidv4 } from '../../lib/uuid.js';
 import { effectiveModelFor, effortAwareModelOptions } from '../../utils/providers';
-import LoomEpisodeFeedback from './LoomEpisodeFeedback';
 import { fieldClass, labelClass } from './fieldStyles';
 
 const newItemId = (prefix) => `${prefix}-${uuidv4()}`;
@@ -121,71 +120,85 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
         label={`Discard unsaved changes to ${loom.name}`}
         onDiscard={discardAndExit}
       />
-      <div className="max-w-5xl mx-auto space-y-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold">Series plan</h2>
-            <p className="text-sm text-port-text-muted mt-1">
-              Shape the full narrative before working inside individual episode graphs.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={save}
-            disabled={!dirty || saving}
-            className="shrink-0 flex items-center gap-2 px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50"
-          >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-            {saving ? 'Saving…' : 'Save plan'}
-          </button>
-        </div>
+      <div className="max-w-7xl mx-auto">
+        <div className="flex flex-col lg:flex-row items-start gap-6">
+          <div className="flex-1 min-w-0 w-full space-y-6">
+            <div>
+              <h2 className="text-lg font-semibold">Series plan</h2>
+              <p className="text-sm text-port-text-muted mt-1">
+                Shape the full narrative before working inside individual episode graphs.
+              </p>
+            </div>
 
-        <div className="rounded-lg border border-port-border bg-port-card p-4">
-          <FormField
-            label="Story arc"
-            hint="The beginning-to-end dramatic movement, central conflict, and intended resolution."
-            labelClassName={labelClass}
-          >
-            <textarea
-              rows={7}
-              className={fieldClass}
-              value={plan.storyArc}
-              placeholder="What changes across the series, why it matters, and where the story lands…"
-              onChange={(event) => changePlan((current) => ({ ...current, storyArc: event.target.value }))}
+            <div className="rounded-lg border border-port-border bg-port-card p-4">
+              <FormField
+                label="Story arc"
+                hint="The beginning-to-end dramatic movement, central conflict, and intended resolution."
+                labelClassName={labelClass}
+              >
+                <textarea
+                  rows={7}
+                  className={fieldClass}
+                  value={plan.storyArc}
+                  placeholder="What changes across the series, why it matters, and where the story lands…"
+                  onChange={(event) => changePlan((current) => ({ ...current, storyArc: event.target.value }))}
+                />
+              </FormField>
+            </div>
+
+            <PlanCollection
+              title="Plot points"
+              description="Order the tentpole beats and connect each one to the episode where it should land."
+              items={plan.plotPoints}
+              episodes={episodeOptions}
+              onAdd={() => changePlan((current) => ({ ...current, plotPoints: [...current.plotPoints, {
+                id: newItemId('plot'), title: '', description: '', episodeId: null,
+              }] }))}
+              onUpdate={(id, patch) => updateItem('plotPoints', id, patch)}
+              onRemove={(id) => removeItem('plotPoints', id)}
+              onMove={(index, direction) => moveItem('plotPoints', index, direction)}
             />
-          </FormField>
+
+            <PlanCollection
+              title="Side quests"
+              description="Track supporting threads without letting them disappear inside a single episode."
+              items={plan.sideQuests}
+              episodes={episodeOptions}
+              sideQuests
+              onAdd={() => changePlan((current) => ({ ...current, sideQuests: [...current.sideQuests, {
+                id: newItemId('quest'), title: '', description: '', status: 'idea', startEpisodeId: null, endEpisodeId: null,
+              }] }))}
+              onUpdate={(id, patch) => updateItem('sideQuests', id, patch)}
+              onRemove={(id) => removeItem('sideQuests', id)}
+              onMove={(index, direction) => moveItem('sideQuests', index, direction)}
+            />
+          </div>
+
+          <aside className="w-full lg:w-[380px] xl:w-[420px] shrink-0 space-y-6 lg:sticky lg:top-0 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto" aria-label="AI tools and actions">
+            <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-sm">Series plan actions</h3>
+                  <p className="text-xs flex items-center gap-1.5 mt-0.5">
+                    <span className={`inline-block w-2 h-2 rounded-full ${dirty ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                    <span className="text-port-text-muted">{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={save}
+                  disabled={!dirty || saving}
+                  className="shrink-0 flex items-center gap-2 px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-50 font-medium"
+                >
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                  {saving ? 'Saving…' : 'Save plan'}
+                </button>
+              </div>
+            </div>
+
+            <SeriesAiEditor loom={loom} dirty={dirty} onLoomUpdate={adoptServerPlan} />
+          </aside>
         </div>
-
-        <PlanCollection
-          title="Plot points"
-          description="Order the tentpole beats and connect each one to the episode where it should land."
-          items={plan.plotPoints}
-          episodes={episodeOptions}
-          onAdd={() => changePlan((current) => ({ ...current, plotPoints: [...current.plotPoints, {
-            id: newItemId('plot'), title: '', description: '', episodeId: null,
-          }] }))}
-          onUpdate={(id, patch) => updateItem('plotPoints', id, patch)}
-          onRemove={(id) => removeItem('plotPoints', id)}
-          onMove={(index, direction) => moveItem('plotPoints', index, direction)}
-        />
-
-        <PlanCollection
-          title="Side quests"
-          description="Track supporting threads without letting them disappear inside a single episode."
-          items={plan.sideQuests}
-          episodes={episodeOptions}
-          sideQuests
-          onAdd={() => changePlan((current) => ({ ...current, sideQuests: [...current.sideQuests, {
-            id: newItemId('quest'), title: '', description: '', status: 'idea', startEpisodeId: null, endEpisodeId: null,
-          }] }))}
-          onUpdate={(id, patch) => updateItem('sideQuests', id, patch)}
-          onRemove={(id) => removeItem('sideQuests', id)}
-          onMove={(index, direction) => moveItem('sideQuests', index, direction)}
-        />
-
-        <SeriesAiEditor loom={loom} dirty={dirty} onLoomUpdate={adoptServerPlan} />
-
-        <WholeEpisodeEditor loom={loom} dirty={dirty} onLoomUpdate={onLoomUpdate} />
       </div>
     </section>
   );
@@ -235,9 +248,9 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-4">
       <div>
-        <h3 className="font-semibold flex items-center gap-2"><BrainCircuit size={16} className="text-port-accent" /> AI story editor</h3>
+        <h3 className="font-semibold flex items-center gap-2"><BrainCircuit size={16} className="text-port-accent" /> AI outline editor</h3>
         <p className="text-xs text-port-text-muted mt-1">
-          Analyze the complete arc or describe an edit to apply across the series plan.
+          Draft, analyze, and edit the story arc, plot points, and side quests across the entire series.
         </p>
       </div>
       <ProviderModelSelector
@@ -302,15 +315,15 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
         </button>
       </div>
       <FormField
-        label="Editing guidance"
-        hint="For example: Move the betrayal earlier, make the midpoint irreversible, and resolve the courier side quest in episode 6."
+        label="Edit outline & plot points"
+        hint="Ask the AI to refine or restructure plot points, story beats, or side quests across the entire series."
         labelClassName={labelClass}
       >
         <textarea
           rows={4}
           className={fieldClass}
           value={feedback}
-          placeholder="Describe the arc, plot-point, or side-quest changes you want…"
+          placeholder="Describe how to revise the arc, plot points, or side quests across the series…"
           onChange={(event) => setFeedback(event.target.value)}
           disabled={busy}
         />
@@ -348,43 +361,6 @@ function SeriesAnalysis({ analysis }) {
           </ul>
         </div>
       ) : null)}
-    </div>
-  );
-}
-
-function WholeEpisodeEditor({ loom, dirty, onLoomUpdate }) {
-  const [episodeId, setEpisodeId] = useState(loom.episodes[0]?.id || '');
-  useEffect(() => {
-    if (!loom.episodes.some((episode) => episode.id === episodeId)) setEpisodeId(loom.episodes[0]?.id || '');
-  }, [episodeId, loom.episodes]);
-  const episode = loom.episodes.find((candidate) => candidate.id === episodeId);
-  return (
-    <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-3">
-      <div>
-        <h3 className="font-semibold flex items-center gap-2"><MessageSquareText size={16} className="text-port-accent" /> Edit a whole episode</h3>
-        <p className="text-xs text-port-text-muted mt-1">
-          Apply one instruction across an episode's title, synopsis, existing scenes, and path language.
-        </p>
-      </div>
-      {episode ? (
-        <>
-          <PlanSelect
-            label="Episode"
-            value={episodeId}
-            onChange={setEpisodeId}
-            options={loom.episodes.map((item) => ({ id: item.id, label: `${item.number}. ${item.title || 'Untitled'}` }))}
-          />
-          <LoomEpisodeFeedback
-            key={episode.id}
-            open
-            loom={loom}
-            episode={episode}
-            onLoomUpdate={onLoomUpdate}
-            disabled={dirty}
-          />
-          {dirty ? <p className="text-xs text-port-warning">Save the series plan before editing an episode with AI.</p> : null}
-        </>
-      ) : <p className="text-sm text-port-text-muted">Add an episode to use whole-episode AI editing.</p>}
     </div>
   );
 }
