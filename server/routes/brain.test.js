@@ -163,6 +163,7 @@ describe('Brain Routes', () => {
   });
 
   describe('IdeaLoom local lists', () => {
+    const LIST_ID = 'c17c0284-b7de-4db6-a09c-7f735f0fd501';
     const listInput = {
       prompt: 'Find practical improvements', title: 'Practical improvements',
       category: 'product', ideas: ['Improve empty states']
@@ -177,7 +178,7 @@ describe('Brain Routes', () => {
     });
 
     it('validates local list CRUD input and preserves native Brain ideas', async () => {
-      ideaLoomLists.createList.mockResolvedValue({ id: 'c17c0284-b7de-4db6-a09c-7f735f0fd501', ...listInput, status: 'draft' });
+      ideaLoomLists.createList.mockResolvedValue({ id: LIST_ID, ...listInput, status: 'draft' });
       const created = await request(app).post('/api/brain/ideas/idealoom/lists').send(listInput);
       expect(created.status).toBe(201);
       expect(ideaLoomLists.createList).toHaveBeenCalledWith({ ...listInput, status: 'draft' });
@@ -185,6 +186,50 @@ describe('Brain Routes', () => {
 
       const rejected = await request(app).post('/api/brain/ideas/idealoom/lists').send({ ...listInput, ideas: [''] });
       expect(rejected.status).toBe(400);
+    });
+
+    it('reads, updates and deletes a list by id', async () => {
+      const stored = { id: LIST_ID, ...listInput, status: 'draft' };
+
+      ideaLoomLists.getList.mockResolvedValue(stored);
+      const read = await request(app).get(`/api/brain/ideas/idealoom/lists/${LIST_ID}`);
+      expect(read.status).toBe(200);
+      expect(read.body).toEqual(stored);
+      expect(ideaLoomLists.getList).toHaveBeenCalledWith(LIST_ID);
+      expect(brainService.getIdeaById).not.toHaveBeenCalled();
+
+      ideaLoomLists.updateList.mockResolvedValue({ ...stored, title: 'Renamed' });
+      const updated = await request(app)
+        .put(`/api/brain/ideas/idealoom/lists/${LIST_ID}`)
+        .send({ title: 'Renamed' });
+      expect(updated.status).toBe(200);
+      expect(ideaLoomLists.updateList).toHaveBeenCalledWith(LIST_ID, { title: 'Renamed' });
+      expect(brainService.updateIdea).not.toHaveBeenCalled();
+
+      // deleteList resolving true is what makes this a 204 rather than a 404 —
+      // the service must report whether the record actually existed.
+      ideaLoomLists.deleteList.mockResolvedValue(true);
+      const removed = await request(app).delete(`/api/brain/ideas/idealoom/lists/${LIST_ID}`);
+      expect(removed.status).toBe(204);
+      expect(ideaLoomLists.deleteList).toHaveBeenCalledWith(LIST_ID);
+      expect(brainService.deleteIdea).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 for an unknown id on every id-addressed route', async () => {
+      ideaLoomLists.getList.mockResolvedValue(null);
+      ideaLoomLists.updateList.mockResolvedValue(null);
+      ideaLoomLists.deleteList.mockResolvedValue(false);
+
+      // The service is mocked here, so this pins the ROUTE contract: a falsy
+      // service result becomes a 404 on every id-addressed verb, for a
+      // well-formed id and a malformed one alike. That the service itself
+      // returns falsy for a bad id is covered against the live store in
+      // services/idealoomLists.test.js.
+      for (const id of [LIST_ID, 'not-a-uuid']) {
+        expect((await request(app).get(`/api/brain/ideas/idealoom/lists/${id}`)).status).toBe(404);
+        expect((await request(app).put(`/api/brain/ideas/idealoom/lists/${id}`).send({ title: 'x' })).status).toBe(404);
+        expect((await request(app).delete(`/api/brain/ideas/idealoom/lists/${id}`)).status).toBe(404);
+      }
     });
   });
 
