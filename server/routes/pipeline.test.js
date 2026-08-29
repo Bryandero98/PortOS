@@ -316,6 +316,11 @@ vi.mock('../services/voice/tts.js', () => ({
   listVoices: vi.fn(async () => ({ engine: 'kokoro', voices: [] })),
   VALID_ENGINES: new Set(['kokoro', 'piper']),
 }));
+vi.mock('../services/voice/profiles.js', () => ({
+  clearVoiceProfileRender: vi.fn(),
+  recordVoiceProfileRender: vi.fn(),
+  resolveCharacterVoice: vi.fn(),
+}));
 
 const musicLibraryStore = new Map();
 let lastImportedName = null;
@@ -2737,6 +2742,7 @@ describe('pipeline routes', () => {
 
     it('keeps local voice profile provenance out of the federated issue record', async () => {
       const audio = await import('../services/pipeline/audio.js');
+      const profiles = await import('../services/voice/profiles.js');
       audio.synthesizeToFile.mockResolvedValueOnce({
         filename: 'vo-local-profile.wav', latencyMs: 5, engine: 'kokoro',
         provenance: {
@@ -2753,6 +2759,14 @@ describe('pipeline routes', () => {
       expect(rendered.status).toBe(200);
       const reread = await request(app).get(`/api/pipeline/issues/${iss.id}`);
       expect(reread.body.stages.audio.lines[0]).not.toHaveProperty('voiceProvenance');
+      expect(reread.body.stages.audio.lines[0]).not.toHaveProperty('profileId');
+      expect(reread.body.stages.audio.lines[0]).not.toHaveProperty('profileRevision');
+      expect(profiles.recordVoiceProfileRender).toHaveBeenCalledWith(expect.objectContaining({
+        issueId: iss.id,
+        lineId: 'line-001',
+        audioFilename: 'vo-local-profile.wav',
+        provenance: expect.objectContaining({ profileId: 'voice-profile-1', profileRevision: 2 }),
+      }));
     });
 
     it('POST /audio/lines/:idx/render 404s for out-of-range index', async () => {

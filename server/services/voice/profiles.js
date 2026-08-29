@@ -22,6 +22,7 @@ const MAX_ID = 160;
 const MAX_LABEL = 160;
 const MAX_REVISION = 240;
 const MAX_BENCHMARK_LINES = 12;
+const MAX_RENDER_ID = 160;
 const DEFAULT_DELIVERY = Object.freeze({ rate: 1, pitchSemitones: null, formantSemitones: null });
 // This initial preset wrapper deliberately makes no opaque DSP changes. Naming
 // the no-op is still useful provenance: an old render can be distinguished
@@ -62,9 +63,9 @@ const sanitizeDelivery = (raw) => ({
 });
 
 const sanitizeMastering = (raw) => ({
-  // An explicit empty chain means the initial preset wrapper applies no hidden
-  // mastering. That is distinct from an absent profile and keeps provenance
-  // honest until a capability-probed mastering adapter is added.
+  // An explicit empty chain means the profile applies no extra mastering;
+  // an absent chain gets the named initial preset-output wrapper. Keeping the
+  // two states distinct makes future mastering adapters reproducible.
   chain: Array.isArray(raw?.chain)
     ? raw.chain.map((step) => trim(step, 80)).filter(Boolean).slice(0, 12)
     : [...DEFAULT_MASTERING.chain],
@@ -283,6 +284,68 @@ export async function saveProfileBenchmark(profile, benchmark) {
   return persist(next);
 }
 
+/**
+ * Keep line-level profile provenance in the local database rather than in a
+ * federated pipeline issue. One row follows the latest render of each line,
+ * including the output filename so it cannot be mistaken for an older WAV.
+ */
+export async function recordVoiceProfileRender({
+  issueId,
+  lineId,
+  audioFilename,
+  latencyMs,
+  durationMs,
+  provenance,
+} = {}) {
+  const issue = trim(issueId, MAX_RENDER_ID);
+  const line = trim(lineId, MAX_RENDER_ID);
+  const filename = trim(audioFilename, 500);
+  const profileId = trim(provenance?.profileId, 80);
+  const profileRevision = positiveInteger(provenance?.profileRevision, 0);
+  const engine = VOICE_PROFILE_ENGINES.has(provenance?.engine) ? provenance.engine : null;
+  if (!issue || !line || !filename || !PROFILE_ID_RE.test(profileId) || !profileRevision || !engine) {
+    throw new ServerError('Invalid local voice render provenance', {
+      status: 400,
+      code: 'VOICE_PROFILE_INVALID_RENDER_PROVENANCE',
+    });
+  }
+  const now = timestamp();
+  const data = {
+    profileId,
+    profileRevision,
+    engine,
+    modelRevision: trim(provenance?.modelRevision, MAX_REVISION) || null,
+    effectiveControls: {
+      rate: Number.isFinite(provenance?.effectiveControls?.rate) ? provenance.effectiveControls.rate : null,
+    },
+    mastering: sanitizeMastering(provenance?.mastering),
+    timing: {
+      latencyMs: Number.isFinite(latencyMs) ? Math.max(0, Math.round(latencyMs)) : null,
+      durationMs: Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : null,
+    },
+    audioFilename: filename,
+    recordedAt: now,
+  };
+  await query(
+    `INSERT INTO voice_profile_renders (issue_id, line_id, profile_id, profile_revision, data, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+     ON CONFLICT (issue_id, line_id) DO UPDATE SET
+       profile_id = EXCLUDED.profile_id,
+       profile_revision = EXCLUDED.profile_revision,
+       data = EXCLUDED.data,
+       updated_at = EXCLUDED.updated_at`,
+    [issue, line, profileId, profileRevision, JSON.stringify(data), now, now],
+  );
+}
+
+/** Clear stale local lineage when a later render uses a portable/default voice. */
+export async function clearVoiceProfileRender({ issueId, lineId } = {}) {
+  const issue = trim(issueId, MAX_RENDER_ID);
+  const line = trim(lineId, MAX_RENDER_ID);
+  if (!issue || !line) return;
+  await query('DELETE FROM voice_profile_renders WHERE issue_id = $1 AND line_id = $2', [issue, line]);
+}
+
 const assertRoute = (route) => {
   if (!VOICE_PROFILE_ROUTES.has(route)) {
     throw new ServerError('Unsupported voice profile route', { status: 400, code: 'VOICE_PROFILE_INVALID_ROUTE' });
@@ -337,12 +400,16 @@ export async function resolveCharacterVoice({
     unavailableProfile = profiles.find((item) => item.approval.status === 'approved') || null;
   }
   const preset = parsePresetVoiceId(characterVoiceId);
-  if (preset) {
+  // Legacy character records stored a bare engine voice name. It remains a
+  // valid portable fallback even though it is less descriptive than a modern
+  // `kokoro:` / `piper:` preset id.
+  const legacyVoice = trim(characterVoiceId, MAX_ID);
+  if (preset || legacyVoice) {
     return {
       source: 'character-preset',
       profileId: null,
       profileRevision: null,
-      voiceId: preset.voiceId,
+      voiceId: preset?.voiceId || legacyVoice,
       degraded: Boolean(unavailableProfile),
       warning: unavailableProfile
         ? `The approved local voice profile is unavailable for ${route}; using the portable character preset.`

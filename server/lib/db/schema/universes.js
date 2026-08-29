@@ -49,6 +49,22 @@ export const universesDdl = [
     `CREATE INDEX IF NOT EXISTS idx_voice_profiles_binding ON voice_profiles (universe_id, character_id, updated_at DESC)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_profiles_approved_binding ON voice_profiles (universe_id, character_id) WHERE approval_status = 'approved'`,
 
+    // Render provenance is deliberately separate from the federated pipeline
+    // issue record. It keeps the local profile revision and precise delivery
+    // data attached to a rendered dialogue line without exporting a
+    // machine-local profile id to a peer.
+    `CREATE TABLE IF NOT EXISTS voice_profile_renders (
+      issue_id TEXT NOT NULL,
+      line_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      profile_revision INTEGER NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (issue_id, line_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_voice_profile_renders_profile ON voice_profile_renders (profile_id, profile_revision, updated_at DESC)`,
+
     // Universe render-history log (issue #1014). The type-level `config.runs[]`
     // array collectionStore kept in data/universes/index.json (capped 200,
     // NEVER federated — per-peer local) becomes its own table. `universe_id` is

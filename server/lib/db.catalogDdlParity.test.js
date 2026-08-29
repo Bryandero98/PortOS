@@ -289,6 +289,19 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     expect(sqlIdx.size).toBeGreaterThan(0);
   });
 
+  it('voice_profile_renders has the same columns and indexes in both files', () => {
+    const sqlBody = extractCreateTable(INIT_SQL, 'voice_profile_renders');
+    const jsBody = extractCreateTable(DB_JS, 'voice_profile_renders');
+    expect(sqlBody, 'init-db.sql missing CREATE TABLE voice_profile_renders').toBeTruthy();
+    expect(jsBody, 'db.js missing CREATE TABLE voice_profile_renders').toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+    const sqlIdx = extractIndexNames(INIT_SQL, 'idx_voice_profile_renders_');
+    const jsIdx = extractIndexNames(DB_JS, 'idx_voice_profile_renders_');
+    expect([...sqlIdx].sort()).toEqual([...jsIdx].sort());
+    expect(sqlIdx.size).toBeGreaterThan(0);
+  });
+
   // Pipeline series (#1015) — non-`catalog_`-prefixed table in BOTH DDL
   // sources, with non-`idx_catalog_`-prefixed indexes, so its own assertion.
   it('pipeline_series has the same columns and indexes in both files', () => {

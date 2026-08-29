@@ -19,6 +19,7 @@ const {
   resolveCharacterVoice,
   getProfileForSynthesis,
   profileArtifactDirectory,
+  recordVoiceProfileRender,
 } = await import('./profiles.js');
 
 const PROFILE = {
@@ -123,6 +124,36 @@ describe('voice profile contract', () => {
       characterVoiceId: 'piper:en_GB-jenny_dioco-medium', route: 'interactive',
     })).resolves.toMatchObject({
       source: 'character-preset', degraded: true, warning: expect.stringMatching(/unavailable for interactive/i),
+    });
+  });
+
+  it('keeps legacy bare character presets as portable fallbacks', async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+    await expect(resolveCharacterVoice({
+      universeId: 'universe-1', characterId: 'character-1', characterVoiceId: 'af_heart',
+    })).resolves.toMatchObject({ source: 'character-preset', voiceId: 'af_heart', degraded: false });
+  });
+
+  it('records dialogue lineage locally with the effective controls and timing', async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+    await recordVoiceProfileRender({
+      issueId: 'iss-1', lineId: 'line-001', audioFilename: 'vo-local-profile.wav', latencyMs: 24, durationMs: 850,
+      provenance: {
+        profileId: PROFILE.id, profileRevision: 2, engine: 'kokoro', modelRevision: 'kokoro-test:q8',
+        effectiveControls: { rate: 0.9 }, mastering: PROFILE.mastering,
+      },
+    });
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO voice_profile_renders'), expect.arrayContaining([
+      'iss-1', 'line-001', PROFILE.id, 2,
+    ]));
+    const saved = JSON.parse(queryMock.mock.calls[0][1][4]);
+    expect(saved).toMatchObject({
+      profileId: PROFILE.id,
+      profileRevision: 2,
+      audioFilename: 'vo-local-profile.wav',
+      effectiveControls: { rate: 0.9 },
+      timing: { latencyMs: 24, durationMs: 850 },
+      mastering: PROFILE.mastering,
     });
   });
 

@@ -937,6 +937,21 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
 CREATE INDEX IF NOT EXISTS idx_voice_profiles_binding ON voice_profiles (universe_id, character_id, updated_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_profiles_approved_binding ON voice_profiles (universe_id, character_id) WHERE approval_status = 'approved';
 
+-- Machine-local dialogue render provenance. Pipeline issues federate, so their
+-- audio lines keep only a portable filename while profile identity and delivery
+-- details remain in this local table.
+CREATE TABLE IF NOT EXISTS voice_profile_renders (
+  issue_id TEXT NOT NULL,
+  line_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  profile_revision INTEGER NOT NULL,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (issue_id, line_id)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_profile_renders_profile ON voice_profile_renders (profile_id, profile_revision, updated_at DESC);
+
 -- Universe render-history log (issue #1014). The type-level `config.runs[]` array
 -- collectionStore kept in data/universes/index.json (capped 200, NEVER federated
 -- — per-peer local) becomes its own table. `universe_id` is a soft ref (no FK):

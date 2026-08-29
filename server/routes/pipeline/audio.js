@@ -15,7 +15,11 @@ import { resolveSeriesLlmOverride } from '../../lib/seriesLlmOverride.js';
 import { listAllVoices, synthesizeToFile, parseVoiceId, extractDialogueLines, resolveVoiceForLine } from '../../services/pipeline/audio.js';
 import { narrateProse } from '../../services/pipeline/manuscriptNarration.js';
 import { synthesize as synthesizeVoice } from '../../services/voice/tts.js';
-import { resolveCharacterVoice } from '../../services/voice/profiles.js';
+import {
+  clearVoiceProfileRender,
+  recordVoiceProfileRender,
+  resolveCharacterVoice,
+} from '../../services/voice/profiles.js';
 import {
   listMusicLibrary,
   importUploadedTrack,
@@ -241,6 +245,18 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
     route: 'studio',
   })
     .catch((err) => { throw mapServiceError(err); });
+  if (synthResult.provenance) {
+    await recordVoiceProfileRender({
+      issueId: issue.id,
+      lineId: line.id,
+      audioFilename: synthResult.filename,
+      latencyMs: synthResult.latencyMs,
+      durationMs: synthResult.durationMs,
+      provenance: synthResult.provenance,
+    });
+  } else {
+    await clearVoiceProfileRender({ issueId: issue.id, lineId: line.id });
+  }
   const nextLines = [...lines];
   nextLines[lineIdx] = {
     ...line,
