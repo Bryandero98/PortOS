@@ -131,6 +131,7 @@ export const CATEGORIES = {
   'uploads': { label: 'Uploads', description: 'Files uploaded through the UI and referenced by records', archivable: true, deletable: false },
   'video-thumbnails': { label: 'Video Thumbnails', description: 'JPEG thumbnails for generated videos', archivable: false, deletable: true, purgeScope: 'category' },
   'videos': { label: 'Videos', description: 'Locally generated videos — delete individually; the render is the only copy and re-rendering costs provider spend', archivable: true, deletable: true, purgeScope: 'items' },
+  'voice-profiles': { label: 'Voice Profiles', description: 'Machine-local voice profile source recordings, benchmarks, and local engine artifacts', archivable: true, deletable: false },
   'writers-room': { label: 'Writers Room', description: 'Writers Room works and story bibles', archivable: true, deletable: false },
   'youtube': { label: 'YouTube Sync', description: 'Machine-local YouTube sync state — purging resets the cursor and can leave a gap in imported history', archivable: true, deletable: false }
 };

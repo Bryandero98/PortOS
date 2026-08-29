@@ -1,10 +1,30 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import CharacterDetailEditor from './CharacterDetailEditor';
 
 // Mock VoicePicker — it pulls in the voice API/socket layer the relationship
 // tests don't care about.
 vi.mock('../voice/VoicePicker', () => ({ default: () => null }));
+vi.mock('../../services/apiVoice', () => ({
+  listVoiceEngines: vi.fn().mockResolvedValue({ engines: [] }),
+  listVoiceProfiles: vi.fn(),
+  promotePresetProfile: vi.fn(),
+  promoteVoicePreset: vi.fn(),
+  renderVoiceProfileBenchmark: vi.fn(),
+  createVoiceDesignCandidate: vi.fn(),
+  createClonedVoiceCandidate: vi.fn(),
+  promoteVoiceProfile: vi.fn(),
+  benchmarkProfileInteractive: vi.fn(),
+  startFineTuningJob: vi.fn(),
+}));
+
+import {
+  listVoiceEngines,
+  listVoiceProfiles,
+  promoteVoicePreset,
+  createVoiceDesignCandidate,
+  benchmarkProfileInteractive,
+} from '../../services/apiVoice';
 
 const ARIA = { id: 'chr-aria', name: 'Aria' };
 const BRAM = { id: 'chr-bram', name: 'Bram' };
@@ -165,6 +185,126 @@ describe('CharacterDetailEditor — character framework (#2175)', () => {
 });
 
 describe('CharacterDetailEditor — production package (#5378)', () => {
+  it('keeps the empty local-profile state distinct and promotes a portable preset locally', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
+    listVoiceProfiles.mockResolvedValue({ profiles: [] });
+    promoteVoicePreset.mockResolvedValueOnce({
+      profile: {
+        id: 'voice-profile-1', version: 1, voiceId: 'kokoro:af_heart', modelRevision: 'kokoro-test:q8',
+        delivery: { rate: 1 }, approval: { status: 'approved' }, benchmark: null,
+      },
+    });
+    render(<CharacterDetailEditor
+      entry={{ ...ARIA, voiceId: 'kokoro:af_heart' }} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+    expect(await screen.findByText(/Promote the selected Kokoro or Piper preset/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Promote selected preset/i }));
+    await waitFor(() => expect(promoteVoicePreset).toHaveBeenCalledWith({
+      universeId: 'uni-1', characterId: 'chr-aria', characterName: 'Aria', voiceId: 'kokoro:af_heart',
+    }, { silent: true }));
+    expect(await screen.findByRole('button', { name: /Re-promote selected preset/i })).toBeInTheDocument();
+  });
+
+  it('plays persisted local benchmark renders through the voice-profile asset mount', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
+    listVoiceProfiles.mockResolvedValue({
+      profiles: [{
+        id: 'voice-profile-1', version: 1, voiceId: 'kokoro:af_heart', modelRevision: 'kokoro-test:q8',
+        delivery: { rate: 1 }, approval: { status: 'approved' },
+        benchmark: { lines: [{ key: 'identity', filename: 'voice-profiles/voice-profile-1/benchmarks/v1/01-identity.wav' }] },
+      }],
+    });
+    render(<CharacterDetailEditor
+      entry={{ ...ARIA, voiceId: 'kokoro:af_heart' }} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+    expect(await screen.findByLabelText(/Voice benchmark identity/i)).toHaveAttribute(
+      'src', '/data/voice-profiles/voice-profile-1/benchmarks/v1/01-identity.wav',
+    );
+  });
+
+  it('generates a voice design candidate via Voice Lab', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
+    listVoiceProfiles.mockResolvedValue({ profiles: [] });
+    createVoiceDesignCandidate.mockResolvedValueOnce({
+      profile: {
+        id: 'voice-profile-des-1', version: 1, kind: 'designed', engine: 'qwen3-tts',
+        approval: { status: 'draft' },
+      },
+    });
+
+    render(<CharacterDetailEditor
+      entry={ARIA} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+
+    // Switch to Design tab
+    fireEvent.click(screen.getByRole('button', { name: /Design/i }));
+    fireEvent.change(screen.getByPlaceholderText(/warm low alto/i), {
+      target: { value: 'calm, measured alto' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Design Candidate Voice/i }));
+
+    await waitFor(() => expect(createVoiceDesignCandidate).toHaveBeenCalledWith({
+      universeId: 'uni-1',
+      characterId: 'chr-aria',
+      characterName: 'Aria',
+      instructions: 'calm, measured alto',
+      seed: 42,
+      rate: 1,
+    }, { silent: true }));
+  });
+
+  it('gates consented voice cloning on explicit performer consent confirmation', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
+    listVoiceProfiles.mockResolvedValue({ profiles: [] });
+
+    render(<CharacterDetailEditor
+      entry={ARIA} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+    expect(await screen.findByText(/Machine-local voice design/i)).toBeInTheDocument();
+
+    // Switch to Clone tab
+    fireEvent.click(screen.getByRole('button', { name: /Clone/i }));
+    const cloneBtn = screen.getByRole('button', { name: /Create Cloned Candidate/i });
+    expect(cloneBtn).toBeDisabled();
+
+    // Check consent box
+    fireEvent.click(screen.getByRole('checkbox', { name: /I confirm the performer consented/i }));
+    // Still disabled because no file is selected yet
+    expect(cloneBtn).toBeDisabled();
+  });
+
+  it('qualifies interactive route via host latency benchmark', async () => {
+    listVoiceEngines.mockResolvedValue({ engines: [] });
+    listVoiceProfiles.mockResolvedValue({
+      profiles: [{
+        id: 'voice-profile-1', version: 1, voiceId: 'qwen3:test', modelRevision: 'qwen3-1.7b',
+        delivery: { rate: 1 }, approval: { status: 'approved' },
+        routes: { studio: { enabled: true }, interactive: { enabled: false, maxFirstAudioMs: 900 } },
+      }],
+    });
+    benchmarkProfileInteractive.mockResolvedValueOnce({
+      profile: {
+        id: 'voice-profile-1', version: 1, approval: { status: 'approved' },
+        routes: { studio: { enabled: true }, interactive: { enabled: true, maxFirstAudioMs: 900 } },
+        benchmark: { interactiveLatencyMs: 120 },
+      },
+    });
+
+    render(<CharacterDetailEditor
+      entry={ARIA} universeId="uni-1" characters={[ARIA]} onPatch={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: /Local voice profile/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Qualify interactive route/i }));
+
+    await waitFor(() => expect(benchmarkProfileInteractive).toHaveBeenCalledWith(
+      'voice-profile-1', { maxFirstAudioMs: 900 }, { silent: true },
+    ));
+  });
+
   it('marks a voice-canon revision as approved', () => {
     const onPatch = vi.fn();
     render(<CharacterDetailEditor entry={ARIA} characters={[ARIA]} onPatch={onPatch} />);
