@@ -87,6 +87,16 @@ describe('IdeaLoomLists', () => {
     expect(await screen.findByText(/Last exchange: 0 imported · 1 exported/)).toBeTruthy();
   });
 
+  it('reports exchange problems instead of showing a successful completion', async () => {
+    api.getIdeaLoomSettings.mockResolvedValue({ enabled: true, obsidianVaultId: 'vault-1', autoSync: false });
+    api.syncIdeaLoomToObsidian.mockResolvedValue({ counts: { failed: 1 } });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Export to Obsidian' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('IdeaLoom export complete with 1 issue'));
+    expect(toast.success).not.toHaveBeenCalledWith('IdeaLoom export complete');
+  });
+
   it('does not report an unread settings fetch as a disabled integration', async () => {
     api.getIdeaLoomSettings.mockRejectedValue(new Error('Server unreachable'));
     renderPanel();

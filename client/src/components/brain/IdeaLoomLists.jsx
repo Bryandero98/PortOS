@@ -138,7 +138,9 @@ export default function IdeaLoomLists() {
     if (!result) return;
     const counts = result.counts || result;
     setExchangeResult(counts);
-    toast.success(successMessage);
+    const problems = ['conflicted', 'malformed', 'unavailable', 'failed'].reduce((total, key) => total + (counts[key] || 0), 0);
+    if (problems) toast.error(`${successMessage} with ${problems} issue${problems === 1 ? '' : 's'}`);
+    else toast.success(successMessage);
     await load();
   };
 

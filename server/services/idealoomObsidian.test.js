@@ -92,6 +92,16 @@ describe('IdeaLoom Markdown contract', () => {
     }));
   });
 
+  it('round-trips Markdown-numbered help and prompt text beginning with a hash', () => {
+    const original = list({ prompt: '#1 priority for Q4', help: 'Try these:\n1. warm up\n2. diverge' });
+    const parsed = parseIdeaLoomMarkdown(renderIdeaLoomMarkdown(original));
+
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: true,
+      list: expect.objectContaining({ prompt: original.prompt, help: original.help, ideas: original.ideas }),
+    }));
+  });
+
   it('rejects malformed metadata and non-dense numbered ideas', () => {
     const rendered = renderIdeaLoomMarkdown(list());
     expect(parseIdeaLoomMarkdown(rendered.replace(`id: "${LIST_ID}"`, 'id: "not-a-uuid"')).ok).toBe(false);

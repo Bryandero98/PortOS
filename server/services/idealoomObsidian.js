@@ -121,29 +121,43 @@ const parseBody = (lines) => {
     const nextContent = lines[nextContentIndex]?.trim();
     // IdeaLoom sometimes uses a literal "Prompt" heading. Do not consume the
     // first numbered idea as prompt text in that valid, empty-help shape.
-    if (nextContent && !NUMBERED_IDEA_RE.test(nextContent)) {
+    if (nextContent && !nextContent.startsWith('#') && !NUMBERED_IDEA_RE.test(nextContent)) {
       prompt = nextContent;
       cursor = nextContentIndex + 1;
     }
   }
-  if (!prompt || prompt.startsWith('#')) return { error: 'missing prompt text' };
+  if (!prompt) return { error: 'missing prompt text' };
 
   const helpLines = [];
   const ideas = [];
   let sawIdea = false;
+  let section = 'legacy';
   for (; cursor < lines.length; cursor += 1) {
     const line = lines[cursor];
     if (!line.trim()) {
       if (!sawIdea) helpLines.push('');
       continue;
     }
-    if (/^#{1,6}\s+(help|ideas)\s*:?$/i.test(line.trim())) continue;
+    const heading = line.trim();
+    if (/^#{1,6}\s+help\s*:?$/i.test(heading)) {
+      section = 'help';
+      continue;
+    }
+    if (/^#{1,6}\s+ideas\s*:?$/i.test(heading)) {
+      section = 'ideas';
+      continue;
+    }
     const match = NUMBERED_IDEA_RE.exec(line.trim());
-    if (!match) {
-      if (sawIdea) return { error: `invalid numbered idea at line ${cursor + 1}` };
+    if (section === 'help') {
       helpLines.push(line.trim());
       continue;
     }
+    if (!match) {
+      if (sawIdea || section === 'ideas') return { error: `invalid numbered idea at line ${cursor + 1}` };
+      helpLines.push(line.trim());
+      continue;
+    }
+    section = 'ideas';
     sawIdea = true;
     const expected = ideas.length + 1;
     if (Number(match[1]) !== expected || !match[2].trim()) {
@@ -219,9 +233,9 @@ export function renderIdeaLoomMarkdown(list) {
     '---',
     `# ${String(list.prompt).replace(/[\r\n]+/g, ' ').trim()}`,
   ];
-  if (list.help?.trim()) lines.push('', list.help.trim());
+  if (list.help?.trim()) lines.push('', '## Help', list.help.trim());
   if (list.ideas?.length) {
-    lines.push('', ...list.ideas.map((idea, index) => `${index + 1}. ${String(idea).replace(/[\r\n]+/g, ' ').trim()}`));
+    lines.push('', '## Ideas', ...list.ideas.map((idea, index) => `${index + 1}. ${String(idea).replace(/[\r\n]+/g, ' ').trim()}`));
   }
   return `${lines.join('\n')}\n`;
 }
@@ -353,7 +367,7 @@ const exportOne = async (vaultId, list) => {
   const importedPath = list.sync?.notePath;
   let notePath = importedPath || generatedNotePath(list);
   let pathResult = await writeNote(vaultId, notePath, content);
-  if (!importedPath && pathResult.kind === 'existing') {
+  if (!importedPath && pathResult.kind === 'existing' && pathResult.id !== list.id) {
     let suffix = `-${list.id.slice(0, 8)}`;
     notePath = generatedNotePath(list, suffix);
     pathResult = await writeNote(vaultId, notePath, content);
