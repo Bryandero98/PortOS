@@ -211,7 +211,9 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
   const [analysis, setAnalysis] = useState(null);
   const [route, setRoute] = useState({ providerId: '', model: '', effort: '' });
   const regenerateConfirm = useConfirmDelete();
-  const { run: aiRun, begin: beginAiRun, fail: failAiRun } = useFableLoomAiRun();
+  const reviewRun = useFableLoomAiRun();
+  const generateRun = useFableLoomAiRun();
+  const feedbackRun = useFableLoomAiRun();
   const { providers, loading } = useProviderModels({ allowDefault: true, silent: true, withEffort: true });
   const selectedProvider = providers.find((provider) => provider.id === route.providerId);
   const routeBody = {
@@ -221,26 +223,26 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
   };
 
   const [runReview, reviewing] = useAsyncAction(async () => {
-    const operationId = beginAiRun();
+    const operationId = reviewRun.begin();
     const result = await reviewLoomSeriesPlan(loom.id, { ...routeBody, operationId }, { silent: true })
-      .catch((error) => { failAiRun(error.message); throw error; });
+      .catch((error) => { reviewRun.fail(error.message); throw error; });
     setAnalysis(result.analysis);
   }, { errorMessage: 'Series analysis failed' });
 
   const [generatePlan, generating] = useAsyncAction(async () => {
-    const operationId = beginAiRun();
+    const operationId = generateRun.begin();
     const result = await generateLoomSeriesPlan(loom.id, { ...routeBody, operationId }, { silent: true })
-      .catch((error) => { failAiRun(error.message); throw error; });
+      .catch((error) => { generateRun.fail(error.message); throw error; });
     onLoomUpdate(result.loom);
     setAnalysis(null);
     toast.success('Full series plan drafted');
   }, { errorMessage: 'Series-plan drafting failed' });
 
   const [applyFeedback, applying] = useAsyncAction(async () => {
-    const operationId = beginAiRun();
+    const operationId = feedbackRun.begin();
     const result = await feedbackLoomSeriesPlan(loom.id, {
       feedback: feedback.trim(), ...routeBody, operationId,
-    }, { silent: true }).catch((error) => { failAiRun(error.message); throw error; });
+    }, { silent: true }).catch((error) => { feedbackRun.fail(error.message); throw error; });
     onLoomUpdate(result.loom);
     setFeedback('');
     setAnalysis(null);
@@ -307,6 +309,7 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
           {generating ? 'Drafting full plan…' : hasPlan ? 'Regenerate full plan' : 'Draft full plan'}
         </button>
       )}
+      <LoomAiRunStatus run={generateRun.run} />
       {hasPlan ? (
         <p className="text-xs text-port-text-muted">
           Regenerating replaces the saved arc, plot points, and side quests. Episode titles,
@@ -324,6 +327,7 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
           {reviewing ? 'Analyzing…' : 'Analyze series'}
         </button>
       </div>
+      <LoomAiRunStatus run={reviewRun.run} />
       <FormField
         label="Edit outline & plot points"
         hint="Ask the AI to refine or restructure plot points, story beats, or side quests across the entire series."
@@ -347,7 +351,7 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
         {applying ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
         {applying ? 'Updating series plan…' : 'Apply guidance to plan'}
       </button>
-      <LoomAiRunStatus run={aiRun} />
+      <LoomAiRunStatus run={feedbackRun.run} />
       {dirty ? <p className="text-xs text-port-warning">Save the plan before running AI so it reads the edits on screen.</p> : null}
       {analysis ? <SeriesAnalysis analysis={analysis} /> : null}
     </div>

@@ -66,8 +66,7 @@ const llmOptions = ({ providerId, model, effort } = {}, source) => ({
 // mistaken for a different loom or a stale run in another tab. The normal
 // `ai:status` channel carries these frames; `localOnly` keeps the global toast
 // surface from duplicating the drawer's inline status and error message.
-const runLoomAi = (stage, variables, route, { action, label, source }) => {
-  const status = route.operationId
+const createLoomAiStatus = (route, { action, label }) => route.operationId
     ? startAIOp({
       op: `fableloom-${action}`,
       label,
@@ -75,13 +74,18 @@ const runLoomAi = (stage, variables, route, { action, label, source }) => {
       localOnly: true,
       silent: true,
     })
-    : null;
+  : null;
+
+const runLoomAi = (stage, variables, route, {
+  action, label, source, status: existingStatus = null, complete = true,
+}) => {
+  const status = existingStatus || createLoomAiStatus(route, { action, label });
   const options = llmOptions(route, source);
   if (status) {
     options.onRunCreated = (runId, meta = {}) => status.update(
       'running',
       `${label} is running…`,
-      { ...meta, runId },
+      { ...meta, runId, shellReady: false },
     );
     options.onRunReady = (meta = {}) => status.update(
       'ready',
@@ -95,7 +99,7 @@ const runLoomAi = (stage, variables, route, { action, label, source }) => {
     );
   }
   return runStagedLLM(stage, variables, options).then((result) => {
-    status?.complete('AI response ready', { runId: result.runId, shellReady: false });
+    if (complete) status?.complete('AI response ready', { runId: result.runId, shellReady: false });
     return result;
   }, (error) => {
     status?.error(
@@ -860,6 +864,10 @@ export async function reformatEpisodeScenes(loomId, episodeId, { format, provide
   const canonDigest = await buildCanonDigest(loom);
   const runIds = [];
   const nodes = episode.nodes.filter((n) => needsReformat(n, target));
+  const status = createLoomAiStatus(
+    { operationId, providerId, model, effort },
+    { action: 'reformat-scenes', label: 'Reformatting scenes' },
+  );
   let rewritten = 0;
   let chunks = 0;
 
@@ -877,7 +885,7 @@ export async function reformatEpisodeScenes(loomId, episodeId, { format, provide
       sceneFormatContract: sceneFormatContract(target),
       scenesJson: JSON.stringify(batch.map((n) => ({ id: n.id, title: n.title, prose: n.prose })), null, 2),
     }, { providerId, model, effort, operationId }, {
-      action: 'reformat-scenes', label: 'Reformatting scenes', source: 'fableloom-reformat',
+      action: 'reformat-scenes', label: 'Reformatting scenes', source: 'fableloom-reformat', status, complete: false,
     });
     if (runId) runIds.push(runId);
 
@@ -905,6 +913,8 @@ export async function reformatEpisodeScenes(loomId, episodeId, { format, provide
     });
     rewritten += byId.size;
   }
+
+  status?.complete('AI response ready', { runId: runIds.at(-1), shellReady: false });
 
   // An episode with nothing to rewrite is a no-op, not a failure — the client
   // walks every episode, and the pin below is still the point. Only an episode
