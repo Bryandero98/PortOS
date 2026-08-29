@@ -510,9 +510,10 @@ describe('executeTuiRun', () => {
 
     it('registers a read-only Shell view (labelled by source) and tears it down on finish', async () => {
       const provider = { id: 'claude', type: 'tui', command: 'claude', defaultModel: 'claude-fable-5' };
+      const onReady = vi.fn();
       const promise = executeTuiRun({
         runId: 'run-view', provider, prompt: 'review this manuscript', workspacePath: TEST_WORKSPACE,
-        label: 'pipeline-manuscript-completeness',
+        label: 'pipeline-manuscript-completeness', onReady,
       });
       await flushAsync();
 
@@ -525,6 +526,14 @@ describe('executeTuiRun', () => {
           cwd: TEST_WORKSPACE,
         }),
       );
+      expect(onReady).toHaveBeenCalledWith({
+        runId: 'run-view',
+        providerId: 'claude',
+        providerName: 'claude',
+        model: 'claude-fable-5',
+        providerType: 'tui',
+        shellReady: true,
+      });
       expect(shellMocks.unregisterExternalSession).not.toHaveBeenCalled();
 
       ptyInstances[0].emitExit({ exitCode: 0 });

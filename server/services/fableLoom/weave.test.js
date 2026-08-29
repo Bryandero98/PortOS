@@ -24,6 +24,7 @@ vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 
 const { createLoom, addEpisode, addNode, mutateLoom, updateLoom, updateNode, getLoom } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
+const { aiStatusEvents } = await import('../aiStatusEvents.js');
 const {
   branchNode, buildCanonDigest, feedbackEpisode, feedbackSeriesPlan, generateSeriesPlan, mapGeneratedGraph, playTurn,
   reformatEpisodeScenes, reviewEpisode, reviewSeriesPlan, weaveEpisode,
@@ -233,6 +234,34 @@ describe('reviewEpisode', () => {
 });
 
 describe('feedbackEpisode', () => {
+  it('reports the provider and shell lifecycle for an in-page operation', async () => {
+    const { loomId, episodeId } = await setup();
+    const events = [];
+    const handle = (event) => events.push(event);
+    aiStatusEvents.on('status', handle);
+    runStagedLLM.mockImplementation(async (_stage, _variables, options) => {
+      options.onRunCreated('run-feedback', {
+        providerId: 'codex-tui', providerName: 'Codex TUI', model: 'gpt-test', providerType: 'tui',
+      });
+      options.onRunReady({
+        runId: 'run-feedback', providerId: 'codex-tui', providerName: 'Codex TUI',
+        model: 'gpt-test', providerType: 'tui', shellReady: true,
+      });
+      options.onRunSettled('run-feedback');
+      return { content: { title: 'Revised' }, runId: 'run-feedback' };
+    });
+
+    await feedbackEpisode(loomId, episodeId, {
+      feedback: 'Revise the title.', operationId: '00000000-0000-4000-8000-000000000042',
+    });
+    aiStatusEvents.off('status', handle);
+
+    expect(events.map((event) => event.phase)).toEqual(['start', 'running', 'ready', 'applying', 'complete']);
+    expect(events.find((event) => event.phase === 'ready')).toMatchObject({
+      runId: 'run-feedback', shellReady: true, operationId: '00000000-0000-4000-8000-000000000042',
+    });
+  });
+
   it('applies sparse metadata, scene, and existing-path edits without changing ids', async () => {
     const { loomId, episodeId } = await setup();
     let updated = await addNode(loomId, episodeId, { title: 'The Gate', prose: 'You wait.' });

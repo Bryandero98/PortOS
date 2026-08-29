@@ -654,6 +654,7 @@ async function executeStagePrompt({ stage, label, prompt, options }) {
     // effort control, so no capability check is needed here.
     effort: effectiveEffort,
     onRunCreated: options.onRunCreated,
+    onRunReady: options.onRunReady,
     onRunSettled: options.onRunSettled,
   });
   const { text } = runResult2;

@@ -148,7 +148,7 @@ const PTY_ROWS = 50;
  *   it reports itself, not a provider incident for the autofixer to escalate.
  * @returns {Promise<void>}
  */
-export async function executeTuiRun({ runId, provider, prompt, workspacePath, onData, onComplete, timeout, idleMs, label, guard = false, reportFailure = true }) {
+export async function executeTuiRun({ runId, provider, prompt, workspacePath, onData, onComplete, onReady, timeout, idleMs, label, guard = false, reportFailure = true }) {
   if (!provider || typeof provider !== 'object') {
     throw new Error('executeTuiRun: provider is required');
   }
@@ -301,6 +301,18 @@ ${prompt}`;
     cwd: workingDir,
     kind: 'tui-run',
   });
+  try {
+    onReady?.({
+      runId,
+      providerId: provider.id,
+      providerName: provider.name || provider.id,
+      model: provider.defaultModel,
+      providerType: provider.type,
+      shellReady: true,
+    });
+  } catch (err) {
+    console.error(`❌ TUI ready hook failed: ${err.message}`);
+  }
 
   const startTime = Date.now();
   let outputBuffer = '';

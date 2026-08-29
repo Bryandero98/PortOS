@@ -14,6 +14,7 @@
 
 import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
+import { startAIOp } from '../aiStatusEvents.js';
 import { runStagedLLM } from '../stageRunner.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
 import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
@@ -59,6 +60,55 @@ const llmOptions = ({ providerId, model, effort } = {}, source) => ({
   ...(model ? { modelOverride: model } : {}),
   ...(effort ? { effortOverride: effort } : {}),
 });
+
+// FableLoom edits are one HTTP request but can spend minutes inside a TUI. The
+// operation id is minted by the requesting view, so status frames cannot be
+// mistaken for a different loom or a stale run in another tab. The normal
+// `ai:status` channel carries these frames; `localOnly` keeps the global toast
+// surface from duplicating the drawer's inline status and error message.
+const createLoomAiStatus = (route, { action, label }) => route.operationId
+    ? startAIOp({
+      op: `fableloom-${action}`,
+      label,
+      operationId: route.operationId,
+      localOnly: true,
+      silent: true,
+    })
+  : null;
+
+const runLoomAi = (stage, variables, route, {
+  action, label, source, status: existingStatus = null, complete = true,
+}) => {
+  const status = existingStatus || createLoomAiStatus(route, { action, label });
+  const options = llmOptions(route, source);
+  if (status) {
+    options.onRunCreated = (runId, meta = {}) => status.update(
+      'running',
+      `${label} is running…`,
+      { ...meta, runId, shellReady: false },
+    );
+    options.onRunReady = (meta = {}) => status.update(
+      'ready',
+      'TUI run is ready — open Shell to watch and interact',
+      meta,
+    );
+    options.onRunSettled = (runId) => status.update(
+      'applying',
+      'AI response received — applying changes…',
+      { runId },
+    );
+  }
+  return runStagedLLM(stage, variables, options).then((result) => {
+    if (complete) status?.complete('AI response ready', { runId: result.runId, shellReady: false });
+    return result;
+  }, (error) => {
+    status?.error(
+      error?.message || 'AI operation failed',
+      error?.runId ? { runId: error.runId } : {},
+    );
+    throw error;
+  });
+};
 
 /**
  * Routing for a play turn: an explicit per-call pick beats the loom's saved
@@ -206,7 +256,7 @@ export function mapGeneratedGraph(parsed) {
 }
 
 export async function weaveEpisode(loomId, episodeId, {
-  guidance = '', replace = false, providerId, model, effort,
+  guidance = '', replace = false, providerId, model, effort, operationId,
 } = {}) {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
@@ -214,7 +264,7 @@ export async function weaveEpisode(loomId, episodeId, {
     throw new ServerError('Episode already has scenes — pass replace to regenerate', { status: 409, code: 'EPISODE_NOT_EMPTY' });
   }
   const canonDigest = await buildCanonDigest(loom);
-  const { content, runId } = await runStagedLLM('fableloom-weave-episode', {
+  const { content, runId } = await runLoomAi('fableloom-weave-episode', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
@@ -224,7 +274,9 @@ export async function weaveEpisode(loomId, episodeId, {
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     sceneFormatContract: sceneFormatContract(loom.format),
     participationContract: audienceContract(loom, episode),
-  }, llmOptions({ providerId, model, effort }, 'fableloom-weave'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'weave-episode', label: 'Weaving episode', source: 'fableloom-weave',
+  });
 
   const { nodes, startNodeId } = mapGeneratedGraph(content);
   if (loom.participationMode === 'helper') {
@@ -258,7 +310,7 @@ export async function weaveEpisode(loomId, episodeId, {
 // --- Branch: grow new paths out of one scene --------------------------------
 
 export async function branchNode(loomId, episodeId, nodeId, {
-  guidance = '', branchCount, providerId, model, effort,
+  guidance = '', branchCount, providerId, model, effort, operationId,
 } = {}) {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
@@ -272,7 +324,7 @@ export async function branchNode(loomId, episodeId, nodeId, {
   const count = clamp(branchCount, 1, 4, 2);
 
   const canonDigest = await buildCanonDigest(loom);
-  const { content, runId } = await runStagedLLM('fableloom-branch-node', {
+  const { content, runId } = await runLoomAi('fableloom-branch-node', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
     graphDigest: describeGraphForPrompt(episode, {
@@ -286,7 +338,9 @@ export async function branchNode(loomId, episodeId, nodeId, {
     guidance: guidance || '(none)',
     sceneFormatContract: sceneFormatContract(loom.format),
     participationContract: audienceContract(loom, episode),
-  }, llmOptions({ providerId, model, effort }, 'fableloom-branch'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'branch-node', label: 'Growing scene branches', source: 'fableloom-branch',
+  });
 
   const branches = Array.isArray(content?.branches)
     ? content.branches.filter((b) => b && typeof b === 'object' && b.node && typeof b.node === 'object').slice(0, count)
@@ -328,20 +382,22 @@ export async function branchNode(loomId, episodeId, nodeId, {
 
 const REVIEW_SEVERITIES = new Set(['high', 'medium', 'low']);
 
-export async function reviewEpisode(loomId, episodeId, { providerId, model, effort } = {}) {
+export async function reviewEpisode(loomId, episodeId, { providerId, model, effort, operationId } = {}) {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
   const structural = analyzeEpisodeGraph(episode, {
     participationMode: loom.participationMode,
     requireAudienceIntroduction: requiresAudienceIntroduction(loom, episode),
   });
-  const { content, runId } = await runStagedLLM('fableloom-review', {
+  const { content, runId } = await runLoomAi('fableloom-review', {
     storyContext: storyContext(loom, episode),
     graphDigest: describeGraphForPrompt(episode, { participationMode: loom.participationMode }),
     structuralDigest: structural.issues.length
       ? structural.issues.map((i) => `- [${i.severity}] ${i.message}`).join('\n')
       : '(no structural issues)',
-  }, llmOptions({ providerId, model, effort }, 'fableloom-review'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'review-episode', label: 'Reviewing episode', source: 'fableloom-review',
+  });
 
   const nodeIds = new Set(episode.nodes.map((n) => n.id));
   const findings = (Array.isArray(content?.findings) ? content.findings : [])
@@ -442,7 +498,7 @@ const normalizeFeedbackPatch = (content, episode) => {
  * records need to be added or removed.
  */
 export async function feedbackEpisode(loomId, episodeId, {
-  feedback, providerId, model, effort,
+  feedback, providerId, model, effort, operationId,
 } = {}) {
   const instruction = trimTo(feedback, LOOM_LIMITS.FEEDBACK_MAX);
   if (!instruction) {
@@ -451,7 +507,7 @@ export async function feedbackEpisode(loomId, episodeId, {
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
   const canonDigest = await buildCanonDigest(loom);
-  const { content, runId } = await runStagedLLM('fableloom-feedback-episode', {
+  const { content, runId } = await runLoomAi('fableloom-feedback-episode', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none)',
     graphDigest: describeGraphForPrompt(episode, {
@@ -460,7 +516,9 @@ export async function feedbackEpisode(loomId, episodeId, {
     }),
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     feedback: instruction,
-  }, llmOptions({ providerId, model, effort }, 'fableloom-feedback'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'feedback-episode', label: 'Updating episode', source: 'fableloom-feedback',
+  });
 
   const { episodePatch, scenePatches } = normalizeFeedbackPatch(content, episode);
   const updated = await mutateLoom(loomId, (current) => {
@@ -507,15 +565,17 @@ const analysisStrings = (value) => (Array.isArray(value) ? value : [])
  * plan. This intentionally replaces only `seriesPlan`; episode records and
  * scene graphs remain untouched.
  */
-export async function generateSeriesPlan(loomId, { providerId, model, effort } = {}) {
+export async function generateSeriesPlan(loomId, { providerId, model, effort, operationId } = {}) {
   const loom = await requireLoom(loomId);
   const sourceFingerprint = seriesPlanGenerationFingerprint(loom);
   const canonDigest = await buildCanonDigest(loom);
-  const { content, runId } = await runStagedLLM('fableloom-generate-series-plan', {
+  const { content, runId } = await runLoomAi('fableloom-generate-series-plan', {
     storyContext: storyContext(loom),
     canonDigest: canonDigest || '(none — invent only what the premise needs)',
     seriesPlanJson: seriesPlanDigest(loom),
-  }, llmOptions({ providerId, model, effort }, 'fableloom-generate-series-plan'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'generate-series-plan', label: 'Drafting series plan', source: 'fableloom-generate-series-plan',
+  });
 
   const storyArc = isStr(content?.storyArc) ? content.storyArc : '';
   const isUsablePlanItem = (item) => item && typeof item === 'object'
@@ -542,14 +602,16 @@ export async function generateSeriesPlan(loomId, { providerId, model, effort } =
 }
 
 /** Read-only story-editor pass over the arc, tentpole beats, side quests, and episode outline. */
-export async function reviewSeriesPlan(loomId, { providerId, model, effort } = {}) {
+export async function reviewSeriesPlan(loomId, { providerId, model, effort, operationId } = {}) {
   const loom = await requireLoom(loomId);
   const canonDigest = await buildCanonDigest(loom);
-  const { content, runId } = await runStagedLLM('fableloom-review-series-plan', {
+  const { content, runId } = await runLoomAi('fableloom-review-series-plan', {
     storyContext: storyContext(loom),
     canonDigest: canonDigest || '(none)',
     seriesPlanJson: seriesPlanDigest(loom),
-  }, llmOptions({ providerId, model, effort }, 'fableloom-review-series-plan'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'review-series-plan', label: 'Reviewing series plan', source: 'fableloom-review-series-plan',
+  });
   const analysis = {
     summary: trimTo(content?.summary, 2000),
     strengths: analysisStrings(content?.strengths),
@@ -567,7 +629,7 @@ export async function reviewSeriesPlan(loomId, { providerId, model, effort } = {
 
 /** Apply one author instruction to the series-level plan without touching episode scene graphs. */
 export async function feedbackSeriesPlan(loomId, {
-  feedback, providerId, model, effort,
+  feedback, providerId, model, effort, operationId,
 } = {}) {
   const instruction = trimTo(feedback, LOOM_LIMITS.FEEDBACK_MAX);
   if (!instruction) {
@@ -575,12 +637,14 @@ export async function feedbackSeriesPlan(loomId, {
   }
   const loom = await requireLoom(loomId);
   const canonDigest = await buildCanonDigest(loom);
-  const { content, runId } = await runStagedLLM('fableloom-feedback-series-plan', {
+  const { content, runId } = await runLoomAi('fableloom-feedback-series-plan', {
     storyContext: storyContext(loom),
     canonDigest: canonDigest || '(none)',
     seriesPlanJson: seriesPlanDigest(loom),
     feedback: instruction,
-  }, llmOptions({ providerId, model, effort }, 'fableloom-feedback-series-plan'));
+  }, { providerId, model, effort, operationId }, {
+    action: 'feedback-series-plan', label: 'Updating series plan', source: 'fableloom-feedback-series-plan',
+  });
 
   if (!content || typeof content !== 'object') {
     throw aiShapeError('The model returned no series-plan edits');
@@ -793,20 +857,24 @@ const unconvertedSceneCount = (loom, target) => loom.episodes.reduce(
  * browser closed mid-walk can't leave the loom pinned to a format half its
  * scenes are not in.
  */
-export async function reformatEpisodeScenes(loomId, episodeId, { format, providerId, model, effort } = {}) {
+export async function reformatEpisodeScenes(loomId, episodeId, { format, providerId, model, effort, operationId } = {}) {
   const target = asLoomFormat(format);
   const loom = await requireLoom(loomId);
   const episode = findEpisode(loom, episodeId);
   const canonDigest = await buildCanonDigest(loom);
   const runIds = [];
   const nodes = episode.nodes.filter((n) => needsReformat(n, target));
+  const status = createLoomAiStatus(
+    { operationId, providerId, model, effort },
+    { action: 'reformat-scenes', label: 'Reformatting scenes' },
+  );
   let rewritten = 0;
   let chunks = 0;
 
   for (let i = 0; i < nodes.length && chunks < REFORMAT_CHUNKS_MAX; i += REFORMAT_CHUNK) {
     const batch = nodes.slice(i, i + REFORMAT_CHUNK);
     chunks += 1;
-    const { content, runId } = await runStagedLLM('fableloom-reformat-scenes', {
+    const { content, runId } = await runLoomAi('fableloom-reformat-scenes', {
       // The TARGET format, not the loom's current one: the pin is written
       // last, so passing `loom` would assert the source format as fact in
       // the same prompt that asks for the target — and would render
@@ -816,7 +884,9 @@ export async function reformatEpisodeScenes(loomId, episodeId, { format, provide
       formatLabel: loomFormatLabel(target),
       sceneFormatContract: sceneFormatContract(target),
       scenesJson: JSON.stringify(batch.map((n) => ({ id: n.id, title: n.title, prose: n.prose })), null, 2),
-    }, llmOptions({ providerId, model, effort }, 'fableloom-reformat'));
+    }, { providerId, model, effort, operationId }, {
+      action: 'reformat-scenes', label: 'Reformatting scenes', source: 'fableloom-reformat', status, complete: false,
+    });
     if (runId) runIds.push(runId);
 
     // Only ids from THIS batch count. A model that invents an id, echoes a
@@ -843,6 +913,8 @@ export async function reformatEpisodeScenes(loomId, episodeId, { format, provide
     });
     rewritten += byId.size;
   }
+
+  status?.complete('AI response ready', { runId: runIds.at(-1), shellReady: false });
 
   // An episode with nothing to rewrite is a no-op, not a failure — the client
   // walks every episode, and the pin below is still the point. Only an episode
