@@ -88,6 +88,11 @@ vi.mock('../services/idealoomLists.js', () => ({
   deleteList: vi.fn()
 }));
 
+vi.mock('../services/idealoomObsidian.js', () => ({
+  importFromObsidian: vi.fn(),
+  exportToObsidian: vi.fn(),
+}));
+
 // Mock the brain graph service
 vi.mock('../services/brainGraph.js', () => ({
   getBrainGraphSearchIndex: vi.fn(),
@@ -145,6 +150,7 @@ vi.mock('../services/brainJournal.js', () => ({
 // Import mocked modules
 import * as brainService from '../services/brain.js';
 import * as ideaLoomLists from '../services/idealoomLists.js';
+import * as ideaLoomObsidian from '../services/idealoomObsidian.js';
 import { getBrainGraphSearchIndex, getBrainGraphOverview, getBrainGraphNeighborhood } from '../services/brainGraph.js';
 import { syncAllBrainData, getEmbeddingCoverage } from '../services/brainMemoryBridge.js';
 import { getChangesSince } from '../services/brainSyncLog.js';
@@ -154,6 +160,7 @@ import * as journal from '../services/brainJournal.js';
 
 describe('Brain Routes', () => {
   let app;
+  const LIST_ID = 'c17c0284-b7de-4db6-a09c-7f735f0fd501';
 
   beforeEach(() => {
     app = express();
@@ -163,7 +170,6 @@ describe('Brain Routes', () => {
   });
 
   describe('IdeaLoom local lists', () => {
-    const LIST_ID = 'c17c0284-b7de-4db6-a09c-7f735f0fd501';
     const listInput = {
       prompt: 'Find practical improvements', title: 'Practical improvements',
       category: 'product', ideas: ['Improve empty states']
@@ -230,6 +236,32 @@ describe('Brain Routes', () => {
         expect((await request(app).put(`/api/brain/ideas/idealoom/lists/${id}`).send({ title: 'x' })).status).toBe(404);
         expect((await request(app).delete(`/api/brain/ideas/idealoom/lists/${id}`)).status).toBe(404);
       }
+    });
+  });
+
+  describe('IdeaLoom Obsidian exchange', () => {
+    it('validates explicit import and export actions and returns their results', async () => {
+      ideaLoomObsidian.importFromObsidian.mockResolvedValue({ counts: { imported: 1 } });
+      ideaLoomObsidian.exportToObsidian.mockResolvedValue({ counts: { exported: 1 } });
+
+      const imported = await request(app).post('/api/brain/ideas/idealoom/import').send({});
+      expect(imported.status).toBe(200);
+      expect(imported.body.counts.imported).toBe(1);
+      expect(ideaLoomObsidian.importFromObsidian).toHaveBeenCalledOnce();
+
+      const exported = await request(app)
+        .post('/api/brain/ideas/idealoom/sync')
+        .send({ listId: LIST_ID });
+      expect(exported.status).toBe(200);
+      expect(exported.body.counts.exported).toBe(1);
+      expect(ideaLoomObsidian.exportToObsidian).toHaveBeenCalledWith({ listId: LIST_ID });
+    });
+
+    it('rejects unknown exchange request fields', async () => {
+      expect((await request(app).post('/api/brain/ideas/idealoom/import').send({ force: true })).status).toBe(400);
+      expect((await request(app).post('/api/brain/ideas/idealoom/sync').send({ direction: 'both' })).status).toBe(400);
+      expect(ideaLoomObsidian.importFromObsidian).not.toHaveBeenCalled();
+      expect(ideaLoomObsidian.exportToObsidian).not.toHaveBeenCalled();
     });
   });
 

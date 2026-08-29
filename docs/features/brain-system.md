@@ -205,6 +205,29 @@ video/audio switches (a transcript-only ingest works without it).
 - **Digest**: Daily and weekly summaries with run buttons
 - **Trust**: Audit trail with classification confidence and reasoning
 
+## IdeaLoom Obsidian exchange
+
+The dedicated `/brain/ideas` page keeps native Brain ideas separate from
+machine-local IdeaLoom lists. When the integration is enabled and an existing
+Obsidian vault is selected, the page exposes explicit Import and Export actions.
+Neither action runs during boot, and disabled or unconfigured integration does
+not affect local list editing.
+
+Import scans only the vault's `Idea Loom/` folder. A supported note has UUID,
+title, category, draft/completed status, created/modified timestamps, an
+IdeaLoom tag, a prompt heading, optional help text, and dense numbered idea
+lines. Imports preserve the UUID, order, timestamps, and discovered note path;
+malformed, duplicate, and iCloud-unavailable notes are reported in the result
+instead of being silently accepted. Export writes the same frontmatter and
+numbered Markdown shape, uses a date/title filename for new lists, and keeps an
+imported filename stable.
+
+The exchange result includes counts and per-note details for imported,
+exported, skipped, malformed, unavailable, and failed work. List records and
+vault identifiers remain under `data/brain/idealoom-lists/` and never enter
+Brain federation or the memory bridge. Conflict-safe reconciliation and
+automatic-sync behavior are intentionally handled by the follow-up sync slice.
+
 ## Implementation Files
 
 | File | Purpose |
@@ -212,6 +235,8 @@ video/audio switches (a transcript-only ingest works without it).
 | `server/lib/brainValidation.js` | Zod schemas for all Brain entities |
 | `server/services/brain.js` | Core business logic |
 | `server/services/brainStorage.js` | JSONL/JSON file operations |
+| `server/services/idealoomLists.js` | Machine-local ordered IdeaLoom list records and sync metadata |
+| `server/services/idealoomObsidian.js` | Validated IdeaLoom Markdown import/export |
 | `server/services/brainScheduler.js` | Daily/weekly job scheduler |
 | `server/services/youtubeIngest.js` | YouTube ingest orchestration (transcript / video / audio → brain + Obsidian + CoS task) |
 | `server/lib/vttTranscript.js` | WebVTT/SRT → readable prose (collapses auto-caption repetition) |

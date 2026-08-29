@@ -69,6 +69,43 @@ export async function createList(data) {
   return list;
 }
 
+/**
+ * Store a list read from an IdeaLoom note without minting a new id or
+ * replacing the note's timestamps. Import metadata is owned by the exchange
+ * service, so normal list edits cannot accidentally overwrite it.
+ */
+export async function upsertImportedList(id, data) {
+  if (!store.isValidId(id)) return null;
+  await store.saveTypeIndex();
+  return store.queueRecordWrite(id, async () => {
+    const current = await store.loadOne(id);
+    const now = timestamp();
+    const list = {
+      ...(current || {}),
+      ...data,
+      id,
+      schemaVersion: IDEALOOM_LIST_SCHEMA_VERSION,
+      sync: data.sync ?? current?.sync,
+      createdAt: data.createdAt ?? current?.createdAt ?? now,
+      updatedAt: data.updatedAt ?? current?.updatedAt ?? now,
+    };
+    await store.saveOneNow(id, list);
+    return list;
+  });
+}
+
+/** Update importer-owned local metadata without changing list content. */
+export async function updateSyncMetadata(id, sync) {
+  if (!store.isValidId(id)) return null;
+  return store.queueRecordWrite(id, async () => {
+    const current = await store.loadOne(id);
+    if (!current) return null;
+    const list = { ...current, sync: { ...(current.sync || {}), ...sync } };
+    await store.saveOneNow(id, list);
+    return list;
+  });
+}
+
 export async function updateList(id, updates) {
   if (!store.isValidId(id)) return null;
   return store.queueRecordWrite(id, async () => {

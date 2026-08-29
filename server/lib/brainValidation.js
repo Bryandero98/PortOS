@@ -298,6 +298,12 @@ export const ideaLoomSettingsInputSchema = z.object({
   autoSync: z.boolean().optional()
 }).strict();
 
+export const ideaLoomImportInputSchema = z.preprocess((value) => value ?? {}, z.object({}).strict());
+
+export const ideaLoomSyncInputSchema = z.preprocess((value) => value ?? {}, z.object({
+  listId: z.string().uuid().optional()
+}).strict());
+
 // Create/Update Admin input schema
 export const adminInputSchema = z.object({
   title: z.string().min(1).max(200),
