@@ -833,6 +833,16 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
   if (model.runtime === 'minimax_h3_cuda') {
     return buildMiniMaxH3CudaArgs({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath });
   }
+  // Migration 315 removes the shipped Hunyuan profile, but a user-repointed
+  // or peer-synced historical entry may still declare its retired runtime.
+  // Fail closed instead of falling through to a legacy MLX/CUDA helper that
+  // cannot load the checkpoint.
+  if (model.runtime === 'hunyuan') {
+    throw new ServerError(
+      `The "hunyuan" runtime was retired — model "${modelId}" can no longer be rendered. Pick a supported model such as FastMetal in data/media-models.json.`,
+      { status: 400, code: 'VIDEO_RUNTIME_RETIRED' },
+    );
+  }
   if (Array.isArray(keyframes) && keyframes.length >= 2) {
     throw new ServerError(
       'Multi-keyframe mode (keyframes array) is only supported on the ltx2 runtime. Pick a model with runtime: "ltx2" in data/media-models.json.',

@@ -14,6 +14,10 @@ describe('VIDEO_RUNTIME_MODES', () => {
     }
   });
 
+  it('keeps preserved Hunyuan records text-only even though the runtime is retired', () => {
+    expect(VIDEO_RUNTIME_MODES.hunyuan).toEqual(['text']);
+  });
+
   it('declares fflf on every runtime that can be handed a last frame', () => {
     // mlx_video's FFLF is degraded (one --image), NOT absent — the caveat rides
     // on lastFrameAnchored: false, so the mode still has to be offerable.

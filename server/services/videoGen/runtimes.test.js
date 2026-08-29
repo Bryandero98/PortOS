@@ -370,8 +370,8 @@ describe('minimax_h3_cuda runtime registration', () => {
 // The JS list exists so the server can reject a bad registry `offloadProfile`
 // with a stable code instead of an opaque non-zero child exit — which only
 // works while it agrees with the argparse `choices=` that actually enforces it.
-// Hand-synced across a language boundary is the established shape here (see
-// VIDEO_PRECISIONS), so pin it rather than leave the two free to drift.
+// Hand-synced across a language boundary is the established shape here, so pin
+// it rather than leave the two free to drift.
 describe('MiniMax H3 CUDA offload profiles', () => {
   it('matches OFFLOAD_PROFILES in the Python runner', () => {
     const runner = readFileSync(

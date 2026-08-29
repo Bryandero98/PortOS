@@ -109,6 +109,10 @@ vi.mock('../../lib/mediaModels.js', async () => {
     { id: 'ltx23_unified', name: 'LTX-2.3 Unified Beta', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av', steps: 25, guidance: 3.0 },
     // quantized mlx_video model — NOT LoRA-capable (out of scope).
     { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4', runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av-q4', steps: 25, guidance: 3.0 },
+    // Compatibility fixture: the shipped profile is gone, but a user-repointed
+    // or peer-synced historical entry must fail closed instead of falling into
+    // the generic MLX/CUDA runner.
+    { id: 'custom_hunyuan', name: 'Custom historical Hunyuan', runtime: 'hunyuan', repo: 'example-org/custom-video-runtime', supportedModes: ['text'], steps: 30, guidance: 6 },
     {
       id: 'minimax_h3_8bit', name: 'MiniMax H3 MLX 8-bit', runtime: 'minimax_h3',
       repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
@@ -1498,6 +1502,22 @@ describe('generateVideo — LTX audio-reactive conditioning', () => {
       '--audio-start', '42.5',
       '--no-audio',
     ]));
+  });
+});
+
+describe('generateVideo — retired runtime guard', () => {
+  it('refuses a preserved Hunyuan entry before choosing a fallback runner', async () => {
+    await expect(generateVideo({
+      jobId: 'retired-hunyuan-runtime',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'custom_hunyuan',
+      prompt: 'a quiet street at dusk',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      mode: 'text',
+    })).rejects.toMatchObject({ status: 400, code: 'VIDEO_RUNTIME_RETIRED' });
   });
 });
 
