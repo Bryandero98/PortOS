@@ -10,15 +10,11 @@ import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import {
   AlertCircle,
-  CheckCircle2,
   Loader2,
   Mic,
-  MicOff,
-  Radio,
   Send,
   Smartphone,
   Volume2,
-  VolumeX,
 } from 'lucide-react';
 
 export default function FableLoomHostedJoin() {
@@ -27,12 +23,10 @@ export default function FableLoomHostedJoin() {
   const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
   const [authError, setAuthError] = useState(null);
-  const [sessionState, setSessionState] = useState(null);
   const [turnPhase, setTurnPhase] = useState('idle'); // 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended'
   const [transcript, setTranscript] = useState([]);
   const [textInput, setTextInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
-  const [micAllowed, setMicAllowed] = useState(null);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -77,7 +71,6 @@ export default function FableLoomHostedJoin() {
     });
 
     s.on('hosted:session:sync', (state) => {
-      setSessionState(state);
       setTurnPhase(state.turnPhase || 'idle');
       if (Array.isArray(state.transcript)) {
         setTranscript(state.transcript);
@@ -110,14 +103,6 @@ export default function FableLoomHostedJoin() {
       }
     });
 
-    s.on('hosted:story:transition', (data) => {
-      setSessionState((prev) => (prev ? {
-        ...prev,
-        currentNodeId: data.node?.id,
-        playbackPhase: data.playbackPhase,
-      } : prev));
-    });
-
     s.on('hosted:session:ended', (data) => {
       setTurnPhase('ended');
       setAuthError(data?.reason === 'host_ended' ? 'The host has ended this play session.' : 'Session ended.');
@@ -143,7 +128,6 @@ export default function FableLoomHostedJoin() {
     try {
       audioChunksRef.current = [];
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      setMicAllowed(true);
 
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
@@ -172,7 +156,6 @@ export default function FableLoomHostedJoin() {
       }
     } catch (err) {
       console.error('Microphone access denied:', err);
-      setMicAllowed(false);
     }
   };
 
@@ -317,11 +300,13 @@ export default function FableLoomHostedJoin() {
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             placeholder="Or type a message…"
+            aria-label="Message protagonist"
             disabled={turnPhase === 'thinking' || turnPhase === 'speaking'}
             className="flex-1 bg-slate-800/80 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
           />
           <button
             type="submit"
+            aria-label="Send message"
             disabled={!textInput.trim() || turnPhase === 'thinking' || turnPhase === 'speaking'}
             className="p-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-white transition-colors"
           >

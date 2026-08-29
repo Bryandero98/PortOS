@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import FableLoomHostedJoin from './FableLoomHostedJoin';
 
 // Mock socket.io-client
@@ -47,7 +47,7 @@ describe('FableLoomHostedJoin', () => {
     const input = screen.getByPlaceholderText('Or type a message…');
     fireEvent.change(input, { target: { value: 'Look around the room' } });
 
-    const submitBtn = screen.getByRole('button', { name: '' }); // Send button
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
     fireEvent.submit(input.closest('form'));
 
     expect(mockSocket.emit).toHaveBeenCalledWith('hosted:turn:text', { text: 'Look around the room' });

@@ -13,17 +13,14 @@ import {
   AlertCircle,
   CheckCircle2,
   Copy,
-  ExternalLink,
   Loader2,
-  Mic,
   QrCode,
-  Radio,
   Smartphone,
   Speaker,
-  Volume2,
   X,
 } from 'lucide-react';
 import toast from '../ui/Toast';
+import Modal from '../ui/Modal';
 import { copyToClipboard } from '../../lib/clipboard';
 import { generateQrCodeSvg } from '../../lib/qrCode';
 import {
@@ -124,17 +121,24 @@ export default function LoomHostedSessionModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="relative w-full max-w-lg bg-port-card border border-port-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      usePortal
+      backdropClassName="bg-black/60 backdrop-blur-sm"
+      panelClassName="bg-port-card border border-port-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+      ariaLabelledBy="hosted-two-device-play-title"
+    >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-port-border bg-port-bg/50">
           <div className="flex items-center gap-2.5">
             <QrCode className="w-5 h-5 text-port-accent" />
-            <h2 className="text-base font-semibold text-port-text">Hosted Two-Device Play</h2>
+            <h2 id="hosted-two-device-play-title" className="text-base font-semibold text-port-text">Hosted Two-Device Play</h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-port-muted hover:text-port-text hover:bg-port-border/40 transition-colors"
+            aria-label="Close hosted two-device play"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center p-1 rounded-lg text-port-muted hover:text-port-text hover:bg-port-border/40 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -209,10 +213,12 @@ export default function LoomHostedSessionModal({
                   type="text"
                   readOnly
                   value={currentJoinUrl}
+                  aria-label="Hosted play join link"
                   className="flex-1 bg-transparent border-none text-port-muted outline-none select-all font-mono text-[11px] truncate"
                 />
                 <button
                   onClick={handleCopyLink}
+                  aria-label="Copy hosted play join link"
                   className="p-1.5 rounded text-port-muted hover:text-port-text hover:bg-port-card transition-colors shrink-0"
                   title="Copy link"
                 >
@@ -222,7 +228,7 @@ export default function LoomHostedSessionModal({
 
               {/* Audio Target Selector */}
               <div className="w-full space-y-2 pt-2 border-t border-port-border">
-                <label className="text-xs font-medium text-port-text">Character Voice Output</label>
+                <span className="text-xs font-medium text-port-text">Character Voice Output</span>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <button
                     type="button"
@@ -295,7 +301,6 @@ export default function LoomHostedSessionModal({
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
