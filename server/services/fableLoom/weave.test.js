@@ -371,19 +371,25 @@ describe('playTurn', () => {
   });
 
   it('locks typed audience input out while a helper channel is disconnected but permits canon advance', async () => {
-    const { loomId, episodeId, gate, insideId } = await playSetup();
+    const { loomId, episodeId, gate: originalGate, insideId } = await playSetup();
     await updateLoom(loomId, {
       participationMode: 'helper',
       audienceCommunicationMedium: 'A pocket radio.',
     });
-    await updateNode(loomId, episodeId, gate.id, {
+    await updateNode(loomId, episodeId, originalGate.id, {
       playbackMode: 'cut', audienceConnection: 'disconnected',
     });
+    await mutateLoom(loomId, (loom) => {
+      const gate = loom.episodes[0].nodes.find((node) => node.id === originalGate.id);
+      gate.transitions.push({ id: 'alternate-path', targetNodeId: insideId, intent: 'Choose a different route' });
+      return loom;
+    });
+    const gate = (await getLoom(loomId)).episodes[0].nodes.find((node) => node.id === originalGate.id);
 
     await expect(playTurn(loomId, episodeId, { nodeId: gate.id, message: 'Can you hear me?' }))
       .rejects.toMatchObject({ code: 'AUDIENCE_DISCONNECTED' });
     const advanced = await playTurn(loomId, episodeId, {
-      nodeId: gate.id, transitionId: gate.transitions[0].id,
+      nodeId: gate.id, transitionId: 'alternate-path',
     });
     expect(advanced).toMatchObject({ action: 'move', resolvedBy: 'graph' });
     expect(advanced.node.id).toBe(insideId);

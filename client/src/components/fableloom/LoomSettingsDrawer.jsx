@@ -16,7 +16,7 @@
  *     all, so this only governs typed input.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Sparkles } from 'lucide-react';
 import Drawer from '../Drawer';
 import ProviderModelSelector from '../ProviderModelSelector';
@@ -53,6 +53,11 @@ export default function LoomSettingsDrawer({ open, onClose, loom, onLoomUpdate, 
   const format = loom.format || 'prose';
   const [participationMode, setParticipationMode] = useState(loom.participationMode || 'protagonist');
   const [communicationMedium, setCommunicationMedium] = useState(loom.audienceCommunicationMedium || '');
+  useEffect(() => {
+    if (open) return;
+    setParticipationMode(loom.participationMode || 'protagonist');
+    setCommunicationMedium(loom.audienceCommunicationMedium || '');
+  }, [open, loom.participationMode, loom.audienceCommunicationMedium]);
   const play = loom.playSettings || {};
   const playProvider = providers.find((p) => p.id === play.providerId);
   // Only scenes not already in the target format are sent, so this is what the
@@ -191,6 +196,11 @@ export default function LoomSettingsDrawer({ open, onClose, loom, onLoomUpdate, 
                 }}
                 placeholder="How the protagonist hears the audience: radio, telepathy, magic device, phone…"
               />
+              {!communicationMedium.trim() && (
+                <p className="text-xs text-port-warning mt-1">
+                  Helper stories need a communication medium before the role can be saved.
+                </p>
+              )}
             </FormField>
           )}
         </section>

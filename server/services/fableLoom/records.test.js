@@ -242,8 +242,13 @@ describe('audience participation round-trip', () => {
       audienceCommunicationMedium: 'A hand-cranked radio carried by the protagonist.',
     });
     loom = await addEpisode(loom.id, { title: 'Pilot' });
+    loom = await addNode(loom.id, loom.episodes[0].id);
+    expect(loom.episodes[0].nodes[0]).toMatchObject({
+      audienceConnection: 'disconnected',
+      playbackMode: 'cut',
+    });
     loom = await addNode(loom.id, loom.episodes[0].id, { audienceConnection: 'connected' });
-    expect(loom.episodes[0].nodes[0].audienceConnection).toBe('connected');
+    expect(loom.episodes[0].nodes[1].audienceConnection).toBe('connected');
 
     await expect(updateLoom(loom.id, { audienceCommunicationMedium: '' }))
       .rejects.toMatchObject({ code: 'AUDIENCE_MEDIUM_REQUIRED' });

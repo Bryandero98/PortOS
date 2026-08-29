@@ -67,8 +67,8 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   const ended = !!scene && (scene.isEnding || !scene.choices?.length);
   const audienceConnected = audienceCanParticipate(loom, scene);
   const automaticCut = !!scene && !scene.isEnding
-    && (scene.playbackMode === 'cut' || !audienceConnected)
-    && scene.choices?.length === 1;
+    && scene.choices?.length > 0
+    && (!audienceConnected || (scene.playbackMode === 'cut' && scene.choices.length === 1));
 
   const restart = () => {
     setScene(start);
@@ -177,8 +177,9 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           if (turn.role === 'scene') {
             if (previewMode === 'video' || i === latestSceneTurnIndex) return null;
             const historicalCut = !turn.node.isEnding
-              && turn.node.playbackMode === 'cut'
-              && turn.node.choices?.length === 1;
+              && turn.node.choices?.length > 0
+              && (!audienceCanParticipate(loom, turn.node)
+                || (turn.node.playbackMode === 'cut' && turn.node.choices.length === 1));
             return (
               <SceneCard
                 key={i}
@@ -186,6 +187,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
                 format={loom.format}
                 previewMode={previewMode}
                 automaticCut={historicalCut}
+                helperMode={loom.participationMode === 'helper'}
               />
             );
           }
@@ -210,6 +212,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           previewMode={previewMode}
           onCutEnded={advanceCut}
           automaticCut={automaticCut}
+          helperMode={loom.participationMode === 'helper'}
           videoFailed={failedVideoId === scene.videoHistoryId}
           onVideoError={() => setFailedVideoId(scene.videoHistoryId)}
         />
@@ -303,7 +306,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
 
 function SceneCard({
   node, isOpening = false, format, previewMode, onCutEnded, automaticCut,
-  videoFailed = false, onVideoError,
+  helperMode = false, videoFailed = false, onVideoError,
 }) {
   if (!node) return null;
   const showVideo = previewMode === 'video' && node.videoHistoryId && !videoFailed;
@@ -343,7 +346,11 @@ function SceneCard({
           <p className="mt-2 text-xs text-port-text-muted">
             {automaticCut
               ? 'Automatic cut'
-              : node.audienceConnection === 'connected' ? 'Audience connected — waits for input' : 'Decision loop — waits for viewer input'}
+              : helperMode && node.audienceConnection !== 'connected'
+                ? 'Canon path — audience disconnected'
+                : node.audienceConnection === 'connected'
+                  ? 'Audience connected — waits for input'
+                  : 'Decision loop — waits for viewer input'}
           </p>
         )}
       </div>

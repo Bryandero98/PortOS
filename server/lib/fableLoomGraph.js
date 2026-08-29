@@ -197,7 +197,9 @@ export function analyzeEpisodeGraph(episode, {
  * `proseLimit` truncates each node's prose so a large graph stays inside the
  * stage's context window.
  */
-export function describeGraphForPrompt(episode, { proseLimit = 400 } = {}) {
+export function describeGraphForPrompt(episode, {
+  proseLimit = 400, participationMode = 'protagonist',
+} = {}) {
   const nodes = asArray(episode?.nodes);
   const lines = [];
   for (const node of nodes) {
@@ -205,7 +207,9 @@ export function describeGraphForPrompt(episode, { proseLimit = 400 } = {}) {
       node.id === episode?.startNodeId ? 'START' : null,
       node?.isEnding ? `ENDING${isStr(node?.endingLabel) ? `: ${node.endingLabel}` : ''}` : null,
       node?.isEnding ? null : (node?.playbackMode === 'cut' ? 'AUTO CUT' : 'DECISION LOOP'),
-      node?.audienceConnection === 'connected' ? 'AUDIENCE CONNECTED' : 'AUDIENCE DISCONNECTED',
+      participationMode === 'helper'
+        ? (node?.audienceConnection === 'connected' ? 'AUDIENCE CONNECTED' : 'AUDIENCE DISCONNECTED')
+        : null,
     ].filter(Boolean);
     lines.push(`[${node.id}] ${node.title || 'Untitled scene'}${flags.length ? ` (${flags.join(') (')})` : ''}`);
     const prose = typeof node.prose === 'string' ? node.prose.trim() : '';

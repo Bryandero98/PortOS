@@ -423,6 +423,11 @@ export function addNode(loomId, episodeId, fields = {}) {
       throw new ServerError('Scene limit reached', { status: 400, code: 'LIMIT_REACHED' });
     }
     const node = { id: `node-${randomUUID()}`, ...fields };
+    if (asFableLoomParticipationMode(loom.participationMode) === 'helper'
+      && asFableLoomAudienceConnection(fields.audienceConnection) !== 'connected'
+      && !('playbackMode' in fields)) {
+      node.playbackMode = 'cut';
+    }
     episode.nodes.push(node);
     if (!episode.startNodeId) episode.startNodeId = node.id;
     // Optionally wire the new node in as a branch of an existing one. The

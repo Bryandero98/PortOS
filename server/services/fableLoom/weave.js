@@ -38,7 +38,6 @@ const TRANSCRIPT_TURNS_MAX = 12;
 const AUDIENCE_GRAPH_ERROR_CODES = new Set([
   GRAPH_ISSUE_CODES.NO_AUDIENCE_CONNECTION,
   GRAPH_ISSUE_CODES.DISCONNECTED_DECISION,
-  GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT,
 ]);
 
 const clamp = (value, min, max, fallback) =>
@@ -219,7 +218,7 @@ export async function weaveEpisode(loomId, episodeId, {
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
     existingGraph: episode.nodes.length
-      ? describeGraphForPrompt(episode, { proseLimit: 1200 })
+      ? describeGraphForPrompt(episode, { proseLimit: 1200, participationMode: loom.participationMode })
       : '(none — create the episode from the story context)',
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     sceneFormatContract: sceneFormatContract(loom.format),
@@ -234,7 +233,11 @@ export async function weaveEpisode(loomId, episodeId, {
         participationMode: 'helper',
         requireAudienceIntroduction: requiresAudienceIntroduction(loom, episode),
       },
-    ).issues.filter((issue) => issue.severity === 'error' && AUDIENCE_GRAPH_ERROR_CODES.has(issue.code));
+    ).issues.filter((issue) => issue.severity === 'error' && (
+      AUDIENCE_GRAPH_ERROR_CODES.has(issue.code)
+      || (issue.code === GRAPH_ISSUE_CODES.CUT_TRANSITION_COUNT
+        && nodes.find((node) => node.id === issue.nodeId)?.audienceConnection !== 'connected')
+    ));
     if (audienceErrors.length) {
       throw aiShapeError(`The model returned an invalid audience connection graph: ${audienceErrors[0].message}`);
     }
@@ -271,7 +274,10 @@ export async function branchNode(loomId, episodeId, nodeId, {
   const { content, runId } = await runStagedLLM('fableloom-branch-node', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
-    graphDigest: describeGraphForPrompt(episode, { proseLimit: 200 }),
+    graphDigest: describeGraphForPrompt(episode, {
+      proseLimit: 200,
+      participationMode: loom.participationMode,
+    }),
     sceneTitle: node.title || 'Untitled scene',
     sceneProse: node.prose || '(no prose yet)',
     branchCount: String(count),
@@ -330,7 +336,7 @@ export async function reviewEpisode(loomId, episodeId, { providerId, model, effo
   });
   const { content, runId } = await runStagedLLM('fableloom-review', {
     storyContext: storyContext(loom, episode),
-    graphDigest: describeGraphForPrompt(episode),
+    graphDigest: describeGraphForPrompt(episode, { participationMode: loom.participationMode }),
     structuralDigest: structural.issues.length
       ? structural.issues.map((i) => `- [${i.severity}] ${i.message}`).join('\n')
       : '(no structural issues)',
@@ -447,7 +453,10 @@ export async function feedbackEpisode(loomId, episodeId, {
   const { content, runId } = await runStagedLLM('fableloom-feedback-episode', {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none)',
-    graphDigest: describeGraphForPrompt(episode, { proseLimit: 1200 }),
+    graphDigest: describeGraphForPrompt(episode, {
+      proseLimit: 1200,
+      participationMode: loom.participationMode,
+    }),
     cameraMovementCatalog: fableLoomCameraMovementCatalogForPrompt(),
     feedback: instruction,
   }, llmOptions({ providerId, model, effort }, 'fableloom-feedback'));
@@ -674,13 +683,16 @@ export async function playTurn(loomId, episodeId, {
   }
 
   if (transitionId) {
-    const taken = node.transitions.find((t) => t.id === transitionId);
+    const interactive = audienceCanParticipate(loom, node);
+    const taken = interactive
+      ? node.transitions.find((t) => t.id === transitionId)
+      : node.transitions[0];
     if (!taken) {
       throw new ServerError('That path is not on this scene', { status: 400, code: 'INVALID_TRANSITION' });
     }
     return moveResult(episode, node, taken, {
       narration: '',
-      resolvedBy: audienceCanParticipate(loom, node) ? 'choice' : 'graph',
+      resolvedBy: interactive ? 'choice' : 'graph',
     });
   }
 

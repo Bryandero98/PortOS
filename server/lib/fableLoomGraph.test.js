@@ -135,6 +135,25 @@ describe('analyzeEpisodeGraph', () => {
     expect(connectedCodes).not.toContain(GRAPH_ISSUE_CODES.DISCONNECTED_DECISION);
   });
 
+  it('warns when a helper audience is not connected until after the opening sequence', () => {
+    const nodes = Array.from({ length: 6 }, (_, index) => ({
+      id: `n${index}`,
+      title: `Scene ${index}`,
+      playbackMode: index < 4 ? 'cut' : 'decision',
+      audienceConnection: index === 4 ? 'connected' : 'disconnected',
+      isEnding: index === 5,
+      transitions: index === 5 ? [] : [tr(`t${index}`, `n${index + 1}`, 'Continue')],
+    }));
+    const { issues } = analyzeEpisodeGraph({ startNodeId: 'n0', nodes }, {
+      participationMode: 'helper', requireAudienceIntroduction: true,
+    });
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: GRAPH_ISSUE_CODES.LATE_AUDIENCE_CONNECTION,
+      severity: 'warning',
+      nodeId: 'n4',
+    }));
+  });
+
   it('warns on unreachable nodes and errors when no ending is reachable', () => {
     const ep = soundEpisode();
     ep.nodes.push({ id: 'n9', title: 'Orphan', transitions: [tr('t9', 'n4', 'onward')] });
@@ -196,5 +215,14 @@ describe('describeGraphForPrompt', () => {
     const ep = soundEpisode();
     ep.nodes[0].transitions[0].triggers = ['go in', 'open the gate'];
     expect(describeGraphForPrompt(ep)).toContain('(triggers: go in; open the gate)');
+  });
+
+  it('renders connection flags only for helper stories', () => {
+    const ep = soundEpisode();
+    ep.nodes[0].audienceConnection = 'connected';
+    expect(describeGraphForPrompt(ep, { participationMode: 'helper' }))
+      .toContain('(START) (DECISION LOOP) (AUDIENCE CONNECTED)');
+    expect(describeGraphForPrompt(ep)).not.toContain('AUDIENCE CONNECTED');
+    expect(describeGraphForPrompt(ep)).not.toContain('AUDIENCE DISCONNECTED');
   });
 });

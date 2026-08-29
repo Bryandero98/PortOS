@@ -171,6 +171,7 @@ describe('LoomSettingsDrawer audience participation', () => {
     renderDrawer({ ...makeLoom([]), participationMode: 'protagonist' });
 
     await user.selectOptions(screen.getByLabelText('Audience role'), 'helper');
+    expect(screen.getByText(/need a communication medium before the role can be saved/i)).toBeInTheDocument();
     await user.type(screen.getByLabelText('Communication medium'), 'A silver mirror.');
     await user.tab();
 
@@ -178,5 +179,24 @@ describe('LoomSettingsDrawer audience participation', () => {
       participationMode: 'helper',
       audienceCommunicationMedium: 'A silver mirror.',
     }, { silent: true }));
+  });
+
+  it('resets an unsaved helper selection when the drawer closes', async () => {
+    const user = userEvent.setup();
+    const loom = { ...makeLoom([]), participationMode: 'protagonist' };
+    const props = {
+      loom,
+      onClose: () => {},
+      onLoomUpdate: vi.fn(),
+      onRewritten: vi.fn(),
+    };
+    const { rerender } = render(<LoomSettingsDrawer open {...props} />);
+
+    await user.selectOptions(screen.getByLabelText('Audience role'), 'helper');
+    expect(updateLoom).not.toHaveBeenCalled();
+    rerender(<LoomSettingsDrawer open={false} {...props} />);
+    rerender(<LoomSettingsDrawer open {...props} />);
+
+    expect(screen.getByLabelText('Audience role')).toHaveValue('protagonist');
   });
 });
