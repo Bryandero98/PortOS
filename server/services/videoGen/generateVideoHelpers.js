@@ -189,8 +189,8 @@ export function makeVideoGenLineHandler({ job, jobId, pythonNoiseRe }) {
       // The legacy "treat every STAGE: as step:" parse mangled heartbeat
       // lines: parts[3]='20s' → parseInt=20, parts[4]=undefined → total=1, so
       // a download-clip heartbeat broadcast progress=20.0 (= 2000%) to the UI.
-      // Normalize tag case — generate_ltx2.py emits `STEP:` (uppercase),
-      // generate_hunyuan.py emits `step:` and `heartbeat:` (lowercase).
+      // Normalize tag case because BYOV helpers are not required to agree on
+      // capitalization.
       const tag = (parts[2] || '').toLowerCase();
       if (tag === 'heartbeat') {
         // Surface as a status message; the activity emit above already

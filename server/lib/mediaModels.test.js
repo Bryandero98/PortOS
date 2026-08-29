@@ -227,14 +227,6 @@ describe('mediaModels registry', () => {
       }
     });
 
-    it('retires the hunyuan legacy `mode: t2v` field for a text-only contract', async () => {
-      const { loadMediaModels, getVideoModels } = await import('./mediaModels.js');
-      expect(loadMediaModels().video.mlx.find((m) => m.id === 'hunyuan_video').mode).toBeUndefined();
-      const hunyuan = getVideoModels().find((m) => m.id === 'hunyuan_video');
-      // The CUDA bucket ships no hunyuan entry, so only assert where it's runnable.
-      if (hunyuan) expect(hunyuan.supportedModes).toEqual(['text']);
-    });
-
     it('is derived on read — never persisted back into the registry file', async () => {
       const { loadMediaModels, getVideoModels } = await import('./mediaModels.js');
       loadMediaModels();

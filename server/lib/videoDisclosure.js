@@ -41,6 +41,9 @@ export const APACHE_2 = { name: 'Apache-2.0', url: 'https://www.apache.org/licen
 // something it cannot, so the ltx25 conditioners in lib/videoTextEncoders.js
 // disclose THIS rather than whatever their card happens to say.
 export const GEMMA_TERMS = { name: 'Gemma Terms of Use', url: 'https://ai.google.dev/gemma/terms' };
+// Compatibility-only disclosure facts retained for migration 237. The model
+// and runtime are no longer shipped, but deleting these would break upgrades
+// whose pending migration still imports the historical disclosure table.
 const TENCENT_HUNYUAN_WEIGHTS = {
   name: 'Tencent Hunyuan Community License',
   url: 'https://huggingface.co/tencent/HunyuanVideo/blob/main/LICENSE',
@@ -69,6 +72,7 @@ const RUNTIME_LICENSE = {
   // governs the inference code is diffusers' own.
   cuda_video: { name: 'Apache-2.0', url: 'https://github.com/huggingface/diffusers/blob/main/LICENSE' },
   minimax_h3_cuda: { name: 'Apache-2.0', url: 'https://github.com/huggingface/diffusers/blob/main/LICENSE' },
+  // Historical runtime license consumed only by the retired model disclosure.
   hunyuan: {
     name: 'Tencent Hunyuan Community License',
     url: 'https://github.com/gaurav-nelson/HunyuanVideo_MLX/blob/main/LICENSE.txt',
@@ -265,6 +269,7 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
   },
+  // Historical entry retained for migration 237; not present in the catalog.
   hunyuan_video: {
     shippedRepo: 'tencent/HunyuanVideo',
     disclosure: {

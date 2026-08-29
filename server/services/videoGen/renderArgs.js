@@ -37,9 +37,6 @@ import {
   MINIMAX_H3_CUDA_VENV_PYTHON,
   MINIMAX_H3_CUDA_HELPER_SCRIPT,
   MINIMAX_H3_CUDA_OFFLOAD_PROFILES,
-  HUNYUAN_VENV_PYTHON,
-  HUNYUAN_HELPER_SCRIPT,
-  HUNYUAN_REPO_DIR,
   FASTVIDEO_VENV_PYTHON,
   FASTVIDEO_HELPER_SCRIPT,
   FASTVIDEO_REPO_DIR,
@@ -770,44 +767,6 @@ const buildMiniMaxH3CudaArgs = ({ model, prompt, negativePrompt, width, height, 
   return { bin: MINIMAX_H3_CUDA_VENV_PYTHON, args };
 };
 
-// Allowed precision tokens for runners that expose dtype as a CLI flag. The
-// Python side already gates argparse with `choices=`, but a bogus value in
-// data/media-models.json would otherwise reach the helper and surface as a
-// less-friendly "invalid choice" inside a Python traceback — failing here
-// gives a stable PortOS error code the route + client error path knows.
-const VIDEO_PRECISIONS = Object.freeze(['fp16', 'bf16', 'fp32']);
-
-// Build args for the HunyuanVideo MLX helper. Calls hyvideo.inference
-// directly (see scripts/generate_hunyuan.py) so the steps / guidance /
-// precision flags actually take effect — upstream's sample_video_mps.py
-// silently hardcoded them.
-const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath }) => {
-  assertByovRuntimeInstalled('hunyuan');
-  const precision = model.precision || 'fp16';
-  if (!VIDEO_PRECISIONS.includes(precision)) {
-    throw new ServerError(
-      `Invalid precision "${precision}" on model "${model.id}" — expected one of ${VIDEO_PRECISIONS.join(', ')}`,
-      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
-    );
-  }
-  const args = [
-    HUNYUAN_HELPER_SCRIPT,
-    '--repo-dir', HUNYUAN_REPO_DIR,
-    '--model-repo', model.repo,
-    '--prompt', prompt,
-    '--width', String(width),
-    '--height', String(height),
-    '--num-frames', String(numFrames),
-    '--steps', String(steps),
-    '--guidance', String(guidance ?? 6.0),
-    '--seed', String(seed),
-    '--precision', precision,
-    '--output', outputPath,
-  ];
-  if (negativePrompt) args.push('--negative-prompt', negativePrompt);
-  return { bin: HUNYUAN_VENV_PYTHON, args };
-};
-
 export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile }) => {
   // Reference-mode promise (#4874) — checked HERE rather than inside
   // buildLtx2Args because every runtime reaches this function and only one can
@@ -873,9 +832,6 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
   }
   if (model.runtime === 'minimax_h3_cuda') {
     return buildMiniMaxH3CudaArgs({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, icReferencePaths, mode, tiling, disableAudio, outputPath });
-  }
-  if (model.runtime === 'hunyuan') {
-    return buildHunyuanArgs({ model, prompt, negativePrompt, width, height, numFrames, steps, guidance, seed, outputPath });
   }
   if (Array.isArray(keyframes) && keyframes.length >= 2) {
     throw new ServerError(

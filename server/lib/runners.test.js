@@ -81,7 +81,7 @@ describe('VIDEO_LORA_FAMILIES / videoLoraFamily', () => {
     // quantized variants are out of scope → null
     expect(videoLoraFamily({ runtime: 'mlx_video', id: 'ltx23_distilled_q4', repo: 'notapalindrome/ltx23-mlx-av-q4', name: 'LTX-2.3 Distilled Q4' })).toBe(null);
     expect(videoLoraFamily({ runtime: 'wan22' })).toBe(null);
-    expect(videoLoraFamily({ runtime: 'hunyuan' })).toBe(null);
+    expect(videoLoraFamily({ runtime: 'fastvideo' })).toBe(null);
     expect(videoLoraFamily({})).toBe(null);
     expect(videoLoraFamily(null)).toBe(null);
   });
@@ -215,7 +215,7 @@ describe('isMiniMaxH3Runtime', () => {
     expect(isMiniMaxH3Runtime('minimax_h3_cuda')).toBe(true);
   });
 
-  it.each(['mlx_video', 'ltx2', 'wan22', 'hunyuan', 'minimax', '', undefined, null])(
+  it.each(['mlx_video', 'ltx2', 'wan22', 'fastvideo', 'minimax', '', undefined, null])(
     'reports %s as not an H3 runtime',
     (runtime) => { expect(isMiniMaxH3Runtime(runtime)).toBe(false); },
   );
@@ -235,7 +235,7 @@ describe('isLtx2FamilyRuntime', () => {
     expect(videoLoraFamily({ runtime: 'ltx25' })).toBe(VIDEO_LORA_FAMILIES.LTX_VIDEO);
   });
 
-  it.each(['mlx_video', 'wan22', 'hunyuan', 'minimax_h3', 'ltx', '', undefined, null])(
+  it.each(['mlx_video', 'wan22', 'fastvideo', 'minimax_h3', 'ltx', '', undefined, null])(
     'reports %s as not an LTX-2 family runtime',
     (runtime) => { expect(isLtx2FamilyRuntime(runtime)).toBe(false); },
   );

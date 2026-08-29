@@ -19,7 +19,7 @@ vi.mock('./local.js', () => ({
   listVideoModels: vi.fn(() => [{ id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' }]),
   defaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   loadHistory: vi.fn(async () => []),
-  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3', 'hunyuan']),
+  BYOV_VIDEO_RUNTIMES: new Set(['ltx2', 'wan22', 'minimax_h3']),
   DEFAULT_NUM_FRAMES: 121,
 }));
 

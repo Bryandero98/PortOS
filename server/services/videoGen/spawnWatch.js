@@ -668,8 +668,8 @@ export async function spawnAndWatchVideo({
     // of the parent shell's PYTHONPATH. Setting to `undefined` in a spread does
     // NOT unset the var — Node coerces it to the literal string "undefined" —
     // so build the env explicitly and `delete`.
-    // Build the complete HF child env so the Wan 2.2 / HunyuanVideo
-    // python helpers can authenticate snapshot_download() against gated repos
+    // Build the complete HF child env so BYOV Python helpers can authenticate
+    // snapshot_download() against gated repos
     // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
     // a gated repo, but the merge is harmless when no token is configured.
     childEnv = runtimeIsCacheOnly(model.runtime)

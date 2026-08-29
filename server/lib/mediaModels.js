@@ -476,26 +476,6 @@ const DEFAULT_REGISTRY = {
           targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
         }],
       },
-      // HunyuanVideo (Tencent) — MLX port at gaurav-nelson/HunyuanVideo_MLX,
-      // weights at tencent/HunyuanVideo. 13B params, ~60 GB resident at bf16.
-      // Practical only with Gemma 4-bit text encoder (not bf16) + nothing else
-      // in unified memory. Provisioned via `INSTALL_HUNYUAN=1 bash
-      // scripts/setup-image-video.sh`.
-      {
-        id: 'hunyuan_video',
-        // fp32-only on MPS: fp16/bf16 trip an MPS matmul accumulator-dtype
-        // assertion within ~2s of the first forward pass. At 576×1024×121
-        // frames × 30 steps that's a 4-8 hr render — marked `deprecated`
-        // so it lands in the "Legacy" optgroup. Migration 044 patches
-        // existing installs that still have the pre-fix shape.
-        name: 'HunyuanVideo (13B — fp32-only on MPS, ~4-8 hr per render)',
-        repo: 'tencent/HunyuanVideo',
-        runtime: 'hunyuan',
-        steps: 30,
-        guidance: 6.0,
-        precision: 'fp32',
-        deprecated: true,
-      },
       // FastVideo FastMetal models — Hao AI Lab's distilled DMD2 Wan models
       // with affine INT8 quantization on Apple Silicon MLX.
       {
@@ -971,9 +951,10 @@ const upgradeLegacyCudaLtxRuntime = (list) => {
 // Built-in video models that were delivered to installs and have since been
 // withdrawn. Dropping an id from DEFAULT_REGISTRY is NOT enough on its own: the
 // user's persisted list is what the pickers read, and appendNewlyShippedEntries
-// only ever adds. This is the load-time twin of the retirement migration (247
-// for ltx2_unified) — and it is the load-bearing half, because the registry is
-// cached at import time, BEFORE bootstrapServices() runs migrations, and
+// only ever adds. This is the load-time twin of the retirement migrations (247
+// for ltx2_unified, 315 for hunyuan_video) — and it is the load-bearing half,
+// because the registry is cached at import time, BEFORE bootstrapServices()
+// runs migrations, and
 // persistRegistry writes the whole cached object back on the next registry
 // edit. Without this the migration's deletion is undone by the same boot that
 // applied it.
@@ -994,6 +975,10 @@ export const RETIRED_VIDEO_MODELS = Object.freeze({
   ltx2_unified: Object.freeze({
     shippedRepo: 'notapalindrome/ltx2-mlx-av',
     replacement: 'ltx23_distilled_q4',
+  }),
+  hunyuan_video: Object.freeze({
+    shippedRepo: 'tencent/HunyuanVideo',
+    replacement: 'fastmetal_1_3b_qad',
   }),
 });
 
@@ -1113,7 +1098,8 @@ const normalizeRegistry = (parsed) => {
   // that persisted their registry before `disclosure` existed pick it up
   // here without waiting for the migration, and both paths share the same
   // preservation guards (user value wins, forked repo keeps Unknown).
-  // dropRetiredEntries is the same arrangement for migration 247, and runs
+  // dropRetiredEntries is the same arrangement for the retirement migrations,
+  // and runs
   // FIRST so a withdrawn model isn't handed a disclosure or a Finish edge on
   // its way out. sanitizeFinishProfiles runs LAST (after the backfill and
   // after the user's own entries are merged in) so an edge that points at a

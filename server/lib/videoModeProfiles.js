@@ -45,9 +45,6 @@ export const VIDEO_BASE_MODES = Object.freeze(['text', 'image', 'fflf', 'extend'
  *     MLX port and the diffusers CUDA path expose the same three, because the
  *     capability is the checkpoint partition's, not the runner's. Doubles as
  *     the mode ceiling in videoGen/modeContract.js.
- *   - `hunyuan` — the MLX port's `hyvideo.inference` helper takes a prompt and
- *     nothing else (see buildHunyuanArgs); text-to-video only. This replaces the
- *     legacy `mode: 't2v'` field, which no reader ever consulted.
  */
 // One array, referenced by both H3 runtimes: the modes are the fl2va
 // checkpoint partition's, so a second literal would be a copy the comment above
@@ -63,7 +60,6 @@ export const VIDEO_RUNTIME_MODES = Object.freeze({
   fastvideo: Object.freeze(['text', 'image']),
   minimax_h3: MINIMAX_H3_MODE_SET,
   minimax_h3_cuda: MINIMAX_H3_MODE_SET,
-  hunyuan: Object.freeze(['text']),
 });
 
 /**

@@ -85,14 +85,6 @@ export const MINIMAX_H3_CUDA_OFFLOAD_PROFILES = Object.freeze([
   'auto', 'bf16', 'int8-stream', 'int8-lean',
 ]);
 
-// HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
-// ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
-// with the 4-bit Gemma text encoder + everything else evicted. Provisioned
-// via `INSTALL_HUNYUAN=1 bash scripts/setup-image-video.sh`.
-export const HUNYUAN_VENV_PYTHON = join(homedir(), '.portos', 'hunyuan-video-mlx', '.venv', 'bin', 'python3');
-export const HUNYUAN_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_hunyuan.py');
-export const HUNYUAN_REPO_DIR = join(homedir(), '.portos', 'hunyuan-video-mlx');
-
 // FastVideo MLX runtime — Hao AI Lab's FastVideo / FastMetal Apple Silicon framework.
 export const FASTVIDEO_VENV_PYTHON = join(homedir(), '.portos', 'fastvideo', '.venv', 'bin', 'python3');
 export const FASTVIDEO_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_fastvideo.py');
@@ -154,7 +146,7 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     // and add deltas in the forward pass (fusing into packed-uint32 weights is
     // not possible). The probe exercises the local adapter against the pinned
     // runtime without loading the model. Absence of this key means "runtime can
-    // never take LoRAs", which is the correct answer for wan22 / hunyuan.
+    // never take LoRAs", which is the correct answer for wan22.
     loraProbeArgs: [MINIMAX_H3_LORA_PROBE_SCRIPT, MINIMAX_H3_REPO_DIR],
     fingerprintPackages: ['mlx', 'mlx-metal', 'mlx-vlm', 'transformers', 'huggingface-hub'],
   },
@@ -190,20 +182,6 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     importProbe: 'import torch; from diffusers import MiniMaxH3Transformer3DModel; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference; import torchao; assert torch.cuda.is_available(), "no CUDA device"',
     // Mirror scripts/generate_minimax_h3_cuda.py's emit_runtime_fingerprint list.
     fingerprintPackages: ['torch', 'diffusers', 'transformers', 'torchao', 'accelerate', 'huggingface-hub'],
-  },
-  hunyuan: {
-    id: 'hunyuan',
-    label: 'HunyuanVideo MLX',
-    venvPython: HUNYUAN_VENV_PYTHON,
-    repoDir: HUNYUAN_REPO_DIR,
-    installEnvVar: 'INSTALL_HUNYUAN',
-    repoUrl: 'https://github.com/gaurav-nelson/HunyuanVideo_MLX',
-    // `hyvideo` isn't pip-installed — mirror the runner's sys.path prepend so
-    // the probe walks the same transitive import chain (loguru, diffusers, …).
-    importProbe: `import sys; sys.path.insert(0, ${JSON.stringify(HUNYUAN_REPO_DIR)}); import hyvideo.inference`,
-    // Distributions the /status runtime-fingerprint probe resolves versions for
-    // (must match scripts/generate_hunyuan.py's emit_runtime_fingerprint call).
-    fingerprintPackages: ['torch', 'diffusers', 'transformers', 'mlx'],
   },
   wan22: {
     id: 'wan22',
@@ -520,8 +498,8 @@ export async function isByovRuntimeCurrent(runtimeId) {
 
 // Throws the same shape the per-runtime buildArgs used to throw inline — a
 // 500 with a stable runtime-specific code the route layer and tests already
-// match against. The error codes are LTX2_VENV_MISSING / WAN22_VENV_MISSING
-// / HUNYUAN_VENV_MISSING; keep `runtimeId.toUpperCase()` to preserve them.
+// match against. Keep `runtimeId.toUpperCase()` so every runtime retains its
+// stable, specific error code.
 export function assertByovRuntimeInstalled(runtimeId) {
   const info = BYOV_RUNTIME_INFO[runtimeId];
   if (!info) return;

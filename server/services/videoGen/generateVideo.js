@@ -168,7 +168,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // work. Internal producers and persisted/retried jobs bypass route
   // preparation, so silently dropping one of these inputs here would render a
   // materially different video than the caller requested. Ungated runtimes
-  // (ltx2 / mlx_video / hunyuan) fall through untouched.
+  // (ltx2 / mlx_video) fall through untouched.
   //
   // Promote before checking: the route sets both fields, but a direct caller
   // that only staged `uploadedTempPath` would otherwise pass the mode guard and
@@ -303,10 +303,10 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   }
 
   // Only require the legacy mlx_video pythonPath when the chosen runtime
-  // actually uses it. ltx2/wan22/hunyuan resolve their own venv path inside
+  // actually uses it. BYOV runtimes resolve their own venv path inside
   // buildArgs — gating them on the unrelated mlx_video setting locks users
-  // out of the runtimes they just installed via INSTALL_WAN22 / INSTALL_LTX2
-  // / INSTALL_HUNYUAN. Routes/videoGen.js reads the same module-level set.
+  // out of the runtimes they just installed. Routes/videoGen.js reads the same
+  // module-level set.
   if (!pythonPath && !BYOV_VIDEO_RUNTIMES.has(model.runtime)) {
     throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   }

@@ -327,8 +327,8 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
     throw videoTextEncoderUnsupportedError(effectiveModel, body.textEncoderId);
   }
   // Reject up-front when the local python isn't configured AND the model's
-  // runtime needs it. ltx2/wan22/hunyuan bring their own venv (resolved
-  // inside buildArgs), so they must NOT be blocked by the legacy mlx_video
+  // runtime needs it. BYOV runtimes bring their own venv (resolved inside
+  // buildArgs), so they must NOT be blocked by the legacy mlx_video
   // pythonPath setting. Without this gate, the queue would happily accept
   // a job that's known to fail and only surface it asynchronously on SSE,
   // polluting the persisted queue with a doomed entry. The allowlist is
@@ -958,7 +958,7 @@ async function resolvePreparedParams({
   // `minimax_h3` applies them at runtime, but only if the installed checkout
   // passes PortOS's quant-aware adapter probe — listVideoModels() decorates that
   // result as `runtimeLoraCapable`, which videoLoraFamily() reads.
-  // videoLoraFamily() returns null for everything else (wan22 / hunyuan /
+  // videoLoraFamily() returns null for everything else (wan22 / fastvideo /
   // quantized mlx_video) — reject up-front so a bad modelId can't enqueue a
   // doomed job that only fails in the worker.
   if (loras && effectiveModel) {

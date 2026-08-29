@@ -14,10 +14,6 @@ describe('VIDEO_RUNTIME_MODES', () => {
     }
   });
 
-  it('keeps hunyuan text-only (the retired `mode: t2v` fact)', () => {
-    expect(VIDEO_RUNTIME_MODES.hunyuan).toEqual(['text']);
-  });
-
   it('declares fflf on every runtime that can be handed a last frame', () => {
     // mlx_video's FFLF is degraded (one --image), NOT absent — the caveat rides
     // on lastFrameAnchored: false, so the mode still has to be offerable.
@@ -36,7 +32,7 @@ describe('resolveVideoSupportedModes', () => {
 
   it('treats an absent, non-array or empty list as "not declared"', () => {
     for (const supportedModes of [undefined, null, [], 'text']) {
-      expect(resolveVideoSupportedModes({ runtime: 'hunyuan', supportedModes })).toEqual(['text']);
+      expect(resolveVideoSupportedModes({ runtime: 'wan22', supportedModes })).toEqual(['text', 'image']);
     }
   });
 
@@ -49,13 +45,13 @@ describe('resolveVideoSupportedModes', () => {
 describe('applyVideoSupportedModes', () => {
   it('resolves a list for every entry without mutating the inputs', () => {
     const entries = [
-      { id: 'a', runtime: 'hunyuan' },
+      { id: 'a', runtime: 'some-future-runtime' },
       { id: 'b', runtime: 'wan22', supportedModes: ['image'] },
       { id: 'c', runtime: 'ltx2' },
     ];
     const out = applyVideoSupportedModes(entries);
     expect(out.map((e) => e.supportedModes)).toEqual([
-      ['text'],
+      ['text', 'image', 'fflf', 'extend'],
       ['image'],
       ['text', 'image', 'fflf', 'extend'],
     ]);
@@ -63,8 +59,8 @@ describe('applyVideoSupportedModes', () => {
   });
 
   it('hands back a copy, never the frozen shared table', () => {
-    const [entry] = applyVideoSupportedModes([{ id: 'a', runtime: 'hunyuan' }]);
-    expect(entry.supportedModes).not.toBe(VIDEO_RUNTIME_MODES.hunyuan);
+    const [entry] = applyVideoSupportedModes([{ id: 'a', runtime: 'wan22' }]);
+    expect(entry.supportedModes).not.toBe(VIDEO_RUNTIME_MODES.wan22);
   });
 
   it('passes through non-entries and a non-array list', () => {

@@ -111,7 +111,7 @@ export const isMlxVideoLtxLoraCapable = (model) => {
 //     services/videoGen/runtimes.js and this reads it off the payload (the same
 //     shape as `lastFrameAnchored`). An undecorated model therefore reads as
 //     "not capable" — the gate fails closed.
-// The wan22 / hunyuan runtimes (and quantized mlx_video models) have no LoRA
+// The wan22 / fastvideo runtimes (and quantized mlx_video models) have no LoRA
 // path, so they return null ("no LoRA support") and the VideoGen picker hides.
 export const videoLoraFamily = (model) => {
   if (isLtx2FamilyRuntime(model?.runtime) || isMlxVideoLtxLoraCapable(model)) return VIDEO_LORA_FAMILIES.LTX_VIDEO;

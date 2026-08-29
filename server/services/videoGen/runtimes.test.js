@@ -71,6 +71,13 @@ beforeEach(() => {
   runtimeMocks.spawn.mockReset();
 });
 
+describe('retired runtime filtering', () => {
+  it('does not advertise legacy Hunyuan support to the video UI', () => {
+    expect(BYOV_RUNTIME_INFO).not.toHaveProperty('hunyuan');
+    expect(BYOV_VIDEO_RUNTIMES.has('hunyuan')).toBe(false);
+  });
+});
+
 describe('isPinnedSourceStatusClean', () => {
   it('accepts the exact revision when the scoped source package is clean', () => {
     expect(isPinnedSourceStatusClean([
@@ -250,7 +257,7 @@ describe('MiniMax H3 LoRA capability', () => {
     expect(runtimeMocks.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['ltx2', 'ltx25', 'wan22', 'hunyuan'])('never probes %s, which has no LoRA runtime path', async (runtime) => {
+  it.each(['ltx2', 'ltx25', 'wan22'])('never probes %s, which has no LoRA runtime path', async (runtime) => {
     await expect(resolveByovRuntimeLoraCapable(runtime)).resolves.toBe(false);
     expect(byovRuntimeLoraCapable(runtime)).toBe(false);
     expect(runtimeMocks.spawn).not.toHaveBeenCalled();
@@ -270,7 +277,7 @@ describe('modelAnchorsLastFrame', () => {
     ['minimax_h3_cuda', true],
     ['mlx_video', false],
     ['wan22', false],
-    ['hunyuan', false],
+    ['fastvideo', false],
   ])('reports %s as %s', (runtime, anchored) => {
     expect(modelAnchorsLastFrame({ runtime })).toBe(anchored);
   });
@@ -346,7 +353,7 @@ describe('minimax_h3_cuda runtime registration', () => {
   it('declares no revision pin or LoRA probe — it runs distributions, not a checkout', () => {
     // `expectedRevision`/`sourcePath` drive the clean-checkout gate, which has
     // nothing to verify here; `loraProbeArgs` absent is the correct "this
-    // runtime can never take LoRAs", matching wan22 / hunyuan.
+    // runtime can never take LoRAs", matching wan22 / fastvideo.
     expect(info.expectedRevision).toBeUndefined();
     expect(info.sourcePath).toBeUndefined();
     expect(info.loraProbeArgs).toBeUndefined();
