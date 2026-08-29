@@ -22,16 +22,25 @@ const episode = {
 };
 
 describe('LoomEpisodeOutline', () => {
-  it('shows scenes in story order with authored text, paths, and unreachable scenes', () => {
+  it('starts with a clear collapsed scene tree and expands a scene on demand', async () => {
+    const user = userEvent.setup();
     render(<LoomEpisodeOutline loom={{ name: 'Example Loom', format: 'prose' }} episode={episode} />);
 
     expect(screen.getByRole('heading', { name: 'The First Door' })).toBeInTheDocument();
-    expect(screen.getByText('You stand before the first door.')).toBeInTheDocument();
-    expect(screen.getByText('Open it')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Scene 2: The Chamber/ })).toBeInTheDocument();
+    expect(screen.getByText('Threshold')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Unreachable scenes' })).toBeInTheDocument();
     expect(screen.getByText('Forgotten Hall')).toBeInTheDocument();
     expect(screen.getByText('Awakened')).toBeInTheDocument();
+
+    const firstScene = screen.getByTestId('outline-scene-node-1');
+    const firstDetails = firstScene.querySelector('details');
+    expect(firstDetails).not.toHaveAttribute('open');
+    expect(screen.getAllByTestId(/^outline-scene-/).every((scene) => !scene.querySelector('details').open)).toBe(true);
+
+    await user.click(firstDetails.querySelector('summary'));
+    expect(firstDetails).toHaveAttribute('open');
+    expect(screen.getByText('You stand before the first door.')).toBeVisible();
+    expect(screen.getByText('Open it')).toBeVisible();
   });
 
   it('returns to the visual editor when a path destination is selected', async () => {
@@ -39,6 +48,8 @@ describe('LoomEpisodeOutline', () => {
     const user = userEvent.setup();
     render(<LoomEpisodeOutline loom={{ name: 'Example Loom', format: 'prose' }} episode={episode} onSelectNode={onSelectNode} />);
 
+    const firstScene = screen.getByTestId('outline-scene-node-1');
+    await user.click(firstScene.querySelector('summary'));
     await user.click(screen.getByRole('button', { name: /Scene 2: The Chamber/ }));
     expect(onSelectNode).toHaveBeenCalledWith('node-2');
   });
