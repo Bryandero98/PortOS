@@ -13,6 +13,7 @@ import { getAccessToken } from './spotifyAuth.js';
 const API_BASE = 'https://api.spotify.com/v1';
 const REQUEST_TIMEOUT_MS = 15000;
 const PAGE_LIMIT = 50;
+const PLAYLIST_BATCH_SIZE = 5;
 const PLAYLISTS_FILE = dataPath('spotify', 'playlists.json');
 const SNAPSHOT_VERSION = 1;
 
@@ -92,13 +93,15 @@ async function fetchPages(path, accessToken) {
   const items = [];
   let offset = 0;
   let total = null;
+  let pageItems = [];
   do {
     const page = await fetchJson(`${API_BASE}${path}?limit=${PAGE_LIMIT}&offset=${offset}`, accessToken);
-    const pageItems = Array.isArray(page?.items) ? page.items : [];
+    pageItems = Array.isArray(page?.items) ? page.items : [];
     items.push(...pageItems);
+    if (!pageItems.length) break;
     total = Number.isFinite(page?.total) ? page.total : null;
     offset += pageItems.length;
-  } while (items.length && (total === null ? items.length >= PAGE_LIMIT : offset < total));
+  } while (total === null ? pageItems.length >= PAGE_LIMIT : offset < total);
   return items;
 }
 
@@ -140,7 +143,11 @@ async function doSyncSpotifyPlaylists() {
   }
   const playlistSummaries = playlistResult.value;
 
-  const results = await Promise.allSettled(playlistSummaries.map((playlist) => fetchPlaylist(playlist, accessToken)));
+  const results = [];
+  for (let index = 0; index < playlistSummaries.length; index += PLAYLIST_BATCH_SIZE) {
+    const batch = playlistSummaries.slice(index, index + PLAYLIST_BATCH_SIZE);
+    results.push(...await Promise.allSettled(batch.map((playlist) => fetchPlaylist(playlist, accessToken))));
+  }
   const previousById = new Map((previous?.playlists || []).map((playlist) => [playlist.id, playlist]));
   const warnings = [];
   const playlists = [];

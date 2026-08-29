@@ -47,12 +47,48 @@ describe('syncSpotifyPlaylists', () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [playlist] }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [trackItem] }) });
   });
-  it('fetches playlists and items, then writes one local snapshot', async () => {
+  it('fetches playlists and current playlist items, then writes one local snapshot', async () => {
     const result = await syncSpotifyPlaylists();
     expect(result).toMatchObject({ ok: true, playlistCount: 1, trackCount: 1, scanned: 1, failed: 0 });
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(2);
     expect(mocks.fetchWithTimeout.mock.calls[0][0].toString()).toContain('/me/playlists?limit=50&offset=0');
     expect(mocks.fetchWithTimeout.mock.calls[1][0].toString()).toContain('/playlists/playlist-1/items?limit=50&offset=0');
     expect(mocks.atomicWrite).toHaveBeenCalledWith('/tmp/spotify/playlists.json', expect.objectContaining({ schemaVersion: 1 }));
+  });
+
+  it('stops pagination when Spotify returns an empty page', async () => {
+    const pageItems = Array.from({ length: 50 }, (_, index) => ({
+      ...trackItem,
+      item: { ...trackItem.item, id: `track-${index}` },
+    }));
+    mocks.fetchWithTimeout
+      .mockReset()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 1, items: [playlist] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 100, items: pageItems }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ total: 100, items: [] }) });
+
+    const result = await syncSpotifyPlaylists();
+
+    expect(result).toMatchObject({ ok: true, playlistCount: 1, trackCount: 50 });
+    expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(3);
+    expect(mocks.fetchWithTimeout.mock.calls[2][0].toString()).toContain('/playlists/playlist-1/items?limit=50&offset=50');
+  });
+
+  it('limits concurrent playlist item requests to bounded batches', async () => {
+    const playlists = Array.from({ length: 6 }, (_, index) => ({ ...playlist, id: `playlist-${index}` }));
+    let active = 0;
+    let maximumActive = 0;
+    mocks.fetchWithTimeout.mockReset().mockImplementation(async (url) => {
+      if (url.includes('/me/playlists')) return { ok: true, json: async () => ({ total: playlists.length, items: playlists }) };
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return { ok: true, json: async () => ({ total: 0, items: [] }) };
+    });
+
+    await syncSpotifyPlaylists();
+
+    expect(maximumActive).toBe(5);
   });
 });

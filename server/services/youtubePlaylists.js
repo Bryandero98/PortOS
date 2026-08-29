@@ -7,7 +7,7 @@
  * video bytes are fetched only after the user explicitly starts a download.
  */
 import { dataPath, ensureDir, atomicWrite, readJSONFile, sleep } from '../lib/fileUtils.js';
-import { findOrOpenPage, isAuthPage, evaluateOnPage } from './browserService.js';
+import { findOrOpenPage, listCdpPages, isAuthPage, evaluateOnPage } from './browserService.js';
 
 const PLAYLISTS_URL = 'https://www.youtube.com/feed/playlists';
 const PLAYLIST_URL = 'https://www.youtube.com/playlist?list=';
@@ -16,11 +16,6 @@ const SNAPSHOT_VERSION = 1;
 const MAX_PLAYLISTS = 100;
 const MAX_VIDEOS_PER_PLAYLIST = 200;
 const NAV_SETTLE_MS = 2500;
-
-export function youtubePlaylistIdFromUrl(value) {
-  const match = /^(?:https?:\/\/)(?:www\.)?youtube\.com\/playlist\?[^#]*\blist=([^&#]+)/i.exec(String(value || ''));
-  return match ? match[1] : null;
-}
 
 export function normalizeYoutubeVideo(raw) {
   if (!raw?.id || !raw?.title) return null;
@@ -59,7 +54,7 @@ export function youtubePlaylistSnapshotSummary(snapshot) {
 function buildPlaylistsExtractionScript() {
   return `
     (async () => {
-      const signedOut = /accounts\.google\.com|\/ServiceLogin/i.test(location.href)
+      const signedOut = /accounts\\.google\\.com|\\/ServiceLogin/i.test(location.href)
         || (!!document.querySelector('a[href*="ServiceLogin"]') && !document.querySelector('#avatar-btn, button#avatar-btn, #masthead #avatar'));
       if (signedOut) return { signedOut: true, playlists: [] };
       const abs = (href) => { try { return new URL(href, location.origin).href; } catch { return href || null; } };
@@ -100,7 +95,7 @@ function buildPlaylistsExtractionScript() {
 function buildPlaylistVideosExtractionScript() {
   return `
     (async () => {
-      const signedOut = /accounts\.google\.com|\/ServiceLogin/i.test(location.href)
+      const signedOut = /accounts\\.google\\.com|\\/ServiceLogin/i.test(location.href)
         || (!!document.querySelector('a[href*="ServiceLogin"]') && !document.querySelector('#avatar-btn, button#avatar-btn, #masthead #avatar'));
       if (signedOut) return { signedOut: true, videos: [] };
       const abs = (href) => { try { return new URL(href, location.origin).href; } catch { return href || null; } };
@@ -135,8 +130,16 @@ function buildPlaylistVideosExtractionScript() {
 }
 
 async function loadPage(url) {
-  const page = await findOrOpenPage(url).catch(() => null);
+  let page = await findOrOpenPage(url).catch(() => null);
   if (!page || isAuthPage(page)) return { page: null, status: page ? 'auth-required' : 'no-browser' };
+  if (!/\/feed\/playlists/.test(page.url || '')) {
+    const navigated = await evaluateOnPage(page, `location.assign(${JSON.stringify(url)}); true`).catch(() => false);
+    if (!navigated) return { page: null, status: 'navigation-failed' };
+    await sleep(NAV_SETTLE_MS);
+    const refreshed = (await listCdpPages().catch(() => [])).find((candidate) => candidate.id === page.id);
+    if (refreshed) page = refreshed;
+  }
+  if (isAuthPage(page)) return { page: null, status: 'auth-required' };
   return { page, status: 'ok' };
 }
 
@@ -172,6 +175,16 @@ async function doSyncYoutubePlaylists() {
   const playlists = [];
   const warnings = [];
   const sourcePlaylists = extracted.playlists.filter((playlist) => playlist?.id && playlist?.name);
+  if (!sourcePlaylists.length && previous?.playlists?.length) {
+    return {
+      ok: false,
+      status: 'extraction-empty',
+      error: 'No playlists found — keeping the previous snapshot.',
+      ...youtubePlaylistSnapshotSummary(previous),
+      scanned: extracted.playlists.length,
+      failed: 0,
+    };
+  }
   for (const rawPlaylist of sourcePlaylists) {
     const navigated = await evaluateOnPage(loaded.page, `location.assign(${JSON.stringify(`${PLAYLIST_URL}${encodeURIComponent(rawPlaylist.id)}`)}); true`).catch(() => false);
     if (!navigated) {
