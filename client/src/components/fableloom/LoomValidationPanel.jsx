@@ -85,6 +85,24 @@ export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
         )}
       </div>
 
+      {structural?.productionReadiness && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold">Production readiness</h3>
+            <span className="text-xs text-port-text-muted">
+              {structural.productionReadiness.ready ? 'Ready for live voice' : `${structural.productionReadiness.totalErrors} blocking error(s)`}
+            </span>
+          </div>
+          {structural.productionReadiness.findings?.length ? (
+            <div className="space-y-1.5">
+              {structural.productionReadiness.findings.map((f, i) => findingRow(f, `pr-${i}`, f.nodeId))}
+            </div>
+          ) : (
+            <p className="text-xs text-port-success">All scenes meet audio occupancy and off-screen voice standards.</p>
+          )}
+        </div>
+      )}
+
       <div>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-semibold">Story review</h3>

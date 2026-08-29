@@ -42,7 +42,12 @@ import {
 } from './store.js';
 import { LOOM_LIMITS } from './limits.js';
 import { asLoomFormat, isLoomFormat } from './formats.js';
-import { asFableLoomPlaybackMode } from '../../lib/fableLoomPlayback.js';
+import {
+  asFableLoomPlaybackMode,
+  isSafeVideoHistoryId,
+  sanitizeInteractionWindow,
+  sanitizePlaybackAssets,
+} from '../../lib/fableLoomPlayback.js';
 import {
   FABLELOOM_LEGACY_PARTICIPATION_MODE,
   asFableLoomAudienceConnection,
@@ -54,8 +59,6 @@ export { LOOM_LIMITS };
 
 const isSafeImageFilename = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpg|jpeg|webp)$/i.test(value);
-const isSafeVideoHistoryId = (value) =>
-  typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value);
 
 const nullableRef = (value) => (isStr(value) && value.trim() ? value.trim().slice(0, LOOM_LIMITS.REF_ID_MAX) : null);
 
@@ -95,6 +98,8 @@ function sanitizeNode(raw) {
     playbackMode: asFableLoomPlaybackMode(raw.playbackMode),
     audienceConnection: asFableLoomAudienceConnection(raw.audienceConnection),
     videoHistoryId: isSafeVideoHistoryId(raw.videoHistoryId) ? raw.videoHistoryId : null,
+    playbackAssets: sanitizePlaybackAssets(raw.playbackAssets),
+    interactionWindow: sanitizeInteractionWindow(raw.interactionWindow),
     isEnding: raw.isEnding === true,
     // The format this scene's text is actually WRITTEN in — server-set, not
     // patchable. `null` means unknown (authored before the field existed, or
@@ -529,7 +534,8 @@ export function deleteEpisode(loomId, episodeId) {
 
 const NODE_PATCH_FIELDS = [
   'title', 'prose', 'imagePrompt', 'videoPrompt', 'cameraMovement', 'playbackMode',
-  'audienceConnection', 'isEnding', 'endingLabel', 'pos', 'transitions',
+  'audienceConnection', 'videoHistoryId', 'playbackAssets', 'interactionWindow',
+  'isEnding', 'endingLabel', 'pos', 'transitions',
 ];
 
 export function addNode(loomId, episodeId, fields = {}) {
@@ -685,3 +691,62 @@ export async function attachNodeVideo(loomId, episodeId, nodeId, { videoHistoryI
   }).catch(() => null);
   return updated?.episodes.find((e) => e.id === episodeId)?.nodes.find((n) => n.id === nodeId) ?? null;
 }
+
+/**
+ * Attach a typed playback asset (entry clip, hold loop, or transition exit) onto
+ * a node with optional audio occupancy manifest and provenance.
+ */
+export async function attachNodePlaybackAsset(loomId, episodeId, nodeId, {
+  role = 'entry',
+  videoHistoryId,
+  transitionId = null,
+  audioOccupancy = null,
+  provenance = null,
+} = {}) {
+  if (!isValidLoomId(loomId) || !isSafeVideoHistoryId(videoHistoryId)) return null;
+  const updated = await mutateLoom(loomId, (loom) => {
+    const episode = loom.episodes.find((e) => e.id === episodeId);
+    const node = episode?.nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+
+    const currentAssets = node.playbackAssets || {
+      entryVideoHistoryId: null,
+      holdLoopVideoHistoryIds: [],
+      exitByTransition: {},
+      audioOccupancy: {},
+    };
+
+    const nextAssets = {
+      ...currentAssets,
+      exitByTransition: { ...(currentAssets.exitByTransition || {}) },
+      audioOccupancy: { ...(currentAssets.audioOccupancy || {}) },
+      holdLoopVideoHistoryIds: [...(currentAssets.holdLoopVideoHistoryIds || [])],
+    };
+
+    if (role === 'entry') {
+      nextAssets.entryVideoHistoryId = videoHistoryId;
+      node.videoHistoryId = videoHistoryId;
+    } else if (role === 'hold') {
+      if (!nextAssets.holdLoopVideoHistoryIds.includes(videoHistoryId)) {
+        nextAssets.holdLoopVideoHistoryIds.push(videoHistoryId);
+      }
+      if (!node.videoHistoryId) node.videoHistoryId = videoHistoryId;
+    } else if (role === 'exit' && isStr(transitionId)) {
+      nextAssets.exitByTransition[transitionId] = videoHistoryId;
+    }
+
+    if (audioOccupancy) {
+      nextAssets.audioOccupancy[videoHistoryId] = audioOccupancy;
+    }
+    if (provenance) {
+      nextAssets.provenance = provenance;
+    }
+
+    node.playbackAssets = nextAssets;
+    episode.updatedAt = new Date().toISOString();
+    return loom;
+  }).catch(() => null);
+
+  return updated?.episodes.find((e) => e.id === episodeId)?.nodes.find((n) => n.id === nodeId) ?? null;
+}
+

@@ -8,7 +8,12 @@
 import { z } from 'zod';
 import { LOOM_LIMITS } from './fableLoomLimits.js';
 import { LOOM_FORMATS } from './fableLoomFormats.js';
-import { FABLELOOM_PLAYBACK_MODES } from './fableLoomPlayback.js';
+import {
+  FABLELOOM_AUDIO_TARGETS,
+  FABLELOOM_HOLD_ROTATION_MODES,
+  FABLELOOM_PLAYBACK_MODES,
+  FABLELOOM_PROTAGONIST_PRESENCE,
+} from './fableLoomPlayback.js';
 import {
   FABLELOOM_AUDIENCE_CONNECTION_STATES,
   FABLELOOM_PARTICIPATION_MODES,
@@ -129,6 +134,40 @@ export const transitionPatchSchema = z.object({
   description: transitionFields.description,
 });
 
+const audioIntervalSchema = z.object({
+  startMs: z.number().min(0),
+  endMs: z.number().min(0),
+  characterId: z.string().max(80).optional(),
+  speaker: z.string().max(100).optional(),
+  blocking: z.boolean().optional(),
+  name: z.string().max(100).optional(),
+});
+
+export const audioOccupancySchema = z.object({
+  durationMs: z.number().min(0).optional(),
+  characterDialogue: z.array(audioIntervalSchema).max(LOOM_LIMITS.AUDIO_INTERVALS_MAX).optional(),
+  music: z.array(audioIntervalSchema).max(LOOM_LIMITS.AUDIO_INTERVALS_MAX).optional(),
+  effects: z.array(audioIntervalSchema).max(LOOM_LIMITS.AUDIO_INTERVALS_MAX).optional(),
+  safeForLiveVoice: z.boolean().optional(),
+});
+
+export const playbackAssetsSchema = z.object({
+  entryVideoHistoryId: z.string().max(200).nullable().optional(),
+  holdLoopVideoHistoryIds: z.array(z.string().max(200)).max(LOOM_LIMITS.HOLD_LOOPS_MAX).optional(),
+  exitByTransition: z.record(z.string(), z.string().max(200)).optional(),
+  audioOccupancy: z.record(z.string(), audioOccupancySchema).optional(),
+  provenance: z.record(z.string(), z.any()).nullable().optional(),
+}).nullable();
+
+export const interactionWindowSchema = z.object({
+  enabled: z.boolean().optional(),
+  protagonistCharacterId: z.string().max(LOOM_LIMITS.REF_ID_MAX).nullable().optional(),
+  protagonistPresence: z.enum(FABLELOOM_PROTAGONIST_PRESENCE).optional(),
+  audioTarget: z.enum(FABLELOOM_AUDIO_TARGETS).optional(),
+  ambientDuckDb: z.number().min(LOOM_LIMITS.AMBIENT_DUCK_DB_MIN).max(LOOM_LIMITS.AMBIENT_DUCK_DB_MAX).optional(),
+  holdLoopRotation: z.enum(FABLELOOM_HOLD_ROTATION_MODES).optional(),
+}).nullable();
+
 const nodeFields = {
   title: z.string().max(LOOM_LIMITS.NODE_TITLE_MAX).optional(),
   prose: z.string().max(LOOM_LIMITS.PROSE_MAX).optional(),
@@ -137,6 +176,9 @@ const nodeFields = {
   cameraMovement: z.string().max(LOOM_LIMITS.CAMERA_MOVEMENT_MAX).optional(),
   playbackMode: z.enum(FABLELOOM_PLAYBACK_MODES).optional(),
   audienceConnection: z.enum(FABLELOOM_AUDIENCE_CONNECTION_STATES).optional(),
+  videoHistoryId: z.string().max(200).nullable().optional(),
+  playbackAssets: playbackAssetsSchema.optional(),
+  interactionWindow: interactionWindowSchema.optional(),
   isEnding: z.boolean().optional(),
   endingLabel: z.string().max(LOOM_LIMITS.ENDING_LABEL_MAX).optional(),
   pos: z.object({ x: z.number(), y: z.number() }).nullable().optional(),

@@ -24,7 +24,8 @@ const getSeriesMock = vi.hoisted(() => vi.fn(async (id) => ({ id })));
 vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 
 const {
-  LOOM_LIMITS, addEpisode, addNode, addNodeTransition, attachNodeImage, attachNodeVideo, createLoom,
+  LOOM_LIMITS, addEpisode, addNode, addNodeTransition, attachNodeImage,
+  attachNodePlaybackAsset, attachNodeVideo, createLoom,
   deleteEpisode, deleteLoom, deleteNode, deleteNodeTransition, getLoom,
   listLooms, listLoomSummaries, mergeLoomsFromSync, pruneTombstonedLooms,
   restoreLoom, sanitizeLoom, updateEpisode, updateLoom,
@@ -590,3 +591,89 @@ describe('attachNodeVideo', () => {
     expect(await attachNodeVideo(loom.id, episodeId, 'node-gone', { videoHistoryId: 'video-1' })).toBeNull();
   });
 });
+
+describe('attachNodePlaybackAsset and node playback fields', () => {
+  it('attaches entry, hold loops, exit transitions, and audio occupancy', async () => {
+    const loom = await makeLoom();
+    let updated = await addEpisode(loom.id, {});
+    const episodeId = updated.episodes[0].id;
+    updated = await addNode(loom.id, episodeId, {
+      title: 'Courtyard',
+      interactionWindow: {
+        enabled: true,
+        protagonistCharacterId: 'char-1',
+        protagonistPresence: 'offscreen',
+        ambientDuckDb: -10,
+      },
+    });
+    const node = updated.episodes[0].nodes[0];
+
+    // Attach entry
+    let attached = await attachNodePlaybackAsset(loom.id, episodeId, node.id, {
+      role: 'entry',
+      videoHistoryId: 'video-entry-1',
+    });
+    expect(attached.playbackAssets.entryVideoHistoryId).toBe('video-entry-1');
+    expect(attached.videoHistoryId).toBe('video-entry-1'); // back-compat
+
+    // Attach hold loop with occupancy manifest
+    attached = await attachNodePlaybackAsset(loom.id, episodeId, node.id, {
+      role: 'hold',
+      videoHistoryId: 'video-hold-1',
+      audioOccupancy: {
+        durationMs: 5000,
+        music: [{ startMs: 0, endMs: 5000 }],
+      },
+    });
+    expect(attached.playbackAssets.holdLoopVideoHistoryIds).toEqual(['video-hold-1']);
+    expect(attached.playbackAssets.audioOccupancy['video-hold-1'].safeForLiveVoice).toBe(true);
+
+    // Attach exit transition
+    attached = await attachNodePlaybackAsset(loom.id, episodeId, node.id, {
+      role: 'exit',
+      transitionId: 'tr-escape',
+      videoHistoryId: 'video-exit-1',
+    });
+    expect(attached.playbackAssets.exitByTransition['tr-escape']).toBe('video-exit-1');
+
+    const reloaded = await getLoom(loom.id);
+    const reloadedNode = reloaded.episodes[0].nodes[0];
+    expect(reloadedNode.interactionWindow).toMatchObject({
+      enabled: true,
+      protagonistCharacterId: 'char-1',
+      protagonistPresence: 'offscreen',
+      ambientDuckDb: -10,
+    });
+    expect(reloadedNode.playbackAssets).toMatchObject({
+      entryVideoHistoryId: 'video-entry-1',
+      holdLoopVideoHistoryIds: ['video-hold-1'],
+      exitByTransition: { 'tr-escape': 'video-exit-1' },
+    });
+  });
+
+  it('updates interactionWindow and playbackAssets through updateNode', async () => {
+    const loom = await makeLoom();
+    let updated = await addEpisode(loom.id, {});
+    const episodeId = updated.episodes[0].id;
+    updated = await addNode(loom.id, episodeId, { title: 'Tavern' });
+    const nodeId = updated.episodes[0].nodes[0].id;
+
+    const patchedLoom = await updateNode(loom.id, episodeId, nodeId, {
+      interactionWindow: {
+        enabled: true,
+        protagonistCharacterId: 'char-2',
+        ambientDuckDb: -6,
+      },
+      playbackAssets: {
+        entryVideoHistoryId: 'vid-e',
+        holdLoopVideoHistoryIds: ['vid-h1', 'vid-h2'],
+      },
+    });
+
+    const targetNode = patchedLoom.episodes[0].nodes.find((n) => n.id === nodeId);
+    expect(targetNode.interactionWindow.enabled).toBe(true);
+    expect(targetNode.interactionWindow.ambientDuckDb).toBe(-6);
+    expect(targetNode.playbackAssets.holdLoopVideoHistoryIds).toEqual(['vid-h1', 'vid-h2']);
+  });
+});
+

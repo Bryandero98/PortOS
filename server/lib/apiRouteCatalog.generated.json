@@ -8724,7 +8724,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 68
+          "line": 73
         }
       ]
     },
@@ -8735,12 +8735,34 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 75
+          "line": 80
         }
       ]
     },
     {
       "method": "DELETE",
+      "path": "/api/fableloom/:id",
+      "mountPath": "/api/fableloom",
+      "sources": [
+        {
+          "source": "server/routes/fableLoom.js",
+          "line": 96
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/fableloom/:id",
+      "mountPath": "/api/fableloom",
+      "sources": [
+        {
+          "source": "server/routes/fableLoom.js",
+          "line": 85
+        }
+      ]
+    },
+    {
+      "method": "PATCH",
       "path": "/api/fableloom/:id",
       "mountPath": "/api/fableloom",
       "sources": [
@@ -8751,40 +8773,29 @@
       ]
     },
     {
-      "method": "GET",
-      "path": "/api/fableloom/:id",
-      "mountPath": "/api/fableloom",
-      "sources": [
-        {
-          "source": "server/routes/fableLoom.js",
-          "line": 80
-        }
-      ]
-    },
-    {
-      "method": "PATCH",
-      "path": "/api/fableloom/:id",
-      "mountPath": "/api/fableloom",
-      "sources": [
-        {
-          "source": "server/routes/fableLoom.js",
-          "line": 86
-        }
-      ]
-    },
-    {
       "method": "POST",
       "path": "/api/fableloom/:id/episodes",
       "mountPath": "/api/fableloom",
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 115
+          "line": 120
         }
       ]
     },
     {
       "method": "DELETE",
+      "path": "/api/fableloom/:id/episodes/:episodeId",
+      "mountPath": "/api/fableloom",
+      "sources": [
+        {
+          "source": "server/routes/fableLoom.js",
+          "line": 130
+        }
+      ]
+    },
+    {
+      "method": "PATCH",
       "path": "/api/fableloom/:id/episodes/:episodeId",
       "mountPath": "/api/fableloom",
       "sources": [
@@ -8795,24 +8806,13 @@
       ]
     },
     {
-      "method": "PATCH",
-      "path": "/api/fableloom/:id/episodes/:episodeId",
-      "mountPath": "/api/fableloom",
-      "sources": [
-        {
-          "source": "server/routes/fableLoom.js",
-          "line": 120
-        }
-      ]
-    },
-    {
       "method": "POST",
       "path": "/api/fableloom/:id/episodes/:episodeId/feedback",
       "mountPath": "/api/fableloom",
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 203
+          "line": 223
         }
       ]
     },
@@ -8823,7 +8823,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 142
+          "line": 162
         }
       ]
     },
@@ -8834,7 +8834,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 152
+          "line": 172
         }
       ]
     },
@@ -8845,7 +8845,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 147
+          "line": 167
         }
       ]
     },
@@ -8856,7 +8856,18 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 190
+          "line": 210
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/fableloom/:id/episodes/:episodeId/nodes/:nodeId/readiness",
+      "mountPath": "/api/fableloom",
+      "sources": [
+        {
+          "source": "server/routes/fableLoom.js",
+          "line": 151
         }
       ]
     },
@@ -8867,7 +8878,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 165
+          "line": 185
         }
       ]
     },
@@ -8878,7 +8889,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 177
+          "line": 197
         }
       ]
     },
@@ -8889,7 +8900,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 170
+          "line": 190
         }
       ]
     },
@@ -8900,7 +8911,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 208
+          "line": 228
         }
       ]
     },
@@ -8911,7 +8922,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 219
+          "line": 239
         }
       ]
     },
@@ -8922,7 +8933,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 195
+          "line": 215
         }
       ]
     },
@@ -8933,7 +8944,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 130
+          "line": 135
         }
       ]
     },
@@ -8944,7 +8955,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 185
+          "line": 205
         }
       ]
     },
@@ -8955,7 +8966,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 108
+          "line": 113
         }
       ]
     },
@@ -8966,7 +8977,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 98
+          "line": 103
         }
       ]
     },
@@ -8977,7 +8988,7 @@
       "sources": [
         {
           "source": "server/routes/fableLoom.js",
-          "line": 103
+          "line": 108
         }
       ]
     },
@@ -23147,8 +23158,8 @@
   ],
   "stats": {
     "mounts": 145,
-    "operations": 2088,
-    "declarations": 2091,
+    "operations": 2089,
+    "declarations": 2092,
     "sourceFiles": 225
   }
 }

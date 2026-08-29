@@ -27,7 +27,12 @@ import { fieldClass, labelClass, sceneFieldClass } from './fieldStyles';
 import { isTeleplayFormat } from './loomFormats';
 import LoomSceneMedia from './LoomSceneMedia';
 import { FABLELOOM_CAMERA_MOVEMENTS } from '../../../../server/lib/fableLoomCameraMovements.js';
-import { FABLELOOM_PLAYBACK_MODES } from '../../../../server/lib/fableLoomPlayback.js';
+import {
+  FABLELOOM_HOLD_ROTATION_MODES,
+  FABLELOOM_PLAYBACK_MODES,
+  FABLELOOM_PROTAGONIST_PRESENCE,
+  inspectNodeProductionReadiness,
+} from '../../../../server/lib/fableLoomPlayback.js';
 import { FABLELOOM_AUDIENCE_CONNECTION_STATES } from '../../../../server/lib/fableLoomParticipation.js';
 
 const toRow = (t) => ({ ...t, triggersText: (t.triggers || []).join('; ') });
@@ -67,6 +72,15 @@ export default function LoomNodeEditor({
       cameraMovement: node.cameraMovement || '',
       playbackMode: node.playbackMode || 'decision',
       audienceConnection: node.audienceConnection || 'disconnected',
+      playbackAssets: node.playbackAssets || null,
+      interactionWindow: node.interactionWindow || {
+        enabled: false,
+        protagonistCharacterId: null,
+        protagonistPresence: 'offscreen',
+        audioTarget: 'host',
+        ambientDuckDb: -8,
+        holdLoopRotation: 'deterministic',
+      },
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
       transitions: (node.transitions || []).map(toRow),
@@ -332,6 +346,121 @@ export default function LoomNodeEditor({
           />
         </FormField>
       )}
+
+      <div>
+        <span className="mb-1 block text-xs font-medium text-port-text-muted">Live interaction & voice</span>
+        <div className="border border-port-border rounded-lg p-3 bg-port-bg/40 space-y-3">
+          <label className="flex items-center gap-2 text-xs font-medium" htmlFor="loom-interaction-enabled">
+            <input
+              id="loom-interaction-enabled"
+              type="checkbox"
+              checked={form.interactionWindow?.enabled || false}
+              onChange={(e) => {
+                const nextInteraction = {
+                  ...(form.interactionWindow || {}),
+                  enabled: e.target.checked,
+                };
+                setForm((p) => ({ ...p, interactionWindow: nextInteraction }));
+                patchNode({ interactionWindow: nextInteraction });
+              }}
+            />
+            Live conversation window (off-screen voice)
+          </label>
+
+          {form.interactionWindow?.enabled && (
+            <div className="space-y-3 pl-5 pt-1 border-l-2 border-port-accent/30 text-xs">
+              <FormField label="Protagonist Character ID" labelClassName={labelClass}>
+                <input
+                  className={fieldClass}
+                  placeholder="e.g. char-protagonist"
+                  value={form.interactionWindow.protagonistCharacterId || ''}
+                  onChange={(e) => {
+                    const next = { ...form.interactionWindow, protagonistCharacterId: e.target.value };
+                    setForm((p) => ({ ...p, interactionWindow: next }));
+                  }}
+                  onBlur={() => patchNode({ interactionWindow: form.interactionWindow })}
+                />
+              </FormField>
+
+              <div className="grid grid-cols-2 gap-2">
+                <FormField label="Protagonist presence" labelClassName={labelClass}>
+                  <select
+                    className={fieldClass}
+                    value={form.interactionWindow.protagonistPresence || 'offscreen'}
+                    onChange={(e) => {
+                      const next = { ...form.interactionWindow, protagonistPresence: e.target.value };
+                      setForm((p) => ({ ...p, interactionWindow: next }));
+                      patchNode({ interactionWindow: next });
+                    }}
+                  >
+                    {FABLELOOM_PROTAGONIST_PRESENCE.map((p) => (
+                      <option key={p} value={p}>{p === 'offscreen' ? 'Off-screen' : 'On-screen'}</option>
+                    ))}
+                  </select>
+                </FormField>
+
+                <FormField label="Hold rotation" labelClassName={labelClass}>
+                  <select
+                    className={fieldClass}
+                    value={form.interactionWindow.holdLoopRotation || 'deterministic'}
+                    onChange={(e) => {
+                      const next = { ...form.interactionWindow, holdLoopRotation: e.target.value };
+                      setForm((p) => ({ ...p, interactionWindow: next }));
+                      patchNode({ interactionWindow: next });
+                    }}
+                  >
+                    {FABLELOOM_HOLD_ROTATION_MODES.map((mode) => (
+                      <option key={mode} value={mode}>{mode[0].toUpperCase() + mode.slice(1)}</option>
+                    ))}
+                  </select>
+                </FormField>
+              </div>
+
+              <FormField label={`Ambience ducking: ${form.interactionWindow.ambientDuckDb ?? -8} dB`} labelClassName={labelClass}>
+                <input
+                  type="range"
+                  min="-60"
+                  max="0"
+                  step="1"
+                  className="w-full cursor-pointer accent-port-accent"
+                  value={form.interactionWindow.ambientDuckDb ?? -8}
+                  onChange={(e) => {
+                    const next = { ...form.interactionWindow, ambientDuckDb: parseInt(e.target.value, 10) };
+                    setForm((p) => ({ ...p, interactionWindow: next }));
+                  }}
+                  onMouseUp={() => patchNode({ interactionWindow: form.interactionWindow })}
+                  onTouchEnd={() => patchNode({ interactionWindow: form.interactionWindow })}
+                />
+              </FormField>
+            </div>
+          )}
+
+          {(() => {
+            const readiness = inspectNodeProductionReadiness(node, { loom });
+            if (!readiness.findings.length) return null;
+            return (
+              <div className="mt-2 space-y-1.5 pt-2 border-t border-port-border/60">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-port-text-muted">
+                  Readiness checks ({readiness.errorCount} error{readiness.errorCount === 1 ? '' : 's'})
+                </span>
+                {readiness.findings.map((f, i) => (
+                  <div
+                    key={i}
+                    className={`text-xs p-2 rounded border ${
+                      f.severity === 'error' ? 'bg-port-error/10 border-port-error/30 text-port-error' :
+                      f.severity === 'warning' ? 'bg-port-warning/10 border-port-warning/30 text-port-warning' :
+                      'bg-port-bg border-port-border text-port-text-muted'
+                    }`}
+                  >
+                    <p className="font-medium">{f.message}</p>
+                    {f.remediation && <p className="text-[11px] opacity-80 mt-0.5">Tip: {f.remediation}</p>}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
 
       <div>
         <span className="mb-1 block text-xs font-medium text-port-text-muted">Scene media</span>
