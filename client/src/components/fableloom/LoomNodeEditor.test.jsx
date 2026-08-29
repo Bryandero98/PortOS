@@ -7,15 +7,12 @@ vi.mock('../../services/api', () => ({
   branchLoomNode: vi.fn(),
   deleteLoomNode: vi.fn(),
   deleteLoomTransition: vi.fn(),
-  generateImage: vi.fn(),
-  generateVideo: vi.fn(),
   updateLoomNode: vi.fn(),
   updateLoomTransition: vi.fn(),
 }));
-vi.mock('../MediaImage', () => ({ default: () => null }));
 
 import {
-  addLoomTransition, branchLoomNode, deleteLoomTransition, generateVideo, updateLoomNode, updateLoomTransition,
+  addLoomTransition, branchLoomNode, deleteLoomTransition, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import LoomNodeEditor from './LoomNodeEditor';
 
@@ -39,6 +36,8 @@ const renderEditor = (transitions = [existingPath]) => {
   const nodes = makeNodes(transitions);
   const episode = { id: 'ep-1', startNodeId: 'n1', nodes };
   const onLoomUpdate = vi.fn();
+  const onGenerateImage = vi.fn().mockResolvedValue({ jobId: 'image-1' });
+  const onGenerateVideo = vi.fn().mockResolvedValue({ jobId: 'video-1' });
   render(
     <LoomNodeEditor
       loom={loom}
@@ -46,9 +45,11 @@ const renderEditor = (transitions = [existingPath]) => {
       node={nodes[0]}
       onLoomUpdate={onLoomUpdate}
       onClearSelection={() => {}}
+      onGenerateImage={onGenerateImage}
+      onGenerateVideo={onGenerateVideo}
     />,
   );
-  return { onLoomUpdate };
+  return { onLoomUpdate, onGenerateImage, onGenerateVideo };
 };
 
 beforeEach(() => vi.clearAllMocks());
@@ -116,27 +117,22 @@ describe('LoomNodeEditor paths', () => {
 describe('LoomNodeEditor scene media', () => {
   it('queues a local video from the teleplay scene and rendered still', async () => {
     const user = userEvent.setup();
-    generateVideo.mockResolvedValue({ jobId: 'video-1', status: 'queued' });
-    renderEditor();
+    const { onGenerateVideo } = renderEditor();
 
     expect(screen.getByLabelText('Video prompt')).toHaveValue('The gate opens in one continuous shot.');
     expect(screen.getByLabelText('Camera movement')).toHaveValue('slow-dolly-in');
     await user.click(screen.getByRole('button', { name: 'Generate video' }));
 
-    await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
-    expect(generateVideo).toHaveBeenCalledWith({
-      prompt: 'The gate opens in one continuous shot.\n\nCamera direction: Camera slowly moves forward toward the subject.',
-      backend: 'local',
-      mode: 'image',
-      sourceImageFile: 'scene.png',
-      disableAudio: true,
-      fableLoom: JSON.stringify({ loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'n1' }),
-    });
+    await waitFor(() => expect(onGenerateVideo).toHaveBeenCalledTimes(1));
+    expect(onGenerateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'n1', prose: scene, image: 'scene.png',
+      videoPrompt: 'The gate opens in one continuous shot.', cameraMovement: 'slow-dolly-in',
+    }));
   });
 
   it('uses the scene for text-to-video when no rendered still exists', async () => {
     const user = userEvent.setup();
-    generateVideo.mockResolvedValue({ jobId: 'video-2', status: 'queued' });
+    const onGenerateVideo = vi.fn().mockResolvedValue({ jobId: 'video-2' });
     const nodes = makeNodes([]).map((node) => node.id === 'n1'
       ? { ...node, image: null, videoPrompt: '', cameraMovement: '' }
       : node);
@@ -147,16 +143,17 @@ describe('LoomNodeEditor scene media', () => {
         node={nodes[0]}
         onLoomUpdate={vi.fn()}
         onClearSelection={() => {}}
+        onGenerateImage={vi.fn()}
+        onGenerateVideo={onGenerateVideo}
       />,
     );
 
     await user.click(screen.getByRole('button', { name: 'Generate video' }));
 
-    await waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
-    expect(generateVideo).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: scene, backend: 'local', mode: 'text', fableLoom: expect.any(String),
+    await waitFor(() => expect(onGenerateVideo).toHaveBeenCalledTimes(1));
+    expect(onGenerateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      prose: scene, videoPrompt: '', image: null,
     }));
-    expect(generateVideo.mock.calls[0][0]).not.toHaveProperty('sourceImageFile');
   });
 
   it('persists a selected camera movement from the shared vocabulary', async () => {

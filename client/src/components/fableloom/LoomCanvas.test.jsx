@@ -34,6 +34,60 @@ describe('LoomCanvas', () => {
     expect(screen.getByText('enter the gate')).toBeInTheDocument();
   });
 
+  it('keeps media controls in each visual node and gives a finished video preview precedence', () => {
+    const onGenerateImage = vi.fn();
+    const onGenerateVideo = vi.fn();
+    const withMedia = episode();
+    withMedia.nodes[0] = {
+      ...withMedia.nodes[0], image: 'scene.png', videoHistoryId: 'video-1',
+    };
+    render(
+      <LoomCanvas
+        episode={withMedia}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateImage={onGenerateImage}
+        onGenerateVideo={onGenerateVideo}
+      />,
+    );
+
+    expect(screen.getByLabelText('The Gate video preview')).toBeInTheDocument();
+    expect(screen.queryByAltText('The Gate image preview')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate image' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate video' }));
+    expect(onGenerateImage).toHaveBeenCalledWith(withMedia.nodes[0]);
+    expect(onGenerateVideo).toHaveBeenCalledWith(withMedia.nodes[0]);
+  });
+
+  it('shows live image progress and retains an actionable failed indicator', () => {
+    const { rerender } = render(
+      <LoomCanvas
+        episode={episode()}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateImage={() => {}}
+        onGenerateVideo={() => {}}
+        mediaJobs={{ n1: { image: { jobId: 'image-1', status: 'running', progress: 0.42, currentImage: 'AAAA' } } }}
+      />,
+    );
+    expect(screen.getByAltText('The Gate image generation preview')).toBeInTheDocument();
+    expect(screen.getByText('Generating image 42%')).toBeInTheDocument();
+
+    rerender(
+      <LoomCanvas
+        episode={episode()}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateImage={() => {}}
+        onGenerateVideo={() => {}}
+        mediaJobs={{ n1: { image: { jobId: 'image-1', status: 'failed', error: 'Synthetic failure' } } }}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Image failed');
+    expect(screen.getByRole('alert')).toHaveAttribute('title', 'Synthetic failure');
+    expect(screen.getAllByRole('button', { name: 'Generate image' })[0]).toBeEnabled();
+  });
+
   it('selects a node on keyboard activation', () => {
     const onSelectNode = vi.fn();
     render(<LoomCanvas episode={episode()} selectedNodeId={null} onSelectNode={onSelectNode} />);
