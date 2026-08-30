@@ -802,15 +802,17 @@ async function appendJsonl(type, record) {
  */
 export async function getInboxLog(options = {}) {
   const { status, limit = 50, offset = 0 } = options;
-  let records = await getAll('inbox');
+  const rows = await resolveRecordIndex(summaryIndex, 'inbox', 0);
+  const matching = rows.filter(([, summary]) => summary && (!status || summary.status === status));
 
-  records = records.sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt));
+  // Bulk captures can share one timestamp. The id tiebreak keeps adjacent
+  // offset pages stable so an entry is never duplicated or skipped.
+  matching.sort(([idA, a], [idB, b]) => (b.capturedAtMs - a.capturedAtMs) || idA.localeCompare(idB));
 
-  if (status) {
-    records = records.filter(r => r.status === status);
-  }
-
-  return records.slice(offset, offset + limit);
+  const pageIds = matching.slice(offset, offset + limit).map(([id]) => id);
+  const page = await Promise.all(pageIds.map((id) => getById('inbox', id)));
+  // A record deleted between resolving the index and loading its body is null.
+  return page.filter(Boolean);
 }
 
 /**
@@ -852,10 +854,9 @@ export async function deleteInboxLog(id) {
  */
 export async function getInboxLogCounts() {
   const rows = await resolveRecordIndex(summaryIndex, 'inbox', 0);
-  const records = rows.map(([, summary]) => summary).filter(Boolean);
 
   const counts = {
-    total: records.length,
+    total: 0,
     classifying: 0,
     filed: 0,
     needs_review: 0,
@@ -864,9 +865,11 @@ export async function getInboxLogCounts() {
     error: 0
   };
 
-  for (const record of records) {
-    if (counts[record.status] !== undefined) {
-      counts[record.status]++;
+  for (const [, summary] of rows) {
+    if (!summary) continue;
+    counts.total++;
+    if (counts[summary.status] !== undefined) {
+      counts[summary.status]++;
     }
   }
 
@@ -1067,7 +1070,11 @@ const linkSummaryIndex = createRecordIndex(projectLinkSummary);
 // lets their frequent count reads reuse the same per-record invalidation
 // machinery without parsing full record bodies in steady state.
 const projectSummary = (record) => (record && !isTombstone(record)
-  ? { status: record.status, isGitHubRepo: record.isGitHubRepo }
+  ? {
+    status: record.status,
+    isGitHubRepo: record.isGitHubRepo,
+    capturedAtMs: safeDate(record.capturedAt),
+  }
   : null);
 const summaryIndex = createRecordIndex(projectSummary);
 

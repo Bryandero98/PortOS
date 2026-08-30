@@ -664,6 +664,74 @@ describe('getLinksPage (paginated link reads, issue #3509)', () => {
   });
 });
 
+describe('getInboxLog (paginated inbox reads, issue #5440)', () => {
+  const stampCapturedAt = async (id, capturedAt) => {
+    const record = { ...(await rawRecord('inbox', id)) };
+    if (capturedAt === undefined) delete record.capturedAt;
+    else record.capturedAt = capturedAt;
+    await writeRawRecord('inbox', id, record);
+    brainStorage.invalidateAllCaches();
+  };
+
+  it('orders and filters deterministically, excluding tombstones and putting missing dates last', async () => {
+    const oldest = await brainStorage.createInboxLog({ capturedText: 'oldest', status: 'done' });
+    const tieA = await brainStorage.createInboxLog({ capturedText: 'tie-a', status: 'needs_review' });
+    const tieB = await brainStorage.createInboxLog({ capturedText: 'tie-b', status: 'needs_review' });
+    const newest = await brainStorage.createInboxLog({ capturedText: 'newest', status: 'filed' });
+    const missing = await brainStorage.createInboxLog({ capturedText: 'missing', status: 'needs_review' });
+    const removed = await brainStorage.createInboxLog({ capturedText: 'removed', status: 'needs_review' });
+
+    await stampCapturedAt(oldest.id, ISO('2098-01-01'));
+    await stampCapturedAt(tieA.id, ISO('2098-02-01'));
+    await stampCapturedAt(tieB.id, ISO('2098-02-01'));
+    await stampCapturedAt(newest.id, ISO('2098-03-01'));
+    await stampCapturedAt(missing.id, undefined);
+    await brainStorage.deleteInboxLog(removed.id);
+
+    const tieIds = [tieA.id, tieB.id].sort();
+    const expected = [newest.id, ...tieIds, oldest.id, missing.id];
+    const pageOne = await brainStorage.getInboxLog({ limit: 2, offset: 0 });
+    const pageTwo = await brainStorage.getInboxLog({ limit: 3, offset: 2 });
+    expect([...pageOne, ...pageTwo].map(({ id }) => id)).toEqual(expected);
+    expect(new Set([...pageOne, ...pageTwo].map(({ id }) => id)).size).toBe(expected.length);
+    expect((await brainStorage.getInboxLog({ status: 'needs_review' })).map(({ id }) => id))
+      .toEqual([...tieIds, missing.id]);
+  });
+
+  it('reads only the requested page bodies once the summary index is warm', async () => {
+    for (let i = 0; i < 8; i++) {
+      await brainStorage.createInboxLog({ capturedText: `page-${i}`, status: 'needs_review' });
+    }
+    await brainStorage.getInboxLog({ status: 'needs_review', limit: 1 });
+
+    readJSONFile.mockClear();
+    const page = await brainStorage.getInboxLog({ status: 'needs_review', limit: 1 });
+
+    expect(page).toHaveLength(1);
+    await brainStorage.getInboxLogCounts();
+    expect(readJSONFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates the projection after status updates and deletes', async () => {
+    const moved = await brainStorage.createInboxLog({ capturedText: 'move me', status: 'needs_review' });
+    const removed = await brainStorage.createInboxLog({ capturedText: 'delete me', status: 'needs_review' });
+    await brainStorage.getInboxLog({ status: 'needs_review' });
+    const before = await brainStorage.getInboxLogCounts();
+
+    await brainStorage.updateInboxLog(moved.id, { status: 'done' });
+    await brainStorage.deleteInboxLog(removed.id);
+
+    expect((await brainStorage.getInboxLog({ status: 'needs_review' })).map(({ id }) => id))
+      .not.toEqual(expect.arrayContaining([moved.id, removed.id]));
+    expect((await brainStorage.getInboxLog({ status: 'done' })).map(({ id }) => id)).toContain(moved.id);
+    expect(await brainStorage.getInboxLogCounts()).toMatchObject({
+      total: before.total - 1,
+      needs_review: before.needs_review - 2,
+      done: before.done + 1,
+    });
+  });
+});
+
 // Overwrite a record's stored JSON directly, bypassing every brainStorage write
 // path (and therefore every brainEvents signal). Used to prove the live-id index
 // is answering from memory rather than re-reading the file.
