@@ -84,6 +84,21 @@ const CLONE_POLL_INTERVAL_MS = 3000;
 // change restarts the window; after it expires the user re-triggers the clone.
 const CLONE_POLL_STALL_MS = 10 * 60 * 1000;
 
+// The fields `cloneRepoInBackground` writes as a clone progresses. The poll
+// merges ONLY these onto the record it already has, so a response that was
+// already in flight when the user renamed a link or dragged its chip cannot
+// revert that edit with a pre-edit snapshot of the whole record.
+const CLONE_PROGRESS_FIELDS = ['cloneStatus', 'cloneError', 'localPath'];
+
+/** The clone-progress fields that actually moved, or null when none did. */
+function cloneProgressPatch(fresh, current) {
+  const patch = {};
+  for (const field of CLONE_PROGRESS_FIELDS) {
+    if (fresh[field] !== current[field]) patch[field] = fresh[field];
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
 export default function LinksTab({ onRefresh }) {
   const [inputUrl, setInputUrl] = useState('');
   const [inputTitle, setInputTitle] = useState('');
@@ -144,30 +159,36 @@ export default function LinksTab({ onRefresh }) {
       setStalledPollKey(inFlightKey);
       return;
     }
-    // A 404 (link deleted mid-clone) or a transient failure drops that id and
-    // leaves every other link untouched.
-    const fresh = await Promise.all(
-      inFlightIds.map(id => api.getBrainLink(id, { silent: true }).catch(() => null))
-    );
-    const byId = new Map(fresh.filter(Boolean).map(l => [l.id, l]));
-    if (byId.size === 0) return;
+    // A 404 means the user deleted the bookmark mid-clone: drop it, or its id
+    // stays in the in-flight set and is polled until the stall bound. Any other
+    // failure is transient and leaves that link exactly as it is.
+    const settled = await Promise.all(inFlightIds.map(id => api.getBrainLink(id, { silent: true })
+      .then(fresh => ({ id, fresh }))
+      .catch(err => ({ id, gone: err?.status === 404 }))));
+    const byId = new Map(settled.map(r => [r.id, r]));
     setLinks(prev => {
       let changed = false;
-      const next = prev.map(l => {
-        const updated = byId.get(l.id);
-        // `updatedAt` is the storage layer's write clock; `cloneStatus` is a
-        // belt-and-braces second signal. Unchanged records keep their identity
-        // so the boards, chips, and search results don't re-render on a tick.
-        if (!updated || (updated.updatedAt === l.updatedAt && updated.cloneStatus === l.cloneStatus)) return l;
+      const next = [];
+      for (const link of prev) {
+        const result = byId.get(link.id);
+        if (result?.gone) { changed = true; continue; }
+        const patch = result?.fresh ? cloneProgressPatch(result.fresh, link) : null;
+        if (!patch) { next.push(link); continue; }
         changed = true;
-        return updated;
-      });
+        next.push({ ...link, ...patch });
+      }
+      // Unchanged records keep their identity — and an all-quiet tick keeps the
+      // array itself — so the boards, chips, and search don't re-render.
       return changed ? next : prev;
     });
   }, [inFlightKey]);
 
+  // True once the poll gave up: the badges below say so rather than showing a
+  // spinner for a status nothing is watching any more.
+  const cloneWatchStalled = inFlightIds.length > 0 && stalledPollKey === inFlightKey;
+
   useAutoRefetch(pollInFlightClones, CLONE_POLL_INTERVAL_MS, {
-    enabled: inFlightIds.length > 0 && stalledPollKey !== inFlightKey,
+    enabled: inFlightIds.length > 0 && !cloneWatchStalled,
     // The initial `fetchLinks` already delivered current statuses, so the first
     // tick belongs one interval out, not immediately on enable.
     immediate: false,
@@ -757,6 +778,14 @@ export default function LinksTab({ onRefresh }) {
                       {link.cloneStatus === 'cloning' && 'Cloning...'}
                       {link.cloneStatus === 'pending' && 'Pending clone'}
                       {link.cloneStatus === 'failed' && 'Clone failed'}
+                      {cloneWatchStalled && isCloneInFlight(link) && (
+                        <span
+                          className="text-gray-500"
+                          title="No change for 10 minutes — this tab stopped checking. Reload the page to resume."
+                        >
+                          (stalled)
+                        </span>
+                      )}
                     </span>
 
                     {/* Clone error */}

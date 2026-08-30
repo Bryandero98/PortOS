@@ -114,11 +114,11 @@ describe('LinksTab clone-status polling', () => {
     expect(getBrainLink).toHaveBeenCalledTimes(callsAfterCompletion);
   });
 
-  it('leaves the other links intact when one in-flight id 404s', async () => {
+  it('leaves the other links intact when one in-flight id fails transiently', async () => {
     getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning'), link('c', 'cloning')] });
     getBrainLink.mockImplementation(async (id) => {
-      if (id === 'a') throw new Error('Link not found');
-      return link('c', 'cloned', { updatedAt: '2026-01-01T00:05:00.000Z' });
+      if (id === 'a') throw Object.assign(new Error('Server unreachable'), { status: 503 });
+      return link('c', 'cloned');
     });
     await renderTab();
 
@@ -127,6 +127,41 @@ describe('LinksTab clone-status polling', () => {
     expect(screen.getByText('Cloned')).toBeTruthy();
     expect(screen.getByText('repo-a')).toBeTruthy();
     expect(screen.getByText('repo-c')).toBeTruthy();
+  });
+
+  // Without this the deleted record keeps its slot in the in-flight set and is
+  // polled every 3s until the stall bound expires.
+  it('drops a link deleted mid-clone and stops polling it', async () => {
+    getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning'), link('c', 'cloning')] });
+    getBrainLink.mockImplementation(async (id) => {
+      if (id === 'a') throw Object.assign(new Error('Link not found'), { status: 404 });
+      return link('c', 'cloning');
+    });
+    await renderTab();
+
+    await tick();
+    expect(screen.queryByText('repo-a')).toBeNull();
+    expect(screen.getByText('repo-c')).toBeTruthy();
+
+    getBrainLink.mockClear();
+    await tick();
+    expect(getBrainLink.mock.calls.map(([id]) => id)).toEqual(['c']);
+  });
+
+  // The poll's job is the clone badge; it must not carry a pre-edit snapshot of
+  // the rest of the record back over a local change.
+  it('merges only the clone-progress fields, never the whole record', async () => {
+    getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning', { title: 'renamed-locally' })] });
+    getBrainLink.mockResolvedValue(link('a', 'cloned', { title: 'repo-a', localPath: '/repos/a' }));
+    await renderTab();
+
+    await tick();
+    expect(screen.getByText('Cloned')).toBeTruthy();
+    // The clone's own localPath landed…
+    expect(screen.getByText('repos/a')).toBeTruthy();
+    // …but the stale title from the same response did not.
+    expect(screen.getByText('renamed-locally')).toBeTruthy();
+    expect(screen.queryByText('repo-a')).toBeNull();
   });
 
   it('does not re-render the list from a replaced array when a tick brings no change', async () => {
@@ -153,8 +188,9 @@ describe('LinksTab clone-status polling', () => {
 
     await tick(60 * 1000);
     expect(getBrainLink).toHaveBeenCalledTimes(stalledAt);
-    // The badge still reports the last known state — the user retriggers it.
+    // …and says so, rather than spinning on a status nothing is watching.
     expect(screen.getByText('Cloning...')).toBeTruthy();
+    expect(screen.getByText('(stalled)')).toBeTruthy();
   });
 
   it('restarts the stall window when a clone actually progresses', async () => {
