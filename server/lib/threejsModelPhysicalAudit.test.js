@@ -1054,3 +1054,112 @@ describe('threejsModelPhysicalAudit attachment anchors', () => {
     });
   });
 });
+
+// A straight horn is invisible to every check above — its bounding box is a
+// perfectly reasonable box, it penetrates nothing, and it touches its parent.
+// Only what the spec CALLS the part makes the straight sweep a defect.
+describe('swept-path curvature', () => {
+  const arcPath = (spanDegrees, count = 8) => Array.from({ length: count }, (_, index) => {
+    const angle = (index / (count - 1)) * spanDegrees * (Math.PI / 180);
+    return [Math.cos(angle) - 1, Math.sin(angle), 0];
+  });
+  const hornSpec = (horn, detailInventory) => ({
+    name: 'Horned Figure',
+    parts: [
+      {
+        id: 'skull',
+        name: 'Skull',
+        geometry: { type: 'box', width: 1, height: 1, depth: 1 },
+        position: [0, 0.5, 0],
+        children: [{ id: 'horn', name: 'Horn', position: [0, 0.5, 0], ...horn }],
+      },
+    ],
+    ...(detailInventory ? { detailInventory } : {}),
+  });
+  const sweptFindings = (spec) => evaluateThreejsPhysicalAudit(spec).findings
+    .filter((finding) => finding.code === 'straight-swept-path');
+
+  it('flags a horn swept along collinear control points', () => {
+    const findings = sweptFindings(hornSpec({
+      geometry: { type: 'tube', path: [[0, 0, 0], [0, 0.5, 0], [0, 1, 0]], radius: 0.1 },
+    }));
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('warning');
+    expect(findings[0].partIds).toEqual(['horn']);
+    expect(findings[0].message).toContain('collinear control points');
+  });
+
+  it('reports the measured span for a horn that bends too little', () => {
+    const findings = sweptFindings(hornSpec({
+      geometry: { type: 'tube', path: arcPath(12), radius: 0.1 },
+    }));
+    expect(findings).toHaveLength(1);
+    expect(findings[0].message).toContain('only turns through 12°');
+  });
+
+  it('accepts a horn that actually curves', () => {
+    expect(sweptFindings(hornSpec({
+      geometry: { type: 'tube', path: arcPath(80), radius: 0.1 },
+    }))).toEqual([]);
+  });
+
+  // `tube` is the right answer for plenty of straight parts, so a straight
+  // sweep is evidence of nothing until the spec says the part was meant to bend.
+  it('leaves an undeclared straight tube alone', () => {
+    const spec = hornSpec({
+      geometry: { type: 'tube', path: [[0, 0, 0], [0, 0.5, 0], [0, 1, 0]], radius: 0.1 },
+    });
+    spec.parts[0].children[0].name = 'Antenna Mast';
+    expect(sweptFindings(spec)).toEqual([]);
+  });
+
+  it('names the detail feature when the part name does not declare the curve', () => {
+    const spec = hornSpec(
+      { geometry: { type: 'tube', path: [[0, 0, 0], [0, 0.5, 0], [0, 1, 0]], radius: 0.1 } },
+      [{ feature: 'coiled brass conduit', evidence: 'reference photo', implementationPartIds: ['horn'], priority: 'identity' }],
+    );
+    spec.parts[0].children[0].name = 'Conduit';
+    const findings = sweptFindings(spec);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].message).toContain('declared by the feature "coiled brass conduit"');
+  });
+
+  // An extrude sweeps along a straight axis, so its outline is the only place
+  // a curve can live — and a convex outline has no curve in it at all.
+  it('flags a curved feature built from a convex extrude outline', () => {
+    const findings = sweptFindings(hornSpec({
+      geometry: {
+        type: 'extrude',
+        outline: [[0, 0], [0.2, 0], [0.1, 1]],
+        depth: 0.2,
+        bevelEnabled: true,
+        bevelThickness: 0.05,
+      },
+    }));
+    expect(findings).toHaveLength(1);
+    expect(findings[0].message).toContain('0° of concave turning');
+  });
+
+  it('accepts a crescent extrude outline', () => {
+    const outer = Array.from({ length: 12 }, (_, index) => {
+      const angle = (index / 11) * Math.PI * 0.8;
+      return [Math.cos(angle), Math.sin(angle)];
+    });
+    const inner = Array.from({ length: 12 }, (_, index) => {
+      const angle = (Math.PI * 0.8) - ((index / 11) * Math.PI * 0.8);
+      return [0.75 * Math.cos(angle), 0.75 * Math.sin(angle)];
+    });
+    expect(sweptFindings(hornSpec({
+      geometry: { type: 'extrude', outline: [...outer, ...inner], depth: 0.2 },
+    }))).toEqual([]);
+  });
+
+  it('feeds the finding back with the recipe for putting the curve in the geometry', () => {
+    const feedback = buildThreejsPhysicalAuditFeedback(evaluateThreejsPhysicalAudit(hornSpec({
+      geometry: { type: 'tube', path: [[0, 0, 0], [0, 0.5, 0], [0, 1, 0]], radius: 0.1 },
+    })));
+    expect(feedback).toContain('For straight swept-path findings');
+    expect(feedback).toContain('outline itself has a concave side');
+  });
+});
+

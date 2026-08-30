@@ -12,6 +12,7 @@
  * 8. `bilateral-mirror-scale`: One half of a named left/right pair mirrored by negating a scale component.
  * 9. `bilateral-pair-same-side`: A named left/right pair that never crosses the lateral plane.
  * 10. `bilateral-chirality`: A named left/right pair mirrored by a 180-degree yaw instead of a lateral reflection.
+ * 11. `straight-swept-path`: A part declared as a curved form built from a sweep that never bends.
  *
  * Checks 6 and 7 exist because `floating-part` and `buried-geometry` both miss
  * the same defect: a hat that belongs behind the shoulders but is authored at
@@ -24,10 +25,22 @@
  * handedness: a hand spun around the vertical axis, or scaled by -1 in X,
  * occupies exactly the same box as a correctly reflected one. Only the
  * transform that placed it says which way round the limb is built.
+ * Check 11 covers the same blind spot in one more dimension: a horn swept along
+ * a straight run of control points has a perfectly reasonable bounding box,
+ * penetrates nothing, and touches its parent, so every check above passes it.
+ * Only the shape of the swept path itself says it never curves.
 
  */
 
-import { isThreejsAttachmentAnchored, listSpecNames, resolveThreejsAttachments } from './threejsModel.js';
+import {
+  CURVED_OUTLINE_MIN_CONCAVE_TURN_DEGREES,
+  SWEPT_ARC_MIN_SPAN_DEGREES,
+  collectDeclaredCurvedParts,
+  evaluateSweptGeometryCurvature,
+  isThreejsAttachmentAnchored,
+  listSpecNames,
+  resolveThreejsAttachments,
+} from './threejsModel.js';
 
 const EPSILON = 1e-4;
 const COPLANAR_TOLERANCE = 1e-3;
@@ -799,6 +812,40 @@ function buildBilateralChiralityFindings({ pairs, chains, volumes }) {
  * @returns {{findings: Array, errorCount: number, warningCount: number, noteCount: number,
  *   evaluatedPartCount: number, evaluatedPoseCount: number}}
  */
+const formatDegrees = (value) => `${Math.round(value)}°`;
+
+/**
+ * Report a part the spec declares as a curved form whose sweep never bends.
+ *
+ * Named or feature-declared curvature is the whole trigger: `tube` and `extrude`
+ * are the right answer for plenty of straight parts — a rail, a plate, a strut —
+ * so a straight sweep is evidence of nothing until the spec says it was meant to
+ * turn.
+ */
+const buildSweptPathCurvatureFindings = (spec, parts) => {
+  const partsById = new Map(parts.map((part) => [part.id, part]));
+  const findings = [];
+  for (const [partId, declaredBy] of collectDeclaredCurvedParts(spec)) {
+    const part = partsById.get(partId);
+    const curvature = evaluateSweptGeometryCurvature(part?.geometry);
+    if (!curvature || !curvature.straight) continue;
+    const name = part.name || part.id;
+    // Only when the declaration came from somewhere else — repeating the part's
+    // own name back at it reads as a stutter.
+    const declaration = declaredBy === name ? '' : ` (declared by the feature "${declaredBy}")`;
+    const message = curvature.kind === 'tube'
+      ? `Part "${name}"${declaration} is a curved form built from a tube whose path ${curvature.arcSpanDegrees > 0 ? `only turns through ${formatDegrees(curvature.arcSpanDegrees)}` : 'runs through collinear control points'}, so it sweeps straight. Sample the intended curve into "path" so consecutive points step around a centre — a horn, tail, hook, or bent conduit needs at least ${formatDegrees(SWEPT_ARC_MIN_SPAN_DEGREES)} of turn — instead of listing points along one line.`
+      : `Part "${name}"${declaration} is a curved form built from an extrude whose outline never turns back on itself (${formatDegrees(curvature.concaveTurnDegrees)} of concave turning). An extrude sweeps its outline along a STRAIGHT axis, so the curve has to be in the outline's own silhouette: give it a concave side of at least ${formatDegrees(CURVED_OUTLINE_MIN_CONCAVE_TURN_DEGREES)}, or build the part as a "tube" whose path follows the curve.`;
+    findings.push({
+      code: 'straight-swept-path',
+      severity: 'warning',
+      partIds: [partId],
+      message,
+    });
+  }
+  return findings;
+};
+
 export function evaluateThreejsPhysicalAudit(spec) {
   if (!spec || !Array.isArray(spec.parts)) {
     return {
@@ -884,6 +931,10 @@ export function evaluateThreejsPhysicalAudit(spec) {
     chains: collectPartChains(spec.parts),
     volumes: visibleStaticVolumes,
   })) {
+    addFinding(finding);
+  }
+
+  for (const finding of buildSweptPathCurvatureFindings(spec, parts)) {
     addFinding(finding);
   }
 
@@ -1125,6 +1176,7 @@ export function buildThreejsPhysicalAuditFeedback(physicalAudit) {
     || finding.code === 'bilateral-mirror-scale'
     || finding.code === 'bilateral-pair-same-side'
   ));
+  const hasStraightSweptPath = actionable.some((finding) => finding.code === 'straight-swept-path');
   const attachmentFindings = actionable.filter((finding) => (
     finding.code === 'unanchored-attachment' || finding.code === 'attachment-far-from-anchor'
   ));
@@ -1140,6 +1192,9 @@ export function buildThreejsPhysicalAuditFeedback(physicalAudit) {
     ...unmeasured.map((entry) => `Attachment "${entry.partId}" could not be checked against ${entry.anchorSocket ? `socket "${entry.anchorSocket}"` : `"${entry.anchorPartId}"`} because ${entry.reason} — give both the attachment and its anchor real geometry so the relationship can be verified.`),
     ...(hasNonuniformParentScale ? [
       'For non-uniform parent scale findings, size each part through its own geometry dimensions (for example, box width/height/depth or sphere radius) and keep containers near-uniform instead of squashing a parent that owns other components.',
+    ] : []),
+    ...(hasStraightSweptPath ? [
+      'For straight swept-path findings, put the curve in the geometry rather than in the part name: a "tube" needs enough control points, stepped around a centre, that its path visibly turns, and an "extrude" only curves when its outline itself has a concave side. Rotating or repositioning a straight sweep does not make it a curved one.',
     ] : []),
     ...(hasBilateralChirality ? [
       'For bilateral pair findings, mirror a paired limb across the lateral plane rather than turning it around: give the counterpart position [-x, y, z] and rotation [rx, -ry, -rz] with every scale component positive. A 180° yaw about the vertical axis or a negative scale factor leaves the bounding box correct while pointing thumbs backward and putting big toes on the outer edge.',
