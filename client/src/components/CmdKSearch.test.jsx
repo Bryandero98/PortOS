@@ -163,6 +163,23 @@ describe('CmdKSearch inline Brain capture', () => {
     await act(async () => { resolveCapture({ ok: true, result: { summary: 'Captured.' } }); });
   });
 
+  it('keeps focus inside the dialog during a pending mouse submission', async () => {
+    let resolveCapture;
+    runPaletteAction.mockImplementation(() => new Promise((resolve) => { resolveCapture = resolve; }));
+    await renderBrainCapturePalette();
+    fireEvent.click(await screen.findByRole('option', { name: /Capture to Brain/ }));
+    const input = screen.getByRole('textbox', { name: 'Capture to Brain' });
+    fireEvent.change(input, { target: { value: 'Mouse thought' } });
+    const button = screen.getByRole('button', { name: 'Capture thought' });
+    button.focus();
+
+    fireEvent.click(button);
+
+    expect(input).toHaveFocus();
+    expect(input).toHaveAttribute('readonly');
+    await act(async () => { resolveCapture({ ok: true, result: { summary: 'Captured.' } }); });
+  });
+
   it('keeps the full draft open after a failed request without a second error toast', async () => {
     runPaletteAction.mockRejectedValue(new Error('Capture failed'));
     await renderBrainCapturePalette();

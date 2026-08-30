@@ -305,6 +305,7 @@ export default function CmdKSearch() {
     if (!text || captureSubmittingRef.current) return;
 
     captureSubmittingRef.current = true;
+    inputRef.current?.focus();
     setCaptureSubmitting(true);
     const attempt = ++captureAttemptRef.current;
     const res = await runPaletteAction('brain_capture', { text }).then(
