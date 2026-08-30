@@ -244,6 +244,17 @@ describe('FableLoomStory episode expansion safety', () => {
   });
 });
 
+describe('FableLoomStory episode rail layout', () => {
+  it('keeps the episode rail content independently scrollable when no scene is selected', async () => {
+    api.getLoom.mockResolvedValue(loom({ episodes: [episode()] }));
+    renderEditor('/fableloom/loom-1/ep-1');
+
+    const rail = await screen.findByTestId('loom-validation-rail');
+    expect(rail).toHaveClass('flex', 'flex-col', 'overflow-hidden');
+    expect(rail.firstElementChild).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+  });
+});
+
 describe('FableLoomStory mobile scene details', () => {
   it('opens the selected scene in a slide-up sheet and closes back to the graph', async () => {
     const user = userEvent.setup();
