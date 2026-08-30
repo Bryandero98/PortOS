@@ -49,6 +49,7 @@ vi.mock('../services/eidoverse.js', () => ({
   normalizeEidoverseWorldsRepo: vi.fn((url) => url),
   getEidoverseStatus: vi.fn(async () => ({ installed: false, bunAvailable: true, registryAvailable: true })),
   assertEidoverseInstalled: vi.fn(async () => ({ installed: true })),
+  setEidoverseWorldsOrigin: vi.fn(async () => ({ appId: 'app-eidoverse' })),
   installEidoverse: vi.fn(async () => ({ installed: true })),
 }));
 vi.mock('../services/eidoverseHost.js', () => ({
@@ -58,7 +59,7 @@ vi.mock('../services/eidoverseHost.js', () => ({
 import settingsRoutes from './settings.js';
 import { hasConfiguredInstances as hasConfiguredDatadogInstances } from '../services/datadog.js';
 import { hasConfiguredInstances as hasConfiguredJiraInstances } from '../services/jira.js';
-import { assertEidoverseInstalled, installEidoverse } from '../services/eidoverse.js';
+import { assertEidoverseInstalled, installEidoverse, setEidoverseWorldsOrigin } from '../services/eidoverse.js';
 import { ensureEidoverseHost } from '../services/eidoverseHost.js';
 
 const buildApp = () => {
@@ -191,6 +192,28 @@ describe('Settings routes — instance feature participation', () => {
     expect(store.instanceFeatures.eidoverse.enabled).toBe(true);
     expect(store.instanceFeatures.eidoverse.worldsRepoUrl).toBe(worldsRepoUrl);
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'eidoverse', enabled: true }));
+  });
+
+  it('updates the installed Eidoverse source without changing feature participation', async () => {
+    const worldsRepoUrl = 'https://github.com/example-owner/eidoverse-worlds';
+    store = { instanceFeatures: { eidoverse: { enabled: true } } };
+
+    const res = await request(buildApp())
+      .put('/api/settings/features/eidoverse/source')
+      .send({ worldsRepoUrl });
+
+    expect(res.status).toBe(200);
+    expect(setEidoverseWorldsOrigin).toHaveBeenCalledWith(worldsRepoUrl);
+    expect(store.instanceFeatures.eidoverse).toMatchObject({ enabled: true, worldsRepoUrl });
+  });
+
+  it('rejects an invalid Eidoverse source update before mutating the checkout', async () => {
+    const res = await request(buildApp())
+      .put('/api/settings/features/eidoverse/source')
+      .send({ worldsRepoUrl: 'https://example.com/not-github' });
+
+    expect(res.status).toBe(400);
+    expect(setEidoverseWorldsOrigin).not.toHaveBeenCalled();
   });
 
   it('opens the Eidoverse host bridge only after verifying the managed app installation', async () => {

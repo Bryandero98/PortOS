@@ -9,6 +9,7 @@ const mock = vi.hoisted(() => ({
   datadogThrows: false,
   eidoverseInstalled: false,
   assertEidoverseInstalled: vi.fn(),
+  setEidoverseWorldsOrigin: vi.fn(),
 }));
 
 vi.mock('./settings.js', () => ({
@@ -38,6 +39,7 @@ vi.mock('./eidoverse.js', () => ({
     registryAvailable: true,
   })),
   assertEidoverseInstalled: mock.assertEidoverseInstalled,
+  setEidoverseWorldsOrigin: mock.setEidoverseWorldsOrigin,
 }));
 
 import {
@@ -46,6 +48,7 @@ import {
   isInstanceFeatureEnabled,
   resolveInstanceFeatures,
   updateInstanceFeature,
+  updateEidoverseWorldsSource,
 } from './instanceFeatures.js';
 
 const byId = (features, id) => features.find((feature) => feature.id === id);
@@ -59,6 +62,7 @@ describe('instance features', () => {
     mock.datadogThrows = false;
     mock.eidoverseInstalled = false;
     mock.assertEidoverseInstalled.mockReset().mockResolvedValue({ installed: true });
+    mock.setEidoverseWorldsOrigin.mockReset().mockResolvedValue({ appId: 'app-eidoverse' });
     mock.updateSettingsWith.mockReset();
     mock.updateSettingsWith.mockImplementation(async (mutate) => {
       mock.settings = await mutate(structuredClone(mock.settings));
@@ -96,6 +100,14 @@ describe('instance features', () => {
 
     await expect(updateInstanceFeature('eidoverse', true)).rejects.toMatchObject({ status: 409 });
     expect(mock.updateSettingsWith).not.toHaveBeenCalled();
+  });
+
+  it('changes the installed source before persisting the normalized setting', async () => {
+    const selected = 'https://github.com/example-owner/eidoverse-worlds';
+
+    await expect(updateEidoverseWorldsSource(selected)).resolves.toBe(selected);
+    expect(mock.setEidoverseWorldsOrigin).toHaveBeenCalledWith(selected);
+    expect(mock.settings.instanceFeatures.eidoverse.worldsRepoUrl).toBe(selected);
   });
 
   it('resolves an explicit disable without changing POST configuration', () => {

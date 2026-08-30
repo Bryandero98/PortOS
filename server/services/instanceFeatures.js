@@ -7,6 +7,7 @@ import {
   DEFAULT_EIDOVERSE_WORLDS_REPO,
   getEidoverseStatus,
   normalizeEidoverseWorldsRepo,
+  setEidoverseWorldsOrigin,
 } from './eidoverse.js';
 import { getSettingsWithStatus, updateSettingsWith } from './settings.js';
 
@@ -160,6 +161,12 @@ export async function updateEidoverseWorldsRepo(worldsRepoUrl) {
     };
   });
   return normalizedRepoUrl;
+}
+
+export async function updateEidoverseWorldsSource(worldsRepoUrl) {
+  const normalizedRepoUrl = normalizeEidoverseWorldsRepo(worldsRepoUrl);
+  await setEidoverseWorldsOrigin(normalizedRepoUrl);
+  return updateEidoverseWorldsRepo(normalizedRepoUrl);
 }
 
 // The same precedence ladder as `resolveInstanceFeatures`, but probing only this

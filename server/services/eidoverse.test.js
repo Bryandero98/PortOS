@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   apps: [],
   registryError: null,
   cloneRepo: vi.fn(),
+  execGit: vi.fn(),
   spawn: vi.fn(),
   atomicWrite: vi.fn(),
   ensureDir: vi.fn(),
@@ -24,6 +25,10 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 vi.mock('../lib/commandExists.js', () => ({
   commandExists: vi.fn(async () => mock.bunAvailable),
+}));
+
+vi.mock('../lib/execGit.js', () => ({
+  execGit: mock.execGit,
 }));
 
 vi.mock('../lib/bufferedSpawn.js', () => ({
@@ -56,6 +61,7 @@ import {
   getEidoverseStatus,
   installEidoverse,
   normalizeEidoverseWorldsRepo,
+  setEidoverseWorldsOrigin,
 } from './eidoverse.js';
 
 const SELECTED_WORLDS_REPO = 'https://github.com/example-owner/eidoverse-worlds';
@@ -68,6 +74,7 @@ describe('Eidoverse managed-app installer', () => {
     mock.bunAvailable = true;
     mock.apps = [];
     mock.registryError = null;
+    mock.execGit.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     __resetEidoverseInstallForTests();
 
     mock.cloneRepo.mockImplementation(async (url) => {
@@ -89,6 +96,11 @@ describe('Eidoverse managed-app installer', () => {
       const app = { id: 'app-eidoverse', ...fields };
       mock.apps.push(app);
       return app;
+    });
+    mock.updateApp.mockImplementation(async (id, fields) => {
+      const index = mock.apps.findIndex((app) => app.id === id);
+      mock.apps[index] = { ...mock.apps[index], ...fields };
+      return mock.apps[index];
     });
   });
 
@@ -116,6 +128,27 @@ describe('Eidoverse managed-app installer', () => {
       appId: 'app-eidoverse',
       runtimeStatus: 'not_started',
     });
+  });
+
+  it('resumes an existing checkout after its configured source changes', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing.add(join(existingPaths.worlds, '.git'));
+
+    const status = await installEidoverse({ worldsRepoUrl: SELECTED_WORLDS_REPO });
+
+    expect(mock.cloneRepo).not.toHaveBeenCalledWith(SELECTED_WORLDS_REPO);
+    expect(mock.spawn).toHaveBeenCalledWith('bun', ['install', '--frozen-lockfile'], expect.objectContaining({ cwd: existingPaths.worlds }));
+    expect(mock.atomicWrite).toHaveBeenCalledWith(
+      existingPaths.envFile,
+      expect.stringContaining(`EIDOVERSE_DIR=${JSON.stringify(existingPaths.video)}`),
+    );
+    expect(status).toMatchObject({ installed: true, appId: 'app-eidoverse' });
   });
 
   it('uses the canonical upstream by default and normalizes a selected fork URL', () => {
@@ -149,5 +182,98 @@ describe('Eidoverse managed-app installer', () => {
       appRegistered: null,
       registryError: 'Managed-app registry unavailable',
     });
+  });
+
+  it('changes the origin of an existing checkout without moving or cloning it', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing.add(join(existingPaths.worlds, '.git'));
+
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).resolves.toEqual({
+      appId: 'app-eidoverse',
+      worldsRepoUrl: SELECTED_WORLDS_REPO,
+    });
+    expect(mock.execGit).toHaveBeenCalledWith(
+      ['remote', 'set-url', 'origin', SELECTED_WORLDS_REPO],
+      existingPaths.worlds,
+      { ignoreExitCode: true },
+    );
+    expect(mock.cloneRepo).not.toHaveBeenCalled();
+  });
+
+  it('keeps the registered checkout installed after its configured source changes', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing = new Set([
+      join(existingPaths.worlds, '.git'),
+      join(existingPaths.worlds, 'node_modules'),
+      join(existingPaths.worlds, 'client', 'node_modules'),
+      existingPaths.envFile,
+      join(existingPaths.video, '.git'),
+      existingPaths.worldData,
+    ]);
+
+    await expect(getEidoverseStatus({ worldsRepoUrl: SELECTED_WORLDS_REPO })).resolves.toMatchObject({
+      installed: true,
+      worldsRepoUrl: SELECTED_WORLDS_REPO,
+      appId: 'app-eidoverse',
+    });
+  });
+
+  it('refuses to update a source when the managed checkout is missing', async () => {
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: getEidoversePaths().worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).rejects.toMatchObject({
+      status: 409,
+      code: 'EIDOVERSE_CHECKOUT_MISSING',
+    });
+    expect(mock.execGit).not.toHaveBeenCalled();
+  });
+
+  it('adds origin when an existing checkout has no origin remote', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing.add(join(existingPaths.worlds, '.git'));
+    mock.execGit
+      .mockResolvedValueOnce({ stdout: '', stderr: "error: No such remote 'origin'", exitCode: 2 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).resolves.toMatchObject({
+      appId: 'app-eidoverse',
+      worldsRepoUrl: SELECTED_WORLDS_REPO,
+    });
+    expect(mock.execGit).toHaveBeenNthCalledWith(
+      2,
+      ['remote', 'add', 'origin', SELECTED_WORLDS_REPO],
+      existingPaths.worlds,
+      { ignoreExitCode: true },
+    );
+  });
+
+  it('refuses to update a source with no registered managed app', async () => {
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).rejects.toMatchObject({
+      status: 409,
+      code: 'EIDOVERSE_NOT_INSTALLED',
+    });
+    expect(mock.execGit).not.toHaveBeenCalled();
   });
 });
