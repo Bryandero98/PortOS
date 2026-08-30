@@ -382,7 +382,7 @@ export default function CmdKSearch() {
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        setCaptureMode(false);
+        resetCapture();
       }
       return;
     }

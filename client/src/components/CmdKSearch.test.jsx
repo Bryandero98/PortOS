@@ -219,6 +219,25 @@ describe('CmdKSearch inline Brain capture', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('ignores a pending capture result after Escape returns to search', async () => {
+    let resolveCapture;
+    runPaletteAction.mockImplementation(() => new Promise((resolve) => { resolveCapture = resolve; }));
+    await renderBrainCapturePalette();
+    fireEvent.click(await screen.findByRole('option', { name: /Capture to Brain/ }));
+    const captureInput = screen.getByRole('textbox', { name: 'Capture to Brain' });
+    fireEvent.change(captureInput, { target: { value: 'Pending thought' } });
+    fireEvent.keyDown(captureInput, { key: 'Enter' });
+
+    fireEvent.keyDown(captureInput, { key: 'Escape' });
+    const searchInput = screen.getByRole('textbox', { name: 'Command palette' });
+    fireEvent.change(searchInput, { target: { value: 'keep searching' } });
+    await act(async () => { resolveCapture({ ok: true, result: { summary: 'Captured.' } }); });
+
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument();
+    expect(searchInput).toHaveValue('keep searching');
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it('resets capture state when dismissed through the backdrop', async () => {
     const dialog = await renderBrainCapturePalette();
     fireEvent.click(await screen.findByRole('option', { name: /Capture to Brain/ }));
