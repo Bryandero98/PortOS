@@ -161,16 +161,22 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     expect(screen.queryByText('gone.png')).not.toBeInTheDocument();
   });
 
-  it('removes without also selecting the block', () => {
+  it('provides a 28px hit target and removes without selecting the block', () => {
     const onSelect = vi.fn();
     const onRemove = vi.fn();
     render(
       <LaneBlock entry={entry} label="logo.png" tone="" isSelected={false} isMissing={false} pxPerSec={40} onSelect={onSelect} onRemove={onRemove} />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove logo.png from timeline' }));
+    const remove = screen.getByRole('button', { name: 'Remove logo.png from timeline' });
+    expect(remove.className).toContain('min-w-[28px]');
+    expect(remove.className).toContain('min-h-[28px]');
+
+    fireEvent.pointerDown(remove);
+    fireEvent.click(remove);
 
     expect(onSelect).not.toHaveBeenCalled();
+    expect(onRemove).toHaveBeenCalledOnce();
     expect(onRemove).toHaveBeenCalledWith('ov-1');
   });
 });

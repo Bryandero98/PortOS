@@ -134,7 +134,7 @@ export const LaneBlock = memo(function LaneBlock({
         type="button"
         onClick={(e) => { e.stopPropagation(); onRemove(entry._key); }}
         onPointerDown={(e) => e.stopPropagation()}
-        className="absolute bottom-0 right-0 p-0.5 text-white/70 hover:text-port-error"
+        className="absolute bottom-0 right-0 inline-flex min-w-[28px] min-h-[28px] items-center justify-center p-1 text-white/70 hover:text-port-error"
         title="Remove"
         aria-label={`Remove ${label} from timeline`}
       >
