@@ -70,14 +70,14 @@ Track administrative tasks:
 ├── ideas/                  # Ideas and concepts (collectionStore: <id>/index.json)
 ├── inbox/                  # Captured thoughts (collectionStore: <id>/index.json)
 ├── journals/               # Daily Log entries (collectionStore: <id>/index.json)
-├── links/                  # Cross-record links (collectionStore: <id>/index.json)
+├── links/                  # Saved bookmarks (collectionStore: <id>/index.json)
 ├── memories/               # Brain memories (collectionStore: <id>/index.json)
 ├── people/                 # People records (collectionStore: <id>/index.json)
 ├── projects/               # Projects with status tracking (collectionStore: <id>/index.json)
 ├── songs/                  # SongBook songs (collectionStore: <id>/index.json)
 ├── memory-bridge-map.json  # Brain↔CoS memory bridge mapping
 ├── obsidian-vaults.json    # Obsidian vault sync config
-├── sync_log.jsonl          # Obsidian sync history
+├── sync_log.jsonl          # Brain peer-sync mutation history
 ├── digests.jsonl           # Daily digest history
 └── reviews.jsonl           # Weekly review history
 ```
