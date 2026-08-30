@@ -199,7 +199,13 @@ export function GeneralTab() {
             {saving ? 'Saving...' : 'Save'}
           </button>
           {timezoneDirty && (
-            <span className="text-xs text-port-warning" role="status">Unsaved changes</span>
+            <span
+              className="text-xs text-port-warning"
+              role="status"
+              aria-label="Timezone has unsaved changes"
+            >
+              Unsaved changes
+            </span>
           )}
           {!timezone && (
             <button
@@ -272,7 +278,13 @@ export function GeneralTab() {
             {savingLocation ? 'Saving...' : 'Save'}
           </button>
           {locationDirty && (
-            <span className="text-xs text-port-warning" role="status">Unsaved changes</span>
+            <span
+              className="text-xs text-port-warning"
+              role="status"
+              aria-label="Location has unsaved changes"
+            >
+              Unsaved changes
+            </span>
           )}
         </div>
       </div>

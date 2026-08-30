@@ -102,12 +102,14 @@ describe('GeneralTab unsaved changes', () => {
       target: { value: 'America/New_York' },
     });
     expect(within(timezoneCard()).getByText('Unsaved changes')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Timezone has unsaved changes' })).toBeInTheDocument();
     expect(within(locationCard()).queryByText('Unsaved changes')).toBeNull();
 
     fireEvent.change(screen.getByLabelText('Latitude (-90 to 90)'), {
       target: { value: '40.7128' },
     });
     expect(within(locationCard()).getByText('Unsaved changes')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Location has unsaved changes' })).toBeInTheDocument();
     await waitFor(() => {
       expect(add.mock.calls.some(([type]) => type === 'beforeunload')).toBe(true);
     });
@@ -227,7 +229,36 @@ describe('GeneralTab unsaved changes', () => {
     fireEvent.click(within(locationCard()).getByRole('button', { name: 'Save' }));
     expect(latitudeInput).toBeDisabled();
     expect(longitudeInput).toBeDisabled();
+    await navigate(router, '/settings/security');
+    expect(screen.queryByText(CONFIRM)).toBeNull();
     await act(async () => { locationSave.resolve({}); });
+    expect(await screen.findByText('Security settings')).toBeInTheDocument();
+  });
+
+  it('discards only the unsaved section while another section save is in flight', async () => {
+    const timezoneSave = deferred();
+    updateSettings.mockReturnValueOnce(timezoneSave.promise);
+    const router = createMemoryRouter([
+      { path: '/settings/:tab', element: <GeneralTab /> },
+    ], { initialEntries: ['/settings/old-tab'] });
+    render(<RouterProvider router={router} />);
+    const timezoneInput = await screen.findByDisplayValue('UTC');
+    const latitudeInput = screen.getByLabelText('Latitude (-90 to 90)');
+    fireEvent.change(timezoneInput, { target: { value: 'America/New_York' } });
+    fireEvent.change(latitudeInput, { target: { value: '40.7128' } });
+    fireEvent.click(within(timezoneCard()).getByRole('button', { name: 'Save' }));
+
+    await navigate(router, '/settings/general');
+    expect(screen.getByText(CONFIRM)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/general'));
+    expect(timezoneInput).toHaveValue('America/New_York');
+    expect(timezoneInput).toBeDisabled();
+    expect(latitudeInput).toHaveValue(String(SETTINGS.location.lat));
+    await act(async () => { timezoneSave.resolve({}); });
+    expect(timezoneInput).toHaveValue('America/New_York');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
   });
 
   it('keeps a failed timezone save dirty and guarded', async () => {
