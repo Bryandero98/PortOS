@@ -134,14 +134,17 @@ function Safe-Install {
 
     Write-SafeHost "📦 Installing deps ($Label)..." -ForegroundColor Yellow
     Push-Location $Dir
-    Invoke-Logged npm install
+    # This is an installation/reconciliation path, not dependency authoring.
+    # --no-save still honors package-lock.json but prevents older npm versions
+    # from rewriting newer lockfile metadata (for example `libc` fields).
+    Invoke-Logged npm install --no-save
     if ($LASTEXITCODE -eq 0) { Pop-Location; return }
 
     Write-SafeHost "⚠️  npm install failed for $Label — cleaning node_modules + package-lock.json and retrying..." -ForegroundColor Yellow
     Pop-Location
     Clear-WorkspaceDeps -Dir $Dir
     Push-Location $Dir
-    Invoke-Logged npm install
+    Invoke-Logged npm install --no-save
     if ($LASTEXITCODE -eq 0) { Pop-Location; return }
 
     Pop-Location

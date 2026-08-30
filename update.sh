@@ -92,13 +92,16 @@ safe_install() {
   fi
 
   log "📦 Installing deps ($label)..."
-  if (cd "$dir" && run npm install); then
+  # This is an installation/reconciliation path, not dependency authoring.
+  # --no-save still honors package-lock.json but prevents older npm versions
+  # from rewriting newer lockfile metadata (for example `libc` fields).
+  if (cd "$dir" && run npm install --no-save); then
     return 0
   fi
 
   log "⚠️  npm install failed for $label — cleaning node_modules + package-lock.json and retrying..."
   clean_workspace_deps "$dir"
-  if (cd "$dir" && run npm install); then
+  if (cd "$dir" && run npm install --no-save); then
     return 0
   fi
 
