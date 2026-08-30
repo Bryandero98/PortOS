@@ -10,7 +10,9 @@ import {
   CODEX_PARALLEL_DEFAULT,
 } from '../services/mediaJobQueue/index.js';
 import { assertMediaRoutingConfig } from '../services/federatedMedia/routingPolicy.js';
-import { getInstanceFeatures, updateInstanceFeature } from '../services/instanceFeatures.js';
+import { getInstanceFeatures, updateEidoverseWorldsRepo, updateInstanceFeature } from '../services/instanceFeatures.js';
+import { installEidoverse } from '../services/eidoverse.js';
+import { isGitHubRepoUrl } from '../lib/githubRepoUrl.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
@@ -159,6 +161,18 @@ router.get('/ai-assignments', asyncHandler(async (_req, res) => {
 // GET /api/settings/features
 router.get('/features', asyncHandler(async (_req, res) => {
   res.json(await getInstanceFeatures());
+}));
+
+// POST /api/settings/features/eidoverse/install
+// Explicit consent boundary: no Eidoverse checkout or dependency install occurs
+// until the user presses Install in Settings > Features.
+router.post('/features/eidoverse/install', asyncHandler(async (req, res) => {
+  const { worldsRepoUrl } = validateRequest(z.object({
+    worldsRepoUrl: z.string().trim().max(500).refine(isGitHubRepoUrl, 'Must be a GitHub repository URL'),
+  }).strict(), req.body || {});
+  const normalizedRepoUrl = await updateEidoverseWorldsRepo(worldsRepoUrl);
+  await installEidoverse({ worldsRepoUrl: normalizedRepoUrl });
+  res.status(201).json(await updateInstanceFeature('eidoverse', true));
 }));
 
 // PUT /api/settings/features/:featureId

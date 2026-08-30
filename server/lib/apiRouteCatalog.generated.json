@@ -19191,7 +19191,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 136
+          "line": 138
         }
       ]
     },
@@ -19202,7 +19202,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 178
+          "line": 192
         }
       ]
     },
@@ -19213,7 +19213,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 155
+          "line": 157
         }
       ]
     },
@@ -19224,7 +19224,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 172
+          "line": 186
         }
       ]
     },
@@ -19235,7 +19235,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 160
+          "line": 162
         }
       ]
     },
@@ -19246,7 +19246,18 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 165
+          "line": 179
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/settings/features/eidoverse/install",
+      "mountPath": "/api/settings",
+      "sources": [
+        {
+          "source": "server/routes/settings.js",
+          "line": 169
         }
       ]
     },
@@ -19257,7 +19268,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 149
+          "line": 151
         }
       ]
     },
@@ -23477,8 +23488,8 @@
   ],
   "stats": {
     "mounts": 145,
-    "operations": 2118,
-    "declarations": 2121,
+    "operations": 2119,
+    "declarations": 2122,
     "sourceFiles": 225
   }
 }

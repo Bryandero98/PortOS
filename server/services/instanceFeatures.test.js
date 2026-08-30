@@ -7,6 +7,8 @@ const mock = vi.hoisted(() => ({
   datadogConfigured: false,
   jiraConfigured: false,
   datadogThrows: false,
+  eidoverseInstalled: false,
+  assertEidoverseInstalled: vi.fn(),
 }));
 
 vi.mock('./settings.js', () => ({
@@ -26,6 +28,18 @@ vi.mock('./jira.js', () => ({
   hasConfiguredInstances: vi.fn(async () => mock.jiraConfigured),
 }));
 
+vi.mock('./eidoverse.js', () => ({
+  DEFAULT_EIDOVERSE_WORLDS_REPO: 'https://github.com/anima-research/eidoverse-worlds',
+  normalizeEidoverseWorldsRepo: vi.fn((url) => url),
+  getEidoverseStatus: vi.fn(async ({ worldsRepoUrl } = {}) => ({
+    installed: mock.eidoverseInstalled,
+    worldsRepoUrl,
+    bunAvailable: true,
+    registryAvailable: true,
+  })),
+  assertEidoverseInstalled: mock.assertEidoverseInstalled,
+}));
+
 import {
   detectFeatureConfiguration,
   getInstanceFeatures,
@@ -43,6 +57,8 @@ describe('instance features', () => {
     mock.datadogConfigured = false;
     mock.jiraConfigured = false;
     mock.datadogThrows = false;
+    mock.eidoverseInstalled = false;
+    mock.assertEidoverseInstalled.mockReset().mockResolvedValue({ installed: true });
     mock.updateSettingsWith.mockReset();
     mock.updateSettingsWith.mockImplementation(async (mutate) => {
       mock.settings = await mutate(structuredClone(mock.settings));
@@ -53,6 +69,33 @@ describe('instance features', () => {
   it('keeps POST enabled by default for existing installs', async () => {
     expect(await isInstanceFeatureEnabled('post')).toBe(true);
     expect(byId((await getInstanceFeatures()).features, 'post')).toMatchObject({ id: 'post', enabled: true });
+  });
+
+  it('keeps Eidoverse opt-in and exposes its install state separately from the flag', async () => {
+    expect(byId((await getInstanceFeatures()).features, 'eidoverse')).toMatchObject({
+      enabled: false,
+      source: 'default',
+      setup: {
+        installed: false,
+        bunAvailable: true,
+        worldsRepoUrl: 'https://github.com/anima-research/eidoverse-worlds',
+      },
+    });
+  });
+
+  it('persists a normalized Worlds fork without enabling the feature', async () => {
+    const selected = 'https://github.com/example-owner/eidoverse-worlds';
+    const { updateEidoverseWorldsRepo } = await import('./instanceFeatures.js');
+
+    await expect(updateEidoverseWorldsRepo(selected)).resolves.toBe(selected);
+    expect(mock.settings).toEqual({ instanceFeatures: { eidoverse: { worldsRepoUrl: selected } } });
+  });
+
+  it('requires a completed Eidoverse install before enabling it', async () => {
+    mock.assertEidoverseInstalled.mockRejectedValueOnce(Object.assign(new Error('not installed'), { status: 409 }));
+
+    await expect(updateInstanceFeature('eidoverse', true)).rejects.toMatchObject({ status: 409 });
+    expect(mock.updateSettingsWith).not.toHaveBeenCalled();
   });
 
   it('resolves an explicit disable without changing POST configuration', () => {
@@ -172,7 +215,7 @@ describe('instance features', () => {
 
     const { features } = await getInstanceFeatures();
     expect(Object.fromEntries(features.map((f) => [f.id, f.enabled])))
-      .toEqual({ post: true, datadog: true, jira: false, gsd: true, openclaw: true, health: true, facetime: false });
+      .toEqual({ post: true, datadog: true, jira: false, eidoverse: false, gsd: true, openclaw: true, health: true, facetime: false });
   });
 
   it('rejects an unknown feature id', async () => {
