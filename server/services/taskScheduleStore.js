@@ -159,6 +159,11 @@ async function readSchedule() {
     const defaultTask = DEFAULT_TASK_INTERVALS[taskType];
     const loadedTask = loaded.tasks?.[taskType] || {};
     const merged = { ...defaultTask, ...loadedTask };
+    // A shipped task's feature association is code-owned, like its identity.
+    // Do not let a stale persisted snapshot retain, replace, or remove the gate
+    // when a later PortOS version changes the registry.
+    if (defaultTask.feature) merged.feature = defaultTask.feature;
+    else delete merged.feature;
     // Deep-merge taskMetadata: preserve explicit null (clears metadata), otherwise merge defaults with stored
     // Only spread if loadedTask.taskMetadata is a plain object to avoid corrupting config
     if (defaultTask.taskMetadata && loadedTask.taskMetadata !== null) {

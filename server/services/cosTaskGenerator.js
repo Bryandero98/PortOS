@@ -884,7 +884,7 @@ async function spawnPriority0OnDemand(ctx) {
 
   const taskSchedule = await import('./taskSchedule.js');
   const liveSchedule = await taskSchedule.loadSchedule();
-  const onDemandRequests = Array.isArray(liveSchedule?.onDemandRequests) ? liveSchedule.onDemandRequests : [];
+  const onDemandRequests = await taskSchedule.getOnDemandRequests();
 
   // Track apps already marked review-started this cycle so multiple on-demand
   // requests for the same app don't each rewrite its activity record.
