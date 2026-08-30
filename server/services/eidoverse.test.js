@@ -97,6 +97,11 @@ describe('Eidoverse managed-app installer', () => {
       mock.apps.push(app);
       return app;
     });
+    mock.updateApp.mockImplementation(async (id, fields) => {
+      const index = mock.apps.findIndex((app) => app.id === id);
+      mock.apps[index] = { ...mock.apps[index], ...fields };
+      return mock.apps[index];
+    });
   });
 
   it('clones separate licensed repos, installs Bun dependencies, and registers Worlds', async () => {
@@ -123,6 +128,27 @@ describe('Eidoverse managed-app installer', () => {
       appId: 'app-eidoverse',
       runtimeStatus: 'not_started',
     });
+  });
+
+  it('resumes an existing checkout after its configured source changes', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing.add(join(existingPaths.worlds, '.git'));
+
+    const status = await installEidoverse({ worldsRepoUrl: SELECTED_WORLDS_REPO });
+
+    expect(mock.cloneRepo).not.toHaveBeenCalledWith(SELECTED_WORLDS_REPO);
+    expect(mock.spawn).toHaveBeenCalledWith('bun', ['install', '--frozen-lockfile'], expect.objectContaining({ cwd: existingPaths.worlds }));
+    expect(mock.atomicWrite).toHaveBeenCalledWith(
+      existingPaths.envFile,
+      expect.stringContaining(`EIDOVERSE_DIR=${JSON.stringify(existingPaths.video)}`),
+    );
+    expect(status).toMatchObject({ installed: true, appId: 'app-eidoverse' });
   });
 
   it('uses the canonical upstream by default and normalizes a selected fork URL', () => {
@@ -215,6 +241,38 @@ describe('Eidoverse managed-app installer', () => {
     await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).rejects.toMatchObject({
       status: 409,
       code: 'EIDOVERSE_CHECKOUT_MISSING',
+    });
+    expect(mock.execGit).not.toHaveBeenCalled();
+  });
+
+  it('adds origin when an existing checkout has no origin remote', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing.add(join(existingPaths.worlds, '.git'));
+    mock.execGit
+      .mockResolvedValueOnce({ stdout: '', stderr: "error: No such remote 'origin'", exitCode: 2 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).resolves.toMatchObject({
+      appId: 'app-eidoverse',
+      worldsRepoUrl: SELECTED_WORLDS_REPO,
+    });
+    expect(mock.execGit).toHaveBeenNthCalledWith(
+      2,
+      ['remote', 'add', 'origin', SELECTED_WORLDS_REPO],
+      existingPaths.worlds,
+      { ignoreExitCode: true },
+    );
+  });
+
+  it('refuses to update a source with no registered managed app', async () => {
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).rejects.toMatchObject({
+      status: 409,
+      code: 'EIDOVERSE_NOT_INSTALLED',
     });
     expect(mock.execGit).not.toHaveBeenCalled();
   });

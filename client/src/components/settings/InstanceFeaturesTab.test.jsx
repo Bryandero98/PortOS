@@ -171,6 +171,28 @@ describe('InstanceFeaturesTab', () => {
     expect(await screen.findByDisplayValue('https://github.com/example-owner/eidoverse-worlds')).toBeInTheDocument();
   });
 
+  it('does not offer a source update for an equivalent repository URL', async () => {
+    const installed = {
+      ...EIDOVERSE_FEATURE,
+      enabled: true,
+      setup: {
+        ...EIDOVERSE_FEATURE.setup,
+        installed: true,
+        appId: 'app-eidoverse',
+      },
+    };
+    mock.getInstanceFeatures.mockResolvedValue({ features: [installed] });
+    render(<MemoryRouter><InstanceFeaturesTab /></MemoryRouter>);
+
+    fireEvent.change(
+      await screen.findByRole('textbox', { name: 'Worlds GitHub repository' }),
+      { target: { value: 'https://github.com/anima-research/eidoverse-worlds.git' } },
+    );
+
+    expect(screen.getByRole('button', { name: 'Update source' })).toBeDisabled();
+    expect(mock.updateEidoverseWorldsSource).not.toHaveBeenCalled();
+  });
+
   it('keeps installation disabled for an invalid repository URL', async () => {
     mock.getInstanceFeatures.mockResolvedValue({ features: [EIDOVERSE_FEATURE] });
     render(<MemoryRouter><InstanceFeaturesTab /></MemoryRouter>);

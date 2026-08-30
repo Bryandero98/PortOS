@@ -4,7 +4,7 @@ import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import ToggleSwitch from '../ToggleSwitch';
 import { useInstanceFeatures, publishInstanceFeatures } from '../../hooks/useInstanceFeatures.js';
-import { isGitHubRepoUrl } from '../../lib/githubRepoUrl.js';
+import { isGitHubRepoUrl, parseGitHubUrl } from '../../lib/githubRepoUrl.js';
 import { getPrimaryLaunchUrl } from '../../services/appUrls.js';
 import { installEidoverseFeature, updateEidoverseWorldsSource, updateInstanceFeature } from '../../services/api';
 
@@ -18,10 +18,16 @@ const sourceHint = (feature) => {
     : `Detected automatically — no ${feature.label} instance is configured yet.`;
 };
 
+const normalizeGitHubRepo = (url) => {
+  const parsed = parseGitHubUrl(url);
+  return parsed ? `https://github.com/${parsed.owner}/${parsed.repo}` : null;
+};
+
 export function InstanceFeaturesTab() {
   const { features, error, reload } = useInstanceFeatures();
   const [savingId, setSavingId] = useState(null);
   const [eidoverseRepoUrl, setEidoverseRepoUrl] = useState(null);
+  const [updatingEidoverseSource, setUpdatingEidoverseSource] = useState(false);
   const [recheckingEidoverse, setRecheckingEidoverse] = useState(false);
 
   // The toggle is announced on the shared INSTANCE_FEATURES_CHANGED channel, so
@@ -62,6 +68,7 @@ export function InstanceFeaturesTab() {
     if (savingId) return;
     const worldsRepoUrl = eidoverseRepoUrl ?? feature?.setup?.worldsRepoUrl;
     if (!worldsRepoUrl || !isGitHubRepoUrl(worldsRepoUrl)) return;
+    setUpdatingEidoverseSource(true);
     setSavingId(feature.id);
     const result = await updateEidoverseWorldsSource(worldsRepoUrl, { silent: true }).catch((err) => {
       toast.error(err.message || 'Could not update the Eidoverse Worlds source');
@@ -73,6 +80,7 @@ export function InstanceFeaturesTab() {
       publishInstanceFeatures(result.features, { featureId: feature.id, enabled: feature.enabled });
       toast.success('Eidoverse Worlds GitHub origin updated');
     }
+    setUpdatingEidoverseSource(false);
     setSavingId(null);
   };
 
@@ -121,7 +129,7 @@ export function InstanceFeaturesTab() {
           const repoIsValid = isGitHubRepoUrl(selectedRepoUrl);
           const canInstall = repoIsValid && setup?.bunAvailable === true && setup?.registryAvailable !== false;
           const canUpdateSource = repoIsValid
-            && selectedRepoUrl.trim() !== setup?.worldsRepoUrl
+            && normalizeGitHubRepo(selectedRepoUrl) !== setup?.worldsRepoUrl
             && setup?.registryAvailable !== false;
           const launchUrl = setup?.appId && setup?.uiPort
             ? getPrimaryLaunchUrl({ id: setup.appId, uiPort: setup.uiPort })
@@ -181,7 +189,7 @@ export function InstanceFeaturesTab() {
                         disabled={savingId !== null || !canUpdateSource}
                         className="inline-flex items-center justify-center min-h-[44px] px-3 mt-2 text-sm bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors"
                       >
-                        {installing ? 'Updating source…' : 'Update source'}
+                        {updatingEidoverseSource ? 'Updating source…' : 'Update source'}
                       </button>
                     )}
                     {needsInstall && <>
