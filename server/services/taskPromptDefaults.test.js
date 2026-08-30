@@ -132,22 +132,24 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(actual).toEqual(SNAPSHOT.PREVIOUS_DEFAULT_PROMPTS);
   });
 
-  // feature-ideas v10: rejected-ideas ledger consultation (issue #2621).
-  // Pins the version-bump pairing — the prompt change ships WITH its version
-  // bump and the outgoing v9 default preserved for cross-install auto-upgrade.
-  it('feature-ideas v10 consults REJECTED.md and closed-unmerged PRs, preserving the v9 default', () => {
+  // feature-ideas v11: product-source precedence (PRD.md → GOALS.md → docs),
+  // on top of v10's rejected-ideas ledger consultation (issue #2621). Pins the
+  // version-bump pairing — the prompt change ships WITH its version bump and
+  // the outgoing v10 default preserved for cross-install auto-upgrade.
+  it('feature-ideas v11 reads PRD.md before GOALS.md, preserving the v10 default', () => {
     const current = DEFAULT_TASK_PROMPTS['feature-ideas'];
     expect(current).toContain('REJECTED.md');
     expect(current).toContain('is:unmerged');
-    expect(PROMPT_VERSIONS['feature-ideas']).toBe(10);
+    expect(current).toContain('`PRD.md`');
+    expect(PROMPT_VERSIONS['feature-ideas']).toBe(11);
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['feature-ideas'];
-    const v9 = previous[previous.length - 1];
-    // The outgoing v9 default lacked the rejected-ideas consultation and is
-    // preserved verbatim so installs holding it are recognized and upgraded.
-    expect(v9).not.toContain('REJECTED.md');
-    expect(v9).toContain('.changelog/');
-    expect(v9).not.toBe(current);
+    const v10 = previous[previous.length - 1];
+    // The outgoing v10 default read GOALS.md only and is preserved verbatim so
+    // installs holding it are recognized and upgraded.
+    expect(v10).toContain('REJECTED.md');
+    expect(v10).not.toContain('PRD.md');
+    expect(v10).not.toBe(current);
   });
 
   // plan-feature v5: omitted optional preloads fall back to direct inventory,

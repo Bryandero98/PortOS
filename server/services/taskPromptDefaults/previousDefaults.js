@@ -32,6 +32,41 @@ Scope: this task operates against the managed app's repository, NOT PortOS. All 
 {slashdoReplan}`,
   ],
   'feature-ideas': [
+    // Pre-genericization default, from before the self-improvement and
+    // app-improvement schedules were unified. It hardcodes "PortOS" and points
+    // at `data/COS-GOALS.md`, a file that unification folded into the root
+    // GOALS.md — so an install still pinned here sends every run looking for a
+    // file that no longer exists. Preserved so that install auto-upgrades.
+    `[Self-Improvement] Feature Review and Development
+
+Evaluate existing features and consider new ones to make PortOS more useful:
+
+1. Read data/COS-GOALS.md for context on user goals
+2. Review recent completed tasks and user feedback to understand patterns
+3. Assess current features:
+   - Are existing features working well toward our goals?
+   - Are there features that could be improved or refined?
+   - Are there features that are underperforming or causing friction?
+
+4. Choose ONE action to take (in order of preference):
+   a) IMPROVE an existing feature that isn't meeting its potential
+      - Identify what's not working and why
+      - Make targeted improvements to increase effectiveness
+   b) ADD a new high-impact feature
+      - Something that saves user time, improves the developer experience, or makes CoS more helpful
+   c) ARCHIVE a feature that is not helping our goals
+      - This requires a high bar: document clear evidence of why it's not useful
+      - Check usage patterns, goal alignment, and whether the feature creates noise
+      - Move the feature config to disabled with a reason, don't delete code
+
+5. Implement it:
+   - Write clean, tested code
+   - Follow existing patterns
+   - Update relevant documentation
+
+6. Commit with a clear description of the change and rationale
+
+Think critically about what we have before adding more.`,
     // v1 default prompt
     `[Improvement: {appName}] Feature Review and Development
 
@@ -486,7 +521,81 @@ When PLAN.md is missing, empty, or fully completed, brainstorm and implement a n
    \`\`\`
    - [x] [<slug-of-feature>] <description of the feature you implemented>
    \`\`\`
-8. Commit with a clear description of the feature and rationale`
+8. Commit with a clear description of the feature and rationale`,
+    // v10 default prompt (before Phase 1 + Phase 4 consult PRD.md as the
+    // primary product source, with GOALS.md as the fallback)
+    `[Improvement: {appName}] Implement Next Planned Feature
+
+Your goal is to implement the next planned item from PLAN.md, or brainstorm a new feature if no plan exists.
+
+Repository: {repoPath}
+{planConstraint}
+## Phase 1 — Find the Next Task
+
+1. Read PLAN.md from {repoPath}
+2. Skim recent \`.changelog/\` entries and \`git log\` (last 50 commits) to understand what has already shipped — do NOT re-implement completed features
+3. If the **Item Constraint** block above named a specific \`[plan-id]\`, find the matching \`- [ ]\` line and use that — do NOT pick a different one, do NOT brainstorm. If the line is missing, has been checked, or carries \`<!-- NEEDS_INPUT -->\`, exit cleanly without commits or PR.
+4. Otherwise, if PLAN.md does not exist, is empty, or has no unchecked items (\`- [ ]\`), go to **Phase 4 — Brainstorm**.
+5. Otherwise, find the first unchecked item (\`- [ ]\`) that does NOT have a \`<!-- NEEDS_INPUT -->\` annotation.
+6. If all unchecked items have \`<!-- NEEDS_INPUT -->\`, go to **Phase 4 — Brainstorm**.
+
+## Phase 2 — Evaluate Feasibility
+
+7. Read relevant source files to understand the scope of the item
+8. Determine: can this be implemented without user clarification?
+   - Consider: are requirements clear? Are there ambiguous design choices? Does it depend on external decisions?
+
+## Phase 3a — Implement (if feasible)
+
+9. Implement the feature:
+   - Write clean, tested code following existing patterns
+   - Run tests to ensure nothing is broken
+10. **Review your changed code for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix any findings. Claude Code can run \`/simplify\` for this pass; on other CLIs, do the equivalent diff review by hand.
+11. Check the PLAN.md item: change \`- [ ]\` to \`- [x]\`. **Preserve the \`[plan-id]\` slug verbatim** — only the box character flips, never the ID. Reference the slug in the commit message (e.g. \`feat([plan-id]): …\`).
+12. Commit with a clear description referencing the PLAN.md item
+
+## Phase 3b — Request Clarification (if not feasible)
+
+9. Create a file named \`.plan-questions.md\` in the repository root with this format:
+   \`\`\`
+   # Plan Question: <short title summarizing the PLAN.md item>
+
+   ## PLAN.md Item
+   <the exact text of the unchecked item, including its [plan-id]>
+
+   ## Questions
+   - <question 1>
+   - <question 2>
+   \`\`\`
+10. **Move the unchecked item to the bottom of PLAN.md and annotate it with \` <!-- NEEDS_INPUT -->\`** — remove the line from its current position and append it at the end of the file with the annotation, **preserving its \`[plan-id]\` slug**. This keeps the queue moving so the next \`feature-ideas\` run picks up a different actionable item instead of repeatedly tripping on this one.
+11. Commit both changes (the new \`.plan-questions.md\` file and the PLAN.md move) with message \`chore: flag PLAN.md item needing user input\`. Then proceed to the **Completion** section below so the clarification PR is opened for the user to review — do NOT leave the worktree orphaned.
+
+## Phase 4 — Brainstorm a New Feature
+
+When PLAN.md is missing, empty, or fully completed, brainstorm and implement a new feature:
+
+1. Read GOALS.md from {repoPath} for context on the app's goals and priorities.
+   If no GOALS.md exists, focus on general improvements.
+2. Skim recent \`.changelog/\` entries and the last 50 \`git log\` entries to avoid re-implementing completed features
+3. Read REJECTED.md from {repoPath} (if it exists) to understand previously rejected ideas — do NOT re-propose an idea matching a rejected entry
+4. Check the repo's recently closed-unmerged PRs (\`gh pr list --state closed --search "is:unmerged" --limit 20\`, or the forge's equivalent) — a brainstormed feature whose PR the user closed WITHOUT merging was rejected; treat those ideas as rejected too
+5. Review the codebase structure, recent git log, and any README or docs to understand the app
+6. Identify ONE small, high-impact feature that:
+   - Aligns with GOALS.md priorities (if available)
+   - Is NOT already shipped per recent \`.changelog/\` entries or \`git log\` (avoid re-implementing shipped features)
+   - Does NOT match a REJECTED.md entry or a closed-unmerged automation PR (rejected ideas stay rejected)
+   - Saves user time, improves UX, or makes the app more useful
+   - Is self-contained and completable in one session
+   - Does NOT duplicate existing functionality
+7. Implement the feature:
+   - Write clean, tested code following existing patterns
+   - Run tests to ensure nothing is broken
+8. **Review your changed code for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix any findings. Claude Code can run \`/simplify\` for this pass; on other CLIs, do the equivalent diff review by hand.
+9. Add the feature as a checked item in PLAN.md (create the file if needed) **with a slug ID** derived from the feature title (lowercase kebab-case, ≤50 chars, unique against every existing \`[slug]\` in PLAN.md):
+   \`\`\`
+   - [x] [<slug-of-feature>] <description of the feature you implemented>
+   \`\`\`
+10. Commit with a clear description of the feature and rationale`,
   ],
   'plan-task': [
     // v14 default (pre-local-reviewer invocation and verified immediate merge)
@@ -9130,6 +9239,38 @@ Analyze PortOS codebase for security vulnerabilities:
 4. Check server/lib/commandAllowlist.js is comprehensive
 
 Fix any vulnerabilities and commit with security advisory notes.`,
+    // v1 genericized default, shipped under the retired `[App Improvement: …]`
+    // header. The header rename is handled by normalizeLegacyPromptHeader
+    // (shippedPrompts.js); this body is preserved because step 4 changed too.
+    `[App Improvement: {appName}] Security Audit
+
+Analyze the {appName} codebase for security vulnerabilities:
+
+Repository: {repoPath}
+
+1. Review routes/controllers for:
+   - Command injection in exec/spawn calls
+   - Path traversal in file operations
+   - Missing input validation
+   - XSS vulnerabilities
+   - SQL/NoSQL injection
+
+2. Review services for:
+   - Unsafe eval() or Function()
+   - Hardcoded credentials
+   - Insecure dependencies
+
+3. Review client code for:
+   - XSS vulnerabilities
+   - Sensitive data in localStorage
+   - CSRF protection
+
+4. Check authentication and authorization:
+   - Secure password handling
+   - Token management
+   - Access control
+
+Fix any vulnerabilities found and commit with security advisory notes.`,
   ],
   'code-quality': [
     // prior default (pre-genericization / intermediate)

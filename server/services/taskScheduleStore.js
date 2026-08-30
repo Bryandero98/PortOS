@@ -15,7 +15,10 @@ import {
 import {
   DEFAULT_TASK_PROMPTS,
   PROMPT_VERSIONS,
-  PREVIOUS_DEFAULT_PROMPTS
+  // True when a stored prompt matches a shipped default (current or prior).
+  // A genuine user edit never does, so loadSchedule treats a match as
+  // "not really customized" — see taskPromptDefaults/shippedPrompts.js.
+  promptMatchesShippedDefault
 } from './taskPromptDefaults.js';
 
 const DATA_DIR = PATHS.cos;
@@ -132,19 +135,6 @@ function migrateScheduleV1toV2(schedule) {
   return migrated;
 }
 
-// True when a stored prompt byte-matches a shipped default for this task — the
-// current default or any prior one in PREVIOUS_DEFAULT_PROMPTS. Used by
-// loadSchedule both to recognize legacy (unversioned) prompts and to self-heal a
-// prompt mis-flagged as customized. A genuine user edit never byte-matches a
-// shipped default, so callers can treat a match as "not really customized".
-function promptMatchesShippedDefault(prompt, taskType) {
-  if (!prompt || !DEFAULT_TASK_PROMPTS[taskType]) return false;
-  return (
-    prompt === DEFAULT_TASK_PROMPTS[taskType] ||
-    (PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(prompt)
-  );
-}
-
 /**
  * Read and normalize schedule data without deciding whether the normalized
  * result should be persisted. Callers that mutate the result must do so inside
@@ -224,7 +214,7 @@ async function readSchedule() {
           // Matches current default — assign current version (no upgrade needed)
           config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
           needsSave = true;
-        } else if ((PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(config.prompt)) {
+        } else if (promptMatchesShippedDefault(config.prompt, taskType)) {
           // Matches a known previous default — assign version 1 so auto-upgrade triggers
           config.promptVersion = 1;
           needsSave = true;
@@ -237,11 +227,13 @@ async function readSchedule() {
       }
 
       // Self-heal a mis-flagged customization: a prompt marked promptCustomized
-      // that nonetheless byte-matches a shipped default was never user-edited —
-      // it was flagged by an earlier legacy migration that ran before this task
-      // carried a PREVIOUS_DEFAULT_PROMPTS entry (e.g. the basic self-improvement
-      // prompts that hardcoded the app name as "PortOS"). Clear the flag so the
-      // auto-upgrade below can replace the stale default.
+      // that nonetheless matches a shipped default was never user-edited — it
+      // was flagged by an earlier legacy migration that ran before this task
+      // carried a PREVIOUS_DEFAULT_PROMPTS entry (the basic self-improvement
+      // prompts that hardcoded the app name as "PortOS", and the whole
+      // `[App Improvement: …]`-header generation the schedule unification
+      // renamed without preserving). Clear the flag so the auto-upgrade below
+      // can replace the stale default.
       if (config.promptCustomized && promptMatchesShippedDefault(config.prompt, taskType)) {
         config.promptCustomized = false;
         needsSave = true;

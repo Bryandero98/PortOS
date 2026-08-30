@@ -17,7 +17,7 @@
     "react-lifecycle": "14b3816d1bcc10f0d7d6357e55cc5e69",
     "observability": "fdb4d77df5891cfb653a5da2553ecf8a",
     "copy": "6a0959e898d37fb4d4d7445dfc8008c9",
-    "feature-ideas": "d3282f16da29efe2d53595b3b34778bc",
+    "feature-ideas": "804f62f1dadadbfa8a0bcd4aff16b2e8",
     "plan-feature": "87f71a894757f89354da4e2119e07118",
     "plan-task": "b85fe92999aa4ee4a8910320457c4242",
     "claim-issue": "9bf278ab141120625cd6faf854622f91",
@@ -45,7 +45,7 @@
   },
   "PROMPT_VERSIONS": {
     "do-replan": 2,
-    "feature-ideas": 10,
+    "feature-ideas": 11,
     "plan-task": 18,
     "claim-issue": 22,
     "claim-issue-gitlab": 20,
@@ -64,6 +64,9 @@
     "test-coverage": 2,
     "performance": 2,
     "accessibility": 2,
+    "console-errors": 2,
+    "error-handling": 2,
+    "typing": 2,
     "dependency-updates": 4,
     "documentation": 6,
     "ui-bugs": 2,
@@ -85,6 +88,7 @@
       "59a57f1bb445138c30ab4fa23630c6f8"
     ],
     "feature-ideas": [
+      "abc098e3acf4eb6b9d1211680ec0440f",
       "d67a9028aeb8bb8348453951f878501b",
       "c6a399399245872401666d5c67c716cc",
       "a4a4b4d7191ae58b82140295c3df5926",
@@ -92,7 +96,8 @@
       "5a0350fa6db8ac040fb638fdd4a31700",
       "d076e19a6848f6452f4d1078b096ba4b",
       "73cdc70f8d14fc909668054bbcee1259",
-      "0741418bd275b8953131155f8bc89460"
+      "0741418bd275b8953131155f8bc89460",
+      "d3282f16da29efe2d53595b3b34778bc"
     ],
     "plan-task": [
       "4df36bed4974ff41f369c86828e7f94f",
@@ -181,7 +186,8 @@
       "af99e76b4881d1a18234eff0d58d49a4"
     ],
     "security": [
-      "d0f54c1fbe62d067b1a23ee0a9f3528c"
+      "d0f54c1fbe62d067b1a23ee0a9f3528c",
+      "b199739b21a8c45ed3778b2339ebf55f"
     ],
     "code-quality": [
       "b1cce8f89218844746746ceb576553c1"

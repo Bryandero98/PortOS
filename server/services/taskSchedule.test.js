@@ -427,6 +427,85 @@ describe('taskSchedule', () => {
     })
   })
 
+  describe('[App Improvement: …] header generation', () => {
+    // The unification of the self-improvement and app-improvement schedules
+    // renamed every basic prompt header from `[App Improvement: {appName}]` to
+    // `[Improvement: {appName}]` without preserving the outgoing bodies. Every
+    // install carrying that generation stopped matching a shipped default, got
+    // stamped promptCustomized by the legacy migration, and has been frozen out
+    // of every prompt upgrade since — nine task types on a real install. These
+    // fixtures are the bodies those installs actually stored.
+    const legacyConsoleErrors = `[App Improvement: {appName}] Console Error Investigation
+
+Find and fix console errors in {appName}:
+
+Repository: {repoPath}
+
+1. If the app has a UI, check browser console for errors
+2. Check server logs for errors
+3. For each error:
+   - Identify the source file and line
+   - Understand the root cause
+   - Implement a fix
+
+4. Test fixes and commit changes`
+    const legacySecurity = PREVIOUS_DEFAULT_PROMPTS['security'].find((p) => p.startsWith('[App Improvement: '))
+    const legacyFeatureIdeas = PREVIOUS_DEFAULT_PROMPTS['feature-ideas'].find((p) => p.startsWith('[Self-Improvement] '))
+
+    const loadOne = async (taskType, prompt, promptVersion) => {
+      mockSchedule({
+        tasks: { [taskType]: { type: 'once', enabled: false, providerId: null, model: null, prompt, promptVersion, promptCustomized: true } }
+      })
+      return (await loadSchedule()).tasks[taskType]
+    }
+
+    it.each([
+      ['console-errors', legacyConsoleErrors, 1],
+      ['security', legacySecurity, 1],
+      ['feature-ideas', legacyFeatureIdeas, 2],
+    ])('self-heals and upgrades a stored %s prompt from that generation', async (taskType, prompt, storedVersion) => {
+      const task = await loadOne(taskType, prompt, storedVersion)
+      expect(task.promptCustomized).toBe(false)
+      expect(task.prompt).toBe(DEFAULT_TASK_PROMPTS[taskType])
+      expect(task.promptVersion).toBe(PROMPT_VERSIONS[taskType])
+    })
+
+    // Without a PROMPT_VERSIONS entry the auto-upgrade block is skipped
+    // entirely, so clearing promptCustomized alone would leave these three
+    // pinned to the legacy body forever.
+    it('versions the task types whose only shipped revision was the header rename', () => {
+      for (const t of ['console-errors', 'error-handling', 'typing']) {
+        expect(PROMPT_VERSIONS[t], `PROMPT_VERSIONS['${t}']`).toBeGreaterThanOrEqual(2)
+      }
+    })
+
+    it('preserves a genuine user customization that merely uses the legacy header', async () => {
+      const custom = '[App Improvement: {appName}] My own audit that matches no shipped default.'
+      const task = await loadOne('console-errors', custom, 1)
+      expect(task.prompt).toBe(custom)
+      expect(task.promptCustomized).toBe(true)
+    })
+
+    // The frozen feature-ideas body sent every run to `data/COS-GOALS.md`, a
+    // file the same unification folded into the root GOALS.md.
+    it('retires the COS-GOALS.md reference once feature-ideas upgrades', async () => {
+      const task = await loadOne('feature-ideas', legacyFeatureIdeas, 2)
+      expect(legacyFeatureIdeas).toContain('data/COS-GOALS.md')
+      expect(task.prompt).not.toContain('COS-GOALS.md')
+    })
+  })
+
+  describe('feature-ideas product-source precedence', () => {
+    it('reads PRD.md first and falls back to GOALS.md when brainstorming', () => {
+      const prompt = DEFAULT_TASK_PROMPTS['feature-ideas']
+      expect(prompt).toContain('`PRD.md`')
+      expect(prompt).toContain('`GOALS.md`')
+      // Precedence, not just presence: the PRD instruction must come first.
+      expect(prompt.indexOf('`PRD.md`')).toBeLessThan(prompt.indexOf('`GOALS.md`'))
+      expect(prompt).toContain('follow the PRD\'s concrete requirements')
+    })
+  })
+
   describe('changelog-fragment prompt revision (issue #3998)', () => {
     // Pins that each task type touched by this revision actually participates in
     // the auto-upgrade path: it is in PROMPT_VERSIONS, loadSchedule walks it, and
