@@ -154,10 +154,32 @@ describe('the advisory is actually reachable', () => {
   });
 });
 
+describe('PortOS-managed installs preserve committed lockfiles', () => {
+  it('passes --no-save through every setup, update, and dependency-repair install', () => {
+    const managedEntrypoints = [
+      ['package.json', /npm install(?: --prefix \w+)?/g],
+      ['setup.ps1', /^npm install/gm],
+      ['update.ps1', /Invoke-Logged npm install/g],
+      ['update.sh', /run npm install/g],
+      ['scripts/ensure-deps.js', /npmSpawn\(\['install'/g],
+    ];
+
+    for (const [rel, installPattern] of managedEntrypoints) {
+      const body = readFileSync(join(REPO_ROOT, rel), 'utf8');
+      const installs = [...body.matchAll(installPattern)];
+      expect(installs.length, `${rel} has no managed npm installs to verify`).toBeGreaterThan(0);
+      for (const install of installs) {
+        const command = body.slice(install.index, install.index + 80);
+        expect(command, `${rel}: ${install[0]} must preserve package-lock.json`).toContain('--no-save');
+      }
+    }
+  });
+});
+
 describe('the floor is declared where npm itself reads it', () => {
   // The three scripts above cover `npm run setup|start|dev` and nothing else.
-  // `cd client && npm install`, `npm i <pkg>` and `npm ci` are how the lockfile
-  // churn actually gets introduced, and only `engines.npm` reaches those.
+  // Direct `cd client && npm install` and `npm i <pkg>` are how lockfile churn
+  // still gets introduced; only `engines.npm` reaches those authoring paths.
   const MANIFESTS = ['package.json', 'client/package.json', 'server/package.json', 'autofixer/package.json'];
 
   it.each(MANIFESTS)('%s declares engines.npm = the floor', (rel) => {
