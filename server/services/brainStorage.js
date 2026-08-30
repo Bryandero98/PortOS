@@ -1286,9 +1286,10 @@ export function invalidateAllCaches() {
  * Get brain data summary (for dashboard)
  */
 export async function getSummary() {
-  const types = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
-  const [typeRows, inboxCounts, meta] = await Promise.all([
+  const types = ['people', 'projects', 'ideas', 'admin', 'memories', 'buckets'];
+  const [typeRows, linkRows, inboxCounts, meta] = await Promise.all([
     Promise.all(types.map((type) => resolveRecordIndex(summaryIndex, type, 0))),
+    resolveLinkSummaries(),
     getInboxLogCounts(),
     loadMeta()
   ]);
@@ -1296,6 +1297,7 @@ export async function getSummary() {
     type,
     typeRows[i].map(([, summary]) => summary).filter(Boolean),
   ]));
+  const links = linkRows.map(([, summary]) => summary).filter(Boolean);
 
   return {
     counts: {
@@ -1304,14 +1306,14 @@ export async function getSummary() {
       ideas: summaries.ideas.length,
       admin: summaries.admin.length,
       memories: summaries.memories.length,
-      links: summaries.links.length,
+      links: links.length,
       buckets: summaries.buckets.length,
       inbox: inboxCounts
     },
     activeProjects: summaries.projects.filter(p => p.status === 'active').length,
     activeIdeas: summaries.ideas.filter(i => !i.status || i.status === 'active').length,
     openAdmin: summaries.admin.filter(a => a.status === 'open').length,
-    gitHubRepos: summaries.links.filter(l => l.isGitHubRepo).length,
+    gitHubRepos: links.filter(l => l.isGitHubRepo).length,
     needsReview: inboxCounts.needs_review,
     lastDailyDigest: meta.lastDailyDigest,
     lastWeeklyReview: meta.lastWeeklyReview
