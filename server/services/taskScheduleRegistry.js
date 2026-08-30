@@ -191,7 +191,9 @@ export const INSTALL_WIDE_TASK_TYPES = new Set(['repo-sync']);
 // type keeps provider work silent until the user explicitly runs a task, while
 // retaining timing metadata such as custom intervals and recheck settings if
 // they later choose a scheduled interval. Existing persisted settings still
-// win when a schedule is loaded.
+// win when a schedule is loaded. A `feature` association is the exception: it
+// is code-owned and makes the task invisible and non-runnable while that
+// install-wide feature is disabled.
 export const DEFAULT_TASK_INTERVALS = {
   'security':            { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   'code-quality':        { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
@@ -320,13 +322,13 @@ export const DEFAULT_TASK_INTERVALS = {
   'pr-reviewer':         { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 7200000, enabled: true, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: true, pipeline: { stages: [{ name: 'Security Scan', promptKey: 'pr-reviewer-security', readOnly: true }, { name: 'Code Review & Merge', promptKey: 'pr-reviewer-review', readOnly: false }] } } },
   'code-reviewer-a':     { ...CODE_REVIEWER_INTERVAL },
   'code-reviewer-b':     { ...CODE_REVIEWER_INTERVAL },
-  'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
+  'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, weekdaysOnly: true, feature: 'jira', providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
   // jira-status-report posts its report to JIRA and edits nothing in the repo, so it
   // takes the shared non-committing-coordinator posture above. `readOnly: true` alone
   // was NOT enough: it skips worktree creation but leaves `openPR` free to be filled
   // from the app's `defaultOpenPR`, and the finalize-time PR-claim check reads
   // `metadata.openPR` directly — scoring a posted report as `pr-missing`.
-  'jira-status-report':  { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, readOnly: true } },
+  'jira-status-report':  { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, weekdaysOnly: true, feature: 'jira', providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, readOnly: true } },
   // do-replan audits PLAN.md after open PRs and stale branches have been cleaned up,
   // so the plan reflects what actually merged.
   'do-replan':           { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, runAfter: ['pr-reviewer', 'branch-reconcile'], taskMetadata: { useWorktree: true, openPR: true } },

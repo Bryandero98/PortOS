@@ -65,6 +65,10 @@ vi.mock('./apps.js', () => ({
   clearAllIssueWatcherState: vi.fn().mockResolvedValue({ changed: false })
 }))
 
+vi.mock('./instanceFeatures.js', () => ({
+  isInstanceFeatureEnabled: vi.fn().mockResolvedValue(true),
+}))
+
 vi.mock('../lib/ports.js', () => ({
   PORTOS_UI_URL: 'http://localhost:5554',
   PORTOS_API_URL: 'http://localhost:5555'
@@ -121,6 +125,7 @@ import {
   deleteTemplateTask,
   resetExecutionHistory,
   triggerOnDemandTask,
+  getOnDemandRequests,
   getScheduleStatus,
   computePerpetualRecheckAt,
   parkPerpetual,
@@ -172,9 +177,10 @@ import { getLocalParts } from '../lib/timezone.js'
 import { getAdaptiveCooldownMultiplier } from './taskLearning.js'
 import { parseCronToNextRun, parseCronToPrevRun } from './eventScheduler.js'
 import { addNotification, exists as notificationExists, removeByMetadata } from './notifications.js'
+import { isInstanceFeatureEnabled } from './instanceFeatures.js'
 
-const mockSchedule = ({ tasks = {}, executions = {}, templates = [] } = {}) => {
-  readJSONFile.mockResolvedValue({ version: 2, tasks, executions, templates })
+const mockSchedule = ({ tasks = {}, executions = {}, templates = [], onDemandRequests = [] } = {}) => {
+  readJSONFile.mockResolvedValue({ version: 2, tasks, executions, templates, onDemandRequests })
 }
 
 // Resolve "the most recent 9 AM in the past, local time." Bare
@@ -193,6 +199,7 @@ const recentNineAm = () => {
 describe('taskSchedule', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    isInstanceFeatureEnabled.mockResolvedValue(true)
     // Default: no saved schedule → use defaults
     readJSONFile.mockResolvedValue(null)
   })
@@ -232,6 +239,25 @@ describe('taskSchedule', () => {
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('performance')
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('dependency-updates')
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('do-replan')
+    })
+  })
+
+  describe('feature-gated shipped tasks', () => {
+    it('associates both shipped JIRA tasks with the JIRA instance feature', () => {
+      expect(DEFAULT_TASK_INTERVALS['jira-sprint-manager'].feature).toBe('jira')
+      expect(DEFAULT_TASK_INTERVALS['jira-status-report'].feature).toBe('jira')
+    })
+
+    it('keeps the shipped feature association authoritative over persisted state', async () => {
+      mockSchedule({ tasks: {
+        'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, feature: 'post' },
+        security: { type: INTERVAL_TYPES.WEEKLY, enabled: true, feature: 'jira' },
+      } })
+
+      const schedule = await loadSchedule()
+
+      expect(schedule.tasks['jira-sprint-manager'].feature).toBe('jira')
+      expect(schedule.tasks.security).not.toHaveProperty('feature')
     })
   })
 
@@ -946,6 +972,15 @@ describe('taskSchedule', () => {
   })
 
   describe('shouldRunTask', () => {
+    it('does not run a task whose required instance feature is disabled', async () => {
+      isInstanceFeatureEnabled.mockResolvedValue(false)
+      mockSchedule({ tasks: { 'jira-sprint-manager': { type: 'rotation', enabled: true } } })
+
+      const result = await shouldRunTask('jira-sprint-manager')
+
+      expect(result).toEqual({ shouldRun: false, reason: 'feature-disabled', feature: 'jira' })
+    })
+
     it('should not run disabled task', async () => {
       mockSchedule({
         tasks: { 'disabled-task': { type: 'weekly', enabled: false, providerId: null, model: null, prompt: null } }
@@ -1300,6 +1335,15 @@ describe('taskSchedule', () => {
 
       const result = await getNextTaskType(null, 'code-quality')
       expect(result.taskType).toBe('error-handling')
+    })
+
+    it('does not select a feature-disabled rotation task', async () => {
+      isInstanceFeatureEnabled.mockResolvedValue(false)
+      mockSchedule({ tasks: {
+        'jira-sprint-manager': { type: INTERVAL_TYPES.ROTATION, enabled: true },
+      } })
+
+      expect(await getNextTaskType()).toBeNull()
     })
 
     it('prefers a due cron task over a perpetually-ready weekly task', async () => {
@@ -1806,6 +1850,26 @@ describe('taskSchedule', () => {
       expect(loadState).not.toHaveBeenCalled()
     })
 
+    it('rejects a manual run when the task feature is disabled', async () => {
+      isInstanceFeatureEnabled.mockResolvedValue(false)
+      mockSchedule({ tasks: { 'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } } })
+
+      const result = await triggerOnDemandTask('jira-sprint-manager', 'app-1')
+
+      expect(result.error).toMatch(/requires the 'jira' feature/i)
+      expect(loadState).not.toHaveBeenCalled()
+    })
+
+    it('does not dispatch a queued request after its task feature is disabled', async () => {
+      isInstanceFeatureEnabled.mockResolvedValue(false)
+      mockSchedule({
+        tasks: { 'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } },
+        onDemandRequests: [{ id: 'demand-existing', taskType: 'jira-sprint-manager', appId: 'app-1' }],
+      })
+
+      expect(await getOnDemandRequests()).toEqual([])
+    })
+
     it('should accept a manual run for an enabled on-demand task', async () => {
       mockSchedule({
         tasks: { 'security': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } }
@@ -1935,6 +1999,16 @@ describe('taskSchedule', () => {
       const status = await getScheduleStatus()
 
       expect(status.improvementEnabled).toBe(false)
+    })
+
+    it('hides shipped tasks whose required instance feature is disabled', async () => {
+      isInstanceFeatureEnabled.mockResolvedValue(false)
+      mockSchedule({ tasks: { 'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } } })
+
+      const status = await getScheduleStatus()
+
+      expect(status.tasks).not.toHaveProperty('jira-sprint-manager')
+      expect(status.tasks).not.toHaveProperty('jira-status-report')
     })
   })
 
