@@ -434,5 +434,46 @@ describe('brainSyncLog', () => {
       expect(lastReadStart()).toBe(lineOffset(2));
       expect(result.changes.map(c => c.seq)).toEqual([5]);
     });
+
+    it('keeps exactly the newest entry when compactLog(currentSeq) is called and recovers seq across restarts (#5439)', async () => {
+      for (let i = 0; i < 5; i++) {
+        await appendChange('create', 'people', `p${i}`, { name: `Person ${i}` }, 'inst-1');
+      }
+      expect(getCurrentSeq()).toBe(5);
+
+      // Compact keeping only seq >= 5
+      const dropped = await compactLog(getCurrentSeq());
+      expect(dropped).toBe(4);
+
+      // Verify file on disk has only seq 5
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const parsed = JSON.parse(lines[0]);
+      expect(parsed.seq).toBe(5);
+      expect(parsed.id).toBe('p4');
+
+      // Simulate restart: re-initialize the log
+      await initSyncLog();
+      expect(getCurrentSeq()).toBe(5);
+
+      // Subsequent appends continue monotonic sequence numbers
+      const nextEntry = await appendChange('create', 'people', 'p5', { name: 'Person 5' }, 'inst-1');
+      expect(nextEntry.seq).toBe(6);
+      expect(getCurrentSeq()).toBe(6);
+    });
+
+    it('returns 0 and does not rewrite file when no entries are dropped (#5439)', async () => {
+      for (let i = 0; i < 3; i++) {
+        await appendChange('create', 'people', `p${i}`, { name: `Person ${i}` }, 'inst-1');
+      }
+      const beforeContent = readFileSync(syncLogPath(), 'utf8');
+
+      // Calling compactLog with minSeq <= 1 drops nothing
+      const dropped = await compactLog(1);
+      expect(dropped).toBe(0);
+
+      const afterContent = readFileSync(syncLogPath(), 'utf8');
+      expect(afterContent).toBe(beforeContent);
+    });
   });
 });

@@ -874,6 +874,11 @@ export async function syncAllPeers() {
     });
     const minSeq = Math.min(...consumedSeqs);
     await brainSyncLog.compactLog(minSeq);
+  } else if (brainSyncLog.getCurrentSeq() > 0) {
+    // No brain-sync peer will ever pull these entries; a peer added later
+    // converges through the reconcile snapshot (#1077). Keep the last entry so
+    // initSyncLog still recovers the sequence counter across restarts.
+    await brainSyncLog.compactLog(brainSyncLog.getCurrentSeq());
   }
 }
 

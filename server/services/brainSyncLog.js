@@ -261,6 +261,8 @@ export async function compactLog(minSeq) {
       kept.push({ line, seq: entry.seq });
     }
 
+    if (dropped === 0) return 0;
+
     const newContent = kept.length > 0 ? kept.map(k => k.line).join('\n') + '\n' : '';
     await atomicWrite(SYNC_LOG_FILE, newContent);
 
