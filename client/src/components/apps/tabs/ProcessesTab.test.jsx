@@ -99,6 +99,7 @@ describe('ProcessesTab', () => {
     expect(container.contains(overlay)).toBe(false);
     expect(overlay.parentElement).toBe(document.body);
     expect(screen.getByText('Logs: example-api')).toBeTruthy();
+    expect(screen.getByTestId('fullscreen-log-controls')).toHaveClass('flex-wrap');
 
     // Exiting fullscreen tears the portaled overlay back down.
     fireEvent.click(screen.getByRole('button', { name: 'Exit fullscreen' }));

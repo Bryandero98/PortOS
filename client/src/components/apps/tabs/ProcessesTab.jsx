@@ -199,14 +199,14 @@ export default function ProcessesTab({ appId, pm2ProcessNames, filterFn }) {
                               <span className="text-xs text-gray-600">{logs.length} lines</span>
                               <button
                                 onClick={clearLogs}
-                                className="min-h-[44px] px-1 text-xs text-gray-500 hover:text-white"
+                                className="min-h-[44px] min-w-[44px] px-1 text-xs text-gray-500 hover:text-white"
                               >
                                 Clear
                               </button>
                               <button
                                 onClick={copyLogs}
                                 disabled={logs.length === 0}
-                                className="min-h-[44px] px-1 text-xs text-gray-500 hover:text-white disabled:opacity-50 disabled:hover:text-gray-500"
+                                className="min-h-[44px] min-w-[44px] px-1 text-xs text-gray-500 hover:text-white disabled:opacity-50 disabled:hover:text-gray-500"
                               >
                                 Copy logs
                               </button>
@@ -265,7 +265,7 @@ export default function ProcessesTab({ appId, pm2ProcessNames, filterFn }) {
                 <span className="text-sm text-port-success">● streaming</span>
               )}
             </div>
-            <div className="flex items-center gap-4">
+            <div data-testid="fullscreen-log-controls" className="flex flex-wrap items-center gap-2 sm:gap-4">
               <FormField className="flex items-center gap-2" label="Tail lines:" labelClassName="text-sm text-gray-500">
                 <select
                   value={tailLines}
@@ -282,14 +282,14 @@ export default function ProcessesTab({ appId, pm2ProcessNames, filterFn }) {
               <span className="text-sm text-gray-600">{logs.length} lines</span>
               <button
                 onClick={clearLogs}
-                className="min-h-[44px] px-1 text-sm text-gray-500 hover:text-white"
+                className="min-h-[44px] min-w-[44px] px-1 text-sm text-gray-500 hover:text-white"
               >
                 Clear
               </button>
               <button
                 onClick={copyLogs}
                 disabled={logs.length === 0}
-                className="min-h-[44px] px-1 text-sm text-gray-500 hover:text-white disabled:opacity-50 disabled:hover:text-gray-500"
+                className="min-h-[44px] min-w-[44px] px-1 text-sm text-gray-500 hover:text-white disabled:opacity-50 disabled:hover:text-gray-500"
               >
                 Copy logs
               </button>
