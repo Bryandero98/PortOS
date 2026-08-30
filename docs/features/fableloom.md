@@ -98,6 +98,13 @@ scene-local clothes cannot silently reappear between episodes.
   are client-side state (restart is free; nothing persists server-side).
 - **Story settings drawer** — audience role and communication medium, scene
   format (plus the rewrite pass), and the narrator's provider/model/effort pin.
+- **AI editor, reviewer & playtest** — a whole-series remediation pass and a
+  bounded autopilot that alternates safe edits with deterministic + narrative
+  path review. Its optional **Improve FableLoom itself** post-mortem runs only
+  after a pause or failure, sends content-free counters (never story records)
+  through one budget-gated diagnosis, and queues a deduplicated PortOS CoS task
+  when the workflow rather than the story is at fault. The task remains in the
+  approval queue; the per-run checkbox does not grant unattended source edits.
 - **Series detail page** (`/pipeline/series/:seriesId`) — a "Branching
   narratives" card lists the looms linked to that series (counts + a link into
   the editor) and spawns a new one pre-linked to the series and its universe.

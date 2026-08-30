@@ -81,6 +81,7 @@ function FindingLink({ loom, finding }) {
 export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
   const [route, setRoute] = useState({ providerId: '', model: '', effort: '' });
   const [maxRounds, setMaxRounds] = useState(3);
+  const [selfImprove, setSelfImprove] = useState(false);
   const [result, setResult] = useState(null);
   const [autopilotRun, setAutopilotRun] = useState(null);
   const handledTerminalRunRef = useRef(null);
@@ -165,6 +166,7 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
     const run = await startLoomEditorialAutopilot(loom.id, {
       ...routeBody,
       maxRounds,
+      ...(selfImprove ? { selfImprove: true } : {}),
     }, { silent: true });
     handledTerminalRunRef.current = null;
     setAutopilotRun(run);
@@ -194,7 +196,7 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
   const findings = result?.type === 'autopilot' || shownRun?.status
     ? shownRun?.residualFindings || []
     : review?.findings?.length ? review.findings : evaluation?.findings || [];
-  const summary = review?.summary || evaluation?.summary || shownRun?.message;
+  const summary = shownRun?.message || review?.summary || evaluation?.summary;
   const passed = result?.type === 'playtest'
     ? response?.passed
     : shownRun?.status === 'completed' || diagnostics?.passed;
@@ -261,6 +263,25 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
           {route.effort ? ` at ${route.effort} effort` : ' at the provider default effort'}.
         </p>
       ) : null}
+
+      <div className="rounded border border-port-border bg-port-bg/30 px-3 py-2">
+        <label htmlFor="fableloom-editorial-self-improve" className="flex items-start gap-2 text-xs text-port-text">
+          <input
+            id="fableloom-editorial-self-improve"
+            type="checkbox"
+            checked={selfImprove}
+            onChange={(event) => setSelfImprove(event.target.checked)}
+            disabled={busy}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-medium">Improve FableLoom itself when autopilot stalls or fails</span>
+            <span className="mt-1 block text-[11px] text-port-text-muted">
+              Runs one content-free, budget-gated post-mortem to distinguish story work from a broken or inefficient editor/reviewer workflow. A confident PortOS defect queues a deduplicated worktree + PR CoS task in the approval queue; it never starts by itself. Healthy and canceled runs spend nothing.
+            </span>
+          </span>
+        </label>
+      </div>
 
       <div className="grid gap-2 sm:grid-cols-3">
         <button
@@ -376,6 +397,25 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
             <p className="text-[11px] text-port-text-muted">
               {shownRun.rounds.length} bounded editorial round{shownRun.rounds.length === 1 ? '' : 's'} recorded. The run stops on success, plateau, cancellation, provider failure, or the selected round limit.
             </p>
+          ) : null}
+          {shownRun?.selfImprove?.verdict === 'pipeline' ? (
+            <div className="rounded border border-port-accent/30 bg-port-accent/5 px-3 py-2 text-xs text-port-accent">
+              <p>
+                {shownRun.selfImprove.duplicate
+                  ? `FableLoom improvement already tracked (${shownRun.selfImprove.area}): ${shownRun.selfImprove.title}`
+                  : shownRun.selfImprove.filed
+                    ? `Queued a FableLoom improvement (${shownRun.selfImprove.area}): ${shownRun.selfImprove.title}`
+                    : `Diagnosed a FableLoom workflow defect (${shownRun.selfImprove.area}), but task filing failed: ${shownRun.selfImprove.title}`}
+              </p>
+              {shownRun.selfImprove.taskId ? (
+                <Link
+                  to={`/cos/tasks?task=${encodeURIComponent(shownRun.selfImprove.taskId)}&source=internal`}
+                  className="mt-1 inline-block font-medium hover:underline"
+                >
+                  Review CoS task
+                </Link>
+              ) : null}
+            </div>
           ) : null}
         </div>
       ) : null}

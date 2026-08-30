@@ -199,11 +199,17 @@ describe('FableLoom routes', () => {
     fableLoom.startFableLoomEditorialAutopilot.mockResolvedValueOnce(running);
     const started = await request(makeApp())
       .post('/api/fableloom/loom-1/editorial/autopilot/start')
-      .send({ maxRounds: 3, maxPaths: 128, providerId: 'writer' });
+      .send({ maxRounds: 3, maxPaths: 128, providerId: 'writer', selfImprove: true });
     expect(started.status).toBe(202);
     expect(fableLoom.startFableLoomEditorialAutopilot).toHaveBeenCalledWith('loom-1', {
-      maxRounds: 3, maxPaths: 128, providerId: 'writer',
+      maxRounds: 3, maxPaths: 128, providerId: 'writer', selfImprove: true,
     });
+
+    const invalid = await request(makeApp())
+      .post('/api/fableloom/loom-1/editorial/autopilot/start')
+      .send({ selfImprove: 'yes' });
+    expect(invalid.status).toBe(400);
+    expect(fableLoom.startFableLoomEditorialAutopilot).toHaveBeenCalledTimes(1);
 
     fableLoom.getLoom.mockResolvedValueOnce({ id: 'loom-1' });
     fableLoom.getLatestFableLoomEditorialAutopilot.mockReturnValueOnce(running);
