@@ -1308,8 +1308,8 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
       expect(spawn.mock.calls[0][1]).not.toContain('--dry-run');
     });
 
-    it('invalidates Brain projections after a selective live Brain restore', async () => {
-      await runRestore('/dest', 'snap-1', { dryRun: false, subdirFilter: 'brain' });
+    it('invalidates Brain projections after a nested selective live Brain restore', async () => {
+      await runRestore('/dest', 'snap-1', { dryRun: false, subdirFilter: 'brain/inbox' });
 
       expect(invalidateBrainCaches).toHaveBeenCalledTimes(1);
     });

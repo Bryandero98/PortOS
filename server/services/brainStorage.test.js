@@ -690,11 +690,18 @@ describe('getInboxLog (paginated inbox reads, issue #5440)', () => {
 
     const tieIds = [tieA.id, tieB.id].sort();
     const expected = [newest.id, ...tieIds, oldest.id, missing.id];
-    const pageOne = await brainStorage.getInboxLog({ limit: 2, offset: 0 });
-    const pageTwo = await brainStorage.getInboxLog({ limit: 3, offset: 2 });
-    expect([...pageOne, ...pageTwo].map(({ id }) => id)).toEqual(expected);
-    expect(new Set([...pageOne, ...pageTwo].map(({ id }) => id)).size).toBe(expected.length);
-    expect((await brainStorage.getInboxLog({ status: 'needs_review' })).map(({ id }) => id))
+    const seededIds = new Set(expected);
+    const all = await brainStorage.getInboxLog({ limit: 100 });
+    expect(all.filter(({ id }) => seededIds.has(id)).map(({ id }) => id)).toEqual(expected);
+
+    const split = Math.ceil(all.length / 2);
+    const pageOne = await brainStorage.getInboxLog({ limit: split, offset: 0 });
+    const pageTwo = await brainStorage.getInboxLog({ limit: 100, offset: split });
+    const pagedIds = [...pageOne, ...pageTwo].map(({ id }) => id);
+    expect(pagedIds).toEqual(all.map(({ id }) => id));
+    expect(new Set(pagedIds).size).toBe(all.length);
+    expect((await brainStorage.getInboxLog({ status: 'needs_review' }))
+      .filter(({ id }) => seededIds.has(id)).map(({ id }) => id))
       .toEqual([...tieIds, missing.id]);
   });
 

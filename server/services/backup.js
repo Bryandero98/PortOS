@@ -674,8 +674,11 @@ export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, sub
     // A live restore writes outside normal service mutation paths. Re-sync the
     // caches whose backing files may have changed instead of serving the
     // pre-restore projection until each record is next mutated or the process
-    // restarts. A selective restore can target only one top-level directory.
-    if (!subdirFilter || subdirFilter === 'brain') invalidateBrainCaches();
+    // restarts. Selective restores may target either `brain` itself or a nested
+    // path such as `brain/inbox`.
+    if (!subdirFilter || subdirFilter === 'brain' || subdirFilter.startsWith('brain/')) {
+      invalidateBrainCaches();
+    }
     await reloadSettings();
   }
   return { dryRun, snapshotId, subdirFilter, changedFiles };
