@@ -4,6 +4,7 @@ import { readFile } from 'fs/promises';
 import * as gitService from './git.js';
 import * as pm2Service from './pm2.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
+import { parseCommandArgs } from '../lib/commandSecurity.js';
 
 const CMD_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -49,6 +50,10 @@ async function _doUpdate(app, emit) {
   const dir = app.repoPath;
   const steps = [];
   const packageManager = app.type === 'bun' ? 'bun' : 'npm';
+  const configuredRuntime = parseCommandArgs(app.startCommands?.[0] || '')[0];
+  const packageManagerCommand = packageManager === 'bun' && configuredRuntime
+    ? configuredRuntime
+    : packageManager;
   const installArgs = packageManager === 'bun' ? ['install', '--frozen-lockfile'] : ['install'];
 
   emit('git-pull', 'running', 'Pulling latest changes...');
@@ -76,7 +81,7 @@ async function _doUpdate(app, emit) {
       const label = sub || 'root';
       const stepId = `${packageManager}-install:${label}`;
       emit(stepId, 'running', `Installing ${label} dependencies...`);
-      await runCommand(packageManager, installArgs, subDir);
+      await runCommand(packageManagerCommand, installArgs, subDir);
       emit(stepId, 'done', `${label} dependencies installed`);
       steps.push({ step: stepId, success: true });
     }
@@ -87,7 +92,7 @@ async function _doUpdate(app, emit) {
     const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
     if (pkg.scripts?.setup) {
       emit('setup', 'running', 'Running setup...');
-      await runCommand(packageManager, ['run', 'setup'], dir);
+      await runCommand(packageManagerCommand, ['run', 'setup'], dir);
       emit('setup', 'done', 'Setup complete');
       steps.push({ step: 'setup', success: true });
     }

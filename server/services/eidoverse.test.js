@@ -4,6 +4,7 @@ import { join } from 'path';
 const mock = vi.hoisted(() => ({
   existing: new Set(),
   bunAvailable: true,
+  installedBunAvailable: false,
   apps: [],
   registryError: null,
   cloneRepo: vi.fn(),
@@ -24,7 +25,9 @@ vi.mock('../lib/fileUtils.js', () => ({
 }));
 
 vi.mock('../lib/commandExists.js', () => ({
-  commandExists: vi.fn(async () => mock.bunAvailable),
+  commandExists: vi.fn(async (command) => (
+    command === 'bun' ? mock.bunAvailable : mock.installedBunAvailable
+  )),
 }));
 
 vi.mock('../lib/execGit.js', () => ({
@@ -57,6 +60,8 @@ import {
   __resetEidoverseInstallForTests,
   DEFAULT_EIDOVERSE_WORLDS_REPO,
   EIDOVERSE_VIDEO_REPO,
+  getBunExecutable,
+  getBunInstallInvocation,
   getEidoversePaths,
   getEidoverseStatus,
   installEidoverse,
@@ -72,6 +77,7 @@ describe('Eidoverse managed-app installer', () => {
     vi.clearAllMocks();
     mock.existing.clear();
     mock.bunAvailable = true;
+    mock.installedBunAvailable = false;
     mock.apps = [];
     mock.registryError = null;
     mock.execGit.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
@@ -82,8 +88,12 @@ describe('Eidoverse managed-app installer', () => {
         ? join(selectedPaths.worlds, '.git')
         : join(selectedPaths.video, '.git'));
     });
-    mock.spawn.mockImplementation(async (_cmd, _args, { cwd }) => {
-      mock.existing.add(join(cwd, 'node_modules'));
+    mock.spawn.mockImplementation(async (command, _args, options = {}) => {
+      if (command === 'powershell' || command === 'bash') {
+        mock.installedBunAvailable = true;
+      } else {
+        mock.existing.add(join(options.cwd, 'node_modules'));
+      }
       return { stdout: '', stderr: '' };
     });
     mock.ensureDir.mockImplementation(async (path) => {
@@ -158,19 +168,80 @@ describe('Eidoverse managed-app installer', () => {
       .toBe(SELECTED_WORLDS_REPO);
   });
 
+  it('selects the official unattended Bun installer for each supported platform', () => {
+    expect(getBunInstallInvocation('win32')).toEqual({
+      command: 'powershell',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        "Invoke-RestMethod 'https://bun.com/install.ps1' | Invoke-Expression",
+      ],
+    });
+    expect(getBunInstallInvocation('darwin')).toEqual({
+      command: 'bash',
+      args: ['-c', 'curl -fsSL https://bun.com/install | bash'],
+    });
+    expect(getBunInstallInvocation('linux')).toEqual(getBunInstallInvocation('darwin'));
+  });
+
   it('rejects non-GitHub Worlds repositories before cloning', async () => {
     await expect(installEidoverse({ worldsRepoUrl: 'https://example.com/eidoverse-worlds' }))
       .rejects.toMatchObject({ status: 400, code: 'EIDOVERSE_REPO_INVALID' });
     expect(mock.cloneRepo).not.toHaveBeenCalled();
   });
 
-  it('refuses installation before creating files when Bun is unavailable', async () => {
+  it('installs Bun automatically before cloning when it is unavailable', async () => {
     mock.bunAvailable = false;
 
     await expect(installEidoverse({ worldsRepoUrl: SELECTED_WORLDS_REPO }))
-      .rejects.toMatchObject({ status: 412, code: 'EIDOVERSE_BUN_REQUIRED' });
+      .resolves.toMatchObject({ installed: true, bunAvailable: true });
+
+    const installer = getBunInstallInvocation();
+    const bunExecutable = getBunExecutable();
+    expect(mock.spawn).toHaveBeenCalledWith(
+      installer.command,
+      installer.args,
+      expect.objectContaining({ timeoutLabel: 'Bun installation' }),
+    );
+    expect(mock.spawn).toHaveBeenCalledWith(
+      bunExecutable,
+      ['install', '--frozen-lockfile'],
+      expect.objectContaining({ cwd: selectedPaths.worlds }),
+    );
+    expect(mock.createApp).toHaveBeenCalledWith(expect.objectContaining({
+      startCommands: [expect.stringContaining(bunExecutable)],
+    }));
+  });
+
+  it('reuses the default Bun installation even when it is not on PATH', async () => {
+    mock.bunAvailable = false;
+    mock.installedBunAvailable = true;
+
+    await installEidoverse({ worldsRepoUrl: SELECTED_WORLDS_REPO });
+
+    const installer = getBunInstallInvocation();
+    expect(mock.spawn).not.toHaveBeenCalledWith(
+      installer.command,
+      installer.args,
+      expect.anything(),
+    );
+    expect(mock.spawn).toHaveBeenCalledWith(
+      getBunExecutable(),
+      ['install', '--frozen-lockfile'],
+      expect.objectContaining({ cwd: selectedPaths.worlds }),
+    );
+  });
+
+  it('stops before cloning when the Bun installer does not produce a runnable binary', async () => {
+    mock.bunAvailable = false;
+    mock.spawn.mockResolvedValue({ stdout: '', stderr: '' });
+
+    await expect(installEidoverse({ worldsRepoUrl: SELECTED_WORLDS_REPO }))
+      .rejects.toMatchObject({ status: 500, code: 'EIDOVERSE_BUN_INSTALL_FAILED' });
     expect(mock.cloneRepo).not.toHaveBeenCalled();
-    expect(mock.atomicWrite).not.toHaveBeenCalled();
   });
 
   it('keeps an unreadable app registry distinct from a confirmed missing registration', async () => {
