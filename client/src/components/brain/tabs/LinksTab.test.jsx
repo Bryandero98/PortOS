@@ -100,7 +100,7 @@ describe('LinksTab clone-status polling', () => {
 
   it('patches the fresh status in and stops polling once nothing is in flight', async () => {
     getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning'), link('b', 'cloned')] });
-    getBrainLink.mockResolvedValue(link('a', 'cloned', { updatedAt: '2026-01-01T00:05:00.000Z' }));
+    getBrainLink.mockResolvedValue(link('a', 'cloned'));
     await renderTab();
 
     expect(screen.getByText('Cloning...')).toBeTruthy();
@@ -193,19 +193,76 @@ describe('LinksTab clone-status polling', () => {
     expect(screen.getByText('(stalled)')).toBeTruthy();
   });
 
+  // The stall bound counts ticks, not wall-clock: useAutoRefetch pauses while
+  // the tab is hidden, so a wall-clock deadline would be tripped by the resume
+  // tick alone and abandon a clone that may well have finished.
+  it('does not count time the tab spent hidden against the stall bound', async () => {
+    getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning')] });
+    getBrainLink.mockResolvedValue(link('a', 'cloning'));
+    await renderTab();
+
+    const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    await tick(20 * 60 * 1000);
+    expect(getBrainLink).not.toHaveBeenCalled();
+
+    hidden.mockReturnValue('visible');
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(getBrainLink).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('(stalled)')).toBeNull();
+    hidden.mockRestore();
+  });
+
+  it('ignores a poll response overtaken by a newer one', async () => {
+    getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning')] });
+    // The first tick's response resolves only after the second tick's has been
+    // applied — it must not patch the finished clone back to `cloning`.
+    let release;
+    const slow = new Promise(resolve => { release = resolve; });
+    getBrainLink
+      .mockImplementationOnce(async () => { await slow; return link('a', 'cloning'); })
+      .mockResolvedValue(link('a', 'cloned', { localPath: '/repos/a' }));
+    await renderTab();
+
+    await tick();
+    await tick();
+    expect(screen.getByText('Cloned')).toBeTruthy();
+
+    await act(async () => { release(); await Promise.resolve(); });
+    expect(screen.getByText('Cloned')).toBeTruthy();
+    expect(screen.queryByText('Cloning...')).toBeNull();
+  });
+
+  // The post-clone intake writes these in a second update, right after the
+  // status flips — the poll has to carry them or the chips never appear.
+  it('carries the post-clone intake fields through', async () => {
+    getBrainLinks.mockResolvedValue({ links: [link('a', 'cloning')] });
+    getBrainLink.mockResolvedValue(link('a', 'cloning', {
+      malwareScan: { reportId: '11111111-1111-4111-8111-111111111111', status: 'queued' },
+    }));
+    await renderTab();
+
+    await tick();
+    expect(screen.getByTitle(/Malware scan queued/)).toBeTruthy();
+
+    // …and an unchanged object on the next tick is not treated as a change.
+    const renders = bucketBoardRenders;
+    await tick();
+    expect(bucketBoardRenders).toBe(renders);
+  });
+
   it('restarts the stall window when a clone actually progresses', async () => {
     getBrainLinks.mockResolvedValue({ links: [link('a', 'pending')] });
     getBrainLink.mockResolvedValue(link('a', 'pending'));
     await renderTab();
 
     await tick(9 * 60 * 1000);
-    getBrainLink.mockResolvedValue(link('a', 'cloning', { updatedAt: '2026-01-01T00:09:00.000Z' }));
+    getBrainLink.mockResolvedValue(link('a', 'cloning'));
     await tick();
     expect(screen.getByText('Cloning...')).toBeTruthy();
 
     // Without the reset the window would have expired 2 minutes in; the status
     // change bought a fresh 10 minutes.
-    getBrainLink.mockResolvedValue(link('a', 'cloning', { updatedAt: '2026-01-01T00:09:00.000Z' }));
+    getBrainLink.mockResolvedValue(link('a', 'cloning'));
     const beforeExtra = getBrainLink.mock.calls.length;
     await tick(3 * 60 * 1000);
     expect(getBrainLink.mock.calls.length).toBeGreaterThan(beforeExtra);
