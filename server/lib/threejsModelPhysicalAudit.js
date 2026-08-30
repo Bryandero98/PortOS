@@ -575,21 +575,24 @@ const BILATERAL_SIDE_TOKENS = new Map([
   ['r', 'right'],
 ]);
 
+// Both camel boundaries, not just the common one: "handL" needs lower-upper,
+// and "LHand" needs upper-upper-lower or the whole name reads as one token and
+// the pair is never found.
 const tokenizeIdentifier = (value) => String(value ?? '')
   .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+  .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
   .split(/[^A-Za-z0-9]+/)
   .filter(Boolean)
   .map((token) => token.toLowerCase());
 
 /**
  * The pairing key for one identifier: its remaining tokens, sorted, so
- * "leftHand", "hand_L" and "Hand Left" all key to the same pair.
+ * "leftHand", "hand_L", "LHand" and "Hand Left" all key to the same pair.
  *
- * Order is discarded deliberately. A generated spec routinely mixes
- * conventions between the two halves of one pair — "leftFoot" beside
- * "foot_R" — and an ordered key would leave exactly those pairs unchecked.
- * Every other token still has to match as a multiset, so the pairing stays
- * as tight as the names themselves.
+ * Order is discarded deliberately. A generated spec routinely mixes conventions
+ * between the two halves of one pair — "leftFoot" beside "foot_R" — and an
+ * ordered key would leave exactly those pairs unchecked. Every other token still
+ * has to match as a multiset, so the pairing stays as tight as the names.
  *
  * Returns null when there is no side token, when there are several (a name that
  * says both sides names neither), or when the side token is the whole
@@ -632,18 +635,42 @@ const collectBilateralPairs = (parts) => {
     .map((group) => ({ left: group.left[0], right: group.right[0] }));
 };
 
-// Every primitive in this set maps onto itself under a 180-degree yaw, so a
-// lone one of them is built identically whether it was reflected or turned
-// around. Reporting those would bury the real defects under every plain box
-// limb in the catalogue. `extrude`, `tube` and `custom` carry an authored
-// profile that a yaw visibly turns around, and any assembly of more than one
-// volume shows the flip in where its pieces land.
-const YAW_SYMMETRIC_GEOMETRY_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'capsule', 'torus', 'lathe']);
+const collectPartChains = (parts) => {
+  const chains = new Map();
+  const walk = (list, ancestors) => {
+    for (const part of list || []) {
+      const chain = [...ancestors, part];
+      chains.set(part.id, chain);
+      walk(part.children, chain);
+    }
+  };
+  walk(parts, []);
+  return chains;
+};
 
-const isYawDistinguishable = (volumes, partId) => {
-  const subtree = volumes.filter((volume) => isInSubtree(volume, partId));
-  if (subtree.length !== 1) return subtree.length > 1;
-  return !YAW_SYMMETRIC_GEOMETRY_TYPES.has(subtree[0].geometry?.type);
+/**
+ * Both halves of a pair placed in the frame of their nearest common ancestor.
+ *
+ * The lateral plane a pair is mirrored across is the one their shared parent
+ * defines, NOT world x = 0. A subject modelled off the origin, or a body yawed
+ * to face somewhere other than down +Z, is mirror-symmetric about its own axis
+ * and about no world plane at all — comparing it against x = 0 reports every
+ * correctly built pair on it. Composing down from the common ancestor cancels
+ * that shared placement, and leaves exactly the authored local transforms the
+ * refinement feedback asks the next pass to change.
+ */
+const transformsRelativeToCommonAncestor = (leftChain, rightChain) => {
+  let shared = 0;
+  while (shared < leftChain.length - 1
+    && shared < rightChain.length - 1
+    && leftChain[shared] === rightChain[shared]) {
+    shared += 1;
+  }
+  const compose = (chain) => chain.slice(shared).reduce(
+    (transform, part) => composeTransform(transform, part.position, part.rotationDegrees, part.scale),
+    IDENTITY_TRANSFORM,
+  );
+  return [compose(leftChain), compose(rightChain)];
 };
 
 const determinant3 = (m) => (
@@ -658,18 +685,18 @@ const vectorClose = (a, b, tolerance) => a.every((value, index) => Math.abs(valu
 
 const formatVector = (vector) => `[${vector.map(formatOffset).join(', ')}]`;
 
-/**
- * Where a part actually sits, measured over its whole subtree.
- *
- * A limb is routinely a bare group whose surface lives entirely in its children,
- * so the transform origin alone would place a whole arm at the shoulder pivot
- * and compare two pivots that are correctly mirrored while the hands hanging off
- * them are not.
- */
-const bilateralCenter = (volumes, part, transform) => {
-  const bounds = subtreeBounds(volumes, part.id);
-  if (!bounds) return transform.translation;
-  return bounds.map(([min, max]) => (min + max) / 2);
+// Every primitive in this set maps onto itself under a 180-degree yaw, so a lone
+// one of them is built identically whether it was reflected or turned around.
+// Reporting those would bury the real defects under every blocky limb in the
+// catalogue. `extrude`, `tube` and `custom` carry an authored profile that a yaw
+// visibly turns around, and any assembly of more than one volume shows the flip
+// in where its pieces land.
+const YAW_SYMMETRIC_GEOMETRY_TYPES = new Set(['box', 'sphere', 'cylinder', 'cone', 'capsule', 'torus', 'lathe']);
+
+const isYawDistinguishable = (volumes, partId) => {
+  const subtree = volumes.filter((volume) => isInSubtree(volume, partId));
+  if (subtree.length !== 1) return subtree.length > 1;
+  return !YAW_SYMMETRIC_GEOMETRY_TYPES.has(subtree[0].geometry?.type);
 };
 
 /**
@@ -678,21 +705,29 @@ const bilateralCenter = (volumes, part, transform) => {
  * Only the resting pose is audited: which way round a limb is built is authored
  * into the assembly, and a clip that rotates an arm is not a chirality defect.
  *
+ * A flipped ORIENTATION is what every finding here turns on. A counterpart
+ * merely placed at a different depth is a staggered pose — a figure mid-stride
+ * has one hand forward and one back — and reporting that as chirality would ask
+ * the next pass to flatten every pose it was asked for. The depth is reported
+ * only as corroboration, once the orientation already says the limb is turned
+ * around.
+ *
  * @returns {Array} findings, at most one per pair
  */
-function buildBilateralChiralityFindings({ pairs, volumes, transformsByPartId }) {
+function buildBilateralChiralityFindings({ pairs, chains, volumes }) {
   const findings = [];
 
   for (const { left, right } of pairs) {
-    const leftTransform = transformsByPartId.get(left.id);
-    const rightTransform = transformsByPartId.get(right.id);
-    if (!leftTransform || !rightTransform) continue;
+    const leftChain = chains.get(left.id);
+    const rightChain = chains.get(right.id);
+    if (!leftChain || !rightChain) continue;
+    const [leftTransform, rightTransform] = transformsRelativeToCommonAncestor(leftChain, rightChain);
 
     const leftName = left.name || left.id;
     const rightName = right.name || right.id;
     const partIds = [left.id, right.id];
-    const leftCenter = bilateralCenter(volumes, left, leftTransform);
-    const rightCenter = bilateralCenter(volumes, right, rightTransform);
+    const leftPosition = leftTransform.translation;
+    const rightPosition = rightTransform.translation;
 
     // A negated scale component is the one mirror that leaves the bounds
     // untouched and every normal inside out, so it is reported before the
@@ -711,56 +746,48 @@ function buildBilateralChiralityFindings({ pairs, volumes, transformsByPartId })
       continue;
     }
 
-    // A pair that never crosses the lateral plane was not mirrored at all — one
-    // limb was copied to the other side's name and left where it was.
-    const sameSide = Math.sign(leftCenter[0]) === Math.sign(rightCenter[0])
-      && Math.min(Math.abs(leftCenter[0]), Math.abs(rightCenter[0])) > TOUCH_TOLERANCE;
+    // A pair that never crosses its parent's lateral plane was not mirrored at
+    // all — one limb was copied to the other side's name and left where it was.
+    const sameSide = Math.sign(leftPosition[0]) === Math.sign(rightPosition[0])
+      && Math.min(Math.abs(leftPosition[0]), Math.abs(rightPosition[0])) > TOUCH_TOLERANCE;
     if (sameSide) {
       findings.push({
         code: 'bilateral-pair-same-side',
         severity: 'warning',
         partIds,
-        message: `Bilateral pair "${leftName}" / "${rightName}" sits entirely on one side of the lateral plane (centred at x = ${formatOffset(leftCenter[0])} and x = ${formatOffset(rightCenter[0])}), so the pair never straddles the body. Reflect one of them across x = 0 so each limb sits on its own side.`,
+        message: `Bilateral pair "${leftName}" / "${rightName}" sits entirely on one side of the lateral plane (both offset from their common parent at x = ${formatOffset(leftPosition[0])} and x = ${formatOffset(rightPosition[0])}), so the pair never straddles the body. Negate the x offset of one of them so each limb sits on its own side.`,
       });
       continue;
     }
 
-    const positionTolerance = Math.max(
-      CHIRALITY_POSITION_TOLERANCE,
-      CHIRALITY_POSITION_RELATIVE_TOLERANCE * Math.hypot(...leftCenter),
-    );
-    const reflectedCenter = [-leftCenter[0], leftCenter[1], leftCenter[2]];
-    const yawedCenter = [-leftCenter[0], leftCenter[1], -leftCenter[2]];
-    const placementReflected = vectorClose(rightCenter, reflectedCenter, positionTolerance);
-    const placementYawed = !placementReflected
-      && Math.abs(leftCenter[2]) > positionTolerance
-      && vectorClose(rightCenter, yawedCenter, positionTolerance);
-
     const reflectedLinear = multiplyLinear(multiplyLinear(LATERAL_REFLECTION, leftTransform.linear), LATERAL_REFLECTION);
-    const orientationReflected = linearClose(rightTransform.linear, reflectedLinear);
-    // Both compositions are tested because the yaw is authored either way: as a
-    // 180-degree turn of the placed limb (world side) or as a [0, 180, 0] local
-    // rotation on the part itself (local side).
-    const orientationYawed = !orientationReflected && isYawDistinguishable(volumes, right.id) && (
+    if (linearClose(rightTransform.linear, reflectedLinear)) continue;
+    // Nothing is reported for a pair that is merely posed differently: an arm
+    // raised on one side is legitimate, and only a positively identified yaw is
+    // a chirality defect. Both compositions are tested because the yaw is
+    // authored either way — as a 180-degree turn of the placed limb (world side)
+    // or as a [0, 180, 0] local rotation on the part itself (local side).
+    const orientationYawed = isYawDistinguishable(volumes, right.id) && (
       linearClose(rightTransform.linear, multiplyLinear(VERTICAL_YAW_180, leftTransform.linear))
       || linearClose(rightTransform.linear, multiplyLinear(leftTransform.linear, VERTICAL_YAW_180))
     );
+    if (!orientationYawed) continue;
 
-    // Nothing is reported for a pair that is merely posed differently: an arm
-    // raised on one side is legitimate, and only a positively identified yaw is
-    // a chirality defect.
-    if (!orientationYawed && !placementYawed) continue;
-
-    const reasons = [
-      ...(orientationYawed ? [`"${rightName}" carries the orientation of "${leftName}" turned 180° about the vertical axis instead of reflected across it`] : []),
-      ...(placementYawed ? [`"${rightName}" is centred at ${formatVector(rightCenter)} where a lateral reflection of "${leftName}" would place it at ${formatVector(reflectedCenter)}`] : []),
-    ];
+    const positionTolerance = Math.max(
+      CHIRALITY_POSITION_TOLERANCE,
+      CHIRALITY_POSITION_RELATIVE_TOLERANCE * Math.hypot(...leftPosition),
+    );
+    const reflectedPosition = [-leftPosition[0], leftPosition[1], leftPosition[2]];
+    const yawedPosition = [-leftPosition[0], leftPosition[1], -leftPosition[2]];
+    const placementYawed = !vectorClose(rightPosition, reflectedPosition, positionTolerance)
+      && Math.abs(leftPosition[2]) > positionTolerance
+      && vectorClose(rightPosition, yawedPosition, positionTolerance);
 
     findings.push({
       code: 'bilateral-chirality',
       severity: 'warning',
       partIds,
-      message: `Bilateral pair "${leftName}" / "${rightName}" is mirrored by a 180° yaw about the vertical axis rather than a reflection across the lateral plane: ${reasons.join('; ')}. This preserves handedness instead of inverting it, which is what produces backward-facing hands and feet with the big toe on the outer edge. Reflect the counterpart instead: position [-x, y, z] with rotation [rx, -ry, -rz] and positive scale.`,
+      message: `Bilateral pair "${leftName}" / "${rightName}" is mirrored by a 180° yaw about the vertical axis rather than a reflection across the lateral plane: "${rightName}" carries the orientation of "${leftName}" turned around rather than reflected${placementYawed ? `, and sits at ${formatVector(rightPosition)} where a reflection would place it at ${formatVector(reflectedPosition)}` : ''}. A yaw preserves handedness instead of inverting it, which is what produces backward-facing hands and feet with the big toe on the outer edge. Reflect the counterpart instead: position [-x, y, z] with rotation [rx, -ry, -rz] and positive scale.`,
     });
   }
 
@@ -854,8 +881,8 @@ export function evaluateThreejsPhysicalAudit(spec) {
 
   for (const finding of buildBilateralChiralityFindings({
     pairs: collectBilateralPairs(parts),
+    chains: collectPartChains(spec.parts),
     volumes: visibleStaticVolumes,
-    transformsByPartId,
   })) {
     addFinding(finding);
   }

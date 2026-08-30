@@ -940,14 +940,25 @@ describe('threejsModelPhysicalAudit attachment anchors', () => {
       const finding = res.findings.find((f) => f.code === 'bilateral-chirality');
       expect(finding.severity).toBe('warning');
       expect(finding.partIds).toEqual(['hand-l', 'hand-r']);
-      expect(finding.message).toContain('turned 180° about the vertical axis');
+      expect(finding.message).toContain('carries the orientation of "Hand Left" turned around');
       expect(finding.message).toContain('[rx, -ry, -rz]');
     });
 
-    it('flags a counterpart placed at the yawed depth rather than the reflected one', () => {
-      const res = evaluateThreejsPhysicalAudit(bilateralSpec({}, { position: [-0.6, 0, -0.2] }));
-      const finding = res.findings.find((f) => f.code === 'bilateral-chirality');
-      expect(finding.message).toContain('where a lateral reflection of "Hand Left" would place it');
+    // A figure mid-stride has one hand forward and one back. Depth alone is a
+    // pose, and reporting it would ask the next pass to flatten every pose.
+    it('ignores a staggered pose that only differs in depth', () => {
+      expect(codes(bilateralSpec({}, { position: [-0.6, 0, -0.2] }))).toEqual([]);
+    });
+
+    // Depth is reported once the orientation already says the limb is turned
+    // around, because it says where the reflected limb should have gone.
+    it('names the reflected placement alongside a yawed orientation', () => {
+      const res = evaluateThreejsPhysicalAudit(bilateralSpec(
+        {},
+        { position: [-0.6, 0, -0.2], rotationDegrees: [0, 180, 0] },
+      ));
+      const finding = res.findings.find((finding) => finding.code === 'bilateral-chirality');
+      expect(finding.message).toContain('where a reflection would place it at [-0.6, 0, 0.2]');
     });
 
     it('flags a pair mirrored by negating a scale component', () => {
@@ -1003,6 +1014,35 @@ describe('threejsModelPhysicalAudit attachment anchors', () => {
       spec.parts[0].children[1].name = 'Right';
       spec.parts[0].children[1].id = 'right';
       expect(codes(spec)).toEqual([]);
+    });
+
+    // The lateral plane a pair mirrors across is the one their shared parent
+    // defines, never world x = 0 — a subject modelled off the origin or facing
+    // anywhere but down +Z is symmetric about its own axis and no world plane.
+    it('measures a pair against its parent rather than world x = 0', () => {
+      const spec = bilateralSpec({}, {});
+      spec.parts[0].position = [3, 1, 0];
+      expect(codes(spec)).toEqual([]);
+    });
+
+    it('measures a pair inside a yawed parent in the parent frame', () => {
+      const spec = bilateralSpec(
+        { rotationDegrees: [0, 90, 0] },
+        { rotationDegrees: [0, -90, 0] },
+      );
+      spec.parts[0].rotationDegrees = [0, 35, 0];
+      expect(codes(spec)).toEqual([]);
+    });
+
+    // Both id and name, or the pair resolves through the id fallback and never
+    // exercises the upper-upper-lower camel split this case exists for.
+    it('pairs a single-letter side prefix run onto the name', () => {
+      const spec = bilateralSpec({}, { rotationDegrees: [0, 180, 0] });
+      spec.parts[0].children[0].id = 'LHand';
+      spec.parts[0].children[0].name = 'LHand';
+      spec.parts[0].children[1].id = 'RHand';
+      spec.parts[0].children[1].name = 'RHand';
+      expect(codes(spec)).toEqual(['bilateral-chirality']);
     });
 
     it('feeds bilateral findings back with the reflection recipe', () => {
