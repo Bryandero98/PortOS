@@ -23,7 +23,7 @@ import { cosEvents, emitLog } from './cosEvents.js';
 import { DAY, safeDate } from '../lib/fileUtils.js';
 import { mapWithConcurrency } from '../lib/mapWithConcurrency.js';
 import { getAdaptiveCooldownMultiplier } from './taskLearning.js';
-import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, getAppTaskTypeIntervalMs, getActiveApps, getAppTaskTypeOverrides, clearAllPrWatcherState } from './apps.js';
+import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, getAppTaskTypeIntervalMs, getActiveApps, getAppTaskTypeOverrides, clearAllPrWatcherState, clearAllIssueWatcherState } from './apps.js';
 import { loadState, isImprovementEnabled } from './cosState.js';
 import { getLocalParts } from '../lib/timezone.js';
 import { getUserTimezone } from './userTimezone.js';
@@ -211,8 +211,8 @@ export async function updateTaskInterval(taskType, settings) {
     // 30-min interval — otherwise PRs opened in that delayed window slip past the
     // firstRun baseline and are never dispatched. Paired with clearAllPrWatcherState
     // below (the per-app disable paths in apps.js do the same via resetExecutionHistory).
-    if (taskType === 'pr-watcher' && settings.enabled === false) {
-      delete schedule.executions['task:pr-watcher'];
+    if (['pr-watcher', 'issue-watcher'].includes(taskType) && settings.enabled === false) {
+      delete schedule.executions[`task:${taskType}`];
     }
 
     // When the recheck cadence of a perpetual task changes, re-derive the
@@ -252,6 +252,11 @@ export async function updateTaskInterval(taskType, settings) {
   if (taskType === 'pr-watcher' && settings.enabled === false) {
     await clearAllPrWatcherState().catch((err) => {
       emitLog('warn', `pr-watcher global-disable state clear failed: ${err.message}`, {}, '📅 TaskSchedule');
+    });
+  }
+  if (taskType === 'issue-watcher' && settings.enabled === false) {
+    await clearAllIssueWatcherState().catch((err) => {
+      emitLog('warn', `issue-watcher global-disable state clear failed: ${err.message}`, {}, '📅 TaskSchedule');
     });
   }
 

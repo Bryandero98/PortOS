@@ -20,6 +20,10 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // pr-watcher prompt) for each one. `taskMetadata.prAuthorFilter` gates on
   // PR authorship (self / others / any). See server/services/prWatcher.js.
   'pr-watcher',
+  // Programmatically scans new external issue comments and unreviewed external
+  // PRs. Only replies and code-review judgments consume an agent; assignment,
+  // review submission, rebase/CI policy enforcement, and merging are hooks.
+  'issue-watcher',
   // Watches `referenceRepos` configured on the app — fetches each upstream
   // repo, finds commits since lastReviewedSha, and appends slug-tagged
   // `[ref-watch-…]` checklist items to the app's PLAN.md for `/claim` /
@@ -355,6 +359,10 @@ export const DEFAULT_TASK_INTERVALS = {
   // customized prompt can make changes if the operator wants — the shipped
   // default prompt only reviews + comments.
   'pr-watcher':          { type: INTERVAL_TYPES.CUSTOM, intervalMs: 1800000, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { prAuthorFilter: 'any', readOnly: false } },
+  // issue-watcher uses deterministic GitHub reads/mutations around a bounded
+  // reasoning-only review pass. Off by default: enabling it is explicit consent
+  // to replies, assignments, reviews, branch updates, and merges.
+  'issue-watcher':       { type: INTERVAL_TYPES.CUSTOM, intervalMs: 1800000, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: false, discardWorktree: true } },
   // plan-feature files a plan, not code — tracker-filing posture mirrors
   // reference-watch: writable (a file-based tracker commits checklist items), no
   // managed worktree, no PR. Weekly (not daily like feature-ideas) so an
@@ -381,6 +389,10 @@ export const DEFAULT_TASK_INTERVALS = {
 // CoS-managed worktree would clobber it).
 export const MANAGED_AGENT_OPTIONS = {
   'plan-task': ['useWorktree', 'openPR', 'claimFlow'],
+  // Programmatic-I/O review task: the model only returns structured judgment;
+  // deterministic hooks own every GitHub mutation. Keep its worktree throwaway
+  // even when a global/per-app metadata override tries to make it writable.
+  'issue-watcher': ['useWorktree', 'openPR', 'discardWorktree'],
   // The non-committing coordinators (NON_COMMITTING_COORDINATOR_METADATA above) all
   // run in the app's LIVE checkout and ship no code, so a CoS-managed worktree is at
   // best unused and at worst harmful — branch-reconcile needs to see the sibling
@@ -490,6 +502,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'typing': 'TypeScript types — file issues or implement fixes',
   'pr-reviewer': 'Review open PRs from contributors',
   'pr-watcher': 'Run a custom prompt on PRs newly opened against the default branch',
+  'issue-watcher': 'Assign issue volunteers and review external PRs with deterministic GitHub actions around one reasoning pass',
   'code-reviewer-a': 'Review the codebase and triage/implement findings (independent provider/model instance A)',
   'code-reviewer-b': 'Review the codebase and triage/implement findings (independent provider/model instance B)',
   'do-replan': 'Audit and prune PLAN.md after merges and branch cleanup so it reflects what actually shipped',

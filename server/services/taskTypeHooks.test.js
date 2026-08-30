@@ -9,6 +9,11 @@ describe('taskTypeHooks registry', () => {
     expect(typeof output).toBe('function');
   });
 
+  it('resolves both hooks for issue-watcher to callables', async () => {
+    expect(typeof await getTaskInputHook('issue-watcher')).toBe('function');
+    expect(typeof await getTaskOutputHook('issue-watcher')).toBe('function');
+  });
+
   it('returns null for a task type with no registered hooks', async () => {
     expect(await getTaskInputHook('security')).toBeNull();
     expect(await getTaskOutputHook('security')).toBeNull();
@@ -21,6 +26,7 @@ describe('taskTypeHooks registry', () => {
     // stopped being a scheduled task type entirely — see quotaBurnRunner.js).
     // The predicate must still fail CLOSED for everything else.
     expect(canRunTaskOutputHookWithoutPayload('layered-intelligence')).toBe(false);
+    expect(canRunTaskOutputHookWithoutPayload('issue-watcher')).toBe(false);
     expect(canRunTaskOutputHookWithoutPayload('does-not-exist')).toBe(false);
   });
 });
@@ -28,6 +34,7 @@ describe('taskTypeHooks registry', () => {
 describe('isProgrammaticIoTaskType (#2700)', () => {
   it('recognizes a registered programmatic-I/O task type', () => {
     expect(isProgrammaticIoTaskType('layered-intelligence')).toBe(true);
+    expect(isProgrammaticIoTaskType('issue-watcher')).toBe(true);
   });
 
   it('rejects unregistered types, non-strings, and inherited Object keys', () => {
