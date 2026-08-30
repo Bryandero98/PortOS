@@ -1266,7 +1266,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 251
+          "line": 262
         }
       ]
     },
@@ -1376,7 +1376,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 299
+          "line": 310
         }
       ]
     },
@@ -1475,7 +1475,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 315
+          "line": 326
         }
       ]
     },
@@ -1486,7 +1486,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 190
+          "line": 201
         }
       ]
     },
@@ -1519,7 +1519,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 280
+          "line": 291
         }
       ]
     },
@@ -1530,7 +1530,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 167
+          "line": 178
         }
       ]
     },
@@ -1585,7 +1585,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 228
+          "line": 239
         }
       ]
     },
