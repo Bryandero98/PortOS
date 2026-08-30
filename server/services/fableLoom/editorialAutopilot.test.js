@@ -165,6 +165,56 @@ describe('FableLoom editorial autopilot', () => {
     });
   });
 
+  it('preserves a known failure when cancellation lands during diagnosis', async () => {
+    let finishDiagnosis;
+    selfImproveMock.mockImplementationOnce(() => new Promise((resolve) => {
+      finishDiagnosis = resolve;
+    }));
+    const providerError = Object.assign(new Error('Provider returned an unusable patch'), {
+      code: 'AI_RESPONSE_INVALID',
+    });
+    remediateMock.mockRejectedValueOnce(providerError);
+
+    const started = await startFableLoomEditorialAutopilot('loom-example', { selfImprove: true });
+    await vi.waitFor(() => expect(selfImproveMock).toHaveBeenCalledTimes(1));
+    expect(cancelFableLoomEditorialAutopilot(started.id).status).toBe('canceling');
+    finishDiagnosis(null);
+    const finished = await waitForTerminal(started.id);
+
+    expect(finished).toMatchObject({
+      status: 'canceled',
+      error: providerError.message,
+      selfImprove: null,
+    });
+  });
+
+  it('preserves a known pause when cancellation lands during diagnosis', async () => {
+    let finishDiagnosis;
+    selfImproveMock.mockImplementationOnce(() => new Promise((resolve) => {
+      finishDiagnosis = resolve;
+    }));
+    remediateMock.mockResolvedValueOnce(remediation(true));
+    playtestMock.mockResolvedValueOnce(playtest({
+      passed: false,
+      findings: [{ severity: 'low', category: 'pacing', problem: 'One route rushes its turn.' }],
+    }));
+
+    const started = await startFableLoomEditorialAutopilot('loom-example', {
+      maxRounds: 1,
+      selfImprove: true,
+    });
+    await vi.waitFor(() => expect(selfImproveMock).toHaveBeenCalledTimes(1));
+    expect(cancelFableLoomEditorialAutopilot(started.id).status).toBe('canceling');
+    finishDiagnosis(null);
+    const finished = await waitForTerminal(started.id);
+
+    expect(finished).toMatchObject({
+      status: 'canceled',
+      pauseReason: 'round-limit',
+      selfImprove: null,
+    });
+  });
+
   it('keeps diagnostics-only blockers actionable in the residual findings', async () => {
     const diagnosticFinding = {
       severity: 'high',

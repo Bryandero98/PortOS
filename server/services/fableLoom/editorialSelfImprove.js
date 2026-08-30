@@ -114,9 +114,9 @@ export function buildFableLoomEditorialSelfImproveTask({ diagnosis, telemetry })
 }
 
 const routeOptions = (run) => ({
-  ...(run?.route?.providerId ? { providerOverride: run.route.providerId } : {}),
-  ...(run?.route?.model ? { modelOverride: run.route.model } : {}),
-  ...(run?.route?.effort ? { effortOverride: run.route.effort } : {}),
+  ...(run?.route?.providerId ? { providerDefault: run.route.providerId } : {}),
+  ...(run?.route?.model ? { modelDefault: run.route.model } : {}),
+  ...(run?.route?.effort ? { effortDefault: run.route.effort } : {}),
 });
 
 /** Run one best-effort terminal diagnosis and file a task for PortOS defects. */

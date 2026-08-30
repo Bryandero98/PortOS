@@ -107,11 +107,12 @@ const routeOptions = (run) => ({
   ...(run.route.effort ? { effort: run.route.effort } : {}),
 });
 
-const finishCanceled = (run) => touch(run, {
+const finishCanceled = (run, terminalFacts = {}) => touch(run, {
   status: 'canceled',
   currentStep: null,
   message: 'Editorial autopilot canceled after the active AI step finished.',
   completedAt: nowIso(),
+  ...terminalFacts,
 });
 
 const terminalDiagnosis = async (run, outcome, { reason = null, error = null } = {}) => {
@@ -134,7 +135,7 @@ const terminalDiagnosis = async (run, outcome, { reason = null, error = null } =
 
 const finishPaused = async (run, pauseReason, message) => {
   const selfImprove = await terminalDiagnosis(run, 'paused', { reason: pauseReason });
-  if (run.cancelRequested) return finishCanceled(run);
+  if (run.cancelRequested) return finishCanceled(run, { pauseReason, selfImprove });
   return touch(run, {
     status: 'paused',
     pauseReason,
@@ -147,7 +148,10 @@ const finishPaused = async (run, pauseReason, message) => {
 
 const finishFailed = async (run, error) => {
   const selfImprove = await terminalDiagnosis(run, 'failed', { reason: 'run-error', error });
-  if (run.cancelRequested) return finishCanceled(run);
+  if (run.cancelRequested) return finishCanceled(run, {
+    error: errorMessage(error),
+    selfImprove,
+  });
   return touch(run, {
     status: 'failed',
     currentStep: null,

@@ -125,7 +125,7 @@ describe('FableLoom editorial self-improvement', () => {
         telemetryJson: expect.any(String),
       }),
       {
-        providerOverride: 'writer', modelOverride: 'large', effortOverride: 'high',
+        providerDefault: 'writer', modelDefault: 'large', effortDefault: 'high',
         returnsJson: true, source: 'fableloom-editorial-self-improve',
       },
     );
