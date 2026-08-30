@@ -6,6 +6,7 @@ const mock = vi.hoisted(() => ({
   getInstanceFeatures: vi.fn(),
   updateInstanceFeature: vi.fn(),
   installEidoverseFeature: vi.fn(),
+  updateEidoverseWorldsSource: vi.fn(),
 }));
 
 vi.mock('../../services/api', () => mock);
@@ -63,6 +64,20 @@ describe('InstanceFeaturesTab', () => {
         enabled: true,
         source: 'explicit',
         setup: { ...EIDOVERSE_FEATURE.setup, installed: true, appId: 'app-eidoverse', runtimeStatus: 'not_started' },
+      }],
+    });
+    mock.updateEidoverseWorldsSource.mockResolvedValue({
+      features: [{
+        ...EIDOVERSE_FEATURE,
+        enabled: true,
+        source: 'explicit',
+        setup: {
+          ...EIDOVERSE_FEATURE.setup,
+          installed: true,
+          appId: 'app-eidoverse',
+          worldsRepoUrl: 'https://github.com/example-owner/eidoverse-worlds',
+          runtimeStatus: 'not_started',
+        },
       }],
     });
   });
@@ -128,6 +143,32 @@ describe('InstanceFeaturesTab', () => {
       'https://github.com/example-owner/eidoverse-worlds',
       { silent: true },
     ));
+  });
+
+  it('updates the origin of an installed Worlds checkout in place', async () => {
+    const installed = {
+      ...EIDOVERSE_FEATURE,
+      enabled: true,
+      source: 'explicit',
+      setup: {
+        ...EIDOVERSE_FEATURE.setup,
+        installed: true,
+        appId: 'app-eidoverse',
+        runtimeStatus: 'not_started',
+      },
+    };
+    mock.getInstanceFeatures.mockResolvedValue({ features: [installed] });
+    render(<MemoryRouter><InstanceFeaturesTab /></MemoryRouter>);
+
+    const repoInput = await screen.findByRole('textbox', { name: 'Worlds GitHub repository' });
+    fireEvent.change(repoInput, { target: { value: 'https://github.com/example-owner/eidoverse-worlds' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update source' }));
+
+    await waitFor(() => expect(mock.updateEidoverseWorldsSource).toHaveBeenCalledWith(
+      'https://github.com/example-owner/eidoverse-worlds',
+      { silent: true },
+    ));
+    expect(await screen.findByDisplayValue('https://github.com/example-owner/eidoverse-worlds')).toBeInTheDocument();
   });
 
   it('keeps installation disabled for an invalid repository URL', async () => {

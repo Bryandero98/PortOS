@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   apps: [],
   registryError: null,
   cloneRepo: vi.fn(),
+  execGit: vi.fn(),
   spawn: vi.fn(),
   atomicWrite: vi.fn(),
   ensureDir: vi.fn(),
@@ -24,6 +25,10 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 vi.mock('../lib/commandExists.js', () => ({
   commandExists: vi.fn(async () => mock.bunAvailable),
+}));
+
+vi.mock('../lib/execGit.js', () => ({
+  execGit: mock.execGit,
 }));
 
 vi.mock('../lib/bufferedSpawn.js', () => ({
@@ -56,6 +61,7 @@ import {
   getEidoverseStatus,
   installEidoverse,
   normalizeEidoverseWorldsRepo,
+  setEidoverseWorldsOrigin,
 } from './eidoverse.js';
 
 const SELECTED_WORLDS_REPO = 'https://github.com/example-owner/eidoverse-worlds';
@@ -68,6 +74,7 @@ describe('Eidoverse managed-app installer', () => {
     mock.bunAvailable = true;
     mock.apps = [];
     mock.registryError = null;
+    mock.execGit.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     __resetEidoverseInstallForTests();
 
     mock.cloneRepo.mockImplementation(async (url) => {
@@ -149,5 +156,66 @@ describe('Eidoverse managed-app installer', () => {
       appRegistered: null,
       registryError: 'Managed-app registry unavailable',
     });
+  });
+
+  it('changes the origin of an existing checkout without moving or cloning it', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing.add(join(existingPaths.worlds, '.git'));
+
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).resolves.toEqual({
+      appId: 'app-eidoverse',
+      worldsRepoUrl: SELECTED_WORLDS_REPO,
+    });
+    expect(mock.execGit).toHaveBeenCalledWith(
+      ['remote', 'set-url', 'origin', SELECTED_WORLDS_REPO],
+      existingPaths.worlds,
+      { ignoreExitCode: true },
+    );
+    expect(mock.cloneRepo).not.toHaveBeenCalled();
+  });
+
+  it('keeps the registered checkout installed after its configured source changes', async () => {
+    const existingPaths = getEidoversePaths();
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: existingPaths.worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+    mock.existing = new Set([
+      join(existingPaths.worlds, '.git'),
+      join(existingPaths.worlds, 'node_modules'),
+      join(existingPaths.worlds, 'client', 'node_modules'),
+      existingPaths.envFile,
+      join(existingPaths.video, '.git'),
+      existingPaths.worldData,
+    ]);
+
+    await expect(getEidoverseStatus({ worldsRepoUrl: SELECTED_WORLDS_REPO })).resolves.toMatchObject({
+      installed: true,
+      worldsRepoUrl: SELECTED_WORLDS_REPO,
+      appId: 'app-eidoverse',
+    });
+  });
+
+  it('refuses to update a source when the managed checkout is missing', async () => {
+    mock.apps = [{
+      id: 'app-eidoverse',
+      name: 'Eidoverse Worlds',
+      repoPath: getEidoversePaths().worlds,
+      pm2ProcessNames: ['eidoverse-worlds'],
+    }];
+
+    await expect(setEidoverseWorldsOrigin(SELECTED_WORLDS_REPO)).rejects.toMatchObject({
+      status: 409,
+      code: 'EIDOVERSE_CHECKOUT_MISSING',
+    });
+    expect(mock.execGit).not.toHaveBeenCalled();
   });
 });

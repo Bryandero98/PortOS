@@ -6,7 +6,7 @@ import ToggleSwitch from '../ToggleSwitch';
 import { useInstanceFeatures, publishInstanceFeatures } from '../../hooks/useInstanceFeatures.js';
 import { isGitHubRepoUrl } from '../../lib/githubRepoUrl.js';
 import { getPrimaryLaunchUrl } from '../../services/appUrls.js';
-import { installEidoverseFeature, updateInstanceFeature } from '../../services/api';
+import { installEidoverseFeature, updateEidoverseWorldsSource, updateInstanceFeature } from '../../services/api';
 
 // How the current value was decided, so a user who never touched the toggle can
 // see that the install picked it up from a configured integration rather than
@@ -58,6 +58,24 @@ export function InstanceFeaturesTab() {
     setSavingId(null);
   };
 
+  const handleEidoverseSourceUpdate = async (feature) => {
+    if (savingId) return;
+    const worldsRepoUrl = eidoverseRepoUrl ?? feature?.setup?.worldsRepoUrl;
+    if (!worldsRepoUrl || !isGitHubRepoUrl(worldsRepoUrl)) return;
+    setSavingId(feature.id);
+    const result = await updateEidoverseWorldsSource(worldsRepoUrl, { silent: true }).catch((err) => {
+      toast.error(err.message || 'Could not update the Eidoverse Worlds source');
+      return null;
+    });
+
+    if (result) {
+      setEidoverseRepoUrl(null);
+      publishInstanceFeatures(result.features, { featureId: feature.id, enabled: feature.enabled });
+      toast.success('Eidoverse Worlds GitHub origin updated');
+    }
+    setSavingId(null);
+  };
+
   const handleEidoverseRecheck = () => {
     if (recheckingEidoverse) return;
     setRecheckingEidoverse(true);
@@ -102,6 +120,9 @@ export function InstanceFeaturesTab() {
           const selectedRepoUrl = eidoverseRepoUrl ?? setup?.worldsRepoUrl ?? '';
           const repoIsValid = isGitHubRepoUrl(selectedRepoUrl);
           const canInstall = repoIsValid && setup?.bunAvailable === true && setup?.registryAvailable !== false;
+          const canUpdateSource = repoIsValid
+            && selectedRepoUrl.trim() !== setup?.worldsRepoUrl
+            && setup?.registryAvailable !== false;
           const launchUrl = setup?.appId && setup?.uiPort
             ? getPrimaryLaunchUrl({ id: setup.appId, uiPort: setup.uiPort })
             : null;
@@ -121,11 +142,11 @@ export function InstanceFeaturesTab() {
                       : (isEidoverse ? 'Installed but disabled on this instance' : 'Not used on this instance'))}
                 </p>
                 {hint && <p className="text-xs text-gray-500 mt-1">{hint}</p>}
-                {needsInstall && (
+                {isEidoverse && (
                   <div className="mt-3 space-y-1 text-xs text-gray-400">
-                    <p>
+                    {needsInstall && <p>
                       PortOS will clone your selected Worlds repository and the upstream video runtime as separate AGPL-3.0 repositories, install their Bun dependencies, and register Worlds under Apps. It will not start the server automatically.
-                    </p>
+                    </p>}
                     <label className="block pt-2" htmlFor="eidoverse-worlds-repo">
                       <span className="block text-gray-300 mb-1">Worlds GitHub repository</span>
                       <input
@@ -148,25 +169,41 @@ export function InstanceFeaturesTab() {
                           : 'Enter a valid GitHub repository URL.'}
                       </p>
                     )}
-                    <p>Use your own fork if you want PortOS agents to prepare changes and PRs against it.</p>
-                    {setup?.bunAvailable === false && (
-                      <p className="text-port-warning">
-                        Bun is required. <a className="underline hover:text-white" href="https://bun.sh" target="_blank" rel="noreferrer">Install Bun</a>, then retry.
-                      </p>
-                    )}
-                    {setup?.registryAvailable === false && (
-                      <p className="text-port-error">The managed-app registry could not be read. Repair that before installing to avoid a duplicate app record.</p>
-                    )}
-                    {(setup?.bunAvailable === false || setup?.registryAvailable === false) && (
+                    <p>
+                      {needsInstall
+                        ? 'Use your own fork if you want PortOS agents to prepare changes and PRs against it.'
+                        : 'Changing this updates the installed checkout’s Git origin in place. Local work, the managed-app path, and world data stay untouched.'}
+                    </p>
+                    {!needsInstall && (
                       <button
                         type="button"
-                        onClick={handleEidoverseRecheck}
-                        disabled={recheckingEidoverse}
-                        className="inline-flex items-center justify-center min-h-[44px] px-3 mt-2 text-sm bg-port-border hover:bg-port-border/70 disabled:opacity-50 text-white rounded transition-colors"
+                        onClick={() => handleEidoverseSourceUpdate(feature)}
+                        disabled={savingId !== null || !canUpdateSource}
+                        className="inline-flex items-center justify-center min-h-[44px] px-3 mt-2 text-sm bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors"
                       >
-                        {recheckingEidoverse ? 'Rechecking…' : 'Recheck requirements'}
+                        {installing ? 'Updating source…' : 'Update source'}
                       </button>
                     )}
+                    {needsInstall && <>
+                      {setup?.bunAvailable === false && (
+                        <p className="text-port-warning">
+                          Bun is required. <a className="underline hover:text-white" href="https://bun.sh" target="_blank" rel="noreferrer">Install Bun</a>, then retry.
+                        </p>
+                      )}
+                      {setup?.registryAvailable === false && (
+                        <p className="text-port-error">The managed-app registry could not be read. Repair that before installing to avoid a duplicate app record.</p>
+                      )}
+                      {(setup?.bunAvailable === false || setup?.registryAvailable === false) && (
+                        <button
+                          type="button"
+                          onClick={handleEidoverseRecheck}
+                          disabled={recheckingEidoverse}
+                          className="inline-flex items-center justify-center min-h-[44px] px-3 mt-2 text-sm bg-port-border hover:bg-port-border/70 disabled:opacity-50 text-white rounded transition-colors"
+                        >
+                          {recheckingEidoverse ? 'Rechecking…' : 'Recheck requirements'}
+                        </button>
+                      )}
+                    </>}
                   </div>
                 )}
                 {setup?.installed && (

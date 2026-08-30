@@ -2,6 +2,7 @@ import { join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
 import { commandExists } from '../lib/commandExists.js';
+import { execGit } from '../lib/execGit.js';
 import { atomicWrite, ensureDir, pathExists, PATHS } from '../lib/fileUtils.js';
 import { parseGitHubUrl } from '../lib/githubRepoUrl.js';
 import { cloneRepo } from './githubCloner.js';
@@ -61,7 +62,16 @@ const envFileContents = (paths) => [
   '',
 ].join('\n');
 
-const findManagedApp = (apps, paths) => apps.find((app) => app.repoPath === paths.worlds) || null;
+const isManagedEidoverseApp = (app) => app?.pm2ProcessNames?.includes(EIDOVERSE_PROCESS_NAME)
+  || app?.name === 'Eidoverse Worlds';
+
+// A source switch keeps the existing checkout in place, so the configured
+// owner/repo path may no longer match the managed-app path. Prefer the exact
+// path for fresh installs, then fall back to the stable Eidoverse process name
+// for an already-registered checkout whose origin is being changed.
+const findManagedApp = (apps, paths) => apps.find((app) => (
+  app.repoPath === paths.worlds && isManagedEidoverseApp(app)
+)) || apps.find(isManagedEidoverseApp) || null;
 
 async function registerManagedApp(paths) {
   const apps = await getAllApps();
@@ -132,31 +142,29 @@ export async function installEidoverse({ worldsRepoUrl = DEFAULT_EIDOVERSE_WORLD
  */
 export async function getEidoverseStatus({ worldsRepoUrl = DEFAULT_EIDOVERSE_WORLDS_REPO } = {}) {
   const normalizedRepoUrl = normalizeEidoverseWorldsRepo(worldsRepoUrl);
-  const paths = getEidoversePaths(normalizedRepoUrl);
-  const [
-    bunAvailable,
-    worldsRepo,
-    videoRepo,
-    rootDependencies,
-    clientDependencies,
-    configured,
-    worldDataReady,
-    registry,
-  ] = await Promise.all([
+  const configuredPaths = getEidoversePaths(normalizedRepoUrl);
+  const [bunAvailable, videoRepo, worldDataReady, registry] = await Promise.all([
     commandExists('bun'),
-    pathExists(join(paths.worlds, '.git')),
-    pathExists(join(paths.video, '.git')),
-    pathExists(join(paths.worlds, 'node_modules')),
-    pathExists(join(paths.worlds, 'client', 'node_modules')),
-    pathExists(paths.envFile),
-    pathExists(paths.worldData),
+    pathExists(join(configuredPaths.video, '.git')),
+    pathExists(configuredPaths.worldData),
     getAllApps().then(
       (apps) => ({ apps, error: null }),
       (error) => ({ apps: null, error: error.message }),
     ),
   ]);
 
-  const app = registry.apps ? findManagedApp(registry.apps, paths) : null;
+  const app = registry.apps ? findManagedApp(registry.apps, configuredPaths) : null;
+  const worldsPath = typeof app?.repoPath === 'string' && app.repoPath.trim()
+    ? app.repoPath
+    : configuredPaths.worlds;
+  const worldsEnvFile = join(worldsPath, '.env.portos');
+  const [worldsRepo, rootDependencies, clientDependencies, configured] = await Promise.all([
+    pathExists(join(worldsPath, '.git')),
+    pathExists(join(worldsPath, 'node_modules')),
+    pathExists(join(worldsPath, 'client', 'node_modules')),
+    pathExists(worldsEnvFile),
+  ]);
+
   const runtime = app
     ? await getAppStatusStrict(EIDOVERSE_PROCESS_NAME, app.pm2Home).catch(() => null)
     : null;
@@ -189,6 +197,48 @@ export async function getEidoverseStatus({ worldsRepoUrl = DEFAULT_EIDOVERSE_WOR
       ? (runtime === null ? 'unknown' : (runtime.status === 'not_found' ? 'not_started' : runtime.status))
       : 'not_registered',
   };
+}
+
+/**
+ * Change the Worlds checkout's fetch origin without moving the checkout or
+ * touching its working tree. This is intentionally separate from installation:
+ * changing a remote must not silently clone a second copy or delete local work.
+ */
+export async function setEidoverseWorldsOrigin(worldsRepoUrl) {
+  const normalizedRepoUrl = normalizeEidoverseWorldsRepo(worldsRepoUrl);
+  const configuredPaths = getEidoversePaths(normalizedRepoUrl);
+  const apps = await getAllApps();
+  const app = findManagedApp(apps, configuredPaths);
+
+  if (!app) {
+    throw new ServerError('Install Eidoverse Worlds before changing its GitHub source.', {
+      status: 409,
+      code: 'EIDOVERSE_NOT_INSTALLED',
+    });
+  }
+
+  const repoPath = typeof app.repoPath === 'string' && app.repoPath.trim() ? app.repoPath : null;
+  if (!repoPath || !await pathExists(join(repoPath, '.git'))) {
+    throw new ServerError('The registered Eidoverse Worlds checkout could not be found.', {
+      status: 409,
+      code: 'EIDOVERSE_CHECKOUT_MISSING',
+    });
+  }
+
+  const result = await execGit(
+    ['remote', 'set-url', 'origin', normalizedRepoUrl],
+    repoPath,
+    { ignoreExitCode: true },
+  );
+  if (result.exitCode !== 0) {
+    throw new ServerError('The Eidoverse Worlds checkout has no usable Git origin.', {
+      status: 422,
+      code: 'EIDOVERSE_ORIGIN_UPDATE_FAILED',
+    });
+  }
+
+  notifyAppsChanged('update', app.id);
+  return { appId: app.id, worldsRepoUrl: normalizedRepoUrl };
 }
 
 export async function assertEidoverseInstalled(options) {

@@ -24,6 +24,11 @@ at its durable world store. PortOS does not copy either project's source into
 the PortOS repository, combine the codebases, or relicense them; each checkout
 retains its own upstream license and git history.
 
+After installation, the **Worlds GitHub repository** field remains available on
+**Settings → Features**. Updating it changes the installed checkout's `origin`
+in place, so the managed-app path, local working tree, and world data stay
+untouched. The companion video checkout remains on its upstream repository.
+
 ## Runtime and data ownership
 
 The managed app uses port `8940` and starts with:

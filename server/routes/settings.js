@@ -10,7 +10,7 @@ import {
   CODEX_PARALLEL_DEFAULT,
 } from '../services/mediaJobQueue/index.js';
 import { assertMediaRoutingConfig } from '../services/federatedMedia/routingPolicy.js';
-import { assertConfiguredEidoverseInstalled, getInstanceFeatures, updateEidoverseWorldsRepo, updateInstanceFeature } from '../services/instanceFeatures.js';
+import { assertConfiguredEidoverseInstalled, getInstanceFeatures, updateEidoverseWorldsRepo, updateEidoverseWorldsSource, updateInstanceFeature } from '../services/instanceFeatures.js';
 import { installEidoverse } from '../services/eidoverse.js';
 import { ensureEidoverseHost } from '../services/eidoverseHost.js';
 import { isGitHubRepoUrl } from '../lib/githubRepoUrl.js';
@@ -26,6 +26,10 @@ const aiAssignmentUpdateSchema = z.object({
   providerId: z.string().trim().max(128).nullable().optional(),
   model: z.string().trim().max(300).nullable().optional(),
   effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+}).strict();
+
+const eidoverseRepoSchema = z.object({
+  worldsRepoUrl: z.string().trim().max(500).refine(isGitHubRepoUrl, 'Must be a GitHub repository URL'),
 }).strict();
 
 // Server-authoritative bounds the client UI can render directly so the form
@@ -168,12 +172,20 @@ router.get('/features', asyncHandler(async (_req, res) => {
 // Explicit consent boundary: no Eidoverse checkout or dependency install occurs
 // until the user presses Install in Settings > Features.
 router.post('/features/eidoverse/install', asyncHandler(async (req, res) => {
-  const { worldsRepoUrl } = validateRequest(z.object({
-    worldsRepoUrl: z.string().trim().max(500).refine(isGitHubRepoUrl, 'Must be a GitHub repository URL'),
-  }).strict(), req.body || {});
+  const { worldsRepoUrl } = validateRequest(eidoverseRepoSchema, req.body || {});
   const normalizedRepoUrl = await updateEidoverseWorldsRepo(worldsRepoUrl);
   await installEidoverse({ worldsRepoUrl: normalizedRepoUrl });
   res.status(201).json(await updateInstanceFeature('eidoverse', true));
+}));
+
+// PUT /api/settings/features/eidoverse/source
+// Update the origin of the existing Worlds checkout in place. The working tree,
+// managed-app path, and world data remain untouched; future app updates pull
+// from the newly selected repository.
+router.put('/features/eidoverse/source', asyncHandler(async (req, res) => {
+  const { worldsRepoUrl } = validateRequest(eidoverseRepoSchema, req.body || {});
+  await updateEidoverseWorldsSource(worldsRepoUrl);
+  res.json(await getInstanceFeatures());
 }));
 
 // POST /api/settings/features/eidoverse/host

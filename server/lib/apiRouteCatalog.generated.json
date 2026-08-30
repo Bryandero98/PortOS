@@ -19246,7 +19246,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 139
+          "line": 143
         }
       ]
     },
@@ -19257,7 +19257,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 202
+          "line": 214
         }
       ]
     },
@@ -19268,7 +19268,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 158
+          "line": 162
         }
       ]
     },
@@ -19279,7 +19279,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 196
+          "line": 208
         }
       ]
     },
@@ -19290,7 +19290,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 163
+          "line": 167
         }
       ]
     },
@@ -19301,7 +19301,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 189
+          "line": 201
         }
       ]
     },
@@ -19312,7 +19312,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 183
+          "line": 195
         }
       ]
     },
@@ -19323,7 +19323,18 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 170
+          "line": 174
+        }
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/settings/features/eidoverse/source",
+      "mountPath": "/api/settings",
+      "sources": [
+        {
+          "source": "server/routes/settings.js",
+          "line": 185
         }
       ]
     },
@@ -19334,7 +19345,7 @@
       "sources": [
         {
           "source": "server/routes/settings.js",
-          "line": 152
+          "line": 156
         }
       ]
     },
@@ -23554,8 +23565,8 @@
   ],
   "stats": {
     "mounts": 145,
-    "operations": 2125,
-    "declarations": 2128,
+    "operations": 2126,
+    "declarations": 2129,
     "sourceFiles": 225
   }
 }
