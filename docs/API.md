@@ -560,6 +560,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/system` | System health metrics |
 | `/api/system/capabilities` | Local hardware capabilities for model/provider selection |
 | `/api/system-resources` | System storage report and AI-assisted cleanup triage |
+| `/api/remote-desktop`, `/remote-desktop` | PortDeck remote desktop session broker and viewer |
 | `/api/capabilities` | Feature capability flags |
 | `/api/agent-context` | Opt-in, loopback-only MCP context plus separately granted semantic PortOS actions |
 | `/api/workspace-contexts` | Workspace context management |
@@ -570,6 +571,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/git` | Git operations for managed apps |
 | `/api/screenshots` | Screenshot capture |
 | `/api/search` | Global search |
+| `/api/rapid-reader` | Rapid reader library and Accelerando source cache |
 | `/api/palette` | ⌘K command palette manifest + actions |
 | `/api/dashboard/layouts` | Dashboard widget layouts |
 | `/api/dashboard/daily-actions` | Dashboard daily action tracking |
@@ -588,7 +590,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/notes` | Notes |
 | `/api/calendar` | Calendar integration |
 | `/api/messages` | Messages (email) integration |
-| `/api/digital-twin/social-accounts`, `/identity`, `/autobiography` | Digital-twin sub-domains |
+| `/api/digital-twin/social-accounts`, `/api/digital-twin/identity`, `/api/digital-twin/autobiography` | Digital-twin sub-domains |
 | `/api/meatspace` | MeatSpace (health, POST, genome) |
 | `/api/lmstudio`, `/api/local-llm` | Local LLM backends and the local runtime servers PortOS can start/stop (Ollama, LM Studio, `llama-server`, MTPLX — the last two as PM2 processes; `POST /api/local-llm/save-startup` is `pm2 save`), plus MTPLX's checkpoint catalog — `GET /api/local-llm/mtplx/models/search`, `POST .../models/pull` (byte progress on the `mtplx:download` socket event), `POST .../models/remove` |
 | `/api/code-review` | Code review runs |
@@ -596,7 +598,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/api-docs` | Generated HTTP/event catalogs, OpenAPI 3.0.3 documents, AsyncAPI 3 document, and the minimized semantic tool resource |
 | `/api/data` | Data manager/sync |
 | `/api/datadog`, `/api/jira`, `/api/github`, `/api/telegram` | External integrations |
-| `/api/health` | Health check |
+| `/api/health` | Apple Health metrics, ingest, and XML import |
 | `/api/insights` | Cross-domain insights |
 | `/api/instances`, `/api/sync`, `/api/peer-sync`, `/api/sharing` | Federation / peer sync (see [COMPANION_APP_API.md](./COMPANION_APP_API.md)) |
 | `/api/federation/media/v1` | Authenticated queued peer audio provider (see [FEDERATED_MEDIA_PROVIDERS.md](./FEDERATED_MEDIA_PROVIDERS.md)) |
@@ -635,7 +637,6 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/image-to-3d` | Image-to-3D conversion |
 | `/api/privacy` | PII vault / trusted-org / broker opt-out |
 | `/api/shell` | Browser PTY shells |
-| `/api/workspace-contexts` | Per-app workspace save/restore |
 | `/api/ports` | Port scan / allocation |
 | `/api/logs` | PM2 process logs |
 | `/api/detect` | App-repo detection |

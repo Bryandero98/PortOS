@@ -1,4 +1,5 @@
-import { join } from 'path';
+import { delimiter, dirname, join } from 'path';
+import { homedir } from 'os';
 import { ServerError } from '../lib/errorHandler.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
 import { commandExists } from '../lib/commandExists.js';
@@ -13,6 +14,41 @@ export const DEFAULT_EIDOVERSE_WORLDS_REPO = 'https://github.com/anima-research/
 export const EIDOVERSE_VIDEO_REPO = 'https://github.com/anima-research/eidoverse-video';
 export const EIDOVERSE_PORT = 8940;
 export const EIDOVERSE_PROCESS_NAME = 'eidoverse-worlds';
+
+const BUN_INSTALL_URL = 'https://bun.com/install';
+const BUN_INSTALL_PS1_URL = 'https://bun.com/install.ps1';
+const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function getBunExecutable({
+  platform = process.platform,
+  home = homedir(),
+  installRoot = process.env.BUN_INSTALL,
+} = {}) {
+  const root = typeof installRoot === 'string' && installRoot.trim()
+    ? installRoot.trim()
+    : join(home, '.bun');
+  return join(root, 'bin', platform === 'win32' ? 'bun.exe' : 'bun');
+}
+
+export function getBunInstallInvocation(platform = process.platform) {
+  if (platform === 'win32') {
+    return {
+      command: 'powershell',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        `Invoke-RestMethod '${BUN_INSTALL_PS1_URL}' | Invoke-Expression`,
+      ],
+    };
+  }
+  return {
+    command: 'bash',
+    args: ['-c', `curl -fsSL ${BUN_INSTALL_URL} | bash`],
+  };
+}
 
 export function normalizeEidoverseWorldsRepo(worldsRepoUrl) {
   const parsed = parseGitHubUrl(worldsRepoUrl);
@@ -37,9 +73,9 @@ export function getEidoversePaths(worldsRepoUrl = DEFAULT_EIDOVERSE_WORLDS_REPO)
   });
 }
 
-const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const quoteCommandToken = (token) => (/\s/.test(token) ? `"${token}"` : token);
 
-const managedAppFields = (paths) => ({
+const managedAppFields = (paths, bunCommand) => ({
   name: 'Eidoverse Worlds',
   description: 'Private 3D world for a PortOS human and their agents. Installed separately under its own AGPL-3.0 license.',
   repoPath: paths.worlds,
@@ -47,7 +83,7 @@ const managedAppFields = (paths) => ({
   type: 'bun',
   uiPort: EIDOVERSE_PORT,
   apiPort: EIDOVERSE_PORT,
-  startCommands: ['bun --env-file=.env.portos server/server.ts'],
+  startCommands: [`${quoteCommandToken(bunCommand)} --env-file=.env.portos server/server.ts`],
   pm2ProcessNames: [EIDOVERSE_PROCESS_NAME],
   envFile: '.env.portos',
   workTracker: 'auto',
@@ -89,10 +125,10 @@ async function resolveEidoverseInstallPaths(worldsRepoUrl) {
   });
 }
 
-async function registerManagedApp(paths) {
+async function registerManagedApp(paths, bunCommand) {
   const apps = await getAllApps();
   const existing = findManagedApp(apps);
-  const fields = managedAppFields(paths);
+  const fields = managedAppFields(paths, bunCommand);
   const app = existing
     ? await updateApp(existing.id, fields)
     : await createApp(fields);
@@ -100,9 +136,55 @@ async function registerManagedApp(paths) {
   return app;
 }
 
-async function installDependencies(directory) {
-  await bufferedSpawnOrThrow('bun', ['install', '--frozen-lockfile'], {
+const bunRuntimeEnv = (bunExecutable) => {
+  const binDirectory = dirname(bunExecutable);
+  const env = { ...process.env };
+  const inheritedPath = env.PATH || env.Path || '';
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'path') delete env[key];
+  }
+  return {
+    ...env,
+    BUN_INSTALL: dirname(binDirectory),
+    PATH: `${binDirectory}${delimiter}${inheritedPath}`,
+  };
+};
+
+async function resolveBunRuntime() {
+  if (await commandExists('bun')) return { command: 'bun', env: process.env };
+
+  const command = getBunExecutable();
+  const env = bunRuntimeEnv(command);
+  return await commandExists(command, ['--version'], { env }) ? { command, env } : null;
+}
+
+async function ensureBunRuntime() {
+  const existing = await resolveBunRuntime();
+  if (existing) return existing;
+
+  const command = getBunExecutable();
+  const env = bunRuntimeEnv(command);
+  const installer = getBunInstallInvocation();
+  console.log('📦 Installing Bun for Eidoverse Worlds');
+  await bufferedSpawnOrThrow(installer.command, installer.args, {
+    env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
+    timeoutLabel: 'Bun installation',
+  });
+
+  if (!await commandExists(command, ['--version'], { env })) {
+    throw new ServerError('Bun installation completed without a runnable Bun binary.', {
+      status: 500,
+      code: 'EIDOVERSE_BUN_INSTALL_FAILED',
+    });
+  }
+  return { command, env };
+}
+
+async function installDependencies(directory, bun) {
+  await bufferedSpawnOrThrow(bun.command, ['install', '--frozen-lockfile'], {
     cwd: directory,
+    env: bun.env,
     timeoutMs: INSTALL_TIMEOUT_MS,
   });
 }
@@ -110,12 +192,7 @@ async function installDependencies(directory) {
 let installInFlight = null;
 
 async function performInstall(worldsRepoUrl) {
-  if (!await commandExists('bun')) {
-    throw new ServerError('Eidoverse Worlds requires Bun. Install Bun, then retry.', {
-      status: 412,
-      code: 'EIDOVERSE_BUN_REQUIRED',
-    });
-  }
+  const bun = await ensureBunRuntime();
 
   const configuredPaths = getEidoversePaths(worldsRepoUrl);
   const paths = await resolveEidoverseInstallPaths(worldsRepoUrl);
@@ -125,13 +202,13 @@ async function performInstall(worldsRepoUrl) {
   ]);
 
   await Promise.all([
-    installDependencies(paths.worlds),
-    installDependencies(join(paths.worlds, 'client')),
+    installDependencies(paths.worlds, bun),
+    installDependencies(join(paths.worlds, 'client'), bun),
   ]);
 
   await ensureDir(paths.worldData);
   await atomicWrite(paths.envFile, envFileContents(paths));
-  await registerManagedApp(paths);
+  await registerManagedApp(paths, bun.command);
 
   console.log('🌐 Eidoverse Worlds installed as a managed app');
   return getEidoverseStatus({ worldsRepoUrl });
@@ -160,8 +237,8 @@ export async function installEidoverse({ worldsRepoUrl = DEFAULT_EIDOVERSE_WORLD
 export async function getEidoverseStatus({ worldsRepoUrl = DEFAULT_EIDOVERSE_WORLDS_REPO } = {}) {
   const normalizedRepoUrl = normalizeEidoverseWorldsRepo(worldsRepoUrl);
   const configuredPaths = getEidoversePaths(normalizedRepoUrl);
-  const [bunAvailable, videoRepo, worldDataReady, registry] = await Promise.all([
-    commandExists('bun'),
+  const [bunRuntime, videoRepo, worldDataReady, registry] = await Promise.all([
+    resolveBunRuntime(),
     pathExists(join(configuredPaths.video, '.git')),
     pathExists(configuredPaths.worldData),
     getAllApps().then(
@@ -198,7 +275,7 @@ export async function getEidoverseStatus({ worldsRepoUrl = DEFAULT_EIDOVERSE_WOR
     worldsRepoUrl: normalizedRepoUrl,
     installed,
     partial: !installed && [worldsRepo, videoRepo, rootDependencies, clientDependencies, configured, worldDataReady, appRegistered].some(Boolean),
-    bunAvailable,
+    bunAvailable: bunRuntime !== null,
     worldsRepo,
     videoRepo,
     rootDependencies,

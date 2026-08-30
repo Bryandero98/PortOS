@@ -127,7 +127,7 @@ export function InstanceFeaturesTab() {
           const installing = savingId === feature.id;
           const selectedRepoUrl = eidoverseRepoUrl ?? setup?.worldsRepoUrl ?? '';
           const repoIsValid = isGitHubRepoUrl(selectedRepoUrl);
-          const canInstall = repoIsValid && setup?.bunAvailable === true && setup?.registryAvailable !== false;
+          const canInstall = repoIsValid && setup?.registryAvailable !== false;
           const canUpdateSource = repoIsValid
             && normalizeGitHubRepo(selectedRepoUrl) !== setup?.worldsRepoUrl
             && setup?.registryAvailable !== false;
@@ -153,7 +153,7 @@ export function InstanceFeaturesTab() {
                 {isEidoverse && (
                   <div className="mt-3 space-y-1 text-xs text-gray-400">
                     {needsInstall && <p>
-                      PortOS will clone your selected Worlds repository and the upstream video runtime as separate AGPL-3.0 repositories, install their Bun dependencies, and register Worlds under Apps. It will not start the server automatically.
+                      PortOS will install Bun if needed, clone your selected Worlds repository and the upstream video runtime as separate AGPL-3.0 repositories, install their dependencies, and register Worlds under Apps. It will not start the server automatically.
                     </p>}
                     <label className="block pt-2" htmlFor="eidoverse-worlds-repo">
                       <span className="block text-gray-300 mb-1">Worlds GitHub repository</span>
@@ -195,13 +195,13 @@ export function InstanceFeaturesTab() {
                     {needsInstall && <>
                       {setup?.bunAvailable === false && (
                         <p className="text-port-warning">
-                          Bun is required. <a className="underline hover:text-white" href="https://bun.sh" target="_blank" rel="noreferrer">Install Bun</a>, then retry.
+                          Bun is not installed. PortOS will install it automatically when you install and enable Eidoverse Worlds.
                         </p>
                       )}
                       {setup?.registryAvailable === false && (
                         <p className="text-port-error">The managed-app registry could not be read. Repair that before installing to avoid a duplicate app record.</p>
                       )}
-                      {(setup?.bunAvailable === false || setup?.registryAvailable === false) && (
+                      {setup?.registryAvailable === false && (
                         <button
                           type="button"
                           onClick={handleEidoverseRecheck}

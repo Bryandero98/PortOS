@@ -277,7 +277,8 @@ describe('taskSchedule', () => {
   describe('layered-intelligence (programmatic-I/O agent task)', () => {
     it('is registered as a self-improvement task with a description and an on-demand default', () => {
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('layered-intelligence');
-      expect(TASK_TYPE_DESCRIPTIONS['layered-intelligence']).toBeTruthy();
+      expect(TASK_TYPE_DESCRIPTIONS['layered-intelligence']).toContain('performance metrics');
+      expect(TASK_TYPE_DESCRIPTIONS['layered-intelligence']).toContain('visibility gap');
       expect(DEFAULT_TASK_INTERVALS['layered-intelligence']).toMatchObject({ type: INTERVAL_TYPES.ON_DEMAND, enabled: true });
     });
 

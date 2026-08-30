@@ -4,6 +4,8 @@ Eidoverse Worlds is an optional, disabled-by-default PortOS feature. It is not
 vendored into PortOS and is not a git submodule. Choosing **Install & enable**
 under **Settings → Features** is the explicit consent boundary that downloads,
 installs, and enables the runtime; the ordinary feature toggle never installs it.
+If Bun is not already available, the same action first runs Bun's official
+platform installer under the PortOS service account on Windows, macOS, or Linux.
 
 ## What PortOS installs
 
@@ -31,10 +33,11 @@ untouched. The companion video checkout remains on its upstream repository.
 
 ## Runtime and data ownership
 
-The managed app uses port `8940` and starts with:
+The managed app uses port `8940` and starts with the Bun executable found or
+installed during setup:
 
 ```text
-bun --env-file=.env.portos server/server.ts
+<bun> --env-file=.env.portos server/server.ts
 ```
 
 Installation does not start the server. Start, stop, logs, updates, and launch
