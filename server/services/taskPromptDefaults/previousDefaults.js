@@ -32,6 +32,37 @@ Scope: this task operates against the managed app's repository, NOT PortOS. All 
 {slashdoReplan}`,
   ],
   'feature-ideas': [
+    // Outgoing pre-unification default, self-improvement schedule.
+    `[Self-Improvement] Feature Review and Development
+
+Evaluate existing features and consider new ones to make PortOS more useful:
+
+1. Read data/COS-GOALS.md for context on user goals
+2. Review recent completed tasks and user feedback to understand patterns
+3. Assess current features:
+   - Are existing features working well toward our goals?
+   - Are there features that could be improved or refined?
+   - Are there features that are underperforming or causing friction?
+
+4. Choose ONE action to take (in order of preference):
+   a) IMPROVE an existing feature that isn't meeting its potential
+      - Identify what's not working and why
+      - Make targeted improvements to increase effectiveness
+   b) ADD a new high-impact feature
+      - Something that saves user time, improves the developer experience, or makes CoS more helpful
+   c) ARCHIVE a feature that is not helping our goals
+      - This requires a high bar: document clear evidence of why it's not useful
+      - Check usage patterns, goal alignment, and whether the feature creates noise
+      - Move the feature config to disabled with a reason, don't delete code
+
+5. Implement it:
+   - Write clean, tested code
+   - Follow existing patterns
+   - Update relevant documentation
+
+6. Commit with a clear description of the change and rationale
+
+Think critically about what we have before adding more.`,
     // v1 default prompt
     `[Improvement: {appName}] Feature Review and Development
 
@@ -486,7 +517,81 @@ When PLAN.md is missing, empty, or fully completed, brainstorm and implement a n
    \`\`\`
    - [x] [<slug-of-feature>] <description of the feature you implemented>
    \`\`\`
-8. Commit with a clear description of the feature and rationale`
+8. Commit with a clear description of the feature and rationale`,
+    // v10 default prompt (before Phase 4 consults PRD.md as the primary
+    // product source, with GOALS.md as the fallback)
+    `[Improvement: {appName}] Implement Next Planned Feature
+
+Your goal is to implement the next planned item from PLAN.md, or brainstorm a new feature if no plan exists.
+
+Repository: {repoPath}
+{planConstraint}
+## Phase 1 — Find the Next Task
+
+1. Read PLAN.md from {repoPath}
+2. Skim recent \`.changelog/\` entries and \`git log\` (last 50 commits) to understand what has already shipped — do NOT re-implement completed features
+3. If the **Item Constraint** block above named a specific \`[plan-id]\`, find the matching \`- [ ]\` line and use that — do NOT pick a different one, do NOT brainstorm. If the line is missing, has been checked, or carries \`<!-- NEEDS_INPUT -->\`, exit cleanly without commits or PR.
+4. Otherwise, if PLAN.md does not exist, is empty, or has no unchecked items (\`- [ ]\`), go to **Phase 4 — Brainstorm**.
+5. Otherwise, find the first unchecked item (\`- [ ]\`) that does NOT have a \`<!-- NEEDS_INPUT -->\` annotation.
+6. If all unchecked items have \`<!-- NEEDS_INPUT -->\`, go to **Phase 4 — Brainstorm**.
+
+## Phase 2 — Evaluate Feasibility
+
+7. Read relevant source files to understand the scope of the item
+8. Determine: can this be implemented without user clarification?
+   - Consider: are requirements clear? Are there ambiguous design choices? Does it depend on external decisions?
+
+## Phase 3a — Implement (if feasible)
+
+9. Implement the feature:
+   - Write clean, tested code following existing patterns
+   - Run tests to ensure nothing is broken
+10. **Review your changed code for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix any findings. Claude Code can run \`/simplify\` for this pass; on other CLIs, do the equivalent diff review by hand.
+11. Check the PLAN.md item: change \`- [ ]\` to \`- [x]\`. **Preserve the \`[plan-id]\` slug verbatim** — only the box character flips, never the ID. Reference the slug in the commit message (e.g. \`feat([plan-id]): …\`).
+12. Commit with a clear description referencing the PLAN.md item
+
+## Phase 3b — Request Clarification (if not feasible)
+
+9. Create a file named \`.plan-questions.md\` in the repository root with this format:
+   \`\`\`
+   # Plan Question: <short title summarizing the PLAN.md item>
+
+   ## PLAN.md Item
+   <the exact text of the unchecked item, including its [plan-id]>
+
+   ## Questions
+   - <question 1>
+   - <question 2>
+   \`\`\`
+10. **Move the unchecked item to the bottom of PLAN.md and annotate it with \` <!-- NEEDS_INPUT -->\`** — remove the line from its current position and append it at the end of the file with the annotation, **preserving its \`[plan-id]\` slug**. This keeps the queue moving so the next \`feature-ideas\` run picks up a different actionable item instead of repeatedly tripping on this one.
+11. Commit both changes (the new \`.plan-questions.md\` file and the PLAN.md move) with message \`chore: flag PLAN.md item needing user input\`. Then proceed to the **Completion** section below so the clarification PR is opened for the user to review — do NOT leave the worktree orphaned.
+
+## Phase 4 — Brainstorm a New Feature
+
+When PLAN.md is missing, empty, or fully completed, brainstorm and implement a new feature:
+
+1. Read GOALS.md from {repoPath} for context on the app's goals and priorities.
+   If no GOALS.md exists, focus on general improvements.
+2. Skim recent \`.changelog/\` entries and the last 50 \`git log\` entries to avoid re-implementing completed features
+3. Read REJECTED.md from {repoPath} (if it exists) to understand previously rejected ideas — do NOT re-propose an idea matching a rejected entry
+4. Check the repo's recently closed-unmerged PRs (\`gh pr list --state closed --search "is:unmerged" --limit 20\`, or the forge's equivalent) — a brainstormed feature whose PR the user closed WITHOUT merging was rejected; treat those ideas as rejected too
+5. Review the codebase structure, recent git log, and any README or docs to understand the app
+6. Identify ONE small, high-impact feature that:
+   - Aligns with GOALS.md priorities (if available)
+   - Is NOT already shipped per recent \`.changelog/\` entries or \`git log\` (avoid re-implementing shipped features)
+   - Does NOT match a REJECTED.md entry or a closed-unmerged automation PR (rejected ideas stay rejected)
+   - Saves user time, improves UX, or makes the app more useful
+   - Is self-contained and completable in one session
+   - Does NOT duplicate existing functionality
+7. Implement the feature:
+   - Write clean, tested code following existing patterns
+   - Run tests to ensure nothing is broken
+8. **Review your changed code for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix any findings. Claude Code can run \`/simplify\` for this pass; on other CLIs, do the equivalent diff review by hand.
+9. Add the feature as a checked item in PLAN.md (create the file if needed) **with a slug ID** derived from the feature title (lowercase kebab-case, ≤50 chars, unique against every existing \`[slug]\` in PLAN.md):
+   \`\`\`
+   - [x] [<slug-of-feature>] <description of the feature you implemented>
+   \`\`\`
+10. Commit with a clear description of the feature and rationale`,
   ],
   'plan-task': [
     // v14 default (pre-local-reviewer invocation and verified immediate merge)
@@ -9106,6 +9211,36 @@ NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it 
   // brief Feb-2026 `${PORTOS_UI_URL}`-interpolated variants are intentionally
   // omitted: they were never released (≈51 min on main) and resolve per-install.
   'security': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Security Audit
+
+Analyze the {appName} codebase for security vulnerabilities:
+
+Repository: {repoPath}
+
+1. Review routes/controllers for:
+   - Command injection in exec/spawn calls
+   - Path traversal in file operations
+   - Missing input validation
+   - XSS vulnerabilities
+   - SQL/NoSQL injection
+
+2. Review services for:
+   - Unsafe eval() or Function()
+   - Hardcoded credentials
+   - Insecure dependencies
+
+3. Review client code for:
+   - XSS vulnerabilities
+   - Sensitive data in localStorage
+   - CSRF protection
+
+4. Check authentication and authorization:
+   - Secure password handling
+   - Token management
+   - Access control
+
+Fix any vulnerabilities found and commit with security advisory notes.`,
     // prior default — app name hardcoded as "PortOS"
     `[Self-Improvement] Security Audit
 
@@ -9132,6 +9267,22 @@ Analyze PortOS codebase for security vulnerabilities:
 Fix any vulnerabilities and commit with security advisory notes.`,
   ],
   'code-quality': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Code Quality Review
+
+Analyze {appName} for maintainability improvements:
+
+Repository: {repoPath}
+
+1. Find DRY violations - similar code in multiple places
+2. Identify functions >50 lines that should be split
+3. Look for missing error handling
+4. Find dead code and unused imports
+5. Check for console.log that should be removed
+6. Look for TODO/FIXME that need addressing
+7. Identify magic numbers that should be constants
+
+Focus on the main source directories. Refactor issues found and commit improvements.`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Code Quality Review
 
@@ -9152,6 +9303,28 @@ Focus on:
 Refactor issues found and commit improvements.`,
   ],
   'test-coverage': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Improve Test Coverage
+
+Analyze and improve test coverage for {appName}:
+
+Repository: {repoPath}
+
+1. Check existing tests and identify untested critical paths
+2. Look for:
+   - API routes without tests
+   - Services with complex logic
+   - Error handling paths
+   - Edge cases
+
+3. Add tests following existing patterns in the project
+4. Ensure tests:
+   - Use appropriate mocks
+   - Test edge cases
+   - Follow naming conventions
+
+5. Run tests to verify all pass
+6. Commit test additions with clear message describing coverage`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Improve Test Coverage
 
@@ -9178,6 +9351,33 @@ Analyze and improve test coverage for PortOS:
 6. Commit test additions with clear message describing what's covered`,
   ],
   'performance': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Performance Analysis
+
+Analyze {appName} for performance issues:
+
+Repository: {repoPath}
+
+1. Review components/views for:
+   - Unnecessary re-renders
+   - Missing memoization
+   - Large files that should be split
+
+2. Review backend for:
+   - N+1 query patterns
+   - Missing caching opportunities
+   - Inefficient file operations
+   - Slow API endpoints
+
+3. Review build/bundle for:
+   - Missing code splitting
+   - Large dependencies that could be optimized
+
+4. Check for:
+   - Memory leaks
+   - Unnecessary broadcasts/events
+
+Optimize and commit improvements.`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Performance Analysis
 
@@ -9204,6 +9404,26 @@ Analyze PortOS for performance issues:
 Optimize and commit improvements.`,
   ],
   'accessibility': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Accessibility Audit
+
+Audit {appName} for accessibility issues:
+
+Repository: {repoPath}
+
+If the app has a web UI:
+1. Navigate to the app's UI
+2. Check for:
+   - Missing ARIA labels
+   - Missing alt text on images
+   - Insufficient color contrast
+   - Keyboard navigation issues
+   - Focus indicators
+   - Semantic HTML usage
+
+3. Fix accessibility issues in components
+4. Add appropriate aria-* attributes
+5. Test and commit changes`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Accessibility Audit
 
@@ -9223,6 +9443,33 @@ Use Playwright MCP to audit PortOS accessibility:
 6. Test and commit changes`,
   ],
   'dependency-updates': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Dependency Updates
+
+Check {appName} dependencies for updates and security vulnerabilities:
+
+Repository: {repoPath}
+
+1. Run npm audit (or equivalent package manager)
+2. Check for outdated packages
+3. Review CRITICAL and HIGH severity vulnerabilities
+4. For each vulnerability:
+   - Assess actual risk
+   - Check if update available
+   - Test updates don't break functionality
+
+5. Update dependencies carefully:
+   - Patch versions first (safest)
+   - Then minor versions
+   - Major versions need careful review
+
+6. After updating:
+   - Run tests
+   - Verify the app starts correctly
+
+7. Commit with clear changelog
+
+IMPORTANT: Only update one major version bump at a time.`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Dependency Updates and Security Audit
 
@@ -9395,6 +9642,33 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 IMPORTANT: Only update one major version bump at a time.`,
   ],
   'documentation': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Update Documentation
+
+Review and improve {appName} documentation:
+
+Repository: {repoPath}
+
+1. Check README.md:
+   - Installation instructions current?
+   - Quick start guide clear?
+   - Feature overview complete?
+
+2. Review inline documentation:
+   - Add JSDoc to exported functions
+   - Document complex algorithms
+   - Explain non-obvious code
+
+3. Check for docs/ folder:
+   - Are all features documented?
+   - Is information current?
+   - Add missing guides if needed
+
+4. Update PLAN.md or similar if present:
+   - Mark completed milestones
+   - Document architectural decisions
+
+Commit documentation improvements.`,
     // prior default (pre-genericization / intermediate)
     `[Improvement: {appName}] Update Documentation
 
@@ -11344,6 +11618,96 @@ Run \`git stash list\`. For each \`stash@{N}\`:
 ## Step 3: Report
 
 Summarize: how many stashes were reviewed, how many were dropped (grouped by reason: superseded vs. stale/abandoned), and — for anything classified REAL UNLANDED WORK — what it is, which files it touches, and a recommendation (recover as a branch, cherry-pick specific hunks, or leave it for the user to decide). When in doubt about whether a stash is safe to drop, leave it in the stash and say so in the report rather than dropping it.`,
+  ],
+  'console-errors': [
+    // Outgoing pre-unification default, self-improvement schedule.
+    `[Self-Improvement] Console Error Investigation
+
+Use Playwright MCP to find and fix console errors:
+
+1. Navigate to http://localhost:5555/
+2. Call browser_console_messages with level: "error"
+3. Visit each route and capture errors:
+   - /, /apps, /cos, /cos/tasks, /cos/agents
+   - /devtools, /devtools/history, /devtools/runner
+   - /providers, /usage, /prompts
+
+4. For each error:
+   - Identify the source file and line
+   - Understand the root cause
+   - Implement a fix
+
+5. Test fixes and commit changes`,
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Console Error Investigation
+
+Find and fix console errors in {appName}:
+
+Repository: {repoPath}
+
+1. If the app has a UI, check browser console for errors
+2. Check server logs for errors
+3. For each error:
+   - Identify the source file and line
+   - Understand the root cause
+   - Implement a fix
+
+4. Test fixes and commit changes`,
+  ],
+  'error-handling': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Improve Error Handling
+
+Enhance error handling in {appName}:
+
+Repository: {repoPath}
+
+1. Review code for:
+   - Missing try-catch blocks where needed
+   - Silent failures (empty catch blocks)
+   - Errors that should be logged
+   - User-facing error messages
+
+2. Add error handling for:
+   - Network requests
+   - File operations
+   - Database queries
+   - External API calls
+
+3. Ensure errors are:
+   - Logged appropriately
+   - Have clear messages
+   - Include relevant context
+   - Don't expose sensitive data
+
+4. Test error paths and commit improvements`,
+  ],
+  'typing': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] TypeScript Type Improvements
+
+Improve TypeScript types in {appName}:
+
+Repository: {repoPath}
+
+1. Review TypeScript files for:
+   - 'any' types that should be specific
+   - Missing type annotations
+   - Type assertions that could be avoided
+   - Missing interfaces/types for objects
+
+2. Add types for:
+   - Function parameters and returns
+   - Component props
+   - API responses
+   - Configuration objects
+
+3. Ensure:
+   - Types are properly exported
+   - No implicit any
+   - Types are reusable
+
+4. Run type checking and commit improvements`,
   ],
 };
 

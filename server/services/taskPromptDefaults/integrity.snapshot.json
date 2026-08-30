@@ -17,7 +17,7 @@
     "react-lifecycle": "14b3816d1bcc10f0d7d6357e55cc5e69",
     "observability": "fdb4d77df5891cfb653a5da2553ecf8a",
     "copy": "6a0959e898d37fb4d4d7445dfc8008c9",
-    "feature-ideas": "d3282f16da29efe2d53595b3b34778bc",
+    "feature-ideas": "804f62f1dadadbfa8a0bcd4aff16b2e8",
     "plan-feature": "87f71a894757f89354da4e2119e07118",
     "plan-task": "b85fe92999aa4ee4a8910320457c4242",
     "claim-issue": "9bf278ab141120625cd6faf854622f91",
@@ -45,7 +45,7 @@
   },
   "PROMPT_VERSIONS": {
     "do-replan": 2,
-    "feature-ideas": 10,
+    "feature-ideas": 11,
     "plan-task": 18,
     "claim-issue": 22,
     "claim-issue-gitlab": 20,
@@ -64,6 +64,9 @@
     "test-coverage": 2,
     "performance": 2,
     "accessibility": 2,
+    "console-errors": 2,
+    "error-handling": 2,
+    "typing": 2,
     "dependency-updates": 4,
     "documentation": 6,
     "ui-bugs": 2,
@@ -77,7 +80,9 @@
     "copy": 1,
     "stash-cleanup": 2,
     "repo-sync": 1,
-    "release-check": 12
+    "release-check": 12,
+    "jira-sprint-manager": 1,
+    "jira-status-report": 1
   },
   "REFERENCE_WATCH_AUDITED_VERSION": 3,
   "PREVIOUS_DEFAULT_PROMPTS": {
@@ -85,6 +90,7 @@
       "59a57f1bb445138c30ab4fa23630c6f8"
     ],
     "feature-ideas": [
+      "abc098e3acf4eb6b9d1211680ec0440f",
       "d67a9028aeb8bb8348453951f878501b",
       "c6a399399245872401666d5c67c716cc",
       "a4a4b4d7191ae58b82140295c3df5926",
@@ -92,7 +98,8 @@
       "5a0350fa6db8ac040fb638fdd4a31700",
       "d076e19a6848f6452f4d1078b096ba4b",
       "73cdc70f8d14fc909668054bbcee1259",
-      "0741418bd275b8953131155f8bc89460"
+      "0741418bd275b8953131155f8bc89460",
+      "d3282f16da29efe2d53595b3b34778bc"
     ],
     "plan-task": [
       "4df36bed4974ff41f369c86828e7f94f",
@@ -181,26 +188,33 @@
       "af99e76b4881d1a18234eff0d58d49a4"
     ],
     "security": [
+      "b199739b21a8c45ed3778b2339ebf55f",
       "d0f54c1fbe62d067b1a23ee0a9f3528c"
     ],
     "code-quality": [
+      "62752723eba7a39aa94e010911923cc8",
       "b1cce8f89218844746746ceb576553c1"
     ],
     "test-coverage": [
+      "ec70fb2b8e193b6a98bec2fbf337b190",
       "c2b0f0dee5bc881239684e706ea88324"
     ],
     "performance": [
+      "c8224243c15f6897ee04be25d172f021",
       "4fea5eb3585bdc150980934b289016bc"
     ],
     "accessibility": [
+      "ce7377d0ac57cbf0526074cfb95e3803",
       "b07cfe1e367411036ef1d4cc4b6e9d2e"
     ],
     "dependency-updates": [
+      "020d66b93698341c556eca1eee851bee",
       "640a7c4214e6bdba2bbd5b9061d9d425",
       "3f461b1c111ba45b7fa5016883cfa54d",
       "7ed05444e2602f4895bdd1e5e0edcaa8"
     ],
     "documentation": [
+      "b6540f4ba13832226fd0c85cf1955f99",
       "074ea22140f8f6a02c7e40a6bc7b0614",
       "658395fa391df5a0fefaaebdf8dbedb7",
       "751186658f5d9a9dbccdd6830946f3d8",
@@ -248,6 +262,16 @@
     ],
     "stash-cleanup": [
       "f9de8b10937919ceb6656fbdb70179c4"
+    ],
+    "console-errors": [
+      "23b1a2e33cb414f27d4002b51d315e83",
+      "3e3f690729ead5e312927ae4bce330c0"
+    ],
+    "error-handling": [
+      "26225ac04f2f35feb61151b2e6474465"
+    ],
+    "typing": [
+      "d8fd1423cf2a523b528ed7d2d7a2bb55"
     ]
   }
 }

@@ -427,6 +427,69 @@ describe('taskSchedule', () => {
     })
   })
 
+  describe('pre-unification prompt generations (self- + app-improvement split)', () => {
+    // Before the two improvement schedules were unified, every basic task
+    // shipped up to two bodies with different headers — `[Self-Improvement] …`
+    // and `[App Improvement: {appName}] …`. Unification replaced both with a
+    // single `[Improvement: {appName}] …` body but preserved neither, so an
+    // install carrying either generation stopped matching any shipped default,
+    // was stamped promptCustomized by the legacy migration, and has been frozen
+    // out of every prompt upgrade since — nine task types on a real install.
+    const fromEra = (taskType, header) =>
+      PREVIOUS_DEFAULT_PROMPTS[taskType].find((p) => p.startsWith(header))
+
+    const loadOne = async (taskType, prompt, promptVersion) => {
+      mockSchedule({
+        tasks: { [taskType]: { type: 'once', enabled: false, providerId: null, model: null, prompt, promptVersion, promptCustomized: true } }
+      })
+      return (await loadSchedule()).tasks[taskType]
+    }
+
+    // One case per shape the freeze took: header-only drift, a body that also
+    // changed, a type whose ONLY revision was the split (so it had no
+    // PROMPT_VERSIONS entry at all), and the older self-improvement generation.
+    //
+    // Each runs under BOTH version stamps a frozen install can carry. The
+    // legacy migration wrote `promptVersion = PROMPT_VERSIONS[taskType]`
+    // alongside the customized flag, so an install flagged after its type was
+    // versioned holds the CURRENT version with a RETIRED body — and clearing
+    // the flag alone leaves `storedVersion < current` false, so the upgrade
+    // never fires. Testing only the version-1 stamp misses that entirely.
+    const ERAS = [
+      ['console-errors', '[App Improvement: '],
+      ['security', '[App Improvement: '],
+      ['typing', '[App Improvement: '],
+      ['console-errors', '[Self-Improvement] '],
+      ['feature-ideas', '[Self-Improvement] '],
+    ]
+    it.each(ERAS.flatMap(([taskType, header]) => [
+      [taskType, header, 'pre-versioning', 1],
+      [taskType, header, 'current-version', PROMPT_VERSIONS[taskType]],
+    ]))('self-heals and upgrades a stored %s prompt from the %s generation (%s stamp)', async (taskType, header, _label, storedVersion) => {
+      const prompt = fromEra(taskType, header)
+      expect(prompt, `no ${header} body registered for ${taskType}`).toBeDefined()
+      const task = await loadOne(taskType, prompt, storedVersion)
+      expect(task.promptCustomized).toBe(false)
+      expect(task.prompt).toBe(DEFAULT_TASK_PROMPTS[taskType])
+      expect(task.promptVersion).toBe(PROMPT_VERSIONS[taskType])
+    })
+
+    it('preserves a genuine user customization that merely mimics a retired header', async () => {
+      const custom = '[App Improvement: {appName}] My own audit that matches no shipped default.'
+      const task = await loadOne('console-errors', custom, 1)
+      expect(task.prompt).toBe(custom)
+      expect(task.promptCustomized).toBe(true)
+    })
+
+    // Pins the provenance of the frozen feature-ideas body: it is the one that
+    // sent every run to `data/COS-GOALS.md`, a file the same unification folded
+    // into the root GOALS.md. The upgrade itself is covered above.
+    it('pins the frozen feature-ideas body as the COS-GOALS.md-era default', () => {
+      expect(fromEra('feature-ideas', '[Self-Improvement] ')).toContain('data/COS-GOALS.md')
+      expect(DEFAULT_TASK_PROMPTS['feature-ideas']).not.toContain('COS-GOALS.md')
+    })
+  })
+
   describe('changelog-fragment prompt revision (issue #3998)', () => {
     // Pins that each task type touched by this revision actually participates in
     // the auto-upgrade path: it is in PROMPT_VERSIONS, loadSchedule walks it, and

@@ -688,14 +688,27 @@ Repository: {repoPath}
 
 When PLAN.md is missing, empty, or fully completed, brainstorm and implement a new feature:
 
-1. Read GOALS.md from {repoPath} for context on the app's goals and priorities.
-   If no GOALS.md exists, focus on general improvements.
+1. **Establish the product direction from the repository's own documents**, in
+   this order of precedence. Make a best effort rather than assuming a missing
+   document means the app has no direction:
+   - Read \`PRD.md\` from the root of {repoPath} if it exists. Treat its
+     requirements, acceptance criteria, success metrics, constraints, and
+     non-goals as the primary statement of what the app should do.
+   - Read \`GOALS.md\` from the root of {repoPath} if it exists. Use it for
+     strategic context alongside the PRD, or as the primary statement of
+     desired direction when there is no PRD.
+   - If neither exists, fall back to the root \`README.md\`, \`docs/README.md\`,
+     relevant guides, architecture notes, and ADRs. Extract stated users,
+     problems, workflows, constraints, and success signals rather than
+     inventing a product direction.
+   - If PRD.md and GOALS.md conflict, follow the PRD's concrete requirements
+     and success criteria, and name the tension in your commit message.
 2. Skim recent \`.changelog/\` entries and the last 50 \`git log\` entries to avoid re-implementing completed features
 3. Read REJECTED.md from {repoPath} (if it exists) to understand previously rejected ideas — do NOT re-propose an idea matching a rejected entry
 4. Check the repo's recently closed-unmerged PRs (\`gh pr list --state closed --search "is:unmerged" --limit 20\`, or the forge's equivalent) — a brainstormed feature whose PR the user closed WITHOUT merging was rejected; treat those ideas as rejected too
 5. Review the codebase structure, recent git log, and any README or docs to understand the app
 6. Identify ONE small, high-impact feature that:
-   - Aligns with GOALS.md priorities (if available)
+   - Aligns with PRD.md requirements and success criteria when available; otherwise with GOALS.md or the documentation gathered in step 1
    - Is NOT already shipped per recent \`.changelog/\` entries or \`git log\` (avoid re-implementing shipped features)
    - Does NOT match a REJECTED.md entry or a closed-unmerged automation PR (rejected ideas stay rejected)
    - Saves user time, improves UX, or makes the app more useful
