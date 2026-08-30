@@ -608,7 +608,7 @@ export default function FableLoomStory({ view = 'graph' }) {
             aria-label={node ? `${node.title || 'Scene'} details` : 'Episode validation'}
             className={node
               ? 'absolute inset-x-0 bottom-0 z-20 flex h-[calc(100%_-_0.75rem)] max-h-dvh-cap flex-col overflow-hidden rounded-t-2xl border border-b-0 border-port-border bg-port-card shadow-2xl motion-safe:animate-in motion-safe:slide-in-from-bottom-4 motion-safe:duration-200 lg:static lg:h-auto lg:max-h-none lg:w-[380px] lg:shrink-0 lg:rounded-none lg:border-y-0 lg:border-r-0 lg:border-l'
-              : 'max-h-dvh-cap overflow-hidden border-t border-port-border lg:max-h-none lg:w-[380px] lg:shrink-0 lg:border-t-0 lg:border-l'}
+              : 'flex max-h-dvh-cap flex-col overflow-hidden border-t border-port-border lg:max-h-none lg:w-[380px] lg:shrink-0 lg:border-t-0 lg:border-l'}
             style={node
               ? { '--dvh-cap': '78vh', '--dvh-cap-dynamic': '78dvh' }
               : { '--dvh-cap': '45vh', '--dvh-cap-dynamic': '45dvh' }}
