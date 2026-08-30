@@ -1842,10 +1842,11 @@ export function measureOutlineConcaveTurn(ring) {
 }
 
 /**
- * The sweep geometries whose curvature this gate can measure, and the reason a
- * given part is treated as declared-curved. Returns `null` for anything else, so
- * a straight `box` rail named "elbowBracket" is never reported — this gate only
- * speaks about sweeps.
+ * Measure whichever sweep geometry this is, using the measure that geometry
+ * carries its curvature in. Returns `null` for anything this gate cannot speak
+ * about — a straight `box` rail named "elbowBracket", a closed tube, an extrude
+ * whose curve may live in a hole — so a caller can tell "measured and straight"
+ * from "not measurable".
  */
 export function evaluateSweptGeometryCurvature(geometry) {
   if (geometry?.type === 'tube') {

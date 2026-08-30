@@ -830,7 +830,7 @@ const buildSweptPathCurvatureFindings = (spec, parts) => {
     const declaration = declaredBy === name ? '' : ` (declared by the feature "${declaredBy}")`;
     const message = curvature.kind === 'tube'
       ? `Part "${name}"${declaration} is a curved form built from a tube whose path ${curvature.arcSpanDegrees > 0 ? `only turns through ${formatDegrees(curvature.arcSpanDegrees)}` : 'runs through collinear control points'}, so it sweeps straight. Sample the intended curve into "path" so consecutive points step around a centre — a horn, tail, hook, or bent conduit needs at least ${formatDegrees(SWEPT_ARC_MIN_SPAN_DEGREES)} of turn — instead of listing points along one line.`
-      : `Part "${name}"${declaration} is a curved form built from an extrude whose outline never turns back on itself (${formatDegrees(curvature.concaveTurnDegrees)} of concave turning). An extrude sweeps its outline along a STRAIGHT axis, so the curve has to be in the outline's own silhouette: give it a concave side of at least ${formatDegrees(CURVED_OUTLINE_MIN_CONCAVE_TURN_DEGREES)}, or build the part as a "tube" whose path follows the curve.`;
+      : `Part "${name}"${declaration} is a curved form built from an extrude whose outline never turns back on itself (${formatDegrees(curvature.concaveTurnDegrees)} of sustained concave turning). An extrude sweeps its outline along a STRAIGHT axis, so the curve has to be in the outline's own silhouette: give it a concave side of at least ${formatDegrees(CURVED_OUTLINE_MIN_CONCAVE_TURN_DEGREES)}, or build the part as a "tube" whose path follows the curve.`;
     findings.push({
       code: 'straight-swept-path',
       severity: 'warning',

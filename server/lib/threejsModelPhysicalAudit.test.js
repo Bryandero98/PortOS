@@ -1137,7 +1137,7 @@ describe('swept-path curvature', () => {
       },
     }));
     expect(findings).toHaveLength(1);
-    expect(findings[0].message).toContain('0° of concave turning');
+    expect(findings[0].message).toContain('0° of sustained concave turning');
   });
 
   it('accepts a crescent extrude outline', () => {
