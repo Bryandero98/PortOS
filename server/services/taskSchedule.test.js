@@ -61,7 +61,8 @@ vi.mock('./apps.js', () => ({
   getAppTaskTypeIntervalMs: vi.fn().mockResolvedValue(null),
   getActiveApps: vi.fn().mockResolvedValue([]),
   getAppTaskTypeOverrides: vi.fn().mockResolvedValue({}),
-  clearAllPrWatcherState: vi.fn().mockResolvedValue({ changed: false })
+  clearAllPrWatcherState: vi.fn().mockResolvedValue({ changed: false }),
+  clearAllIssueWatcherState: vi.fn().mockResolvedValue({ changed: false })
 }))
 
 vi.mock('../lib/ports.js', () => ({
@@ -160,12 +161,13 @@ import { DEFAULT_TASK_PROMPTS, PREVIOUS_DEFAULT_PROMPTS } from './taskPromptDefa
 // The source of truth for "this type's deliverable is a side effect, not a commit"
 // — the posture guard below iterates it so the two can't drift apart.
 import { NON_COMMITTING_COORDINATOR_TASK_TYPES } from './taskTypeHooks.js'
+import { enforceManagedAgentOptions } from './taskScheduleRegistry.js'
 
 import { loadState } from './cosState.js'
 
 import { readJSONFile } from '../lib/fileUtils.js'
 import { writeFile } from 'fs/promises'
-import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, clearAllPrWatcherState } from './apps.js'
+import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, clearAllPrWatcherState, clearAllIssueWatcherState } from './apps.js'
 import { getLocalParts } from '../lib/timezone.js'
 import { getAdaptiveCooldownMultiplier } from './taskLearning.js'
 import { parseCronToNextRun, parseCronToPrevRun } from './eventScheduler.js'
@@ -305,6 +307,23 @@ describe('taskSchedule', () => {
       expect(res.shouldRun).toBe(true);
       getAppTaskTypeInterval.mockResolvedValue(null);
       getAppTaskTypeIntervalMs.mockResolvedValue(null);
+    });
+  });
+
+  describe('issue-watcher (programmatic-I/O agent task)', () => {
+    it('ships as a disabled 30-minute task with no persisted prompt', () => {
+      expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('issue-watcher');
+      expect(DEFAULT_TASK_INTERVALS['issue-watcher']).toMatchObject({
+        type: 'custom', intervalMs: 30 * 60 * 1000, enabled: false, prompt: null
+      });
+      expect(DEFAULT_TASK_PROMPTS['issue-watcher']).toBeUndefined();
+    });
+
+    it('locks the reasoning-only throwaway-worktree posture', () => {
+      expect(MANAGED_AGENT_OPTIONS['issue-watcher']).toEqual(['useWorktree', 'openPR', 'discardWorktree']);
+      const config = { taskMetadata: { useWorktree: false, openPR: true, discardWorktree: false } };
+      expect(enforceManagedAgentOptions('issue-watcher', config)).toBe(true);
+      expect(config.taskMetadata).toMatchObject({ useWorktree: true, openPR: false, discardWorktree: true });
     });
   });
 
@@ -787,6 +806,12 @@ describe('taskSchedule', () => {
       await updateTaskInterval('pr-watcher', { enabled: true })
       await updateTaskInterval('security', { enabled: false })
       expect(clearAllPrWatcherState).not.toHaveBeenCalled()
+    })
+
+    it('clears all issue-watcher state when issue-watcher is globally disabled', async () => {
+      clearAllIssueWatcherState.mockClear()
+      await updateTaskInterval('issue-watcher', { enabled: false })
+      expect(clearAllIssueWatcherState).toHaveBeenCalledTimes(1)
     })
   })
 
