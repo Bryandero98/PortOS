@@ -38,18 +38,6 @@ export const PROMPT_VERSIONS = {
   'console-errors': 2, // v2: unified `[Improvement: {appName}]` body (pre-unification defaults shipped separate self- and app-improvement bodies)
   'error-handling': 2, // v2: unified `[Improvement: {appName}]` body (older default used the `[App Improvement: {appName}]` header)
   'typing': 2, // v2: unified `[Improvement: {appName}]` body (older default used the `[App Improvement: {appName}]` header)
-
-  // A SCHEDULE task type absent from this map is silently exempt from
-  // auto-upgrade forever: taskScheduleStore's upgrade block is gated on
-  // `PROMPT_VERSIONS[taskType] && …`, so a body change ships and no install
-  // ever receives it. The three types above were frozen that way for months.
-  // Every schedule key therefore carries an entry, v1 meaning "shipped once,
-  // never revised" — taskPromptDefaults.test.js enforces the parity so the next
-  // new scheduled prompt cannot repeat it. (Pipeline STAGE bodies stay
-  // unversioned on purpose: they are read live from the catalog and never
-  // persisted, so an edit reaches every install on the next dispatch.)
-  'jira-sprint-manager': 1,
-  'jira-status-report': 1,
   'dependency-updates': 4, // v4: the Phase 1 GitLab MR listing gains `--output json` — without it glab answers with the human table, which carries the head branch but NOT the author, while the classification right below it reads both. The same bump drops `--state` from the MR-list recipes — that flag does not exist (MR state is selected by presence flags `--merged`/`--closed`/`--all`, and OPEN is the default), so `--state opened` exited 1 with `Unknown flag: --state` and Phase 1 skipped its bot-PR triage entirely on GitLab repos. v3: Phase 1 triages open Dependabot/Renovate PRs first (evidence → MERGE / FIX-THEN-MERGE / CLOSE / LEAVE, including conflict + CI-failure repair on the bot branch) before Phase 2 updates anything the bots didn't cover — an agent that bumped packages itself was duplicating and conflicting with open bot PRs. v2: generic {appName} body (older default hardcoded "PortOS")
   'documentation': 6, // v6: the changelog step names `AGENTS.md` (or `CLAUDE.md`) as the file carrying the repo's documented convention — #4852 made AGENTS.md the canonical cross-vendor agent-instructions filename, and a managed app that adopted it would otherwise be told to read a file it no longer has. v5: the changelog step defers to the convention the repo documents (some repos collect per-branch fragments in a directory so parallel agents don't conflict) instead of prescribing an append to `.changelog/NEXT.md`. v4: generic {appName} body (v1 hardcoded "PortOS"; v2/v3 retired DONE.md wording)
   'ui-bugs': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
@@ -64,6 +52,19 @@ export const PROMPT_VERSIONS = {
   'stash-cleanup': 2, // v2: the STALE/ABANDONED heuristic names `AGENTS.md` (or `CLAUDE.md`) as the policy file to check before assuming a stash contradicts current architecture (#4852). v1: triage git stash list — supersession check against main, drop superseded/stale entries, leave real unlanded work in place. Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed).
   'repo-sync': 1, // v1: verify + finish the deterministic install-wide origin-sync sweep (services/repoSync.js) — resolve mid-flight merges/rebases, decide what to do with uncommitted work, land or report unpushed branches, triage the stashes it could not prove redundant. Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed).
   'release-check': 12, // v12: code review is advisory and only CI gates release progress; v11: delegate release mechanics to bundled slashdo release and pin PortOS-configured reviewers. v10: the release-documentation search names the `AGENTS.md` (or `CLAUDE.md`) context instead of CLAUDE.md alone (#4852). v9: Step 1 reconciles missing GitHub Releases against git release tags (publishing any missing tag with .changelog/vX.Y.Z.md as body and --latest=false when a newer version exists) BEFORE evaluating if enough unreleased work has accumulated; v8: database-backed release tests are provisioned and run using the repo's documented isolated test database before the release PR gate; v7: Step 1 also reads the UNCOLLECTED changelog fragments (the fragment dir, plus whatever preview command that repo documents — release-check is a generic {appName} prompt, so it never names a PortOS script to run) and counts substantive entries across the assembled notes — reading only the staged `.changelog/NEXT.md` under-counts a release whose entries are still per-branch fragments, so a ready release reported as "not enough work". v6: generic {appName} body (older defaults hardcoded "PortOS")
+
+  // A SCHEDULE task type absent from this map is silently exempt from
+  // auto-upgrade forever: taskScheduleStore's upgrade block is gated on
+  // `PROMPT_VERSIONS[taskType] && …`, so a body change ships and no install
+  // ever receives it. console-errors, error-handling and typing were frozen
+  // that way for months. Every schedule key therefore carries an entry, v1
+  // meaning "shipped once, never revised" — taskPromptDefaults.test.js enforces
+  // the parity so the next new scheduled prompt cannot repeat it. (Pipeline
+  // STAGE bodies stay unversioned on purpose: they are read live from the
+  // catalog and never persisted, so an edit reaches every install on the next
+  // dispatch.)
+  'jira-sprint-manager': 1,
+  'jira-status-report': 1,
 };
 
 // Audit anchor for reference-watch's read/write coupling.

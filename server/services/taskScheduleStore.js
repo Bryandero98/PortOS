@@ -212,8 +212,7 @@ async function readSchedule() {
           config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
           needsSave = true;
         } else if (promptMatchesShippedDefault(config.prompt, taskType)) {
-          // Matches a shipped default — a prior one, or the current one under
-          // the retired header. Assign version 1 so auto-upgrade triggers.
+          // Matches a known previous default — assign version 1 so auto-upgrade triggers
           config.promptVersion = 1;
           needsSave = true;
         } else {
