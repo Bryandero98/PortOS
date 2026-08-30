@@ -899,4 +899,118 @@ describe('threejsModelPhysicalAudit attachment anchors', () => {
     const feedback = buildThreejsPhysicalAuditFeedback(res);
     expect(feedback).toContain('could not be checked against "group"');
   });
+
+  // Bilateral chirality is invisible to every bounds check above: a hand spun
+  // 180° about the vertical axis fills exactly the same box as a reflected one,
+  // so these cases pin the transform relationship rather than the geometry.
+  describe('bilateral chirality', () => {
+    // A swept profile, not a box: a box maps onto itself under a 180° yaw, so
+    // nothing distinguishes a reflected one from a turned-around one.
+    const hand = { type: 'tube', path: [[0, 0, -0.25], [0, 0, 0.25]], radius: 0.15 };
+    const bilateralSpec = (left, right) => ({
+      name: 'Bilateral Figure',
+      parts: [
+        {
+          id: 'torso',
+          name: 'Torso',
+          geometry: { type: 'box', width: 1, height: 2, depth: 0.6 },
+          position: [0, 1, 0],
+          children: [
+            { id: 'hand-l', name: 'Hand Left', geometry: hand, position: [0.6, 0, 0.2], ...left },
+            { id: 'hand-r', name: 'Hand Right', geometry: hand, position: [-0.6, 0, 0.2], ...right },
+          ],
+        },
+      ],
+    });
+    const codes = (spec) => evaluateThreejsPhysicalAudit(spec).findings
+      .filter((finding) => finding.code.startsWith('bilateral-'))
+      .map((finding) => finding.code);
+
+    it('accepts a pair reflected across the lateral plane', () => {
+      const spec = bilateralSpec(
+        { rotationDegrees: [10, 20, 30] },
+        { rotationDegrees: [10, -20, -30] },
+      );
+      expect(codes(spec)).toEqual([]);
+      expect(buildThreejsPhysicalAuditFeedback(evaluateThreejsPhysicalAudit(spec))).toBe('');
+    });
+
+    it('flags a pair mirrored by a 180 degree yaw instead of a reflection', () => {
+      const res = evaluateThreejsPhysicalAudit(bilateralSpec({}, { rotationDegrees: [0, 180, 0] }));
+      const finding = res.findings.find((f) => f.code === 'bilateral-chirality');
+      expect(finding.severity).toBe('warning');
+      expect(finding.partIds).toEqual(['hand-l', 'hand-r']);
+      expect(finding.message).toContain('turned 180° about the vertical axis');
+      expect(finding.message).toContain('[rx, -ry, -rz]');
+    });
+
+    it('flags a counterpart placed at the yawed depth rather than the reflected one', () => {
+      const res = evaluateThreejsPhysicalAudit(bilateralSpec({}, { position: [-0.6, 0, -0.2] }));
+      const finding = res.findings.find((f) => f.code === 'bilateral-chirality');
+      expect(finding.message).toContain('where a lateral reflection of "Hand Left" would place it');
+    });
+
+    it('flags a pair mirrored by negating a scale component', () => {
+      const res = evaluateThreejsPhysicalAudit(bilateralSpec({}, { scale: [-1, 1, 1] }));
+      const finding = res.findings.find((f) => f.code === 'bilateral-mirror-scale');
+      expect(finding.message).toContain('negating a scale component on "Hand Right"');
+      // The negated half is the one named, not whichever side happens to be first.
+      expect(finding.message).toContain('relative to "Hand Left"');
+    });
+
+    it('flags a pair that never crosses the lateral plane', () => {
+      const res = evaluateThreejsPhysicalAudit(bilateralSpec({}, { position: [0.6, 0, -1.2] }));
+      const finding = res.findings.find((f) => f.code === 'bilateral-pair-same-side');
+      expect(finding.message).toContain('sits entirely on one side of the lateral plane');
+    });
+
+    // A merely asymmetric pose is legitimate — only a positively identified yaw
+    // is a defect, or the gate would report every raised arm.
+    it('ignores a pair posed differently without a chirality flip', () => {
+      expect(codes(bilateralSpec({}, { rotationDegrees: [25, -20, -30] }))).toEqual([]);
+    });
+
+    it('pairs across naming conventions and camelCase', () => {
+      const spec = bilateralSpec({}, { rotationDegrees: [0, 180, 0] });
+      spec.parts[0].children[0].name = 'leftFoot';
+      spec.parts[0].children[1].name = 'foot_R';
+      expect(codes(spec)).toEqual(['bilateral-chirality']);
+    });
+
+    // Which counterpart a third same-side part is meant to mirror is unknowable,
+    // and guessing would report chirality against the wrong limb.
+    it('skips a group that cannot be paired one to one', () => {
+      const spec = bilateralSpec({}, { rotationDegrees: [0, 180, 0] });
+      spec.parts[0].children.push({
+        id: 'hand-l-spare', name: 'Hand Left', geometry: hand, position: [0.6, 0.8, 0.2],
+      });
+      expect(codes(spec)).toEqual([]);
+    });
+
+    // A box reads the same either way round, so the yaw is not a defect and
+    // reporting it would bury the real findings under every blocky limb.
+    it('ignores a yaw on a lone geometry that maps onto itself', () => {
+      const spec = bilateralSpec({}, { rotationDegrees: [0, 180, 0] });
+      spec.parts[0].children[0].geometry = { type: 'box', width: 0.3, height: 0.3, depth: 0.5 };
+      spec.parts[0].children[1].geometry = { type: 'box', width: 0.3, height: 0.3, depth: 0.5 };
+      expect(codes(spec)).toEqual([]);
+    });
+
+    it('ignores a name whose only token is a side word', () => {
+      const spec = bilateralSpec({}, { rotationDegrees: [0, 180, 0] });
+      spec.parts[0].children[0].name = 'Left';
+      spec.parts[0].children[0].id = 'left';
+      spec.parts[0].children[1].name = 'Right';
+      spec.parts[0].children[1].id = 'right';
+      expect(codes(spec)).toEqual([]);
+    });
+
+    it('feeds bilateral findings back with the reflection recipe', () => {
+      const feedback = buildThreejsPhysicalAuditFeedback(
+        evaluateThreejsPhysicalAudit(bilateralSpec({}, { rotationDegrees: [0, 180, 0] })),
+      );
+      expect(feedback).toContain('For bilateral pair findings');
+      expect(feedback).toContain('position [-x, y, z] and rotation [rx, -ry, -rz]');
+    });
+  });
 });
