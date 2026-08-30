@@ -65,21 +65,25 @@ Track administrative tasks:
 ```
 ./data/brain/
 ├── meta.json               # Settings and scheduler state
-├── inbox.json              # All captured thoughts with classifications
-├── people.json             # People records
-├── projects.json           # Projects with status tracking
-├── ideas.json              # Ideas and concepts
-├── admin.json              # Administrative tasks
-├── buckets.json            # Custom bucket definitions
-├── links.json              # Cross-record links
-├── memories.json           # Brain memories
-├── journals.json           # Daily Log entries
+├── admin/                  # Admin tasks (collectionStore: <id>/index.json)
+├── buckets/                # Custom bucket definitions (collectionStore: <id>/index.json)
+├── ideas/                  # Ideas and concepts (collectionStore: <id>/index.json)
+├── inbox/                  # Captured thoughts (collectionStore: <id>/index.json)
+├── journals/               # Daily Log entries (collectionStore: <id>/index.json)
+├── links/                  # Cross-record links (collectionStore: <id>/index.json)
+├── memories/               # Brain memories (collectionStore: <id>/index.json)
+├── people/                 # People records (collectionStore: <id>/index.json)
+├── projects/               # Projects with status tracking (collectionStore: <id>/index.json)
+├── songs/                  # SongBook songs (collectionStore: <id>/index.json)
 ├── memory-bridge-map.json  # Brain↔CoS memory bridge mapping
 ├── obsidian-vaults.json    # Obsidian vault sync config
 ├── sync_log.jsonl          # Obsidian sync history
 ├── digests.jsonl           # Daily digest history
 └── reviews.jsonl           # Weekly review history
 ```
+
+Each `collectionStore` directory contains a schema-versioned `index.json` and
+stores every record at `<id>/index.json`.
 
 ## AI Classification
 
@@ -288,7 +292,7 @@ not export itself back.
 | `server/services/brainScheduler.js` | Daily/weekly job scheduler |
 | `server/services/youtubeIngest.js` | YouTube ingest orchestration (transcript / video / audio → brain + Obsidian + CoS task) |
 | `server/lib/vttTranscript.js` | WebVTT/SRT → readable prose (collapses auto-caption repetition) |
-| `server/routes/brain.js` | Aggregator router mounting brainCapture, brainCrud, brainDigest, brainSettings, brainLinks, brainGraph, brainSync, brainDailyLog, brainSongbook, and brainYoutube |
+| `server/routes/brain.js` | Aggregator router mounting brainCapture, brainIdeaLoom, brainCrud, brainDigest, brainSettings, brainLinks, brainGraph, brainSync, brainDailyLog, brainSongbook, and brainYoutube |
 | `client/src/pages/Brain.jsx` | Main page with tabs |
 | `client/src/components/brain/tabs/*.jsx` | Tab components |
 | `data/prompts/stages/brain-*.md` | Prompt templates |
