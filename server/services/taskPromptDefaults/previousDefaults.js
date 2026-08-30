@@ -32,11 +32,7 @@ Scope: this task operates against the managed app's repository, NOT PortOS. All 
 {slashdoReplan}`,
   ],
   'feature-ideas': [
-    // Pre-genericization default, from before the self-improvement and
-    // app-improvement schedules were unified. It hardcodes "PortOS" and points
-    // at `data/COS-GOALS.md`, a file that unification folded into the root
-    // GOALS.md — so an install still pinned here sends every run looking for a
-    // file that no longer exists. Preserved so that install auto-upgrades.
+    // Outgoing pre-unification default, self-improvement schedule.
     `[Self-Improvement] Feature Review and Development
 
 Evaluate existing features and consider new ones to make PortOS more useful:
@@ -522,8 +518,8 @@ When PLAN.md is missing, empty, or fully completed, brainstorm and implement a n
    - [x] [<slug-of-feature>] <description of the feature you implemented>
    \`\`\`
 8. Commit with a clear description of the feature and rationale`,
-    // v10 default prompt (before Phase 1 + Phase 4 consult PRD.md as the
-    // primary product source, with GOALS.md as the fallback)
+    // v10 default prompt (before Phase 4 consults PRD.md as the primary
+    // product source, with GOALS.md as the fallback)
     `[Improvement: {appName}] Implement Next Planned Feature
 
 Your goal is to implement the next planned item from PLAN.md, or brainstorm a new feature if no plan exists.
@@ -9215,33 +9211,7 @@ NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it 
   // brief Feb-2026 `${PORTOS_UI_URL}`-interpolated variants are intentionally
   // omitted: they were never released (≈51 min on main) and resolve per-install.
   'security': [
-    // prior default — app name hardcoded as "PortOS"
-    `[Self-Improvement] Security Audit
-
-Analyze PortOS codebase for security vulnerabilities:
-
-1. Review server/routes/*.js for:
-   - Command injection in exec/spawn calls
-   - Path traversal in file operations
-   - Missing input validation
-   - XSS in rendered content
-
-2. Review server/services/*.js for:
-   - Unsafe eval() or Function()
-   - Hardcoded credentials
-   - SQL/NoSQL injection
-
-3. Review client/src/ for:
-   - XSS vulnerabilities in React
-   - Sensitive data in localStorage
-   - CSRF protection
-
-4. Check server/lib/commandAllowlist.js is comprehensive
-
-Fix any vulnerabilities and commit with security advisory notes.`,
-    // v1 genericized default, shipped under the retired `[App Improvement: …]`
-    // header. The header rename is handled by normalizeLegacyPromptHeader
-    // (shippedPrompts.js); this body is preserved because step 4 changed too.
+    // Outgoing pre-unification default, app-improvement schedule.
     `[App Improvement: {appName}] Security Audit
 
 Analyze the {appName} codebase for security vulnerabilities:
@@ -9271,6 +9241,30 @@ Repository: {repoPath}
    - Access control
 
 Fix any vulnerabilities found and commit with security advisory notes.`,
+    // prior default — app name hardcoded as "PortOS"
+    `[Self-Improvement] Security Audit
+
+Analyze PortOS codebase for security vulnerabilities:
+
+1. Review server/routes/*.js for:
+   - Command injection in exec/spawn calls
+   - Path traversal in file operations
+   - Missing input validation
+   - XSS in rendered content
+
+2. Review server/services/*.js for:
+   - Unsafe eval() or Function()
+   - Hardcoded credentials
+   - SQL/NoSQL injection
+
+3. Review client/src/ for:
+   - XSS vulnerabilities in React
+   - Sensitive data in localStorage
+   - CSRF protection
+
+4. Check server/lib/commandAllowlist.js is comprehensive
+
+Fix any vulnerabilities and commit with security advisory notes.`,
   ],
   'code-quality': [
     // Outgoing pre-unification default, app-improvement schedule.
@@ -9410,23 +9404,6 @@ Analyze PortOS for performance issues:
 Optimize and commit improvements.`,
   ],
   'accessibility': [
-    // Outgoing pre-unification default, self-improvement schedule.
-    `[Self-Improvement] Accessibility Audit
-
-Use Playwright MCP to audit PortOS accessibility:
-
-1. Navigate to http://localhost:5554/
-2. Use browser_snapshot to get accessibility tree
-3. Check each main route for:
-   - Missing ARIA labels
-   - Missing alt text on images
-   - Insufficient color contrast
-   - Keyboard navigation issues
-   - Focus indicators
-
-4. Fix accessibility issues in React components
-5. Add appropriate aria-* attributes
-6. Test and commit changes`,
     // Outgoing pre-unification default, app-improvement schedule.
     `[App Improvement: {appName}] Accessibility Audit
 
@@ -9836,19 +9813,6 @@ Repository: {repoPath}
 Commit documentation improvements.`,
   ],
   'ui-bugs': [
-    // Outgoing pre-unification default, self-improvement schedule.
-    `[Self-Improvement] UI Bug Analysis
-
-Use Playwright MCP (browser_navigate, browser_snapshot, browser_console_messages) to analyze PortOS UI:
-
-1. Navigate to http://localhost:5554/
-2. Check each main route: /, /apps, /cos, /cos/tasks, /cos/agents, /devtools, /devtools/history, /providers, /usage
-3. For each route:
-   - Take a browser_snapshot to see the page structure
-   - Check browser_console_messages for JavaScript errors
-   - Look for broken UI elements, missing data, failed requests
-4. Fix any bugs found in the React components or API routes
-5. Run tests and commit changes`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] UI Bug Analysis
 
@@ -9864,23 +9828,6 @@ Use Playwright MCP (browser_navigate, browser_snapshot, browser_console_messages
 5. Run tests and commit changes`,
   ],
   'mobile-responsive': [
-    // Outgoing pre-unification default, self-improvement schedule.
-    `[Self-Improvement] Mobile Responsiveness Analysis
-
-Use Playwright MCP to test PortOS at different viewport sizes:
-
-1. browser_resize to mobile (375x812), then navigate to http://localhost:5554/
-2. Take browser_snapshot and analyze for:
-   - Text overflow or truncation
-   - Buttons too small to tap (< 44px)
-   - Horizontal scrolling issues
-   - Elements overlapping
-   - Navigation usability
-3. Repeat at tablet (768x1024) and desktop (1440x900)
-4. Fix Tailwind CSS responsive classes (sm:, md:, lg:) as needed
-5. Test fixes and commit changes
-
-Focus on these routes: /cos, /cos/tasks, /devtools, /providers`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Mobile Responsiveness Analysis
 
@@ -11678,7 +11625,7 @@ Summarize: how many stashes were reviewed, how many were dropped (grouped by rea
 
 Use Playwright MCP to find and fix console errors:
 
-1. Navigate to http://localhost:5554/
+1. Navigate to http://localhost:5555/
 2. Call browser_console_messages with level: "error"
 3. Visit each route and capture errors:
    - /, /apps, /cos, /cos/tasks, /cos/agents

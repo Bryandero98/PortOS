@@ -9,7 +9,6 @@ import {
   PREVIOUS_DEFAULT_PROMPTS,
 } from './taskPromptDefaults.js';
 import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
-import { DEFAULT_TASK_INTERVALS } from './taskScheduleRegistry.js';
 import { EPIC_DECOMPOSED_LABEL } from './perpetualWork.js';
 // The claim prompts build their contributor-label release from this helper, so the
 // test asserts against the same source rather than re-typing the command text.
@@ -291,14 +290,28 @@ describe('taskPromptDefaults integrity snapshot', () => {
 
   // The other direction, and the one that actually bites: taskScheduleStore's
   // auto-upgrade block is gated on `PROMPT_VERSIONS[taskType] && …`, so a
-  // SCHEDULE prompt with no entry is silently exempt from upgrade forever — a
-  // body change ships and no install ever receives it. console-errors,
-  // error-handling and typing were frozen exactly that way. Pipeline stage
-  // bodies are excluded because they are never persisted (see the
-  // "unversioned pipeline stage body" cases below).
-  it('every scheduled default prompt is versioned, so none is silently exempt from auto-upgrade', () => {
+  // prompt with no entry is silently exempt from upgrade forever — a body
+  // change ships and no install ever receives it. console-errors,
+  // error-handling and typing were frozen exactly that way.
+  //
+  // The exemptions are an explicit ALLOWLIST, not a derived predicate. Keying
+  // off "absent from DEFAULT_TASK_INTERVALS" would exempt any future body that
+  // merely isn't a schedule key yet — the exact regression this guards — so a
+  // new unversioned prompt has to be justified by naming it here.
+  const UNPERSISTED_PROMPT_KEYS = [
+    // Pipeline stage bodies: getStagePrompt reads them live from this catalog
+    // and never persists them, so an edit reaches every install on the next
+    // dispatch (their pipeline's SCHEDULE key carries the version instead).
+    'pr-reviewer-security',
+    'pr-reviewer-review',
+    'code-reviewer-review',
+    'code-reviewer-implement',
+    'branch-cleanup',
+  ];
+
+  it('every persisted default prompt is versioned, so none is silently exempt from auto-upgrade', () => {
     for (const key of Object.keys(DEFAULT_TASK_PROMPTS)) {
-      if (!DEFAULT_TASK_INTERVALS[key]) continue;
+      if (UNPERSISTED_PROMPT_KEYS.includes(key)) continue;
       expect(PROMPT_VERSIONS[key], `PROMPT_VERSIONS['${key}']`).toBeTypeOf('number');
     }
   });

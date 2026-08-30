@@ -448,16 +448,27 @@ describe('taskSchedule', () => {
     // One case per shape the freeze took: header-only drift, a body that also
     // changed, a type whose ONLY revision was the split (so it had no
     // PROMPT_VERSIONS entry at all), and the older self-improvement generation.
-    it.each([
+    //
+    // Each runs under BOTH version stamps a frozen install can carry. The
+    // legacy migration wrote `promptVersion = PROMPT_VERSIONS[taskType]`
+    // alongside the customized flag, so an install flagged after its type was
+    // versioned holds the CURRENT version with a RETIRED body — and clearing
+    // the flag alone leaves `storedVersion < current` false, so the upgrade
+    // never fires. Testing only the version-1 stamp misses that entirely.
+    const ERAS = [
       ['console-errors', '[App Improvement: '],
       ['security', '[App Improvement: '],
       ['typing', '[App Improvement: '],
       ['console-errors', '[Self-Improvement] '],
       ['feature-ideas', '[Self-Improvement] '],
-    ])('self-heals and upgrades a stored %s prompt from the %s generation', async (taskType, header) => {
+    ]
+    it.each(ERAS.flatMap(([taskType, header]) => [
+      [taskType, header, 'pre-versioning', 1],
+      [taskType, header, 'current-version', PROMPT_VERSIONS[taskType]],
+    ]))('self-heals and upgrades a stored %s prompt from the %s generation (%s stamp)', async (taskType, header, _label, storedVersion) => {
       const prompt = fromEra(taskType, header)
       expect(prompt, `no ${header} body registered for ${taskType}`).toBeDefined()
-      const task = await loadOne(taskType, prompt, 1)
+      const task = await loadOne(taskType, prompt, storedVersion)
       expect(task.promptCustomized).toBe(false)
       expect(task.prompt).toBe(DEFAULT_TASK_PROMPTS[taskType])
       expect(task.promptVersion).toBe(PROMPT_VERSIONS[taskType])

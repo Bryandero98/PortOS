@@ -13,43 +13,33 @@ import { PORTOS_API_URL } from '../../lib/ports.js';
 
 const API_URL_PLACEHOLDER = '{{PORTOS_API_URL}}';
 
-// Prompt bodies embed an install origin three different ways:
+// Prompt bodies embed the install's API origin two different ways:
 //
 //   1. Current defaults interpolate PORTOS_API_URL at module load, so the body
 //      text varies with PORTOS_API_URL / PORTOS_HOST / PORT.
 //   2. Preserved historical defaults (pre-genericization) hardcode
-//      `http://localhost:5555` — the API origin that WAS the default when they
-//      shipped.
-//   3. Preserved pre-unification self-improvement defaults drove the UI with
-//      Playwright, so they hardcode the *UI* origin, `http://localhost:5554`.
+//      `http://localhost:5555` — the origin that WAS the default when they
+//      shipped. Those bytes are frozen history and never change again, so the
+//      literal is pinned here rather than derived from PORTS.API.
 //
-// (2) and (3) are frozen history and never change again, so both literals are
-// pinned here rather than derived from PORTS. Each collapses to a placeholder so
-// a body hashes identically on every install — (1) and (2) share one, since they
-// name the same origin, while (3) gets its own so a body carrying the UI origin
-// never hashes the same as one carrying the API origin.
-//
-// Normalizing only (1) made the snapshot reproducible solely on a machine whose
-// PORTOS_API_URL happened to equal the legacy origin: anywhere else — a custom
-// PORTOS_HOST, or simply a shell with PORT set, as inside a CoS agent — the five
-// bodies carrying the literal hashed differently and the integrity test failed
-// while nothing had actually drifted (issue #3359).
+// Both collapse to the same placeholder so a body hashes identically on every
+// install. Normalizing only (1) made the snapshot reproducible solely on a
+// machine whose PORTOS_API_URL happened to equal the legacy origin: anywhere
+// else — a custom PORTOS_HOST, or simply a shell with PORT set, as inside a CoS
+// agent — the five bodies carrying the literal hashed differently and the
+// integrity test failed while nothing had actually drifted (issue #3359).
 const LEGACY_API_ORIGIN = 'http://localhost:5555';
-const LEGACY_UI_ORIGIN = 'http://localhost:5554';
-const UI_URL_PLACEHOLDER = '{{PORTOS_UI_URL}}';
 
-// Longest first: the origins can overlap — `PORTOS_API_URL=http://localhost`
-// (port 80) is a prefix of the legacy literals, and replacing it first would turn
+// Longest first: the two origins can overlap — `PORTOS_API_URL=http://localhost`
+// (port 80) is a prefix of the legacy literal, and replacing it first would turn
 // `http://localhost:5555` into `{{PORTOS_API_URL}}:5555`, which the legacy pass
 // can then no longer match. Replacing the longer candidate first leaves only
-// standalone occurrences of the shorter one. The sort is stable, so on a length
-// tie (an install whose API origin IS one of the legacy literals) the configured
-// apiUrl still wins and current defaults keep hashing as {{PORTOS_API_URL}}.
+// standalone occurrences of the shorter one.
 export const normalizePromptForHash = (body, apiUrl = PORTOS_API_URL) => (
-  [[apiUrl, API_URL_PLACEHOLDER], [LEGACY_API_ORIGIN, API_URL_PLACEHOLDER], [LEGACY_UI_ORIGIN, UI_URL_PLACEHOLDER]]
-    .filter(([origin]) => origin)
-    .sort((a, b) => b[0].length - a[0].length)
-    .reduce((out, [origin, placeholder]) => out.split(origin).join(placeholder), String(body))
+  [apiUrl, LEGACY_API_ORIGIN]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .reduce((out, origin) => out.split(origin).join(API_URL_PLACEHOLDER), String(body))
 );
 
 export const hashPromptBody = (body, apiUrl = PORTOS_API_URL) => createHash('md5')

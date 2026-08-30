@@ -227,12 +227,23 @@ async function readSchedule() {
       // that nonetheless matches a shipped default was never user-edited — it
       // was flagged by an earlier legacy migration that ran before this task
       // carried a PREVIOUS_DEFAULT_PROMPTS entry (the basic self-improvement
-      // prompts that hardcoded the app name as "PortOS", and the whole
-      // `[App Improvement: …]`-header generation the schedule unification
-      // renamed without preserving). Clear the flag so the auto-upgrade below
-      // can replace the stale default.
+      // prompts that hardcoded the app name as "PortOS", and both
+      // pre-unification generations — `[Self-Improvement] …` and
+      // `[App Improvement: …]` — that the schedule unification replaced without
+      // preserving). Clear the flag so the auto-upgrade below can replace the
+      // stale default.
+      //
+      // Clearing the flag is NOT enough on its own. That legacy migration
+      // stamped `promptVersion = PROMPT_VERSIONS[taskType]` alongside the flag,
+      // so an install flagged after a type was versioned carries the CURRENT
+      // version while holding a RETIRED body — the upgrade below then sees
+      // `storedVersion < current` as false and leaves the stale prompt in place
+      // forever, now un-flagged so nothing else notices. Reset the version to 1
+      // whenever the body is a prior default rather than the current one, which
+      // is the same stamp the version-inference branch above applies.
       if (config.promptCustomized && promptMatchesShippedDefault(config.prompt, taskType)) {
         config.promptCustomized = false;
+        if (config.prompt !== DEFAULT_TASK_PROMPTS[taskType]) config.promptVersion = 1;
         needsSave = true;
       }
 

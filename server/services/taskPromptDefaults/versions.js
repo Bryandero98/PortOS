@@ -57,12 +57,12 @@ export const PROMPT_VERSIONS = {
   // auto-upgrade forever: taskScheduleStore's upgrade block is gated on
   // `PROMPT_VERSIONS[taskType] && …`, so a body change ships and no install
   // ever receives it. console-errors, error-handling and typing were frozen
-  // that way for months. Every schedule key therefore carries an entry, v1
+  // that way for months. Every PERSISTED prompt therefore carries an entry, v1
   // meaning "shipped once, never revised" — taskPromptDefaults.test.js enforces
-  // the parity so the next new scheduled prompt cannot repeat it. (Pipeline
-  // STAGE bodies stay unversioned on purpose: they are read live from the
-  // catalog and never persisted, so an edit reaches every install on the next
-  // dispatch.)
+  // the parity against an explicit allowlist, so the next new prompt has to
+  // justify itself to stay unversioned. (Pipeline STAGE bodies are on that
+  // allowlist: they are read live from the catalog and never persisted, so an
+  // edit reaches every install on the next dispatch.)
   'jira-sprint-manager': 1,
   'jira-status-report': 1,
 };
