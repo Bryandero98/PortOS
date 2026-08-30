@@ -112,12 +112,12 @@ export const LaneBlock = memo(function LaneBlock({
   const dur = Math.max(0.05, entry.durationSec || 0);
   const style = {
     left: `${(entry.startSec || 0) * pxPerSec}px`,
-    width: `${Math.max(28, dur * pxPerSec)}px`,
+    width: `${Math.max(56, dur * pxPerSec)}px`,
   };
   return (
     <div
       style={style}
-      className={`absolute top-1 bottom-1 rounded border cursor-pointer overflow-hidden ${
+      className={`absolute top-1 bottom-1 rounded border cursor-pointer ${
         isMissing
           ? 'bg-port-error/20 border-port-error'
           : isSelected
@@ -127,14 +127,14 @@ export const LaneBlock = memo(function LaneBlock({
       onClick={() => onSelect(entry._key)}
       {...clickableProps(() => onSelect(entry._key))}
     >
-      <span className="absolute inset-x-1 top-0.5 text-[9px] text-white truncate pointer-events-none">
+      <span className="absolute left-1 right-7 top-0.5 text-[9px] text-white truncate pointer-events-none">
         {isMissing ? '(missing)' : label}
       </span>
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); onRemove(entry._key); }}
         onPointerDown={(e) => e.stopPropagation()}
-        className="absolute bottom-0 right-0 inline-flex min-w-[28px] min-h-[28px] items-center justify-center p-1 text-white/70 hover:text-port-error"
+        className="absolute top-1/2 right-0 -translate-y-1/2 inline-flex min-w-[28px] min-h-[28px] items-center justify-center p-1 text-white/70 hover:text-port-error"
         title="Remove"
         aria-label={`Remove ${label} from timeline`}
       >
