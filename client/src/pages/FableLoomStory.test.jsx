@@ -131,10 +131,12 @@ describe('FableLoomStory navigation and series backlink', () => {
     await user.click(await screen.findByRole('button', { name: 'Play' }));
 
     const player = screen.getByRole('dialog', { name: 'Example Loom player' });
-    expect(player).toHaveClass('h-[100dvh]', 'w-screen', 'overflow-hidden', 'bg-black');
+    expect(player).toHaveClass('h-[100dvh]', 'w-full', 'overflow-hidden', 'bg-black');
+    expect(document.body.style.overflow).toBe('hidden');
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Example Loom player' })).not.toBeInTheDocument());
+    expect(document.body.style.overflow).toBe('');
   });
 
   it('opens an empty loom in the series plan before asking for episodes', async () => {

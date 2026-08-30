@@ -307,7 +307,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode, onClose }
 
   if (!start) {
     return (
-      <div className="flex h-full flex-col bg-black text-white">
+      <div className="always-dark flex h-full flex-col bg-black text-white">
         {onClose && (
           <div className="flex justify-end p-3">
             <button
@@ -514,7 +514,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode, onClose }
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {transcript.map((turn, i) => {
           if (turn.role === 'scene') {
-            if (previewMode === 'video' || i === latestSceneTurnIndex) return null;
+            if (i === latestSceneTurnIndex) return null;
             const historicalCut = !turn.node.isEnding
               && turn.node.choices?.length > 0
               && (!audienceCanParticipate(loom, turn.node)

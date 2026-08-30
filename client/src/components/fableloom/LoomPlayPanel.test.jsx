@@ -221,6 +221,8 @@ describe('LoomPlayPanel', () => {
       'loom-1', 'ep-cut', expect.objectContaining({ nodeId: 'cut-1', transitionId: 'continue-1' }), { silent: true },
     ));
     await waitFor(() => expect(screen.getAllByText('Wait')).not.toHaveLength(0));
+    expect(screen.getByText('A door opens.')).toBeInTheDocument();
+    expect(screen.getByText('A guard paces.')).toBeInTheDocument();
   });
 
   it('loops rendered decision video while waiting for input', async () => {

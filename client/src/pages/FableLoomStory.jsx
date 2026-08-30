@@ -25,6 +25,7 @@ import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import useFableLoomAiRun from '../hooks/useFableLoomAiRun';
 import useContainerWidth from '../hooks/useContainerWidth';
+import { useScrollLock } from '../hooks/useScrollLock';
 import LoomCanvas from '../components/fableloom/LoomCanvas';
 import LoomEpisodeOutline from '../components/fableloom/LoomEpisodeOutline';
 import LoomEpisodeOutlinePlanner from '../components/fableloom/LoomEpisodeOutlinePlanner';
@@ -69,6 +70,7 @@ export default function FableLoomStory({ view = 'graph' }) {
   const [setupOpen, setSetupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const playOpen = searchParams.get('play') === '1';
+  useScrollLock(playOpen);
   const seriesPlanOpen = episodeId === 'plan';
   const outlineOpen = view === 'outline';
   // Orientation keys off the PAGE, not the canvas. The canvas is the leftover
@@ -693,7 +695,7 @@ export default function FableLoomStory({ view = 'graph' }) {
           usePortal
           zIndexClassName="z-[100]"
           backdropClassName="bg-black"
-          panelClassName="h-[100dvh] w-screen overflow-hidden bg-black"
+          panelClassName="h-[100dvh] w-full overflow-hidden bg-black"
           ariaLabel={`${loom.name} player`}
         >
           <LoomPlayPanel loom={loom} episode={episode} onClose={() => setPlayOpen(false)} />
