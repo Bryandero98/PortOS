@@ -48,6 +48,7 @@ import {
   Globe,
   Newspaper,
   Globe2,
+  Orbit,
   Ticket,
   Network,
   Flame,
@@ -166,6 +167,7 @@ import * as api from '../services/api';
 export const NAV_PRESENTATION = {
   '/': { icon: Home, single: true },
   '/review': { icon: ClipboardList, single: true },
+  '/eidoverse': { icon: Orbit, single: true },
   '/openworld': { icon: Globe2, single: true },
   '/apps': { icon: Package, dynamic: 'apps' },
   '/brain/config': { icon: Settings },
@@ -400,7 +402,7 @@ const sectionNavItem = (section) => {
   return { label: section, feature: sharedFeature, children, ...SECTION_PRESENTATION[section] };
 };
 
-const mainRows = ['/', '/review', '/openworld'].map(navRowForPath);
+const mainRows = ['/', '/review', '/eidoverse', '/openworld'].map(navRowForPath);
 const appsCommand = navRowForPath('/apps');
 const goalsRow = navRowForPath('/goals/list');
 const sectionRows = Object.fromEntries(SECTION_ORDER.map((section) => [section, sectionNavItem(section)]));
@@ -527,6 +529,7 @@ export function SingleNavRow({ item, collapsed, active, badgeCount, pinned, onTo
 // regex — see `isFullWidthRoute` below.
 const EXACT_FULL_WIDTH_PATHS = [
   '/character',
+  '/eidoverse',
   '/ai',
   // Data Manager is a bordered title bar over a `flex-1 overflow-auto` body,
   // so it owns its own scroll. EXACT, not a prefix — a `/data` prefix would

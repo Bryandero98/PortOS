@@ -10,8 +10,9 @@ import {
   CODEX_PARALLEL_DEFAULT,
 } from '../services/mediaJobQueue/index.js';
 import { assertMediaRoutingConfig } from '../services/federatedMedia/routingPolicy.js';
-import { getInstanceFeatures, updateEidoverseWorldsRepo, updateInstanceFeature } from '../services/instanceFeatures.js';
+import { assertConfiguredEidoverseInstalled, getInstanceFeatures, updateEidoverseWorldsRepo, updateInstanceFeature } from '../services/instanceFeatures.js';
 import { installEidoverse } from '../services/eidoverse.js';
+import { ensureEidoverseHost } from '../services/eidoverseHost.js';
 import { isGitHubRepoUrl } from '../lib/githubRepoUrl.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
@@ -173,6 +174,15 @@ router.post('/features/eidoverse/install', asyncHandler(async (req, res) => {
   const normalizedRepoUrl = await updateEidoverseWorldsRepo(worldsRepoUrl);
   await installEidoverse({ worldsRepoUrl: normalizedRepoUrl });
   res.status(201).json(await updateInstanceFeature('eidoverse', true));
+}));
+
+// POST /api/settings/features/eidoverse/host
+// Lazily opens PortOS's TLS/WebSocket bridge. The external runtime stays a
+// separately managed app; this listener only makes its existing web UI safe to
+// embed when PortOS itself was opened over HTTPS.
+router.post('/features/eidoverse/host', asyncHandler(async (_req, res) => {
+  await assertConfiguredEidoverseInstalled();
+  res.json(await ensureEidoverseHost());
 }));
 
 // PUT /api/settings/features/:featureId

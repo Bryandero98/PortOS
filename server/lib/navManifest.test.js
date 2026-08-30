@@ -192,6 +192,11 @@ describe('nav contract — instance-feature gating', () => {
     expect(byId['nav.cos.gsd']).toBe('gsd');
   });
 
+  it('gates the Eidoverse host page on its installed feature', () => {
+    const command = NAV_COMMANDS.find((entry) => entry.id === 'nav.eidoverse');
+    expect(command).toMatchObject({ path: '/eidoverse', feature: 'eidoverse' });
+  });
+
   it('gates the complete Health section and MortalLoom settings', () => {
     const byId = Object.fromEntries(NAV_COMMANDS.map((c) => [c.id, c.feature]));
     expect([...SECTION_FEATURE]).toContainEqual(['Health', 'health']);

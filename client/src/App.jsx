@@ -23,6 +23,7 @@ const AgentsPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ 
 const DataDog = lazyWithReload(() => import('./pages/DataDog'));
 const FlowsDoc = lazyWithReload(() => import('./pages/FlowsDoc'));
 const GitHub = lazyWithReload(() => import('./pages/GitHub'));
+const Eidoverse = lazyWithReload(() => import('./pages/Eidoverse'));
 const OpenWorld = lazyWithReload(() => import('./pages/OpenWorld'));
 const AppDetail = lazyWithReload(() => import('./pages/AppDetail'));
 const FeatureAgents = lazyWithReload(() => import('./pages/FeatureAgents'));
@@ -276,6 +277,7 @@ export default function App() {
           <Route path="devtools/video-download" element={<VideoDownloaderPage />} />
           <Route path="devtools/processes" element={<ProcessesPage />} />
           <Route path="devtools/agents" element={<AgentsPage />} />
+          <Route path="eidoverse" element={<Eidoverse />} />
           <Route path="ai" element={<AIProviders />} />
           {/* The provider editor is a deep-linkable slide-in over the same page:
               /ai/new creates, /ai/edit/:providerId edits. The id sits under its

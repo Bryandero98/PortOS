@@ -68,6 +68,7 @@ export const SECTION_FEATURE = new Map([
 const RAW_NAV_COMMANDS = [
   { id: 'nav.dashboard', path: '/', label: 'Dashboard', section: 'Main', aliases: ['dashboard', 'home'], keywords: ['overview', 'start'] },
   { id: 'nav.review-hub', path: '/review', label: 'Review Hub', section: 'Main', aliases: ['review', 'review-hub'] },
+  { id: 'nav.eidoverse', path: '/eidoverse', label: 'Eidoverse', section: 'Main', feature: 'eidoverse', aliases: ['eidoverse', 'eidoverse-worlds', 'worlds'], keywords: ['3d', 'world', 'agents', 'spatial', 'managed app'] },
   { id: 'nav.cybercity', path: '/openworld', label: 'OpenWorld', section: 'Main', previousPaths: ['/city'], aliases: ['openworld', 'open world', 'open-world', 'city'], keywords: ['3d', 'visualization', 'game', 'map', 'explore'] },
   { id: 'nav.cybercity.settings', path: '/openworld/settings', label: 'OpenWorld Settings', section: 'Main', aliases: ['openworld settings', 'open world settings', 'world settings', 'city settings', 'city-settings', 'openworld-config'], keywords: ['openworld', 'settings', '3d', 'configure', 'world style', 'low poly'] },
   ...OPEN_WORLD_REGION_COMMANDS,
