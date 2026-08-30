@@ -667,7 +667,9 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
       && !diffInsufficient
       && blockingFindings.length === 0;
     if (!canApprove) {
-      const summary = decision.summary || 'This change needs follow-up before it can merge.';
+      const downgraded = hasInvalidFinding && decision.verdict !== 'request_changes';
+      const summary = `${decision.summary || 'This change needs follow-up before it can merge.'}${
+        downgraded ? '\n\nPortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.' : ''}`;
       const shouldRequestChanges = decision.verdict === 'request_changes'
         || hasInvalidFinding
         || blockingFindings.length > 0;
@@ -680,11 +682,15 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
       continue;
     }
 
+    const approveBody = decision.summary || 'Reviewed: no material issues found.';
     const approved = await submitReview(ctx, pr.number, {
-      body: decision.summary || 'Reviewed: no material issues found.',
+      body: approveBody,
       event: 'APPROVE',
       comments: findings,
-    });
+    }) || (findings.length > 0 && await submitReview(ctx, pr.number, {
+      body: approveBody,
+      event: 'APPROVE',
+    }));
     if (!approved) continue;
     reviewed += 1;
 

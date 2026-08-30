@@ -911,6 +911,13 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
         issueWatcher,
         outputHookDispatchedAt: '2026-08-30T00:00:00.000Z',
         totalSpawnCount: 3,
+        autoRetryCount: 2,
+        autoRetriedByInvestigation: 'sys-investigation',
+        autoRetriedAt: '2026-08-29T00:00:00.000Z',
+        autoRetryExhaustedAt: '2026-08-29T01:00:00.000Z',
+        resolution: 'auto-expired',
+        autoExpiredReason: 'investigation-resolved',
+        autoExpiredAt: '2026-08-29T02:00:00.000Z',
       },
     });
 
@@ -920,6 +927,10 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
     expect(replacement.metadata).toMatchObject({ analysisType: 'issue-watcher', issueWatcher });
     expect(replacement.metadata).not.toHaveProperty('outputHookDispatchedAt');
     expect(replacement.metadata).not.toHaveProperty('totalSpawnCount');
+    for (const key of [
+      'autoRetryCount', 'autoRetriedByInvestigation', 'autoRetriedAt', 'autoRetryExhaustedAt',
+      'resolution', 'autoExpiredReason', 'autoExpiredAt',
+    ]) expect(replacement.metadata).not.toHaveProperty(key);
   });
 
   it('leaves a LATER agent\'s pause intact and creates nothing', async () => {
