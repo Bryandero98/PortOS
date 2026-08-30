@@ -163,12 +163,14 @@ describe('workspace layout — mobile library regression (#5424)', () => {
     expect(screen.queryByRole('tablist', { name: 'Clip library' })).not.toBeInTheDocument();
     expect(workspace).toHaveClass('order-1', 'lg:order-2');
     expect(inspector).toHaveClass('order-3');
+    expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[1fr_240px]');
 
     fireEvent.click(showLibrary);
 
     const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
     expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
     expect(library).toHaveClass('order-2', 'lg:order-1');
+    expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[260px_1fr_240px]');
 
     fireEvent.click(screen.getByRole('button', { name: 'Add to timeline' }));
     await waitFor(() => expect(
@@ -184,6 +186,10 @@ describe('workspace layout — mobile library regression (#5424)', () => {
     expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
     expect(library).toHaveClass('order-2', 'lg:order-1');
     expect(workspace).toHaveClass('order-1', 'lg:order-2');
+    expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[260px_1fr_240px]');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide library' }));
+    expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[1fr_240px]');
   });
 });
 

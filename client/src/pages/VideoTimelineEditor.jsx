@@ -754,7 +754,9 @@ export default function VideoTimelineEditor() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr_240px] gap-3 min-h-[400px]">
+      <div className={`grid grid-cols-1 ${
+        showLibrary ? 'lg:grid-cols-[260px_1fr_240px]' : 'lg:grid-cols-[1fr_240px]'
+      } gap-3 min-h-[400px]`}>
         {/* Left rail — library */}
         {showLibrary && (
           <div className="order-2 lg:order-1 bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto">
