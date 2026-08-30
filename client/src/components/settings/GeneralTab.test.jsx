@@ -28,17 +28,26 @@ const CONFIRM = 'Discard your unsaved General settings changes?';
 const timezoneCard = () => screen.getByRole('heading', { name: 'Timezone' }).parentElement;
 const locationCard = () => screen.getByRole('heading', { name: 'Location' }).parentElement;
 
-const renderTab = async () => {
+const renderTab = async ({ expectedTimezone = 'UTC' } = {}) => {
   const router = createMemoryRouter([
     { path: '/settings/general', element: <GeneralTab /> },
     { path: '/settings/security', element: <div>Security settings</div> },
   ], { initialEntries: ['/settings/general'] });
   render(<RouterProvider router={router} />);
-  await screen.findByDisplayValue('UTC');
+  if (expectedTimezone === null) {
+    await screen.findByLabelText('Timezone (IANA)');
+  } else {
+    await screen.findByDisplayValue(expectedTimezone);
+  }
   return router;
 };
 
 const navigate = (router, to) => act(async () => { await router.navigate(to); });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((settle) => { resolve = settle; });
+  return { promise, resolve };
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -47,6 +56,18 @@ beforeEach(() => {
 });
 
 describe('GeneralTab unsaved changes', () => {
+  it('guards edits made against the displayed fallback after loading fails', async () => {
+    getSettings.mockRejectedValueOnce(new Error('settings offline'));
+    const router = await renderTab({ expectedTimezone: null });
+    fireEvent.change(screen.getByLabelText('Timezone (IANA)'), {
+      target: { value: 'America/New_York' },
+    });
+
+    expect(within(timezoneCard()).getByText('Unsaved changes')).toBeInTheDocument();
+    await navigate(router, '/settings/security');
+    expect(screen.getByText(CONFIRM)).toBeInTheDocument();
+  });
+
   it('marks each edited section dirty, arms beforeunload, and clears when values are restored', async () => {
     const add = vi.spyOn(window, 'addEventListener');
     const remove = vi.spyOn(window, 'removeEventListener');
@@ -138,6 +159,33 @@ describe('GeneralTab unsaved changes', () => {
       { silent: true },
     );
     expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('locks each section during its save without hiding another section\'s discard prompt', async () => {
+    const timezoneSave = deferred();
+    const locationSave = deferred();
+    updateSettings
+      .mockReturnValueOnce(timezoneSave.promise)
+      .mockReturnValueOnce(locationSave.promise);
+    const router = await renderTab();
+    const timezoneInput = screen.getByLabelText('Timezone (IANA)');
+    const latitudeInput = screen.getByLabelText('Latitude (-90 to 90)');
+    const longitudeInput = screen.getByLabelText('Longitude (-180 to 180)');
+    fireEvent.change(timezoneInput, { target: { value: 'America/New_York' } });
+    fireEvent.change(latitudeInput, { target: { value: '40.7128' } });
+
+    fireEvent.click(within(timezoneCard()).getByRole('button', { name: 'Save' }));
+    expect(timezoneInput).toBeDisabled();
+    expect(latitudeInput).not.toBeDisabled();
+    await navigate(router, '/settings/security');
+    expect(screen.getByText(CONFIRM)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+
+    await act(async () => { timezoneSave.resolve({}); });
+    fireEvent.click(within(locationCard()).getByRole('button', { name: 'Save' }));
+    expect(latitudeInput).toBeDisabled();
+    expect(longitudeInput).toBeDisabled();
+    await act(async () => { locationSave.resolve({}); });
   });
 
   it('keeps a failed timezone save dirty and guarded', async () => {

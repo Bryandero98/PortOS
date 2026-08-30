@@ -34,6 +34,8 @@ export function GeneralTab() {
   const locationDirty = savedLocation !== null
     && (lat !== savedLocation.lat || lon !== savedLocation.lon);
   const dirty = timezoneDirty || locationDirty;
+  const hasDiscardableChanges = (timezoneDirty && !saving)
+    || (locationDirty && !savingLocation);
   const routeGuard = useUnsavedChangesGuard(dirty);
 
   useEffect(() => {
@@ -48,7 +50,14 @@ export function GeneralTab() {
         setLon(nextLon);
         setSavedLocation({ lat: nextLat, lon: nextLon });
       })
-      .catch(() => toast.error('Failed to load settings'))
+      .catch(() => {
+        // The empty fields remain usable after a failed load, so treat the
+        // displayed fallback as the baseline instead of leaving edits outside
+        // dirty tracking.
+        setSavedTimezone('');
+        setSavedLocation({ lat: '', lon: '' });
+        toast.error('Failed to load settings');
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -133,7 +142,7 @@ export function GeneralTab() {
     <div className="space-y-6">
       <UnsavedChangesConfirm
         guard={routeGuard}
-        when={!saving && !savingLocation}
+        when={hasDiscardableChanges}
         question="Discard your unsaved General settings changes?"
         label="Discard unsaved General settings changes"
         onDiscard={routeGuard.proceed}
@@ -158,8 +167,9 @@ export function GeneralTab() {
             type="text"
             value={timezone}
             onChange={e => setTimezone(e.target.value)}
+            disabled={saving}
             placeholder={detectedTz}
-            className="w-full sm:flex-1 sm:max-w-xs min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+            className="w-full sm:flex-1 sm:max-w-xs min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm disabled:opacity-50"
             list="tz-list"
           />
           <button
@@ -214,8 +224,9 @@ export function GeneralTab() {
               inputMode="decimal"
               value={lat}
               onChange={e => setLat(e.target.value)}
+              disabled={savingLocation}
               placeholder="37.7749"
-              className="w-full min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+              className="w-full min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm disabled:opacity-50"
             />
           </FormField>
           <FormField
@@ -229,8 +240,9 @@ export function GeneralTab() {
               inputMode="decimal"
               value={lon}
               onChange={e => setLon(e.target.value)}
+              disabled={savingLocation}
               placeholder="-122.4194"
-              className="w-full min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
+              className="w-full min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm disabled:opacity-50"
             />
           </FormField>
           <button
