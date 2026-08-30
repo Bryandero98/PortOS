@@ -69,6 +69,10 @@ export default {
       if (isObject(schedule) && isObject(schedule.tasks)) {
         const task = isObject(schedule.tasks['branch-reconcile']) ? schedule.tasks['branch-reconcile'] : {};
         task.enabled = true;
+        // The legacy enabled flag was explicit consent to an automatic drain.
+        // A missing/new default is now on-demand, so retain that old behavior
+        // when the migration has no previously selected cadence to preserve.
+        if (!task.type || task.type === 'on-demand') task.type = 'perpetual';
         if (typeof old.cron === 'string' && old.cron.trim().split(/\s+/).length === 5) {
           task.recheckCron = old.cron;
         }

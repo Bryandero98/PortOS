@@ -201,10 +201,11 @@ export const DEFAULT_TASK_INTERVALS = {
   // branch-reconcile first removes fully-merged, clean orphaned worktrees and
   // branches, then finishes THIS machine's remaining in-flight LOCAL branches
   // per app (open a PR for pushed-but-unopened work, resolve merge conflicts,
-  // drive the review loop, auto-merge when green). PERPETUAL (drain-until-done):
-  // the generator runs the deterministic reconcile every dispatch, and dispatches
-  // the coordinator agent only while actionable in-flight branches remain — then
-  // PARKS on the daily recheckCron. The action toggles (cleanupMerged / openPr /
+  // drive the review loop, auto-merge when green). Detector-driven drain behavior:
+  // the generator runs the deterministic reconcile every manual/on-demand
+  // dispatch (or selected perpetual dispatch), and dispatches the coordinator
+  // agent only while actionable in-flight branches remain — then PARKS on the
+  // daily recheckCron. The action toggles (cleanupMerged / openPr /
   // resolveConflicts / autoMerge / finishAbandoned) are per-app taskMetadata
   // booleans (each ON unless explicitly false); `finishAbandoned` covers the work
   // a dead agent left UNCOMMITTED in its worktree — commit + ship it, or report it
@@ -222,10 +223,11 @@ export const DEFAULT_TASK_INTERVALS = {
   // issue-reconcile heals ZOMBIE issues: open + `in-progress` (claimed) yet with
   // their PR already MERGED and no live claim anywhere — a partial ship left the
   // claim marker on, so the queue (which skips `in-progress`) never re-picks the
-  // remaining scope. PERPETUAL (drain-until-done): the generator runs the
-  // deterministic gh/git scan every dispatch and dispatches the coordinator agent
-  // only while zombies remain — then PARKS on the daily recheckCron (offset an
-  // hour after branch-reconcile so merged-branch cleanup lands first). The
+  // remaining scope. Detector-driven drain behavior: the generator runs the
+  // deterministic gh/git scan every manual/on-demand dispatch (or selected
+  // perpetual dispatch) and dispatches the coordinator agent only while zombies
+  // remain — then PARKS on the daily recheckCron (offset an hour after
+  // branch-reconcile so merged-branch cleanup lands first). The
   // coordinator applies the partial-ship hybrid per zombie (close + file a scoped
   // follow-up when the remainder is separable, else comment "done/remaining" +
   // release the claim). `autoClose` (ON unless explicitly false) is the only

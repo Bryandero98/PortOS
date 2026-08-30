@@ -381,6 +381,16 @@ describe('taskSchedule', () => {
       expect(schedule.tasks['security'].providerId).toBe('p1')
     })
 
+    it('preserves an existing paused cadence when loading new defaults', async () => {
+      mockSchedule({
+        tasks: { security: { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null } }
+      })
+
+      const schedule = await loadSchedule()
+
+      expect(schedule.tasks.security).toMatchObject({ type: INTERVAL_TYPES.WEEKLY, enabled: false })
+    })
+
     it('should merge defaults for missing task types', async () => {
       mockSchedule({
         tasks: { 'security': { type: 'weekly', enabled: true, providerId: null, model: null, prompt: null } }
@@ -1102,6 +1112,22 @@ describe('taskSchedule', () => {
           isTaskTypeEnabledForApp.mockReset()
         }
       }
+    })
+
+    it('feature-ideas ignores an enabled on-demand do-replan dependency', async () => {
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+
+      mockSchedule({
+        tasks: {
+          'feature-ideas': { type: 'daily', enabled: true, providerId: null, model: null, prompt: null },
+          'do-replan': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null }
+        },
+        executions: { 'task:feature-ideas': { lastRun: twoDaysAgo, count: 1, perApp: {} } }
+      })
+
+      const result = await shouldRunTask('feature-ideas')
+      expect(result.shouldRun).toBe(true)
+      expect(result.reason).toContain('daily-due')
     })
 
     it('feature-ideas runs when do-replan has run since its last run', async () => {

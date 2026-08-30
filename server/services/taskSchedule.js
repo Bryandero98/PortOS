@@ -713,8 +713,9 @@ export async function applyOnDemandRunResets(request, appId = null) {
  * Returns { satisfied, pending } where pending lists unfinished dependency task types.
  *
  * Dependencies that are disabled — either globally (missing from the schedule or
- * `enabled: false`) or disabled for the requesting app — are skipped, since they
- * will never run and would otherwise block the dependent task indefinitely.
+ * `enabled: false`) — or use an on-demand interval are skipped, since they will
+ * not run automatically and would otherwise block the dependent task indefinitely.
+ * A scheduled per-app override keeps its dependency gate active.
  */
 async function checkRunAfterDeps(schedule, taskType, appId = null) {
   const interval = schedule.tasks[taskType];
@@ -730,6 +731,8 @@ async function checkRunAfterDeps(schedule, taskType, appId = null) {
     const depConfig = schedule.tasks[dep];
     if (!depConfig || !depConfig.enabled) continue;
     if (appId && !(await isTaskTypeEnabledForApp(appId, dep))) continue;
+    const depPerAppInterval = appId ? await getAppTaskTypeInterval(appId, dep) : null;
+    if ((depPerAppInterval || depConfig.type) === INTERVAL_TYPES.ON_DEMAND) continue;
 
     const depKey = `task:${dep}`;
     const depExec = schedule.executions[depKey] || { lastRun: null, perApp: {} };
