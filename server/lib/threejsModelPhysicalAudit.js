@@ -807,11 +807,6 @@ function buildBilateralChiralityFindings({ pairs, chains, volumes }) {
   return findings;
 }
 
-/**
- * @param {object|null} spec a validated Three.js scene spec
- * @returns {{findings: Array, errorCount: number, warningCount: number, noteCount: number,
- *   evaluatedPartCount: number, evaluatedPoseCount: number}}
- */
 const formatDegrees = (value) => `${Math.round(value)}°`;
 
 /**
@@ -846,6 +841,11 @@ const buildSweptPathCurvatureFindings = (spec, parts) => {
   return findings;
 };
 
+/**
+ * @param {object|null} spec a validated Three.js scene spec
+ * @returns {{findings: Array, errorCount: number, warningCount: number, noteCount: number,
+ *   evaluatedPartCount: number, evaluatedPoseCount: number}}
+ */
 export function evaluateThreejsPhysicalAudit(spec) {
   if (!spec || !Array.isArray(spec.parts)) {
     return {

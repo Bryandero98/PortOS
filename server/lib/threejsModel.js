@@ -1510,19 +1510,33 @@ const SWEPT_PATH_MIN_SAGITTA_RATIO = 0.05;
 // its outer boundary sweeps, so the outline threshold is the arc threshold.
 export const CURVED_OUTLINE_MIN_CONCAVE_TURN_DEGREES = 25;
 
+// Concavity has to be SUSTAINED, not merely present. Summed over the whole ring,
+// a single deep V-notch at the base of an otherwise straight spike buys hundreds
+// of degrees, and serrated, stepped, and slotted silhouettes are common — so the
+// gate would pass exactly the straight claw it exists to catch. A run of concave
+// vertices only counts when the boundary it governs is a real stretch of the
+// outline rather than a nick in it.
+const CONCAVE_RUN_MIN_LENGTH_RATIO = 0.25;
+
 // Tokens that declare a form which has to bend to read as itself. Deliberately
-// narrow: a token earns a place here only when a STRAIGHT version of the part
-// would be wrong, which is why "pipe", "rod", and "trunk" are absent — those are
-// straight far more often than not, and only qualify through a "bent"/"curved"
-// modifier that is itself on the list. Bare "arc" and "hoop" are absent for the
-// opposite reason: an "arcReactor" is a disc, and a hoop authored as an extruded
-// ring has a convex outline with the curve in its HOLE, so both would report a
-// correct build as the defect.
+// narrow, because this text is fed back into the next refinement pass: a false
+// positive does not merely add noise, it TELLS the provider to bend a part that
+// was right to be straight.
+//
+// So a noun earns a bare place here only when a straight version of the part
+// would be wrong. "pipe", "rod", "trunk", "tail", "whisker", "bow", and "barb"
+// are all absent — a tail boom runs down a fuselage, a tail fin is a flat plate,
+// and a whisker is a straight bristle — and they declare a curve only through a
+// modifier that is itself on the list, which is why "curved tail" and "coiled
+// tail" still match. Bare "arc" and "hoop" are absent for a different reason: an
+// "arcReactor" is a disc, and a hoop authored as an extruded ring has a convex
+// outline with the curve in its HOLE, so both would report a correct build as
+// the defect.
 const CURVED_FORM_TOKENS = new Set([
   'horn', 'antler', 'tusk', 'fang', 'claw', 'talon', 'pincer', 'mandible',
-  'tail', 'tentacle', 'whisker', 'hook', 'crook', 'barb',
+  'tentacle', 'hook', 'crook',
   'curve', 'curved', 'curving', 'curl', 'curled', 'coil', 'coiled', 'spiral',
-  'bend', 'bent', 'arced', 'arch', 'arched', 'bow', 'bowed',
+  'bend', 'bent', 'arced', 'arch', 'arched', 'bowed',
   'crescent', 'scythe', 'sickle', 'elbow',
 ]);
 
@@ -1766,8 +1780,11 @@ export function evaluateSweptArcCurvature(points) {
 }
 
 /**
- * How much of a closed outline's turning is concave, in degrees. A convex ring
- * returns 0; a crescent returns roughly the arc its inner boundary sweeps.
+ * The largest SUSTAINED concave turn in a closed outline, in degrees: the
+ * longest unbroken run of concave vertices whose stretch of boundary is a real
+ * fraction of the outline's own size. A convex ring returns 0; a crescent
+ * returns roughly the arc its inner boundary sweeps; a notch or a serration in
+ * an otherwise straight silhouette returns 0 however deep it is cut.
  *
  * @param {Array<number[]>} ring ordered `[x, y]` outline points
  */
@@ -1775,6 +1792,11 @@ export function measureOutlineConcaveTurn(ring) {
   const points = (Array.isArray(ring) ? ring : [])
     .filter((point) => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite));
   if (points.length < 3) return 0;
+  const segmentLength = (index) => {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    return Math.hypot(next[0] - current[0], next[1] - current[1]);
+  };
   const turns = points.map((current, index) => {
     const previous = points[(index - 1 + points.length) % points.length];
     const next = points[(index + 1) % points.length];
@@ -1789,8 +1811,34 @@ export function measureOutlineConcaveTurn(ring) {
   // total is its winding — measured from the turns themselves rather than from a
   // signed area, so the two can never disagree about which side is concave.
   const winding = turns.reduce((total, turn) => total + turn, 0) >= 0 ? 1 : -1;
-  const concave = turns.reduce((total, turn) => total + Math.max(0, -turn * winding), 0);
-  return (concave * 180) / Math.PI;
+  const xs = points.map(([x]) => x);
+  const ys = points.map(([, y]) => y);
+  const extent = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  if (!(extent > 0)) return 0;
+
+  // Walked over two laps so a run straddling the start of the array is measured
+  // whole rather than split into two short ones.
+  let runTurn = 0;
+  let runLength = 0;
+  let widest = 0;
+  for (let step = 0; step < points.length * 2; step += 1) {
+    const index = step % points.length;
+    const concave = -turns[index] * winding;
+    if (concave > 0) {
+      // The boundary a concave vertex governs runs from the segment arriving at
+      // it to the segment leaving it, so a run picks up its leading segment once.
+      if (runTurn === 0) runLength += segmentLength((index - 1 + points.length) % points.length);
+      runTurn += concave;
+      runLength += segmentLength(index);
+      if (runLength >= extent * CONCAVE_RUN_MIN_LENGTH_RATIO) {
+        widest = Math.max(widest, runTurn);
+      }
+    } else {
+      runTurn = 0;
+      runLength = 0;
+    }
+  }
+  return (widest * 180) / Math.PI;
 }
 
 /**
@@ -1808,6 +1856,11 @@ export function evaluateSweptGeometryCurvature(geometry) {
     return { kind: 'tube', straight: curvature.straight, arcSpanDegrees: curvature.arcSpanDegrees };
   }
   if (geometry?.type === 'extrude') {
+    // A ring, an arch, and a slotted plate all put their curve in a HOLE, and a
+    // hole leaves the outline convex, so an outline measurement would report the
+    // canonical build as the defect. There is no measurement here that separates
+    // those from a straight spike with a cutout, so the gate declines to speak.
+    if ((geometry.holes || []).length > 0) return null;
     const concaveTurnDegrees = measureOutlineConcaveTurn(geometry.outline);
     return {
       kind: 'extrude',
@@ -1828,8 +1881,10 @@ export function evaluateSweptGeometryCurvature(geometry) {
  * several parts — a tail of five tapered segments, a horn split into a base and
  * a tip — curves by ARRANGEMENT, and every piece of it is legitimately straight,
  * so measuring the pieces would report the correct build as the defect. That is
- * why a segment nested under an already-declared part is skipped, and why a
- * feature implementing itself with more than one sweep is skipped too.
+ * why a segment nested under an already-declared part is skipped, why a part
+ * that owns sweep-carrying children is skipped even when it carries a sweep of
+ * its own (its geometry is the base of an assembly, not the whole curve), and
+ * why a feature implementing itself with more than one sweep is skipped too.
  */
 export function collectDeclaredCurvedParts(spec) {
   const declared = new Map();
@@ -1837,12 +1892,15 @@ export function collectDeclaredCurvedParts(spec) {
   const declare = (partId, declaredBy) => {
     if (!declared.has(partId)) declared.set(partId, declaredBy);
   };
+  const hasSweepDescendant = (part) => (part.children || []).some((child) => (
+    evaluateSweptGeometryCurvature(child.geometry) || hasSweepDescendant(child)
+  ));
   const walk = (parts, ancestorDeclared) => {
     for (const part of parts || []) {
       byId.set(part.id, part);
       const name = part.name || part.id;
       const isDeclared = namesCurvedForm(name);
-      if (isDeclared && !ancestorDeclared) declare(part.id, name);
+      if (isDeclared && !ancestorDeclared && !hasSweepDescendant(part)) declare(part.id, name);
       walk(part.children, ancestorDeclared || isDeclared);
     }
   };

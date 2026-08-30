@@ -1520,6 +1520,20 @@ describe('measureOutlineConcaveTurn', () => {
     expect(measureOutlineConcaveTurn([...crescent()].reverse()))
       .toBeCloseTo(measureOutlineConcaveTurn(crescent()), 6);
   });
+
+  // Summed over the whole ring, one deep notch buys hundreds of degrees and lets
+  // a straight spike through the gate that exists to catch it. Only a SUSTAINED
+  // run — one governing a real stretch of boundary — counts.
+  it('ignores a notch cut into an otherwise straight silhouette', () => {
+    const notchedSpike = [[0, 0], [0.45, 0], [0.5, 0.3], [0.55, 0], [1, 0], [0.5, 6]];
+    expect(measureOutlineConcaveTurn(notchedSpike)).toBeCloseTo(0, 6);
+  });
+
+  // The same rule must not throw away the crescent: its inner boundary is one
+  // long run, not a nick.
+  it('still reports a crescent whose concavity is one sustained run', () => {
+    expect(measureOutlineConcaveTurn(crescent())).toBeGreaterThan(100);
+  });
 });
 
 describe('evaluateSweptGeometryCurvature', () => {
@@ -1541,6 +1555,21 @@ describe('evaluateSweptGeometryCurvature', () => {
       path: [[0, 0, 0], [1, 0, 0], [1, 1, 0]],
     })).toBeNull();
   });
+
+  // An arch, a ring, and a slotted plate all put the curve in the HOLE and leave
+  // the outline convex, so measuring the outline would report the canonical
+  // build as the defect.
+  it('declines to measure an extrude whose curve can live in a hole', () => {
+    expect(evaluateSweptGeometryCurvature({
+      type: 'extrude',
+      outline: [[-1, 0], [1, 0], [1, 2], [-1, 2]],
+      holes: [Array.from({ length: 12 }, (_, index) => {
+        const angle = Math.PI * (index / 11);
+        return [0.8 * Math.cos(angle), 0.8 * Math.sin(angle)];
+      })],
+      depth: 0.3,
+    })).toBeNull();
+  });
 });
 
 describe('collectDeclaredCurvedParts', () => {
@@ -1558,23 +1587,42 @@ describe('collectDeclaredCurvedParts', () => {
     expect([...declared.entries()]).toEqual([['horn', 'Left Horn'], ['part_17', 'curved brass conduit']]);
   });
 
-  // A tail of five straight segments arranged along an arc is the CORRECT build,
+  // A horn of five straight segments arranged along an arc is the CORRECT build,
   // and every segment of it is straight — so an assembly is never measured piece
-  // by piece, from either declaration source.
+  // by piece, from either declaration source, and not through its parent either
+  // even when the parent carries a sweep of its own.
   it('skips an assembly that can curve by arrangement', () => {
     const declared = collectDeclaredCurvedParts({
       parts: [
         {
-          id: 'tail',
-          name: 'Tail',
+          id: 'horn',
+          name: 'Horn',
+          geometry: tube,
           children: [
-            { id: 'tail-a', name: 'Tail Segment A', geometry: tube },
-            { id: 'tail-b', name: 'Tail Segment B', geometry: tube },
+            { id: 'horn-a', name: 'Horn Segment A', geometry: tube },
+            { id: 'horn-b', name: 'Horn Segment B', geometry: tube },
           ],
         },
       ],
-      detailInventory: [{ feature: 'curved tail', implementationPartIds: ['tail-a', 'tail-b'] }],
+      detailInventory: [{ feature: 'curved horn', implementationPartIds: ['horn-a', 'horn-b'] }],
     });
-    expect([...declared.keys()]).toEqual(['tail']);
+    expect([...declared.keys()]).toEqual([]);
+  });
+
+  // These read as curved about as often as they read as straight — a tail boom
+  // runs down a fuselage, a whisker is a bristle — and the finding text steers
+  // the next refinement pass, so a bare noun must not tell it to bend them.
+  it('needs a curve modifier before an ambiguous noun declares anything', () => {
+    const bare = collectDeclaredCurvedParts({
+      parts: [
+        { id: 'boom', name: 'Tail Boom', geometry: tube },
+        { id: 'bristle', name: 'whiskerLeft', geometry: tube },
+      ],
+    });
+    expect([...bare.keys()]).toEqual([]);
+    const modified = collectDeclaredCurvedParts({
+      parts: [{ id: 'boom', name: 'Curled Tail', geometry: tube }],
+    });
+    expect([...modified.keys()]).toEqual(['boom']);
   });
 });
