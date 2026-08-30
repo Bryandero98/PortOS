@@ -184,6 +184,7 @@ describe('FableLoom editorial autopilot', () => {
     expect(finished).toMatchObject({
       status: 'canceled',
       error: providerError.message,
+      message: providerError.message,
       selfImprove: null,
     });
   });
@@ -211,6 +212,7 @@ describe('FableLoom editorial autopilot', () => {
     expect(finished).toMatchObject({
       status: 'canceled',
       pauseReason: 'round-limit',
+      message: 'Editorial autopilot reached its 1-round limit with review findings still open.',
       selfImprove: null,
     });
   });

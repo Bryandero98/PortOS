@@ -135,7 +135,7 @@ const terminalDiagnosis = async (run, outcome, { reason = null, error = null } =
 
 const finishPaused = async (run, pauseReason, message) => {
   const selfImprove = await terminalDiagnosis(run, 'paused', { reason: pauseReason });
-  if (run.cancelRequested) return finishCanceled(run, { pauseReason, selfImprove });
+  if (run.cancelRequested) return finishCanceled(run, { pauseReason, message, selfImprove });
   return touch(run, {
     status: 'paused',
     pauseReason,
@@ -150,6 +150,7 @@ const finishFailed = async (run, error) => {
   const selfImprove = await terminalDiagnosis(run, 'failed', { reason: 'run-error', error });
   if (run.cancelRequested) return finishCanceled(run, {
     error: errorMessage(error),
+    message: errorMessage(error),
     selfImprove,
   });
   return touch(run, {

@@ -168,6 +168,22 @@ describe('LoomEditorialAutomation', () => {
     );
   });
 
+  it('keeps the decided pause explanation visible when cancellation lands during diagnosis', async () => {
+    api.getLoomEditorialAutopilotStatus.mockResolvedValue({
+      run: {
+        id: 'editorial-run-1', loomId: 'loom-1', status: 'canceled', round: 1, maxRounds: 1,
+        pauseReason: 'round-limit',
+        message: 'Editorial autopilot reached its 1-round limit with review findings still open.',
+        rounds: [], residualFindings: [],
+        lastReview: { summary: 'The story review still has open findings.', findings: [] },
+      },
+    });
+    renderPanel();
+
+    expect(await screen.findByText(/reached its 1-round limit with review findings still open/i))
+      .toBeInTheDocument();
+  });
+
   it('blocks every mutating AI action while the series plan has unsaved edits', async () => {
     renderPanel({ dirty: true });
 

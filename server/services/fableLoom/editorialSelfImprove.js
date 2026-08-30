@@ -113,12 +113,6 @@ export function buildFableLoomEditorialSelfImproveTask({ diagnosis, telemetry })
   });
 }
 
-const routeOptions = (run) => ({
-  ...(run?.route?.providerId ? { providerDefault: run.route.providerId } : {}),
-  ...(run?.route?.model ? { modelDefault: run.route.model } : {}),
-  ...(run?.route?.effort ? { effortDefault: run.route.effort } : {}),
-});
-
 /** Run one best-effort terminal diagnosis and file a task for PortOS defects. */
 export async function runFableLoomEditorialSelfImprove(run, context = {}) {
   if (!shouldDiagnoseFableLoomEditorial(run, context.outcome)) return null;
@@ -137,7 +131,10 @@ export async function runFableLoomEditorialSelfImprove(run, context = {}) {
     maxPaths: telemetry.maxPaths,
     telemetryJson: JSON.stringify(telemetry.rounds, null, 2),
   }, {
-    ...routeOptions(run),
+    // Keep the selected provider when available, but let this software-focused
+    // stage resolve its own heavy model instead of inheriting a story-writing
+    // model (modelDefault outranks stage tiers in stageRunner).
+    ...(run?.route?.providerId ? { providerDefault: run.route.providerId } : {}),
     returnsJson: true,
     source: SELF_IMPROVE_STAGE,
   });

@@ -196,7 +196,7 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
   const findings = result?.type === 'autopilot' || shownRun?.status
     ? shownRun?.residualFindings || []
     : review?.findings?.length ? review.findings : evaluation?.findings || [];
-  const summary = review?.summary || evaluation?.summary || shownRun?.message;
+  const summary = shownRun?.message || review?.summary || evaluation?.summary;
   const passed = result?.type === 'playtest'
     ? response?.passed
     : shownRun?.status === 'completed' || diagnostics?.passed;
