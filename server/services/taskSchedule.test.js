@@ -275,10 +275,10 @@ describe('taskSchedule', () => {
   })
 
   describe('layered-intelligence (programmatic-I/O agent task)', () => {
-    it('is registered as a self-improvement task with a description and a daily default', () => {
+    it('is registered as a self-improvement task with a description and an on-demand default', () => {
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('layered-intelligence');
       expect(TASK_TYPE_DESCRIPTIONS['layered-intelligence']).toBeTruthy();
-      expect(DEFAULT_TASK_INTERVALS['layered-intelligence']).toMatchObject({ type: 'daily', enabled: false });
+      expect(DEFAULT_TASK_INTERVALS['layered-intelligence']).toMatchObject({ type: INTERVAL_TYPES.ON_DEMAND, enabled: true });
     });
 
     it('has NO default prompt — the buildTaskInput hook renders it', () => {
@@ -311,10 +311,10 @@ describe('taskSchedule', () => {
   });
 
   describe('issue-watcher (programmatic-I/O agent task)', () => {
-    it('ships as a disabled 30-minute task with no persisted prompt', () => {
+    it('ships as an enabled on-demand task with a 30-minute fallback and no persisted prompt', () => {
       expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('issue-watcher');
       expect(DEFAULT_TASK_INTERVALS['issue-watcher']).toMatchObject({
-        type: 'custom', intervalMs: 30 * 60 * 1000, enabled: false, prompt: null
+        type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 30 * 60 * 1000, enabled: true, prompt: null
       });
       expect(DEFAULT_TASK_PROMPTS['issue-watcher']).toBeUndefined();
     });
@@ -328,10 +328,10 @@ describe('taskSchedule', () => {
   });
 
   describe('do-replan task type', () => {
-    it('should default to weekly, disabled, with worktree+PR metadata', async () => {
+    it('should default to on-demand and enabled, with worktree+PR metadata', async () => {
       const interval = await getTaskInterval('do-replan')
-      expect(interval.type).toBe('weekly')
-      expect(interval.enabled).toBe(false)
+      expect(interval.type).toBe(INTERVAL_TYPES.ON_DEMAND)
+      expect(interval.enabled).toBe(true)
       expect(interval.taskMetadata?.useWorktree).toBe(true)
       expect(interval.taskMetadata?.openPR).toBe(true)
     })
@@ -359,6 +359,17 @@ describe('taskSchedule', () => {
       expect(schedule.executions).toBeDefined()
     })
 
+    it('installs every registered task as an enabled on-demand action', async () => {
+      const schedule = await loadSchedule()
+
+      for (const taskType of SELF_IMPROVEMENT_TASK_TYPES) {
+        expect(schedule.tasks[taskType], taskType).toMatchObject({
+          type: INTERVAL_TYPES.ON_DEMAND,
+          enabled: true
+        })
+      }
+    })
+
     it('should load and return existing v2 schedule', async () => {
       mockSchedule({
         tasks: { 'security': { type: 'weekly', enabled: true, providerId: 'p1', model: 'm1', prompt: null } }
@@ -368,6 +379,16 @@ describe('taskSchedule', () => {
       expect(schedule.version).toBe(2)
       expect(schedule.tasks['security'].enabled).toBe(true)
       expect(schedule.tasks['security'].providerId).toBe('p1')
+    })
+
+    it('preserves an existing paused cadence when loading new defaults', async () => {
+      mockSchedule({
+        tasks: { security: { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null } }
+      })
+
+      const schedule = await loadSchedule()
+
+      expect(schedule.tasks.security).toMatchObject({ type: INTERVAL_TYPES.WEEKLY, enabled: false })
     })
 
     it('should merge defaults for missing task types', async () => {
@@ -660,7 +681,8 @@ describe('taskSchedule', () => {
   describe('getTaskInterval', () => {
     it('should return interval for known task type', async () => {
       const interval = await getTaskInterval('security')
-      expect(interval.type).toBe('weekly')
+      expect(interval.type).toBe(INTERVAL_TYPES.ON_DEMAND)
+      expect(interval.enabled).toBe(true)
     })
 
     it('should return disabled defaults for unknown task type', async () => {
@@ -1090,6 +1112,22 @@ describe('taskSchedule', () => {
           isTaskTypeEnabledForApp.mockReset()
         }
       }
+    })
+
+    it('feature-ideas ignores an enabled on-demand do-replan dependency', async () => {
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+
+      mockSchedule({
+        tasks: {
+          'feature-ideas': { type: 'daily', enabled: true, providerId: null, model: null, prompt: null },
+          'do-replan': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null }
+        },
+        executions: { 'task:feature-ideas': { lastRun: twoDaysAgo, count: 1, perApp: {} } }
+      })
+
+      const result = await shouldRunTask('feature-ideas')
+      expect(result.shouldRun).toBe(true)
+      expect(result.reason).toContain('daily-due')
     })
 
     it('feature-ideas runs when do-replan has run since its last run', async () => {
@@ -1540,8 +1578,8 @@ describe('taskSchedule', () => {
 
     it('defaults to self-filed issues with worktree/PR managed by the agent', () => {
       const cfg = DEFAULT_TASK_INTERVALS['claim-issue']
-      expect(cfg.type).toBe(INTERVAL_TYPES.DAILY)
-      expect(cfg.enabled).toBe(false)
+      expect(cfg.type).toBe(INTERVAL_TYPES.ON_DEMAND)
+      expect(cfg.enabled).toBe(true)
       // Default is the slashdo /do:next --self security boundary.
       expect(cfg.taskMetadata.issueAuthorFilter).toBe('self')
       // Mirrors plan-task: the agent creates its own worktree + opens the PR,
@@ -1568,11 +1606,11 @@ describe('taskSchedule', () => {
       expect(TASK_TYPE_DESCRIPTIONS['ux']).toBe('UX/design audit — file issues (default) or implement fixes')
     })
 
-    it('defaults to weekly + disabled with file-issues on (worktree/PR off)', () => {
+    it('defaults to on-demand + enabled with file-issues on (worktree/PR off)', () => {
       const cfg = DEFAULT_TASK_INTERVALS['ux']
-      expect(cfg.type).toBe(INTERVAL_TYPES.WEEKLY)
-      // Off by default — enabling it is the user's consent to a weekly LLM run.
-      expect(cfg.enabled).toBe(false)
+      expect(cfg.type).toBe(INTERVAL_TYPES.ON_DEMAND)
+      // Manual Run is explicit consent; choosing a cadence opts into scheduling.
+      expect(cfg.enabled).toBe(true)
       expect(cfg.taskMetadata.fileIssues).toBe(true)
       expect(cfg.taskMetadata.useWorktree).toBe(false)
       expect(cfg.taskMetadata.openPR).toBe(false)
@@ -1606,11 +1644,11 @@ describe('taskSchedule', () => {
       expect(TASK_TYPE_DESCRIPTIONS['plan-feature']).toBeTruthy()
     })
 
-    it('defaults to weekly + disabled, grounded on do-replan, with no worktree/PR', () => {
+    it('defaults to on-demand + enabled, grounded on do-replan, with no worktree/PR', () => {
       const cfg = DEFAULT_TASK_INTERVALS['plan-feature']
-      expect(cfg.type).toBe(INTERVAL_TYPES.WEEKLY)
-      // Off by default — enabling it is the user's consent to scheduled LLM runs.
-      expect(cfg.enabled).toBe(false)
+      expect(cfg.type).toBe(INTERVAL_TYPES.ON_DEMAND)
+      // Manual Run is explicit consent; choosing a cadence opts into scheduling.
+      expect(cfg.enabled).toBe(true)
       // Refresh the configured work tracker before filing a new proposal.
       expect(cfg.runAfter).toEqual(['do-replan'])
       expect(cfg.dataInputs).toEqual([
@@ -1660,13 +1698,13 @@ describe('taskSchedule', () => {
   })
 
   describe('audit file-issues types', () => {
-    it('registers data-safety and simplify as disabled weekly file-issues audits', () => {
+    it('registers data-safety and simplify as enabled on-demand file-issues audits', () => {
       for (const taskType of ['data-safety', 'simplify']) {
         expect(SELF_IMPROVEMENT_TASK_TYPES).toContain(taskType)
         expect(TASK_TYPE_DESCRIPTIONS[taskType]).toBeTruthy()
         const cfg = DEFAULT_TASK_INTERVALS[taskType]
-        expect(cfg.type).toBe(INTERVAL_TYPES.WEEKLY)
-        expect(cfg.enabled).toBe(false)
+        expect(cfg.type).toBe(INTERVAL_TYPES.ON_DEMAND)
+        expect(cfg.enabled).toBe(true)
         expect(cfg.taskMetadata.fileIssues).toBe(true)
         expect(cfg.taskMetadata.useWorktree).toBe(false)
         expect(cfg.taskMetadata.openPR).toBe(false)
@@ -1765,6 +1803,19 @@ describe('taskSchedule', () => {
       expect(result.error).toMatch(/'feature-ideas' is disabled/i)
       // loadState should not have been called — task-type check short-circuits before loadState.
       expect(loadState).not.toHaveBeenCalled()
+    })
+
+    it('should accept a manual run for an enabled on-demand task', async () => {
+      mockSchedule({
+        tasks: { 'security': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } }
+      })
+
+      const result = await triggerOnDemandTask('security', 'app-1')
+
+      expect(result.error).toBeUndefined()
+      expect(result.taskType).toBe('security')
+      expect(result.appId).toBe('app-1')
+      expect(result.origin).toBe(ON_DEMAND_ORIGINS.USER)
     })
 
     it('should reject unknown task types instead of silently queuing them', async () => {
