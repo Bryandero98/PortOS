@@ -465,22 +465,14 @@ export function planPromptEncodingRetry({ signal = null, stderr = '', promptEnco
 }
 
 /**
- * Whether a PortOS-fired SIGKILL should be treated as success rather than a
- * failure. Two Node-side watchdogs can SIGKILL a render:
- *   - the completion watchdog (armed after a completion marker, guards a
- *     post-completion teardown hang), and
- *   - the pre-output idle-stall deadline (fires when a render goes silent).
- * Either kill is a SUCCESS when a real output file is already on disk and
- * non-empty — e.g. a runtime that wrote its .mp4 but never printed a
- * recognized completion marker (so the completion watchdog never armed) and
- * then hung: the idle timer kills it, but the finished video must still be
- * kept, not discarded as "no output". A kill with no output on disk (a genuine
- * pre-output stall, or a marker from a malformed runtime that wrote nothing)
- * still fails loudly. `idleStallFired` defaults false so existing callers that
- * only track the completion watchdog keep their exact prior behavior.
+ * Whether a PortOS-fired completion-watchdog SIGKILL should be treated as
+ * success rather than a failure. The watchdog is armed after a completion
+ * marker and only guards a post-completion teardown hang. It is a SUCCESS when
+ * a real output file is already on disk and non-empty; a kill with no output on
+ * disk still fails loudly.
  */
-export function isWatchdogSuccess({ completionWatchdogFired, idleStallFired = false, signal, outputPath }) {
-  return (completionWatchdogFired || idleStallFired) && signal === 'SIGKILL'
+export function isWatchdogSuccess({ completionWatchdogFired, signal, outputPath }) {
+  return completionWatchdogFired && signal === 'SIGKILL'
     && existsSync(outputPath) && statSync(outputPath).size > 0;
 }
 
