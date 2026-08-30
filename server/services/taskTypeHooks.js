@@ -99,7 +99,9 @@ export function canRunTaskOutputHookWithoutPayload(taskType) {
 /**
  * The task type a hook is keyed on, for a task record. The SCHEDULED type lives in
  * `metadata.analysisType` (the top-level `task.taskType` is the CoS queue category,
- * e.g. 'internal'), falling back to `taskType` for a task shaped the other way.
+ * e.g. 'internal'). Archived agent/task projections historically called that
+ * field `metadata.taskAnalysisType`, so accept it as a compatibility fallback
+ * before falling back to `taskType` for a task shaped the other way.
  *
  * Single resolver on purpose (#2727): "does this task get the programmatic-I/O
  * success criterion?" and "does this task run an output hook?" must be the same
@@ -108,7 +110,7 @@ export function canRunTaskOutputHookWithoutPayload(taskType) {
  * #2700 bug, one shape over.
  */
 export function resolveTaskHookType(task) {
-  return task?.metadata?.analysisType || task?.taskType || null;
+  return task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
 }
 
 /**

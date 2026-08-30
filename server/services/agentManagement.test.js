@@ -896,6 +896,32 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
     }), 'user');
   });
 
+  it('preserves the scheduled hook contract when replacing a spent task', async () => {
+    const issueWatcher = {
+      repoFullName: 'example/example',
+      issueComments: [],
+      pullRequests: [{ number: 7, headSha: 'a'.repeat(40) }],
+    };
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      status: 'completed',
+      metadata: {
+        ...PAUSED_TASK.metadata,
+        analysisType: 'issue-watcher',
+        issueWatcher,
+        outputHookDispatchedAt: '2026-08-30T00:00:00.000Z',
+        totalSpawnCount: 3,
+      },
+    });
+
+    await resumeAgent('agent-paused-1', { description: '[Resume] Issue watcher' });
+
+    const [replacement] = addTask.mock.calls[0];
+    expect(replacement.metadata).toMatchObject({ analysisType: 'issue-watcher', issueWatcher });
+    expect(replacement.metadata).not.toHaveProperty('outputHookDispatchedAt');
+    expect(replacement.metadata).not.toHaveProperty('totalSpawnCount');
+  });
+
   it('leaves a LATER agent\'s pause intact and creates nothing', async () => {
     getTaskById.mockResolvedValue({
       ...PAUSED_TASK,

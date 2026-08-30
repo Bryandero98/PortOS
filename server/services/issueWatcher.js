@@ -154,7 +154,13 @@ function normalizeFinding(finding, anchors) {
   const line = Number(finding.line);
   const body = text(finding.body, 3_000);
   if (!path || side !== 'RIGHT' || !Number.isInteger(line) || line < 1 || !body) return null;
-  return anchors.has(`${path}\u0000${side}\u0000${line}`) ? { path, side, line, body } : null;
+  if (!anchors.has(`${path}\u0000${side}\u0000${line}`)) return null;
+  return {
+    comment: { path, side, line, body },
+    // A finding without an explicit boolean is blocking. The watcher must not
+    // turn an incomplete model response into an automatic merge.
+    blocking: finding.blocking !== false,
+  };
 }
 
 function normalizeReviewDecision(value) {
@@ -372,27 +378,32 @@ For each supplied comment, choose \`reply\` only when the project owner should a
 
 ${prs}
 
-Review every supplied diff for concrete correctness, security, data-loss, compatibility, and regression problems. Findings must anchor to an ADDED line in the supplied diff with exact \`path\`, \`line\`, and \`side: "RIGHT"\`. A truncated or insufficient diff must use \`defer\`, never \`approve\`.
+Review every supplied diff for concrete correctness, security, data-loss, compatibility, and regression problems. Findings must anchor to an ADDED line in the supplied diff with exact \`path\`, \`line\`, and \`side: "RIGHT"\`. Every finding MUST include \`blocking: true\` or \`blocking: false\`; omit a finding rather than guessing. A truncated or insufficient diff must use \`defer\`, never \`approve\`.
+
+Use \`request_changes\` only when at least one finding is blocking. Small, non-blocking findings should use \`approve\`: deterministic processing posts them as inline comments on the approving GitHub review and may merge once the normal CI/mergeability gates pass. Those comments are the follow-up record for later implementation work. Missing or invalid finding fields are treated as blocking by the deterministic validator.
 
 For a clean PR, decide:
 - \`rebaseRequired\`: true only when being behind the base creates a material integration/overlap risk; an independent clean change need not rebase merely because the count is nonzero.
 - \`ciPolicy: "required"\` for executable code, build/dependency/config/schema/security/auth changes, broad refactors, or anything whose behavior needs tests.
 - \`ciPolicy: "skippable"\` only when the supplied diff is plainly low risk and review is sufficient (for example documentation-only or isolated static styling). A known failing check can never be waived.
 
-Return exactly this payload shape through the completion sentinel:
+Return exactly this envelope through the completion sentinel (the outer \`summary\`/\`payload\` wrapper is required):
 
 \`\`\`json
 {
-  "issueComments": [{ "issueNumber": 1, "commentId": 2, "action": "reply|none", "body": "reply text or empty" }],
-  "pullRequests": [{
-    "number": 3,
-    "headSha": "exact supplied SHA",
-    "verdict": "approve|request_changes|defer",
-    "summary": "concise review summary",
-    "findings": [{ "path": "src/file.js", "line": 42, "side": "RIGHT", "body": "concrete problem and fix" }],
-    "rebaseRequired": false,
-    "ciPolicy": "required|skippable"
-  }]
+  "summary": "brief completion summary",
+  "payload": {
+    "issueComments": [{ "issueNumber": 1, "commentId": 2, "action": "reply|none", "body": "reply text or empty" }],
+    "pullRequests": [{
+      "number": 3,
+      "headSha": "exact supplied SHA",
+      "verdict": "approve|request_changes|defer",
+      "summary": "concise review summary",
+      "findings": [{ "path": "src/file.js", "line": 42, "side": "RIGHT", "blocking": true, "body": "concrete problem and fix" }],
+      "rebaseRequired": false,
+      "ciPolicy": "required|skippable"
+    }]
+  }
 }
 \`\`\`
 
@@ -600,7 +611,8 @@ function mergeApproval(existing, approval) {
 
 /** Validated reply/review/rebase/merge pass run after cognition. */
 export async function processTaskOutput({ appId, success, payload, task } = {}) {
-  if (!appId || !success || !isTaskOutputPayload(payload)) return { action: 'no-op', reason: !success ? 'agent-failed' : 'invalid-payload' };
+  if (!appId || !success) return { action: 'no-op', reason: !success ? 'agent-failed' : 'missing-app' };
+  if (!isTaskOutputPayload(payload)) return { action: 'no-op', reason: 'unparseable-response' };
   const expected = task?.metadata?.issueWatcher;
   if (!expected || !Array.isArray(expected.issueComments) || !Array.isArray(expected.pullRequests)) {
     return { action: 'no-op', reason: 'missing-hook-metadata' };
@@ -640,21 +652,39 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
     const diff = await runGh(['pr', 'diff', String(pr.number), '--repo', ctx.repoSpec], ctx).catch(() => null);
     if (diff === null) continue;
     const anchors = parseAddedDiffLines(diff);
-    const findings = decision.findings.map((finding) => normalizeFinding(finding, anchors)).filter(Boolean);
+    const normalizedFindings = decision.findings.map((finding) => normalizeFinding(finding, anchors)).filter(Boolean);
+    const findings = normalizedFindings.map(({ comment }) => comment);
+    const blockingFindings = normalizedFindings.filter(({ blocking }) => blocking);
+    const hasInvalidFinding = normalizedFindings.length !== decision.findings.length;
+    const diffInsufficient = target.diffTruncated || diff.length > MAX_DIFF_CHARS;
 
-    if (decision.verdict !== 'approve' || decision.findings.length > 0 || target.diffTruncated || diff.length > MAX_DIFF_CHARS) {
+    // An approval with only explicitly non-blocking findings is still a real
+    // GitHub code review: the comments travel with the APPROVE event, while
+    // the findings stay as follow-up work instead of blocking this PR. Every
+    // other ambiguous/negative case remains a non-merging review.
+    const canApprove = decision.verdict === 'approve'
+      && !hasInvalidFinding
+      && !diffInsufficient
+      && blockingFindings.length === 0;
+    if (!canApprove) {
       const summary = decision.summary || 'This change needs follow-up before it can merge.';
-      const shouldRequestChanges = decision.verdict === 'request_changes' || findings.length > 0;
+      const shouldRequestChanges = decision.verdict === 'request_changes'
+        || hasInvalidFinding
+        || blockingFindings.length > 0;
       const posted = shouldRequestChanges
         ? await submitReview(ctx, pr.number, { body: summary, event: 'REQUEST_CHANGES', comments: findings })
           || await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT', comments: findings })
-        : await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT' })
+        : await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT', comments: findings })
           || await postReviewFallback(ctx, pr.number, summary);
       if (posted) reviewed += 1;
       continue;
     }
 
-    const approved = await submitReview(ctx, pr.number, { body: decision.summary || 'Reviewed: no material issues found.', event: 'APPROVE' });
+    const approved = await submitReview(ctx, pr.number, {
+      body: decision.summary || 'Reviewed: no material issues found.',
+      event: 'APPROVE',
+      comments: findings,
+    });
     if (!approved) continue;
     reviewed += 1;
 

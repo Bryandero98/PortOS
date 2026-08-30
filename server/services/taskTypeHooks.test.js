@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canRunTaskOutputHookWithoutPayload, getTaskInputHook, getTaskOutputHook, isProgrammaticIoTaskType } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, getTaskInputHook, getTaskOutputHook, isProgrammaticIoTaskType, resolveTaskHookType } from './taskTypeHooks.js';
 
 describe('taskTypeHooks registry', () => {
   it('resolves both hooks for layered-intelligence to callables', async () => {
@@ -45,5 +45,15 @@ describe('isProgrammaticIoTaskType (#2700)', () => {
     // A truthiness check on the registry object would let these through.
     expect(isProgrammaticIoTaskType('constructor')).toBe(false);
     expect(isProgrammaticIoTaskType('toString')).toBe(false);
+  });
+});
+
+describe('resolveTaskHookType', () => {
+  it('prefers the live scheduled type and supports archived task projections', () => {
+    expect(resolveTaskHookType({ taskType: 'internal', metadata: { analysisType: 'issue-watcher', taskAnalysisType: 'layered-intelligence' } }))
+      .toBe('issue-watcher');
+    expect(resolveTaskHookType({ taskType: 'internal', metadata: { taskAnalysisType: 'issue-watcher' } }))
+      .toBe('issue-watcher');
+    expect(resolveTaskHookType({ taskType: 'layered-intelligence', metadata: {} })).toBe('layered-intelligence');
   });
 });

@@ -166,6 +166,8 @@ describe('buildTaskInput', () => {
     expect(result.prompt).toContain('PR #7: Contributor update');
     expect(result.prompt).toContain('behind base: 2 commit(s)');
     expect(result.prompt).toContain('ciPolicy: "skippable"');
+    expect(result.prompt).toContain('"summary": "brief completion summary"');
+    expect(result.prompt).toContain('"blocking": true');
     expect(result.hookMetadata.issueWatcher.pullRequests).toEqual([
       { number: 7, headSha: 'a'.repeat(40), diffTruncated: false },
     ]);
@@ -330,6 +332,39 @@ describe('processTaskOutput', () => {
     expect(result).toMatchObject({ reviewed: 1, merged: 1 });
     const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
     expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'APPROVE', comments: [] });
+    expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it('posts non-blocking findings on an approving review and still merges', async () => {
+    installDefaultGhMock();
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7,
+        headSha: 'a'.repeat(40),
+        verdict: 'approve',
+        summary: 'Safe to merge; one small follow-up is noted.',
+        findings: [{
+          path: 'src/example.js', line: 2, side: 'RIGHT', blocking: false,
+          body: 'Consider making this helper name more specific in a follow-up.',
+        }],
+        rebaseRequired: false,
+        ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(JSON.parse(reviewCall[2].input)).toMatchObject({
+      event: 'APPROVE',
+      comments: [{
+        path: 'src/example.js', line: 2, side: 'RIGHT',
+        body: 'Consider making this helper name more specific in a follow-up.',
+      }],
+    });
     expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
   });
 
