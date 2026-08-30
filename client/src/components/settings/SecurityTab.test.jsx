@@ -1,5 +1,6 @@
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SecurityTab } from './SecurityTab';
 import * as api from '../../services/api';
 
@@ -15,6 +16,16 @@ vi.mock('../ui/Toast', () => ({
     error: vi.fn(),
   },
 }));
+
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
 
 describe('SecurityTab', () => {
   beforeEach(() => {
@@ -85,5 +96,26 @@ describe('SecurityTab', () => {
     expect(screen.getByText('Change password')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await waitFor(() => expect(api.getAuthStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it('ignores an obsolete failure when a newer StrictMode request succeeds', async () => {
+    const firstRequest = deferred();
+    const secondRequest = deferred();
+    api.getAuthStatus
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockReturnValueOnce(secondRequest.promise);
+
+    render(
+      <StrictMode>
+        <SecurityTab />
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(api.getAuthStatus).toHaveBeenCalledTimes(2));
+    await act(async () => firstRequest.reject(new Error('Server unavailable')));
+    await act(async () => secondRequest.resolve({ enabled: true }));
+
+    expect(await screen.findByText('Login password enabled')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

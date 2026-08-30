@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lock, ShieldCheck, ShieldOff } from 'lucide-react';
 import toast from '../ui/Toast';
 import Banner from '../ui/Banner';
@@ -22,21 +22,28 @@ export function SecurityTab() {
   const [showDisable, setShowDisable] = useState(false);
   const [disablePassword, setDisablePassword] = useState('');
   const [disabling, setDisabling] = useState(false);
+  const statusRequestRef = useRef(0);
 
   const loadAuthStatus = useCallback(() => {
+    const requestId = ++statusRequestRef.current;
     setLoading(true);
     setLoadError(false);
     setEnabled(null);
     getAuthStatus({ silent: true })
       .then((status) => {
+        if (requestId !== statusRequestRef.current) return;
         if (typeof status?.enabled !== 'boolean') {
           setLoadError(true);
           return;
         }
         setEnabled(status.enabled);
       })
-      .catch(() => setLoadError(true))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (requestId === statusRequestRef.current) setLoadError(true);
+      })
+      .finally(() => {
+        if (requestId === statusRequestRef.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
