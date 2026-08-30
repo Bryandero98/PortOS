@@ -166,6 +166,8 @@ describe('buildTaskInput', () => {
     expect(result.prompt).toContain('PR #7: Contributor update');
     expect(result.prompt).toContain('behind base: 2 commit(s)');
     expect(result.prompt).toContain('ciPolicy: "skippable"');
+    expect(result.prompt).toContain('"summary": "brief completion summary"');
+    expect(result.prompt).toContain('"blocking": true');
     expect(result.hookMetadata.issueWatcher.pullRequests).toEqual([
       { number: 7, headSha: 'a'.repeat(40), diffTruncated: false },
     ]);
@@ -296,6 +298,32 @@ describe('processTaskOutput', () => {
     expect(mergePrMock).not.toHaveBeenCalled();
   });
 
+  it('explains when an approval was blocked because a finding could not be anchored', async () => {
+    installDefaultGhMock();
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7,
+        headSha: 'a'.repeat(40),
+        verdict: 'approve',
+        summary: 'Looks fine; one follow-up is noted.',
+        findings: [{
+          path: 'src/example.js', line: 99, side: 'RIGHT', blocking: false,
+          body: 'This line is not in the supplied diff.',
+        }],
+        rebaseRequired: false,
+        ciPolicy: 'required',
+      }],
+    };
+
+    await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'REQUEST_CHANGES' });
+    expect(JSON.parse(reviewCall[2].input).body).toContain('could not anchor one or more reported findings');
+    expect(mergePrMock).not.toHaveBeenCalled();
+  });
+
   it('updates a behind branch when the reviewer requires a rebase, then waits for a fresh review', async () => {
     installDefaultGhMock();
     const payload = {
@@ -331,6 +359,96 @@ describe('processTaskOutput', () => {
     const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
     expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'APPROVE', comments: [] });
     expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it('posts non-blocking findings on an approving review and still merges', async () => {
+    installDefaultGhMock();
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7,
+        headSha: 'a'.repeat(40),
+        verdict: 'approve',
+        summary: 'Safe to merge; one small follow-up is noted.',
+        findings: [{
+          path: 'src/example.js', line: 2, side: 'RIGHT', blocking: false,
+          body: 'Consider making this helper name more specific in a follow-up.',
+        }],
+        rebaseRequired: false,
+        ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(JSON.parse(reviewCall[2].input)).toMatchObject({
+      event: 'APPROVE',
+      comments: [{
+        path: 'src/example.js', line: 2, side: 'RIGHT',
+        body: 'Consider making this helper name more specific in a follow-up.',
+      }],
+    });
+    expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it('approves without inline comments when GitHub rejects the comment anchors', async () => {
+    installDefaultGhMock();
+    const defaultGhImplementation = execGhMock.getMockImplementation();
+    let reviewAttempts = 0;
+    execGhMock.mockImplementation(async (args, ...rest) => {
+      if (args[0] === 'api' && args.some((arg) => String(arg).endsWith('/pulls/7/reviews'))) {
+        reviewAttempts += 1;
+        if (reviewAttempts === 1) throw new Error('HTTP 422: invalid review comment');
+      }
+      return defaultGhImplementation(args, ...rest);
+    });
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7,
+        headSha: 'a'.repeat(40),
+        verdict: 'approve',
+        summary: 'Safe to merge; comment delivery was unavailable.',
+        findings: [{
+          path: 'src/example.js', line: 2, side: 'RIGHT', blocking: false,
+          body: 'Track this small cleanup in a follow-up.',
+        }],
+        rebaseRequired: false,
+        ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    const reviewCalls = execGhMock.mock.calls.filter(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(reviewCalls).toHaveLength(2);
+    expect(JSON.parse(reviewCalls[1][2].input)).toMatchObject({ event: 'APPROVE', comments: [] });
+    expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it('treats a finding with no explicit blocking flag as blocking and does not merge', async () => {
+    installDefaultGhMock();
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve',
+        summary: 'Looks fine.',
+        findings: [{ path: 'src/example.js', line: 2, side: 'RIGHT', body: 'Validate input before this call.' }],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 0 });
+    const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'REQUEST_CHANGES' });
+    expect(mergePrMock).not.toHaveBeenCalled();
   });
 
   it('does not review or merge when the PR head changed after cognition', async () => {
