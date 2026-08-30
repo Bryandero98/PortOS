@@ -127,6 +127,47 @@ describe('LoomEditorialAutomation', () => {
     expect(screen.getAllByText(/Round 1: evaluating and remediating/).length).toBeGreaterThan(0);
   });
 
+  it('opts a run into approval-gated FableLoom workflow diagnosis', async () => {
+    const user = userEvent.setup();
+    api.startLoomEditorialAutopilot.mockResolvedValue({
+      id: 'editorial-run-1', loomId: 'loom-1', status: 'running', round: 0, maxRounds: 3,
+      message: 'Starting FableLoom editorial autopilot…', rounds: [], residualFindings: [],
+    });
+    renderPanel();
+
+    const toggle = await screen.findByLabelText(/improve fableloom itself/i);
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(screen.getByText(/queues a deduplicated worktree \+ PR CoS task in the approval queue/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Start editor autopilot' }));
+
+    await waitFor(() => expect(api.startLoomEditorialAutopilot).toHaveBeenCalledWith(
+      'loom-1', { maxRounds: 3, selfImprove: true }, { silent: true },
+    ));
+  });
+
+  it('links a filed workflow diagnosis to its CoS approval task', async () => {
+    api.getLoom.mockResolvedValue(loom);
+    api.getLoomEditorialAutopilotStatus.mockResolvedValue({
+      run: {
+        id: 'editorial-run-1', loomId: 'loom-1', status: 'paused', round: 2, maxRounds: 3,
+        pauseReason: 'plateau', message: 'Editorial autopilot paused.', rounds: [],
+        residualFindings: [],
+        selfImprove: {
+          verdict: 'pipeline', area: 'prompt', title: 'Tighten the remediation contract',
+          taskId: 'sys-example', filed: true, duplicate: false,
+        },
+      },
+    });
+    renderPanel();
+
+    expect(await screen.findByText(/Queued a FableLoom improvement \(prompt\)/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Review CoS task' })).toHaveAttribute(
+      'href',
+      '/cos/tasks?task=sys-example&source=internal',
+    );
+  });
+
   it('blocks every mutating AI action while the series plan has unsaved edits', async () => {
     renderPanel({ dirty: true });
 

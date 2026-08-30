@@ -3,11 +3,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getLoomMock = vi.hoisted(() => vi.fn(async (id) => ({ id })));
 const remediateMock = vi.hoisted(() => vi.fn());
 const playtestMock = vi.hoisted(() => vi.fn());
+const selfImproveMock = vi.hoisted(() => vi.fn(async () => ({
+  verdict: 'pipeline', area: 'prompt', title: 'Tighten the remediation contract',
+  taskId: 'sys-example', filed: true, duplicate: false,
+})));
 
 vi.mock('./records.js', () => ({ getLoom: getLoomMock }));
 vi.mock('./editorial.js', () => ({
   evaluateAndRemediateFableLoom: remediateMock,
   reviewFableLoomPlaythroughs: playtestMock,
+}));
+vi.mock('./editorialSelfImprove.js', () => ({
+  shouldDiagnoseFableLoomEditorial: (run, outcome) => (
+    run?.selfImproveEnabled === true && ['paused', 'failed'].includes(outcome)
+  ),
+  runFableLoomEditorialSelfImprove: (...args) => selfImproveMock(...args),
 }));
 
 const {
@@ -62,6 +72,7 @@ beforeEach(() => {
   getLoomMock.mockClear().mockImplementation(async (id) => ({ id }));
   remediateMock.mockReset();
   playtestMock.mockReset();
+  selfImproveMock.mockClear();
 });
 
 describe('FableLoom editorial autopilot', () => {
@@ -82,6 +93,7 @@ describe('FableLoom editorial autopilot', () => {
     expect(playtestMock).toHaveBeenCalledWith('loom-example', {
       providerId: 'writer', model: 'large', effort: 'high', aiReview: true,
     });
+    expect(selfImproveMock).not.toHaveBeenCalled();
   });
 
   it('pauses on a plateau after the same finding survives a no-change pass', async () => {
@@ -110,10 +122,47 @@ describe('FableLoom editorial autopilot', () => {
       findings: [{ severity: 'low', category: 'pacing', problem: 'The second route rushes its turn.' }],
     }));
 
-    const started = await startFableLoomEditorialAutopilot('loom-example', { maxRounds: 1 });
+    const started = await startFableLoomEditorialAutopilot('loom-example', {
+      maxRounds: 1,
+      selfImprove: true,
+    });
     const finished = await waitForTerminal(started.id);
 
-    expect(finished).toMatchObject({ status: 'paused', pauseReason: 'round-limit', round: 1 });
+    expect(finished).toMatchObject({
+      status: 'paused',
+      pauseReason: 'round-limit',
+      round: 1,
+      selfImproveEnabled: true,
+      selfImprove: { verdict: 'pipeline', taskId: 'sys-example', filed: true },
+    });
+    expect(selfImproveMock).toHaveBeenCalledWith(expect.objectContaining({ id: started.id }), {
+      outcome: 'paused',
+      reason: 'round-limit',
+      sourceStep: 'playthrough-review',
+      errorCode: null,
+    });
+  });
+
+  it('keeps provider failures terminal while best-effort self-improvement diagnoses the failed step', async () => {
+    const providerError = Object.assign(new Error('Provider returned an unusable patch'), {
+      code: 'AI_RESPONSE_INVALID',
+    });
+    remediateMock.mockRejectedValueOnce(providerError);
+
+    const started = await startFableLoomEditorialAutopilot('loom-example', { selfImprove: true });
+    const finished = await waitForTerminal(started.id);
+
+    expect(finished).toMatchObject({
+      status: 'failed',
+      error: providerError.message,
+      selfImprove: { taskId: 'sys-example' },
+    });
+    expect(selfImproveMock).toHaveBeenCalledWith(expect.any(Object), {
+      outcome: 'failed',
+      reason: 'run-error',
+      sourceStep: 'evaluate-remediate',
+      errorCode: 'AI_RESPONSE_INVALID',
+    });
   });
 
   it('keeps diagnostics-only blockers actionable in the residual findings', async () => {

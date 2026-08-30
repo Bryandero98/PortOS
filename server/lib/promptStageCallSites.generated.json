@@ -37,6 +37,9 @@
   "fableloom-editorial-remediate": [
     "server/services/fableLoom/editorial.js"
   ],
+  "fableloom-editorial-self-improve": [
+    "server/services/fableLoom/editorialSelfImprove.js"
+  ],
   "fableloom-feedback-episode": [
     "server/services/fableLoom/weave.js"
   ],

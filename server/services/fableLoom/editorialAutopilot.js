@@ -17,6 +17,10 @@ import {
   evaluateAndRemediateFableLoom,
   reviewFableLoomPlaythroughs,
 } from './editorial.js';
+import {
+  runFableLoomEditorialSelfImprove,
+  shouldDiagnoseFableLoomEditorial,
+} from './editorialSelfImprove.js';
 
 export const FABLELOOM_EDITORIAL_AUTOPILOT_LIMITS = Object.freeze({
   DEFAULT_ROUNDS: 3,
@@ -110,13 +114,49 @@ const finishCanceled = (run) => touch(run, {
   completedAt: nowIso(),
 });
 
-const finishFailed = (run, error) => touch(run, {
-  status: 'failed',
-  currentStep: null,
-  message: errorMessage(error),
-  error: errorMessage(error),
-  completedAt: nowIso(),
-});
+const terminalDiagnosis = async (run, outcome, { reason = null, error = null } = {}) => {
+  if (!shouldDiagnoseFableLoomEditorial(run, outcome)) return null;
+  const sourceStep = run.currentStep;
+  touch(run, {
+    currentStep: 'self-improve',
+    message: 'Diagnosing whether the editorial automation itself should improve…',
+  });
+  return runFableLoomEditorialSelfImprove(run, {
+    outcome,
+    reason,
+    sourceStep,
+    errorCode: error?.code || null,
+  }).catch((diagnosisError) => {
+    console.log(`⚠️ FableLoom self-improve diagnosis failed: ${diagnosisError.message}`);
+    return null;
+  });
+};
+
+const finishPaused = async (run, pauseReason, message) => {
+  const selfImprove = await terminalDiagnosis(run, 'paused', { reason: pauseReason });
+  if (run.cancelRequested) return finishCanceled(run);
+  return touch(run, {
+    status: 'paused',
+    pauseReason,
+    currentStep: null,
+    message,
+    selfImprove,
+    completedAt: nowIso(),
+  });
+};
+
+const finishFailed = async (run, error) => {
+  const selfImprove = await terminalDiagnosis(run, 'failed', { reason: 'run-error', error });
+  if (run.cancelRequested) return finishCanceled(run);
+  return touch(run, {
+    status: 'failed',
+    currentStep: null,
+    message: errorMessage(error),
+    error: errorMessage(error),
+    selfImprove,
+    completedAt: nowIso(),
+  });
+};
 
 async function runRound(run, guidance) {
   const round = run.round + 1;
@@ -174,22 +214,18 @@ async function runRound(run, guidance) {
   const plateau = !remediation.changed && signature === run.previousFindingSignature;
   run.previousFindingSignature = signature;
   if (plateau) {
-    return touch(run, {
-      status: 'paused',
-      pauseReason: 'plateau',
-      currentStep: null,
-      message: 'Editorial autopilot paused because another safe pass produced no changes and the same findings remained.',
-      completedAt: nowIso(),
-    });
+    return finishPaused(
+      run,
+      'plateau',
+      'Editorial autopilot paused because another safe pass produced no changes and the same findings remained.',
+    );
   }
   if (round >= run.maxRounds) {
-    return touch(run, {
-      status: 'paused',
-      pauseReason: 'round-limit',
-      currentStep: null,
-      message: `Editorial autopilot reached its ${run.maxRounds}-round limit with review findings still open.`,
-      completedAt: nowIso(),
-    });
+    return finishPaused(
+      run,
+      'round-limit',
+      `Editorial autopilot reached its ${run.maxRounds}-round limit with review findings still open.`,
+    );
   }
 
   touch(run, {
@@ -200,7 +236,7 @@ async function runRound(run, guidance) {
 
 /** Start and detach a bounded editor/reviewer run. */
 export async function startFableLoomEditorialAutopilot(loomId, {
-  maxRounds, maxPaths, providerId, model, effort,
+  maxRounds, maxPaths, providerId, model, effort, selfImprove,
 } = {}) {
   cleanStaleRuns();
   await requireLoomForRun(loomId);
@@ -236,6 +272,8 @@ export async function startFableLoomEditorialAutopilot(loomId, {
     completedAt: null,
     cancelRequested: false,
     pauseReason: null,
+    selfImproveEnabled: selfImprove === true,
+    selfImprove: null,
     message: 'Starting FableLoom editorial autopilot…',
     error: null,
     rounds: [],
@@ -247,9 +285,18 @@ export async function startFableLoomEditorialAutopilot(loomId, {
   };
   runs.set(run.id, run);
   latestRunByLoom.set(loomId, run.id);
-  void runRound(run, '').catch((error) => (
-    run.cancelRequested ? finishCanceled(run) : finishFailed(run, error)
-  ));
+  void runRound(run, '')
+    .catch((error) => (run.cancelRequested ? finishCanceled(run) : finishFailed(run, error)))
+    .catch((error) => {
+      console.error(`❌ FableLoom editorial autopilot terminal handling failed: ${error.message}`);
+      touch(run, {
+        status: 'failed',
+        currentStep: null,
+        message: errorMessage(error),
+        error: errorMessage(error),
+        completedAt: nowIso(),
+      });
+    });
   return run;
 }
 

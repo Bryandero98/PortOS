@@ -61,6 +61,14 @@ export {
   startFableLoomEditorialAutopilot,
 } from './editorialAutopilot.js';
 export {
+  FABLELOOM_EDITORIAL_SELF_IMPROVE_AREAS,
+  FABLELOOM_EDITORIAL_SELF_IMPROVE_MIN_CONFIDENCE,
+  buildFableLoomEditorialSelfImproveTask,
+  buildFableLoomEditorialTelemetry,
+  runFableLoomEditorialSelfImprove,
+  shouldDiagnoseFableLoomEditorial,
+} from './editorialSelfImprove.js';
+export {
   _resetFableLoomBackend,
   isValidLoomId,
   verifySchemaVersion,

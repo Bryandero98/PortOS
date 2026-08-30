@@ -70,9 +70,9 @@ describe('apiFableLoom', () => {
       method: 'POST', body: JSON.stringify({ aiReview: true }),
     });
 
-    await api.startLoomEditorialAutopilot('loom-1', { maxRounds: 3 });
+    await api.startLoomEditorialAutopilot('loom-1', { maxRounds: 3, selfImprove: true });
     expect(request).toHaveBeenCalledWith('/fableloom/loom-1/editorial/autopilot/start', {
-      method: 'POST', body: JSON.stringify({ maxRounds: 3 }),
+      method: 'POST', body: JSON.stringify({ maxRounds: 3, selfImprove: true }),
     });
 
     await api.getLoomEditorialAutopilotStatus('loom-1', { silent: true });
