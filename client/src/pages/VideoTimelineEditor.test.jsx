@@ -161,21 +161,27 @@ describe('workspace layout — mobile library regression (#5424)', () => {
     const workspace = screen.getByRole('button', { name: 'Play' }).parentElement?.parentElement;
     const inspector = screen.getByText('Inspector').parentElement;
     expect(screen.queryByRole('tablist', { name: 'Clip library' })).not.toBeInTheDocument();
-    expect(workspace).toHaveClass('order-1', 'lg:order-2');
-    expect(inspector).toHaveClass('order-3');
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[1fr_240px]');
+    expect(workspace?.compareDocumentPosition(inspector) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(showLibrary);
 
     const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
     expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
-    expect(library).toHaveClass('order-2', 'lg:order-1');
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[260px_1fr_240px]');
+    expect(workspace?.compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add to timeline' }));
     await waitFor(() => expect(
       screen.getByRole('button', { name: 'Remove A dramatic sunrise from timeline' }),
     ).toBeInTheDocument());
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+    fireEvent(window, new Event('resize'));
+    await waitFor(() => {
+      const desktopLibrary = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
+      expect(desktopLibrary?.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
   });
 
   it('keeps the desktop library visible in the original left-rail order', async () => {
@@ -184,9 +190,8 @@ describe('workspace layout — mobile library regression (#5424)', () => {
     const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
     const workspace = screen.getByRole('button', { name: 'Play' }).parentElement?.parentElement;
     expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
-    expect(library).toHaveClass('order-2', 'lg:order-1');
-    expect(workspace).toHaveClass('order-1', 'lg:order-2');
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[260px_1fr_240px]');
+    expect(library?.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide library' }));
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[1fr_240px]');
