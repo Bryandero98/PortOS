@@ -596,6 +596,8 @@ export async function processHostedUtterance(sessionId, {
       }).catch(() => null);
 
       const synth = await synthesize(narration, {
+        profileId: resolved?.profileId || undefined,
+        route: 'interactive',
         voice: resolved?.voiceId || undefined,
       }).catch(() => null);
       if (synth?.wav) {
