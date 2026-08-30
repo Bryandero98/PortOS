@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 
@@ -45,8 +46,12 @@ const renderTab = async ({ expectedTimezone = 'UTC' } = {}) => {
 const navigate = (router, to) => act(async () => { await router.navigate(to); });
 const deferred = () => {
   let resolve;
-  const promise = new Promise((settle) => { resolve = settle; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 };
 
 beforeEach(() => {
@@ -66,6 +71,26 @@ describe('GeneralTab unsaved changes', () => {
     expect(within(timezoneCard()).getByText('Unsaved changes')).toBeInTheDocument();
     await navigate(router, '/settings/security');
     expect(screen.getByText(CONFIRM)).toBeInTheDocument();
+  });
+
+  it('ignores an older StrictMode load failure after the current load succeeds', async () => {
+    const olderLoad = deferred();
+    const currentLoad = deferred();
+    getSettings
+      .mockReturnValueOnce(olderLoad.promise)
+      .mockReturnValueOnce(currentLoad.promise);
+    const router = createMemoryRouter([
+      { path: '/settings/general', element: <GeneralTab /> },
+    ], { initialEntries: ['/settings/general'] });
+    render(<StrictMode><RouterProvider router={router} /></StrictMode>);
+
+    await act(async () => { currentLoad.resolve(SETTINGS); });
+    expect(await screen.findByDisplayValue('UTC')).toBeInTheDocument();
+    await act(async () => { olderLoad.reject(new Error('stale settings request')); });
+
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+    expect(screen.getByLabelText('Timezone (IANA)')).toHaveValue('UTC');
+    expect(screen.getByLabelText('Latitude (-90 to 90)')).toHaveValue(String(SETTINGS.location.lat));
   });
 
   it('marks each edited section dirty, arms beforeunload, and clears when values are restored', async () => {

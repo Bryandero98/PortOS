@@ -39,8 +39,10 @@ export function GeneralTab() {
   const routeGuard = useUnsavedChangesGuard(dirty);
 
   useEffect(() => {
+    let current = true;
     getSettings({ silent: true })
       .then(settings => {
+        if (!current) return;
         const nextTimezone = settings?.timezone || '';
         const nextLat = settings?.location?.lat != null ? String(settings.location.lat) : '';
         const nextLon = settings?.location?.lon != null ? String(settings.location.lon) : '';
@@ -51,6 +53,7 @@ export function GeneralTab() {
         setSavedLocation({ lat: nextLat, lon: nextLon });
       })
       .catch(() => {
+        if (!current) return;
         // The empty fields remain usable after a failed load, so treat the
         // displayed fallback as the baseline instead of leaving edits outside
         // dirty tracking.
@@ -58,7 +61,10 @@ export function GeneralTab() {
         setSavedLocation({ lat: '', lon: '' });
         toast.error('Failed to load settings');
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (current) setLoading(false);
+      });
+    return () => { current = false; };
   }, []);
 
   const handleSaveLocation = async () => {
