@@ -33,9 +33,17 @@ bun --env-file=.env.portos server/server.ts
 ```
 
 Installation does not start the server. Start, stop, logs, updates, and launch
-links remain visible on the normal managed-app screen. Managed updates pull both
-the selected Worlds checkout and its companion video runtime before using Bun's
-frozen lockfile rather than npm.
+links remain visible on the normal managed-app screen. Plain-HTTP managed apps
+keep an `http://` launch URL even when PortOS itself is open over HTTPS, so the
+Apps launch action works from a Tailscale MagicDNS session. Managed updates pull
+both the selected Worlds checkout and its companion video runtime before using
+Bun's frozen lockfile rather than npm.
+
+When the feature is enabled, **Eidoverse** appears beside OpenWorld in PortOS's
+primary navigation. Opening it starts the managed app when needed and embeds its
+web client in a full-width PortOS page. OpenWorld remains available during this
+evaluation; replacing or redirecting it is a separate product decision after
+the Eidoverse integration proves the required behavior.
 
 Durable Eidoverse world logs live at `data/eidoverse/worlds`. This is
 machine-local `file-primary` data: PortOS backups include it, but PortOS does
@@ -55,9 +63,17 @@ an empty join token; do not expose this configuration to the public internet.
 An instance that needs a broader trust model should configure Eidoverse access
 control in that project before starting it.
 
+Eidoverse itself remains a plain-HTTP service on `:8940`. For an HTTPS PortOS
+session, the embedded page lazily opens a PortOS-owned HTTPS/WebSocket bridge on
+`:5563`, using the same machine certificate as `:5555` and forwarding to
+`127.0.0.1:8940`. This avoids browser mixed-content rejection while leaving both
+external repositories unchanged. The bridge starts only when the page is
+opened, waits for the managed app to answer before mounting the iframe, and
+returns an explicit unavailable state when the runtime does not become ready.
+
 ## PortOS bridge boundary
 
-This slice establishes installation and runtime management only. Persistent
-Mind presence, agent identity, and dynamic PortOS buildings/assets should be
-implemented as explicit adapters across the two projects' public protocols.
-They must remain opt-in and must not cause provider calls at PortOS boot.
+The hosted UI and runtime management do not yet bridge Persistent Mind presence,
+agent identity, or dynamic PortOS buildings/assets. Those should be implemented
+as explicit adapters across the two projects' public protocols. They must remain
+opt-in and must not cause provider calls at PortOS boot.

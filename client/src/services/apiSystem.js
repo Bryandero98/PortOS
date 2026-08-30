@@ -78,6 +78,10 @@ export const installEidoverseFeature = (worldsRepoUrl, options = {}) => request(
   body: JSON.stringify({ worldsRepoUrl }),
   ...options,
 });
+export const startEidoverseHost = (options = {}) => request('/settings/features/eidoverse/host', {
+  method: 'POST',
+  ...options,
+});
 export const updateSettings = (data, options) => request('/settings', {
   method: 'PUT',
   body: JSON.stringify(data),

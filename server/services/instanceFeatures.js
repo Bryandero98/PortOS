@@ -126,6 +126,11 @@ const configuredEidoverseRepo = (settings) => {
     : DEFAULT_EIDOVERSE_WORLDS_REPO;
 };
 
+export async function assertConfiguredEidoverseInstalled() {
+  const { settings } = await getSettingsWithStatus();
+  return assertEidoverseInstalled({ worldsRepoUrl: configuredEidoverseRepo(settings) });
+}
+
 const attachSetupStatus = async (features, settings) => {
   const eidoverse = await getEidoverseStatus({ worldsRepoUrl: configuredEidoverseRepo(settings) });
   return features.map((feature) => (
@@ -176,8 +181,7 @@ export async function updateInstanceFeature(featureId, enabled) {
     throw new ServerError(`Unknown instance feature: ${featureId}`, { status: 404, code: 'NOT_FOUND' });
   }
   if (featureId === 'eidoverse' && enabled) {
-    const { settings } = await getSettingsWithStatus();
-    await assertEidoverseInstalled({ worldsRepoUrl: configuredEidoverseRepo(settings) });
+    await assertConfiguredEidoverseInstalled();
   }
 
   const settings = await updateSettingsWith((current) => {

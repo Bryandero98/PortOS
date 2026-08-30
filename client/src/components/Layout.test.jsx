@@ -60,6 +60,7 @@ const allFeaturesOn = () => [
   { id: 'post', label: 'POST', enabled: true },
   { id: 'datadog', label: 'DataDog', enabled: true },
   { id: 'jira', label: 'JIRA', enabled: true },
+  { id: 'eidoverse', label: 'Eidoverse Worlds', enabled: true },
   { id: 'gsd', label: 'GSD', enabled: true },
   { id: 'openclaw', label: 'OpenClaw', enabled: true },
   { id: 'health', label: 'Health tracking', enabled: true },
@@ -245,6 +246,18 @@ describe('Layout — instance feature gating', () => {
     expect(screen.getByRole('link', { name: 'Features' })).toHaveAttribute('href', '/settings/features');
   });
 
+  it('shows and hides Eidoverse with its instance feature flag', async () => {
+    await renderLayout('/eidoverse');
+    expect(screen.getByRole('link', { name: 'Eidoverse' })).toHaveAttribute('href', '/eidoverse');
+
+    featureMock.features = allFeaturesOn()
+      .map((feature) => feature.id === 'eidoverse' ? { ...feature, enabled: false } : feature);
+    act(() => window.dispatchEvent(new CustomEvent(INSTANCE_FEATURES_CHANGED, {
+      detail: { features: featureMock.features },
+    })));
+    expect(screen.queryByRole('link', { name: 'Eidoverse' })).toBeNull();
+  });
+
   it('shows and hides OpenClaw with its instance feature flag', async () => {
     await renderLayout('/openclaw');
     expect(screen.getByRole('link', { name: 'OpenClaw' })).toHaveAttribute('href', '/openclaw');
@@ -418,6 +431,7 @@ describe('Layout — isFullWidthRoute classification', () => {
     ['/ask', true], ['/ask/1', true], ['/asking', false],
     ['/timeline', true], ['/timeline/2026-08-12', true],
     ['/tribe', true], ['/rapid-reader', true], ['/openclaw', true],
+    ['/eidoverse', true], ['/eidoverse/world', false],
     // Index page stays padded+scrolling; only the DETAIL route is full-width.
     ['/catalog', false], ['/catalog/book/1', true],
     ['/universes', false], ['/universes/u1', true],

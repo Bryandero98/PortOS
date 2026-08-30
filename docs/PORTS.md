@@ -35,6 +35,7 @@ Common port labels:
 | 5560 | portos-autofixer-ui | ui | Autofixer web UI |
 | 5561 | portos-db (Docker container) | - | Infrastructure dependency: PostgreSQL Docker container provisioned by `scripts/setup-db.js` / Docker Compose (not a PM2 process in `server/services/apps.js`; native mode uses system pg on 5432). |
 | 5562 | portos-whisper | whisper-server | Loopback whisper.cpp speech-to-text server. |
+| 5563 | portos-server | eidoverse-host | Optional HTTPS/WebSocket bridge for the embedded Eidoverse Worlds page. Starts on demand and forwards to the managed app on loopback `:8940`. |
 | 5568 | portos-llama-server | - | Loopback llama.cpp speculative-decoding server. Optional PM2 process, started/stopped from Models → LLMs. |
 | 8000 | portos-mtplx | - | Loopback MTPLX OpenAI-compatible API (upstream's own default, kept so the shipped provider presets match). Optional PM2 process, started/stopped from Models → LLMs. See [features/mtplx.md](./features/mtplx.md). |
 | 18020 | vLLM (Docker) | - | Loopback vLLM Qwen3.8-27B / DFlash 2 container on an RTX 3090 host. Operator-started (`docker compose --profile single up -d`) — PortOS never brings it up on boot. See [features/qwen38-rtx3090.md](./features/qwen38-rtx3090.md). |
@@ -127,7 +128,7 @@ PortOS automatically detects ports from env vars:
 | Range | Purpose |
 |-------|---------|
 | 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and the `portos-db` Docker container on `:5561`) |
-| 5562-5569 | Reserved for PortOS extensions (5568 is the managed llama-server default) |
+| 5562-5569 | Reserved for PortOS extensions (5563 hosts Eidoverse on demand; 5568 is the managed llama-server default) |
 | 5570-5599 | User applications |
 
 PostgreSQL in native mode listens on the system default `:5432`, outside these ranges. Two third-party

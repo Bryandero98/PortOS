@@ -51,11 +51,15 @@ vi.mock('../services/eidoverse.js', () => ({
   assertEidoverseInstalled: vi.fn(async () => ({ installed: true })),
   installEidoverse: vi.fn(async () => ({ installed: true })),
 }));
+vi.mock('../services/eidoverseHost.js', () => ({
+  ensureEidoverseHost: vi.fn(async () => ({ running: true, protocol: 'https', port: 5563 })),
+}));
 
 import settingsRoutes from './settings.js';
 import { hasConfiguredInstances as hasConfiguredDatadogInstances } from '../services/datadog.js';
 import { hasConfiguredInstances as hasConfiguredJiraInstances } from '../services/jira.js';
-import { installEidoverse } from '../services/eidoverse.js';
+import { assertEidoverseInstalled, installEidoverse } from '../services/eidoverse.js';
+import { ensureEidoverseHost } from '../services/eidoverseHost.js';
 
 const buildApp = () => {
   const app = express();
@@ -187,6 +191,15 @@ describe('Settings routes — instance feature participation', () => {
     expect(store.instanceFeatures.eidoverse.enabled).toBe(true);
     expect(store.instanceFeatures.eidoverse.worldsRepoUrl).toBe(worldsRepoUrl);
     expect(res.body.features).toContainEqual(expect.objectContaining({ id: 'eidoverse', enabled: true }));
+  });
+
+  it('opens the Eidoverse host bridge only after verifying the managed app installation', async () => {
+    const res = await request(buildApp()).post('/api/settings/features/eidoverse/host');
+
+    expect(res.status).toBe(200);
+    expect(assertEidoverseInstalled).toHaveBeenCalledOnce();
+    expect(ensureEidoverseHost).toHaveBeenCalledOnce();
+    expect(res.body).toEqual({ running: true, protocol: 'https', port: 5563 });
   });
 
   it('rejects a non-GitHub Worlds repository', async () => {
