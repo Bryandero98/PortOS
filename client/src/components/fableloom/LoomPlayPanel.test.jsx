@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 vi.mock('../../services/api', () => ({ playLoomTurn: vi.fn() }));
-vi.mock('../MediaImage', () => ({ default: () => null }));
+vi.mock('../MediaImage', () => ({ default: (props) => <img alt="" {...props} /> }));
 
 import { playLoomTurn } from '../../services/api';
 import LoomPlayPanel from './LoomPlayPanel';
@@ -31,6 +31,28 @@ const sendMessage = async (user, text) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('LoomPlayPanel', () => {
+  it('presents produced media as the main stage with the teleplay beside it', () => {
+    const onClose = vi.fn();
+    const producedEpisode = {
+      ...episode,
+      nodes: [{ ...episode.nodes[0], image: 'opening-still.png' }, episode.nodes[1]],
+    };
+
+    render(<LoomPlayPanel
+      loom={{ ...loom, format: 'teleplay', episodes: [producedEpisode] }}
+      episode={producedEpisode}
+      onClose={onClose}
+    />);
+
+    expect(screen.getByRole('region', { name: 'Scene media' })).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'Teleplay' })).toHaveTextContent('You stand before it.');
+    expect(screen.getByRole('img', { name: 'The Gate' })).toHaveClass('h-full', 'w-full', 'object-contain');
+    expect(screen.getByLabelText('Preview stage')).toHaveValue('image');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close player' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('renders the opening scene with intent hint chips', () => {
     render(<LoomPlayPanel loom={loom} episode={episode} />);
     expect(screen.getByText('You stand before it.')).toBeInTheDocument();
@@ -198,7 +220,9 @@ describe('LoomPlayPanel', () => {
     await waitFor(() => expect(playLoomTurn).toHaveBeenCalledWith(
       'loom-1', 'ep-cut', expect.objectContaining({ nodeId: 'cut-1', transitionId: 'continue-1' }), { silent: true },
     ));
-    await waitFor(() => expect(screen.getByText('Wait')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Wait')).not.toHaveLength(0));
+    expect(screen.getByText('A door opens.')).toBeInTheDocument();
+    expect(screen.getByText('A guard paces.')).toBeInTheDocument();
   });
 
   it('loops rendered decision video while waiting for input', async () => {
@@ -417,7 +441,7 @@ describe('LoomPlayPanel', () => {
     await waitFor(() => expect(playLoomTurn).toHaveBeenCalledWith(
       'loom-1', 'ep-prod', expect.objectContaining({ transitionId: 'tr-gate' }), { silent: true },
     ));
-    await waitFor(() => expect(screen.getByText('Ending')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Ending')).not.toHaveLength(0));
   });
 
   it('shows rehearsal details with inspector drawer', async () => {

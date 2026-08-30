@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { Loader2, RotateCcw, Send, Flag, Volume2, Mic, CheckCircle2, AlertCircle, QrCode, Smartphone } from 'lucide-react';
+import { Loader2, RotateCcw, Send, Flag, Volume2, Mic, CheckCircle2, AlertCircle, QrCode, Smartphone, X } from 'lucide-react';
 import MediaImage from '../MediaImage';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { playLoomTurn } from '../../services/api';
@@ -60,7 +60,18 @@ const initialPhaseForNode = (node) => {
   return 'hold';
 };
 
-export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
+const episodePreviewMode = (episode) => {
+  const opening = findNode(episode, episode?.startNodeId);
+  if (
+    opening?.videoHistoryId
+    || opening?.playbackAssets?.entryVideoHistoryId
+    || opening?.playbackAssets?.holdLoopVideoHistoryIds?.length
+  ) return 'video';
+  if (opening?.image) return 'image';
+  return 'text';
+};
+
+export default function LoomPlayPanel({ loom, episode: initialEpisode, onClose }) {
   const [playEpisodeId, setPlayEpisodeId] = useState(initialEpisode.id);
   const episode = loom.episodes?.find((item) => item.id === playEpisodeId) || initialEpisode;
   const episodeIndex = loom.episodes?.findIndex((item) => item.id === episode.id) ?? -1;
@@ -91,7 +102,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   const [pendingTransition, setPendingTransition] = useState(null);
   const [transcript, setTranscript] = useState(() => (start ? [{ role: 'scene', node: start }] : []));
   const [message, setMessage] = useState('');
-  const [previewMode, setPreviewMode] = useState('text');
+  const [previewMode, setPreviewMode] = useState(() => episodePreviewMode(initialEpisode));
   const [failedVideoId, setFailedVideoId] = useState(null);
   const [showInspector, setShowInspector] = useState(false);
   const [hostedModalOpen, setHostedModalOpen] = useState(false);
@@ -191,6 +202,8 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   };
 
   useEffect(() => { setPlayEpisodeId(initialEpisode.id); }, [initialEpisode.id]);
+
+  useEffect(() => { setPreviewMode(episodePreviewMode(episode)); }, [episode.id]);
 
   // An episode switch (or a changed opening scene) re-anchors the session.
   useEffect(() => { restart(); }, [start]);
@@ -294,9 +307,23 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
 
   if (!start) {
     return (
-      <p className="p-4 text-sm text-port-text-muted">
-        This episode has no opening scene yet — weave or add scenes first.
-      </p>
+      <div className="always-dark flex h-full flex-col bg-black text-white">
+        {onClose && (
+          <div className="flex justify-end p-3">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close player"
+              className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-gray-300 hover:bg-white/10 hover:text-white"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        )}
+        <p className="m-auto p-4 text-sm text-gray-400">
+          This episode has no opening scene yet — weave or add scenes first.
+        </p>
+      </div>
     );
   }
 
@@ -305,7 +332,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
   );
 
   return (
-    <div className="flex flex-col h-full relative">
+    <div className="flex h-full min-h-0 flex-col bg-black text-white relative">
       <audio ref={hostAudioPlayerRef} className="hidden" />
 
       {hostedModalOpen && (
@@ -326,34 +353,34 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
         />
       )}
 
-      <div className="border-b border-port-border p-3 flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium">Episode {episode.number || episodeIndex + 1 || 1}: {episode.title || 'Untitled'}</p>
-          <div className="flex items-center gap-2 mt-0.5">
-            <label htmlFor="loom-preview-mode" className="text-xs text-port-text-muted">Preview stage</label>
+      <header className="always-dark flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-black px-3 py-2.5 sm:px-4">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{loom.name}</p>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            <span className="truncate text-xs text-gray-400">Episode {episode.number || episodeIndex + 1 || 1}: {episode.title || 'Untitled'}</span>
             <button
               type="button"
               onClick={() => setShowInspector((prev) => !prev)}
-              className="text-[10px] text-port-accent hover:underline"
+              className="shrink-0 text-[10px] text-port-accent hover:underline"
             >
               {showInspector ? 'Hide rehearsal' : 'Rehearsal details'}
             </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
             onClick={() => setHostedModalOpen(true)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border transition-colors ${
               hostedSession
                 ? 'bg-port-accent/15 border-port-accent text-port-accent font-medium'
-                : 'bg-port-bg border-port-border text-port-text hover:border-port-accent'
+                : 'border-white/20 bg-white/5 text-gray-200 hover:border-port-accent'
             }`}
             title="Host two-device QR play session"
           >
             <QrCode size={13} />
-            <span>{hostedSession ? 'Hosted (Active)' : 'Host (QR)'}</span>
+            <span className="hidden sm:inline">{hostedSession ? 'Hosted (Active)' : 'Host (QR)'}</span>
             {hostedSession && (
               <span className={`w-1.5 h-1.5 rounded-full ${hostedAudienceConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
             )}
@@ -361,7 +388,8 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
 
           <select
             id="loom-preview-mode"
-            className="bg-port-bg border border-port-border rounded px-2 py-1 text-xs"
+            aria-label="Preview stage"
+            className="rounded border border-white/20 bg-black px-2 py-1 text-xs text-gray-200"
             value={previewMode}
             onChange={(event) => setPreviewMode(event.target.value)}
           >
@@ -369,8 +397,18 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
             <option value="image">Storyboard images</option>
             <option value="video">Rendered video</option>
           </select>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close player"
+              className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-gray-300 hover:bg-white/10 hover:text-white"
+            >
+              <X size={20} />
+            </button>
+          )}
         </div>
-      </div>
+      </header>
 
       {hostedSession && (
         <div className="bg-indigo-500/10 border-b border-indigo-500/20 px-3 py-1.5 text-xs flex items-center justify-between text-indigo-400">
@@ -394,8 +432,42 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
         </div>
       )}
 
+      <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(20rem,32rem)]">
+        <section
+          className="relative flex min-h-[16rem] h-[42vh] items-center justify-center overflow-hidden bg-black lg:h-auto lg:min-h-0"
+          aria-label="Scene media"
+        >
+          <SceneMedia
+            node={scene}
+            previewMode={previewMode}
+            onCutEnded={handleVideoEnded}
+            playbackPhase={playbackPhase}
+            activeAsset={currentAsset}
+            automaticCut={automaticCut}
+            videoFailed={Boolean(currentAsset.videoHistoryId && failedVideoId === currentAsset.videoHistoryId)}
+            onVideoError={() => setFailedVideoId(currentAsset.videoHistoryId)}
+          />
+          <div className="port-media-overlay-strong absolute left-3 top-3 max-w-[calc(100%-1.5rem)] rounded px-2.5 py-1.5 sm:left-4 sm:top-4">
+            <p className="truncate text-[10px] uppercase tracking-[0.18em] opacity-70">
+              {scene?.isEnding ? (scene.endingLabel || 'Ending') : scene?.id === start.id ? 'Opening' : 'Now playing'}
+            </p>
+            <p className="truncate text-sm font-medium">{scene?.title || 'Untitled scene'}</p>
+          </div>
+          {liveVoiceActive && (
+            <div className="port-media-overlay absolute bottom-3 left-3 right-3 flex items-center justify-between gap-3 rounded px-3 py-2 text-xs sm:bottom-4 sm:left-4 sm:right-auto sm:min-w-80" role="status">
+              <span className="flex items-center gap-1.5 font-medium">
+                <Mic size={13} className="animate-pulse" /> Off-screen voice window open
+              </span>
+              <span className="flex items-center gap-1 text-[10px] opacity-75">
+                <Volume2 size={11} /> Ambience ducked {scene?.interactionWindow?.ambientDuckDb ?? -8} dB
+              </span>
+            </div>
+          )}
+        </section>
+
+        <aside className="flex min-h-0 flex-1 flex-col border-t border-port-border bg-port-card text-port-text lg:border-l lg:border-t-0" aria-label={loom.format === 'teleplay' ? 'Teleplay' : 'Story script'}>
       {showInspector && (
-        <div className="bg-port-card/60 border-b border-port-border p-2.5 text-xs space-y-1.5" role="region" aria-label="Playback rehearsal">
+        <div className="shrink-0 bg-port-bg/60 border-b border-port-border p-2.5 text-xs space-y-1.5" role="region" aria-label="Playback rehearsal">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold uppercase tracking-wider text-[10px] text-port-text-muted">Phase:</span>
             <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium uppercase ${
@@ -439,33 +511,22 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
         </div>
       )}
 
-      {liveVoiceActive && (
-        <div className="bg-port-accent/10 border-b border-port-accent/30 px-3 py-1.5 text-xs flex items-center justify-between text-port-accent" role="status">
-          <span className="flex items-center gap-1.5 font-medium">
-            <Mic size={13} className="animate-pulse" /> Off-screen voice window open
-          </span>
-          <span className="flex items-center gap-1 text-[10px] text-port-text-muted">
-            <Volume2 size={11} /> Ambience ducked {scene?.interactionWindow?.ambientDuckDb ?? -8} dB
-          </span>
-        </div>
-      )}
-
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {transcript.map((turn, i) => {
           if (turn.role === 'scene') {
-            if (previewMode === 'video' || i === latestSceneTurnIndex) return null;
+            if (i === latestSceneTurnIndex) return null;
             const historicalCut = !turn.node.isEnding
               && turn.node.choices?.length > 0
               && (!audienceCanParticipate(loom, turn.node)
                 || (turn.node.playbackMode === 'cut' && turn.node.choices.length === 1));
             return (
-              <SceneCard
+              <SceneScriptCard
                 key={i}
                 node={turn.node}
                 format={loom.format}
-                previewMode={previewMode}
                 automaticCut={historicalCut}
                 helperMode={loom.participationMode === 'helper'}
+                historical
               />
             );
           }
@@ -483,18 +544,11 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
             </div>
           );
         })}
-        <SceneCard
+        <SceneScriptCard
           node={scene}
-          isOpening={scene?.id === start.id}
           format={loom.format}
-          previewMode={previewMode}
-          onCutEnded={handleVideoEnded}
-          playbackPhase={playbackPhase}
-          activeAsset={currentAsset}
           automaticCut={automaticCut}
           helperMode={loom.participationMode === 'helper'}
-          videoFailed={Boolean(currentAsset.videoHistoryId && failedVideoId === currentAsset.videoHistoryId)}
-          onVideoError={() => setFailedVideoId(currentAsset.videoHistoryId)}
         />
         {ended && (
           <div className="flex items-center gap-2 justify-center text-port-success text-sm font-medium py-2">
@@ -519,7 +573,7 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           />
         )}
       </div>
-      <div className="border-t border-port-border p-3 space-y-2">
+      <div className="shrink-0 border-t border-port-border bg-port-card p-3 space-y-2">
         {!ended && audienceConnected && !automaticCut && scene?.choices?.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {scene.choices.filter((c) => c.intent).map((c) => (
@@ -596,6 +650,8 @@ export default function LoomPlayPanel({ loom, episode: initialEpisode }) {
           )}
         </div>}
       </div>
+        </aside>
+      </div>
     </div>
   );
 }
@@ -612,10 +668,9 @@ function SeriesDeliveryCard({ label, title, transcript, emptyMessage }) {
   );
 }
 
-function SceneCard({
-  node, isOpening = false, format, previewMode, onCutEnded, automaticCut,
-  playbackPhase = 'hold', activeAsset = null,
-  helperMode = false, videoFailed = false, onVideoError,
+function SceneMedia({
+  node, previewMode, onCutEnded, automaticCut,
+  playbackPhase = 'hold', activeAsset = null, videoFailed = false, onVideoError,
 }) {
   if (!node) return null;
   const videoId = activeAsset?.videoHistoryId || node.videoHistoryId || null;
@@ -626,8 +681,26 @@ function SceneCard({
   const holdLoopCount = node.playbackAssets?.holdLoopVideoHistoryIds?.length || 0;
   const shouldLoopNatively = !automaticCut && !node.isEnding && playbackPhase === 'hold' && holdLoopCount <= 1;
 
+  if (!showVideo && !showImage) {
+    const message = previewMode === 'image'
+      ? 'No storyboard image rendered for this cut yet.'
+      : previewMode === 'video'
+        ? videoFailed
+          ? 'The rendered video is unavailable; advance manually or retry after rendering.'
+          : 'No video rendered for this cut yet.'
+        : 'Text rehearsal';
+    return (
+      <div className="always-dark flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_center,_#202020_0%,_#050505_65%)] px-8 text-center">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-gray-500">{previewMode === 'text' ? 'FableLoom' : 'Media pending'}</p>
+          <p className="mt-2 text-sm text-gray-300">{message}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="border border-port-border rounded-lg overflow-hidden bg-port-card">
+    <>
       {showVideo && (
         <video
           key={videoId}
@@ -640,33 +713,35 @@ function SceneCard({
           onError={onVideoError}
           src={`/data/videos/${encodeURIComponent(videoId)}.mp4`}
           aria-label={node.title || 'Scene video'}
-          className="w-full max-h-[60vh] bg-black object-contain"
+          className="h-full w-full bg-black object-contain"
         />
       )}
       {showImage && (
-        <MediaImage src={`/data/images/${node.image}`} alt={node.title || 'Scene'} className="w-full max-h-56 object-cover" />
+        <MediaImage src={`/data/images/${node.image}`} alt={node.title || 'Scene'} className="h-full w-full object-contain" />
       )}
-      <div className="p-3">
-        <div className="text-xs uppercase tracking-wide text-port-text-muted mb-1">
-          {isOpening ? 'Opening' : node.isEnding ? (node.endingLabel || 'Ending') : node.title || 'Scene'}
-        </div>
-        {previewMode === 'text' && <p className={sceneProseClass(format)}>{node.prose}</p>}
-        {previewMode === 'image' && (
-          <div className="mt-2 rounded border border-port-border/70 bg-port-bg/40 p-2.5">
-            <div className="text-[10px] uppercase tracking-wide text-port-text-muted mb-1">
-              Scene description &amp; dialogue
-            </div>
-            <p className={sceneProseClass(format)}>
-              {node.prose || 'No scene description has been authored yet.'}
-            </p>
+    </>
+  );
+}
+
+function SceneScriptCard({
+  node, format, automaticCut, helperMode = false, historical = false,
+}) {
+  if (!node) return null;
+
+  return (
+    <article className={historical ? 'border-b border-port-border/70 pb-4 opacity-70' : ''}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.16em] text-port-text-muted">
+            {historical ? 'Earlier scene' : 'Scene description & dialogue'}
           </div>
-        )}
-        {previewMode === 'image' && !node.image && <p className="text-sm text-port-text-muted">No storyboard image rendered for this cut yet.</p>}
-        {previewMode === 'video' && (!videoId || videoFailed) && (
-          <p className="text-sm text-port-text-muted">
-            {videoFailed ? 'The rendered video is unavailable; advance manually or retry after rendering.' : 'No video rendered for this cut yet.'}
-          </p>
-        )}
+          <h3 className="mt-0.5 text-sm font-semibold text-port-text">{node.title || 'Untitled scene'}</h3>
+        </div>
+        {!historical && <span className="shrink-0 rounded-full border border-port-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-port-text-muted">{format === 'teleplay' ? 'Teleplay' : 'Story'}</span>}
+      </div>
+      <p className={sceneProseClass(format)}>
+        {node.prose || 'No scene description has been authored yet.'}
+      </p>
         {!node.isEnding && (
           <p className="mt-2 text-xs text-port-text-muted">
             {automaticCut
@@ -683,7 +758,6 @@ function SceneCard({
             Protagonist off-screen — keep this decision loop running while the audience conversation happens on the side device.
           </p>
         )}
-      </div>
-    </div>
+    </article>
   );
 }

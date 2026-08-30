@@ -4,7 +4,7 @@
  * URL is the source of truth: /fableloom/:loomId/plan is the series workspace;
  * /fableloom/:loomId/:episodeId selects an episode, /outline switches that
  * episode to its text outline, and /:nodeId selects a scene in the graph. The
- * play drawer rides ?play=1.
+ * full-screen player rides ?play=1.
  * Left: the scene-graph canvas (stacks top-to-bottom under the `lg` rail
  * breakpoint). Right rail: the selected scene's editor, or the
  * structure/review panel when nothing is selected. On small screens a
@@ -18,12 +18,14 @@ import toast from '../components/ui/Toast';
 import Drawer from '../components/Drawer';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import { FormField } from '../components/ui/FormField.jsx';
+import Modal from '../components/ui/Modal';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import TabPills from '../components/ui/TabPills';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import useFableLoomAiRun from '../hooks/useFableLoomAiRun';
 import useContainerWidth from '../hooks/useContainerWidth';
+import { useScrollLock } from '../hooks/useScrollLock';
 import LoomCanvas from '../components/fableloom/LoomCanvas';
 import LoomEpisodeOutline from '../components/fableloom/LoomEpisodeOutline';
 import LoomEpisodeOutlinePlanner from '../components/fableloom/LoomEpisodeOutlinePlanner';
@@ -68,6 +70,7 @@ export default function FableLoomStory({ view = 'graph' }) {
   const [setupOpen, setSetupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const playOpen = searchParams.get('play') === '1';
+  useScrollLock(playOpen);
   const seriesPlanOpen = episodeId === 'plan';
   const outlineOpen = view === 'outline';
   // Orientation keys off the PAGE, not the canvas. The canvas is the leftover
@@ -684,9 +687,19 @@ export default function FableLoomStory({ view = 'graph' }) {
       />
 
       {episode && (
-        <Drawer open={playOpen} onClose={() => setPlayOpen(false)} title="Play" subtitle={loom.name} size="md" bodyClassName="p-0">
-          <LoomPlayPanel loom={loom} episode={episode} />
-        </Drawer>
+        <Modal
+          open={playOpen}
+          onClose={() => setPlayOpen(false)}
+          size="none"
+          align="none"
+          usePortal
+          zIndexClassName="z-[100]"
+          backdropClassName="bg-black"
+          panelClassName="h-[100dvh] w-full overflow-hidden bg-black"
+          ariaLabel={`${loom.name} player`}
+        >
+          <LoomPlayPanel loom={loom} episode={episode} onClose={() => setPlayOpen(false)} />
+        </Modal>
       )}
     </div>
   );

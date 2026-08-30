@@ -123,6 +123,22 @@ beforeEach(() => {
 });
 
 describe('FableLoomStory navigation and series backlink', () => {
+  it('opens Play as a viewport-filling movie player', async () => {
+    const user = userEvent.setup();
+    api.getLoom.mockResolvedValue(loom({ episodes: [episode()] }));
+    renderEditor('/fableloom/loom-1/ep-1');
+
+    await user.click(await screen.findByRole('button', { name: 'Play' }));
+
+    const player = screen.getByRole('dialog', { name: 'Example Loom player' });
+    expect(player).toHaveClass('h-[100dvh]', 'w-full', 'overflow-hidden', 'bg-black');
+    expect(document.body.style.overflow).toBe('hidden');
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Example Loom player' })).not.toBeInTheDocument());
+    expect(document.body.style.overflow).toBe('');
+  });
+
   it('opens an empty loom in the series plan before asking for episodes', async () => {
     renderEditor();
 
