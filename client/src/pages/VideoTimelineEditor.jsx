@@ -697,7 +697,7 @@ export default function VideoTimelineEditor() {
 
   const laneWidth = Math.max(240, total * pxPerSec);
   const playheadSec = Math.min(t, total);
-  const libraryPanel = (
+  const libraryPanel = showLibrary ? (
     <div className="bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto">
       <div className="flex gap-1 mb-2" role="tablist" aria-label="Clip library">
         {LIBRARY_TABS.map(({ id, label, Icon }) => (
@@ -750,7 +750,7 @@ export default function VideoTimelineEditor() {
         </div>
       ))}
     </div>
-  );
+  ) : null;
 
   return (
     <div className="space-y-3">
