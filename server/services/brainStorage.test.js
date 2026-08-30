@@ -17,7 +17,7 @@ function getTempRoot() {
 
 vi.mock('../lib/fileUtils.js', async () => {
   const actual = await vi.importActual('../lib/fileUtils.js');
-  return makePathsProxy(actual, { dataRoot: () => getTempRoot() });
+  return makePathsProxy({ ...actual, readJSONFile: vi.fn(actual.readJSONFile) }, { dataRoot: () => getTempRoot() });
 });
 
 // getInstanceId is used by create()/backfill; stub to a stable id.
@@ -35,6 +35,7 @@ vi.mock('./brainSyncLog.js', async () => {
 
 import * as brainStorage from './brainStorage.js';
 import * as brainSyncLog from './brainSyncLog.js';
+import { readJSONFile } from '../lib/fileUtils.js';
 
 afterAll(() => { if (tempRoot) rmSync(tempRoot, { recursive: true, force: true }); });
 
@@ -435,6 +436,94 @@ describe('listLiveIds (embedding-coverage id index, issue #3508)', () => {
   });
 });
 
+describe('Brain summary projection index (issue #5438)', () => {
+  const recordBodyReads = () => readJSONFile.mock.calls.filter(([path]) =>
+    /[/\\]brain[/\\][^/\\]+[/\\][^/\\]+[/\\]index\.json$/.test(path)
+  ).length;
+
+  it('preserves summary predicates while excluding tombstones and unreadable records', async () => {
+    const before = await brainStorage.getSummary();
+    const fixtures = {
+      people: { name: 'Summary Person' },
+      projects: { name: 'Summary Project', status: 'active' },
+      ideas: { title: 'Summary Idea' },
+      admin: { title: 'Summary Admin', status: 'open' },
+      memories: { title: 'Summary Memory' },
+      links: { url: 'https://example.com/summary-repo', isGitHubRepo: true },
+      buckets: { name: 'Summary Bucket' },
+    };
+
+    for (const [type, record] of Object.entries(fixtures)) {
+      await brainStorage.create(type, record);
+      const archived = await brainStorage.create(type, { ...record, archived: true });
+      expect(archived.id).toBeTruthy();
+      const removed = await brainStorage.create(type, record);
+      await brainStorage.remove(type, removed.id);
+      writeCorruptRecord(type, `corrupt-summary-${type}`);
+    }
+    await brainStorage.createInboxLog({ text: 'Visible summary inbox', status: 'filed' });
+    await brainStorage.createInboxLog({ text: 'Archived summary inbox', status: 'filed', archived: true });
+    const removedInbox = await brainStorage.createInboxLog({ text: 'Removed summary inbox', status: 'filed' });
+    await brainStorage.remove('inbox', removedInbox.id);
+    writeCorruptRecord('inbox', 'corrupt-summary-inbox');
+    brainStorage.invalidateAllCaches();
+
+    const summary = await brainStorage.getSummary();
+    expect(Object.keys(summary)).toEqual(Object.keys(before));
+    expect(Object.keys(summary.counts)).toEqual(Object.keys(before.counts));
+    for (const type of Object.keys(fixtures)) {
+      expect(summary.counts[type]).toBe(before.counts[type] + 2);
+    }
+    expect(summary.counts.inbox.total).toBe(before.counts.inbox.total + 2);
+    expect(summary.counts.inbox.filed).toBe(before.counts.inbox.filed + 2);
+    expect(summary.activeProjects).toBe(before.activeProjects + 2);
+    expect(summary.activeIdeas).toBe(before.activeIdeas + 2);
+    expect(summary.openAdmin).toBe(before.openAdmin + 2);
+    expect(summary.gitHubRepos).toBe(before.gitHubRepos + 2);
+    expect(summary).toEqual(expect.objectContaining({
+      needsReview: summary.counts.inbox.needs_review,
+      lastDailyDigest: before.lastDailyDigest,
+      lastWeeklyReview: before.lastWeeklyReview,
+    }));
+  });
+
+  it('serves repeated summary and inbox counts without re-reading record bodies', async () => {
+    await brainStorage.createInboxLog({ text: 'Summary cache', status: 'needs_review' });
+    await brainStorage.getSummary();
+    await brainStorage.getInboxLogCounts();
+    const readsAfterPrime = recordBodyReads();
+
+    await brainStorage.getSummary();
+    await brainStorage.getInboxLogCounts();
+    expect(recordBodyReads()).toBe(readsAfterPrime);
+  });
+
+  it('reflects local create, status update, delete, and peer-applied changes', async () => {
+    const before = await brainStorage.getSummary();
+    const project = await brainStorage.create('projects', { name: 'Mutable Summary', status: 'active' });
+    expect((await brainStorage.getSummary()).activeProjects).toBe(before.activeProjects + 1);
+
+    await brainStorage.update('projects', project.id, { status: 'done' });
+    expect((await brainStorage.getSummary()).activeProjects).toBe(before.activeProjects);
+
+    const inbox = await brainStorage.createInboxLog({ text: 'Remove me', status: 'needs_review' });
+    const withInbox = await brainStorage.getInboxLogCounts();
+    await brainStorage.remove('inbox', inbox.id);
+    const withoutInbox = await brainStorage.getInboxLogCounts();
+    expect(withoutInbox.total).toBe(withInbox.total - 1);
+    expect(withoutInbox.needs_review).toBe(withInbox.needs_review - 1);
+
+    await brainStorage.applyRemoteRecord('ideas', 'peer-summary-idea', {
+      title: 'Peer Summary Idea', status: 'active', updatedAt: ISO('2099-01-01'), originInstanceId: 'peer-example',
+    }, 'create');
+    expect((await brainStorage.getSummary()).activeIdeas).toBe(before.activeIdeas + 1);
+    await brainStorage.applyRemoteRecord('ideas', 'peer-summary-idea', {
+      title: 'Peer Summary Idea', status: 'done', updatedAt: ISO('2099-01-02'), originInstanceId: 'peer-example',
+    }, 'update');
+    expect((await brainStorage.getSummary()).activeIdeas).toBe(before.activeIdeas);
+  });
+});
+
 describe('getLinksPage (paginated link reads, issue #3509)', () => {
   // The temp store is shared by every test in this file, so assertions filter
   // the page down to the ids the test itself created rather than assuming the
@@ -581,6 +670,12 @@ describe('getLinksPage (paginated link reads, issue #3509)', () => {
 async function writeRawRecord(type, id, record) {
   const { PATHS, atomicWrite } = await import('../lib/fileUtils.js');
   await atomicWrite(join(PATHS.brain, type, id, 'index.json'), record);
+}
+
+function writeCorruptRecord(type, id) {
+  const dir = join(getTempRoot(), 'brain', type, id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'index.json'), '{not-json');
 }
 
 // Read the raw stored record (including tombstones) by bypassing the read

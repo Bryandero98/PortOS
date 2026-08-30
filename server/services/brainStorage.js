@@ -851,7 +851,8 @@ export async function deleteInboxLog(id) {
  * Get inbox log count by status
  */
 export async function getInboxLogCounts() {
-  const records = await getAll('inbox');
+  const rows = await resolveRecordIndex(summaryIndex, 'inbox', 0);
+  const records = rows.map(([, summary]) => summary).filter(Boolean);
 
   const counts = {
     total: records.length,
@@ -1060,6 +1061,15 @@ const projectLinkSummary = (record) => (record && !isTombstone(record)
   }
   : null);
 const linkSummaryIndex = createRecordIndex(projectLinkSummary);
+
+// The Brain header and inbox gates need only these two fields from each
+// user-visible record. Keeping that projection beside the link summary index
+// lets their frequent count reads reuse the same per-record invalidation
+// machinery without parsing full record bodies in steady state.
+const projectSummary = (record) => (record && !isTombstone(record)
+  ? { status: record.status, isGitHubRepo: record.isGitHubRepo }
+  : null);
+const summaryIndex = createRecordIndex(projectSummary);
 
 const resolveLinkSummaries = () => resolveRecordIndex(linkSummaryIndex, 'links', 0);
 
@@ -1276,32 +1286,33 @@ export function invalidateAllCaches() {
  * Get brain data summary (for dashboard)
  */
 export async function getSummary() {
-  const [people, projects, ideas, adminItems, memoryEntries, links, buckets, inboxCounts, meta] = await Promise.all([
-    getAll('people'),
-    getAll('projects'),
-    getAll('ideas'),
-    getAll('admin'),
-    getAll('memories'),
-    getAll('links'),
-    getAll('buckets'),
+  const types = ['people', 'projects', 'ideas', 'admin', 'memories', 'buckets'];
+  const [typeRows, linkRows, inboxCounts, meta] = await Promise.all([
+    Promise.all(types.map((type) => resolveRecordIndex(summaryIndex, type, 0))),
+    resolveLinkSummaries(),
     getInboxLogCounts(),
     loadMeta()
   ]);
+  const summaries = Object.fromEntries(types.map((type, i) => [
+    type,
+    typeRows[i].map(([, summary]) => summary).filter(Boolean),
+  ]));
+  const links = linkRows.map(([, summary]) => summary).filter(Boolean);
 
   return {
     counts: {
-      people: people.length,
-      projects: projects.length,
-      ideas: ideas.length,
-      admin: adminItems.length,
-      memories: memoryEntries.length,
+      people: summaries.people.length,
+      projects: summaries.projects.length,
+      ideas: summaries.ideas.length,
+      admin: summaries.admin.length,
+      memories: summaries.memories.length,
       links: links.length,
-      buckets: buckets.length,
+      buckets: summaries.buckets.length,
       inbox: inboxCounts
     },
-    activeProjects: projects.filter(p => p.status === 'active').length,
-    activeIdeas: ideas.filter(i => !i.status || i.status === 'active').length,
-    openAdmin: adminItems.filter(a => a.status === 'open').length,
+    activeProjects: summaries.projects.filter(p => p.status === 'active').length,
+    activeIdeas: summaries.ideas.filter(i => !i.status || i.status === 'active').length,
+    openAdmin: summaries.admin.filter(a => a.status === 'open').length,
     gitHubRepos: links.filter(l => l.isGitHubRepo).length,
     needsReview: inboxCounts.needs_review,
     lastDailyDigest: meta.lastDailyDigest,
