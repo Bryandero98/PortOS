@@ -223,7 +223,7 @@ describe('fableLoom hostedSession', () => {
         source: 'profile',
         profileId: 'voice-profile-1',
         profileRevision: 3,
-        voiceId: 'qwen3:character-1',
+        voiceId: 'qwen3-tts:character-1',
         degraded: false,
         warning: null,
       });
@@ -236,9 +236,40 @@ describe('fableLoom hostedSession', () => {
       await processHostedUtterance(session.id, { textMessage: 'Can you hear me?' });
 
       expect(tts.synthesize).toHaveBeenCalledWith('The signal is clear.', {
+        engine: 'qwen3-tts',
         profileId: 'voice-profile-1',
         route: 'interactive',
-        voice: 'qwen3:character-1',
+        voice: 'character-1',
+      });
+    });
+
+    it('splits a namespaced character preset before live synthesis', async () => {
+      const { session } = await createHostedSession('loom-1', 'ep-1');
+      await startHostedListening(session.id);
+      vi.spyOn(universeBuilder, 'getUniverse').mockResolvedValue({
+        characters: [{ id: 'character-1', voiceId: 'kokoro:af_heart' }],
+      });
+      vi.spyOn(voiceProfiles, 'resolveCharacterVoice').mockResolvedValue({
+        source: 'character-preset',
+        profileId: null,
+        profileRevision: null,
+        voiceId: 'kokoro:af_heart',
+        degraded: false,
+        warning: null,
+      });
+      vi.spyOn(weave, 'playTurn').mockResolvedValue({
+        action: 'stay',
+        narration: 'Stay on the line.',
+        node: { id: 'node-start' },
+      });
+
+      await processHostedUtterance(session.id, { textMessage: 'Hello?' });
+
+      expect(tts.synthesize).toHaveBeenCalledWith('Stay on the line.', {
+        engine: 'kokoro',
+        profileId: undefined,
+        route: 'interactive',
+        voice: 'af_heart',
       });
     });
 
