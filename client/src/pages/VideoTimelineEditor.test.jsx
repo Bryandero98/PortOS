@@ -67,6 +67,12 @@ const bedEntry = { assetKind: 'music', assetFile: 'bed.mp3', startSec: 0, offset
 
 beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+  window.matchMedia = vi.fn((query) => ({
+    matches: query === '(min-width: 64rem)' && window.innerWidth >= 1024,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }));
   toastError.mockClear();
   api.project = project();
   api.history = [{ id: CLIP_A, prompt: 'A dramatic sunrise', filename: 'a.mp4', thumbnail: 'a.jpg', width: 1920, height: 1080, fps: 24, numFrames: 96 }];
@@ -161,14 +167,20 @@ describe('workspace layout — mobile library regression (#5424)', () => {
     const workspace = screen.getByRole('button', { name: 'Play' }).parentElement?.parentElement;
     const inspector = screen.getByText('Inspector').parentElement;
     expect(screen.queryByRole('tablist', { name: 'Clip library' })).not.toBeInTheDocument();
+    expect(showLibrary).toHaveAttribute('aria-expanded', 'false');
+    expect(showLibrary).toHaveAttribute('aria-controls', 'timeline-library');
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[1fr_240px]');
+    expect(workspace).toHaveClass('order-1', 'lg:order-2');
     expect(workspace?.compareDocumentPosition(inspector) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(showLibrary);
 
     const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
     expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Hide library' })).toHaveAttribute('aria-expanded', 'true');
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[260px_1fr_240px]');
+    expect(library).toHaveAttribute('id', 'timeline-library');
+    expect(library).toHaveClass('order-2', 'lg:order-1');
     expect(workspace?.compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add to timeline' }));
@@ -176,22 +188,22 @@ describe('workspace layout — mobile library regression (#5424)', () => {
       screen.getByRole('button', { name: 'Remove A dramatic sunrise from timeline' }),
     ).toBeInTheDocument());
 
+    const mountedLibrary = library;
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
     fireEvent(window, new Event('resize'));
-    await waitFor(() => {
-      const desktopLibrary = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
-      expect(desktopLibrary?.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
+    expect(screen.getByRole('tablist', { name: 'Clip library' }).parentElement).toBe(mountedLibrary);
   });
 
-  it('keeps the desktop library visible in the original left-rail order', async () => {
+  it('keeps the desktop library visible in the original left-rail grid position', async () => {
     await renderEditor();
 
     const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
     const workspace = screen.getByRole('button', { name: 'Play' }).parentElement?.parentElement;
     expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[260px_1fr_240px]');
-    expect(library?.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workspace).toHaveClass('order-1', 'lg:order-2');
+    expect(library).toHaveClass('order-2', 'lg:order-1');
+    expect(workspace?.compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide library' }));
     expect(workspace?.parentElement).toHaveClass('lg:grid-cols-[1fr_240px]');

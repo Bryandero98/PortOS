@@ -67,6 +67,10 @@ const LIBRARY_TABS = [
   { id: 'audio', label: 'Audio', Icon: Music },
 ];
 
+const desktopTimelineLayout = () => (
+  typeof window === 'undefined' || window.matchMedia('(min-width: 64rem)').matches
+);
+
 // One accessor per lane, so adding a lane doesn't mean a fourth branch in
 // every ternary chain that needs "the entries for this lane".
 const laneEntries = (lanes, lane) => {
@@ -109,22 +113,11 @@ export default function VideoTimelineEditor() {
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [renderJobId, setRenderJobId] = useState(null);
-  const [isDesktop, setIsDesktop] = useState(() => (
-    typeof window === 'undefined' || window.innerWidth >= 1024
-  ));
-  const [showLibrary, setShowLibrary] = useState(() => (
-    typeof window === 'undefined' || window.innerWidth >= 1024
-  ));
+  const [showLibrary, setShowLibrary] = useState(desktopTimelineLayout);
   const [libraryTab, setLibraryTab] = useState('clips');
   // Local input draft. Editing the canonical state on every keystroke makes the
   // rename onBlur-vs-canonical comparison always-equal.
   const [nameDraft, setNameDraft] = useState('');
-
-  useEffect(() => {
-    const updateLayout = () => setIsDesktop(window.innerWidth >= 1024);
-    window.addEventListener('resize', updateLayout);
-    return () => window.removeEventListener('resize', updateLayout);
-  }, []);
 
   const videoRef = useRef(null);
   const lastSrcRef = useRef('');
@@ -698,7 +691,10 @@ export default function VideoTimelineEditor() {
   const laneWidth = Math.max(240, total * pxPerSec);
   const playheadSec = Math.min(t, total);
   const libraryPanel = showLibrary ? (
-    <div className="bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto">
+    <div
+      id="timeline-library"
+      className="order-2 lg:order-1 bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto"
+    >
       <div className="flex gap-1 mb-2" role="tablist" aria-label="Clip library">
         {LIBRARY_TABS.map(({ id, label, Icon }) => (
           <button
@@ -801,6 +797,8 @@ export default function VideoTimelineEditor() {
           <button
             type="button"
             onClick={() => setShowLibrary((v) => !v)}
+            aria-expanded={showLibrary}
+            aria-controls="timeline-library"
             className="px-2 py-1.5 text-xs text-gray-400 hover:text-white border border-port-border rounded-md"
           >
             {showLibrary ? 'Hide library' : 'Show library'}
@@ -820,11 +818,8 @@ export default function VideoTimelineEditor() {
       <div className={`grid grid-cols-1 ${
         showLibrary ? 'lg:grid-cols-[260px_1fr_240px]' : 'lg:grid-cols-[1fr_240px]'
       } gap-3 min-h-[400px]`}>
-        {/* Left rail — library */}
-        {showLibrary && isDesktop && libraryPanel}
-
         {/* Center — preview + tracks */}
-        <div className="space-y-3 min-w-0">
+        <div className="order-1 lg:order-2 space-y-3 min-w-0">
           {/* The preview adopts the CANONICAL render canvas, not a fixed 16:9
               box — overlay x/y/width are normalized against that canvas, so a
               portrait or square project would otherwise place them somewhere
@@ -998,11 +993,12 @@ export default function VideoTimelineEditor() {
           </div>
         </div>
 
-        {/* On mobile the library follows the workspace in both visual and focus order. */}
-        {showLibrary && !isDesktop && libraryPanel}
+        {/* The library follows the workspace in DOM/focus order on mobile, then
+            moves into the desktop grid's left rail without remounting. */}
+        {libraryPanel}
 
         {/* Right rail — inspector */}
-        <div className="bg-port-card/50 border border-port-border rounded-lg p-3 space-y-3">
+        <div className="order-3 bg-port-card/50 border border-port-border rounded-lg p-3 space-y-3">
           <div className="text-xs uppercase text-gray-500 tracking-wide">Inspector</div>
 
           {!selected && (
