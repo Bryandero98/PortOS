@@ -82,7 +82,7 @@ export function execGh(args, timeoutMs = DEFAULT_EXEC_GH_TIMEOUT_MS, { cwd = nul
     });
     if (input !== null && input !== undefined) {
       child.stdin.on('error', (err) => {
-        if (timedOut) return;
+        if (timedOut || err.code === 'EPIPE') return;
         clearTimeout(timer);
         reject(err);
       });

@@ -23,10 +23,14 @@ const GH_TIMEOUT_MS = 60_000;
 const LIST_LIMIT = 100;
 const MAX_PULL_REQUESTS_PER_RUN = 3;
 const MAX_DIFF_CHARS = 120_000;
+const MAX_TOTAL_DIFF_CHARS = 180_000;
 const MAX_ISSUE_COMMENTS_PER_RUN = 25;
+const MAX_ISSUE_CONTEXT_CHARS = 40_000;
+const MAX_PENDING_ISSUE_COMMENTS = 250;
 export const MAX_PENDING_APPROVAL_TICKS = 12;
+export const MAX_PENDING_ISSUE_COMMENT_TICKS = 12;
 const GREEN_CHECKS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
-const FAILED_CHECKS = new Set(['ACTION_REQUIRED', 'CANCELLED', 'FAILURE', 'STALE', 'TIMED_OUT']);
+const FAILED_CHECKS = new Set(['ACTION_REQUIRED', 'CANCELLED', 'ERROR', 'FAILURE', 'STALE', 'STARTUP_FAILURE', 'TIMED_OUT']);
 
 let stateWriteTail = Promise.resolve();
 
@@ -206,7 +210,6 @@ async function gatherIssueComments(ctx, { since, ownerLogin }) {
   if (rows === null) return { ok: false, comments: [], assignments: 0 };
   const comments = [];
   let assignments = 0;
-  let assignmentFailed = false;
   for (const issue of rows.filter((row) => !row.pull_request)) {
     const issueComments = await listPaginated(ctx, `repos/${ctx.repoFullName}/issues/${issue.number}/comments`, [
       ['since', since], ['per_page', LIST_LIMIT],
@@ -230,7 +233,6 @@ async function gatherIssueComments(ctx, { since, ownerLogin }) {
             assignments += 1;
             continue;
           }
-          assignmentFailed = true;
         }
       }
       comments.push({
@@ -244,7 +246,7 @@ async function gatherIssueComments(ctx, { since, ownerLogin }) {
       });
     }
   }
-  return { ok: !assignmentFailed, comments, assignments };
+  return { ok: true, comments, assignments };
 }
 
 async function readPullRequest(ctx, number) {
@@ -279,6 +281,7 @@ async function gatherPullRequests(ctx, ownerLogin) {
     return null;
   }
   const candidates = [];
+  let diffChars = 0;
   const ordered = listed
     .filter((pr) => !pr.isDraft && pr.author?.login && pr.author?.is_bot !== true && !sameLogin(pr.author.login, ownerLogin))
     .sort((a, b) => String(a.updatedAt || '').localeCompare(String(b.updatedAt || '')));
@@ -291,7 +294,11 @@ async function gatherPullRequests(ctx, ownerLogin) {
     if (!pr || pr.state !== 'OPEN' || pr.headRefOid !== summary.headRefOid) continue;
     const rawDiff = await runGh(['pr', 'diff', String(pr.number), '--repo', ctx.repoSpec], ctx).catch(() => null);
     if (rawDiff === null) return null;
-    const truncated = rawDiff.length > MAX_DIFF_CHARS;
+    const remainingDiffChars = MAX_TOTAL_DIFF_CHARS - diffChars;
+    if (remainingDiffChars <= 0) break;
+    const diffLimit = Math.min(MAX_DIFF_CHARS, remainingDiffChars);
+    const truncated = rawDiff.length > diffLimit;
+    diffChars += Math.min(rawDiff.length, diffLimit);
     candidates.push({
       number: pr.number,
       title: text(pr.title, 500),
@@ -309,11 +316,27 @@ async function gatherPullRequests(ctx, ownerLogin) {
       mergeable: pr.mergeable,
       mergeStateStatus: pr.mergeStateStatus,
       checks: classifyChecks(pr.statusCheckRollup),
-      diff: truncated ? `${rawDiff.slice(0, MAX_DIFF_CHARS)}\n\n[DIFF TRUNCATED — verdict must be defer]` : rawDiff,
+      diff: truncated ? `${rawDiff.slice(0, diffLimit)}\n\n[DIFF TRUNCATED — verdict must be defer]` : rawDiff,
       diffTruncated: truncated,
     });
   }
   return candidates;
+}
+
+function takeIssueCommentsWithinBudget(comments) {
+  const selected = [];
+  let used = 0;
+  for (const item of comments) {
+    if (selected.length >= MAX_ISSUE_COMMENTS_PER_RUN) break;
+    const size = String(item?.issueTitle || '').length
+      + String(item?.issueBody || '').length
+      + String(item?.commentBody || '').length
+      + 200;
+    if (selected.length > 0 && used + size > MAX_ISSUE_CONTEXT_CHARS) break;
+    selected.push(item);
+    used += size;
+  }
+  return selected;
 }
 
 function renderPrompt({ app, ctx, ownerLogin, issueComments, pullRequests }) {
@@ -379,7 +402,7 @@ Include one decision for every supplied issue comment and PR, and no others.`;
 async function keepPendingApproval(app, approval, remaining, reason, patch = {}) {
   const next = { ...approval, ...patch, ticks: (approval.ticks || 0) + 1 };
   if (next.ticks >= MAX_PENDING_APPROVAL_TICKS) {
-    await notifyPendingApprovalTimeout(app, approval, reason);
+    await notifyPendingApproval(app, approval, `PortOS stopped polling after ${MAX_PENDING_APPROVAL_TICKS} checks because ${reason}.`);
   } else {
     remaining.push(next);
   }
@@ -422,6 +445,11 @@ async function processPendingApprovals(app, ctx) {
     }
     const checkRollup = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
     const checks = classifyChecks(checkRollup);
+    if (checks === 'failed') {
+      await notifyPendingApproval(app, approval, 'CI reported a failing status, so PortOS stopped automatic merge polling.');
+      changed = true;
+      continue;
+    }
     // An empty rollup is ambiguous immediately after review: CI may simply not
     // have attached yet. A low-risk PR may skip CI only after two consecutive
     // scheduled observations see no checks. Active checks are never waived.
@@ -445,12 +473,12 @@ async function processPendingApprovals(app, ctx) {
   return remaining;
 }
 
-async function notifyPendingApprovalTimeout(app, approval, reason) {
+async function notifyPendingApproval(app, approval, description) {
   return addNotification({
     type: NOTIFICATION_TYPES.AGENT_WARNING,
     priority: PRIORITY_LEVELS.HIGH,
     title: `Issue Watcher PR #${approval.number} needs attention`,
-    description: `PortOS stopped polling this reviewed PR after ${MAX_PENDING_APPROVAL_TICKS} checks because ${reason}.`,
+    description,
     link: approval.url,
     metadata: { appId: app.id, issueWatcherPrNumber: approval.number },
   }).catch((err) => {
@@ -493,17 +521,23 @@ export async function buildTaskInput({ app } = {}) {
   const pendingById = new Map();
   for (const item of [...(Array.isArray(state.pendingIssueComments) ? state.pendingIssueComments : []), ...issueResult.comments]) {
     if (item && Number.isInteger(item.issueNumber) && Number.isInteger(item.commentId)) {
-      pendingById.set(`${item.issueNumber}:${item.commentId}`, item);
+      const key = `${item.issueNumber}:${item.commentId}`;
+      const existing = pendingById.get(key);
+      pendingById.set(key, { ...item, ticks: existing?.ticks || item.ticks || 0 });
     }
   }
-  const pendingIssueComments = [...pendingById.values()];
+  const allPendingIssueComments = [...pendingById.values()];
+  const pendingIssueComments = allPendingIssueComments.slice(-MAX_PENDING_ISSUE_COMMENTS);
+  if (allPendingIssueComments.length > pendingIssueComments.length) {
+    console.warn(`⚠️ issue-watcher: dropped ${allPendingIssueComments.length - pendingIssueComments.length} oldest pending issue comment(s) for ${app.name} to preserve queue progress.`);
+  }
   await persistState(app.id, {
     cursor: startedAt,
     pendingIssueComments,
     lastCheckedAt: startedAt,
     lastError: null,
   });
-  const issueComments = pendingIssueComments.slice(0, MAX_ISSUE_COMMENTS_PER_RUN);
+  const issueComments = takeIssueCommentsWithinBudget(pendingIssueComments);
 
   if (issueComments.length === 0 && pullRequests.length === 0) {
     return { skip: { reason: firstRun ? 'baselined' : 'no-cognitive-activity' } };
@@ -525,27 +559,39 @@ export async function buildTaskInput({ app } = {}) {
 async function postIssueReply(ctx, decision) {
   return runGh([
     'issue', 'comment', String(decision.issueNumber), '--repo', ctx.repoSpec, '--body', text(decision.body, 5_000),
-  ], ctx).then(() => true).catch(() => false);
+  ], ctx).then(() => true).catch((err) => {
+    console.error(`❌ issue-watcher: issue reply failed for #${decision.issueNumber}: ${err.message}`);
+    return false;
+  });
 }
 
 async function submitReview(ctx, number, { body, event, comments = [] }) {
   const input = JSON.stringify({ body: text(body, 4_000), event, comments });
   return runGh([...apiArgs(ctx, `repos/${ctx.repoFullName}/pulls/${number}/reviews`, { method: 'POST' }), '--input', '-'], ctx, input)
     .then(() => true)
-    .catch(() => false);
+    .catch((err) => {
+      console.error(`❌ issue-watcher: review submit failed for PR #${number} (${event}): ${err.message}`);
+      return false;
+    });
 }
 
 async function postReviewFallback(ctx, number, body) {
   return runGh(['pr', 'comment', String(number), '--repo', ctx.repoSpec, '--body', text(body, 5_000)], ctx)
     .then(() => true)
-    .catch(() => false);
+    .catch((err) => {
+      console.error(`❌ issue-watcher: review comment failed for PR #${number}: ${err.message}`);
+      return false;
+    });
 }
 
 async function updatePullRequestBranch(ctx, number, headSha) {
   const input = JSON.stringify({ expected_head_sha: headSha, update_method: 'rebase' });
   return runGh([...apiArgs(ctx, `repos/${ctx.repoFullName}/pulls/${number}/update-branch`, { method: 'PUT' }), '--input', '-'], ctx, input)
     .then(() => true)
-    .catch(() => false);
+    .catch((err) => {
+      console.error(`❌ issue-watcher: update-branch failed for PR #${number}: ${err.message}`);
+      return false;
+    });
 }
 
 function mergeApproval(existing, approval) {
@@ -639,6 +685,14 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
         continue;
       }
     }
+    if (checks === 'failed') {
+      await notifyPendingApproval(app, {
+        number: pr.number,
+        url: pr.url,
+      }, 'CI reported a failing status, so PortOS did not merge this approved PR.');
+      approvals = approvals.filter((entry) => entry.number !== pr.number);
+      continue;
+    }
     approvals = mergeApproval(approvals, {
       number: pr.number,
       headSha: pr.headRefOid,
@@ -652,8 +706,30 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
   }
 
   const latestState = readState(await getAppById(appId) || app);
+  const timedOutComments = [];
   const pendingIssueComments = (Array.isArray(latestState.pendingIssueComments) ? latestState.pendingIssueComments : [])
-    .filter((item) => !handledCommentKeys.has(`${item?.issueNumber}:${item?.commentId}`));
+    .flatMap((item) => {
+      const key = `${item?.issueNumber}:${item?.commentId}`;
+      if (handledCommentKeys.has(key)) return [];
+      if (!expectedComments.has(key)) return [item];
+      const next = { ...item, ticks: (item.ticks || 0) + 1 };
+      if (next.ticks < MAX_PENDING_ISSUE_COMMENT_TICKS) return [next];
+      timedOutComments.push(next);
+      return [];
+    });
+  if (timedOutComments.length > 0) {
+    await addNotification({
+      type: NOTIFICATION_TYPES.AGENT_WARNING,
+      priority: PRIORITY_LEVELS.HIGH,
+      title: `${timedOutComments.length} Issue Watcher comment${timedOutComments.length === 1 ? '' : 's'} need attention`,
+      description: `PortOS stopped retrying after ${MAX_PENDING_ISSUE_COMMENT_TICKS} incomplete reasoning or reply attempts.`,
+      link: timedOutComments[0].commentUrl,
+      metadata: { appId, issueWatcherCommentCount: timedOutComments.length },
+    }).catch((err) => {
+      console.error(`❌ issue-watcher: failed to notify about timed-out issue comments: ${err.message}`);
+      return null;
+    });
+  }
   await persistState(appId, {
     approvedPullRequests: approvals,
     pendingIssueComments,

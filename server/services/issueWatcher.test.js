@@ -44,6 +44,7 @@ import {
   parseAddedDiffLines,
   processTaskOutput,
   MAX_PENDING_APPROVAL_TICKS,
+  MAX_PENDING_ISSUE_COMMENT_TICKS,
 } from './issueWatcher.js';
 
 const APP = { id: 'app-1', name: 'Example App', repoPath: '/repos/example' };
@@ -140,6 +141,8 @@ describe('issue-watcher pure contracts', () => {
 
   it('keeps failed, pending, and green check states distinct', () => {
     expect(classifyChecks([{ conclusion: 'FAILURE' }])).toBe('failed');
+    expect(classifyChecks([{ state: 'ERROR' }])).toBe('failed');
+    expect(classifyChecks([{ conclusion: 'STARTUP_FAILURE' }])).toBe('failed');
     expect(classifyChecks([])).toBe('pending');
     expect(classifyChecks([{ status: 'IN_PROGRESS' }])).toBe('pending');
     expect(classifyChecks([{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }])).toBe('green');
@@ -205,6 +208,31 @@ describe('buildTaskInput', () => {
       expect.any(Number),
       expect.objectContaining({ cwd: APP.repoPath, env: { GH_TOKEN: 'test-token' } }),
     );
+    expect(apps.get(APP.id).issueWatcherState.cursor).toMatch(/^2026-/);
+  });
+
+  it('continues to cognition when an explicit volunteer cannot be assigned', async () => {
+    apps.set(APP.id, { ...APP, issueWatcherState: { cursor: '2026-08-29T00:00:00.000Z' } });
+    installDefaultGhMock({ pr: null });
+    execGhMock.mockImplementation(async (args) => {
+      if (args[0] === 'api' && args.includes('repos/o/r') && !args.some((arg) => String(arg).includes('/issues'))) {
+        return JSON.stringify({ owner: { login: 'owner', type: 'User' } });
+      }
+      if (args[0] === 'api' && args.some((arg) => String(arg).endsWith('/issues'))) {
+        return JSON.stringify([[{ number: 12, title: 'Small task', body: 'Please help', assignees: [] }]]);
+      }
+      if (args[0] === 'api' && args.some((arg) => String(arg).includes('/comments'))) {
+        return JSON.stringify([[{ id: 99, body: 'I can take this issue', created_at: '2026-08-30T00:00:00.000Z', user: { login: 'alice' } }]]);
+      }
+      if (args[0] === 'issue' && args[1] === 'edit') throw new Error('HTTP 422');
+      if (args[0] === 'pr' && args[1] === 'list') return '[]';
+      return '{}';
+    });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result.prompt).toContain('Issue #12: Small task');
+    expect(result.hookMetadata.issueWatcher.issueComments).toEqual([{ issueNumber: 12, commentId: 99 }]);
     expect(apps.get(APP.id).issueWatcherState.cursor).toMatch(/^2026-/);
   });
 });
@@ -286,6 +314,42 @@ describe('processTaskOutput', () => {
     expect(mergePrMock).not.toHaveBeenCalled();
   });
 
+  it('approves and merges a fresh clean PR after green checks', async () => {
+    installDefaultGhMock();
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'No material issues found.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'APPROVE', comments: [] });
+    expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it('does not review or merge when the PR head changed after cognition', async () => {
+    installDefaultGhMock({ pr: pullRequest({ headRefOid: 'c'.repeat(40) }) });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'No material issues found.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 0, merged: 0 });
+    expect(execGhMock.mock.calls.some(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'))).toBe(false);
+    expect(mergePrMock).not.toHaveBeenCalled();
+  });
+
   it('waits one scheduled observation before treating absent CI as skippable', async () => {
     installDefaultGhMock({ pr: pullRequest({ statusCheckRollup: [] }) });
     mergePrMock.mockResolvedValue({ success: true });
@@ -349,9 +413,11 @@ describe('processTaskOutput', () => {
 
     expect(result).toMatchObject({ reviewed: 1, merged: 0 });
     expect(mergePrMock).not.toHaveBeenCalled();
-    expect(apps.get(APP.id).issueWatcherState.approvedPullRequests).toEqual([
-      expect.objectContaining({ number: 7, headSha: 'a'.repeat(40), ciPolicy: 'skippable' }),
-    ]);
+    expect(apps.get(APP.id).issueWatcherState.approvedPullRequests).toEqual([]);
+    expect(addNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Issue Watcher PR #7 needs attention',
+      link: 'https://github.com/o/r/pull/7',
+    }));
   });
 
   it('bounds polling for an approved PR whose CI never settles', async () => {
@@ -377,6 +443,39 @@ describe('processTaskOutput', () => {
       type: 'agent_warning',
       link: approval.url,
       metadata: { appId: APP.id, issueWatcherPrNumber: 7 },
+    }));
+  });
+
+  it('ages out a repeatedly incomplete issue-comment decision and notifies', async () => {
+    const pending = {
+      issueNumber: 12,
+      commentId: 99,
+      commentUrl: 'https://github.com/o/r/issues/12#issuecomment-99',
+      ticks: MAX_PENDING_ISSUE_COMMENT_TICKS - 1,
+    };
+    apps.set(APP.id, { ...APP, issueWatcherState: { pendingIssueComments: [pending] } });
+    installDefaultGhMock();
+    const commentMetadata = {
+      issueWatcher: {
+        ...metadata.issueWatcher,
+        issueComments: [{ issueNumber: 12, commentId: 99 }],
+        pullRequests: [],
+      },
+    };
+
+    const result = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload: { issueComments: [], pullRequests: [] },
+      task: { metadata: commentMetadata },
+    });
+
+    expect(result).toMatchObject({ commentsHandled: false });
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
+    expect(addNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent_warning',
+      link: pending.commentUrl,
+      metadata: { appId: APP.id, issueWatcherCommentCount: 1 },
     }));
   });
 });
