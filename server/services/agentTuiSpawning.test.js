@@ -450,6 +450,15 @@ describe('agent TUI spawning', () => {
     expect(codex.args).not.toContain('--effort');
   });
 
+  it('passes Ultra through when a Codex TUI runs Sol', () => {
+    const codex = buildTuiSpawnConfig(
+      { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
+      'gpt-5.6-sol',
+      { effort: 'ultra' },
+    );
+    expect(codex.args).toContain('model_reasoning_effort=ultra');
+  });
+
   it('gives a cloud Codex swarm enough threads for its root plus every worker', () => {
     const config = buildTuiSpawnConfig(
       { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
