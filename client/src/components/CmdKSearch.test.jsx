@@ -102,6 +102,18 @@ describe('CmdKSearch inline Brain capture', () => {
     expect(toast).not.toHaveBeenCalled();
   });
 
+  it('does not submit while Enter is committing an IME composition', async () => {
+    await renderBrainCapturePalette();
+    fireEvent.click(await screen.findByRole('option', { name: /Capture to Brain/ }));
+    const input = screen.getByRole('textbox', { name: 'Capture to Brain' });
+    fireEvent.change(input, { target: { value: '候補' } });
+
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 });
+
+    expect(runPaletteAction).not.toHaveBeenCalled();
+    expect(input).toHaveValue('候補');
+  });
+
   it('enters capture mode from the keyboard', async () => {
     await renderBrainCapturePalette();
     const input = screen.getByRole('textbox', { name: 'Command palette' });
@@ -174,12 +186,17 @@ describe('CmdKSearch inline Brain capture', () => {
     fireEvent.keyDown(searchInput, { key: 'Enter' });
     const captureInput = screen.getByRole('textbox', { name: 'Capture to Brain' });
     fireEvent.change(captureInput, { target: { value: 'Draft thought' } });
+    const leakedEscape = vi.fn();
+    window.addEventListener('keydown', leakedEscape);
 
     fireEvent.keyDown(captureInput, { key: 'Escape' });
+    window.removeEventListener('keydown', leakedEscape);
 
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument();
     const restoredSearch = screen.getByRole('textbox', { name: 'Command palette' });
     expect(restoredSearch).toHaveValue('capture');
+    expect(restoredSearch).toHaveFocus();
+    expect(leakedEscape).not.toHaveBeenCalled();
 
     fireEvent.keyDown(restoredSearch, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

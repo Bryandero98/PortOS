@@ -280,7 +280,7 @@ export default function CmdKSearch() {
   }, [focusedIndex]);
 
   useEffect(() => {
-    if (open && captureMode) inputRef.current?.focus();
+    if (open) inputRef.current?.focus();
   }, [open, captureMode]);
 
   const resetCapture = useCallback(() => {
@@ -375,10 +375,12 @@ export default function CmdKSearch() {
   const handleKeyDown = (e) => {
     if (captureMode) {
       if (e.key === 'Enter') {
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         e.preventDefault();
         submitCapture();
       } else if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
         setCaptureMode(false);
       }
       return;
