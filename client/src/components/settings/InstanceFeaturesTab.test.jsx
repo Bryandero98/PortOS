@@ -219,28 +219,19 @@ describe('InstanceFeaturesTab', () => {
     expect(screen.getByRole('button', { name: 'Install & enable' })).toBeDisabled();
   });
 
-  it('explains the Bun prerequisite before installation', async () => {
+  it('offers to install Bun automatically as part of Eidoverse setup', async () => {
     mock.getInstanceFeatures.mockResolvedValue({
       features: [{ ...EIDOVERSE_FEATURE, setup: { ...EIDOVERSE_FEATURE.setup, bunAvailable: false } }],
     });
-    render(<InstanceFeaturesTab />);
+    render(<MemoryRouter><InstanceFeaturesTab /></MemoryRouter>);
 
-    expect(await screen.findByRole('button', { name: 'Install & enable' })).toBeDisabled();
-    expect(screen.getByRole('link', { name: 'Install Bun' })).toHaveAttribute('href', 'https://bun.sh');
-  });
+    const install = await screen.findByRole('button', { name: 'Install & enable' });
+    expect(install).toBeEnabled();
+    expect(screen.getByText(/PortOS will install it automatically/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Install Bun' })).toBeNull();
 
-  it('rechecks Eidoverse requirements after Bun is installed', async () => {
-    const missingBun = { ...EIDOVERSE_FEATURE, setup: { ...EIDOVERSE_FEATURE.setup, bunAvailable: false } };
-    mock.getInstanceFeatures
-      .mockResolvedValueOnce({ features: [missingBun] })
-      .mockResolvedValueOnce({ features: [EIDOVERSE_FEATURE] });
-    render(<InstanceFeaturesTab />);
-
-    expect(await screen.findByRole('button', { name: 'Install & enable' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Recheck requirements' }));
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Install & enable' })).toBeEnabled());
-    expect(mock.getInstanceFeatures).toHaveBeenCalledTimes(2);
+    fireEvent.click(install);
+    await waitFor(() => expect(mock.installEidoverseFeature).toHaveBeenCalledOnce());
   });
 
   // The sidebar and ⌘K read the same module cache; a retry that updated only
