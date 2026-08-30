@@ -43,6 +43,7 @@ import {
   playTurn,
 } from './weave.js';
 import { getUniverse } from '../universeBuilder.js';
+import { parseVoiceId } from '../pipeline/audio.js';
 
 // Active hosted sessions in memory (ephemeral, machine-local)
 const activeSessions = new Map();
@@ -594,10 +595,17 @@ export async function processHostedUtterance(sessionId, {
         characterVoiceId: char?.voiceId,
         route: 'interactive',
       }).catch(() => null);
+      const { engine, voice } = parseVoiceId(resolved?.voiceId);
 
       const synth = await synthesize(narration, {
-        voice: resolved?.voiceId || undefined,
-      }).catch(() => null);
+        engine: engine || undefined,
+        profileId: resolved?.profileId || undefined,
+        route: 'interactive',
+        voice: voice || undefined,
+      }).catch((err) => {
+        console.warn(`[HostedPlay] Protagonist TTS synthesis failed: ${err.message}`);
+        return null;
+      });
       if (synth?.wav) {
         ttsAudio = synth.wav;
       }
