@@ -136,6 +136,18 @@ export function GeneralTab() {
     }
   };
 
+  const discardAndExit = () => {
+    // A stale /settings/:tab URL can fall back to General on both sides of the
+    // navigation, preserving this component instance. Reset the sections that
+    // are not actively being persisted before releasing the parked route.
+    if (!saving) setTimezone(savedTimezone ?? '');
+    if (!savingLocation) {
+      setLat(savedLocation?.lat ?? '');
+      setLon(savedLocation?.lon ?? '');
+    }
+    routeGuard.proceed();
+  };
+
   if (loading) return <BrailleSpinner />;
 
   return (
@@ -145,7 +157,7 @@ export function GeneralTab() {
         when={hasDiscardableChanges}
         question="Discard your unsaved General settings changes?"
         label="Discard unsaved General settings changes"
-        onDiscard={routeGuard.proceed}
+        onDiscard={discardAndExit}
       />
       <div className="bg-port-card border border-port-border rounded-lg p-4 sm:p-6">
         <h3 className="text-lg font-semibold text-white mb-4">Interface Theme</h3>

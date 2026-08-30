@@ -128,6 +128,23 @@ describe('GeneralTab unsaved changes', () => {
     expect(router.state.location.pathname).toBe('/settings/security');
   });
 
+  it('resets the draft when Settings preserves General across a stale tab route', async () => {
+    const router = createMemoryRouter([
+      { path: '/settings/:tab', element: <GeneralTab /> },
+    ], { initialEntries: ['/settings/old-tab'] });
+    render(<RouterProvider router={router} />);
+    const timezoneInput = await screen.findByDisplayValue('UTC');
+    fireEvent.change(timezoneInput, { target: { value: 'America/New_York' } });
+
+    await navigate(router, '/settings/general');
+    expect(screen.getByText(CONFIRM)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/general'));
+    expect(screen.getByLabelText('Timezone (IANA)')).toHaveValue('UTC');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
   it('advances only the successful section baseline', async () => {
     const router = await renderTab();
     fireEvent.change(screen.getByLabelText('Timezone (IANA)'), {
