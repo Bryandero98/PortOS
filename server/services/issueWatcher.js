@@ -376,8 +376,8 @@ Return exactly this payload shape through the completion sentinel:
 Include one decision for every supplied issue comment and PR, and no others.`;
 }
 
-async function keepPendingApproval(app, approval, remaining, reason) {
-  const next = { ...approval, ticks: (approval.ticks || 0) + 1 };
+async function keepPendingApproval(app, approval, remaining, reason, patch = {}) {
+  const next = { ...approval, ...patch, ticks: (approval.ticks || 0) + 1 };
   if (next.ticks >= MAX_PENDING_APPROVAL_TICKS) {
     await notifyPendingApprovalTimeout(app, approval, reason);
   } else {
@@ -420,8 +420,15 @@ async function processPendingApprovals(app, ctx) {
         continue;
       }
     }
-    const checks = classifyChecks(pr.statusCheckRollup);
-    const mayMerge = checks === 'green' || (approval.ciPolicy === 'skippable' && checks !== 'failed');
+    const checkRollup = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
+    const checks = classifyChecks(checkRollup);
+    // An empty rollup is ambiguous immediately after review: CI may simply not
+    // have attached yet. A low-risk PR may skip CI only after two consecutive
+    // scheduled observations see no checks. Active checks are never waived.
+    const maySkipEmptyChecks = approval.ciPolicy === 'skippable'
+      && checkRollup.length === 0
+      && approval.noChecksObserved === true;
+    const mayMerge = checks === 'green' || maySkipEmptyChecks;
     if (mayMerge && pr.mergeable === 'MERGEABLE') {
       const merged = await mergePR(app.repoPath, approval.number).catch(() => ({ success: false }));
       if (merged.success) {
@@ -429,7 +436,9 @@ async function processPendingApprovals(app, ctx) {
         continue;
       }
     }
-    await keepPendingApproval(app, approval, remaining, 'CI or mergeability did not settle');
+    await keepPendingApproval(app, approval, remaining, 'CI or mergeability did not settle', {
+      noChecksObserved: approval.noChecksObserved === true || checkRollup.length === 0,
+    });
     changed = true;
   }
   if (changed) await persistState(app.id, { approvedPullRequests: remaining });
@@ -589,7 +598,8 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
 
     if (decision.verdict !== 'approve' || decision.findings.length > 0 || target.diffTruncated || diff.length > MAX_DIFF_CHARS) {
       const summary = decision.summary || 'This change needs follow-up before it can merge.';
-      const posted = findings.length > 0
+      const shouldRequestChanges = decision.verdict === 'request_changes' || findings.length > 0;
+      const posted = shouldRequestChanges
         ? await submitReview(ctx, pr.number, { body: summary, event: 'REQUEST_CHANGES', comments: findings })
           || await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT', comments: findings })
         : await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT' })
@@ -618,9 +628,9 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
       continue;
     }
 
-    const checks = classifyChecks(pr.statusCheckRollup);
-    const maySkip = decision.ciPolicy === 'skippable' && checks !== 'failed';
-    const mayMerge = pr.mergeable === 'MERGEABLE' && (checks === 'green' || maySkip);
+    const checkRollup = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
+    const checks = classifyChecks(checkRollup);
+    const mayMerge = pr.mergeable === 'MERGEABLE' && checks === 'green';
     if (mayMerge) {
       const result = await mergePR(app.repoPath, pr.number).catch(() => ({ success: false }));
       if (result.success) {
@@ -635,6 +645,7 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
       url: pr.url,
       ciPolicy: decision.ciPolicy,
       rebaseRequired: false,
+      noChecksObserved: checkRollup.length === 0,
       reviewedAt: new Date().toISOString(),
       ticks: 0,
     });

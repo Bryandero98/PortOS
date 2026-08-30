@@ -246,6 +246,28 @@ describe('processTaskOutput', () => {
     expect(mergePrMock).not.toHaveBeenCalled();
   });
 
+  it('submits a blocking review when request-changes has no inline anchor', async () => {
+    installDefaultGhMock();
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7,
+        headSha: 'a'.repeat(40),
+        verdict: 'request_changes',
+        summary: 'The change removes required compatibility behavior.',
+        findings: [],
+        rebaseRequired: false,
+        ciPolicy: 'required',
+      }],
+    };
+
+    await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
+    expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'REQUEST_CHANGES', comments: [] });
+    expect(mergePrMock).not.toHaveBeenCalled();
+  });
+
   it('updates a behind branch when the reviewer requires a rebase, then waits for a fresh review', async () => {
     installDefaultGhMock();
     const payload = {
@@ -264,7 +286,7 @@ describe('processTaskOutput', () => {
     expect(mergePrMock).not.toHaveBeenCalled();
   });
 
-  it('merges a clean low-risk PR when the reviewer explicitly marks CI skippable', async () => {
+  it('waits one scheduled observation before treating absent CI as skippable', async () => {
     installDefaultGhMock({ pr: pullRequest({ statusCheckRollup: [] }) });
     mergePrMock.mockResolvedValue({ success: true });
     const payload = {
@@ -277,8 +299,40 @@ describe('processTaskOutput', () => {
 
     const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
 
-    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    expect(result).toMatchObject({ reviewed: 1, merged: 0 });
+    expect(mergePrMock).not.toHaveBeenCalled();
+    expect(apps.get(APP.id).issueWatcherState.approvedPullRequests).toEqual([
+      expect.objectContaining({ number: 7, ciPolicy: 'skippable', noChecksObserved: true }),
+    ]);
+
+    installDefaultGhMock({
+      pr: pullRequest({ statusCheckRollup: [] }),
+      reviews: [[{ user: { login: 'owner' }, commit_id: 'a'.repeat(40), state: 'APPROVED' }]],
+    });
+    const followUp = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(followUp).toEqual({ skip: { reason: 'baselined' } });
     expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+    expect(apps.get(APP.id).issueWatcherState.approvedPullRequests).toEqual([]);
+  });
+
+  it('never waives an actively running check for a low-risk PR', async () => {
+    installDefaultGhMock({ pr: pullRequest({ statusCheckRollup: [{ status: 'IN_PROGRESS', conclusion: null }] }) });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'Low-risk documentation change.', findings: [],
+        rebaseRequired: false, ciPolicy: 'skippable',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 0 });
+    expect(mergePrMock).not.toHaveBeenCalled();
+    expect(apps.get(APP.id).issueWatcherState.approvedPullRequests).toEqual([
+      expect.objectContaining({ number: 7, noChecksObserved: false }),
+    ]);
   });
 
   it('never waives a known failing check, even when CI was classified skippable', async () => {
