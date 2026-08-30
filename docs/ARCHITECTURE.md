@@ -123,8 +123,17 @@ PortOS/
 │   │   ├── people/            # People records (collectionStore: <id>/index.json)
 │   │   ├── projects/          # Projects with status tracking (collectionStore: <id>/index.json)
 │   │   ├── songs/             # SongBook songs (collectionStore: <id>/index.json)
+│   │   ├── idealoom-lists/    # Machine-local IdeaLoom lists (collectionStore: <id>/index.json)
+│   │   ├── imports/           # Imported conversation archives
+│   │   ├── scans/             # Repository malware scan reports
+│   │   ├── songbook/          # Machine-local SongBook attachment files
+│   │   ├── youtube/           # YouTube transcripts, audio, and ingest index
+│   │   ├── activity-digest-settings.json # Activity digest configuration
+│   │   ├── journal-settings.json # Daily Log and Obsidian mirror settings
+│   │   ├── journal-obsidian-locations.json # Machine-local journal mirror paths
 │   │   ├── memory-bridge-map.json # Brain↔CoS memory bridge mapping
 │   │   ├── obsidian-vaults.json # Obsidian vault sync config
+│   │   ├── youtube-ingest-settings.json # YouTube ingest defaults
 │   │   ├── sync_log.jsonl     # Brain peer-sync mutation history
 │   │   ├── digests.jsonl      # Daily digest history
 │   │   └── reviews.jsonl      # Weekly review history

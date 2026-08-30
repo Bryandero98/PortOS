@@ -75,8 +75,17 @@ Track administrative tasks:
 ├── people/                 # People records (collectionStore: <id>/index.json)
 ├── projects/               # Projects with status tracking (collectionStore: <id>/index.json)
 ├── songs/                  # SongBook songs (collectionStore: <id>/index.json)
+├── idealoom-lists/         # Machine-local IdeaLoom lists (collectionStore: <id>/index.json)
+├── imports/                # Imported conversation archives
+├── scans/                  # Repository malware scan reports
+├── songbook/               # Machine-local SongBook attachment files
+├── youtube/                # YouTube transcripts, audio, and ingest index
+├── activity-digest-settings.json # Activity digest configuration
+├── journal-settings.json   # Daily Log and Obsidian mirror settings
+├── journal-obsidian-locations.json # Machine-local journal mirror paths
 ├── memory-bridge-map.json  # Brain↔CoS memory bridge mapping
 ├── obsidian-vaults.json    # Obsidian vault sync config
+├── youtube-ingest-settings.json # YouTube ingest defaults
 ├── sync_log.jsonl          # Brain peer-sync mutation history
 ├── digests.jsonl           # Daily digest history
 └── reviews.jsonl           # Weekly review history
@@ -285,7 +294,7 @@ not export itself back.
 |------|---------|
 | `server/lib/brainValidation.js` | Zod schemas for all Brain entities |
 | `server/services/brain.js` | Core business logic |
-| `server/services/brainStorage.js` | JSONL/JSON file operations |
+| `server/services/brainStorage.js` | Per-record collectionStore persistence plus JSON/JSONL sidecars |
 | `server/services/idealoomLists.js` | Machine-local ordered IdeaLoom list records and sync metadata |
 | `server/services/idealoomObsidian.js` | Validated IdeaLoom Markdown import/export with base-hash conflict and deletion handling |
 | `server/services/idealoomAutoSync.js` | Opt-in debounced automatic export (never deletes or recreates a note) |
