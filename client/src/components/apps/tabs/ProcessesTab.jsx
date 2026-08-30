@@ -258,8 +258,8 @@ export default function ProcessesTab({ appId, pm2ProcessNames, filterFn }) {
       */}
       {fullscreen && expandedProcess && createPortal(
         <div className="fixed inset-0 bg-port-bg z-50 flex flex-col">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-port-border bg-port-card">
-            <div className="flex items-center gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 sm:px-6 py-3 sm:py-4 border-b border-port-border bg-port-card">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-4">
               <span className="text-lg font-medium text-white">Logs: {expandedProcess}</span>
               {subscribed && (
                 <span className="text-sm text-port-success">● streaming</span>
