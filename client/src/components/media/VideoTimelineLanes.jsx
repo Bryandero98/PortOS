@@ -111,7 +111,7 @@ export const LaneBlock = memo(function LaneBlock({
 }) {
   const dur = Math.max(0.05, entry.durationSec || 0);
   const width = Math.max(28, dur * pxPerSec);
-  const showRemove = isSelected || width >= 56;
+  const showRemove = width >= 56;
   const style = {
     left: `${(entry.startSec || 0) * pxPerSec}px`,
     width: `${width}px`,

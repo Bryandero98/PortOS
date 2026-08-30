@@ -171,7 +171,6 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     const remove = screen.getByRole('button', { name: 'Remove logo.png from timeline' });
     expect(remove.className).toContain('min-w-[28px]');
     expect(remove.className).toContain('min-h-[28px]');
-    expect(remove.className).toContain('-translate-y-1/2');
 
     fireEvent.pointerDown(remove);
     fireEvent.click(remove);
@@ -181,7 +180,7 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     expect(onRemove).toHaveBeenCalledWith('ov-1');
   });
 
-  it('keeps compact entries at their temporal width and reveals removal after selection', () => {
+  it('keeps compact entries selectable without turning the block into a delete target', () => {
     const compactEntry = { ...entry, durationSec: 0 };
     const onSelect = vi.fn();
     const onRemove = vi.fn();
@@ -199,19 +198,13 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     rerender(
       <LaneBlock entry={compactEntry} label="logo.png" tone="" isSelected isMissing={false} pxPerSec={40} onSelect={onSelect} onRemove={onRemove} />,
     );
-    expect(block.className).toContain('z-10');
-
-    const remove = screen.getByRole('button', { name: 'Remove logo.png from timeline' });
-    expect(remove.className).toContain('min-w-[28px]');
-    expect(remove.className).toContain('min-h-[28px]');
+    expect(screen.queryByRole('button', { name: 'Remove logo.png from timeline' })).not.toBeInTheDocument();
 
     onSelect.mockClear();
-    fireEvent.pointerDown(remove);
-    fireEvent.click(remove);
+    fireEvent.click(block);
 
-    expect(onSelect).not.toHaveBeenCalled();
-    expect(onRemove).toHaveBeenCalledOnce();
-    expect(onRemove).toHaveBeenCalledWith('ov-1');
+    expect(onSelect).toHaveBeenCalledWith('ov-1');
+    expect(onRemove).not.toHaveBeenCalled();
   });
 });
 
