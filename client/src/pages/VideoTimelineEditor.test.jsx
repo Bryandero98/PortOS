@@ -66,6 +66,7 @@ const overlayEntry = { type: 'image', assetKind: 'images', assetFile: 'logo.png'
 const bedEntry = { assetKind: 'music', assetFile: 'bed.mp3', startSec: 0, offsetSec: 0, durationSec: 4, volume: 1, fadeInSec: 0, fadeOutSec: 0 };
 
 beforeEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
   toastError.mockClear();
   api.project = project();
   api.history = [{ id: CLIP_A, prompt: 'A dramatic sunrise', filename: 'a.mp4', thumbnail: 'a.jpg', width: 1920, height: 1080, fps: 24, numFrames: 96 }];
@@ -148,6 +149,41 @@ describe('header layout — mobile overflow regression (#5425)', () => {
     await renderEditor();
     const summarySpan = screen.getByText(/1 segments · 1 overlays · 1 beds/);
     expect(summarySpan).toHaveClass('hidden', 'sm:inline');
+  });
+});
+
+describe('workspace layout — mobile library regression (#5424)', () => {
+  it('starts with the library hidden and keeps the workspace before it when opened', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    await renderEditor();
+
+    const showLibrary = screen.getByRole('button', { name: 'Show library' });
+    const workspace = screen.getByRole('button', { name: 'Play' }).parentElement?.parentElement;
+    const inspector = screen.getByText('Inspector').parentElement;
+    expect(screen.queryByRole('tablist', { name: 'Clip library' })).not.toBeInTheDocument();
+    expect(workspace).toHaveClass('order-1', 'lg:order-2');
+    expect(inspector).toHaveClass('order-3');
+
+    fireEvent.click(showLibrary);
+
+    const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
+    expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
+    expect(library).toHaveClass('order-2', 'lg:order-1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add to timeline' }));
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Remove A dramatic sunrise from timeline' }),
+    ).toBeInTheDocument());
+  });
+
+  it('keeps the desktop library visible in the original left-rail order', async () => {
+    await renderEditor();
+
+    const library = screen.getByRole('tablist', { name: 'Clip library' }).parentElement;
+    const workspace = screen.getByRole('button', { name: 'Play' }).parentElement?.parentElement;
+    expect(screen.getByRole('button', { name: 'Hide library' })).toBeInTheDocument();
+    expect(library).toHaveClass('order-2', 'lg:order-1');
+    expect(workspace).toHaveClass('order-1', 'lg:order-2');
   });
 });
 

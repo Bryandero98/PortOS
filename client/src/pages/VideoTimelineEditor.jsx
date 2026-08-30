@@ -109,7 +109,9 @@ export default function VideoTimelineEditor() {
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [renderJobId, setRenderJobId] = useState(null);
-  const [showLibrary, setShowLibrary] = useState(true);
+  const [showLibrary, setShowLibrary] = useState(() => (
+    typeof window === 'undefined' || window.innerWidth >= 1024
+  ));
   const [libraryTab, setLibraryTab] = useState('clips');
   // Local input draft. Editing the canonical state on every keystroke makes the
   // rename onBlur-vs-canonical comparison always-equal.
@@ -755,7 +757,7 @@ export default function VideoTimelineEditor() {
       <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr_240px] gap-3 min-h-[400px]">
         {/* Left rail — library */}
         {showLibrary && (
-          <div className="bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto">
+          <div className="order-2 lg:order-1 bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto">
             <div className="flex gap-1 mb-2" role="tablist" aria-label="Clip library">
               {LIBRARY_TABS.map(({ id, label, Icon }) => (
                 <button
@@ -810,7 +812,7 @@ export default function VideoTimelineEditor() {
         )}
 
         {/* Center — preview + tracks */}
-        <div className="space-y-3 min-w-0">
+        <div className="order-1 lg:order-2 space-y-3 min-w-0">
           {/* The preview adopts the CANONICAL render canvas, not a fixed 16:9
               box — overlay x/y/width are normalized against that canvas, so a
               portrait or square project would otherwise place them somewhere
@@ -985,7 +987,7 @@ export default function VideoTimelineEditor() {
         </div>
 
         {/* Right rail — inspector */}
-        <div className="bg-port-card/50 border border-port-border rounded-lg p-3 space-y-3">
+        <div className="order-3 bg-port-card/50 border border-port-border rounded-lg p-3 space-y-3">
           <div className="text-xs uppercase text-gray-500 tracking-wide">Inspector</div>
 
           {!selected && (
