@@ -109,4 +109,29 @@ describe('Eidoverse host bridge', () => {
     await once(client, 'close');
     webSocketClients.pop();
   });
+
+  // A managed app on PortOS's reserved :5563 bound 127.0.0.1 explicitly while
+  // this bridge bound the wildcard. macOS/BSD allow both, and the specific bind
+  // wins every connection — so the bridge logged "listening", served nothing,
+  // and the Eidoverse page rendered the other app's UI instead of the world.
+  it('refuses to start when another process already serves the port, rather than binding to silence', async () => {
+    const squatter = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end('a different app');
+    });
+    const contestedPort = await listen(squatter);
+
+    const bridge = createEidoverseHost({
+      targetPort: contestedPort,
+      listenHost: '0.0.0.0',
+      listenPort: contestedPort,
+      certDir: null,
+    });
+    bridges.push(bridge);
+
+    await expect(bridge.start()).rejects.toMatchObject({
+      code: 'EIDOVERSE_HOST_PORT_CONFLICT',
+      status: 409,
+    });
+  });
 });

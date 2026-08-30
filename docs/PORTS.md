@@ -118,18 +118,40 @@ PortOS automatically detects ports from env vars:
 
 ## Guidelines for New Apps
 
-1. **Check Available Ports**: Use PortOS apps list to see which ports are in use
-2. **Pick a Contiguous Range**: Choose a starting port and allocate contiguously
-3. **Define PORTS Object**: Always define ports in a top-level `PORTS` constant
-4. **Avoid Common Ports**: Stay away from well-known ports (80, 443, 3000, 8080, etc.)
+1. **Never bind a managed app inside `5553-5569`** — that whole band belongs to PortOS and its extensions, whether or not a given port currently shows a listener. Managed apps start at `5570`. See the warning below for why a collision here does not announce itself.
+2. **Check Available Ports**: Use PortOS apps list to see which ports are in use
+3. **Pick a Contiguous Range**: Choose a starting port and allocate contiguously
+4. **Define PORTS Object**: Always define ports in a top-level `PORTS` constant
+5. **Avoid Common Ports**: Stay away from well-known ports (80, 443, 3000, 8080, etc.)
 
 ## Recommended Port Ranges
 
 | Range | Purpose |
 |-------|---------|
 | 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and the `portos-db` Docker container on `:5561`) |
-| 5562-5569 | Reserved for PortOS extensions (5563 hosts Eidoverse on demand; 5568 is the managed llama-server default) |
-| 5570-5599 | User applications |
+| 5562-5569 | Reserved for PortOS extensions. Assigned: 5562 whisper, 5563 Eidoverse bridge (on demand), 5568 llama-server. Unassigned but still reserved: 5564-5567, 5569 |
+| 5570-5599 | User applications — **put managed apps here** |
+
+> **A collision inside `5553-5569` is silent, not loud.** The natural assumption is
+> that a second listener on a taken port fails with `EADDRINUSE`, so an accidental
+> overlap would announce itself. It does not. A wildcard bind (`0.0.0.0`) does **not**
+> collide with an existing address-specific bind (`127.0.0.1`, a Tailscale address) —
+> macOS and the BSDs accept both, and the *specific* bind then wins every connection.
+> Two processes each believe they own the port; one of them quietly receives nothing.
+>
+> This is not hypothetical. A managed app bound `127.0.0.1:5563` and the Tailscale
+> address explicitly, while PortOS's Eidoverse bridge bound the wildcard. Both started
+> without an error, PortOS logged `🌐 Eidoverse host listening`, and the Eidoverse page
+> served the other app's admin UI. Nothing in either process reported a problem.
+>
+> The on-demand ports (5563, 5568) are the easiest to get wrong, because they are free
+> at boot and only bind once a user opens the relevant page — so a port scan taken at
+> install time shows them available. Treat the whole band as taken regardless.
+>
+> `server/services/eidoverseHost.js` now probes `127.0.0.1:<port>` before binding and
+> fails with `EIDOVERSE_HOST_PORT_CONFLICT` (409) rather than serving into the void.
+> That guard covers the Eidoverse bridge only — it is not a general defence, which is
+> why the range rule above still matters.
 
 PostgreSQL in native mode listens on the system default `:5432`, outside these ranges. Two third-party
 local runtimes also sit outside them, each on its own upstream default so an unmodified install works

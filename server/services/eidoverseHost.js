@@ -8,6 +8,13 @@ import { ServerError } from '../lib/errorHandler.js';
 import { EIDOVERSE_PORT } from './eidoverse.js';
 
 const BAD_GATEWAY_BODY = 'Eidoverse Worlds is not running.';
+
+// Where a conflicting listener would sit. A local squatter almost always claims
+// loopback — Docker publishes to 127.0.0.1, dev servers bind localhost — and
+// loopback is also the address this bridge's own traffic arrives on when the
+// page is opened from the host itself.
+const CONFLICT_PROBE_HOST = '127.0.0.1';
+const CONFLICT_PROBE_TIMEOUT_MS = 300;
 const FORWARDED_HEADER_NAMES = new Set(['host', 'x-forwarded-host', 'x-forwarded-proto']);
 
 const targetAuthority = (host, port) => `${host}:${port}`;
@@ -151,9 +158,36 @@ export function createEidoverseHost({
     });
   };
 
-  const start = () => {
-    if (server?.listening) return Promise.resolve(status());
-    if (startInFlight) return startInFlight;
+  /**
+   * Is someone already serving this port? A wildcard bind does NOT collide with
+   * an existing address-specific bind — macOS/BSD accept both, and the specific
+   * bind wins every connection — so `listen('0.0.0.0')` reports success while
+   * this bridge receives nothing and logs that it is listening. `listen` cannot
+   * surface that, so probe before binding and fail loudly instead.
+   */
+  const portIsClaimed = () => new Promise((resolve) => {
+    // Port 0 asks the OS for a free ephemeral port, so there is nothing to
+    // collide with — and it is not a connectable address to probe.
+    if (!listenPort) return resolve(false);
+
+    const probe = createConnection({ host: CONFLICT_PROBE_HOST, port: listenPort });
+    const settle = (claimed) => {
+      probe.destroy();
+      resolve(claimed);
+    };
+    probe.once('connect', () => settle(true));
+    probe.once('error', () => settle(false));
+    probe.setTimeout(CONFLICT_PROBE_TIMEOUT_MS, () => settle(false));
+  });
+
+  const openListener = async () => {
+    if (await portIsClaimed()) {
+      throw new ServerError(
+        `Port ${listenPort} is already served by another process, so the Eidoverse bridge would bind without ever receiving a request. `
+        + `${listenPort} is reserved for PortOS — move that app to the user range (see docs/PORTS.md), then retry.`,
+        { status: 409, code: 'EIDOVERSE_HOST_PORT_CONFLICT' },
+      );
+    }
 
     const created = createTailscaleServers(handleHttp, { certDir, httpMirror: false });
     server = created.server;
@@ -161,7 +195,7 @@ export function createEidoverseHost({
     server.on('connection', trackSocket);
     server.on('upgrade', handleUpgrade);
 
-    const attempt = new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const handleListenError = (error) => reject(error);
       server.once('error', handleListenError);
       server.listen(listenPort, listenHost, () => {
@@ -172,8 +206,13 @@ export function createEidoverseHost({
         resolve(status());
       });
     });
+  };
 
-    startInFlight = attempt
+  const start = () => {
+    if (server?.listening) return Promise.resolve(status());
+    if (startInFlight) return startInFlight;
+
+    startInFlight = openListener()
       .catch((error) => {
         server?.close();
         server = null;
