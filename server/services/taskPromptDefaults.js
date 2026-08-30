@@ -25,4 +25,4 @@
 export { DEFAULT_TASK_PROMPTS } from './taskPromptDefaults/prompts.js';
 export { PROMPT_VERSIONS, REFERENCE_WATCH_AUDITED_VERSION } from './taskPromptDefaults/versions.js';
 export { PREVIOUS_DEFAULT_PROMPTS } from './taskPromptDefaults/previousDefaults.js';
-export { promptMatchesShippedDefault, normalizeLegacyPromptHeader } from './taskPromptDefaults/shippedPrompts.js';
+export { promptMatchesShippedDefault } from './taskPromptDefaults/shippedPrompts.js';

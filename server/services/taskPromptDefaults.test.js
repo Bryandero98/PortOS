@@ -9,6 +9,7 @@ import {
   PREVIOUS_DEFAULT_PROMPTS,
 } from './taskPromptDefaults.js';
 import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
+import { DEFAULT_TASK_INTERVALS } from './taskScheduleRegistry.js';
 import { EPIC_DECOMPOSED_LABEL } from './perpetualWork.js';
 // The claim prompts build their contributor-label release from this helper, so the
 // test asserts against the same source rather than re-typing the command text.
@@ -141,6 +142,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('REJECTED.md');
     expect(current).toContain('is:unmerged');
     expect(current).toContain('`PRD.md`');
+    expect(current).toContain('`GOALS.md`');
+    // Precedence, not just presence: the PRD instruction must come first.
+    expect(current.indexOf('`PRD.md`')).toBeLessThan(current.indexOf('`GOALS.md`'));
+    expect(current).toContain('follow the PRD\'s concrete requirements');
     expect(PROMPT_VERSIONS['feature-ideas']).toBe(11);
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['feature-ideas'];
@@ -280,6 +285,20 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // deliberately no "every versioned key has a prompt body" invariant here.
   it('every PREVIOUS_DEFAULT_PROMPTS key is a versioned prompt', () => {
     for (const key of Object.keys(PREVIOUS_DEFAULT_PROMPTS)) {
+      expect(PROMPT_VERSIONS[key], `PROMPT_VERSIONS['${key}']`).toBeTypeOf('number');
+    }
+  });
+
+  // The other direction, and the one that actually bites: taskScheduleStore's
+  // auto-upgrade block is gated on `PROMPT_VERSIONS[taskType] && …`, so a
+  // SCHEDULE prompt with no entry is silently exempt from upgrade forever — a
+  // body change ships and no install ever receives it. console-errors,
+  // error-handling and typing were frozen exactly that way. Pipeline stage
+  // bodies are excluded because they are never persisted (see the
+  // "unversioned pipeline stage body" cases below).
+  it('every scheduled default prompt is versioned, so none is silently exempt from auto-upgrade', () => {
+    for (const key of Object.keys(DEFAULT_TASK_PROMPTS)) {
+      if (!DEFAULT_TASK_INTERVALS[key]) continue;
       expect(PROMPT_VERSIONS[key], `PROMPT_VERSIONS['${key}']`).toBeTypeOf('number');
     }
   });

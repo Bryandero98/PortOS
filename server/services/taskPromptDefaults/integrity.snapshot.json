@@ -67,6 +67,8 @@
     "console-errors": 2,
     "error-handling": 2,
     "typing": 2,
+    "jira-sprint-manager": 1,
+    "jira-status-report": 1,
     "dependency-updates": 4,
     "documentation": 6,
     "ui-bugs": 2,
@@ -190,23 +192,30 @@
       "b199739b21a8c45ed3778b2339ebf55f"
     ],
     "code-quality": [
+      "62752723eba7a39aa94e010911923cc8",
       "b1cce8f89218844746746ceb576553c1"
     ],
     "test-coverage": [
+      "ec70fb2b8e193b6a98bec2fbf337b190",
       "c2b0f0dee5bc881239684e706ea88324"
     ],
     "performance": [
+      "c8224243c15f6897ee04be25d172f021",
       "4fea5eb3585bdc150980934b289016bc"
     ],
     "accessibility": [
+      "6c927b9b70950e9a38fc5944d15cad3b",
+      "ce7377d0ac57cbf0526074cfb95e3803",
       "b07cfe1e367411036ef1d4cc4b6e9d2e"
     ],
     "dependency-updates": [
+      "020d66b93698341c556eca1eee851bee",
       "640a7c4214e6bdba2bbd5b9061d9d425",
       "3f461b1c111ba45b7fa5016883cfa54d",
       "7ed05444e2602f4895bdd1e5e0edcaa8"
     ],
     "documentation": [
+      "b6540f4ba13832226fd0c85cf1955f99",
       "074ea22140f8f6a02c7e40a6bc7b0614",
       "658395fa391df5a0fefaaebdf8dbedb7",
       "751186658f5d9a9dbccdd6830946f3d8",
@@ -214,9 +223,11 @@
       "b375f95ae2274f03d06ba5ceff5705d8"
     ],
     "ui-bugs": [
+      "ac85ee1bd35c1475f78b75b198dd6c97",
       "01d2a7e034713195f33071f2c71a3c99"
     ],
     "mobile-responsive": [
+      "699b2fe64ee663d5d9e2e70919592dd4",
       "636bdc17fa39ed2f2e27623284c8e04c"
     ],
     "release-check": [
@@ -254,6 +265,16 @@
     ],
     "stash-cleanup": [
       "f9de8b10937919ceb6656fbdb70179c4"
+    ],
+    "console-errors": [
+      "ed7a4fe732c5227d3951df4ed63d1b0c",
+      "3e3f690729ead5e312927ae4bce330c0"
+    ],
+    "error-handling": [
+      "26225ac04f2f35feb61151b2e6474465"
+    ],
+    "typing": [
+      "d8fd1423cf2a523b528ed7d2d7a2bb55"
     ]
   }
 }

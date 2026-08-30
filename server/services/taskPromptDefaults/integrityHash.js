@@ -30,16 +30,25 @@ const API_URL_PLACEHOLDER = '{{PORTOS_API_URL}}';
 // integrity test failed while nothing had actually drifted (issue #3359).
 const LEGACY_API_ORIGIN = 'http://localhost:5555';
 
-// Longest first: the two origins can overlap — `PORTOS_API_URL=http://localhost`
-// (port 80) is a prefix of the legacy literal, and replacing it first would turn
+// The pre-unification self-improvement defaults drove the UI with Playwright and
+// so hardcode the *UI* origin instead. Same reasoning as (2) above: frozen bytes,
+// pinned rather than derived, and given their own placeholder so a body carrying
+// the UI origin never hashes the same as one carrying the API origin.
+const LEGACY_UI_ORIGIN = 'http://localhost:5554';
+const UI_URL_PLACEHOLDER = '{{PORTOS_UI_URL}}';
+
+// Longest first: the origins can overlap — `PORTOS_API_URL=http://localhost`
+// (port 80) is a prefix of the legacy literals, and replacing it first would turn
 // `http://localhost:5555` into `{{PORTOS_API_URL}}:5555`, which the legacy pass
 // can then no longer match. Replacing the longer candidate first leaves only
-// standalone occurrences of the shorter one.
+// standalone occurrences of the shorter one. The sort is stable, so on a length
+// tie (an install whose API origin IS one of the legacy literals) the configured
+// apiUrl still wins and current defaults keep hashing as {{PORTOS_API_URL}}.
 export const normalizePromptForHash = (body, apiUrl = PORTOS_API_URL) => (
-  [apiUrl, LEGACY_API_ORIGIN]
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)
-    .reduce((out, origin) => out.split(origin).join(API_URL_PLACEHOLDER), String(body))
+  [[apiUrl, API_URL_PLACEHOLDER], [LEGACY_API_ORIGIN, API_URL_PLACEHOLDER], [LEGACY_UI_ORIGIN, UI_URL_PLACEHOLDER]]
+    .filter(([origin]) => origin)
+    .sort((a, b) => b[0].length - a[0].length)
+    .reduce((out, [origin, placeholder]) => out.split(origin).join(placeholder), String(body))
 );
 
 export const hashPromptBody = (body, apiUrl = PORTOS_API_URL) => createHash('md5')

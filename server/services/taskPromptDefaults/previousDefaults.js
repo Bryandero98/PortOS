@@ -9273,6 +9273,22 @@ Repository: {repoPath}
 Fix any vulnerabilities found and commit with security advisory notes.`,
   ],
   'code-quality': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Code Quality Review
+
+Analyze {appName} for maintainability improvements:
+
+Repository: {repoPath}
+
+1. Find DRY violations - similar code in multiple places
+2. Identify functions >50 lines that should be split
+3. Look for missing error handling
+4. Find dead code and unused imports
+5. Check for console.log that should be removed
+6. Look for TODO/FIXME that need addressing
+7. Identify magic numbers that should be constants
+
+Focus on the main source directories. Refactor issues found and commit improvements.`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Code Quality Review
 
@@ -9293,6 +9309,28 @@ Focus on:
 Refactor issues found and commit improvements.`,
   ],
   'test-coverage': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Improve Test Coverage
+
+Analyze and improve test coverage for {appName}:
+
+Repository: {repoPath}
+
+1. Check existing tests and identify untested critical paths
+2. Look for:
+   - API routes without tests
+   - Services with complex logic
+   - Error handling paths
+   - Edge cases
+
+3. Add tests following existing patterns in the project
+4. Ensure tests:
+   - Use appropriate mocks
+   - Test edge cases
+   - Follow naming conventions
+
+5. Run tests to verify all pass
+6. Commit test additions with clear message describing coverage`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Improve Test Coverage
 
@@ -9319,6 +9357,33 @@ Analyze and improve test coverage for PortOS:
 6. Commit test additions with clear message describing what's covered`,
   ],
   'performance': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Performance Analysis
+
+Analyze {appName} for performance issues:
+
+Repository: {repoPath}
+
+1. Review components/views for:
+   - Unnecessary re-renders
+   - Missing memoization
+   - Large files that should be split
+
+2. Review backend for:
+   - N+1 query patterns
+   - Missing caching opportunities
+   - Inefficient file operations
+   - Slow API endpoints
+
+3. Review build/bundle for:
+   - Missing code splitting
+   - Large dependencies that could be optimized
+
+4. Check for:
+   - Memory leaks
+   - Unnecessary broadcasts/events
+
+Optimize and commit improvements.`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Performance Analysis
 
@@ -9345,6 +9410,43 @@ Analyze PortOS for performance issues:
 Optimize and commit improvements.`,
   ],
   'accessibility': [
+    // Outgoing pre-unification default, self-improvement schedule.
+    `[Self-Improvement] Accessibility Audit
+
+Use Playwright MCP to audit PortOS accessibility:
+
+1. Navigate to http://localhost:5554/
+2. Use browser_snapshot to get accessibility tree
+3. Check each main route for:
+   - Missing ARIA labels
+   - Missing alt text on images
+   - Insufficient color contrast
+   - Keyboard navigation issues
+   - Focus indicators
+
+4. Fix accessibility issues in React components
+5. Add appropriate aria-* attributes
+6. Test and commit changes`,
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Accessibility Audit
+
+Audit {appName} for accessibility issues:
+
+Repository: {repoPath}
+
+If the app has a web UI:
+1. Navigate to the app's UI
+2. Check for:
+   - Missing ARIA labels
+   - Missing alt text on images
+   - Insufficient color contrast
+   - Keyboard navigation issues
+   - Focus indicators
+   - Semantic HTML usage
+
+3. Fix accessibility issues in components
+4. Add appropriate aria-* attributes
+5. Test and commit changes`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Accessibility Audit
 
@@ -9364,6 +9466,33 @@ Use Playwright MCP to audit PortOS accessibility:
 6. Test and commit changes`,
   ],
   'dependency-updates': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Dependency Updates
+
+Check {appName} dependencies for updates and security vulnerabilities:
+
+Repository: {repoPath}
+
+1. Run npm audit (or equivalent package manager)
+2. Check for outdated packages
+3. Review CRITICAL and HIGH severity vulnerabilities
+4. For each vulnerability:
+   - Assess actual risk
+   - Check if update available
+   - Test updates don't break functionality
+
+5. Update dependencies carefully:
+   - Patch versions first (safest)
+   - Then minor versions
+   - Major versions need careful review
+
+6. After updating:
+   - Run tests
+   - Verify the app starts correctly
+
+7. Commit with clear changelog
+
+IMPORTANT: Only update one major version bump at a time.`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Dependency Updates and Security Audit
 
@@ -9536,6 +9665,33 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 IMPORTANT: Only update one major version bump at a time.`,
   ],
   'documentation': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Update Documentation
+
+Review and improve {appName} documentation:
+
+Repository: {repoPath}
+
+1. Check README.md:
+   - Installation instructions current?
+   - Quick start guide clear?
+   - Feature overview complete?
+
+2. Review inline documentation:
+   - Add JSDoc to exported functions
+   - Document complex algorithms
+   - Explain non-obvious code
+
+3. Check for docs/ folder:
+   - Are all features documented?
+   - Is information current?
+   - Add missing guides if needed
+
+4. Update PLAN.md or similar if present:
+   - Mark completed milestones
+   - Document architectural decisions
+
+Commit documentation improvements.`,
     // prior default (pre-genericization / intermediate)
     `[Improvement: {appName}] Update Documentation
 
@@ -9680,6 +9836,19 @@ Repository: {repoPath}
 Commit documentation improvements.`,
   ],
   'ui-bugs': [
+    // Outgoing pre-unification default, self-improvement schedule.
+    `[Self-Improvement] UI Bug Analysis
+
+Use Playwright MCP (browser_navigate, browser_snapshot, browser_console_messages) to analyze PortOS UI:
+
+1. Navigate to http://localhost:5554/
+2. Check each main route: /, /apps, /cos, /cos/tasks, /cos/agents, /devtools, /devtools/history, /providers, /usage
+3. For each route:
+   - Take a browser_snapshot to see the page structure
+   - Check browser_console_messages for JavaScript errors
+   - Look for broken UI elements, missing data, failed requests
+4. Fix any bugs found in the React components or API routes
+5. Run tests and commit changes`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] UI Bug Analysis
 
@@ -9695,6 +9864,23 @@ Use Playwright MCP (browser_navigate, browser_snapshot, browser_console_messages
 5. Run tests and commit changes`,
   ],
   'mobile-responsive': [
+    // Outgoing pre-unification default, self-improvement schedule.
+    `[Self-Improvement] Mobile Responsiveness Analysis
+
+Use Playwright MCP to test PortOS at different viewport sizes:
+
+1. browser_resize to mobile (375x812), then navigate to http://localhost:5554/
+2. Take browser_snapshot and analyze for:
+   - Text overflow or truncation
+   - Buttons too small to tap (< 44px)
+   - Horizontal scrolling issues
+   - Elements overlapping
+   - Navigation usability
+3. Repeat at tablet (768x1024) and desktop (1440x900)
+4. Fix Tailwind CSS responsive classes (sm:, md:, lg:) as needed
+5. Test fixes and commit changes
+
+Focus on these routes: /cos, /cos/tasks, /devtools, /providers`,
     // prior default (pre-genericization / intermediate)
     `[Self-Improvement] Mobile Responsiveness Analysis
 
@@ -11485,6 +11671,96 @@ Run \`git stash list\`. For each \`stash@{N}\`:
 ## Step 3: Report
 
 Summarize: how many stashes were reviewed, how many were dropped (grouped by reason: superseded vs. stale/abandoned), and — for anything classified REAL UNLANDED WORK — what it is, which files it touches, and a recommendation (recover as a branch, cherry-pick specific hunks, or leave it for the user to decide). When in doubt about whether a stash is safe to drop, leave it in the stash and say so in the report rather than dropping it.`,
+  ],
+  'console-errors': [
+    // Outgoing pre-unification default, self-improvement schedule.
+    `[Self-Improvement] Console Error Investigation
+
+Use Playwright MCP to find and fix console errors:
+
+1. Navigate to http://localhost:5554/
+2. Call browser_console_messages with level: "error"
+3. Visit each route and capture errors:
+   - /, /apps, /cos, /cos/tasks, /cos/agents
+   - /devtools, /devtools/history, /devtools/runner
+   - /providers, /usage, /prompts
+
+4. For each error:
+   - Identify the source file and line
+   - Understand the root cause
+   - Implement a fix
+
+5. Test fixes and commit changes`,
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Console Error Investigation
+
+Find and fix console errors in {appName}:
+
+Repository: {repoPath}
+
+1. If the app has a UI, check browser console for errors
+2. Check server logs for errors
+3. For each error:
+   - Identify the source file and line
+   - Understand the root cause
+   - Implement a fix
+
+4. Test fixes and commit changes`,
+  ],
+  'error-handling': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] Improve Error Handling
+
+Enhance error handling in {appName}:
+
+Repository: {repoPath}
+
+1. Review code for:
+   - Missing try-catch blocks where needed
+   - Silent failures (empty catch blocks)
+   - Errors that should be logged
+   - User-facing error messages
+
+2. Add error handling for:
+   - Network requests
+   - File operations
+   - Database queries
+   - External API calls
+
+3. Ensure errors are:
+   - Logged appropriately
+   - Have clear messages
+   - Include relevant context
+   - Don't expose sensitive data
+
+4. Test error paths and commit improvements`,
+  ],
+  'typing': [
+    // Outgoing pre-unification default, app-improvement schedule.
+    `[App Improvement: {appName}] TypeScript Type Improvements
+
+Improve TypeScript types in {appName}:
+
+Repository: {repoPath}
+
+1. Review TypeScript files for:
+   - 'any' types that should be specific
+   - Missing type annotations
+   - Type assertions that could be avoided
+   - Missing interfaces/types for objects
+
+2. Add types for:
+   - Function parameters and returns
+   - Component props
+   - API responses
+   - Configuration objects
+
+3. Ensure:
+   - Types are properly exported
+   - No implicit any
+   - Types are reusable
+
+4. Run type checking and commit improvements`,
   ],
 };
 

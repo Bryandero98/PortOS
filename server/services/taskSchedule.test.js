@@ -427,30 +427,16 @@ describe('taskSchedule', () => {
     })
   })
 
-  describe('[App Improvement: …] header generation', () => {
-    // The unification of the self-improvement and app-improvement schedules
-    // renamed every basic prompt header from `[App Improvement: {appName}]` to
-    // `[Improvement: {appName}]` without preserving the outgoing bodies. Every
-    // install carrying that generation stopped matching a shipped default, got
-    // stamped promptCustomized by the legacy migration, and has been frozen out
-    // of every prompt upgrade since — nine task types on a real install. These
-    // fixtures are the bodies those installs actually stored.
-    const legacyConsoleErrors = `[App Improvement: {appName}] Console Error Investigation
-
-Find and fix console errors in {appName}:
-
-Repository: {repoPath}
-
-1. If the app has a UI, check browser console for errors
-2. Check server logs for errors
-3. For each error:
-   - Identify the source file and line
-   - Understand the root cause
-   - Implement a fix
-
-4. Test fixes and commit changes`
-    const legacySecurity = PREVIOUS_DEFAULT_PROMPTS['security'].find((p) => p.startsWith('[App Improvement: '))
-    const legacyFeatureIdeas = PREVIOUS_DEFAULT_PROMPTS['feature-ideas'].find((p) => p.startsWith('[Self-Improvement] '))
+  describe('pre-unification prompt generations (self- + app-improvement split)', () => {
+    // Before the two improvement schedules were unified, every basic task
+    // shipped up to two bodies with different headers — `[Self-Improvement] …`
+    // and `[App Improvement: {appName}] …`. Unification replaced both with a
+    // single `[Improvement: {appName}] …` body but preserved neither, so an
+    // install carrying either generation stopped matching any shipped default,
+    // was stamped promptCustomized by the legacy migration, and has been frozen
+    // out of every prompt upgrade since — nine task types on a real install.
+    const fromEra = (taskType, header) =>
+      PREVIOUS_DEFAULT_PROMPTS[taskType].find((p) => p.startsWith(header))
 
     const loadOne = async (taskType, prompt, promptVersion) => {
       mockSchedule({
@@ -459,50 +445,37 @@ Repository: {repoPath}
       return (await loadSchedule()).tasks[taskType]
     }
 
+    // One case per shape the freeze took: header-only drift, a body that also
+    // changed, a type whose ONLY revision was the split (so it had no
+    // PROMPT_VERSIONS entry at all), and the older self-improvement generation.
     it.each([
-      ['console-errors', legacyConsoleErrors, 1],
-      ['security', legacySecurity, 1],
-      ['feature-ideas', legacyFeatureIdeas, 2],
-    ])('self-heals and upgrades a stored %s prompt from that generation', async (taskType, prompt, storedVersion) => {
-      const task = await loadOne(taskType, prompt, storedVersion)
+      ['console-errors', '[App Improvement: '],
+      ['security', '[App Improvement: '],
+      ['typing', '[App Improvement: '],
+      ['console-errors', '[Self-Improvement] '],
+      ['feature-ideas', '[Self-Improvement] '],
+    ])('self-heals and upgrades a stored %s prompt from the %s generation', async (taskType, header) => {
+      const prompt = fromEra(taskType, header)
+      expect(prompt, `no ${header} body registered for ${taskType}`).toBeDefined()
+      const task = await loadOne(taskType, prompt, 1)
       expect(task.promptCustomized).toBe(false)
       expect(task.prompt).toBe(DEFAULT_TASK_PROMPTS[taskType])
       expect(task.promptVersion).toBe(PROMPT_VERSIONS[taskType])
     })
 
-    // Without a PROMPT_VERSIONS entry the auto-upgrade block is skipped
-    // entirely, so clearing promptCustomized alone would leave these three
-    // pinned to the legacy body forever.
-    it('versions the task types whose only shipped revision was the header rename', () => {
-      for (const t of ['console-errors', 'error-handling', 'typing']) {
-        expect(PROMPT_VERSIONS[t], `PROMPT_VERSIONS['${t}']`).toBeGreaterThanOrEqual(2)
-      }
-    })
-
-    it('preserves a genuine user customization that merely uses the legacy header', async () => {
+    it('preserves a genuine user customization that merely mimics a retired header', async () => {
       const custom = '[App Improvement: {appName}] My own audit that matches no shipped default.'
       const task = await loadOne('console-errors', custom, 1)
       expect(task.prompt).toBe(custom)
       expect(task.promptCustomized).toBe(true)
     })
 
-    // The frozen feature-ideas body sent every run to `data/COS-GOALS.md`, a
-    // file the same unification folded into the root GOALS.md.
-    it('retires the COS-GOALS.md reference once feature-ideas upgrades', async () => {
-      const task = await loadOne('feature-ideas', legacyFeatureIdeas, 2)
-      expect(legacyFeatureIdeas).toContain('data/COS-GOALS.md')
-      expect(task.prompt).not.toContain('COS-GOALS.md')
-    })
-  })
-
-  describe('feature-ideas product-source precedence', () => {
-    it('reads PRD.md first and falls back to GOALS.md when brainstorming', () => {
-      const prompt = DEFAULT_TASK_PROMPTS['feature-ideas']
-      expect(prompt).toContain('`PRD.md`')
-      expect(prompt).toContain('`GOALS.md`')
-      // Precedence, not just presence: the PRD instruction must come first.
-      expect(prompt.indexOf('`PRD.md`')).toBeLessThan(prompt.indexOf('`GOALS.md`'))
-      expect(prompt).toContain('follow the PRD\'s concrete requirements')
+    // Pins the provenance of the frozen feature-ideas body: it is the one that
+    // sent every run to `data/COS-GOALS.md`, a file the same unification folded
+    // into the root GOALS.md. The upgrade itself is covered above.
+    it('pins the frozen feature-ideas body as the COS-GOALS.md-era default', () => {
+      expect(fromEra('feature-ideas', '[Self-Improvement] ')).toContain('data/COS-GOALS.md')
+      expect(DEFAULT_TASK_PROMPTS['feature-ideas']).not.toContain('COS-GOALS.md')
     })
   })
 

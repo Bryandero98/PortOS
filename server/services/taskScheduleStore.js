@@ -15,9 +15,6 @@ import {
 import {
   DEFAULT_TASK_PROMPTS,
   PROMPT_VERSIONS,
-  // True when a stored prompt matches a shipped default (current or prior).
-  // A genuine user edit never does, so loadSchedule treats a match as
-  // "not really customized" — see taskPromptDefaults/shippedPrompts.js.
   promptMatchesShippedDefault
 } from './taskPromptDefaults.js';
 
@@ -215,7 +212,8 @@ async function readSchedule() {
           config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
           needsSave = true;
         } else if (promptMatchesShippedDefault(config.prompt, taskType)) {
-          // Matches a known previous default — assign version 1 so auto-upgrade triggers
+          // Matches a shipped default — a prior one, or the current one under
+          // the retired header. Assign version 1 so auto-upgrade triggers.
           config.promptVersion = 1;
           needsSave = true;
         } else {
