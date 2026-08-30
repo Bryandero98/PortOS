@@ -161,21 +161,51 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     expect(screen.queryByText('gone.png')).not.toBeInTheDocument();
   });
 
-  it('reserves separate 28px hit targets for selection and removal', () => {
+  it('provides a 28px remove target without selecting a normal-width block', () => {
     const onSelect = vi.fn();
     const onRemove = vi.fn();
     render(
-      <LaneBlock entry={{ ...entry, durationSec: 0 }} label="logo.png" tone="" isSelected={false} isMissing={false} pxPerSec={40} onSelect={onSelect} onRemove={onRemove} />,
+      <LaneBlock entry={entry} label="logo.png" tone="" isSelected={false} isMissing={false} pxPerSec={40} onSelect={onSelect} onRemove={onRemove} />,
     );
 
     const remove = screen.getByRole('button', { name: 'Remove logo.png from timeline' });
-    const block = remove.parentElement;
-    expect(block).toHaveStyle({ width: '56px' });
-    expect(block.className).not.toContain('overflow-hidden');
     expect(remove.className).toContain('min-w-[28px]');
     expect(remove.className).toContain('min-h-[28px]');
     expect(remove.className).toContain('-translate-y-1/2');
 
+    fireEvent.pointerDown(remove);
+    fireEvent.click(remove);
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onRemove).toHaveBeenCalledOnce();
+    expect(onRemove).toHaveBeenCalledWith('ov-1');
+  });
+
+  it('keeps compact entries at their temporal width and reveals removal after selection', () => {
+    const compactEntry = { ...entry, durationSec: 0 };
+    const onSelect = vi.fn();
+    const onRemove = vi.fn();
+    const { rerender } = render(
+      <LaneBlock entry={compactEntry} label="logo.png" tone="" isSelected={false} isMissing={false} pxPerSec={40} onSelect={onSelect} onRemove={onRemove} />,
+    );
+
+    const block = screen.getByText('logo.png').closest('div');
+    expect(block).toHaveStyle({ width: '28px' });
+    expect(screen.queryByRole('button', { name: 'Remove logo.png from timeline' })).not.toBeInTheDocument();
+
+    fireEvent.click(block);
+    expect(onSelect).toHaveBeenCalledWith('ov-1');
+
+    rerender(
+      <LaneBlock entry={compactEntry} label="logo.png" tone="" isSelected isMissing={false} pxPerSec={40} onSelect={onSelect} onRemove={onRemove} />,
+    );
+    expect(block.className).toContain('z-10');
+
+    const remove = screen.getByRole('button', { name: 'Remove logo.png from timeline' });
+    expect(remove.className).toContain('min-w-[28px]');
+    expect(remove.className).toContain('min-h-[28px]');
+
+    onSelect.mockClear();
     fireEvent.pointerDown(remove);
     fireEvent.click(remove);
 
