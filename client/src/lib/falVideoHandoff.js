@@ -19,10 +19,17 @@ export function buildFalH3MaxPrompt(prompt, negativePrompt = '') {
  * copy the prepared prompt. Opening first avoids popup blockers caused by
  * awaiting the Clipboard API before window.open().
  */
-export function openFalH3MaxFreeTool({ prompt, negativePrompt = '' } = {}) {
+export function openFalH3MaxFreeTool({
+  prompt,
+  negativePrompt = '',
+  onCopyFailure,
+} = {}) {
   const prepared = buildFalH3MaxPrompt(prompt, negativePrompt);
   if (!prepared) return false;
   globalThis.open?.(FAL_H3_MAX_FREE_URL, '_blank', 'noopener,noreferrer');
-  void copyToClipboard(prepared, 'fal H3 Max prompt copied — paste it into the free tool');
+  void copyToClipboard(prepared, 'fal H3 Max prompt copied — paste it into the free tool')
+    .then((copied) => {
+      if (!copied) onCopyFailure?.(prepared);
+    });
   return true;
 }

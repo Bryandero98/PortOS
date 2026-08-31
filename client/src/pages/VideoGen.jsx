@@ -57,6 +57,7 @@ import { resolveVideoStagePreview, VIDEO_STAGE_KIND } from '../lib/videoStagePre
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import GalleryVideoPicker from '../components/videoGen/GalleryVideoPicker';
+import FalH3MaxPromptFallback from '../components/videoGen/FalH3MaxPromptFallback';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import PromptEnhancer from '../components/media/PromptEnhancer';
@@ -114,6 +115,7 @@ const MODES = [
 
 export default function VideoGen() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [falManualPrompt, setFalManualPrompt] = useState('');
   const settingsOpen = searchParams.get('settings') === '1';
   const openSettings = () => setSearchParams(prev => { const n = new URLSearchParams(prev); n.set('settings', '1'); return n; });
   const closeSettings = () => {
@@ -198,6 +200,7 @@ export default function VideoGen() {
   const openFalFree = () => openFalH3MaxFreeTool({
     prompt: envelopedPrompt,
     negativePrompt,
+    onCopyFailure: setFalManualPrompt,
   });
   // Conditioning the selected peer model cannot take. The server refuses a job
   // holding any of it (MEDIA_PROVIDER_INPUT_UNSUPPORTED) rather than silently
@@ -1578,12 +1581,21 @@ export default function VideoGen() {
       <GalleryVideoPicker
         open={falImportOpen}
         onClose={() => setFalImportOpen(false)}
-        onSelect={() => {
-          refreshHistory();
-          toast.success('Video imported to Media History');
+        onSelect={(_item, context) => {
+          if (context?.origin === 'upload') {
+            refreshHistory();
+            toast.success('Video imported to Media History');
+          } else {
+            toast('That video is already in Media History');
+          }
         }}
         allowUpload
         uploadToGallery
+      />
+
+      <FalH3MaxPromptFallback
+        prompt={falManualPrompt}
+        onClose={() => setFalManualPrompt('')}
       />
 
       <Drawer open={settingsOpen} onClose={closeSettings} title="Media Generation Settings" size="lg">

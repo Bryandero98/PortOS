@@ -30,4 +30,16 @@ describe('fal H3 Max free-tool handoff', () => {
     expect(openFalH3MaxFreeTool({ prompt: '  ' })).toBe(false);
     expect(globalThis.open).not.toHaveBeenCalled();
   });
+
+  it('returns the prepared prompt to the caller when automatic copying fails', async () => {
+    const onCopyFailure = vi.fn();
+    globalThis.navigator.clipboard.writeText.mockRejectedValueOnce(new Error('blocked'));
+
+    openFalH3MaxFreeTool({
+      prompt: 'The door opens.', negativePrompt: 'cuts', onCopyFailure,
+    });
+
+    await vi.waitFor(() => expect(onCopyFailure)
+      .toHaveBeenCalledWith('The door opens.\n\nAvoid: cuts'));
+  });
 });

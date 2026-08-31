@@ -37,6 +37,7 @@ import LoomSettingsDrawer from '../components/fableloom/LoomSettingsDrawer';
 import LoomSeriesPlan from '../components/fableloom/LoomSeriesPlan';
 import LoomValidationPanel from '../components/fableloom/LoomValidationPanel';
 import LoomAiRunStatus from '../components/fableloom/LoomAiRunStatus';
+import FalH3MaxPromptFallback from '../components/videoGen/FalH3MaxPromptFallback';
 import { fieldClass, labelClass } from '../components/fableloom/fieldStyles';
 import {
   buildFableLoomImageRequest, buildFableLoomVideoRequest,
@@ -70,6 +71,7 @@ export default function FableLoomStory({ view = 'graph' }) {
   const [notFound, setNotFound] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [falManualPrompt, setFalManualPrompt] = useState('');
   const playOpen = searchParams.get('play') === '1';
   useScrollLock(playOpen);
   const seriesPlanOpen = episodeId === 'plan';
@@ -348,7 +350,10 @@ export default function FableLoomStory({ view = 'graph' }) {
     const request = buildFableLoomVideoRequest({
       loom, episodeId, node: targetNode, stylePreset: sceneStylePreset,
     });
-    return openFalH3MaxFreeTool(request);
+    return openFalH3MaxFreeTool({
+      ...request,
+      onCopyFailure: setFalManualPrompt,
+    });
   }, [episodeId, generationDisabledReason, loom, mediaReadiness.reason, mediaWorkflowBlocked, sceneStylePreset, styleContextLoading, styleContextUnavailable]);
 
   const basePath = `/fableloom/${loomId}`;
@@ -724,6 +729,11 @@ export default function FableLoomStory({ view = 'graph' }) {
           <LoomPlayPanel loom={loom} episode={episode} onClose={() => setPlayOpen(false)} />
         </Modal>
       )}
+
+      <FalH3MaxPromptFallback
+        prompt={falManualPrompt}
+        onClose={() => setFalManualPrompt('')}
+      />
     </div>
   );
 }

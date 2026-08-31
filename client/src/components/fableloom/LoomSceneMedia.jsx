@@ -218,6 +218,7 @@ export default function LoomSceneMedia({
           onSelect={(item) => onAttachVideo?.(node, item)}
           allowUpload
           uploadToGallery
+          accept="video/mp4,.mp4"
         />
       )}
     </div>

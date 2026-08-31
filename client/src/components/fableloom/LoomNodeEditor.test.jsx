@@ -12,15 +12,19 @@ vi.mock('../../services/api', () => ({
   updateLoomTransition: vi.fn(),
 }));
 
+const pickerMocks = vi.hoisted(() => ({
+  item: { id: 'upload-example', filename: 'upload-example.mp4' },
+  props: vi.fn(),
+}));
 vi.mock('../videoGen/GalleryVideoPicker', () => ({
-  default: ({ open, onSelect }) => open ? (
-    <button
-      type="button"
-      onClick={() => onSelect({ id: 'upload-example', filename: 'upload-example.mp4' })}
-    >
-      Pick fal MP4
-    </button>
-  ) : null,
+  default: (props) => {
+    pickerMocks.props(props);
+    return props.open ? (
+      <button type="button" onClick={() => props.onSelect(pickerMocks.item)}>
+        Pick gallery video
+      </button>
+    ) : null;
+  },
 }));
 
 import {
@@ -132,7 +136,10 @@ const renderCanonicalEditor = (presence = 'onscreen') => {
   );
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  pickerMocks.item = { id: 'upload-example', filename: 'upload-example.mp4' };
+});
 
 describe('LoomNodeEditor paths', () => {
   it('requires confirmation before deleting a scene', async () => {
@@ -338,11 +345,25 @@ describe('LoomNodeEditor scene media', () => {
     renderEditor();
 
     await user.click(screen.getByRole('button', { name: 'Attach video' }));
-    await user.click(screen.getByRole('button', { name: 'Pick fal MP4' }));
+    expect(pickerMocks.props).toHaveBeenLastCalledWith(expect.objectContaining({
+      accept: 'video/mp4,.mp4',
+    }));
+    await user.click(screen.getByRole('button', { name: 'Pick gallery video' }));
 
     await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
       'loom-1', 'ep-1', 'n1', { videoHistoryId: 'upload-example' }, { silent: true },
     ));
+  });
+
+  it('refuses a non-MP4 history record that scene playback cannot address', async () => {
+    const user = userEvent.setup();
+    pickerMocks.item = { id: 'upload-example', filename: 'upload-example.mov' };
+    renderEditor();
+
+    await user.click(screen.getByRole('button', { name: 'Attach video' }));
+    await user.click(screen.getByRole('button', { name: 'Pick gallery video' }));
+
+    expect(updateLoomNode).not.toHaveBeenCalled();
   });
 
   it('uses the scene for text-to-video when no rendered still exists', async () => {
