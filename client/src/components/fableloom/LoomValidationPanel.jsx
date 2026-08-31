@@ -67,13 +67,13 @@ export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
   );
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-3 sm:p-4 space-y-3 sm:space-y-4">
       {/* Panel Tab Navigation */}
-      <div className="flex border-b border-port-border mb-3 text-xs">
+      <div className="flex border-b border-port-border mb-3 text-xs overflow-x-auto scrollbar-hide touch-pan-x">
         <button
           type="button"
           onClick={() => setActiveTab('structure')}
-          className={`px-3 py-1.5 font-medium border-b-2 flex items-center gap-1.5 ${
+          className={`shrink-0 whitespace-nowrap px-2.5 sm:px-3 py-2 font-medium border-b-2 flex items-center gap-1.5 ${
             activeTab === 'structure'
               ? 'border-port-accent text-port-accent'
               : 'border-transparent text-port-text-muted hover:text-port-text'
@@ -85,7 +85,7 @@ export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
         <button
           type="button"
           onClick={() => setActiveTab('production')}
-          className={`px-3 py-1.5 font-medium border-b-2 flex items-center gap-1.5 ${
+          className={`shrink-0 whitespace-nowrap px-2.5 sm:px-3 py-2 font-medium border-b-2 flex items-center gap-1.5 ${
             activeTab === 'production'
               ? 'border-port-accent text-port-accent'
               : 'border-transparent text-port-text-muted hover:text-port-text'
@@ -101,7 +101,7 @@ export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
       ) : (
         <>
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 mb-2">
               <h3 className="text-sm font-semibold">Structure</h3>
               {structural?.stats && (
                 <span className="text-xs text-port-text-muted">
@@ -124,7 +124,7 @@ export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
 
           {structural?.productionReadiness && (
             <div>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 mb-2">
                 <h3 className="text-sm font-semibold">Production readiness</h3>
                 <span className="text-xs text-port-text-muted">
                   {structural.productionReadiness.ready ? 'Ready for live voice' : `${structural.productionReadiness.totalErrors} blocking error(s)`}
@@ -141,7 +141,7 @@ export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
           )}
 
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 mb-2">
               <h3 className="text-sm font-semibold">Story review</h3>
               <button
                 type="button"
