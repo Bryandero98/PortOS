@@ -15,12 +15,16 @@ const pythonRequiredHelper = source.match(/^python_required\(\) \{\n(?:.*\n)*?^\
 const tempVenvs = [];
 const installFlags = [
   'INSTALL_MFLUX', 'INSTALL_VIDEO', 'INSTALL_LTX2', 'INSTALL_LTX25',
-  'INSTALL_FASTVIDEO', 'INSTALL_WAN22', 'INSTALL_MINIMAX_H3',
+  'INSTALL_LTX25_CUDA', 'INSTALL_FASTVIDEO', 'INSTALL_WAN22', 'INSTALL_WAN22_CUDA', 'INSTALL_MINIMAX_H3',
   'INSTALL_MERERUN', 'INSTALL_MINIMAX_H3_CUDA', 'INSTALL_MUSICGEN',
   'INSTALL_AUDIOLDM2', 'INSTALL_ACESTEP', 'INSTALL_ACESTEP15',
   'INSTALL_MINIMAX_MUSIC3', 'INSTALL_MINIMAX_MUSIC3_MLX',
   'INSTALL_MUSCRIPTOR', 'INSTALL_FLUX2',
 ];
+
+it('tells UI-driven BYOV installs that no manual Python configuration is needed', () => {
+  expect(source).toContain('PortOS auto-discovers the requested runtime; no Python path or other manual configuration is needed.');
+});
 
 afterEach(() => {
   while (tempVenvs.length) rmSync(tempVenvs.pop(), { recursive: true, force: true });
@@ -52,11 +56,14 @@ function venvExists(venv) {
 }
 
 function pythonRequired(env = {}) {
-  const installEnv = Object.fromEntries(installFlags.map((name) => [name, '0']));
+  const installEnv = Object.fromEntries(installFlags.map((name) => [name, env[name] ?? '0']));
+  const assignments = Object.entries(installEnv)
+    .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+    .join('\n');
   const result = execFileSync(
     'bash',
-    ['-c', `${pythonRequiredHelper}\npython_required && echo yes || echo no`],
-    { encoding: 'utf8', env: { ...process.env, ...installEnv, ...env } },
+    ['-c', `${assignments}\n${pythonRequiredHelper}\npython_required && echo yes || echo no`],
+    { encoding: 'utf8', env: process.env },
   ).trim();
   return result === 'yes';
 }
@@ -93,10 +100,12 @@ describe('setup-image-video venv layout handling (issue #4200)', () => {
     expect(existsHelper).toBeTruthy();
   });
 
-  it('requires no Python only for an explicit mere.run-only install', () => {
+  it.skipIf(process.platform === 'win32')('requires no Python only for an explicit mere.run-only install', () => {
     expect(pythonRequiredHelper).toBeTruthy();
     expect(pythonRequired({ INSTALL_MERERUN: '1' })).toBe(false);
     expect(pythonRequired({ INSTALL_MERERUN: '1', INSTALL_LTX25: '1' })).toBe(true);
+    expect(pythonRequired({ INSTALL_MERERUN: '1', INSTALL_LTX25_CUDA: '1' })).toBe(true);
+    expect(pythonRequired({ INSTALL_MERERUN: '1', INSTALL_WAN22_CUDA: '1' })).toBe(true);
     expect(pythonRequired({ INSTALL_MERERUN: '0' })).toBe(true);
   });
 
@@ -135,6 +144,8 @@ describe('setup-image-video venv layout handling (issue #4200)', () => {
 
   it.each([
     ['MiniMax H3 CUDA', 'MINIMAX_H3_CUDA_VENV', 'MINIMAX_H3_CUDA_PY'],
+    ['LTX-2.5 CUDA', 'LTX25_CUDA_VENV', 'LTX25_CUDA_PY'],
+    ['Wan 2.2 CUDA', 'WAN22_CUDA_VENV', 'WAN22_CUDA_PY'],
     ['AudioLDM2', 'AUDIOLDM2_VENV', 'AUDIOLDM2_PY'],
     ['ACE-Step', 'ACESTEP_VENV', 'ACESTEP_PY'],
     ['MiniMax Music 3', 'MINIMAX_MUSIC3_VENV', 'MINIMAX_MUSIC3_PY'],
@@ -144,6 +155,11 @@ describe('setup-image-video venv layout handling (issue #4200)', () => {
   ])('%s reuses an existing Windows venv and resolves it with the helper', (_name, venv, python) => {
     expect(source).toContain(`if ! venv_exists "$${venv}"; then`);
     expect(source).toContain(`${python}="$(venv_python "$${venv}")"`);
+  });
+
+  it('pins LTX-2.5 CUDA to Lightricks Desktop\'s validated Windows torch stack', () => {
+    expect(source).toContain('https://download.pytorch.org/whl/cu128');
+    expect(source).toContain('"torch==2.10.0" "torchaudio==2.10.0" "torchvision==0.25.0"');
   });
 
   it('has no call site that hardcodes a venv interpreter path outside the shared helpers', () => {

@@ -15,6 +15,8 @@
 #   INSTALL_MINIMAX_H3 '1' to install the pinned MiniMax H3 MLX runtime at ~/.portos/minimax-h3-mlx (Apple Silicon). Weights remain a separate explicit Video Gen download. Default: 0.
 #   INSTALL_MERERUN '1' to install the signed mere.run v0.47.0 runtime at ~/.portos/mere-run for MiniMax H3 Ref2VA image+audio generation (Apple Silicon). Weights remain a separate explicit Video Gen download. Default: 0.
 #   INSTALL_MINIMAX_H3_CUDA '1' to install the MiniMax H3 CUDA runtime at ~/.portos/minimax-h3-cuda (Windows + NVIDIA), via diffusers' MiniMaxH3ModularPipeline. Weights remain a separate explicit Video Gen download (~144 GB). Default: 0.
+#   INSTALL_LTX25_CUDA '1' to install the official LTX-2.5 CUDA runtime at ~/.portos/ltx-2.5-cuda (Windows/Linux + NVIDIA). Weights remain a separate explicit Video Gen download. Default: 0.
+#   INSTALL_WAN22_CUDA '1' to install the official Wan 2.2 Diffusers runtime at ~/.portos/wan2.2-cuda (Windows/Linux + NVIDIA). Weights remain a separate explicit Video Gen download. Default: 0.
 #   INSTALL_FLUX2  '1' to also bootstrap a separate venv at ~/.portos/venv-flux2 for FLUX.2-klein (default: 1 on macOS, 0 elsewhere)
 #   INSTALL_MUSICGEN '1' to bootstrap a venv at ~/.portos/venv-musicgen + clone ml-explore/mlx-examples to ~/.portos/mlx-examples for local MusicGen (MLX) background-music generation (pipeline audio stage). Default: 0; opt in with INSTALL_MUSICGEN=1 (macOS / Apple Silicon only).
 #   MLX_EXAMPLES_PIN  commit SHA of ml-explore/mlx-examples to check out for MusicGen (default: main).
@@ -81,7 +83,7 @@ venv_exists() { [[ -x "$1/bin/python3" || -x "$1/Scripts/python.exe" ]]; }
 # on a machine without Python.
 python_required() {
   local non_mere_requests
-  non_mere_requests="${INSTALL_MFLUX:-0}${INSTALL_VIDEO:-0}${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}${INSTALL_FLUX2:-0}"
+  non_mere_requests="${INSTALL_MFLUX:-0}${INSTALL_VIDEO:-0}${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_LTX25_CUDA:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_WAN22_CUDA:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}${INSTALL_FLUX2:-0}"
   [[ "${INSTALL_MERERUN:-0}" != "1" || "$non_mere_requests" == *[!0]* ]]
 }
 
@@ -120,7 +122,7 @@ mkdir -p "${PORTOS_DATA}/video-thumbnails"
 # install ever starts — which on Linux/CPU/CUDA blocks the advertised
 # `INSTALL_ACESTEP=1 bash …` path. A bare `bash setup-image-video.sh` still
 # installs mflux as before.
-ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MERERUN:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}"
+ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_LTX25:-0}${INSTALL_LTX25_CUDA:-0}${INSTALL_FASTVIDEO:-0}${INSTALL_WAN22:-0}${INSTALL_WAN22_CUDA:-0}${INSTALL_MINIMAX_H3:-0}${INSTALL_MERERUN:-0}${INSTALL_MINIMAX_H3_CUDA:-0}${INSTALL_MUSICGEN:-0}${INSTALL_AUDIOLDM2:-0}${INSTALL_ACESTEP:-0}${INSTALL_ACESTEP15:-0}${INSTALL_MINIMAX_MUSIC3:-0}${INSTALL_MINIMAX_MUSIC3_MLX:-0}${INSTALL_MUSCRIPTOR:-0}"
 # "no BYOV runtime was requested" = the concatenation contains no non-zero
 # character. Matching a literal string of zeros instead made this a counting
 # exercise that the string and the variable list had to agree on — and they had
@@ -641,6 +643,69 @@ if [[ "$INSTALL_MINIMAX_H3_CUDA" == "1" ]]; then
   echo "   That download is ~144 GB, and rendering needs ~24 GB VRAM plus ~75 GB of system RAM for offloaded weights."
 fi
 
+INSTALL_LTX25_CUDA="${INSTALL_LTX25_CUDA:-0}"
+if [[ "$INSTALL_LTX25_CUDA" == "1" ]]; then
+  if is_macos; then
+    echo "❌ LTX-2.5 CUDA needs an NVIDIA GPU. On Apple Silicon use the LTX-2.5 MLX runtime instead." >&2
+    exit 1
+  fi
+  LTX25_CUDA_DIR="${HOME}/.portos/ltx-2.5-cuda"
+  LTX25_CUDA_VENV="${LTX25_CUDA_DIR}/.venv"
+  LTX25_CUDA_REQS="${SCRIPT_DIR}/requirements-ltx25-cuda.txt"
+  LTX25_CUDA_TORCH_INDEX="${PORTOS_LTX25_CUDA_TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
+  mkdir -p "$LTX25_CUDA_DIR"
+  if ! venv_exists "$LTX25_CUDA_VENV"; then
+    echo "📦 Creating LTX-2.5 CUDA venv..."
+    "$PYTHON_BIN" -m venv "$LTX25_CUDA_VENV"
+  fi
+  LTX25_CUDA_PY="$(venv_python "$LTX25_CUDA_VENV")"
+  "$LTX25_CUDA_PY" -m pip install --disable-pip-version-check --upgrade pip wheel setuptools
+  if is_windows; then
+    echo "📦 Installing LTX-validated CUDA torch 2.10 stack from ${LTX25_CUDA_TORCH_INDEX}..."
+    "$LTX25_CUDA_PY" -m pip install --upgrade --index-url "$LTX25_CUDA_TORCH_INDEX" "torch==2.10.0" "torchaudio==2.10.0" "torchvision==0.25.0"
+  else
+    "$LTX25_CUDA_PY" -m pip install --upgrade torch torchaudio torchvision
+  fi
+  echo "📦 Installing official LTX-2.5 CUDA packages..."
+  "$LTX25_CUDA_PY" -m pip install --upgrade --progress-bar on -r "$LTX25_CUDA_REQS"
+  probe_or_fail \
+    "LTX-2.5 CUDA installed but its runtime probe failed." \
+    "Check the CUDA torch and LTX package errors above, then use Repair in Video Gen." \
+    "$LTX25_CUDA_PY" -c "import torch; import ltx_core, ltx_pipelines; from ltx_pipelines.distilled import DistilledPipeline; assert torch.cuda.is_available(), 'no CUDA device'"
+  echo "✅ LTX-2.5 CUDA runtime ready: ${LTX25_CUDA_PY}"
+  echo "   Weights remain uninstalled until you accept the LTX license and choose Download in Video Gen."
+fi
+
+INSTALL_WAN22_CUDA="${INSTALL_WAN22_CUDA:-0}"
+if [[ "$INSTALL_WAN22_CUDA" == "1" ]]; then
+  if is_macos; then
+    echo "❌ Wan 2.2 CUDA needs an NVIDIA GPU. Use the Wan 2.2 MLX runtime on Apple Silicon." >&2
+    exit 1
+  fi
+  WAN22_CUDA_DIR="${HOME}/.portos/wan2.2-cuda"
+  WAN22_CUDA_VENV="${WAN22_CUDA_DIR}/.venv"
+  WAN22_CUDA_REQS="${SCRIPT_DIR}/requirements-wan22-cuda.txt"
+  mkdir -p "$WAN22_CUDA_DIR"
+  if ! venv_exists "$WAN22_CUDA_VENV"; then
+    echo "📦 Creating Wan 2.2 CUDA venv..."
+    "$PYTHON_BIN" -m venv "$WAN22_CUDA_VENV"
+  fi
+  WAN22_CUDA_PY="$(venv_python "$WAN22_CUDA_VENV")"
+  "$WAN22_CUDA_PY" -m pip install --disable-pip-version-check --upgrade pip wheel setuptools
+  if is_windows; then
+    "$WAN22_CUDA_PY" -m pip install --upgrade --index-url "$TORCH_CUDA_INDEX" torch torchvision
+  else
+    "$WAN22_CUDA_PY" -m pip install --upgrade torch torchvision
+  fi
+  "$WAN22_CUDA_PY" -m pip install --upgrade --progress-bar on -r "$WAN22_CUDA_REQS"
+  probe_or_fail \
+    "Wan 2.2 CUDA installed but its runtime probe failed." \
+    "Check the CUDA torch errors above, then use Repair in Video Gen." \
+    "$WAN22_CUDA_PY" -c "import torch, hf_xet; from diffusers import AutoencoderKLWan, WanPipeline; assert torch.cuda.is_available(), 'no CUDA device'"
+  echo "✅ Wan 2.2 CUDA runtime ready: ${WAN22_CUDA_PY}"
+  echo "   Weights remain uninstalled until Download is chosen in Video Gen."
+fi
+
 INSTALL_MUSICGEN="${INSTALL_MUSICGEN:-0}"
 if [[ "$INSTALL_MUSICGEN" == "1" ]]; then
   # Local background-music generation for the pipeline audio stage (Phase
@@ -1039,6 +1104,12 @@ fi
 if [[ "$INSTALL_FASTVIDEO" == "1" ]]; then
   echo "   FastVideo MLX: ${HOME}/.portos/fastvideo/.venv/bin/python3 (FastVideo @ ${FASTVIDEO_PIN:0:12})"
 fi
+if [[ "$INSTALL_LTX25_CUDA" == "1" ]]; then
+  echo "   LTX-2.5 CUDA: ${HOME}/.portos/ltx-2.5-cuda/.venv (official streamed PyTorch runtime)"
+fi
+if [[ "$INSTALL_WAN22_CUDA" == "1" ]]; then
+  echo "   Wan 2.2 CUDA: ${HOME}/.portos/wan2.2-cuda/.venv (official Diffusers runtime)"
+fi
 if [[ "$INSTALL_WAN22" == "1" ]]; then
   echo "   Wan 2.2:  ${HOME}/.portos/mlx-gen/.venv/bin/python3 (MLX-Gen @ ${WAN22_PIN:0:12})"
   echo "              Weights remain uninstalled until Download is chosen in Video Gen."
@@ -1079,4 +1150,8 @@ if [[ "$INSTALL_FLUX2" == "1" ]]; then
   echo "    then save the Hugging Face token in PortOS Media Generation Settings."
 fi
 echo ""
-echo "Set this Python path in PortOS Settings → Image Gen → Local."
+if [[ "$ANY_BYOV" == *[!0]* ]]; then
+  echo "PortOS auto-discovers the requested runtime; no Python path or other manual configuration is needed."
+else
+  echo "Set this Python path in PortOS Settings → Image Gen → Local."
+fi

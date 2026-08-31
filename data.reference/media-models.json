@@ -693,6 +693,87 @@
         }
       },
       {
+        "id": "ltx25_cuda_distilled",
+        "name": "LTX-2.5 CUDA Distilled (joint video + audio, ~72 GB download, streamed)",
+        "repo": "Lightricks/LTX-2.5",
+        "revision": "bf86adedf518142442575d1ce2e767b7d01c8c76",
+        "repoFiles": [
+          "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+          "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
+          "vae/ltx-2.5-video-vae-bf16.safetensors",
+          "vae/ltx-2.5-audio-vae-bf16.safetensors",
+          "model_patches/ltx-2.5-duration-head-bf16.safetensors",
+          "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+        ],
+        "runtime": "ltx25_cuda",
+        "supportedModes": ["text", "image"],
+        "defaultFrames": 121,
+        "resolutionStep": 64,
+        "fpsOptions": [24],
+        "steps": 8,
+        "guidance": 1,
+        "samplerLocked": true,
+        "samplerNote": "LTX-2.5 Distilled uses the official fixed 8-step, CFG-free schedule.",
+        "supportsNegativePrompt": false,
+        "supportsTiling": false,
+        "supportsDisableAudio": true,
+        "requiresHfToken": true,
+        "hardwareRequirements": {
+          "minMemoryGb": 64,
+          "minVramGb": 16,
+          "minCudaComputeCapability": 8
+        },
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/Lightricks/LTX-2.5",
+          "weightsLicense": {
+            "name": "LTX-2.x Community License",
+            "url": "https://github.com/Lightricks/LTX-2/blob/main/LICENSE.md"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/Lightricks/LTX-2/blob/v1.2.0/LICENSE"
+          },
+          "estimatedDownloadGb": 72.1,
+          "reviewedAt": "2026-08-30"
+        }
+      },
+      {
+        "id": "wan22_cuda_ti2v_5b",
+        "name": "Wan 2.2 TI2V 5B CUDA (high quality, ~34 GB download, text-to-video)",
+        "repo": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "revision": "b8fff7315c768468a5333511427288870b2e9635",
+        "runtime": "wan22_cuda",
+        "supportedModes": ["text"],
+        "defaultWidth": 1280,
+        "defaultHeight": 704,
+        "resolutionStep": 16,
+        "defaultFrames": 121,
+        "frameStride": 4,
+        "fpsOptions": [24],
+        "steps": 50,
+        "guidance": 5,
+        "supportsNegativePrompt": true,
+        "supportsTiling": false,
+        "hardwareRequirements": {
+          "minMemoryGb": 32,
+          "minVramGb": 24,
+          "minCudaComputeCapability": 8
+        },
+        "disclosure": {
+          "modelCardUrl": "https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+          "weightsLicense": {
+            "name": "Apache-2.0",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0"
+          },
+          "runtimeLicense": {
+            "name": "Apache-2.0",
+            "url": "https://github.com/huggingface/diffusers/blob/main/LICENSE"
+          },
+          "estimatedDownloadGb": 34.2,
+          "reviewedAt": "2026-08-30"
+        }
+      },
+      {
         "id": "minimax_h3_cuda",
         "name": "MiniMax H3 CUDA int8 (joint video + audio, ~144 GB download, 24 GB VRAM + 96 GB RAM)",
         "repo": "MiniMaxAI/MiniMax-H3",

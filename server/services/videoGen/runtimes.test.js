@@ -393,6 +393,44 @@ describe('minimax_h3_cuda runtime registration', () => {
   });
 });
 
+describe('ltx25_cuda runtime registration', () => {
+  const info = BYOV_RUNTIME_INFO.ltx25_cuda;
+
+  it('registers the official cache-only CUDA pipeline in its own venv', () => {
+    expect(BYOV_VIDEO_RUNTIMES.has('ltx25_cuda')).toBe(true);
+    expect(info.installEnvVar).toBe('INSTALL_LTX25_CUDA');
+    expect(info.repoUrl).toBe('https://github.com/Lightricks/LTX-2');
+    expect(info.venvPython).not.toBe(BYOV_RUNTIME_INFO.ltx25.venvPython);
+    expect(info.importProbe).toContain('DistilledPipeline');
+    expect(info.importProbe).toContain('torch.cuda.is_available()');
+    expect(info.importProbe).toContain('2.10.0+cu128');
+    expect(info.cacheOnly).toBe(true);
+    expect(info.killProcessGroup).toBe(true);
+  });
+
+  it('keeps the cache contract aligned with the Python runner', () => {
+    const runner = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'generate_ltx25_cuda.py'),
+      'utf8',
+    );
+    for (const relative of [
+      'diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors',
+      'text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors',
+      'vae/ltx-2.5-video-vae-bf16.safetensors',
+      'vae/ltx-2.5-audio-vae-bf16.safetensors',
+      'model_patches/ltx-2.5-duration-head-bf16.safetensors',
+      'latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors',
+    ]) {
+      expect(runner).toContain(relative);
+    }
+    expect(runner).toContain('local_files_only=True');
+    expect(runner).toContain('PYTORCH_CUDA_ALLOC_CONF');
+    expect(runner).toContain('OffloadMode.DISK');
+    expect(runner).not.toContain('SafetensorsStateDictLoader.load =');
+    expect(runner).not.toContain('pipe.prompt_encoder =');
+  });
+});
+
 // The JS list exists so the server can reject a bad registry `offloadProfile`
 // with a stable code instead of an opaque non-zero child exit — which only
 // works while it agrees with the argparse `choices=` that actually enforces it.
@@ -439,6 +477,8 @@ describe('runtime execution flags', () => {
   it('reports cache-only for exactly the runners that never touch the network', () => {
     expect(runtimeIsCacheOnly('minimax_h3')).toBe(true);
     expect(runtimeIsCacheOnly('minimax_h3_cuda')).toBe(true);
+    expect(runtimeIsCacheOnly('ltx25_cuda')).toBe(true);
+    expect(runtimeIsCacheOnly('wan22_cuda')).toBe(true);
     expect(runtimeIsCacheOnly('ltx2')).toBe(false);
     expect(runtimeIsCacheOnly('wan22')).toBe(false);
     expect(runtimeIsCacheOnly('fastvideo')).toBe(false);
@@ -450,6 +490,8 @@ describe('runtime execution flags', () => {
     expect(runtimeNeedsProcessGroupKill('fastvideo')).toBe(true);
     expect(runtimeNeedsProcessGroupKill('minimax_h3')).toBe(true);
     expect(runtimeNeedsProcessGroupKill('minimax_h3_cuda')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('ltx25_cuda')).toBe(true);
+    expect(runtimeNeedsProcessGroupKill('wan22_cuda')).toBe(true);
     expect(runtimeNeedsProcessGroupKill('ltx2')).toBe(false);
     expect(runtimeNeedsProcessGroupKill('nope')).toBe(false);
   });

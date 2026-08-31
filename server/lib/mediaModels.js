@@ -208,6 +208,15 @@ const MINIMAX_H3_CUDA_REPO_FILES = Object.freeze([
   'audio_scheduler/scheduler_config.json',
 ]);
 
+const LTX25_CUDA_REPO_FILES = Object.freeze([
+  'diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors',
+  'text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors',
+  'vae/ltx-2.5-video-vae-bf16.safetensors',
+  'vae/ltx-2.5-audio-vae-bf16.safetensors',
+  'model_patches/ltx-2.5-duration-head-bf16.safetensors',
+  'latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors',
+]);
+
 // The diffusers integration's duration window, which is NARROWER than the MLX
 // port's at both ends: frames are snapped up to the next 17n+5 and the RESULTING
 // duration must land in 5-15 s, so 107 (4.46 s) is under the floor and 362
@@ -608,6 +617,46 @@ const DEFAULT_REGISTRY = {
     ]))))),
     cuda: applyMiniMaxH3MemoryProfiles(applyVideoDraftDecoders(applyVideoSpeedProfiles(applyVideoFinishProfiles(applyVideoDisclosures([
       { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'cuda_video', steps: 25, guidance: 3.0 },
+      {
+        id: 'ltx25_cuda_distilled',
+        name: 'LTX-2.5 CUDA Distilled (joint video + audio, ~72 GB download, streamed)',
+        repo: 'Lightricks/LTX-2.5',
+        revision: 'bf86adedf518142442575d1ce2e767b7d01c8c76',
+        repoFiles: [...LTX25_CUDA_REPO_FILES],
+        runtime: 'ltx25_cuda',
+        supportedModes: ['text', 'image'],
+        defaultFrames: 121,
+        resolutionStep: 64,
+        fpsOptions: [24],
+        steps: 8,
+        guidance: 1.0,
+        samplerLocked: true,
+        samplerNote: 'LTX-2.5 Distilled uses the official fixed 8-step, CFG-free schedule.',
+        supportsNegativePrompt: false,
+        supportsTiling: false,
+        supportsDisableAudio: true,
+        requiresHfToken: true,
+        hardwareRequirements: { minMemoryGb: 64, minVramGb: 16, minCudaComputeCapability: 8 },
+      },
+      {
+        id: 'wan22_cuda_ti2v_5b',
+        name: 'Wan 2.2 TI2V 5B CUDA (high quality, ~34 GB download, text-to-video)',
+        repo: 'Wan-AI/Wan2.2-TI2V-5B-Diffusers',
+        revision: 'b8fff7315c768468a5333511427288870b2e9635',
+        runtime: 'wan22_cuda',
+        supportedModes: ['text'],
+        defaultWidth: 1280,
+        defaultHeight: 704,
+        resolutionStep: 16,
+        defaultFrames: 121,
+        frameStride: 4,
+        fpsOptions: [24],
+        steps: 50,
+        guidance: 5,
+        supportsNegativePrompt: true,
+        supportsTiling: false,
+        hardwareRequirements: { minMemoryGb: 32, minVramGb: 24, minCudaComputeCapability: 8 },
+      },
       // MiniMax H3 on NVIDIA, through diffusers' MiniMaxH3ModularPipeline —
       // the same joint video+audio model the MLX list runs on Apple Silicon, so it
       // shares H3's canvas grid, its fixed 24 fps, its locked CFG-distilled
@@ -1030,6 +1079,18 @@ const upgradeLegacyCudaLtxRuntime = (list) => {
   ));
 };
 
+export const upgradeLtx25CudaMemoryFloor = (list) => {
+  if (!Array.isArray(list)) return list;
+  return list.map((entry) => (
+    isPlainObject(entry)
+      && entry.id === 'ltx25_cuda_distilled'
+      && entry.repo === 'Lightricks/LTX-2.5'
+      && entry.hardwareRequirements?.minMemoryGb === 32
+      ? { ...entry, hardwareRequirements: { ...entry.hardwareRequirements, minMemoryGb: 64 } }
+      : entry
+  ));
+};
+
 // Built-in video models that were delivered to installs and have since been
 // withdrawn. Dropping an id from DEFAULT_REGISTRY is NOT enough on its own: the
 // user's persisted list is what the pickers read, and appendNewlyShippedEntries
@@ -1191,7 +1252,9 @@ const normalizeRegistry = (parsed) => {
     const normalized = backfillRuntime(upgradeLtx25AudioControls(
       upgradeMiniMaxH3OutputControls(dropRetiredEntries(entries)),
     ));
-    const upgraded = upgradeLegacyCudaLtx ? upgradeLegacyCudaLtxRuntime(normalized) : normalized;
+    const upgraded = upgradeLegacyCudaLtx
+      ? upgradeLtx25CudaMemoryFloor(upgradeLegacyCudaLtxRuntime(normalized))
+      : normalized;
     const decorated = sanitizeFinishProfiles(applyVideoFinishProfiles(applyVideoDisclosures(upgraded)));
     // applyVideoSpeedProfiles is the load-time twin of migration 295, and
     // sanitizeSpeedProfiles is its sibling of sanitizeFinishProfiles: a
