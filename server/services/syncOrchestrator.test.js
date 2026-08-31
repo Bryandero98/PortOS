@@ -848,7 +848,7 @@ describe('syncOrchestrator', () => {
       expect(compactLog).toHaveBeenCalledWith(0);
     });
 
-    it('compacts to getCurrentSeq() when peers are configured but none is brain-enabled (#5439)', async () => {
+    it('calls compactLog(0) for compatibility-preserving compaction when peers are configured but none is brain-enabled (#5439)', async () => {
       const memoryOnlyPeer = {
         ...mockPeer,
         instanceId: 'A',
@@ -859,26 +859,16 @@ describe('syncOrchestrator', () => {
 
       await syncAllPeers();
 
-      expect(compactLog).toHaveBeenCalledWith(200);
+      expect(compactLog).toHaveBeenCalledWith(0);
     });
 
-    it('compacts to getCurrentSeq() when no peers are configured (#5439)', async () => {
+    it('calls compactLog(0) for compatibility-preserving compaction when no peers are configured (#5439)', async () => {
       getPeers.mockResolvedValue([]);
       readJSONFile.mockImplementation(async () => ({}));
 
       await syncAllPeers();
 
-      expect(compactLog).toHaveBeenCalledWith(200);
-    });
-
-    it('does not call compactLog when no brain peers exist and getCurrentSeq() is 0 (#5439)', async () => {
-      getCurrentSeq.mockReturnValue(0);
-      getPeers.mockResolvedValue([]);
-      readJSONFile.mockImplementation(async () => ({}));
-
-      await syncAllPeers();
-
-      expect(compactLog).not.toHaveBeenCalled();
+      expect(compactLog).toHaveBeenCalledWith(0);
     });
   });
 

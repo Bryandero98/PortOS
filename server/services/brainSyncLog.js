@@ -237,9 +237,38 @@ export async function getChangesSince(sinceSeq, limit = 100) {
 }
 
 /**
- * Compact the log by dropping entries below minSeq
+ * Replay entries for a single (type, id) according to runtime LWW rules,
+ * returning the surviving terminal entry.
+ *
+ * Incumbent wins ties (same timestamp) matching applyRemoteRecord.
+ * Entries missing updatedAt are skipped.
  */
-export async function compactLog(minSeq) {
+function replayTerminal(entries) {
+  let accepted = null;
+  for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
+    const ts = e?.record?.updatedAt;
+    if (ts == null) continue;
+    if (accepted == null || ts > accepted.record.updatedAt) accepted = e;
+  }
+  return accepted;
+}
+
+/**
+ * Compact the sync log using a compatibility-preserving compaction representation.
+ *
+ * Deltas at or above `minSeq` (unconsumed by at least one active peer) are
+ * preserved verbatim in sequence order.
+ *
+ * For history below `minSeq` (or all entries when minSeq is 0, e.g. on installs
+ * with no brain-sync peers), redundant intermediate updates are pruned by
+ * retaining only the surviving terminal LWW entry per (type, id).
+ *
+ * The durable sequence counter (maxSeq) is always determined from disk state
+ * under the log mutex, preventing index skew after a failed append, and is
+ * preserved so initSyncLog recovers the monotonic sequence counter across
+ * restarts.
+ */
+export async function compactLog(minSeq = 0) {
   return withLock(async () => {
     await ensureBrainDir();
     // Load first: the rebuild below marks the index loaded, so skipping this
@@ -248,35 +277,114 @@ export async function compactLog(minSeq) {
     if (!existsSync(SYNC_LOG_FILE)) return 0;
 
     const content = await readFile(SYNC_LOG_FILE, 'utf-8');
-    const lines = content.trim().split('\n').filter(l => l.trim());
-    const kept = [];
-    let dropped = 0;
+    const rawLines = content.trim().split('\n').filter(l => l.trim());
+    if (rawLines.length === 0) return 0;
 
-    for (const line of lines) {
-      const entry = safeJSONParse(line, null);
-      if (!entry || entry.seq < minSeq) {
-        dropped++;
+    const parsedLines = [];
+    let maxDurableSeq = 0;
+    let maxSeqEntry = null;
+
+    for (const rawLine of rawLines) {
+      const entry = safeJSONParse(rawLine, null);
+      if (entry && typeof entry.seq === 'number') {
+        if (entry.seq > maxDurableSeq) {
+          maxDurableSeq = entry.seq;
+          maxSeqEntry = entry;
+        }
+        parsedLines.push({ rawLine, entry, seq: entry.seq });
+      } else {
+        // Line without numeric seq (e.g. malformed or unindexed note)
+        parsedLines.push({ rawLine, entry: null, seq: null });
+      }
+    }
+
+    const floor = typeof minSeq === 'number' && Number.isFinite(minSeq)
+      ? Math.max(0, Math.min(minSeq, maxDurableSeq))
+      : 0;
+
+    const preservedTail = [];
+    const tailKeys = new Set();
+    const olderEntriesByKey = new Map();
+    const unindexedOrUntypedOlder = [];
+
+    for (const item of parsedLines) {
+      const { entry, seq } = item;
+      if (seq !== null && floor > 0 && seq >= floor) {
+        preservedTail.push(item);
+        if (entry?.type && entry?.id) {
+          tailKeys.add(`${entry.type}/${entry.id}`);
+        }
+      } else if (entry?.type && entry?.id) {
+        const key = `${entry.type}/${entry.id}`;
+        if (!olderEntriesByKey.has(key)) olderEntriesByKey.set(key, []);
+        olderEntriesByKey.get(key).push(item);
+      } else {
+        if (floor === 0 || seq === null) {
+          unindexedOrUntypedOlder.push(item);
+        }
+      }
+    }
+
+    // Replay terminal winning state for older keys not already superseded in tail
+    const keptOlder = [];
+    const olderWinnersByKey = new Map();
+    for (const [key, items] of olderEntriesByKey) {
+      if (tailKeys.has(key)) {
+        // Already superseded by newer operations in the preserved tail
         continue;
       }
-      kept.push({ line, seq: entry.seq });
+      const entries = items.map(i => i.entry);
+      const terminalEntry = replayTerminal(entries);
+      if (terminalEntry) {
+        const matchingItem = items.find(i => i.entry === terminalEntry)
+          || { rawLine: JSON.stringify(terminalEntry), entry: terminalEntry, seq: terminalEntry.seq };
+        keptOlder.push(matchingItem);
+        olderWinnersByKey.set(key, matchingItem);
+      }
     }
 
-    if (dropped === 0) return 0;
+    const kept = [...unindexedOrUntypedOlder, ...keptOlder, ...preservedTail];
 
-    const newContent = kept.length > 0 ? kept.map(k => k.line).join('\n') + '\n' : '';
+    // Ensure the durable max sequence is preserved so restart recovery and cursors hold
+    if (maxSeqEntry && !kept.some(i => i.seq === maxSeqEntry.seq)) {
+      if (!maxSeqEntry.type || !maxSeqEntry.id) {
+        kept.push({ rawLine: JSON.stringify(maxSeqEntry), entry: maxSeqEntry, seq: maxSeqEntry.seq });
+      } else {
+        const key = `${maxSeqEntry.type}/${maxSeqEntry.id}`;
+        const winner = olderWinnersByKey.get(key);
+        if (winner && winner.entry) {
+          winner.entry.seq = maxSeqEntry.seq;
+          winner.seq = maxSeqEntry.seq;
+          winner.rawLine = JSON.stringify(winner.entry);
+        } else {
+          kept.push({ rawLine: JSON.stringify(maxSeqEntry), entry: maxSeqEntry, seq: maxSeqEntry.seq });
+        }
+      }
+    }
+
+    // Sort kept entries: items with numeric seq sorted by seq
+    kept.sort((a, b) => {
+      if (a.seq !== null && b.seq !== null) return a.seq - b.seq;
+      return 0;
+    });
+
+    const dropped = rawLines.length - kept.length;
+    if (dropped <= 0) return 0;
+
+    const newContent = kept.map(i => i.rawLine).join('\n') + '\n';
     await atomicWrite(SYNC_LOG_FILE, newContent);
 
-    // Rebuild the index from what we just wrote — the offsets all moved. A kept
-    // line without a numeric seq keeps its bytes but stays OUT of the index:
-    // a non-numeric seq in the array would break firstIndexAfter's binary
-    // search and hide every entry before it from peers.
+    // Rebuild index offsets from what was written
     offsets = [];
     let offset = 0;
-    for (const { line, seq } of kept) {
-      if (typeof seq === 'number') offsets.push({ seq, offset });
-      offset += Buffer.byteLength(line, 'utf8') + 1;
+    for (const { rawLine, seq } of kept) {
+      if (typeof seq === 'number') {
+        offsets.push({ seq, offset });
+      }
+      offset += Buffer.byteLength(rawLine, 'utf8') + 1;
     }
     fileSize = offset;
+    currentSeq = maxDurableSeq;
     pendingNewline = false;
     indexLoaded = true;
 
