@@ -217,34 +217,38 @@ if (import.meta.hot) {
 // date-scoped features (daily log, schedulers) land on the wrong day. Push
 // the browser's IANA zone once so remote/VPN clients don't need to visit
 // Settings before their first entry is correct.
-function useTimezoneBootstrap() {
+function useTimezoneBootstrap(enabled = true) {
   useEffect(() => {
+    if (!enabled) return;
     getSettings().then((s) => {
       if (s?.timezone) return;
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (!tz || tz === 'UTC') return;
       return updateSettings({ timezone: tz });
     }).catch(() => null);
-  }, []);
+  }, [enabled]);
 }
 
 // Stamp the machine's instance name into the browser tab so multiple federated
 // installs are distinguishable at a glance — "PortOS: {name}". Falls back to the
 // static "PortOS" title (set in index.html) when the name is missing/unfetchable.
-function useDocumentTitle() {
+function useDocumentTitle(enabled = true) {
   useEffect(() => {
+    if (!enabled) return;
     getSelfInstance({ silent: true }).then((self) => {
       const name = self?.name?.trim();
       if (name) document.title = `PortOS: ${name}`;
     }).catch(() => null);
-  }, []);
+  }, [enabled]);
 }
 
 export default function App() {
-  useTimezoneBootstrap();
-  useDocumentTitle();
-  return (
-    <CatalogTypesProvider>
+  const { pathname } = useLocation();
+  const isHostedAudienceRoute = pathname === '/fableloom/join';
+  useTimezoneBootstrap(!isHostedAudienceRoute);
+  useDocumentTitle(!isHostedAudienceRoute);
+
+  const routeContent = (
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -566,6 +570,8 @@ export default function App() {
         </Route>
       </Routes>
     </Suspense>
-    </CatalogTypesProvider>
   );
+  return isHostedAudienceRoute
+    ? routeContent
+    : <CatalogTypesProvider>{routeContent}</CatalogTypesProvider>;
 }

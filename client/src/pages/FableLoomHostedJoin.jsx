@@ -231,7 +231,7 @@ export default function FableLoomHostedJoin() {
       {/* Transcript Stream */}
       <div
         ref={transcriptScrollRef}
-        className="flex-1 min-h-0 p-4 overflow-y-auto space-y-3 font-sans text-sm"
+        className="flex-1 min-h-[8rem] p-4 overflow-y-auto space-y-3 font-sans text-sm"
       >
         {transcript.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 text-xs py-12">

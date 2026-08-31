@@ -56,9 +56,10 @@ describe('FableLoomHostedJoin', () => {
 
     const scrollRegions = shell.querySelectorAll('.overflow-y-auto');
     expect(scrollRegions).toHaveLength(1);
-    expect(scrollRegions[0]).toHaveClass('flex-1', 'min-h-0');
-    expect(screen.getByRole('banner')).toHaveClass('shrink-0');
-    expect(screen.getByRole('banner').nextElementSibling).toHaveClass('shrink-0');
+    expect(scrollRegions[0]).toHaveClass('flex-1', 'min-h-[8rem]');
+    const header = shell.querySelector('header');
+    expect(header).toHaveClass('shrink-0');
+    expect(header.nextElementSibling).toHaveClass('shrink-0');
     expect(screen.getByPlaceholderText('Or type a message…').closest('form').parentElement).toHaveClass('shrink-0');
   });
 
