@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import EventEmitter from 'node:events';
+import { join } from 'node:path';
 
 vi.mock('fs', () => ({ existsSync: vi.fn() }));
 vi.mock('fs/promises', () => ({
@@ -19,6 +20,12 @@ import { mkdtemp, readdir, rename, rm } from 'fs/promises';
 import { spawn } from '../lib/childProcess.js';
 import { cloneRepo, reapStaleCloneStaging } from './githubCloner.js';
 
+const REPOS_DIR = '/repos';
+const OWNER_DIR = join(REPOS_DIR, 'acme');
+const LOCAL_PATH = join(OWNER_DIR, 'widgets');
+const STAGING_ROOT = join(OWNER_DIR, '.widgets-cloning-attempt');
+const STAGING_PATH = join(STAGING_ROOT, 'widgets');
+
 const createChild = () => {
   const child = new EventEmitter();
   child.stderr = new EventEmitter();
@@ -30,7 +37,7 @@ describe('cloneRepo', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     existsSync.mockImplementation(path => !String(path).endsWith('.git'));
-    mkdtemp.mockResolvedValue('/repos/acme/.widgets-cloning-attempt');
+    mkdtemp.mockResolvedValue(STAGING_ROOT);
     readdir.mockResolvedValue([]);
     rename.mockResolvedValue();
     rm.mockResolvedValue();
@@ -46,22 +53,22 @@ describe('cloneRepo', () => {
     expect(spawn).toHaveBeenCalledWith('git', [
       'clone', '--depth', '1', '--single-branch',
       'https://github.com/acme/widgets.git',
-      '/repos/acme/.widgets-cloning-attempt/widgets'
+      STAGING_PATH
     ], expect.objectContaining({ shell: false }));
     expect(rename).not.toHaveBeenCalled();
 
     child.emit('close', 0);
 
     await expect(resultPromise).resolves.toMatchObject({
-      localPath: '/repos/acme/widgets',
+      localPath: LOCAL_PATH,
       alreadyCloned: false
     });
     expect(rename).toHaveBeenCalledWith(
-      '/repos/acme/.widgets-cloning-attempt/widgets',
-      '/repos/acme/widgets'
+      STAGING_PATH,
+      LOCAL_PATH
     );
     expect(rm).toHaveBeenCalledWith(
-      '/repos/acme/.widgets-cloning-attempt',
+      STAGING_ROOT,
       { recursive: true, force: true }
     );
   });
@@ -73,7 +80,7 @@ describe('cloneRepo', () => {
     const resultPromise = cloneRepo('https://github.com/acme/widgets', { replaceIncomplete: true });
     await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
 
-    expect(rm).toHaveBeenCalledWith('/repos/acme/widgets', { recursive: true, force: true });
+    expect(rm).toHaveBeenCalledWith(LOCAL_PATH, { recursive: true, force: true });
     child.emit('close', 0);
     await resultPromise;
   });
@@ -89,7 +96,7 @@ describe('cloneRepo', () => {
     child.emit('close', 0);
     await resultPromise;
 
-    expect(rm).not.toHaveBeenCalledWith('/repos/acme/widgets', expect.anything());
+    expect(rm).not.toHaveBeenCalledWith(LOCAL_PATH, expect.anything());
   });
 
   it('discards staging and surfaces the git error when the clone fails', async () => {
@@ -106,7 +113,7 @@ describe('cloneRepo', () => {
     // left for the boot-time reaper.
     expect(rename).not.toHaveBeenCalled();
     expect(rm).toHaveBeenCalledWith(
-      '/repos/acme/.widgets-cloning-attempt',
+      STAGING_ROOT,
       { recursive: true, force: true }
     );
   });
@@ -122,7 +129,7 @@ describe('cloneRepo', () => {
     child.emit('close', 0);
 
     await expect(resultPromise).resolves.toMatchObject({
-      localPath: '/repos/acme/widgets',
+      localPath: LOCAL_PATH,
       alreadyCloned: true
     });
     expect(rename).not.toHaveBeenCalled();
@@ -148,13 +155,13 @@ describe('reapStaleCloneStaging', () => {
       ]);
 
     await expect(reapStaleCloneStaging({
-      cloneDir: '/repos',
+      cloneDir: REPOS_DIR,
       now: 2000000000000
     })).resolves.toBe(1);
 
     expect(rm).toHaveBeenCalledTimes(1);
     expect(rm).toHaveBeenCalledWith(
-      '/repos/acme/.portos-clone-1000000000000-old123',
+      join(OWNER_DIR, '.portos-clone-1000000000000-old123'),
       { recursive: true, force: true }
     );
   });
@@ -162,7 +169,7 @@ describe('reapStaleCloneStaging', () => {
   it('reports an empty repos directory rather than throwing', async () => {
     readdir.mockRejectedValueOnce(Object.assign(new Error('nope'), { code: 'ENOENT' }));
 
-    await expect(reapStaleCloneStaging({ cloneDir: '/repos' })).resolves.toBe(0);
+    await expect(reapStaleCloneStaging({ cloneDir: REPOS_DIR })).resolves.toBe(0);
     expect(rm).not.toHaveBeenCalled();
   });
 
@@ -173,12 +180,12 @@ describe('reapStaleCloneStaging', () => {
       .mockResolvedValueOnce([directory('.portos-clone-1000000000000-old123')]);
 
     await expect(reapStaleCloneStaging({
-      cloneDir: '/repos',
+      cloneDir: REPOS_DIR,
       now: 2000000000000
     })).resolves.toBe(1);
 
     expect(rm).toHaveBeenCalledWith(
-      '/repos/acme/.portos-clone-1000000000000-old123',
+      join(OWNER_DIR, '.portos-clone-1000000000000-old123'),
       { recursive: true, force: true }
     );
   });

@@ -301,6 +301,13 @@ export const nodeCreateSchema = z.object({
 
 export const nodePatchSchema = z.object(nodeFields);
 
+export const falVideoAutomationSchema = z.object({
+  // This is the fully composed browser-tool prompt (scene direction, camera,
+  // style, and avoid block), not just the persisted node.videoPrompt leaf.
+  prompt: z.string().trim().min(1).max(12_000),
+  aspectRatio: z.enum(['16:9', '9:16', '1:1', '4:3']).optional(),
+});
+
 // A per-call pick carries the same three dimensions as the saved pin.
 const llmPickFields = llmRoutePinSchema.shape;
 const aiRunFields = { ...llmPickFields, operationId: z.string().uuid().optional() };
