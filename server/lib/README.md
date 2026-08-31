@@ -374,7 +374,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `goalFeatureMap.js` | Deterministic goal `category` → PortOS feature-area map (deep-links sourced from `NAV_COMMANDS`). `getGoalFeatureAreas(goal)` honors the per-goal `featureAreas` override, else the category default. Mirrored byte-for-byte to `client/src/lib/`. |
 | `navManifest.js` | Single source of truth for nav (`⌘K` palette + voice). Add an entry when you add a page. |
 | `personaTraitBlend.js` | Digital-twin persona trait-blending (M34 P7). Blends a persona's `traitAdjustments` against the base twin's communication profile + Big-Five into a "Communication Calibration" directive. Mirrored to `client/src/lib/`. |
-| `textUtils.js` | Pure server-side prose helpers. `countWords(text)` — canonical whitespace-token count (`\S+`), the single home for what `writersRoom/local.js`, `issueLength.js`, and the client's `formatters.js` used to each re-implement. |
+| `textUtils.js` | Pure dependency-free prose helpers. `countWords(text)` is the canonical whitespace-token count (`\S+`); `trimTo(value, max)` trims and bounds strings without coercing non-strings, and is safe for shared modules consumed by the browser. |
 | `pipelineIssueOrder.js` | Pure renumber algorithm for pipeline issues. |
 | `postAdaptive.js` | Pure POST adaptive-difficulty policy — nudges a math drill's primary knob (`steps`/`maxDigits`/`maxExponent`/`tolerancePct`) up/down within clamped bounds from recent scored performance. Opt-in via the config Adaptive toggle. |
 | `postAppliedNumeracy.js` | Pure seeded Applied Numeracy pack — everyday percentage, ratio, unit, rate, and estimation scenarios plus server-authoritative numeric/fraction/unit scoring with explicit tolerance handling. |
