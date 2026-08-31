@@ -72,6 +72,7 @@ describe('LoomCanvas', () => {
   it('keeps media controls in each visual node and gives a finished video preview precedence', () => {
     const onGenerateImage = vi.fn();
     const onGenerateVideo = vi.fn();
+    const onOpenFalVideo = vi.fn();
     const withMedia = episode();
     withMedia.nodes[0] = {
       ...withMedia.nodes[0], image: 'scene.png', videoHistoryId: 'video-1',
@@ -83,6 +84,7 @@ describe('LoomCanvas', () => {
         onSelectNode={() => {}}
         onGenerateImage={onGenerateImage}
         onGenerateVideo={onGenerateVideo}
+        onOpenFalVideo={onOpenFalVideo}
       />,
     );
 
@@ -90,8 +92,10 @@ describe('LoomCanvas', () => {
     expect(screen.queryByAltText('The Gate image preview')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate image' }));
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate video' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'fal.ai free' })[0]);
     expect(onGenerateImage).toHaveBeenCalledWith(withMedia.nodes[0]);
     expect(onGenerateVideo).toHaveBeenCalledWith(withMedia.nodes[0]);
+    expect(onOpenFalVideo).toHaveBeenCalledWith(withMedia.nodes[0]);
   });
 
   it('shows live image progress and retains an actionable failed indicator', () => {

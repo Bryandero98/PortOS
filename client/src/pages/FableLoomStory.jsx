@@ -43,6 +43,7 @@ import {
 } from '../components/fableloom/sceneMediaRequests';
 import { universeStylePreset } from '../lib/universeStylePreset';
 import { fableLoomMediaReadiness } from '../lib/fableLoomReadiness';
+import { openFalH3MaxFreeTool } from '../lib/falVideoHandoff';
 import { LOOM_ORIENTATION, LOOM_STACK_WIDTH } from '../lib/loomLayout';
 import {
   addLoomEpisode, addLoomNode, deleteLoomEpisode, generateImage, generateVideo,
@@ -330,6 +331,26 @@ export default function FableLoomStory({ view = 'graph' }) {
     return queued;
   }, [episodeId, generationDisabledReason, loom, mediaReadiness.reason, mediaWorkflowBlocked, sceneStylePreset, setSceneMediaJob, styleContextLoading, styleContextUnavailable]);
 
+  const openFalSceneVideo = useCallback((targetNode) => {
+    const prompt = (targetNode?.videoPrompt || '').trim() || (targetNode?.prose || '').trim();
+    if (!prompt) {
+      toast.error('Write the scene first');
+      return false;
+    }
+    if (mediaWorkflowBlocked) {
+      toast.error(mediaReadiness.reason);
+      return false;
+    }
+    if (styleContextLoading || styleContextUnavailable) {
+      toast.error(generationDisabledReason || 'Scene style is not ready');
+      return false;
+    }
+    const request = buildFableLoomVideoRequest({
+      loom, episodeId, node: targetNode, stylePreset: sceneStylePreset,
+    });
+    return openFalH3MaxFreeTool(request);
+  }, [episodeId, generationDisabledReason, loom, mediaReadiness.reason, mediaWorkflowBlocked, sceneStylePreset, styleContextLoading, styleContextUnavailable]);
+
   const basePath = `/fableloom/${loomId}`;
   const episodePath = useCallback(
     (epId, nId) => `${basePath}/${epId}${nId ? `/${nId}` : ''}`,
@@ -569,6 +590,7 @@ export default function FableLoomStory({ view = 'graph' }) {
                 mediaJobs={mediaJobs}
                 onGenerateImage={queueSceneImage}
                 onGenerateVideo={queueSceneVideo}
+                onOpenFalVideo={openFalSceneVideo}
                 generationDisabled={styleContextLoading || styleContextUnavailable || mediaWorkflowBlocked}
                 generationDisabledReason={mediaGenerationDisabledReason}
               />
@@ -642,6 +664,7 @@ export default function FableLoomStory({ view = 'graph' }) {
                   mediaJobs={mediaJobs[node.id]}
                   onGenerateImage={queueSceneImage}
                   onGenerateVideo={queueSceneVideo}
+                  onOpenFalVideo={openFalSceneVideo}
                   generationDisabled={styleContextLoading || styleContextUnavailable || mediaWorkflowBlocked}
                   generationDisabledReason={mediaGenerationDisabledReason}
                   onMakeStart={node.id !== episode.startNodeId ? async () => {

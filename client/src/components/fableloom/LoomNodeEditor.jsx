@@ -69,7 +69,7 @@ const characterReferenceInfo = (character) => {
 
 export default function LoomNodeEditor({
   loom, episode, node, universe, onLoomUpdate, onClearSelection, onMakeStart,
-  mediaJobs = {}, onGenerateImage, onGenerateVideo,
+  mediaJobs = {}, onGenerateImage, onGenerateVideo, onOpenFalVideo,
   generationDisabled = false, generationDisabledReason = '',
 }) {
   const [form, setForm] = useState(null);
@@ -246,6 +246,40 @@ export default function LoomNodeEditor({
       videoPrompt: form.videoPrompt,
       cameraMovement: form.cameraMovement,
     });
+  };
+
+  const runOpenFalVideo = () => {
+    const authoredPrompt = form.videoPrompt.trim() || form.prose.trim();
+    if (!authoredPrompt) {
+      toast.error('Write the scene first');
+      return;
+    }
+    // Keep window.open under the originating click. The free-tool handoff does
+    // not read server state, so persisting an unsaved prompt can finish after
+    // the new tab opens without risking a popup blocker.
+    onOpenFalVideo?.({
+      ...node,
+      prose: form.prose,
+      videoPrompt: form.videoPrompt,
+      cameraMovement: form.cameraMovement,
+    });
+    void saveField('videoPrompt', form.videoPrompt);
+  };
+
+  const attachGalleryVideo = async (_targetNode, item) => {
+    if (!item?.id || !item?.filename) {
+      toast.error('The selected video is missing its gallery record');
+      return;
+    }
+    // Scene playback has historically resolved history ids as `${id}.mp4`.
+    // fal H3 Max downloads MP4, so refuse a different gallery container rather
+    // than attaching a record whose preview URL this schema cannot represent.
+    if (item.filename !== `${item.id}.mp4`) {
+      toast.error('Choose an MP4 uploaded here; this gallery video uses a different filename');
+      return;
+    }
+    const updated = await patchNode({ videoHistoryId: item.id });
+    if (updated) toast.success('Scene video attached');
   };
 
   const handleDelete = async () => {
@@ -669,8 +703,12 @@ export default function LoomNodeEditor({
           jobs={mediaJobs}
           onGenerateImage={runGenerateImage}
           onGenerateVideo={runGenerateVideo}
+          onOpenFalVideo={runOpenFalVideo}
+          onAttachVideo={attachGalleryVideo}
           generationDisabled={aiBlocked || generationDisabled}
           generationDisabledReason={aiBlocked ? 'Wait for scene changes to save' : generationDisabledReason}
+          falDisabled={generationDisabled}
+          falDisabledReason={generationDisabledReason}
         />
       </div>
 
