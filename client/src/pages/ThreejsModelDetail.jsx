@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Box, Check, Code2, Download, Info, LoaderCircle, RefreshCw, Trash2, X } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router';
 import MediaImage from '../components/MediaImage';
@@ -7,6 +7,7 @@ import SubjectFamilySelect from '../components/threejsModels/SubjectFamilySelect
 import ThreejsModelPreview from '../components/threejsModels/ThreejsModelPreview';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
+import useMounted from '../hooks/useMounted';
 import useProviderModels from '../hooks/useProviderModels';
 import useThreejsModelFamilies, { GENERAL_FAMILY_ID, resolveFamilyId } from '../hooks/useThreejsModelFamilies';
 import {
@@ -284,38 +285,44 @@ export default function ThreejsModelDetail() {
     // server, so Antigravity lists base models with effort picked separately.
   } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
-  const load = async ({ initial = false } = {}) => {
+  const mountedRef = useMounted();
+  const loadGenerationRef = useRef(0);
+  const load = useCallback(async ({ initial = false } = {}) => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => mountedRef.current && generation === loadGenerationRef.current;
+    if (initial && isCurrent()) {
+      setLoading(true);
+      setNotFound(false);
+    }
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {
+      if (!isCurrent()) return null;
       if (error.status === 404) setNotFound(true);
       else if (initial) toast.error(error.message || 'Failed to load model');
       return null;
     });
+    if (!isCurrent()) return null;
     if (next) {
       setRecord(next);
       setNotFound(false);
     }
     if (initial) setLoading(false);
     return next;
-  };
+  }, [id, mountedRef]);
 
   useEffect(() => {
-    let cancelled = false;
-    getThreejsModel(id, { silent: true })
-      .then((next) => { if (!cancelled) setRecord(next); })
-      .catch((error) => {
-        if (cancelled) return;
-        if (error.status === 404) setNotFound(true);
-        else toast.error(error.message || 'Failed to load model');
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [id]);
+    loadGenerationRef.current += 1;
+    void load({ initial: true });
+    return () => { loadGenerationRef.current += 1; };
+  }, [id, load]);
 
   useEffect(() => {
-    if (record?.status !== 'generating') return undefined;
+    if (record?.id !== id || record?.status !== 'generating') return undefined;
     const handle = setInterval(() => { void load(); }, 2_000);
-    return () => clearInterval(handle);
-  }, [record?.status, id]);
+    return () => {
+      clearInterval(handle);
+      loadGenerationRef.current += 1;
+    };
+  }, [record?.id, record?.status, id, load]);
 
   useEffect(() => {
     if (!record || providers.length === 0) return;
