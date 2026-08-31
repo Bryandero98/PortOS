@@ -669,7 +669,10 @@ export const runTurn = async ({ audio, text, mimeType, source, history = [], emi
       provider: cfg.llm.provider,
       model: cfg.llm.model,
       signal,
-      onTimeout: () => ttsController.abort(),
+      onTimeout: () => {
+        ttsController.abort();
+        emit('voice:tts:cancel', { reason: 'timeout' });
+      },
       tools: toolSpecs,
       tag: turnId,
       onDelta: (delta) => {
