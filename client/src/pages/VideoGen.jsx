@@ -323,6 +323,13 @@ export default function VideoGen() {
     await deleteVideoHistoryItem(raw.id, { silent: true }).catch((err) => toast.error(err.message || 'Delete failed'));
     setHistory((h) => h.filter((v) => v.id !== raw.id));
   }, []);
+  const handlePromptSaved = useCallback((item, prompt) => {
+    const id = item?.id || item?.raw?.id;
+    if (!id) return;
+    setHistory((h) => h.map((v) => v.id === id
+      ? { ...v, prompt: prompt === '(no prompt)' ? '' : prompt }
+      : v));
+  }, []);
   const handleToggleHistoryHidden = useCallback(async (item) => {
     const raw = item?.raw || item;
     const nextHidden = !raw.hidden;
@@ -1558,6 +1565,7 @@ export default function VideoGen() {
         items={previewItems}
         annotations={annotations}
         updateAnnotation={updateAnnotation}
+        onPromptSaved={handlePromptSaved}
         onContinue={handleContinue}
         onRemix={(item) => item?.raw && handleRemixVideo(item.raw)}
       />
