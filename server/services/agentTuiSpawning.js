@@ -1492,11 +1492,29 @@ export async function spawnTuiAgent({
     // first is what lets the composer appear at all.
     if (inputReady.needsTrust && inputReady.trustChoiceReady && !trustAccepted) {
       trustAccepted = true;
-      const trustInput = `${inputReady.trustNeedsSelectionAdvance ? '\x1b[B' : ''}${SUBMIT_KEY}`;
+      const trustInput = `${inputReady.trustSelectionKey}${SUBMIT_KEY}`;
       shellService.writeToSession(sessionId, trustInput);
+      inputReady.ackTrustChoice();
       lastOutputAt = now;
       firstOutputAt = null;
       appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
+      return;
+    }
+
+    // A recognized trust heading with unknown choices is not an input prompt.
+    // Never fall through to either positive-readiness or idle delivery and paste
+    // the task into it. Fail explicitly at the provider's normal readiness cap
+    // so a future wording change is diagnosable without accepting an unknown
+    // highlighted default (which may be "No, exit").
+    if (inputReady.needsTrust && !inputReady.trustChoiceReady) {
+      const trustDeadlineMs = requireInputReady ? TUI_INPUT_READY_DEADLINE_MS : PASTE_DEADLINE_MS;
+      if (elapsed >= trustDeadlineMs) {
+        clearInterval(promptTimer);
+        safeFinishStartupFailure(
+          'tui-trust-choice-unrecognized',
+          `${tuiConfig.command} presented a folder-trust prompt whose affirmative choice PortOS could not identify, so no prompt was sent.`,
+        );
+      }
       return;
     }
 

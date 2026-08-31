@@ -350,10 +350,8 @@ ${prompt}`;
   // retain their existing idle/deadline behavior.
   const inputReady = createInputReadyTracker({ directLaunch: true });
   const requiresInputReady = isClaudeCommand(command);
-  // needsTrust has no self-clearing latch in the tracker, so this flag is
-  // load-bearing to avoid re-sending Enter on every poll tick. needsAutoModeChoice
-  // doesn't need a matching flag below — ackAutoModeChoice() latches it false
-  // permanently on the tracker itself (see autoModeAnswered in tuiHandshake.js).
+  // Keep local one-shot flags alongside the tracker's terminal acknowledgements
+  // so a failed/delayed PTY write cannot cause repeated selector navigation.
   let trustAccepted = false;
   let hookReviewDeclined = false;
 
@@ -882,10 +880,24 @@ ${prompt}`;
       // next option before submitting. `trustAccepted` keeps this to one input.
       if (inputReady.needsTrust && inputReady.trustChoiceReady && !trustAccepted) {
         trustAccepted = true;
-        const trustInput = `${inputReady.trustNeedsSelectionAdvance ? '\x1b[B' : ''}${SUBMIT_KEY}`;
-        dismissStartupDialog(trustInput, 'folder-trust prompt');
+        const trustInput = `${inputReady.trustSelectionKey}${SUBMIT_KEY}`;
+        if (dismissStartupDialog(trustInput, 'folder-trust prompt')) inputReady.ackTrustChoice();
         lastOutputAt = now;
         firstOutputAt = null;
+        return;
+      }
+      if (inputReady.needsTrust && !inputReady.trustChoiceReady) {
+        const trustDeadlineMs = requiresInputReady ? TUI_INPUT_READY_DEADLINE_MS : PASTE_DEADLINE_MS;
+        if (elapsed >= trustDeadlineMs) {
+          clearInterval(readyTimer);
+          readyTimer = null;
+          finish({
+            success: false,
+            exitCode: 1,
+            error: `${command} presented a folder-trust prompt whose affirmative choice PortOS could not identify, so no prompt was sent.`,
+            reason: 'tui-trust-choice-unrecognized',
+          });
+        }
         return;
       }
       if (requiresInputReady) {
