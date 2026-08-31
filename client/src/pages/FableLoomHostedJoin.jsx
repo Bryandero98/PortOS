@@ -175,7 +175,7 @@ export default function FableLoomHostedJoin() {
 
   if (authError) {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
+      <div className="min-h-dvh-cap bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
         <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
           <AlertCircle className="w-8 h-8 text-red-400" />
         </div>
@@ -186,7 +186,7 @@ export default function FableLoomHostedJoin() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between max-w-md mx-auto relative overflow-hidden shadow-2xl">
+    <div className="min-h-dvh-cap bg-slate-950 text-white flex flex-col justify-between max-w-md mx-auto relative overflow-hidden shadow-2xl">
       <audio ref={audioPlayerRef} className="hidden" />
 
       {/* Header */}
@@ -308,7 +308,7 @@ export default function FableLoomHostedJoin() {
             type="submit"
             aria-label="Send message"
             disabled={!textInput.trim() || turnPhase === 'thinking' || turnPhase === 'speaking'}
-            className="p-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-white transition-colors"
+            className="min-w-[44px] min-h-[44px] p-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-white transition-colors flex items-center justify-center"
           >
             <Send className="w-4 h-4" />
           </button>
