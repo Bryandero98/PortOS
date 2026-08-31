@@ -386,14 +386,12 @@ export default function VideoGen() {
   const [progress, setProgress] = useState(null);
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState(null);
-  // Main-stage preview state (#4588). `currentImage` is the runner's latest
-  // decoded frame (absent for every runner that doesn't publish one yet, which
-  // is why the stage falls back to the render's conditioning). `renderGeometry`
-  // is the server's RESOLVED width/height — the form's values are what we
-  // asked for, and videoGen snaps both edges down to the model's grid.
+  // Main-stage preview state (#4588). `renderGeometry` is the server's
+  // RESOLVED width/height — the form's values are what we asked for, and
+  // videoGen snaps both edges down to the model's grid. Transient runner frames
+  // are intentionally ignored: they are not useful for judging a video render.
   // `lastRender` is this session's finished clip, so the stage hands off to it
   // instead of going blank when the render lands.
-  const [currentImage, setCurrentImage] = useState(null);
   const [renderGeometry, setRenderGeometry] = useState(null);
   const [lastRender, setLastRender] = useState(null);
   const { attach, eventSourceRef } = useMediaJobSse('video');
@@ -433,15 +431,9 @@ export default function VideoGen() {
       onQueued: (msg) => setStatusMsg(typeof msg.position === 'number' ? `Queued (position ${msg.position})` : 'Queued'),
       onStarted: () => setStatusMsg('Starting render…'),
       onRenderMeta: (msg) => setRenderGeometry({ width: msg.width, height: msg.height }),
-      // Preview-only frame: a runner frame with no progress value. It must not
-      // disturb the progress bar, hence its own frame type on the wire.
-      onPreview: (msg) => { if (msg.currentImage) setCurrentImage(msg.currentImage); },
       onStatus: (msg) => setStatusMsg(msg.message),
       onProgress: (msg) => {
         setProgress({ progress: msg.progress });
-        // Runners throttle frames, so an absent key must leave the last frame
-        // on the stage rather than blanking it.
-        if (msg.currentImage) setCurrentImage(msg.currentImage);
         // A bare tqdm percentage shouldn't blank the STATUS line that just
         // preceded it; only overwrite when the progress event carries text.
         if (msg.message) setStatusMsg(msg.message);
@@ -450,8 +442,7 @@ export default function VideoGen() {
         setGenerating(false);
         setProgress({ progress: 1 });
         setStatusMsg('Complete');
-        // Hand the stage off from the forming preview to the finished clip.
-        setCurrentImage(null);
+        // Hand the stage off from the conditioning media to the finished clip.
         if (msg.result) setLastRender(msg.result);
         if (withToast) toast.success('Video generated');
         refreshHistory();
@@ -672,7 +663,6 @@ export default function VideoGen() {
   );
   const stage = useMemo(() => resolveVideoStagePreview({
     generating,
-    currentImage,
     width: renderGeometry?.width ?? width,
     height: renderGeometry?.height ?? height,
     result: lastRender,
@@ -681,7 +671,7 @@ export default function VideoGen() {
     lastImageFile, lastUploadUrl,
     keyframes: keyframesActive ? keyframes : null,
   }), [
-    generating, currentImage, renderGeometry, width, height, lastRender, extendSource,
+    generating, renderGeometry, width, height, lastRender, extendSource,
     sourceImageFile, sourceUploadUrl, lastImageFile, lastUploadUrl, keyframesActive, keyframes,
   ]);
   const showStage = generating || stage.kind !== VIDEO_STAGE_KIND.EMPTY;
@@ -705,11 +695,9 @@ export default function VideoGen() {
     setProgress({ progress: 0 });
     setStatusMsg('Starting...');
     setError(null);
-    // Stale-job isolation: the previous run's frame and geometry must not be
-    // shown as if they belonged to this one. `lastRender` deliberately
-    // survives so the stage keeps the finished clip until this run produces
-    // something of its own.
-    setCurrentImage(null);
+    // Stale-job isolation: the previous run's geometry must not be shown as if
+    // it belonged to this one. `lastRender` deliberately survives so the stage
+    // keeps the finished clip until this run produces something of its own.
     setRenderGeometry(null);
 
     const myToken = ++runTokenRef.current;
