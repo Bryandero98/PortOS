@@ -1,11 +1,11 @@
 /**
  * FableLoom REST surface — branching narratives.
  *
- * CRUD for looms/episodes/nodes plus the AI lanes (weave/branch/feedback/review/play)
- * and the deterministic graph validation. Every AI endpoint is a direct
- * user action in the same request (AI Provider Usage Policy). Scene media
- * rides the shared image/video generation queues with a `fableLoom`
- * destination tag — there are no bespoke generation endpoints here.
+ * CRUD for looms/episodes/nodes plus the AI lanes (weave/branch/feedback/review/play),
+ * the deterministic graph validation, and user-triggered fal.ai browser video automation.
+ * Every AI endpoint is a direct user action in the same request (AI Provider Usage Policy).
+ * Standard scene media rides the shared image/video generation queues with a `fableLoom`
+ * destination tag, while fal.ai automation uses a dedicated serialized browser runner.
  */
 
 import { Router } from 'express';

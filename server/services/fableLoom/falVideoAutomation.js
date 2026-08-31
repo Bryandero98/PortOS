@@ -83,6 +83,12 @@ const falAspectRatio = (requested) => {
   return '16:9';
 };
 
+/**
+ * Resolves the active Chrome DevTools Protocol endpoint URL for the PortOS Browser.
+ *
+ * @returns {Promise<string>} CDP HTTP endpoint URL (e.g. http://127.0.0.1:5556).
+ * @throws {ServerError} When PortOS Browser is not running and cannot be launched.
+ */
 const cdpEndpoint = async () => {
   let health = await getHealthStatus();
   if (!health.connected) health = await launchBrowser();
@@ -99,6 +105,12 @@ const cdpEndpoint = async () => {
   return `http://${endpointHost}:${health.cdpPort}`;
 };
 
+/**
+ * Checks for visible error messages, CAPTCHA challenges, rate limits, or auth walls on the fal.ai page.
+ *
+ * @param {import('playwright-core').Page} page - Active Playwright page.
+ * @returns {Promise<string|null>} User-friendly error diagnosis if found, otherwise null.
+ */
 const visibleFalFailure = async (page) => {
   const text = await page.locator('[role="alert"]:visible, .text-error:visible').allInnerTexts().catch(() => []);
   const message = text.map((item) => item.trim()).find(Boolean) || '';
@@ -122,6 +134,12 @@ const visibleFalFailure = async (page) => {
     : null;
 };
 
+/**
+ * Maps uncaught errors to sanitized user-facing error explanations.
+ *
+ * @param {Error|ServerError} error - Caught error.
+ * @returns {string} User-facing failure summary.
+ */
 const safeFailureMessage = (error) => {
   if (error instanceof ServerError) return error.message;
   if (error?.name === 'TimeoutError') {
@@ -130,10 +148,25 @@ const safeFailureMessage = (error) => {
   return 'fal.ai browser automation failed. Inspect the PortOS Browser tab, then retry.';
 };
 
+/**
+ * Reads the current video source URL from the given video locator.
+ *
+ * @param {import('playwright-core').Locator} resultVideo - Video element locator.
+ * @returns {Promise<string>} Video source URL.
+ */
 const readVideoSource = (resultVideo) => resultVideo
   .evaluate((video) => video.currentSrc || video.src || '')
   .catch(() => '');
 
+/**
+ * Polls the fal.ai result video element until a new video URL appears or an error is diagnosed.
+ *
+ * @param {import('playwright-core').Page} page - Active Playwright page.
+ * @param {import('playwright-core').Locator} resultVideo - Video element locator.
+ * @param {string} previousSourceUrl - URL from any previous completed render.
+ * @returns {Promise<string>} Downloadable URL of the generated video.
+ * @throws {ServerError} When rendering times out or fal.ai shows an error/captcha.
+ */
 const waitForFalResult = async (page, resultVideo, previousSourceUrl) => {
   const deadline = Date.now() + FAL_RENDER_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -165,6 +198,14 @@ const waitForFalResult = async (page, resultVideo, previousSourceUrl) => {
   );
 };
 
+/**
+ * Downloads the generated video buffer from fal.ai using the authenticated browser context.
+ *
+ * @param {import('playwright-core').BrowserContext} context - Playwright browser context.
+ * @param {string} sourceUrl - Video asset URL to download.
+ * @returns {Promise<Buffer>} Video file buffer.
+ * @throws {ServerError} On non-200 HTTP response or when video size exceeds max upload limits.
+ */
 const readFalVideo = async (context, sourceUrl) => {
   if (!/^https?:\/\//i.test(sourceUrl)) {
     throw new ServerError('fal.ai finished, but did not expose a downloadable video URL.', {
@@ -207,6 +248,12 @@ const readFalVideo = async (context, sourceUrl) => {
   return buffer;
 };
 
+/**
+ * Executes a single serialized fal.ai video generation job via Playwright CDP automation.
+ *
+ * @param {object} job - The internal job record to execute.
+ * @returns {Promise<void>}
+ */
 const executeJob = async (job) => {
   let browser = null;
   let createdPage = null;
@@ -333,6 +380,21 @@ const executeJob = async (job) => {
   }
 };
 
+/**
+ * Enqueues a user-triggered fal.ai H3 Max video automation job for a FableLoom scene.
+ *
+ * Checks scene existence and validates that an approved storyboard still is present,
+ * registers the queued job, and attaches it to the serialized browser runner tail.
+ *
+ * @param {string} loomId - The ID of the parent loom story.
+ * @param {string} episodeId - The ID of the episode containing the scene.
+ * @param {string} nodeId - The ID of the scene node to render video for.
+ * @param {object} options - Generation options.
+ * @param {string} options.prompt - Authored video generation prompt and camera direction.
+ * @param {'16:9'|'9:16'|'1:1'} [options.aspectRatio='16:9'] - Target video aspect ratio.
+ * @returns {Promise<object>} Public job status descriptor.
+ * @throws {ServerError} When scene/image is missing or browser is unavailable.
+ */
 export async function startFalVideoAutomation(loomId, episodeId, nodeId, {
   prompt,
   aspectRatio = '16:9',
@@ -398,6 +460,16 @@ export async function startFalVideoAutomation(loomId, episodeId, nodeId, {
   }
 }
 
+/**
+ * Retrieves the public status descriptor for an existing fal.ai video automation job.
+ *
+ * @param {string} loomId - The ID of the parent loom story.
+ * @param {string} episodeId - The ID of the episode containing the scene.
+ * @param {string} nodeId - The ID of the scene node.
+ * @param {string} jobId - The unique job ID.
+ * @returns {object} Public job status descriptor.
+ * @throws {ServerError} When the job is not found or does not match scene scope.
+ */
 export function getFalVideoAutomation(loomId, episodeId, nodeId, jobId) {
   pruneJobs();
   const job = jobs.get(jobId);
@@ -407,6 +479,9 @@ export function getFalVideoAutomation(loomId, episodeId, nodeId, jobId) {
   return publicJob(job);
 }
 
+/**
+ * Resets all in-memory fal.ai video automation job queues, caches, and run promises (test helper).
+ */
 export function _resetFalVideoAutomations() {
   jobs.clear();
   latestJobByScene.clear();
