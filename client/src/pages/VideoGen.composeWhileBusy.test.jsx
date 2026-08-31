@@ -202,6 +202,8 @@ describe('VideoGen compose-while-busy', () => {
       );
     });
 
+    expect(screen.getByText(/fal\.ai currently advertises up to 5 free videos per day with an account/))
+      .toBeInTheDocument();
     fireEvent.change(await screen.findByLabelText('Prompt'), { target: { value: 'A clockwork bird takes flight.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy prompt & open fal.ai' }));
 

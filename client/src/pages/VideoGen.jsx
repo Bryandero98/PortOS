@@ -101,7 +101,9 @@ import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord, isDeliveryVideoModel } from '../lib/videoFinish.js';
 import { peerModelRequiresInput } from '../lib/federatedMediaReadiness.js';
-import { openFalH3MaxFreeTool } from '../lib/falVideoHandoff.js';
+import {
+  FAL_H3_MAX_FREE_ALLOWANCE_NOTE, openFalH3MaxFreeTool,
+} from '../lib/falVideoHandoff.js';
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
   { id: 'image',  label: 'Image',  icon: ImageIcon,  desc: 'Image-to-video (start frame)' },
@@ -892,7 +894,7 @@ export default function VideoGen() {
         <div className="min-w-0">
           <p className="text-sm font-medium text-port-text">MiniMax H3 Max on fal.ai</p>
           <p className="mt-0.5 text-xs text-port-text-muted">
-            fal offers up to 15 free browser-tool renders per day with an account. PortOS copies this form&rsquo;s composed prompt and opens that tool; download the MP4, then upload it to Media History. fal&rsquo;s app API is separately metered.
+            {FAL_H3_MAX_FREE_ALLOWANCE_NOTE} PortOS copies this form&rsquo;s composed prompt and opens that tool; download the MP4, then upload it to Media History. fal&rsquo;s app API is separately metered.
           </p>
           {!falFreeSupported && (
             <p className="mt-1 text-xs text-port-warning" role="status">
