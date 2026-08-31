@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { chromium } from 'playwright-core';
 import { ServerError } from '../../lib/errorHandler.js';
+import { sleep } from '../../lib/fileUtils.js';
 import { resolveGalleryImage } from '../../lib/pathSafety.js';
 import { getHealthStatus, launchBrowser } from '../browserService.js';
 import {
@@ -100,12 +101,16 @@ const cdpEndpoint = async () => {
 const visibleFalFailure = async (page) => {
   const text = await page.locator('[role="alert"]:visible, .text-error:visible').allInnerTexts().catch(() => []);
   const message = text.map((item) => item.trim()).find(Boolean) || '';
-  const bodyText = await page.locator('body').innerText().catch(() => '');
-  const combined = `${message}\n${bodyText}`;
-  if (/captcha|verify (?:that )?you are human|human verification/i.test(combined)) {
+  const challengeFrames = await page.locator([
+    'iframe[src*="captcha" i]',
+    'iframe[src*="challenge" i]',
+    'iframe[title*="captcha" i]',
+    'iframe[title*="challenge" i]',
+  ].join(', ')).count().catch(() => 0);
+  if (challengeFrames > 0 || /captcha|verify (?:that )?you are human|human verification/i.test(message)) {
     return 'fal.ai needs human verification in the PortOS Browser. Complete it there, then retry.';
   }
-  if (/daily limit|free (?:video )?limit|quota|too many requests/i.test(combined)) {
+  if (/daily limit|free (?:video )?limit|quota|too many requests/i.test(message)) {
     return 'fal.ai reports that the free video allowance is exhausted. Retry when the allowance resets.';
   }
   if (/sign in (?:to|with)|log in (?:to|with)/i.test(message)) {
@@ -148,6 +153,7 @@ const waitForFalResult = async (page, resultVideo, previousSourceUrl) => {
     if (failure) {
       throw new ServerError(failure, { status: 502, code: 'FAL_VIDEO_GENERATION_FAILED' });
     }
+    await sleep(Math.min(FAL_RESULT_POLL_MS, Math.max(0, deadline - Date.now())));
   }
   throw new ServerError(
     'fal.ai did not finish the video before the 20-minute timeout. Inspect the PortOS Browser tab, then retry.',
@@ -199,6 +205,7 @@ const readFalVideo = async (context, sourceUrl) => {
 
 const executeJob = async (job) => {
   let browser = null;
+  let createdPage = null;
   try {
     job.startedAt = new Date().toISOString();
     setJobProgress(job, 'Opening the PortOS Browser…', 0.05);
@@ -231,12 +238,16 @@ const executeJob = async (job) => {
         code: 'PORTOS_BROWSER_UNAVAILABLE',
       });
     }
-    const page = context.pages().find((candidate) => candidate.url().includes('/tools/minimax-h3-max'))
-      || await context.newPage();
+    const existingPage = context.pages()
+      .find((candidate) => candidate.url().includes('/tools/minimax-h3-max'));
+    createdPage = existingPage ? null : await context.newPage();
+    const page = existingPage || createdPage;
+    setJobProgress(job, 'Loading the fal.ai video tool…', 0.1);
     await page.goto(FAL_H3_MAX_FREE_URL, { waitUntil: 'domcontentloaded', timeout: FAL_CONTROL_TIMEOUT_MS });
 
     const promptInput = page.locator('textarea[placeholder^="Describe the video you want"]').first();
     const imageInput = page.locator('input[type="file"][accept*="image"]').first();
+    setJobProgress(job, 'Waiting for fal.ai controls…', 0.12);
     await promptInput.waitFor({ state: 'visible', timeout: FAL_CONTROL_TIMEOUT_MS });
 
     setJobProgress(job, 'Uploading the scene image to fal.ai…', 0.15);
@@ -293,12 +304,17 @@ const executeJob = async (job) => {
     console.log(`🎬 fal.ai scene video attached: ${galleryVideo.id}`);
   } catch (error) {
     const message = safeFailureMessage(error);
+    const diagnostic = [error?.name || 'Error', error?.code].filter(Boolean).join('/');
+    const failedStage = job.statusMsg || 'fal.ai automation';
     job.status = 'failed';
     job.statusMsg = 'fal.ai video failed';
     job.error = message;
     job.completedAt = new Date().toISOString();
-    console.error(`❌ fal.ai scene video failed: ${message}`);
+    console.error(`❌ fal.ai scene video failed: ${message} (${diagnostic} during ${failedStage})`);
   } finally {
+    // Keep a real fal.ai page open for login/CAPTCHA inspection, but do not
+    // accumulate blank tabs when navigation itself failed.
+    if (createdPage?.url() === 'about:blank') await createdPage.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
   }
 };

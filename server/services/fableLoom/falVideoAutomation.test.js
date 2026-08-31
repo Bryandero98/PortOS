@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   launchBrowser: vi.fn(),
   resolveGalleryImage: vi.fn(),
   saveUploadedGalleryVideoBuffer: vi.fn(),
+  sleep: vi.fn(),
 }));
 
 vi.mock('playwright-core', () => ({
@@ -20,6 +21,9 @@ vi.mock('../browserService.js', () => ({
 }));
 vi.mock('../../lib/pathSafety.js', () => ({
   resolveGalleryImage: (...args) => mocks.resolveGalleryImage(...args),
+}));
+vi.mock('../../lib/fileUtils.js', () => ({
+  sleep: (...args) => mocks.sleep(...args),
 }));
 vi.mock('../videoUpload.js', () => ({
   MAX_GALLERY_VIDEO_UPLOAD_BYTES: 50 * 1024 * 1024,
@@ -45,6 +49,7 @@ const loomWithImage = (image = 'scene.png') => ({
 const makeBrowser = ({
   resultError = null,
   errorTexts = [],
+  gotoError = null,
   previousVideoUrl = '',
   resultVideoUrl = 'https://v3.fal.media/files/example.mp4',
 } = {}) => {
@@ -62,8 +67,8 @@ const makeBrowser = ({
   video.first.mockReturnValue(video);
   const errorLocator = {
     allInnerTexts: vi.fn(async () => errorTexts),
+    count: vi.fn(async () => 0),
   };
-  const bodyLocator = { innerText: vi.fn(async () => errorTexts.join('\n')) };
   const controls = new Map(['16:9', '9:16', '1:1', '5s', 'Generate'].map((name) => [name, {
     click: vi.fn(async () => {}),
     waitFor: vi.fn(async () => {}),
@@ -77,13 +82,13 @@ const makeBrowser = ({
   };
   const request = { get: vi.fn(async () => apiResponse) };
   const page = {
+    close: vi.fn(async () => {}),
     getByRole: vi.fn((_role, { name }) => controls.get(name)),
-    goto: vi.fn(async () => {}),
+    goto: gotoError ? vi.fn(async () => { throw gotoError; }) : vi.fn(async () => {}),
     locator: vi.fn((selector) => {
       if (selector.startsWith('textarea')) return prompt;
       if (selector.startsWith('input')) return image;
       if (selector === 'video[src]') return video;
-      if (selector === 'body') return bodyLocator;
       return errorLocator;
     }),
     url: vi.fn(() => 'about:blank'),
@@ -119,6 +124,7 @@ beforeEach(() => {
   mocks.getHealthStatus.mockResolvedValue({ connected: true, cdpHost: '127.0.0.1', cdpPort: 5556 });
   mocks.getLoom.mockResolvedValue(loomWithImage());
   mocks.resolveGalleryImage.mockReturnValue('/example/images/scene.png');
+  mocks.sleep.mockResolvedValue(undefined);
   mocks.saveUploadedGalleryVideoBuffer.mockResolvedValue({
     id: 'upload-ab12cd34', filename: 'upload-ab12cd34.mp4',
   });
@@ -193,6 +199,35 @@ describe('FableLoom fal.ai browser automation', () => {
       'https://v3.fal.media/files/current-scene.mp4',
       expect.any(Object),
     );
+  });
+
+  it('paces polling while a stale persistent-tab result remains visible', async () => {
+    const { video } = makeBrowser({
+      previousVideoUrl: 'https://v3.fal.media/files/prior-scene.mp4',
+      resultVideoUrl: 'https://v3.fal.media/files/current-scene.mp4',
+    });
+    video.evaluate
+      .mockReset()
+      .mockResolvedValueOnce('https://v3.fal.media/files/prior-scene.mp4')
+      .mockResolvedValueOnce('https://v3.fal.media/files/prior-scene.mp4')
+      .mockResolvedValue('https://v3.fal.media/files/current-scene.mp4');
+    const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+      prompt: 'The current scene begins.', aspectRatio: '16:9',
+    });
+
+    await expect(waitForTerminalJob(queued)).resolves.toMatchObject({ status: 'completed' });
+    expect(mocks.sleep).toHaveBeenCalledWith(2000);
+  });
+
+  it('closes a newly created blank tab when fal.ai navigation fails', async () => {
+    const { page } = makeBrowser({ gotoError: new Error('navigation failed') });
+    const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+      prompt: 'The current scene begins.', aspectRatio: '16:9',
+    });
+
+    await expect(waitForTerminalJob(queued)).resolves.toMatchObject({ status: 'failed' });
+    expect(page.close).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('during Loading the fal.ai video tool'));
   });
 
   it('requires a current storyboard image before it consumes fal.ai', async () => {

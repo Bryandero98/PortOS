@@ -60,7 +60,8 @@ export default function LoomSceneMedia({
   const freeToolDisabled = (falDisabled ?? generationDisabled) || videoActive || falRequiresImage;
   const configuredFalDisabledReason = falDisabledReason ?? generationDisabledReason;
   const freeToolDisabledReason = configuredFalDisabledReason
-    || (falRequiresImage ? 'Generate a scene image first so fal.ai has a starting frame' : '');
+    || (falRequiresImage ? 'Generate a scene image first so fal.ai has a starting frame' : '')
+    || (videoActive ? 'A scene video is already rendering' : '');
   const activeJob = videoActive ? videoJob : imageActive ? imageJob : null;
   const activeKind = videoActive ? 'video' : imageActive ? 'image' : null;
   const failedJob = videoJob?.status === 'failed'
