@@ -383,6 +383,7 @@ export const streamChat = async (messages, opts = {}) => {
       body: JSON.stringify(body),
       signal: requestController.signal,
     });
+    if (timedOut) throw new Error(VOICE_LLM_TIMEOUT_MESSAGE);
     console.log(`🤖 ${tag}voice.llm.headers ${res.status} in ${Date.now() - reqStart}ms`);
     if (!res.ok || !res.body) {
       const errBody = await res.text().catch(() => '');
@@ -472,6 +473,7 @@ export const streamChat = async (messages, opts = {}) => {
 
     while (true) {
       const { value, done } = await reader.read();
+      if (timedOut) throw new Error(VOICE_LLM_TIMEOUT_MESSAGE);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 

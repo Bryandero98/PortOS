@@ -327,9 +327,13 @@ describe('streamChat request lifecycle', () => {
   });
 
   it('aborts a provider stream that stops yielding SSE data', async () => {
+    let releaseRead;
     const reader = {
-      read: vi.fn(({ signal } = {}) => pendingUntilAbort(signal || chatSignal)),
-      cancel: vi.fn(),
+      read: vi.fn(() => new Promise((resolve) => { releaseRead = resolve; })),
+      cancel: vi.fn(() => {
+        releaseRead?.({ value: undefined, done: true });
+        return Promise.resolve();
+      }),
     };
     installFetch(({ signal }) => Promise.resolve({
       ok: true,
