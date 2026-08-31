@@ -290,13 +290,12 @@ export async function deleteSyncBaseHash(kind, id) {
 /**
  * Sweep base-hash entries whose record no longer resolves to a live record.
  *
- * The per-record prune paths (`pruneTombstonedUniverses` / `…Series` / `…Issues`
- * / `…Collections`) already evict a record's base hash when they hard-delete its
- * tombstone. This is the BACKSTOP for keys that escaped those paths: a record
- * hand-deleted on disk, a key left behind by an older version before the prune
- * paths evicted, or any future kind that seeds a base hash without a matching
- * eviction. Without it the side store accumulates dead keys forever on a
- * long-lived federated install.
+ * The per-record prune paths that own base hashes already evict them when they
+ * hard-delete tombstones. This is the BACKSTOP for keys that escaped those
+ * paths: a record hand-deleted on disk, a key left behind by an older version
+ * before the prune paths evicted, or any future kind that seeds a base hash
+ * without a matching eviction. Without it the side store accumulates dead keys
+ * forever on a long-lived federated install.
  *
  * `resolves` is an async predicate `(kind, id) => boolean` — return true if the
  * key still maps to a record we want to keep a base hash for. Keys whose kind
@@ -364,9 +363,9 @@ export function flushBaseHashes() {
  *
  * Two caller shapes use it: the `peer:online` convergence walk
  * `retryPendingPushesForPeer` (pushes — and stamps — every subscribed record in
- * sequence), and `pruneTombstoned*` hard-prune loops that evict a base hash per
- * hard-deleted record. Eviction only marks `_baseDirty` for a key the map
- * actually held, so a prune that removed nothing still costs zero writes.
+ * sequence), and every base-hash-evicting `pruneTombstoned*` hard-prune loop.
+ * Eviction only marks `_baseDirty` for a key the map actually held, so a prune
+ * that removed nothing still costs zero writes.
  *
  * Re-entrant (depth-counted) so nested scopes collapse to the outermost batch,
  * and the terminal flush runs in `finally` so a thrown/rejected `fn` still
@@ -381,10 +380,9 @@ export function flushBaseHashes() {
  *
  * Depth is module-level, not per-async-context, so CONCURRENT batches merge
  * rather than nest. The tombstone GC fans its `pruneTombstoned*` calls out
- * through one `Promise.all`, so the batched ones overlap: the last scope to
- * close flushes every eviction they accumulated, and an unbatched sibling's
- * flush that landed while depth was still >0 rides along in that same write.
- * Nothing is dropped either way — a deferred flush leaves `_baseDirty` set.
+ * through one `Promise.all`, so their scopes overlap: the last scope to close
+ * flushes every eviction they accumulated. Nothing is dropped — a deferred
+ * flush leaves `_baseDirty` set.
  */
 export async function withBaseHashFlushBatch(fn) {
   _flushBatchDepth += 1;
