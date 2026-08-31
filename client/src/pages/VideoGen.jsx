@@ -1,6 +1,6 @@
 /**
  * Video Generation page (LTX models via mlx_video on macOS, diffusers on
- * Windows). Local-only — there is no external A1111 equivalent for video.
+ * Windows), with local, Grok, and federated render targets.
  *
  * Accepts a source image either via direct upload or via the
  * `?sourceImageFile=` query param so the Image Gen page can pipe a generation
@@ -26,13 +26,13 @@
  * Form state, the URL-param prefill paths, the mode/backend transitions, and
  * `buildGeneratePayload()` live in `useVideoGenForm` (issue #3291) — this page
  * owns the fetching (status/models/history/gallery), the SSE run pipeline, the
- * batch queue, and the rendering.
+ * the rendering. The durable server queue owns queued work; each render target
+ * drains through its own lane.
  *
- * Batch queue: client-side serial executor. The form's "Add to queue" button
- * appends a job to the queue (preserving the current params). When no job is
- * actively generating, the head of the queue is dequeued and submitted via
- * the same generate path as the inline button — so SSE progress, history
- * refresh, and error handling are all reused.
+ * "Add to queue" submits immediately to the durable server queue. That is
+ * important for mixed-target work: a Grok submission can start in its cloud
+ * lane while a local render occupies the GPU lane, and a federated peer owns
+ * the queue for the work it receives.
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -66,7 +66,6 @@ import {
   X, Type, Image as ImageIcon, GitBranch, ListPlus, Music, SlidersHorizontal,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
-import BatchQueuePanel from '../components/media/BatchQueuePanel';
 import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import ModelSelect from '../components/ModelSelect';
 import { FormField } from '../components/ui/FormField';
@@ -78,7 +77,6 @@ import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import usePreviewRoute from '../hooks/usePreviewRoute';
 import useMediaPreviewActions from '../hooks/useMediaPreviewActions';
-import { useVideoGenQueue } from '../hooks/useVideoGenQueue.js';
 import { useVideoGenForm } from '../hooks/useVideoGenForm.js';
 import { useFederatedMediaTarget } from '../hooks/useFederatedMediaTarget';
 import RemoteMediaTargetPicker from '../components/federatedMedia/RemoteMediaTargetPicker';
@@ -94,7 +92,7 @@ import {
 } from '../services/api';
 import LoraPicker from '../components/imageGen/LoraPicker';
 import { VIDEO_RESOLUTIONS, resolutionOptionsForModel } from '../lib/videoGenResolutions';
-import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
+import { GROK_VIDEO_DURATIONS } from '../lib/grokVideoClip.js';
 import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord, isDeliveryVideoModel } from '../lib/videoFinish.js';
@@ -387,8 +385,7 @@ export default function VideoGen() {
   const { attach, eventSourceRef } = useMediaJobSse('video');
   // Hold the reject() of the in-flight runGeneration Promise so cancel can
   // settle it. Without this, handleCancel() closes the EventSource but the
-  // outstanding Promise dangles forever — and the queue worker's .finally()
-  // never runs, leaving runningQueueId stuck and freezing further dequeue.
+  // outstanding Promise dangles forever.
   const runRejectRef = useRef(null);
   // Per-run abort token. Bumped at the start of each runGeneration() and
   // again on cancel; runGeneration captures the value at start and bails
@@ -667,8 +664,9 @@ export default function VideoGen() {
   const showStage = generating || stage.kind !== VIDEO_STAGE_KIND.EMPTY;
 
   // Run a single payload through the SSE pipeline. Returns a promise that
-  // resolves when the job completes (or rejects on error / cancel). Shared
-  // by the inline submit and the queue worker.
+  // resolves when the job completes (or rejects on error / cancel). The
+  // separate queue-submit path below deliberately does not attach SSE: the
+  // shared MediaJobsQueue is the live view for work submitted in parallel.
   //
   // Per-run abort token: the user can press Cancel during the brief window
   // between generateVideo() POST and its `.then()` resolving with a jobId.
@@ -694,8 +692,8 @@ export default function VideoGen() {
     const isCurrent = () => myToken === runTokenRef.current;
 
     // Wrap settle so the cancel ref is cleared exactly once when the Promise
-    // transitions to a final state — guarantees the queue worker's .finally()
-    // always runs and stale rejects can't fire after a successful complete.
+    // transitions to a final state and stale rejects can't fire after a
+    // successful complete.
     const settleResolve = (value) => { runRejectRef.current = null; activeJobIdRef.current = null; resolve(value); };
     const settleReject = (err) => { runRejectRef.current = null; activeJobIdRef.current = null; reject(err); };
     runRejectRef.current = settleReject;
@@ -728,39 +726,44 @@ export default function VideoGen() {
     });
   });
 
-  // Client-side serial batch queue. Owns the queue state + worker effect;
-  // the page supplies `generating` (parks the worker) and `runGeneration`
-  // (runs one payload through the SSE pipeline).
-  const {
-    queue, enqueue, removeFromQueue, clearFinishedQueue, cancelRunning,
-  } = useVideoGenQueue({ generating, runGeneration });
-
   const handleGenerate = async (e) => {
     e?.preventDefault?.();
     if (generating) {
-      if (canEnqueue) handleEnqueue();
+      if (canEnqueue) await handleEnqueue();
       return;
     }
     if (!canEnqueue) return;
     // A capacity window expires on the clock, so an enabled button can already
     // be pointing at a lapsed peer — re-derive at the moment of commit and say
     // so, rather than letting the peer reject a render already paid for.
-    if (remoteTarget.isRemote) {
-      const fresh = remoteTarget.verify();
-      if (!fresh.ok) { toast.error(fresh.message); return; }
-    }
+    if (!verifyRemoteTarget()) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
-  const handleEnqueue = () => {
+  const verifyRemoteTarget = () => {
+    if (!remoteTarget.isRemote) return true;
+    const fresh = remoteTarget.verify();
+    if (!fresh.ok) { toast.error(fresh.message); return false; }
+    return true;
+  };
+
+  const handleEnqueue = async () => {
     // Mirror the Generate guard — a BYOV runtime that isn't installed yet
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
     if (!canEnqueue) return;
-    // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
-    // rest as a stable summary for the queue UI.
-    enqueue(buildGeneratePayload());
+    // A capacity window expires on the clock, so re-check the selected peer at
+    // the moment this queued job is committed. The server then owns the job,
+    // including any multipart uploads, and the appropriate lane can start it
+    // without waiting for this tab's active SSE render.
+    if (!verifyRemoteTarget()) return;
+    await generateVideo(buildGeneratePayload())
+      .then((data) => {
+        const position = Number.isInteger(data?.position) ? ` (position ${data.position})` : '';
+        toast.success(`Queued${position}`);
+      })
+      .catch((err) => toast.error(err.message || 'Failed to queue video'));
   };
 
   const handleCancel = async () => {
@@ -779,17 +782,13 @@ export default function VideoGen() {
     }
     setGenerating(false);
     setStatusMsg('Cancelled');
-    // Settle the in-flight runGeneration Promise so the queue worker's
-    // .finally() releases runningQueueId and the next pending item can run.
-    // Without this the Promise would dangle and the worker would stay parked.
+    // Settle the in-flight runGeneration Promise so callers waiting on the
+    // active render do not retain a dangling promise after cancellation.
     if (runRejectRef.current) {
       const reject = runRejectRef.current;
       runRejectRef.current = null;
       reject(new Error('Cancelled'));
     }
-    // Mark the running queue item errored + release the slot so the next
-    // pending item can dispatch (no-op when nothing's queued).
-    cancelRunning();
   };
 
   // `status.connected` reflects the LEGACY mlx_video pythonPath health. BYOV
@@ -1053,7 +1052,8 @@ export default function VideoGen() {
           </div>
 
           {/* Keep Enhance live while a render is in flight so the next clip
-              can be composed and queued. Generate itself becomes Cancel. */}
+              can be composed and submitted to its server queue. Generate
+              itself becomes Cancel. */}
           <PromptEnhancer
             kind="video"
             prompt={prompt}
@@ -1444,7 +1444,7 @@ export default function VideoGen() {
               onClick={handleEnqueue}
               disabled={!canEnqueue}
               className="flex items-center gap-2 px-4 py-2 border border-port-border text-gray-200 hover:text-white hover:bg-port-border/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg min-h-[40px]"
-              title={canEnqueue ? 'Add this configuration to the batch queue'
+              title={canEnqueue ? 'Submit this configuration to its server queue; local, Grok, and remote lanes run independently'
                 : icWeightsBlocked ? `Download the ${icSpec?.label || 'IC-LoRA'} weight before queueing`
                   : weightsGateBlocked ? 'Finish required model downloads before queueing'
                     : 'Complete the required inputs before queueing'}
@@ -1471,18 +1471,6 @@ export default function VideoGen() {
           />
         </div>
       </form>
-
-      <BatchQueuePanel
-        queue={queue}
-        onRemove={removeFromQueue}
-        onClear={clearFinishedQueue}
-        summarize={(item) => (
-          <>
-            <span className="uppercase mr-2">{item.params.backend === 'grok' ? `grok ${item.params.mode}` : item.params.mode}</span>
-            {item.params.width}×{item.params.height} · {item.params.backend === 'grok' ? `${item.params.grokDuration || GROK_VIDEO_DEFAULT_DURATION}s` : `${item.params.numFrames}f`}
-          </>
-        )}
-      />
 
       <MediaJobsQueue kind="video" />
 

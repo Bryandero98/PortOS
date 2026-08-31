@@ -43,6 +43,23 @@ const STATUS_BADGE = {
 
 const KIND_ICON = { video: Film, image: ImageIcon, training: Cpu };
 
+// Video jobs are scheduled by the server into independent execution lanes.
+// Keep the UI labels aligned with the user-facing targets rather than exposing
+// implementation names such as "gpu" and "cloud". Remote jobs are already
+// projected with renderer="remote"; Grok video jobs carry the Grok mode while
+// local video jobs carry their pipeline mode (text/image/etc.).
+const VIDEO_QUEUE_LANES = Object.freeze([
+  { id: 'local', label: 'Local machine', description: 'Local GPU renders run one at a time.' },
+  { id: 'grok', label: 'Grok', description: 'Grok renders use a cloud lane in parallel with local work.' },
+  { id: 'remote', label: 'Remote machines', description: 'Each selected peer owns the queue for work it receives.' },
+]);
+
+const videoQueueLane = (job) => {
+  if (job?.renderer === 'remote') return 'remote';
+  if (job?.kind === 'video' && job.params?.mode === IMAGE_GEN_MODE.GROK) return 'grok';
+  return 'local';
+};
+
 // Creative Director scene renders use the same durable media queue as manual
 // Video Gen renders, but carry an owner tag so the orchestrator can reconcile
 // completion. Keep that ownership visible in the shared queue: otherwise an
@@ -165,6 +182,13 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
     return { live: liveJobs, recent: recentJobs, queuedCount: queued, failedCount: failed };
   }, [jobs, recentLimit]);
 
+  const videoLanes = useMemo(() => {
+    if (kind !== 'video') return [];
+    return VIDEO_QUEUE_LANES
+      .map((lane) => ({ ...lane, jobs: live.filter((job) => videoQueueLane(job) === lane.id) }))
+      .filter((lane) => lane.jobs.length > 0);
+  }, [kind, live]);
+
   // Accepts optional `overrides` so the inline Edit form can patch prompt /
   // negativePrompt / model / dimensions before the re-enqueue. No overrides =
   // same behavior as the plain Retry button.
@@ -192,7 +216,9 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
     })
     .catch((err) => toast.error(err?.message || 'Delete failed'));
   const KIND_LABEL = { image: 'Image', video: 'Video', training: 'Training' };
-  const headerLabel = kind ? `${KIND_LABEL[kind] || ''} ${kind === 'training' ? 'Queue' : 'Render Queue'}`.trim() : 'Render Queue';
+  const headerLabel = kind
+    ? `${KIND_LABEL[kind] || ''} ${kind === 'training' ? 'Queue' : kind === 'video' ? 'Render Queues' : 'Render Queue'}`.trim()
+    : 'Render Queue';
 
   const handleClearQueued = () => {
     if (!queuedCount) return;
@@ -253,7 +279,28 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
         </div>
       ) : (
         <div className="space-y-2">
-          {live.map((j) => <JobRow key={j.id} job={j} onCancel={handleCancel} onRetry={handleRetry} onRunNow={handleRunNow} />)}
+          {kind === 'video' ? (
+            <div className="space-y-3">
+              {videoLanes.map((lane) => (
+                <section
+                  key={lane.id}
+                  aria-label={`${lane.label} video queue`}
+                  className="space-y-1.5"
+                  title={lane.description}
+                >
+                  <div className="flex items-center justify-between gap-2 px-1">
+                    <h3 className="text-[11px] font-medium text-gray-300 uppercase tracking-wide">{lane.label}</h3>
+                    <span className="text-[11px] text-port-text-muted">{formatLaneCounts(lane.jobs)}</span>
+                  </div>
+                  {lane.jobs.map((j) => (
+                    <JobRow key={j.id} job={j} onCancel={handleCancel} onRetry={handleRetry} onRunNow={handleRunNow} />
+                  ))}
+                </section>
+              ))}
+            </div>
+          ) : (
+            live.map((j) => <JobRow key={j.id} job={j} onCancel={handleCancel} onRetry={handleRetry} onRunNow={handleRunNow} />)
+          )}
 
           {recent.length > 0 && (
             <button
@@ -278,6 +325,15 @@ function formatCounts(live, recent, failedCount) {
   const canceledCount = recent.length - failedCount;
   if (canceledCount > 0) parts.push(`${canceledCount} canceled`);
   return parts.join(' • ');
+}
+
+function formatLaneCounts(jobs) {
+  const running = jobs.filter((job) => job.status === 'running').length;
+  const queued = jobs.filter((job) => job.status === 'queued').length;
+  return [
+    running > 0 ? `${running} running` : null,
+    queued > 0 ? `${queued} queued` : null,
+  ].filter(Boolean).join(' · ');
 }
 
 // One-line training summary in place of the (absent) prompt: who's training,
