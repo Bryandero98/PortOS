@@ -28,6 +28,7 @@ const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
 
 const MAX_IN_FLIGHT_POLLS = 2;
+const POLL_TIMEOUT_MS = 30_000;
 
 const SEVERITY_STYLE = {
   error: 'border-port-error/40 bg-port-error/10 text-port-error',
@@ -292,8 +293,8 @@ export default function ThreejsModelDetail() {
   const requestSequenceRef = useRef(0);
   const pollSequenceRef = useRef(0);
   const lastAppliedRequestRef = useRef(0);
-  const inFlightPollsRef = useRef(new Set());
-  const load = useCallback(async ({ initial = false } = {}) => {
+  const inFlightPollsRef = useRef(new Map());
+  const load = useCallback(async ({ initial = false, signal } = {}) => {
     const lifecycleGeneration = lifecycleGenerationRef.current;
     const requestSequence = ++requestSequenceRef.current;
     const isCurrent = () => mountedRef.current && lifecycleGeneration === lifecycleGenerationRef.current;
@@ -303,7 +304,10 @@ export default function ThreejsModelDetail() {
       setNotFound(false);
       setRecord(null);
     }
-    const next = await getThreejsModel(id, { silent: true }).catch((error) => {
+    const next = await getThreejsModel(id, {
+      silent: true,
+      ...(signal ? { signal } : {}),
+    }).catch((error) => {
       if (!isAuthoritative()) return null;
       if (error.status === 404) {
         lastAppliedRequestRef.current = requestSequence;
@@ -332,11 +336,27 @@ export default function ThreejsModelDetail() {
     const handle = setInterval(() => {
       if (inFlightPollsRef.current.size >= MAX_IN_FLIGHT_POLLS) return;
       const pollSequence = ++pollSequenceRef.current;
-      inFlightPollsRef.current.add(pollSequence);
-      void load().finally(() => { inFlightPollsRef.current.delete(pollSequence); });
+      const controller = new AbortController();
+      const poll = { controller, timeoutId: null };
+      inFlightPollsRef.current.set(pollSequence, poll);
+      poll.timeoutId = setTimeout(() => {
+        if (inFlightPollsRef.current.get(pollSequence)?.controller !== controller) return;
+        inFlightPollsRef.current.delete(pollSequence);
+        controller.abort();
+      }, POLL_TIMEOUT_MS);
+      void load({ signal: controller.signal }).finally(() => {
+        const activePoll = inFlightPollsRef.current.get(pollSequence);
+        if (activePoll?.controller !== controller) return;
+        clearTimeout(activePoll.timeoutId);
+        inFlightPollsRef.current.delete(pollSequence);
+      });
     }, 2_000);
     return () => {
       clearInterval(handle);
+      for (const { controller, timeoutId } of inFlightPollsRef.current.values()) {
+        clearTimeout(timeoutId);
+        controller.abort();
+      }
       inFlightPollsRef.current.clear();
       lifecycleGenerationRef.current += 1;
     };
