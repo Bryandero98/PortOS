@@ -20,7 +20,11 @@ function getTempRoot() {
 
 vi.mock('../lib/fileUtils.js', async () => {
   const actual = await vi.importActual('../lib/fileUtils.js');
-  return makePathsProxy(actual, { dataRoot: () => getTempRoot() });
+  const proxy = makePathsProxy(actual, { dataRoot: () => getTempRoot() });
+  return {
+    ...proxy,
+    atomicWrite: vi.fn(actual.atomicWrite)
+  };
 });
 
 // Spy on createReadStream so the tests can assert WHICH bytes were read — that
@@ -39,6 +43,7 @@ vi.mock('fs/promises', async () => {
 
 import { createReadStream } from 'fs';
 import { appendFile } from 'fs/promises';
+import { atomicWrite } from '../lib/fileUtils.js';
 import {
   initSyncLog,
   getCurrentSeq,
@@ -392,9 +397,11 @@ describe('brainSyncLog', () => {
     });
 
     it('serves reads from the rebuilt index immediately after compaction', async () => {
-      for (let i = 0; i < 5; i++) {
-        await appendChange('create', 'people', `p${i}`, { name: `Person ${i}` }, 'inst-1');
-      }
+      await appendChange('create', 'people', 'p0', { name: 'Person 0 v1' }, 'inst-1');
+      await appendChange('update', 'people', 'p0', { name: 'Person 0 v2' }, 'inst-1');
+      await appendChange('update', 'people', 'p0', { name: 'Person 0 v3' }, 'inst-1');
+      await appendChange('create', 'people', 'p1', { name: 'Person 1' }, 'inst-1');
+      await appendChange('create', 'people', 'p2', { name: 'Person 2' }, 'inst-1');
 
       expect(await compactLog(3)).toBe(2);
 
@@ -423,16 +430,142 @@ describe('brainSyncLog', () => {
     });
 
     it('keeps appending at the right offset after compaction', async () => {
-      for (let i = 0; i < 4; i++) {
-        await appendChange('create', 'people', `p${i}`, { name: `Person ${i}` }, 'inst-1');
-      }
+      await appendChange('create', 'people', 'p0', { name: 'Person 0 v1' }, 'inst-1');
+      await appendChange('update', 'people', 'p0', { name: 'Person 0 v2' }, 'inst-1');
+      await appendChange('create', 'people', 'p1', { name: 'Person 1' }, 'inst-1');
+      await appendChange('create', 'people', 'p2', { name: 'Person 2' }, 'inst-1');
       await compactLog(3);
-      await appendChange('create', 'people', 'p5', { name: 'Person 5' }, 'inst-1');
+      await appendChange('create', 'people', 'p3', { name: 'Person 3' }, 'inst-1');
 
       vi.clearAllMocks();
       const result = await getChangesSince(4);
       expect(lastReadStart()).toBe(lineOffset(2));
       expect(result.changes.map(c => c.seq)).toEqual([5]);
+    });
+
+    it('prunes intermediate update churn to terminal survivors and preserves max seq on installs with no peers (#5439)', async () => {
+      await appendChange('create', 'people', 'p0', { name: 'Person 0 v1', updatedAt: '2026-01-01T00:00:00.000Z' }, 'inst-1');
+      await appendChange('update', 'people', 'p0', { name: 'Person 0 v2', updatedAt: '2026-01-02T00:00:00.000Z' }, 'inst-1');
+      await appendChange('update', 'people', 'p0', { name: 'Person 0 v3', updatedAt: '2026-01-03T00:00:00.000Z' }, 'inst-1');
+      await appendChange('create', 'people', 'p1', { name: 'Person 1', updatedAt: '2026-01-01T00:00:00.000Z' }, 'inst-1');
+      await appendChange('delete', 'people', 'p1', { updatedAt: '2026-01-04T00:00:00.000Z' }, 'inst-1');
+      await appendChange('create', 'people', 'p2', { name: 'Person 2', updatedAt: '2026-01-05T00:00:00.000Z' }, 'inst-1');
+      expect(getCurrentSeq()).toBe(6);
+
+      // Compact with floor 0 (compatibility-preserving compaction representation)
+      const dropped = await compactLog(0);
+      expect(dropped).toBe(3); // 2 intermediate p0 updates + 1 p1 create superseded by delete
+
+      // Verify file on disk contains the 3 terminal survivors
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(3);
+      const parsed = lines.map(l => JSON.parse(l));
+      expect(parsed.map(p => ({ id: p.id, op: p.op }))).toEqual([
+        { id: 'p0', op: 'update' },
+        { id: 'p1', op: 'delete' },
+        { id: 'p2', op: 'create' }
+      ]);
+      expect(parsed.map(p => p.seq)).toEqual([3, 5, 6]);
+
+      // All active entities are available for delta pulls (e.g. pre-#1077 / fresh peers)
+      const deltaResult = await getChangesSince(0);
+      expect(deltaResult.changes).toHaveLength(3);
+
+      // Simulate restart: re-initialize the log
+      await initSyncLog();
+      expect(getCurrentSeq()).toBe(6);
+
+      // Subsequent appends continue monotonic sequence numbers
+      const nextEntry = await appendChange('create', 'people', 'p3', { name: 'Person 3' }, 'inst-1');
+      expect(nextEntry.seq).toBe(7);
+      expect(getCurrentSeq()).toBe(7);
+    });
+
+    it('returns 0 and does not call atomicWrite when no entries are dropped (#5439)', async () => {
+      for (let i = 0; i < 3; i++) {
+        await appendChange('create', 'people', `p${i}`, { name: `Person ${i}`, updatedAt: `2026-01-0${i + 1}T00:00:00.000Z` }, 'inst-1');
+      }
+      atomicWrite.mockClear();
+
+      // Calling compactLog with minSeq <= 1 drops nothing
+      const dropped = await compactLog(1);
+      expect(dropped).toBe(0);
+      expect(atomicWrite).not.toHaveBeenCalled();
+    });
+
+    it('determines compaction floor strictly under mutex from durable state after a failed append', async () => {
+      for (let i = 0; i < 3; i++) {
+        await appendChange('create', 'people', `p${i}`, { name: `Person ${i}`, updatedAt: `2026-01-0${i + 1}T00:00:00.000Z` }, 'inst-1');
+      }
+      expect(getCurrentSeq()).toBe(3);
+
+      // Simulate appendFile disk failure during appendChange
+      appendFile.mockRejectedValueOnce(new Error('Disk I/O error'));
+      await expect(appendChange('create', 'people', 'p3', { name: 'Person 3' }, 'inst-1')).rejects.toThrow('Disk I/O error');
+
+      // In-memory currentSeq was reserved/incremented to 4, but disk holds up to seq 3
+      expect(getCurrentSeq()).toBe(4);
+
+      // Compacting under mutex re-syncs durable state from disk and does NOT wipe the log
+      const dropped = await compactLog(4);
+      expect(dropped).toBe(0);
+
+      // All 3 durable entries on disk remain intact
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(3);
+      expect(getCurrentSeq()).toBe(3);
+
+      // Sequence recovery across restart recovers the durable seq 3
+      await initSyncLog();
+      expect(getCurrentSeq()).toBe(3);
+      const next = await appendChange('create', 'people', 'p3', { name: 'Person 3' }, 'inst-1');
+      expect(next.seq).toBe(4);
+    });
+
+    it('replays LWW rules correctly in terminal compaction', async () => {
+      writeLog(
+        '{"seq":1,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n' +
+        '{"seq":2,"op":"delete","type":"links","id":"x","record":{"updatedAt":"2026-01-02T00:00:00.000Z"}}\n' +
+        '{"seq":99,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n'
+      );
+      await initSyncLog();
+      expect(await compactLog(0)).toBe(2);
+
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0].op).toBe('delete'); // LWW winner
+      expect(lines[0].record.updatedAt).toBe('2026-01-02T00:00:00.000Z');
+      expect(lines[0].seq).toBe(99); // max seq preserved
+    });
+
+    it('preserves pre-floor LWW winner before verbatim tail when tail is stale under positive floor', async () => {
+      // seq 1: create links x (Jan-01)
+      // seq 2: delete links x (Jan-02) -> winning delete
+      // seq 99: stale create links x (Jan-01) -> stale echoed create in tail
+      writeLog(
+        '{"seq":1,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n' +
+        '{"seq":2,"op":"delete","type":"links","id":"x","record":{"updatedAt":"2026-01-02T00:00:00.000Z"}}\n' +
+        '{"seq":99,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n'
+      );
+      await initSyncLog();
+
+      // Compact with positive floor (50). Tail (seq >= 50) is kept verbatim,
+      // and seq 2 (delete Jan-02) is preserved before the tail so a fresh peer
+      // replaying from since=0 rejects the stale create and avoids resurrecting the record.
+      const dropped = await compactLog(50);
+      expect(dropped).toBe(1); // seq 1 is dropped, seq 2 and seq 99 are kept
+
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      expect(lines).toHaveLength(2);
+      expect(lines[0].seq).toBe(2);
+      expect(lines[0].op).toBe('delete');
+      expect(lines[0].record.updatedAt).toBe('2026-01-02T00:00:00.000Z');
+      expect(lines[1].seq).toBe(99);
+      expect(lines[1].op).toBe('create');
+
+      // A fresh peer pulling from since=0 gets seq 2 (delete) then seq 99 (stale create)
+      const fromZero = await getChangesSince(0);
+      expect(fromZero.changes.map(c => c.seq)).toEqual([2, 99]);
     });
   });
 });
