@@ -244,7 +244,7 @@ function useDocumentTitle(enabled = true) {
 
 export default function App() {
   const { pathname } = useLocation();
-  const isHostedAudienceRoute = pathname === '/fableloom/join';
+  const isHostedAudienceRoute = pathname.replace(/\/+$/, '') === '/fableloom/join';
   useTimezoneBootstrap(!isHostedAudienceRoute);
   useDocumentTitle(!isHostedAudienceRoute);
 

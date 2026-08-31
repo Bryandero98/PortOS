@@ -416,6 +416,8 @@ describe('getNavAliasMap — voice-agent compatibility', () => {
 // a second test fails if an opt-out entry goes stale (route deleted, or the path
 // gained a manifest entry) so the allow-list can't quietly rot.
 const APP_JSX = path.join(REPO_ROOT, 'client/src/App.jsx');
+const MAIN_JSX = path.join(REPO_ROOT, 'client/src/main.jsx');
+const SOCKET_JS = path.join(REPO_ROOT, 'client/src/services/socket.js');
 
 // Concrete leaf routes that render a real page but are deliberately absent from
 // the nav manifest — reached via an in-page button or as a create-mode sentinel,
@@ -557,6 +559,19 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
     // The hosted audience shell owns a full dynamic viewport and must not be
     // nested under Layout's shorter overflow-hidden main (#5499).
     expect(scan.topLevel).toContain('/fableloom/join');
+  });
+
+  it('keeps hosted audience joins free of authenticated app bootstraps', () => {
+    // A password-gated install must not redirect a QR audience device before
+    // the fragment token reaches FableLoomHostedJoin (#5499).
+    const appSrc = fs.readFileSync(APP_JSX, 'utf8');
+    const mainSrc = fs.readFileSync(MAIN_JSX, 'utf8');
+    const socketSrc = fs.readFileSync(SOCKET_JS, 'utf8');
+    expect(appSrc).toMatch(/useTimezoneBootstrap\(!isHostedAudienceRoute\)/);
+    expect(appSrc).toMatch(/useDocumentTitle\(!isHostedAudienceRoute\)/);
+    expect(appSrc).toMatch(/isHostedAudienceRoute\s*\?\s*routeContent/);
+    expect(mainSrc).toContain("const isHostedAudienceRoute = window.location.pathname.replace(/\\/+$/, '')");
+    expect(socketSrc).toMatch(/autoConnect: !isHostedAudienceRoute/);
   });
 
   // Every page that has ever moved leaves its old path behind in bookmarks, in
