@@ -53,6 +53,15 @@ const DEFAULT_INPUT_LABEL = 'BlackHole 16ch';
 const DEFAULT_OUTPUT_LABEL = 'BlackHole 2ch';
 const MODES = ['call', 'capture'];
 
+const releaseCallAudio = (playing, element) => {
+  if (!playing?.delete(element)) return;
+  element.pause?.();
+  if (element.src) {
+    URL.revokeObjectURL(element.src);
+    element.src = '';
+  }
+};
+
 export default function VoiceCallHost() {
   // Deep-linkable mode, not local state: `?mode=capture` is shareable and
   // survives a reload, same convention as a drawer's active tab.
@@ -68,18 +77,18 @@ export default function VoiceCallHost() {
   const [captureState, setCaptureState] = useState(null);
   const [level, setLevel] = useState(0);
   const [notice, setNotice] = useState(null);
-  const audio = useRef({ context: null, stream: null, node: null, source: null, playing: null, outputId: null, pending: [] });
+  const audio = useRef({ context: null, stream: null, node: null, source: null, playing: new Set(), outputId: null, pending: [] });
   const lockRelease = useRef(null);
 
   const teardown = useCallback(() => {
     const current = audio.current;
-    current.playing?.pause?.();
+    for (const element of current.playing) releaseCallAudio(current.playing, element);
     current.node?.port?.close?.();
     current.node?.disconnect?.();
     current.source?.disconnect?.();
     current.stream?.getTracks?.().forEach((track) => track.stop());
     current.context?.close?.();
-    audio.current = { context: null, stream: null, node: null, source: null, playing: null, outputId: current.outputId, pending: [] };
+    audio.current = { context: null, stream: null, node: null, source: null, playing: new Set(), outputId: current.outputId, pending: [] };
     setLevel(0);
   }, []);
 
@@ -92,19 +101,20 @@ export default function VoiceCallHost() {
     const element = new Audio();
     const blob = new Blob([wav], { type: 'audio/wav' });
     element.src = URL.createObjectURL(blob);
-    audio.current.playing = element;
+    audio.current.playing.add(element);
+    const release = () => releaseCallAudio(audio.current.playing, element);
+    element.addEventListener('ended', release, { once: true });
+    element.addEventListener('error', release, { once: true });
     try {
       if (audio.current.outputId) await element.setSinkId(audio.current.outputId);
-      if (audio.current.playing !== element) return;
+      if (!audio.current.playing.has(element)) return;
       await element.play();
-      if (audio.current.playing !== element) element.pause();
+      if (!audio.current.playing.has(element)) return;
     } catch (error) {
-      if (audio.current.playing === element) setNotice(`Could not play into the call: ${error.message}`);
-    } finally {
-      element.addEventListener('ended', () => {
-        URL.revokeObjectURL(element.src);
-        if (audio.current.playing === element) audio.current.playing = null;
-      }, { once: true });
+      if (audio.current.playing.has(element)) {
+        setNotice(`Could not play into the call: ${error.message}`);
+        releaseCallAudio(audio.current.playing, element);
+      }
     }
   }, []);
 
@@ -203,7 +213,7 @@ export default function VoiceCallHost() {
     };
     source.connect(node);
 
-    audio.current = { context, stream, node, source, playing: null, outputId: output?.deviceId ?? null, pending: [] };
+    audio.current = { context, stream, node, source, playing: new Set(), outputId: output?.deviceId ?? null, pending: [] };
     // Two literal emits, not a computed event name — a computed
     // `socket.emit(x ? 'a' : 'b')` is invisible to the static
     // socket-event inventory scan (`server/lib/socketEventInventory.js`),
@@ -253,9 +263,9 @@ export default function VoiceCallHost() {
     };
     const onTts = ({ wav }) => { if (wav) playToCall(wav); };
     const onTtsCancel = () => {
-      const playing = audio.current.playing;
-      playing?.pause?.();
-      if (audio.current.playing === playing) audio.current.playing = null;
+      for (const element of audio.current.playing) {
+        releaseCallAudio(audio.current.playing, element);
+      }
     };
     socket.on('voice:call:state', onCallState);
     socket.on('voice:capture:state', onCaptureState);
