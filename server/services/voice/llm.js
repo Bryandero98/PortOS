@@ -372,6 +372,11 @@ export const streamChat = async (messages, opts = {}) => {
   }
   const timeoutId = setTimeout(() => {
     timedOut = true;
+    try {
+      opts.onTimeout?.();
+    } catch (err) {
+      console.error(`🤖 voice.llm.timeout_hook failed: ${err.message}`);
+    }
     requestController.abort();
   }, VOICE_LLM_TIMEOUT_MS);
 
@@ -393,6 +398,12 @@ export const streamChat = async (messages, opts = {}) => {
     const decoder = new TextDecoder();
     reader = res.body.getReader();
     if (requestController.signal.aborted) cancelReader();
+    const throwIfAborted = () => {
+      if (timedOut) throw new Error(VOICE_LLM_TIMEOUT_MESSAGE);
+      if (requestController.signal.aborted) {
+        throw requestController.signal.reason || new Error('The voice LLM request was aborted');
+      }
+    };
     let buffer = '';
     let text = '';
     let ttfbMs = null;
@@ -473,7 +484,7 @@ export const streamChat = async (messages, opts = {}) => {
 
     while (true) {
       const { value, done } = await reader.read();
-      if (timedOut) throw new Error(VOICE_LLM_TIMEOUT_MESSAGE);
+      throwIfAborted();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
@@ -484,6 +495,7 @@ export const streamChat = async (messages, opts = {}) => {
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim();
         if (payload === '[DONE]') {
+          throwIfAborted();
           return finalizeReturn();
         }
         // Malformed SSE frames (proxy keep-alive, truncated write) would otherwise
@@ -497,6 +509,7 @@ export const streamChat = async (messages, opts = {}) => {
           if (ttfbMs === null) ttfbMs = Date.now() - started;
           text += delta.content;
           forwardClean(delta.content);
+          throwIfAborted();
         }
         for (const tc of delta.tool_calls || []) {
           const frag = toolCallFrags.get(tc.index) || {

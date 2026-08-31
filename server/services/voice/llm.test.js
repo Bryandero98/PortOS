@@ -316,12 +316,16 @@ describe('streamChat request lifecycle', () => {
 
   it('aborts a provider request that never returns headers', async () => {
     installFetch(({ signal }) => pendingUntilAbort(signal));
+    const onTimeout = vi.fn();
 
-    const result = streamChat([], { provider: 'test-provider', model: 'test-model' });
+    const result = streamChat([], {
+      provider: 'test-provider', model: 'test-model', onTimeout,
+    });
     const rejection = expect(result).rejects.toThrow(VOICE_LLM_TIMEOUT_MESSAGE);
     await vi.advanceTimersByTimeAsync(VOICE_LLM_TIMEOUT_MS);
 
     await rejection;
+    expect(onTimeout).toHaveBeenCalledTimes(1);
     expect(chatSignal.aborted).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -349,6 +353,35 @@ describe('streamChat request lifecycle', () => {
     await rejection;
     expect(chatSignal.aborted).toBe(true);
     expect(reader.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves explicit cancellation when an active reader closes as done', async () => {
+    let releaseRead;
+    const reader = {
+      read: vi.fn(() => new Promise((resolve) => { releaseRead = resolve; })),
+      cancel: vi.fn(() => {
+        releaseRead?.({ value: undefined, done: true });
+        return Promise.resolve();
+      }),
+    };
+    installFetch(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      body: { getReader: () => reader },
+    }));
+
+    const external = new AbortController();
+    const result = streamChat([], {
+      provider: 'test-provider', model: 'test-model', signal: external.signal,
+    });
+    await vi.waitFor(() => expect(reader.read).toHaveBeenCalledTimes(1));
+    const rejection = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    external.abort();
+
+    await rejection;
+    expect(chatSignal.aborted).toBe(true);
+    expect(reader.cancel).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(VOICE_LLM_TIMEOUT_MS);
   });
 
   it('clears the deadline and external abort listener after a successful stream', async () => {
