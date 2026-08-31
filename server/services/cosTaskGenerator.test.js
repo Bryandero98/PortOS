@@ -131,6 +131,9 @@ describe('claim reviewer resolution', () => {
     expect(pinned).toContain('run-local-code-review.mjs');
     expect(pinned).not.toContain('localhost:5555');
     expect(pinned).toContain('missing/empty findings is INCONCLUSIVE');
+    expect(pinned).toContain('REVIEW_STATUS=review-blocked');
+    expect(pinned).toContain('continue to publish the MR/PR');
+    expect(pinned).toContain('leave it open and do not merge until the required review completes');
 
     const bare = buildLocalReviewerInstructions(['lmstudio']);
     expect(bare).toContain('git diff "origin/$DEFAULT_BRANCH...HEAD"');

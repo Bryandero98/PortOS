@@ -378,8 +378,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('`antigravity` (CLI binary: `agy`)');
     // …and a reviewer whose binary is missing must not be replaced by the
     // agent's own self-review, which is what actually merged the bad PR.
-    expect(current).toContain('is UNSATISFIED, not clean');
-    expect(current).toContain('Do NOT substitute your own self-review');
+    expect(current).toContain('is unavailable, not clean');
+    expect(current).toContain('do NOT substitute your own self-review');
 
     // The pre-`agy` default named only the slug; preserved verbatim so installs
     // holding it are recognized and auto-upgraded. Located by CONTENT, not array
@@ -715,6 +715,25 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
   });
 
+  it('publishes claim work when a required local review is unavailable, but leaves it unmerged', () => {
+    const cases = [
+      ['claim-issue', 23, 'gh pr comment "$PR_URL"'],
+      ['claim-issue-gitlab', 21, 'glab mr note "$MR_IID"'],
+      ['claim-issue-jira', 16, 'This MR/PR is intentionally left open and will not be merged'],
+    ];
+
+    for (const [key, version, publicationCommand] of cases) {
+      const current = DEFAULT_TASK_PROMPTS[key];
+      expect(PROMPT_VERSIONS[key]).toBe(version);
+      expect(current).toContain('review-blocked');
+      expect(current).toContain('continue to push and open the PR/MR');
+      expect(current).toContain('intentionally left open and will not be merged until the required review completes');
+      expect(current).toContain(publicationCommand);
+      expect(PREVIOUS_DEFAULT_PROMPTS[key]).toHaveLength(version - 1);
+      expect(PREVIOUS_DEFAULT_PROMPTS[key].at(-1)).not.toBe(current);
+    }
+  });
+
   // Epic decomposition. Every claim flow used to skip an epic outright ("leave
   // it for a human to split"), so a tracker whose remaining work was all epics
   // ended each run with nothing done and reported an empty queue. Phase 1b makes
@@ -805,12 +824,18 @@ describe('taskPromptDefaults integrity snapshot', () => {
       // instead of being flagged promptCustomized and pinned to the old flow.
       const previous = PREVIOUS_DEFAULT_PROMPTS[key];
       expect(previous).toHaveLength(PROMPT_VERSIONS[key] - 1);
-      expect(previous.at(-1)).not.toBe(current);
-      for (const command of releases[key]) expect(previous.at(-1)).not.toContain(command);
+      // A later review revision now follows this contributor-label revision, so
+      // locate the outgoing body by the property this revision introduced rather
+      // than assuming it remains the final historical entry.
+      const outgoing = previous.findLast((prompt) => prompt.includes('Phase 1b')
+        && releases[key].every((command) => !prompt.includes(command)));
+      expect(outgoing).toBeDefined();
+      expect(outgoing).not.toBe(current);
       // …and it is the body that ONLY lacks the release: everything else the
       // outgoing version shipped (Phase 1b) is still there, which is what makes it
       // the immediately-previous body rather than some older one.
-      expect(previous.at(-1)).toContain('Phase 1b');
+      expect(outgoing).toContain('Phase 1b');
+      for (const command of releases[key]) expect(outgoing).not.toContain(command);
     }
   });
 
