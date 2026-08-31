@@ -325,22 +325,34 @@ export async function compactLog(minSeq = 0) {
       }
     }
 
-    // Replay terminal winning state for older keys not already superseded in tail
+    // Replay terminal winning state for older keys
     const keptOlder = [];
     const olderWinnersByKey = new Map();
     for (const [key, items] of olderEntriesByKey) {
-      if (tailKeys.has(key)) {
-        // Already superseded by newer operations in the preserved tail
-        continue;
-      }
       const entries = items.map(i => i.entry);
-      const terminalEntry = replayTerminal(entries);
-      if (terminalEntry) {
-        const matchingItem = items.find(i => i.entry === terminalEntry)
-          || { rawLine: JSON.stringify(terminalEntry), entry: terminalEntry, seq: terminalEntry.seq };
-        keptOlder.push(matchingItem);
-        olderWinnersByKey.set(key, matchingItem);
+      const olderWinner = replayTerminal(entries);
+      if (!olderWinner) continue;
+
+      // If this key also appears in the preserved tail, check whether any tail
+      // operation strictly supersedes the pre-floor LWW winner (updatedAt > olderWinner.updatedAt).
+      // If the tail carries ONLY stale/losing operations (e.g. olderWinner is a Jan-02 delete
+      // and tail has an echoed Jan-01 create), we MUST retain olderWinner before the verbatim
+      // tail so fresh / delta-only peers do not accept the stale create and resurrect the record.
+      if (tailKeys.has(key)) {
+        const tailItems = preservedTail.filter(i => i.entry && `${i.entry.type}/${i.entry.id}` === key);
+        const supersededByTail = tailItems.some(i => {
+          const tailTs = i.entry?.record?.updatedAt;
+          return tailTs != null && olderWinner.record?.updatedAt != null && tailTs > olderWinner.record.updatedAt;
+        });
+        if (supersededByTail) {
+          continue;
+        }
       }
+
+      const matchingItem = items.find(i => i.entry === olderWinner)
+        || { rawLine: JSON.stringify(olderWinner), entry: olderWinner, seq: olderWinner.seq };
+      keptOlder.push(matchingItem);
+      olderWinnersByKey.set(key, matchingItem);
     }
 
     const kept = [...unindexedOrUntypedOlder, ...keptOlder, ...preservedTail];

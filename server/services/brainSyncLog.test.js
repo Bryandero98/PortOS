@@ -537,5 +537,35 @@ describe('brainSyncLog', () => {
       expect(lines[0].record.updatedAt).toBe('2026-01-02T00:00:00.000Z');
       expect(lines[0].seq).toBe(99); // max seq preserved
     });
+
+    it('preserves pre-floor LWW winner before verbatim tail when tail is stale under positive floor', async () => {
+      // seq 1: create links x (Jan-01)
+      // seq 2: delete links x (Jan-02) -> winning delete
+      // seq 99: stale create links x (Jan-01) -> stale echoed create in tail
+      writeLog(
+        '{"seq":1,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n' +
+        '{"seq":2,"op":"delete","type":"links","id":"x","record":{"updatedAt":"2026-01-02T00:00:00.000Z"}}\n' +
+        '{"seq":99,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n'
+      );
+      await initSyncLog();
+
+      // Compact with positive floor (50). Tail (seq >= 50) is kept verbatim,
+      // and seq 2 (delete Jan-02) is preserved before the tail so a fresh peer
+      // replaying from since=0 rejects the stale create and avoids resurrecting the record.
+      const dropped = await compactLog(50);
+      expect(dropped).toBe(1); // seq 1 is dropped, seq 2 and seq 99 are kept
+
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      expect(lines).toHaveLength(2);
+      expect(lines[0].seq).toBe(2);
+      expect(lines[0].op).toBe('delete');
+      expect(lines[0].record.updatedAt).toBe('2026-01-02T00:00:00.000Z');
+      expect(lines[1].seq).toBe(99);
+      expect(lines[1].op).toBe('create');
+
+      // A fresh peer pulling from since=0 gets seq 2 (delete) then seq 99 (stale create)
+      const fromZero = await getChangesSince(0);
+      expect(fromZero.changes.map(c => c.seq)).toEqual([2, 99]);
+    });
   });
 });
