@@ -50,12 +50,16 @@ describe('FableLoomHostedJoin', () => {
     render(<FableLoomHostedJoin />);
 
     const shell = screen.getByRole('main');
-    expect(shell).toHaveClass('h-dvh-screen', 'overflow-hidden');
+    expect(shell).toHaveClass('h-dvh-screen', 'overflow-y-auto');
+    expect(shell).not.toHaveClass('overflow-hidden');
     expect(shell).not.toHaveClass('min-h-screen');
 
     const scrollRegions = shell.querySelectorAll('.overflow-y-auto');
     expect(scrollRegions).toHaveLength(1);
     expect(scrollRegions[0]).toHaveClass('flex-1', 'min-h-0');
+    expect(screen.getByRole('banner')).toHaveClass('shrink-0');
+    expect(screen.getByRole('banner').nextElementSibling).toHaveClass('shrink-0');
+    expect(screen.getByPlaceholderText('Or type a message…').closest('form').parentElement).toHaveClass('shrink-0');
   });
 
   it('sends text input fallback when submitted', async () => {
