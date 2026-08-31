@@ -1048,6 +1048,14 @@ export default function ImageGen() {
     setGallery((g) => g.filter((img) => img.filename !== filename));
   }, []);
 
+  const handlePromptSaved = useCallback((item, prompt) => {
+    const filename = item?.filename || item?.raw?.filename;
+    if (!filename) return;
+    setGallery((g) => g.map((img) => img.filename === filename
+      ? { ...img, prompt: prompt === '(no prompt)' ? '' : prompt }
+      : img));
+  }, []);
+
   const handleToggleHidden = useCallback(async (item) => {
     const img = item?.raw || item;
     const nextHidden = !img.hidden;
@@ -1690,6 +1698,7 @@ export default function ImageGen() {
         items={previewItems}
         annotations={annotations}
         updateAnnotation={updateAnnotation}
+        onPromptSaved={handlePromptSaved}
         onRemix={(item) => item?.raw && handleRemix(item.raw)}
         onSendToImage={(item) => item?.raw?.filename && handleSendToImage(item.raw)}
         onSendToVideo={(item) => item?.raw?.filename && sendToVideo(item.raw)}
