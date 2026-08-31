@@ -15,6 +15,7 @@ const BUILTINS = new Set([
 const importSpecifiers = (source) => [
   ...source.matchAll(/^\s*import\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/gm),
   ...source.matchAll(/^\s*export\s+(?:\*|{)[^'"]*?\s+from\s+['"]([^'"]+)['"]/gm),
+  ...source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g),
 ].map((match) => match[1]);
 
 const resolveSourceImport = (fromFile, specifier) => {
@@ -45,17 +46,25 @@ const browserBuiltinImports = (entry) => {
       }
       if (!specifier.startsWith('.')) continue;
       const importedFile = resolveSourceImport(file, specifier);
-      if (importedFile && SOURCE_EXTENSIONS.includes(extname(importedFile))) {
+      if (!importedFile) {
+        findings.push(`${relative(REPO_ROOT, file)} has an unresolvable relative import ${specifier}`);
+      } else if (SOURCE_EXTENSIONS.includes(extname(importedFile))) {
         pending.push(importedFile);
       }
     }
   }
 
-  return findings.sort();
+  return { findings: findings.sort(), visited };
 };
 
 describe('FableLoomStory browser dependency boundary', () => {
   it('keeps the route import graph free of Node builtins', () => {
-    expect(browserBuiltinImports(ENTRY)).toEqual([]);
+    const { findings, visited } = browserBuiltinImports(ENTRY);
+    expect(findings).toEqual([]);
+    const reached = [...visited].map((file) => relative(REPO_ROOT, file));
+    expect(reached).toEqual(expect.arrayContaining([
+      'server/lib/fableLoomOutline.js',
+      'server/lib/textUtils.js',
+    ]));
   });
 });
