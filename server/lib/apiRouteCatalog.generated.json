@@ -1481,6 +1481,28 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/apps/:id/repository-sources",
+      "mountPath": "/api/apps",
+      "sources": [
+        {
+          "source": "server/routes/apps/repositorySources.js",
+          "line": 23
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/:id/repository-sources/sync-fork",
+      "mountPath": "/api/apps",
+      "sources": [
+        {
+          "source": "server/routes/apps/repositorySources.js",
+          "line": 27
+        }
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/apps/:id/restart",
       "mountPath": "/api/apps",
@@ -23731,8 +23753,8 @@
   ],
   "stats": {
     "mounts": 146,
-    "operations": 2141,
-    "declarations": 2144,
-    "sourceFiles": 226
+    "operations": 2143,
+    "declarations": 2146,
+    "sourceFiles": 227
   }
 }

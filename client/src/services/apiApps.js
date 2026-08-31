@@ -4,6 +4,18 @@ import { request, API_BASE } from './apiCore.js';
 // Apps
 export const getApps = (options) => request('/apps', options);
 export const getApp = (id, options) => request(`/apps/${id}`, options);
+// Multi-checkout managed integrations (currently Eidoverse): returns sanitized
+// local/fork/upstream revision state without exposing machine-local repo paths.
+export const getAppRepositorySources = (id, options = {}) =>
+  request(`/apps/${id}/repository-sources`, { silent: true, ...options });
+// Fast-forward the integration's configured GitHub fork from canonical
+// upstream. The server deliberately refuses divergence and never forces.
+export const syncAppRepositoryFork = (id, options = {}) =>
+  request(`/apps/${id}/repository-sources/sync-fork`, {
+    method: 'POST',
+    silent: true,
+    ...options,
+  });
 // Reverse lookup (#2991): sprite records whose publishBinding.appId targets this
 // app. Read-only; the caller owns a .catch fallback, so default to silent.
 export const getAppSpriteBindings = (id, options) =>
@@ -122,7 +134,10 @@ export const openAppFolder = (id) => request(`/apps/${id}/open-folder`, { method
 // comes back as a real error instead of a silent `xcode://` no-op.
 export const openAppInXcode = (id) => request(`/apps/${id}/open-xcode`, { method: 'POST' });
 export const refreshAppConfig = (id) => request(`/apps/${id}/refresh-config`, { method: 'POST' });
-export const pullAndUpdateApp = (id) => request(`/apps/${id}/update`, { method: 'POST' });
+export const pullAndUpdateApp = (id, options = {}) => request(`/apps/${id}/update`, {
+  method: 'POST',
+  ...options,
+});
 // `options` lets a caller suppress request()'s auto-toast with `{ silent: true }`
 // when it already renders its own error UI.
 export const buildApp = (id, options = {}) => request(`/apps/${id}/build`, { method: 'POST', ...options });

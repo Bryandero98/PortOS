@@ -11,6 +11,9 @@ vi.mock('../../../services/api', () => ({
   cleanupMergedBranches: vi.fn(),
   resetToDefaultBranch: vi.fn(),
 }));
+vi.mock('./EidoverseSourcePanel', () => ({
+  default: ({ appId }) => <div data-testid="eidoverse-source-panel">{appId}</div>,
+}));
 
 import * as api from '../../../services/api';
 import GitTab from './GitTab';
@@ -43,6 +46,31 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('GitTab managed repository sources', () => {
+  it('shows the Eidoverse source stack only for the managed Eidoverse process', async () => {
+    const { rerender } = render(
+      <GitTab
+        appId="app-eidoverse"
+        app={{ pm2ProcessNames: ['eidoverse-worlds'] }}
+        appName="Eidoverse Worlds"
+        repoPath="/repo"
+      />,
+    );
+
+    expect(await screen.findByTestId('eidoverse-source-panel')).toHaveTextContent('app-eidoverse');
+
+    rerender(
+      <GitTab
+        appId="app-other"
+        app={{ pm2ProcessNames: ['example-app'] }}
+        appName="Example App"
+        repoPath="/repo"
+      />,
+    );
+    expect(screen.queryByTestId('eidoverse-source-panel')).toBeNull();
+  });
 });
 
 describe('GitTab modal accessibility (issue #1090)', () => {

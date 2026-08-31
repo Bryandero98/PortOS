@@ -5,6 +5,7 @@ import Modal from '../../ui/Modal';
 import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
 import { formatDateNumeric } from '../../../utils/formatters';
+import EidoverseSourcePanel from './EidoverseSourcePanel';
 
 function buildReleasePrompt({ repoPath, appName, comparison, baseBranch, devBranch, hasChangelog }) {
   const commitList = comparison.commits
@@ -130,7 +131,7 @@ function ConfirmModal({ open, onClose, titleId, icon, title, tone = 'accent', co
   );
 }
 
-export default function GitTab({ appId: _appId, appName, repoPath }) {
+export default function GitTab({ appId, app, appName, repoPath }) {
   const [gitInfo, setGitInfo] = useState(null);
   const [diff, setDiff] = useState('');
   const [showDiff, setShowDiff] = useState(false);
@@ -481,6 +482,13 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
 
   return (
     <div className="space-y-6">
+      {app?.pm2ProcessNames?.includes('eidoverse-worlds') && (
+        <EidoverseSourcePanel
+          appId={appId}
+          onUpdated={() => loadGitData({ includeRemote: true })}
+        />
+      )}
+
       {/* Wraps rather than overflows: three actions no longer fit one phone row. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-white">Git Status</h2>
@@ -501,7 +509,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
             className="flex items-center gap-1.5 px-3 py-2 bg-port-card border border-port-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-port-accent disabled:opacity-50"
           >
             <Download size={16} className={updating ? 'animate-bounce' : ''} />
-            {updating ? 'Updating...' : 'Update'}
+            {updating ? 'Fetching...' : 'Fetch branches'}
           </button>
           <button
             onClick={() => {
