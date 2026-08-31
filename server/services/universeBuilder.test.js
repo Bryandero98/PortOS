@@ -10,6 +10,7 @@ import { mockNoPeerSync, mockNoPeers } from "../lib/mockPathsDataRoot.js";
 // universeBuilder + collectionStore land here instead of the real ./data.
 const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), "universe-builder-test-"));
 const writeCounter = vi.hoisted(() => ({ baseHash: 0 }));
+const baseHashEvictionSequence = vi.hoisted(() => ({ enabled: false, tail: Promise.resolve() }));
 
 // Per-test reference-sheet "what exists on disk" — keys are filenames the
 // referenceSheetImageRef preservation guard / pruner asks about. Default
@@ -39,6 +40,25 @@ vi.mock("../lib/fileUtils.js", async (importOriginal) => {
       if (refSheetFilesByName.has(ref)) return refSheetFilesByName.get(ref);
       return `/mock/refs/${ref}`;
     }),
+  };
+});
+
+vi.mock("../lib/conflictJournal.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    deleteSyncBaseHash: async (...args) => {
+      if (!baseHashEvictionSequence.enabled) return actual.deleteSyncBaseHash(...args);
+      const previous = baseHashEvictionSequence.tail;
+      let release;
+      baseHashEvictionSequence.tail = new Promise((resolve) => { release = resolve; });
+      await previous;
+      try {
+        return await actual.deleteSyncBaseHash(...args);
+      } finally {
+        release();
+      }
+    },
   };
 });
 
@@ -130,6 +150,8 @@ describe("universeBuilder service", () => {
     mkdirSync(TEST_DATA_ROOT, { recursive: true });
     cj.__resetBaseHashCacheForTests();
     writeCounter.baseHash = 0;
+    baseHashEvictionSequence.enabled = false;
+    baseHashEvictionSequence.tail = Promise.resolve();
     uuidCounter = 0;
     refSheetFilesByName.clear();
   });
@@ -1357,6 +1379,9 @@ describe("universeBuilder service", () => {
         await cj.setSyncBaseHash('universe', oldTombstone2.id, 'hash-old-b');
         await cj.flushBaseHashes();
         writeCounter.baseHash = 0;
+        // Serialize the eviction calls without sleeping. Without the batch,
+        // each call would finish its own side-store write before the next one.
+        baseHashEvictionSequence.enabled = true;
 
         // Cutoff = now - 50s — old (100s ago) is past, new (just now) is not.
         const cutoff = Date.now() - 50_000;

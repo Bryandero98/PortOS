@@ -381,8 +381,9 @@ export function flushBaseHashes() {
  * Depth is module-level, not per-async-context, so CONCURRENT batches merge
  * rather than nest. The tombstone GC fans its `pruneTombstoned*` calls out
  * through one `Promise.all`, so their scopes overlap: the last scope to close
- * flushes every eviction they accumulated. Nothing is dropped — a deferred
- * flush leaves `_baseDirty` set.
+ * flushes every eviction they accumulated. An unbatched concurrent flush that
+ * lands while the depth is still positive rides along in that same write.
+ * Nothing is dropped — a deferred flush leaves `_baseDirty` set.
  */
 export async function withBaseHashFlushBatch(fn) {
   _flushBatchDepth += 1;

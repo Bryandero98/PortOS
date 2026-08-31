@@ -3,6 +3,7 @@ import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
 const writeCounter = vi.hoisted(() => ({ baseHash: 0 }));
+const baseHashEvictionSequence = vi.hoisted(() => ({ enabled: false, tail: Promise.resolve() }));
 
 vi.mock('../../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
@@ -14,6 +15,25 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   }),
   readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(path) ? fileStore.get(path) : fallback)),
 }));
+
+vi.mock('../../lib/conflictJournal.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    deleteSyncBaseHash: async (...args) => {
+      if (!baseHashEvictionSequence.enabled) return actual.deleteSyncBaseHash(...args);
+      const previous = baseHashEvictionSequence.tail;
+      let release;
+      baseHashEvictionSequence.tail = new Promise((resolve) => { release = resolve; });
+      await previous;
+      try {
+        return await actual.deleteSyncBaseHash(...args);
+      } finally {
+        release();
+      }
+    },
+  };
+});
 
 let uuidCounter = 0;
 vi.mock('crypto', async () => {
@@ -33,6 +53,8 @@ describe('pipeline series service', () => {
     fileStore.clear();
     cj.__resetBaseHashCacheForTests();
     writeCounter.baseHash = 0;
+    baseHashEvictionSequence.enabled = false;
+    baseHashEvictionSequence.tail = Promise.resolve();
     uuidCounter = 0;
   });
 
@@ -449,6 +471,9 @@ describe('pipeline series service', () => {
         await cj.setSyncBaseHash('series', oldT2.id, 'hash-old-b');
         await cj.flushBaseHashes();
         writeCounter.baseHash = 0;
+        // Serialize the eviction calls without sleeping. Without the batch,
+        // each call would finish its own side-store write before the next one.
+        baseHashEvictionSequence.enabled = true;
         const cutoff = Date.now() - 50_000;
         const result = await svc.pruneTombstonedSeries(cutoff);
         expect(result.pruned).toBe(2);
