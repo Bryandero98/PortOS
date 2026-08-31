@@ -1084,6 +1084,25 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
+  it('claude trust gate: moves from a highlighted No choice before confirming', async () => {
+    runSpawn({ tuiConfig: claudeTuiConfig, useDurableRunner: true });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      'Quick safety check: Is this a project you created or one you trust?\n'
+      + '❯ No, exit\n'
+      + '  Yes, I trust this folder\n'
+      + 'Enter to confirm · Esc to cancel\n',
+    ));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+
+    expect(vi.mocked(shellService.writeToSession).mock.calls.map(([, data]) => data))
+      .toContain('\x1b[B\r');
+    expect(pasteCount()).toBe(0);
+  });
+
   // Claude Code v2.1.233's auto-mode offer. The trust gate above paints BEFORE
   // the composer; this one paints after, with paste mode already on — so the old
   // gate said "ready" and the prompt went into a modal that ignored it. All four

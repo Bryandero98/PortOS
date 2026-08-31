@@ -617,6 +617,31 @@ describe('executeTuiRun', () => {
       await promise;
     });
 
+    it('moves off Claude\'s highlighted decline choice before accepting trust', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      const provider = { id: 'claude', type: 'tui', command: 'claude', tuiPromptDelayMs: 50 };
+      const promise = executeTuiRun({
+        runId: 'run-claude-decline-default', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE, timeout: 60000,
+      });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData('Quick safety check: Is this a project you created or one you trust?\n'
+        + '❯ No, exit\n'
+        + '  Yes, I trust this folder\n'
+        + 'Enter to confirm · Esc to cancel\n');
+      await vi.advanceTimersByTimeAsync(400);
+
+      expect(pty.write).toHaveBeenCalledWith('\x1b[B\r');
+      expect(pty.write).not.toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
+
+      pty.emitExit({ exitCode: 0 });
+      await promise;
+    });
+
     it('declines Claude auto-mode and pastes only after dismissing the offer', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],

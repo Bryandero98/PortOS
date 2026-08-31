@@ -1477,9 +1477,11 @@ export async function spawnTuiAgent({
       return;
     }
 
-    // Auto-confirm the first-run "trust this folder?" gate (claude's, agy's and
-    // codex's all default to yes) so agents can run in fresh worktrees. Send
-    // Enter once.
+    // Auto-confirm the first-run "trust this folder?" gate so agents can run in
+    // fresh worktrees. Wait for the choices themselves to paint: Claude Code
+    // releases disagree about their ordering, and newer builds can highlight
+    // "No, exit" by default. Move to the affirmative option when necessary,
+    // then submit it once.
     //
     // Like the hook-review selector this runs for EVERY TUI, not only the
     // positive input-ready providers below: codex takes the idle/deadline path,
@@ -1488,9 +1490,10 @@ export async function spawnTuiAgent({
     // the menu — which swallows it and all three paste retries
     // (agent-671af38f, 2026-08-21, `paste-not-rendered`). Answering the dialog
     // first is what lets the composer appear at all.
-    if (inputReady.needsTrust && !trustAccepted) {
+    if (inputReady.needsTrust && inputReady.trustChoiceReady && !trustAccepted) {
       trustAccepted = true;
-      shellService.writeToSession(sessionId, SUBMIT_KEY);
+      const trustInput = `${inputReady.trustNeedsSelectionAdvance ? '\x1b[B' : ''}${SUBMIT_KEY}`;
+      shellService.writeToSession(sessionId, trustInput);
       lastOutputAt = now;
       firstOutputAt = null;
       appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);

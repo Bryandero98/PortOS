@@ -877,11 +877,13 @@ ${prompt}`;
       // ones: codex takes the idle/deadline path below, and its trust dialog
       // paints and then goes silent — which that path reads as "ready" and
       // pastes into, losing the prompt and every retry with it (agent-671af38f).
-      // Enter takes the highlighted default (claude/agy "Yes, I trust", codex
-      // "Yes, continue"); `trustAccepted` keeps it to one keystroke.
-      if (inputReady.needsTrust && !trustAccepted) {
+      // Wait for the options to paint before acting. Claude Code versions do
+      // not agree on their order: when "No, exit" is highlighted, select the
+      // next option before submitting. `trustAccepted` keeps this to one input.
+      if (inputReady.needsTrust && inputReady.trustChoiceReady && !trustAccepted) {
         trustAccepted = true;
-        dismissStartupDialog('\r', 'folder-trust prompt');
+        const trustInput = `${inputReady.trustNeedsSelectionAdvance ? '\x1b[B' : ''}${SUBMIT_KEY}`;
+        dismissStartupDialog(trustInput, 'folder-trust prompt');
         lastOutputAt = now;
         firstOutputAt = null;
         return;

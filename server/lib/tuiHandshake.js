@@ -288,6 +288,24 @@ export const BRACKETED_PASTE_MODE_PATTERN = /\x1b\[\?2004([hl])/g;
 export const TUI_TRUST_PROMPT_PATTERN =
   /trustthisfolder|isthisaprojectyou(?:created|trust)|doyoutrustthecontentsofthis(?:directory|project|folder)/i;
 
+// Trust selectors have changed ordering across Claude Code releases. Older
+// builds (and Codex/agy) highlight the affirmative choice first, while newer
+// Claude Code builds can render "No, exit" first and highlight it. Consumers must
+// wait until the choices themselves have painted, then move off a highlighted
+// decline choice instead of assuming a bare Enter always accepts the folder.
+// These patterns run against createInputReadyTracker's whitespace-free tail.
+const TUI_TRUST_ACCEPT_OPTION_PATTERN = /(?:yes,?itrustthisfolder|yes,?continue)/i;
+const TUI_TRUST_DECLINE_OPTION_PATTERN = /no,?(?:exit|quit)/i;
+const TUI_HIGHLIGHT_PATTERN_PREFIX = String.raw`(?:❯|›|>)\d*\.?`;
+const TUI_TRUST_HIGHLIGHTED_ACCEPT_PATTERN = new RegExp(
+  `${TUI_HIGHLIGHT_PATTERN_PREFIX}(?:yes,?itrustthisfolder|yes,?continue)`,
+  'i',
+);
+const TUI_TRUST_HIGHLIGHTED_DECLINE_PATTERN = new RegExp(
+  `${TUI_HIGHLIGHT_PATTERN_PREFIX}no,?(?:exit|quit)`,
+  'i',
+);
+
 // Claude Code's auto-mode opt-in offer ("Make auto mode your default permission
 // mode? → 1. Yes, set auto mode as my default permission mode / 2. No, keep
 // don't ask"), added in v2.1.233. Like the trust gate it is NOT bypassed by
@@ -367,6 +385,8 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
   // launches, where the TUI owns the PTY from byte zero and no shell OFF exists.
   let sawCommandRun = directLaunch;
   let needsTrust = false;
+  let trustChoiceReady = false;
+  let trustNeedsSelectionAdvance = false;
   let sawReadyText = false;
   // Auto-mode offer: latched when seen, cleared once answered. `autoModeAnswered`
   // makes the ack TERMINAL — `tail` is a rolling 4000-char window, so the modal's
@@ -407,6 +427,8 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
         && (!readyTextPattern || sawReadyText);
     },
     get needsTrust() { return needsTrust; },
+    get trustChoiceReady() { return trustChoiceReady; },
+    get trustNeedsSelectionAdvance() { return trustNeedsSelectionAdvance; },
     get needsAutoModeChoice() { return needsAutoModeChoice; },
     get needsExternalImportsChoice() { return needsExternalImportsChoice; },
     get needsHookReview() { return needsHookReview; },
@@ -435,6 +457,23 @@ export function createInputReadyTracker({ readyTextPattern = null, directLaunch 
       if (strippedText) {
         tail = (tail + strippedText.replace(/\s+/g, '')).slice(-OBSERVE_TAIL_MAX_LEN);
         if (!needsTrust && TUI_TRUST_PROMPT_PATTERN.test(tail)) needsTrust = true;
+        if (needsTrust && !trustChoiceReady) {
+          const acceptMatch = TUI_TRUST_ACCEPT_OPTION_PATTERN.exec(tail);
+          const declineMatch = TUI_TRUST_DECLINE_OPTION_PATTERN.exec(tail);
+          if (acceptMatch) {
+            trustChoiceReady = true;
+            if (TUI_TRUST_HIGHLIGHTED_DECLINE_PATTERN.test(tail)) {
+              trustNeedsSelectionAdvance = true;
+            } else if (TUI_TRUST_HIGHLIGHTED_ACCEPT_PATTERN.test(tail)) {
+              trustNeedsSelectionAdvance = false;
+            } else if (declineMatch) {
+              // Ink highlights the first rendered option when its cursor glyph
+              // is unavailable in a captured transcript. Use ordering only as
+              // that fallback; explicit highlight chrome wins above.
+              trustNeedsSelectionAdvance = declineMatch.index < acceptMatch.index;
+            }
+          }
+        }
         if (!needsAutoModeChoice && !autoModeAnswered && TUI_AUTO_MODE_PROMPT_PATTERN.test(tail)) needsAutoModeChoice = true;
         if (!needsExternalImportsChoice && !externalImportsAnswered && TUI_EXTERNAL_IMPORTS_PROMPT_PATTERN.test(tail)) {
           needsExternalImportsChoice = true;
