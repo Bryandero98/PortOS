@@ -25,7 +25,8 @@ describe('FableLoomHostedJoin', () => {
     expect(screen.getByText('Hosted Play Error')).toBeInTheDocument();
     expect(screen.getByText(/Invalid or missing join credentials/i)).toBeInTheDocument();
 
-    const shell = screen.getByRole('heading', { name: 'Hosted Play Error' }).parentElement;
+    const shell = screen.getByRole('main');
+    expect(shell).toContainElement(screen.getByRole('heading', { name: 'Hosted Play Error' }));
     expect(shell).toHaveClass('h-dvh-screen');
     expect(shell).not.toHaveClass('min-h-screen');
   });
@@ -48,7 +49,7 @@ describe('FableLoomHostedJoin', () => {
     window.location.hash = '#session=sess-123&token=tok-abc';
     render(<FableLoomHostedJoin />);
 
-    const shell = screen.getByRole('banner').parentElement;
+    const shell = screen.getByRole('main');
     expect(shell).toHaveClass('h-dvh-screen', 'overflow-hidden');
     expect(shell).not.toHaveClass('min-h-screen');
 

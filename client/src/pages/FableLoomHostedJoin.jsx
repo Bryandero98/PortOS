@@ -175,18 +175,18 @@ export default function FableLoomHostedJoin() {
 
   if (authError) {
     return (
-      <div className="h-dvh-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
+      <main className="h-dvh-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
         <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
           <AlertCircle className="w-8 h-8 text-red-400" />
         </div>
         <h1 className="text-xl font-bold mb-2">Hosted Play Error</h1>
         <p className="text-slate-400 text-sm max-w-xs">{authError}</p>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="h-dvh-screen bg-slate-950 text-white flex flex-col justify-between max-w-md mx-auto relative overflow-hidden shadow-2xl">
+    <main className="h-dvh-screen bg-slate-950 text-white flex flex-col justify-between max-w-md mx-auto relative overflow-hidden shadow-2xl">
       <audio ref={audioPlayerRef} className="hidden" />
 
       {/* Header */}
@@ -314,6 +314,6 @@ export default function FableLoomHostedJoin() {
           </button>
         </form>
       </div>
-    </div>
+    </main>
   );
 }
