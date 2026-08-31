@@ -97,14 +97,20 @@ describe('notifications routes', () => {
       expect(res.body.map(({ id }) => id)).toEqual(['n4', 'n3', 'n2', 'n1']);
     });
 
-    it('applies type, unreadOnly, and limit filters through the real service', async () => {
+    it('applies type and unreadOnly filters through the real service', async () => {
+      const type = notifications.NOTIFICATION_TYPES.MEMORY_APPROVAL;
+      const res = await request(buildApp()).get(`/api/notifications?type=${type}&unreadOnly=true`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.map(({ id }) => id)).toEqual(['n4', 'n1']);
+    });
+
+    it('applies limit after the type and unreadOnly filters', async () => {
       const type = notifications.NOTIFICATION_TYPES.MEMORY_APPROVAL;
       const res = await request(buildApp()).get(`/api/notifications?type=${type}&unreadOnly=true&limit=1`);
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual([
-        expect.objectContaining({ id: 'n4', type, read: false })
-      ]);
+      expect(res.body.map(({ id }) => id)).toEqual(['n4']);
     });
   });
 
