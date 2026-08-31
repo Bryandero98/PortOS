@@ -49,8 +49,28 @@ const format = z.enum(LOOM_FORMATS);
 // the runner would clamp an unknown level silently, and the door check is
 // where a typo should surface.
 const playSettings = llmRoutePinSchema.nullable();
+const optionalRenderMode = (values) => z.preprocess(
+  (value) => value == null || value === '' || value === 'auto' ? null : value,
+  z.enum(values).nullable().optional(),
+);
+const optionalRenderModel = z.preprocess(
+  (value) => value == null || value === '' ? null : value,
+  z.string().trim().min(1).max(64).nullable().optional(),
+);
+const optionalRenderEffort = z.preprocess(
+  (value) => value == null || value === '' ? null : value,
+  z.enum(EFFORT_LEVELS).nullable().optional(),
+);
+// Format, provider, and model preferences travel together as one loom-level
+// pin. The provider/model fields are nullable so the UI can explicitly return
+// to the install default without omitting a sibling preference accidentally.
 const renderSettings = z.object({
   formatId: z.enum(FABLELOOM_RENDER_FORMAT_IDS),
+  imageMode: optionalRenderMode(QUEUEABLE_IMAGE_MODES),
+  imageModel: optionalRenderModel,
+  videoMode: optionalRenderMode(VIDEO_GEN_MODES),
+  videoModel: optionalRenderModel,
+  effort: optionalRenderEffort,
 });
 const productionStatus = z.object({
   editorialApprovedAt: z.string().max(80).nullable().optional(),
