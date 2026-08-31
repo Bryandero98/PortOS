@@ -507,6 +507,27 @@ backward-compatible historical snapshot/introspection endpoints.
 | DELETE | `/notifications/:id` | Delete notification |
 | DELETE | `/notifications` | Clear all notifications |
 
+`GET /notifications` returns a bare JSON array of notification objects, newest
+first. It accepts the optional query parameters `type`, `unreadOnly=true`, and
+`limit`; the filters are applied before the result is returned. It does not
+return an `{ items, total }` envelope.
+
+```json
+[
+  {
+    "id": "notification-id",
+    "type": "agent_warning",
+    "title": "Example notification",
+    "description": "Example description",
+    "priority": "medium",
+    "timestamp": "2025-01-01T00:00:00.000Z",
+    "link": "/example",
+    "read": false,
+    "metadata": {}
+  }
+]
+```
+
 ### Media (Audio/Video Capture)
 
 | Method | Endpoint | Description |
