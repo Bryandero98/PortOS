@@ -40,6 +40,7 @@ export default function LoomCanvas({
   episode, selectedNodeId, onSelectNode, onMoveNode,
   viewportWidth: viewportWidthProp, orientation: orientationProp,
   mediaJobs = {}, onGenerateImage, onGenerateVideo,
+  onOpenFalVideo,
   generationDisabled = false, generationDisabledReason = '',
 }) {
   // An in-flight drag lives entirely outside React state: the dragged <g>'s
@@ -328,6 +329,7 @@ export default function LoomCanvas({
                     jobs={mediaJobs[node.id]}
                     onGenerateImage={onGenerateImage}
                     onGenerateVideo={onGenerateVideo}
+                    onOpenFalVideo={onOpenFalVideo}
                     compact
                     generationDisabled={generationDisabled}
                     generationDisabledReason={generationDisabledReason}

@@ -29,6 +29,7 @@ export * from './creativeDirectorPlan.js';
 export * from './creativeDirectorPreview.js';
 export * from './editorialRoadmap.js';
 export * from './federatedMediaReadiness.js';
+export * from './falVideoHandoff.js';
 export * from './fableLoomReadiness.js';
 export * from './glbFailure.js';
 export * from './grokVideoClip.js';

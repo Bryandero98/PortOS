@@ -12,6 +12,21 @@ vi.mock('../../services/api', () => ({
   updateLoomTransition: vi.fn(),
 }));
 
+const pickerMocks = vi.hoisted(() => ({
+  item: { id: 'upload-example', filename: 'upload-example.mp4' },
+  props: vi.fn(),
+}));
+vi.mock('../videoGen/GalleryVideoPicker', () => ({
+  default: (props) => {
+    pickerMocks.props(props);
+    return props.open ? (
+      <button type="button" onClick={() => props.onSelect(pickerMocks.item)}>
+        Pick gallery video
+      </button>
+    ) : null;
+  },
+}));
+
 import {
   addLoomTransition, branchLoomNode, deleteLoomNode, deleteLoomTransition, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
@@ -39,6 +54,7 @@ const renderEditor = (transitions = [existingPath]) => {
   const onLoomUpdate = vi.fn();
   const onGenerateImage = vi.fn().mockResolvedValue({ jobId: 'image-1' });
   const onGenerateVideo = vi.fn().mockResolvedValue({ jobId: 'video-1' });
+  const onOpenFalVideo = vi.fn();
   render(
     <MemoryRouter>
       <LoomNodeEditor
@@ -55,10 +71,11 @@ const renderEditor = (transitions = [existingPath]) => {
         onClearSelection={() => {}}
         onGenerateImage={onGenerateImage}
         onGenerateVideo={onGenerateVideo}
+        onOpenFalVideo={onOpenFalVideo}
       />
     </MemoryRouter>,
   );
-  return { onLoomUpdate, onGenerateImage, onGenerateVideo };
+  return { onLoomUpdate, onGenerateImage, onGenerateVideo, onOpenFalVideo };
 };
 
 const renderHelperEditor = () => {
@@ -119,7 +136,10 @@ const renderCanonicalEditor = (presence = 'onscreen') => {
   );
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  pickerMocks.item = { id: 'upload-example', filename: 'upload-example.mp4' };
+});
 
 describe('LoomNodeEditor paths', () => {
   it('requires confirmation before deleting a scene', async () => {
@@ -302,6 +322,48 @@ describe('LoomNodeEditor scene media', () => {
       id: 'n1', prose: scene, image: 'scene.png',
       videoPrompt: 'The gate opens in one continuous shot.', cameraMovement: 'slow-dolly-in',
     }));
+  });
+
+  it('hands the current scene direction to the fal free tool without waiting on a save', async () => {
+    const user = userEvent.setup();
+    const { onOpenFalVideo } = renderEditor();
+
+    await user.clear(screen.getByLabelText('Video prompt'));
+    await user.type(screen.getByLabelText('Video prompt'), 'A fast practical-effects reveal.');
+    await user.click(screen.getByRole('button', { name: 'fal.ai free' }));
+
+    expect(onOpenFalVideo).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'n1',
+      videoPrompt: 'A fast practical-effects reveal.',
+      cameraMovement: 'slow-dolly-in',
+    }));
+  });
+
+  it('attaches an uploaded fal MP4 through the durable gallery history id', async () => {
+    const user = userEvent.setup();
+    updateLoomNode.mockResolvedValue({ id: 'loom-1' });
+    renderEditor();
+
+    await user.click(screen.getByRole('button', { name: 'Attach video' }));
+    expect(pickerMocks.props).toHaveBeenLastCalledWith(expect.objectContaining({
+      accept: 'video/mp4,.mp4',
+    }));
+    await user.click(screen.getByRole('button', { name: 'Pick gallery video' }));
+
+    await waitFor(() => expect(updateLoomNode).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', 'n1', { videoHistoryId: 'upload-example' }, { silent: true },
+    ));
+  });
+
+  it('refuses a non-MP4 history record that scene playback cannot address', async () => {
+    const user = userEvent.setup();
+    pickerMocks.item = { id: 'upload-example', filename: 'upload-example.mov' };
+    renderEditor();
+
+    await user.click(screen.getByRole('button', { name: 'Attach video' }));
+    await user.click(screen.getByRole('button', { name: 'Pick gallery video' }));
+
+    expect(updateLoomNode).not.toHaveBeenCalled();
   });
 
   it('uses the scene for text-to-video when no rendered still exists', async () => {

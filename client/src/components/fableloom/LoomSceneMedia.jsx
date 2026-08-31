@@ -7,8 +7,10 @@
  * and queued/running/failed/canceled states stay visible after the POST returns.
  */
 
-import { AlertCircle, ImagePlus, Loader2, Video } from 'lucide-react';
+import { useState } from 'react';
+import { AlertCircle, ExternalLink, ImagePlus, Loader2, Upload, Video } from 'lucide-react';
 import MediaImage from '../MediaImage';
+import GalleryVideoPicker from '../videoGen/GalleryVideoPicker';
 
 const ACTIVE_STATUSES = new Set(['submitting', 'queued', 'running', 'unknown']);
 
@@ -39,11 +41,18 @@ export default function LoomSceneMedia({
   jobs = {},
   onGenerateImage,
   onGenerateVideo,
+  onOpenFalVideo,
+  onAttachVideo,
   compact = false,
   generationDisabled = false,
   generationDisabledReason = '',
+  falDisabled,
+  falDisabledReason,
 }) {
+  const [videoPickerOpen, setVideoPickerOpen] = useState(false);
   const imageJob = jobs.image || null;
+  const freeToolDisabled = falDisabled ?? generationDisabled;
+  const freeToolDisabledReason = falDisabledReason ?? generationDisabledReason;
   const videoJob = jobs.video || null;
   const imageActive = isActive(imageJob);
   const videoActive = isActive(videoJob);
@@ -144,7 +153,7 @@ export default function LoomSceneMedia({
       </div>
 
       <div
-        className="grid shrink-0 grid-cols-2 gap-1"
+        className={`grid shrink-0 gap-1 ${compact ? 'grid-cols-3' : 'grid-cols-2'}`}
         onPointerDown={stopNodeActivation}
         onClick={stopNodeActivation}
         onKeyDown={stopNodeActivation}
@@ -169,6 +178,28 @@ export default function LoomSceneMedia({
           {videoActive ? <Loader2 size={compact ? 10 : 12} className="animate-spin" /> : <Video size={compact ? 10 : 12} />}
           <span className="truncate">{videoActive ? 'Generating video' : node.videoHistoryId ? 'Regenerate video' : 'Generate video'}</span>
         </button>
+        <button
+          type="button"
+          onClick={() => onOpenFalVideo?.(node)}
+          disabled={freeToolDisabled || !onOpenFalVideo}
+          title={freeToolDisabledReason || 'Copy this scene prompt and open fal H3 Max (up to 15 free browser renders per day with an account)'}
+          className={buttonClass}
+        >
+          <ExternalLink size={compact ? 10 : 12} aria-hidden="true" />
+          <span className="truncate">fal.ai free</span>
+        </button>
+        {!compact && (
+          <button
+            type="button"
+            onClick={() => setVideoPickerOpen(true)}
+            disabled={!onAttachVideo}
+            title="Attach a downloaded fal MP4 or another video from Media History"
+            className={buttonClass}
+          >
+            <Upload size={12} aria-hidden="true" />
+            <span className="truncate">Attach video</span>
+          </button>
+        )}
       </div>
 
       {noticeLabel && !compact && (
@@ -179,6 +210,16 @@ export default function LoomSceneMedia({
       )}
       {generationDisabledReason && !noticeLabel && !compact && (
         <p className="text-xs text-port-text-muted" role="status">{generationDisabledReason}</p>
+      )}
+      {!compact && (
+        <GalleryVideoPicker
+          open={videoPickerOpen}
+          onClose={() => setVideoPickerOpen(false)}
+          onSelect={(item) => onAttachVideo?.(node, item)}
+          allowUpload
+          uploadToGallery
+          accept="video/mp4,.mp4"
+        />
       )}
     </div>
   );
