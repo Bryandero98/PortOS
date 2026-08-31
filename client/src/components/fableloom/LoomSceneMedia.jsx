@@ -30,7 +30,7 @@ const jobStateLabel = (kind, job) => {
   if (job.status === 'failed') return `${noun[0].toUpperCase()}${noun.slice(1)} failed`;
   if (job.status === 'canceled') return `${noun[0].toUpperCase()}${noun.slice(1)} canceled`;
   if (!isActive(job)) return null;
-  if (job.statusMsg) return job.statusMsg;
+  if (job.source === 'fal-browser' && job.statusMsg) return job.statusMsg;
   const pct = progressPercent(job);
   return job.status === 'submitting'
     ? `Starting ${noun}…`

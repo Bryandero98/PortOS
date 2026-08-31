@@ -50,6 +50,7 @@ const makeBrowser = ({
   resultError = null,
   errorTexts = [],
   gotoError = null,
+  hiddenChallengeFrame = false,
   previousVideoUrl = '',
   resultVideoUrl = 'https://v3.fal.media/files/example.mp4',
 } = {}) => {
@@ -67,7 +68,6 @@ const makeBrowser = ({
   video.first.mockReturnValue(video);
   const errorLocator = {
     allInnerTexts: vi.fn(async () => errorTexts),
-    count: vi.fn(async () => 0),
   };
   const controls = new Map(['16:9', '9:16', '1:1', '5s', 'Generate'].map((name) => [name, {
     click: vi.fn(async () => {}),
@@ -89,6 +89,10 @@ const makeBrowser = ({
       if (selector.startsWith('textarea')) return prompt;
       if (selector.startsWith('input')) return image;
       if (selector === 'video[src]') return video;
+      if (selector.includes('iframe[')) {
+        const visibleOnly = selector.split(',').every((part) => part.trim().endsWith(':visible'));
+        return { count: vi.fn(async () => hiddenChallengeFrame && !visibleOnly ? 1 : 0) };
+      }
       return errorLocator;
     }),
     url: vi.fn(() => 'about:blank'),
@@ -172,12 +176,16 @@ describe('FableLoom fal.ai browser automation', () => {
 
   it('coalesces repeated clicks for one scene instead of spending the free allowance twice', async () => {
     makeBrowser();
-    const first = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+    let resolveLookup;
+    mocks.getLoom.mockImplementationOnce(() => new Promise((resolve) => { resolveLookup = resolve; }));
+    const firstRequest = startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
       prompt: 'The example door opens.', aspectRatio: '16:9',
     });
-    const second = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+    const secondRequest = startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
       prompt: 'A duplicate click.', aspectRatio: '16:9',
     });
+    resolveLookup(loomWithImage());
+    const [first, second] = await Promise.all([firstRequest, secondRequest]);
 
     expect(second.id).toBe(first.id);
     await waitForTerminalJob(first);
@@ -219,6 +227,44 @@ describe('FableLoom fal.ai browser automation', () => {
     expect(mocks.sleep).toHaveBeenCalledWith(2000);
   });
 
+  it('keeps the final result probe finite when the render deadline is reached between checks', async () => {
+    const { video } = makeBrowser();
+    const now = vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce((20 * 60 * 1000) - 1)
+      .mockReturnValue(20 * 60 * 1000);
+    try {
+      const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+        prompt: 'The example door opens.', aspectRatio: '16:9',
+      });
+
+      await expect(waitForTerminalJob(queued)).resolves.toMatchObject({ status: 'completed' });
+      expect(video.waitFor).toHaveBeenCalledWith({ state: 'visible', timeout: 1 });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('ignores a hidden challenge iframe injected during an ordinary fal.ai render', async () => {
+    const { video } = makeBrowser({
+      hiddenChallengeFrame: true,
+      previousVideoUrl: 'https://v3.fal.media/files/prior-scene.mp4',
+      resultVideoUrl: 'https://v3.fal.media/files/current-scene.mp4',
+    });
+    video.evaluate
+      .mockReset()
+      .mockResolvedValueOnce('https://v3.fal.media/files/prior-scene.mp4')
+      .mockResolvedValueOnce('https://v3.fal.media/files/prior-scene.mp4')
+      .mockResolvedValue('https://v3.fal.media/files/current-scene.mp4');
+    const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+      prompt: 'The example door opens.', aspectRatio: '16:9',
+    });
+
+    await expect(waitForTerminalJob(queued)).resolves.toMatchObject({ status: 'completed' });
+  });
+
   it('closes a newly created blank tab when fal.ai navigation fails', async () => {
     const { page } = makeBrowser({ gotoError: new Error('navigation failed') });
     const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
@@ -253,6 +299,25 @@ describe('FableLoom fal.ai browser automation', () => {
     expect(failed).toMatchObject({
       status: 'failed',
       videoHistoryId: 'upload-ab12cd34',
+      error: expect.stringContaining('saved in Media History but was not attached'),
+    });
+    expect(mocks.attachNodeVideo).not.toHaveBeenCalled();
+  });
+
+  it('keeps a non-MP4 fal result in Media History without attaching an unplayable scene id', async () => {
+    makeBrowser();
+    mocks.saveUploadedGalleryVideoBuffer.mockResolvedValueOnce({
+      id: 'upload-ab12cd34', filename: 'upload-ab12cd34.webm',
+    });
+    const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+      prompt: 'The example door opens.', aspectRatio: '16:9',
+    });
+
+    const failed = await waitForTerminalJob(queued);
+    expect(failed).toMatchObject({
+      status: 'failed',
+      videoHistoryId: 'upload-ab12cd34',
+      filename: 'upload-ab12cd34.webm',
       error: expect.stringContaining('saved in Media History but was not attached'),
     });
     expect(mocks.attachNodeVideo).not.toHaveBeenCalled();

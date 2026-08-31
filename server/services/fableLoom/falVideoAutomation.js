@@ -32,6 +32,7 @@ const FAL_ASPECT_RATIOS = new Set(['16:9', '9:16', '1:1']);
 
 const jobs = new Map();
 const latestJobByScene = new Map();
+const pendingJobByScene = new Map();
 let runTail = Promise.resolve();
 
 const sceneKey = (loomId, episodeId, nodeId) => JSON.stringify([loomId, episodeId, nodeId]);
@@ -102,10 +103,10 @@ const visibleFalFailure = async (page) => {
   const text = await page.locator('[role="alert"]:visible, .text-error:visible').allInnerTexts().catch(() => []);
   const message = text.map((item) => item.trim()).find(Boolean) || '';
   const challengeFrames = await page.locator([
-    'iframe[src*="captcha" i]',
-    'iframe[src*="challenge" i]',
-    'iframe[title*="captcha" i]',
-    'iframe[title*="challenge" i]',
+    'iframe[src*="captcha" i]:visible',
+    'iframe[src*="challenge" i]:visible',
+    'iframe[title*="captcha" i]:visible',
+    'iframe[title*="challenge" i]:visible',
   ].join(', ')).count().catch(() => 0);
   if (challengeFrames > 0 || /captcha|verify (?:that )?you are human|human verification/i.test(message)) {
     return 'fal.ai needs human verification in the PortOS Browser. Complete it there, then retry.';
@@ -139,7 +140,10 @@ const waitForFalResult = async (page, resultVideo, previousSourceUrl) => {
     const remaining = deadline - Date.now();
     const visible = await resultVideo.waitFor({
       state: 'visible',
-      timeout: Math.min(FAL_RESULT_POLL_MS, remaining),
+      // Playwright interprets zero as "no timeout". The clock can reach the
+      // deadline between the loop check and this calculation, so keep the
+      // final probe finite instead of wedging the global job queue forever.
+      timeout: Math.max(1, Math.min(FAL_RESULT_POLL_MS, remaining)),
     }).then(() => true).catch(() => false);
     if (visible) {
       const sourceUrl = await readVideoSource(resultVideo);
@@ -279,6 +283,16 @@ const executeJob = async (job) => {
     job.videoHistoryId = galleryVideo.id;
     job.filename = galleryVideo.filename;
 
+    // FableLoom scenes still address a gallery clip as `${historyId}.mp4`.
+    // Keep any valid alternate container in Media History, but do not attach
+    // a record whose scene preview URL cannot resolve.
+    if (galleryVideo.filename !== `${galleryVideo.id}.mp4`) {
+      throw new ServerError(
+        'fal.ai returned a non-MP4 video. It is saved in Media History but was not attached.',
+        { status: 502, code: 'FAL_VIDEO_UNSUPPORTED_CONTAINER' },
+      );
+    }
+
     const latestBeforeAttach = await getLoom(job.loomId);
     const { node: sceneBeforeAttach } = findScene(latestBeforeAttach, job.episodeId, job.nodeId);
     if (!sceneBeforeAttach || sceneBeforeAttach.image !== job.imageFilename) {
@@ -328,44 +342,60 @@ export async function startFalVideoAutomation(loomId, episodeId, nodeId, {
   const prior = jobs.get(latestJobByScene.get(key));
   if (prior && ACTIVE_STATUSES.has(prior.status)) return publicJob(prior);
 
-  const loom = await getLoom(loomId);
-  const { node } = findScene(loom, episodeId, nodeId);
-  if (!node) {
-    throw new ServerError('Scene not found', { status: 404, code: 'NOT_FOUND' });
-  }
-  if (!node.image || !resolveGalleryImage(node.image)) {
-    throw new ServerError('Generate a scene image before starting fal.ai video automation.', {
-      status: 409,
-      code: 'FAL_SCENE_IMAGE_REQUIRED',
-    });
-  }
+  const pending = pendingJobByScene.get(key);
+  if (pending) return await pending;
 
-  const job = {
-    id: `fal-${randomUUID()}`,
-    loomId,
-    episodeId,
-    nodeId,
-    prompt,
-    aspectRatio,
-    imageFilename: node.image,
-    status: 'queued',
-    statusMsg: 'Waiting for the fal.ai browser…',
-    progress: 0,
-    createdAt: new Date().toISOString(),
-    startedAt: null,
-    completedAt: null,
-    error: null,
-    videoHistoryId: null,
-    filename: null,
-  };
-  jobs.set(job.id, job);
-  latestJobByScene.set(key, job.id);
+  // Reserve this scene before the first lookup yields. Without this promise,
+  // two POSTs arriving in the same render can both pass the active-job check
+  // and spend two free fal.ai allowances before either job is registered.
+  const createJob = (async () => {
+    const loom = await getLoom(loomId);
+    const { node } = findScene(loom, episodeId, nodeId);
+    if (!node) {
+      throw new ServerError('Scene not found', { status: 404, code: 'NOT_FOUND' });
+    }
+    if (!node.image || !resolveGalleryImage(node.image)) {
+      throw new ServerError('Generate a scene image before starting fal.ai video automation.', {
+        status: 409,
+        code: 'FAL_SCENE_IMAGE_REQUIRED',
+      });
+    }
 
-  // The free tool exposes one form in one persistent browser profile. Keep
-  // every user-requested scene job, but serialize them so a later click cannot
-  // replace the prompt/image of an in-flight render.
-  runTail = runTail.then(() => executeJob(job));
-  return publicJob(job);
+    const job = {
+      id: `fal-${randomUUID()}`,
+      loomId,
+      episodeId,
+      nodeId,
+      prompt,
+      aspectRatio,
+      imageFilename: node.image,
+      status: 'queued',
+      statusMsg: 'Waiting for the fal.ai browser…',
+      progress: 0,
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      videoHistoryId: null,
+      filename: null,
+    };
+    jobs.set(job.id, job);
+    latestJobByScene.set(key, job.id);
+
+    // The free tool exposes one form in one persistent browser profile. Keep
+    // every user-requested scene job, but serialize them so a later click
+    // cannot replace the prompt/image of an in-flight render.
+    runTail = runTail.then(() => executeJob(job));
+    // Snapshot the queued state before the serialized runner can advance it;
+    // both same-scene callers receive the same initial API contract.
+    return publicJob(job);
+  })();
+  pendingJobByScene.set(key, createJob);
+  try {
+    return await createJob;
+  } finally {
+    if (pendingJobByScene.get(key) === createJob) pendingJobByScene.delete(key);
+  }
 }
 
 export function getFalVideoAutomation(loomId, episodeId, nodeId, jobId) {
@@ -380,5 +410,6 @@ export function getFalVideoAutomation(loomId, episodeId, nodeId, jobId) {
 export function _resetFalVideoAutomations() {
   jobs.clear();
   latestJobByScene.clear();
+  pendingJobByScene.clear();
   runTail = Promise.resolve();
 }

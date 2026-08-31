@@ -127,6 +127,36 @@ describe('LoomCanvas', () => {
     expect(screen.getAllByRole('button', { name: 'Generate image' })[0]).toBeEnabled();
   });
 
+  it('preserves numeric progress for local video jobs and uses fal browser stage messages', () => {
+    const { rerender } = render(
+      <LoomCanvas
+        episode={episode()}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateVideo={() => {}}
+        mediaJobs={{ n1: { video: {
+          jobId: 'video-1', status: 'running', progress: 0.42, statusMsg: 'Sampling frames',
+        } } }}
+      />,
+    );
+    expect(screen.getByText('Generating video 42%')).toBeInTheDocument();
+    expect(screen.queryByText('Sampling frames')).not.toBeInTheDocument();
+
+    rerender(
+      <LoomCanvas
+        episode={episode()}
+        selectedNodeId={null}
+        onSelectNode={() => {}}
+        onGenerateVideo={() => {}}
+        mediaJobs={{ n1: { video: {
+          jobId: 'fal-1', source: 'fal-browser', status: 'running', progress: 0.3,
+          statusMsg: 'Generating the scene video on fal.ai…',
+        } } }}
+      />,
+    );
+    expect(screen.getByText('Generating the scene video on fal.ai…')).toBeInTheDocument();
+  });
+
   it('uses absolute SVG coordinates for compact media so WebKit keeps it inside the card', () => {
     const { rerender } = render(
       <LoomCanvas
