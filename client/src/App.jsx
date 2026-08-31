@@ -249,6 +249,9 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/ambient" element={<Ambient />} />
+        {/* Hosted audience devices need the full dynamic viewport, without the
+            app chrome consuming part of the height or clipping the controls. */}
+        <Route path="/fableloom/join" element={<FableLoomHostedJoin />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="apps" element={<Apps />} />
@@ -520,7 +523,6 @@ export default function App() {
           <Route path="sharing/:section" element={<Sharing />} />
           <Route path="sharing/:section/:bucketId" element={<Sharing />} />
           <Route path="importer" element={<Importer />} />
-          <Route path="fableloom/join" element={<FableLoomHostedJoin />} />
           <Route path="fableloom" element={<FableLoom />} />
           <Route path="fableloom/:loomId" element={<FableLoomStory />} />
           <Route path="fableloom/:loomId/:episodeId/outline" element={<FableLoomStory view="outline" />} />
