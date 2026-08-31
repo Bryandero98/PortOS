@@ -31,6 +31,21 @@ After installation, the **Worlds GitHub repository** field remains available on
 in place, so the managed-app path, local working tree, and world data stay
 untouched. The companion video checkout remains on its upstream repository.
 
+The managed app's **Git** tab makes that two-repository topology explicit. It
+shows the checked-out branch and revision for Worlds and Video, compares each
+checkout with its configured origin, and—when Worlds points at an ordinary
+GitHub fork—compares that fork with the canonical
+`anima-research/eidoverse-worlds` upstream. A failed network comparison is
+reported as unknown rather than as current.
+
+**Sync fork only** fast-forwards the configured Worlds fork on GitHub without
+changing either local checkout or restarting a process. PortOS never passes
+`--force`, so a fork with its own incompatible commits is left untouched for
+manual reconciliation. **Update both** pulls Worlds from its configured origin,
+pulls the independent Video checkout from its own origin and branch, installs
+Worlds' frozen Bun dependencies, and restarts only Eidoverse. Video is therefore
+managed as a version-visible sidecar, not pinned as a PortOS submodule.
+
 ## Runtime and data ownership
 
 The managed app uses port `8940` and starts with the Bun executable found or
@@ -200,6 +215,11 @@ V1's lane coordinates have no safe district translation, so a custom layout is
 reported rather than silently applied. Missing state is a fresh V2 install;
 invalid or newer schema state fails closed and remains pending for repair or a
 PortOS update.
+
+Migration `325-eidoverse-video-companion.js` backfills the canonical Video
+checkout into older Eidoverse managed-app registrations. This lets those
+installations use the same two-checkout managed update path after upgrading
+PortOS without rewriting their selected Worlds origin or world data.
 
 The offline migration never touches an external checkout or calls an AI
 provider. It leaves V2 pending. After restart, a deterministic reconciler runs
