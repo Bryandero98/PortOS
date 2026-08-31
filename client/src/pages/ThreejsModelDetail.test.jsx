@@ -153,6 +153,8 @@ describe('ThreejsModelDetail request lifecycle', () => {
 
     await act(async () => { initial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
     await act(async () => { vi.advanceTimersByTime(4_000); });
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    expect(getThreejsModel).toHaveBeenCalledTimes(3);
     await act(async () => { slowPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'ready' }); });
     expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
 
@@ -175,6 +177,24 @@ describe('ThreejsModelDetail request lifecycle', () => {
     await act(async () => { olderPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'ready' }); });
 
     expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
+  });
+
+  it('stops polling after a model disappears', async () => {
+    vi.useFakeTimers();
+    const initial = deferred();
+    const poll = deferred();
+    const unexpectedPoll = deferred();
+    const requests = [initial, poll, unexpectedPoll];
+    getThreejsModel.mockImplementation(() => requests.shift().promise);
+    renderDetail(['/media/threejs/model-a']);
+
+    await act(async () => { initial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    await act(async () => { poll.reject({ status: 404, message: 'Model disappeared' }); });
+    expect(screen.getByText('That Three.js model does not exist.')).toBeInTheDocument();
+
+    await act(async () => { vi.advanceTimersByTime(4_000); });
+    expect(getThreejsModel).toHaveBeenCalledTimes(2);
   });
 
   it('keeps a newer terminal poll result authoritative over an older generating response', async () => {

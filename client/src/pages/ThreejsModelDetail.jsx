@@ -27,6 +27,8 @@ import { seedModelEffort } from '../utils/providers';
 const providerFilter = (provider) =>
   provider.enabled !== false && ['api', 'cli', 'tui'].includes(provider.type);
 
+const MAX_IN_FLIGHT_POLLS = 2;
+
 const SEVERITY_STYLE = {
   error: 'border-port-error/40 bg-port-error/10 text-port-error',
   warning: 'border-port-warning/40 bg-port-warning/10 text-port-warning',
@@ -288,7 +290,9 @@ export default function ThreejsModelDetail() {
   const mountedRef = useMounted();
   const lifecycleGenerationRef = useRef(0);
   const requestSequenceRef = useRef(0);
+  const pollSequenceRef = useRef(0);
   const lastAppliedRequestRef = useRef(0);
+  const inFlightPollsRef = useRef(new Set());
   const load = useCallback(async ({ initial = false } = {}) => {
     const lifecycleGeneration = lifecycleGenerationRef.current;
     const requestSequence = ++requestSequenceRef.current;
@@ -297,6 +301,7 @@ export default function ThreejsModelDetail() {
     if (initial && isCurrent()) {
       setLoading(true);
       setNotFound(false);
+      setRecord(null);
     }
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {
       if (!isAuthoritative()) return null;
@@ -323,13 +328,19 @@ export default function ThreejsModelDetail() {
   }, [id, load]);
 
   useEffect(() => {
-    if (loading || record?.id !== id || record?.status !== 'generating') return undefined;
-    const handle = setInterval(() => { void load(); }, 2_000);
+    if (loading || notFound || record?.id !== id || record?.status !== 'generating') return undefined;
+    const handle = setInterval(() => {
+      if (inFlightPollsRef.current.size >= MAX_IN_FLIGHT_POLLS) return;
+      const pollSequence = ++pollSequenceRef.current;
+      inFlightPollsRef.current.add(pollSequence);
+      void load().finally(() => { inFlightPollsRef.current.delete(pollSequence); });
+    }, 2_000);
     return () => {
       clearInterval(handle);
+      inFlightPollsRef.current.clear();
       lifecycleGenerationRef.current += 1;
     };
-  }, [loading, record?.id, record?.status, id, load]);
+  }, [loading, notFound, record?.id, record?.status, id, load]);
 
   useEffect(() => {
     if (!record || providers.length === 0) return;
