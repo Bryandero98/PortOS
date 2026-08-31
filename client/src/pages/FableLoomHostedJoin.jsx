@@ -175,7 +175,7 @@ export default function FableLoomHostedJoin() {
 
   if (authError) {
     return (
-      <div className="min-h-dvh-cap bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
+      <div className="h-dvh-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center">
         <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
           <AlertCircle className="w-8 h-8 text-red-400" />
         </div>
@@ -186,7 +186,7 @@ export default function FableLoomHostedJoin() {
   }
 
   return (
-    <div className="min-h-dvh-cap bg-slate-950 text-white flex flex-col justify-between max-w-md mx-auto relative overflow-hidden shadow-2xl">
+    <div className="h-dvh-screen bg-slate-950 text-white flex flex-col justify-between max-w-md mx-auto relative overflow-hidden shadow-2xl">
       <audio ref={audioPlayerRef} className="hidden" />
 
       {/* Header */}
@@ -231,7 +231,7 @@ export default function FableLoomHostedJoin() {
       {/* Transcript Stream */}
       <div
         ref={transcriptScrollRef}
-        className="flex-1 p-4 overflow-y-auto space-y-3 font-sans text-sm"
+        className="flex-1 min-h-0 p-4 overflow-y-auto space-y-3 font-sans text-sm"
       >
         {transcript.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 text-xs py-12">

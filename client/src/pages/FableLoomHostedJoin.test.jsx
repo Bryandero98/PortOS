@@ -26,7 +26,7 @@ describe('FableLoomHostedJoin', () => {
     expect(screen.getByText(/Invalid or missing join credentials/i)).toBeInTheDocument();
 
     const shell = screen.getByRole('heading', { name: 'Hosted Play Error' }).parentElement;
-    expect(shell).toHaveClass('min-h-dvh-cap');
+    expect(shell).toHaveClass('h-dvh-screen');
     expect(shell).not.toHaveClass('min-h-screen');
   });
 
@@ -49,12 +49,12 @@ describe('FableLoomHostedJoin', () => {
     render(<FableLoomHostedJoin />);
 
     const shell = screen.getByRole('banner').parentElement;
-    expect(shell).toHaveClass('min-h-dvh-cap', 'overflow-hidden');
+    expect(shell).toHaveClass('h-dvh-screen', 'overflow-hidden');
     expect(shell).not.toHaveClass('min-h-screen');
 
     const scrollRegions = shell.querySelectorAll('.overflow-y-auto');
     expect(scrollRegions).toHaveLength(1);
-    expect(scrollRegions[0]).toHaveClass('flex-1');
+    expect(scrollRegions[0]).toHaveClass('flex-1', 'min-h-0');
   });
 
   it('sends text input fallback when submitted', async () => {
