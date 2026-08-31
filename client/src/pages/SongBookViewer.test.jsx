@@ -97,7 +97,8 @@ describe('SongBookViewer', () => {
         { id: 't1', title: 'Example Track' },
       ]));
 
-      await renderEditPage();
+      renderPage('/songbook/abc?mode=edit');
+      await settleSongLinksEditor();
       const type = screen.getByLabelText('Link type');
       const target = screen.getByLabelText('Record to link');
       expect(target).toBeEnabled();
