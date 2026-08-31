@@ -8,12 +8,13 @@
  * episode-level grouping, dependency barriers, cancellation, and resume UX.
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { ServerError } from '../../lib/errorHandler.js';
 import { resolveImageInputPath } from '../../lib/fileUtils.js';
 import { getImageModels, isEditOnly } from '../../lib/mediaModels.js';
 import { selectLocalImageModel, resolveLocalImageModel } from '../imageGen/prepareParams.js';
+import { readImageSidecar } from '../imageGen/local.js';
 import {
   IMAGE_GEN_MODE,
   QUEUEABLE_IMAGE_MODES,
@@ -28,6 +29,7 @@ import {
   listVideoModels,
   resolveVideoModel,
 } from '../videoGen/local.js';
+import { loadHistory as loadVideoHistory } from '../videoGen/history.js';
 import { VIDEO_GEN_MODE, VIDEO_GEN_MODES, resolveVideoMode } from '../videoGen/modes.js';
 import {
   compileFableLoomVisualRequest,
@@ -36,7 +38,9 @@ import {
 } from './visualConditioning.js';
 import { cancelJob, enqueueJob, mediaJobEvents } from '../mediaJobQueue/index.js';
 import {
+  asFableLoomRenderSettings,
   buildEpisodeProductionPlan,
+  exactRenderParameterIssues,
   FABLELOOM_PRODUCTION_MODE_DEFAULT,
   inspectEpisodeProductionOrder,
 } from '../../lib/fableLoomProduction.js';
@@ -130,6 +134,121 @@ function normalizedRenderOptions({ imageMode, imageModel, videoMode, videoModel,
   };
 }
 
+function renderGeometry(run, recordedConditioning = null) {
+  const recorded = exactRenderParameters(run, recordedConditioning);
+  return {
+    width: Number.isFinite(recorded.width) ? recorded.width : run.render.width,
+    height: Number.isFinite(recorded.height) ? recorded.height : run.render.height,
+    aspectRatio: text(recorded.aspectRatio) || run.render.aspectRatio,
+  };
+}
+
+function exactRenderParameters(run, recordedConditioning) {
+  if (run.mode !== 'exact_inputs') return {};
+  const issues = exactRenderParameterIssues(recordedConditioning);
+  if (issues.length) {
+    throw exactInputError(`Exact-input reproduction refused: ${issues.join(' ')}`);
+  }
+  return effectiveParameters(recordedConditioning.render.parameters);
+}
+
+const aspectMismatch = (width, height, expectedWidth, expectedHeight) => {
+  if (![width, height, expectedWidth, expectedHeight].every((value) => Number.isFinite(value) && value > 0)) {
+    return false;
+  }
+  const actual = width / height;
+  const expected = expectedWidth / expectedHeight;
+  return Math.abs(actual - expected) / expected > 0.02;
+};
+
+async function inspectImageDimensions(asset, node) {
+  const filename = asset.existingAssetId;
+  const { metadata } = await readImageSidecar(filename);
+  if (Number.isFinite(Number(metadata?.width)) && Number.isFinite(Number(metadata?.height))) {
+    return { width: Number(metadata.width), height: Number(metadata.height) };
+  }
+  const manifests = [
+    node?.visualConditioning,
+    ...Object.values(node?.playbackAssets?.visualConditioningByAsset || {}),
+  ];
+  const recorded = manifests.find((manifest) => manifest?.capability?.kind === 'image'
+    && manifest?.assetId === asset.id)?.render?.parameters;
+  return Number.isFinite(recorded?.width) && Number.isFinite(recorded?.height)
+    ? { width: recorded.width, height: recorded.height }
+    : null;
+}
+
+function inspectVideoDimensions(asset, node, historyById) {
+  const history = historyById.get(asset.existingAssetId);
+  if (Number.isFinite(Number(history?.width)) && Number.isFinite(Number(history?.height))) {
+    return { width: Number(history.width), height: Number(history.height) };
+  }
+  const perAsset = node?.playbackAssets?.visualConditioningByAsset || {};
+  const recorded = (perAsset[asset.existingAssetId]
+    || perAsset[asset.id]
+    || Object.values(perAsset).find((manifest) => manifest?.assetId === asset.id))
+    ?.render?.parameters;
+  return Number.isFinite(recorded?.width) && Number.isFinite(recorded?.height)
+    ? { width: recorded.width, height: recorded.height }
+    : null;
+}
+
+async function flagRenderFormatMismatches(plan, episode, render) {
+  plan.formatMismatches = [];
+  if (plan.mode === 'exact_inputs') return plan;
+  const nodeById = new Map((episode.nodes || []).map((node) => [node.id, node]));
+  const existingAssets = plan.plannedAssets.filter((asset) => asset.existingAssetId
+    && (asset.type === 'image' || asset.type.startsWith('video_')));
+  const videoAssets = existingAssets.filter((asset) => asset.type.startsWith('video_'));
+  const history = videoAssets.length ? await loadVideoHistory() : [];
+  const historyById = new Map((Array.isArray(history) ? history : [])
+    .filter((item) => item?.id)
+    .map((item) => [item.id, item]));
+  const inspected = await Promise.all(existingAssets.map(async (asset) => ({
+    asset,
+    dimensions: asset.type === 'image'
+      ? await inspectImageDimensions(asset, nodeById.get(asset.nodeId))
+      : inspectVideoDimensions(asset, nodeById.get(asset.nodeId), historyById),
+  })));
+  const formatMismatches = [];
+  const forcedAssetIds = new Set();
+  for (const { asset, dimensions } of inspected) {
+    if (forcedAssetIds.has(asset.id)) continue;
+    if (!dimensions || !aspectMismatch(dimensions.width, dimensions.height, render.width, render.height)) continue;
+    const mismatch = {
+      assetId: asset.id,
+      assetType: asset.type,
+      nodeId: asset.nodeId,
+      nodeTitle: asset.nodeTitle,
+      actualWidth: dimensions.width,
+      actualHeight: dimensions.height,
+      expectedWidth: render.width,
+      expectedHeight: render.height,
+      expectedAspectRatio: render.aspectRatio,
+    };
+    formatMismatches.push(mismatch);
+    const relatedAssets = asset.type === 'image'
+      ? plan.plannedAssets.filter((candidate) => candidate.nodeId === asset.nodeId
+        && (candidate.type === 'image' || candidate.type.startsWith('video_'))
+        && candidate.existingAssetId)
+      : [asset];
+    for (const related of relatedAssets) {
+      related.formatMismatch = mismatch;
+      if (related.readiness?.ready !== false) related.status = 'ready';
+      forcedAssetIds.add(related.id);
+    }
+  }
+  plan.formatMismatches = formatMismatches;
+  plan.readyAssetsCount = plan.plannedAssets.filter((asset) => asset.status === 'ready').length;
+  plan.alreadyRenderedCount = plan.plannedAssets.filter((asset) => asset.status === 'already_rendered').length;
+  plan.skippedAssetsCount = plan.plannedAssets.filter((asset) => asset.status === 'skipped').length;
+  plan.blockedAssetsCount = plan.plannedAssets.filter((asset) => asset.status === 'blocked').length;
+  plan.isFullyReady = plan.blockedAssetsCount === 0
+    && plan.exactInputIssues.length === 0
+    && plan.planningIssues.length === 0;
+  return plan;
+}
+
 function selectAssets(plan, { assetTypes = null, nodeIds = null } = {}) {
   const typeFilter = Array.isArray(assetTypes) && assetTypes.length > 0 ? new Set(assetTypes) : null;
   const nodeFilter = Array.isArray(nodeIds) && nodeIds.length > 0 ? new Set(nodeIds) : null;
@@ -174,6 +293,7 @@ function assetState(asset) {
     existingAssetId: asset.existingAssetId || null,
     readiness: asset.readiness || { ready: false, reasons: [] },
     skipReason: asset.skipReason || null,
+    formatMismatch: asset.formatMismatch || null,
     status: alreadyRendered ? 'completed' : skipped ? 'skipped' : 'pending',
     jobId: null,
     provider: null,
@@ -376,6 +496,8 @@ async function prepareImageJob(run, asset) {
   if (run.mode === 'exact_inputs') assertExactConditioning(recordedConditioning, conditioned?.visualConditioning);
   const referenceImagePaths = conditioned?.referenceImagePaths || [];
   const localInitImagePath = conditioned?.sourceImagePath || referenceImagePaths[0] || null;
+  const geometry = renderGeometry(run, recordedConditioning);
+  const replayParameters = exactRenderParameters(run, recordedConditioning);
 
   if (mode === IMAGE_GEN_MODE.LOCAL) {
     const local = resolveLocalImageModel(settings, {
@@ -399,11 +521,14 @@ async function prepareImageJob(run, asset) {
         prompt: conditioned?.prompt || asset.prompt,
         negativePrompt: conditioned?.negativePrompt || '',
         modelId: local.selectedModel.id,
-        width: 1024,
-        height: 1024,
-        steps: settings.imageGen?.local?.steps,
-        guidance: settings.imageGen?.local?.guidance,
+        width: geometry.width,
+        height: geometry.height,
+        aspectRatio: geometry.aspectRatio,
+        steps: settings.imageGen?.local?.steps ?? local.selectedModel.steps,
+        guidance: settings.imageGen?.local?.guidance ?? local.selectedModel.guidance,
         quantize: settings.imageGen?.local?.quantize ?? '8',
+        seed: randomInt(0, 2_147_483_647),
+        ...replayParameters,
         ...(selectedIsEditOnly && localInitImagePath ? { initImagePath: localInitImagePath } : {}),
         referenceImagePaths: selectedIsEditOnly ? referenceImagePaths.slice(1) : referenceImagePaths,
         referenceImageStrengths: selectedIsEditOnly
@@ -437,8 +562,10 @@ async function prepareImageJob(run, asset) {
       ...providerParams,
       prompt: conditioned?.prompt || asset.prompt,
       negativePrompt: conditioned?.negativePrompt || '',
-      width: 1024,
-      height: 1024,
+      width: geometry.width,
+      height: geometry.height,
+      aspectRatio: geometry.aspectRatio,
+      ...replayParameters,
       initImagePath: conditioned?.sourceImagePath || null,
       referenceImagePaths,
       referenceImageStrengths: conditioned?.referenceImageStrengths || [],
@@ -475,6 +602,8 @@ async function prepareVideoJob(run, asset) {
   const conditioned = await conditionRequest(run, asset, 'video', capability, requestedSourceImagePath);
   if (run.mode === 'exact_inputs') assertExactConditioning(recordedConditioning, conditioned?.visualConditioning);
   const sourceImagePath = conditioned ? conditioned.sourceImagePath : requestedSourceImagePath;
+  const geometry = renderGeometry(run, recordedConditioning);
+  const replayParameters = exactRenderParameters(run, recordedConditioning);
 
   if (backend === VIDEO_GEN_MODE.LOCAL) {
     const supportedModes = Array.isArray(model.supportedModes) ? model.supportedModes : [];
@@ -495,14 +624,19 @@ async function prepareVideoJob(run, asset) {
         prompt: conditioned?.prompt || asset.prompt,
         negativePrompt: conditioned?.negativePrompt || '',
         modelId: model.id,
-        width: model.defaultWidth || 1024,
-        height: model.defaultHeight || 576,
+        width: geometry.width,
+        height: geometry.height,
+        aspectRatio: geometry.aspectRatio,
         numFrames: model.defaultFrames || DEFAULT_NUM_FRAMES,
-        fps: model.defaultFps || 24,
-        steps: model.defaultSteps,
-        guidanceScale: model.defaultGuidanceScale,
+        fps: model.defaultFps || model.fpsOptions?.[0] || 24,
+        steps: model.steps,
+        guidanceScale: model.guidance,
+        seed: randomInt(0, 2_147_483_647),
+        tiling: 'auto',
+        disableAudio: false,
         sourceImagePath,
         mode: videoMode,
+        ...replayParameters,
         visualConditioning: conditioned?.visualConditioning || null,
         fableLoom: productionTag(run, asset),
       },
@@ -530,8 +664,10 @@ async function prepareVideoJob(run, asset) {
       ...cloud.providerParams,
       prompt: conditioned?.prompt || asset.prompt,
       negativePrompt: conditioned?.negativePrompt || '',
-      width: 1024,
-      height: 576,
+      width: geometry.width,
+      height: geometry.height,
+      aspectRatio: geometry.aspectRatio,
+      ...replayParameters,
       sourceImagePath,
       visualConditioning: conditioned?.visualConditioning || null,
       fableLoom: productionTag(run, asset),
@@ -730,6 +866,11 @@ export async function planEpisodeProduction(loomId, episodeId, {
     availableVideoModels: listVideoModels(),
     resolveAsset: resolveImageInputPath,
   });
+  const render = {
+    ...normalizedRenderOptions({ imageMode, imageModel, videoMode, videoModel, effort }),
+    ...asFableLoomRenderSettings(loom.renderSettings),
+  };
+  await flagRenderFormatMismatches(plan, episode, render);
   const episodeOrderReadiness = inspectEpisodeProductionOrder(loom, episode);
   plan.episodeOrderReadiness = episodeOrderReadiness;
   if (!episodeOrderReadiness.ready) {
@@ -740,7 +881,6 @@ export async function planEpisodeProduction(loomId, episodeId, {
   for (const issue of seriesStoryReadiness.issues.filter((candidate) => candidate.severity === 'error')) {
     plan.planningIssues.push(`Story arc: ${issue.message}`);
   }
-  const render = normalizedRenderOptions({ imageMode, imageModel, videoMode, videoModel, effort });
   const settings = await getSettings();
   if (plan.mode === 'exact_inputs') {
     const exactEnvironmentIssues = new Set();
@@ -799,6 +939,9 @@ export async function planEpisodeProduction(loomId, episodeId, {
       plan.planningIssues.push(`Video model "${videoModelId}" is not available on this machine.`);
     }
   }
+  plan.isFullyReady = plan.blockedAssetsCount === 0
+    && plan.exactInputIssues.length === 0
+    && plan.planningIssues.length === 0;
   return {
     ...plan,
     renderOptions: render,
@@ -825,8 +968,9 @@ export async function startEpisodeProductionBatch(loomId, episodeId, {
     });
   }
 
-  const render = normalizedRenderOptions({ imageMode, imageModel, videoMode, videoModel, effort });
-  const plan = await planEpisodeProduction(loomId, episodeId, { mode, ...render });
+  const requestedRender = normalizedRenderOptions({ imageMode, imageModel, videoMode, videoModel, effort });
+  const plan = await planEpisodeProduction(loomId, episodeId, { mode, ...requestedRender });
+  const render = plan.renderOptions;
   const targetAssets = selectAssets(plan, { assetTypes, nodeIds });
   const blockedAssets = targetAssets.filter((asset) => asset.status === 'blocked');
   if (blockedAssets.length > 0 || plan.exactInputIssues.length > 0 || plan.planningIssues.length > 0) {

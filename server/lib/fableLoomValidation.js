@@ -21,7 +21,12 @@ import {
 import {
   FABLELOOM_ASSET_TYPES,
   FABLELOOM_PRODUCTION_MODES,
+  FABLELOOM_RENDER_FORMAT_IDS,
 } from './fableLoomProduction.js';
+import {
+  FABLELOOM_CHALLENGE_PHASES,
+  FABLELOOM_PLOT_POINT_KINDS,
+} from './fableLoomOutline.js';
 import { FABLELOOM_PLAYTEST_LIMITS } from './fableLoomPlaytest.js';
 import { EFFORT_LEVELS } from './providerModels.js';
 import { QUEUEABLE_IMAGE_MODES, VIDEO_GEN_MODES } from './generationModes.js';
@@ -44,6 +49,14 @@ const format = z.enum(LOOM_FORMATS);
 // the runner would clamp an unknown level silently, and the door check is
 // where a typo should surface.
 const playSettings = llmRoutePinSchema.nullable();
+const renderSettings = z.object({
+  formatId: z.enum(FABLELOOM_RENDER_FORMAT_IDS),
+});
+const productionStatus = z.object({
+  editorialApprovedAt: z.string().max(80).nullable().optional(),
+  editorialApprovalSource: z.enum(['manual', 'autopilot']).nullable().optional(),
+  deliveryApprovedAt: z.string().max(80).nullable().optional(),
+});
 const planItemId = z.string().min(1).max(80).optional();
 const planEpisodeId = z.string().min(1).max(80).nullable().optional();
 const planItemFields = {
@@ -55,6 +68,7 @@ const seriesPlan = z.object({
   storyArc: z.string().max(LOOM_LIMITS.STORY_ARC_MAX),
   plotPoints: z.array(z.object({
     ...planItemFields,
+    kind: z.enum(FABLELOOM_PLOT_POINT_KINDS).optional(),
     episodeId: planEpisodeId,
   })).max(LOOM_LIMITS.PLAN_ITEMS_MAX),
   sideQuests: z.array(z.object({
@@ -104,6 +118,8 @@ const storyOutline = z.object({
     key: z.string().max(LOOM_LIMITS.OUTLINE_KEY_MAX),
     title: z.string().max(LOOM_LIMITS.NODE_TITLE_MAX).optional(),
     summary: z.string().max(LOOM_LIMITS.OUTLINE_SUMMARY_MAX).optional(),
+    plotPointId: z.string().max(LOOM_LIMITS.OUTLINE_KEY_MAX).nullable().optional(),
+    challengePhase: z.enum(FABLELOOM_CHALLENGE_PHASES).nullable().optional(),
     playbackMode: z.enum(['cut', 'decision']).optional(),
     audienceConnection: z.enum(['connected', 'disconnected']).optional(),
     protagonistPresence: z.enum(FABLELOOM_PROTAGONIST_PRESENCE).optional(),
@@ -131,6 +147,7 @@ export const loomCreateSchema = z.object({
   audienceCommunicationMedium: audienceCommunicationMedium.optional(),
   format: format.optional(),
   playSettings: playSettings.optional(),
+  renderSettings: renderSettings.optional(),
   seriesPlan: seriesPlan.optional(),
   protagonistCharacterId: refId.optional(),
   protagonistWardrobeId: refId.optional(),
@@ -148,6 +165,8 @@ export const loomPatchSchema = z.object({
   audienceCommunicationMedium: audienceCommunicationMedium.optional(),
   format: format.optional(),
   playSettings: playSettings.optional(),
+  renderSettings: renderSettings.optional(),
+  productionStatus: productionStatus.optional(),
   seriesPlan: seriesPlan.optional(),
   protagonistCharacterId: refId.optional(),
   protagonistWardrobeId: refId.optional(),
@@ -255,6 +274,8 @@ export const interactionWindowSchema = z.object({
 const nodeFields = {
   title: z.string().max(LOOM_LIMITS.NODE_TITLE_MAX).optional(),
   prose: z.string().max(LOOM_LIMITS.PROSE_MAX).optional(),
+  plotPointId: z.string().max(LOOM_LIMITS.OUTLINE_KEY_MAX).nullable().optional(),
+  challengePhase: z.enum(FABLELOOM_CHALLENGE_PHASES).nullable().optional(),
   imagePrompt: z.string().max(LOOM_LIMITS.IMAGE_PROMPT_MAX).optional(),
   videoPrompt: z.string().max(LOOM_LIMITS.VIDEO_PROMPT_MAX).optional(),
   cameraMovement: z.string().max(LOOM_LIMITS.CAMERA_MOVEMENT_MAX).optional(),

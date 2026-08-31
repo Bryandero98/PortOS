@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { BrainCircuit, CheckCircle2, ChevronDown, ChevronUp, Loader2, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import toast from '../ui/Toast';
@@ -26,8 +26,10 @@ import { effectiveModelFor, effortAwareModelOptions } from '../../utils/provider
 import { fieldClass, labelClass } from './fieldStyles';
 import LoomAiRunStatus from './LoomAiRunStatus';
 import LoomEditorialAutomation from './LoomEditorialAutomation';
+import { fableLoomPlotPointKind } from '../../../../server/lib/fableLoomOutline.js';
 
 const newItemId = (prefix) => `${prefix}-${uuidv4()}`;
+const CHALLENGE_DESCRIPTION_TEMPLATE = 'SETUP: Establish the blockade and plant the clue. VIEWER DECISION LOOP: Offer 2–4 actionable options with escalating feedback. SUCCESS: Advance with an earned advantage. FAILURE: Continue with a visible cost. RECOVERY / PAYOFF: Converge without erasing the choice.';
 
 const normalizeDeliveryOptions = (options) => ({
   overnightVoicemails: options?.overnightVoicemails === true,
@@ -36,7 +38,9 @@ const normalizeDeliveryOptions = (options) => ({
 
 const normalizePlan = (plan) => ({
   storyArc: plan?.storyArc || '',
-  plotPoints: Array.isArray(plan?.plotPoints) ? plan.plotPoints : [],
+  plotPoints: Array.isArray(plan?.plotPoints)
+    ? plan.plotPoints.map((item) => ({ ...item, kind: fableLoomPlotPointKind(item) }))
+    : [],
   sideQuests: Array.isArray(plan?.sideQuests) ? plan.sideQuests : [],
   deliveryOptions: normalizeDeliveryOptions(plan?.deliveryOptions),
   interEpisodeVoicemails: Array.isArray(plan?.interEpisodeVoicemails)
@@ -63,12 +67,30 @@ const withVoicemailDrafts = (plan, episodes) => {
 };
 
 export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
+  const [searchParams] = useSearchParams();
+  const requestedSection = searchParams.get('section');
   const [plan, setPlan] = useState(() => normalizePlan(loom.seriesPlan));
   const [dirty, setDirty] = useState(false);
   const revisionRef = useRef(0);
   const savedRevisionRef = useRef(0);
   const loomIdRef = useRef(loom.id);
   const routeGuard = useUnsavedChangesGuard(dirty);
+
+  useEffect(() => {
+    const targetId = {
+      arc: 'fableloom-plan-arc',
+      challenges: 'fableloom-plan-challenges',
+      editorial: 'fableloom-plan-editorial',
+      handoffs: 'fableloom-plan-handoffs',
+    }[requestedSection];
+    if (!targetId) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(targetId);
+      target?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+      target?.focus?.({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loom.id, requestedSection]);
 
   useEffect(() => {
     if (loomIdRef.current !== loom.id) {
@@ -162,7 +184,7 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
               </p>
             </div>
 
-            <div className="rounded-lg border border-port-border bg-port-card p-4">
+            <div id="fableloom-plan-arc" tabIndex={-1} className="rounded-lg border border-port-border bg-port-card p-4 focus:outline-none">
               <FormField
                 label="Story arc"
                 hint="The beginning-to-end dramatic movement, central conflict, and intended resolution."
@@ -178,22 +200,23 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
               </FormField>
             </div>
 
-            <EpisodeBeatReadiness loom={loom} />
-
-            <LoomEditorialAutomation loom={loom} dirty={dirty} onLoomUpdate={adoptServerPlan} />
-
-            <PlanCollection
-              title="Plot points"
-              description="Order the tentpole beats and connect each one to the episode where it should land."
-              items={plan.plotPoints}
-              episodes={episodeOptions}
-              onAdd={() => changePlan((current) => ({ ...current, plotPoints: [...current.plotPoints, {
-                id: newItemId('plot'), title: '', description: '', episodeId: null,
-              }] }))}
-              onUpdate={(id, patch) => updateItem('plotPoints', id, patch)}
-              onRemove={(id) => removeItem('plotPoints', id)}
-              onMove={(index, direction) => moveItem('plotPoints', index, direction)}
-            />
+            <div id="fableloom-plan-challenges" tabIndex={-1} className="focus:outline-none">
+              <PlanCollection
+                title="Plot points"
+                description="Order tentpoles and playable challenges, then assign each one to the episode where it must appear."
+                items={plan.plotPoints}
+                episodes={episodeOptions}
+                onAdd={() => changePlan((current) => ({ ...current, plotPoints: [...current.plotPoints, {
+                  id: newItemId('plot'), kind: 'beat', title: '', description: '', episodeId: null,
+                }] }))}
+                onUpdate={(id, patch) => updateItem('plotPoints', id, patch)}
+                onAddChallenge={() => changePlan((current) => ({ ...current, plotPoints: [...current.plotPoints, {
+                  id: newItemId('plot'), kind: 'challenge', title: '', description: CHALLENGE_DESCRIPTION_TEMPLATE, episodeId: null,
+                }] }))}
+                onRemove={(id) => removeItem('plotPoints', id)}
+                onMove={(index, direction) => moveItem('plotPoints', index, direction)}
+              />
+            </div>
 
             <PlanCollection
               title="Side quests"
@@ -209,11 +232,19 @@ export default function LoomSeriesPlan({ loom, onLoomUpdate }) {
               onMove={(index, direction) => moveItem('sideQuests', index, direction)}
             />
 
-            <SeriesDeliveryPlan
-              plan={plan}
-              episodes={loom.episodes}
-              onChange={changePlan}
-            />
+            <EpisodeBeatReadiness loom={loom} />
+
+            <div id="fableloom-plan-editorial" tabIndex={-1} className="focus:outline-none">
+              <LoomEditorialAutomation loom={loom} dirty={dirty} onLoomUpdate={adoptServerPlan} />
+            </div>
+
+            <div id="fableloom-plan-handoffs" tabIndex={-1} className="focus:outline-none">
+              <SeriesDeliveryPlan
+                plan={plan}
+                episodes={loom.episodes}
+                onChange={changePlan}
+              />
+            </div>
           </div>
 
           <aside className="w-full lg:w-[380px] xl:w-[420px] shrink-0 space-y-6 lg:sticky lg:top-0 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto" aria-label="AI tools and actions">
@@ -690,7 +721,12 @@ function SeriesDeliveryPlan({ plan, episodes, onChange }) {
   );
 }
 
-function PlanCollection({ title, description, items, episodes, sideQuests = false, onAdd, onUpdate, onRemove, onMove }) {
+function PlanCollection({
+  title, description, items, episodes, sideQuests = false,
+  onAdd, onAddChallenge, onUpdate, onRemove, onMove,
+}) {
+  const challenges = sideQuests ? [] : items.filter((item) => fableLoomPlotPointKind(item) === 'challenge');
+  const assignedChallenges = challenges.filter((item) => item.episodeId);
   return (
     <div className="rounded-lg border border-port-border bg-port-card p-4 space-y-4">
       <div className="flex items-start justify-between gap-3">
@@ -698,10 +734,23 @@ function PlanCollection({ title, description, items, episodes, sideQuests = fals
           <h3 className="font-semibold">{title}</h3>
           <p className="text-xs text-port-text-muted mt-1">{description}</p>
         </div>
-        <button type="button" onClick={onAdd} className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-port-border text-xs hover:border-port-accent">
-          <Plus size={13} /> Add
-        </button>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          {onAddChallenge ? (
+            <button type="button" onClick={onAddChallenge} className="flex items-center gap-1 rounded border border-port-accent px-2.5 py-1.5 text-xs text-port-accent hover:bg-port-accent/10">
+              <Plus size={13} /> Challenge
+            </button>
+          ) : null}
+          <button type="button" onClick={onAdd} className="flex items-center gap-1 rounded border border-port-border px-2.5 py-1.5 text-xs hover:border-port-accent">
+            <Plus size={13} /> Add
+          </button>
+        </div>
       </div>
+
+      {onAddChallenge && challenges.length ? (
+        <p className={`text-xs ${assignedChallenges.length === challenges.length ? 'text-port-success' : 'text-port-warning'}`} role="status">
+          {assignedChallenges.length}/{challenges.length} playable challenges mapped to episodes
+        </p>
+      ) : null}
 
       {!items.length ? (
         <button type="button" onClick={onAdd} className="w-full rounded border border-dashed border-port-border p-5 text-sm text-port-text-muted hover:border-port-accent hover:text-port-accent">
@@ -709,6 +758,11 @@ function PlanCollection({ title, description, items, episodes, sideQuests = fals
         </button>
       ) : items.map((item, index) => (
         <div key={item.id} className="rounded border border-port-border p-3 space-y-3">
+          {!sideQuests && fableLoomPlotPointKind(item) === 'challenge' ? (
+            <span className="inline-flex rounded bg-port-accent/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-port-accent">
+              Playable challenge
+            </span>
+          ) : null}
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-port-text-muted w-6">{index + 1}.</span>
             <input

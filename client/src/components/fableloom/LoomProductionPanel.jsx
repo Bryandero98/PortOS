@@ -1,18 +1,18 @@
 /**
- * FableLoom production orchestration and episodic continuity review panel.
+ * FableLoom render orchestration panel.
  *
  * Provides user-triggered batch production planning, DAG asset enumeration,
- * exact-input verification, batch execution tracking, and episodic continuity review.
+ * exact-input verification, and batch execution tracking. Continuity review
+ * lives in its own workflow tab so a producer never has to hunt below render settings.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
   CircleAlert,
   Cloud,
   Cpu,
-  Film,
   Info,
   Layers,
   Loader2,
@@ -29,11 +29,15 @@ import {
   listImageModels,
   listVideoModels,
   planLoomEpisodeProduction,
-  reviewLoomEpisodeContinuity,
   resumeLoomEpisodeProductionBatch,
   startLoomEpisodeProductionBatch,
+  updateLoom,
 } from '../../services/api';
 import { fableLoomStoryReadiness } from '../../lib/fableLoomReadiness';
+import {
+  asFableLoomRenderSettings,
+  FABLELOOM_RENDER_FORMATS,
+} from '../../../../server/lib/fableLoomProduction.js';
 
 const IMAGE_BACKENDS = [
   { id: 'auto', label: 'Auto', icon: Layers },
@@ -61,23 +65,12 @@ const productionAssetsForScope = (plan, scope) => {
 
 const assetIsReady = (asset) => asset.status !== 'blocked' && asset.readiness?.ready !== false;
 
-const severityIcon = (severity) => {
-  if (severity === 'error' || severity === 'high') {
-    return <CircleAlert size={14} className="text-port-error shrink-0 mt-0.5" />;
-  }
-  if (severity === 'warning') {
-    return <AlertTriangle size={14} className="text-port-warning shrink-0 mt-0.5" />;
-  }
-  return <Info size={14} className="text-port-accent shrink-0 mt-0.5" />;
-};
-
-export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
+export default function LoomProductionPanel({ loom, episode, onSelectNode, onLoomUpdate }) {
   const [mode, setMode] = useState('current_canon');
   const [assetScope, setAssetScope] = useState('images');
   const [plan, setPlan] = useState(null);
+  const [planKey, setPlanKey] = useState(null);
   const [activeBatchRun, setActiveBatchRun] = useState(null);
-  const [continuityReview, setContinuityReview] = useState(null);
-  const [categoryFilter, setCategoryFilter] = useState('all');
   const [imageMode, setImageMode] = useState(null);
   const [imageModel, setImageModel] = useState(null);
   const [videoMode, setVideoMode] = useState(null);
@@ -85,6 +78,24 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
   const [effort, setEffort] = useState(null);
   const [imageModels, setImageModels] = useState([]);
   const [videoModels, setVideoModels] = useState([]);
+  const renderFormat = asFableLoomRenderSettings(loom.renderSettings);
+  const productionIdentity = `${loom.id}:${episode.id}`;
+  const productionIdentityRef = useRef(productionIdentity);
+  productionIdentityRef.current = productionIdentity;
+  const planInputKey = JSON.stringify({
+    loomId: loom.id,
+    episodeId: episode.id,
+    formatId: renderFormat.formatId,
+    mode,
+    imageMode,
+    imageModel,
+    videoMode,
+    videoModel,
+    effort,
+  });
+  const planInputKeyRef = useRef(planInputKey);
+  planInputKeyRef.current = planInputKey;
+  const planRequestRef = useRef(0);
 
   const renderOptions = (targetMode = mode) => ({
     mode: targetMode,
@@ -96,9 +107,34 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
   });
 
   const [fetchPlan, planning] = useAsyncAction(async (targetMode = mode) => {
-    const res = await planLoomEpisodeProduction(loom.id, episode.id, renderOptions(targetMode), { silent: true });
+    const requestId = planRequestRef.current + 1;
+    planRequestRef.current = requestId;
+    const requestKey = JSON.stringify({
+      loomId: loom.id,
+      episodeId: episode.id,
+      formatId: renderFormat.formatId,
+      mode: targetMode,
+      imageMode,
+      imageModel,
+      videoMode,
+      videoModel,
+      effort,
+    });
+    const res = await planLoomEpisodeProduction(
+      loom.id,
+      episode.id,
+      renderOptions(targetMode),
+      { silent: true },
+    );
+    if (planRequestRef.current !== requestId || planInputKeyRef.current !== requestKey) return;
     setPlan(res);
+    setPlanKey(requestKey);
   }, { errorMessage: 'Production planning failed' });
+
+  const [saveRenderFormat, savingRenderFormat] = useAsyncAction(async (formatId) => {
+    const updated = await updateLoom(loom.id, { renderSettings: { formatId } }, { silent: true });
+    onLoomUpdate?.(updated);
+  }, { errorMessage: 'Saving output format failed' });
 
   useEffect(() => {
     const load = (loader) => (typeof loader === 'function'
@@ -114,16 +150,28 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
   }, []);
 
   useEffect(() => {
+    setPlan(null);
+    setPlanKey(null);
     fetchPlan(mode);
-  }, [loom.id, episode.id, mode, imageMode, imageModel, videoMode, videoModel, effort]);
+  }, [planInputKey]);
+
+  useEffect(() => {
+    setActiveBatchRun(null);
+  }, [productionIdentity]);
 
   // Batch run polling
   useEffect(() => {
     if (!activeBatchRun || activeBatchRun.status !== 'in_progress') return undefined;
     const interval = setInterval(() => {
-      getLoomEpisodeProductionBatch(loom.id, episode.id, activeBatchRun.id, { silent: true })
+      getLoomEpisodeProductionBatch(
+        activeBatchRun.loomId,
+        activeBatchRun.episodeId,
+        activeBatchRun.id,
+        { silent: true },
+      )
         .then((updated) => {
           if (!updated) return;
+          if (`${updated.loomId}:${updated.episodeId}` !== productionIdentityRef.current) return;
           setActiveBatchRun(updated);
           if (updated.status === 'completed' || updated.status === 'canceled' || updated.status === 'failed') {
             fetchPlan(mode);
@@ -134,32 +182,38 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
         });
     }, 2000);
     return () => clearInterval(interval);
-  }, [activeBatchRun, loom.id, episode.id, mode]);
+  }, [activeBatchRun, mode]);
 
   const [startBatch, startingBatch] = useAsyncAction(async () => {
+    const requestedIdentity = productionIdentity;
     const res = await startLoomEpisodeProductionBatch(loom.id, episode.id, {
       ...renderOptions(),
       ...(selectedAssetTypes ? { assetTypes: selectedAssetTypes } : {}),
     }, { silent: true });
-    setActiveBatchRun(res);
+    if (productionIdentityRef.current === requestedIdentity) setActiveBatchRun(res);
   }, { errorMessage: 'Starting production batch failed' });
 
   const [cancelBatch, cancelingBatch] = useAsyncAction(async () => {
     if (!activeBatchRun) return;
-    const res = await cancelLoomEpisodeProductionBatch(loom.id, episode.id, activeBatchRun.id, { silent: true });
-    setActiveBatchRun(res);
+    const res = await cancelLoomEpisodeProductionBatch(
+      activeBatchRun.loomId,
+      activeBatchRun.episodeId,
+      activeBatchRun.id,
+      { silent: true },
+    );
+    if (`${res.loomId}:${res.episodeId}` === productionIdentityRef.current) setActiveBatchRun(res);
   }, { errorMessage: 'Canceling batch run failed' });
 
   const [resumeBatch, resumingBatch] = useAsyncAction(async () => {
     if (!activeBatchRun) return;
-    const res = await resumeLoomEpisodeProductionBatch(loom.id, episode.id, activeBatchRun.id, { silent: true });
-    setActiveBatchRun(res);
+    const res = await resumeLoomEpisodeProductionBatch(
+      activeBatchRun.loomId,
+      activeBatchRun.episodeId,
+      activeBatchRun.id,
+      { silent: true },
+    );
+    if (`${res.loomId}:${res.episodeId}` === productionIdentityRef.current) setActiveBatchRun(res);
   }, { errorMessage: 'Resuming batch run failed' });
-
-  const [runContinuityReview, reviewingContinuity] = useAsyncAction(async () => {
-    const res = await reviewLoomEpisodeContinuity(loom.id, episode.id, {}, { silent: true });
-    setContinuityReview(res);
-  }, { errorMessage: 'Continuity review failed' });
 
   const scopedAssets = productionAssetsForScope(plan, assetScope);
   const hasAssetList = Array.isArray(plan?.plannedAssets);
@@ -178,11 +232,6 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
   const selectedAssetTypes = assetScope === 'images' ? ['image'] : null;
   const storyReadiness = fableLoomStoryReadiness(loom);
 
-  const filteredFindings = (continuityReview?.findings || []).filter((f) => {
-    if (categoryFilter === 'all') return true;
-    return f.category === categoryFilter;
-  });
-
   const readinessBlockers = [
     ...(episode?.nodes?.length && !storyReadiness.ready
       ? [{ message: storyReadiness.reason, nodeId: null }]
@@ -198,10 +247,13 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
     candidate.message === item.message && candidate.nodeId === item.nodeId
   )) === index);
   const canStart = readinessBlockers.length === 0
-    && (mode !== 'exact_inputs' || !plan?.exactInputIssues?.length);
+    && (mode !== 'exact_inputs' || !plan?.exactInputIssues?.length)
+    && planKey === planInputKey
+    && !planning
+    && !savingRenderFormat;
 
   return (
-    <div className="p-4 space-y-6">
+    <div className="space-y-6">
       {/* 1. Production Mode & Plan Summary */}
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -317,6 +369,28 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
               <div className="text-[10px] uppercase font-semibold text-port-text-muted">Render settings</div>
               <div className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
+                  <label htmlFor="fableloom-render-format" className="text-[11px] text-port-text-muted w-14">Output</label>
+                  <select
+                    id="fableloom-render-format"
+                    value={renderFormat.formatId}
+                    onChange={(event) => saveRenderFormat(event.target.value)}
+                    disabled={savingRenderFormat}
+                    className="text-[11px] bg-port-bg border border-port-border rounded px-1.5 py-1 text-port-text disabled:opacity-50"
+                  >
+                    {FABLELOOM_RENDER_FORMATS.map((format) => (
+                      <option key={format.formatId} value={format.formatId}>
+                        {format.label} · {format.width}×{format.height}
+                      </option>
+                    ))}
+                  </select>
+                  {savingRenderFormat && <Loader2 size={11} className="animate-spin text-port-text-muted" aria-label="Saving output format" />}
+                  <span className="text-[10px] text-port-text-muted">
+                    {mode === 'exact_inputs'
+                      ? 'Exact-input mode preserves each asset’s recorded dimensions.'
+                      : 'Shared by storyboard images and video clips; 16:9 landscape is the default.'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[11px] text-port-text-muted w-14">Images</span>
                   <BackendChipStrip
                     availableBackends={IMAGE_BACKENDS}
@@ -387,6 +461,29 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
                 </div>
               </div>
             </div>
+
+            {plan.formatMismatches?.length > 0 && (
+              <div className="p-2.5 rounded bg-port-warning/10 border border-port-warning/30 text-xs space-y-1">
+                <div className="font-semibold flex items-center gap-1 text-port-warning">
+                  <AlertTriangle size={12} />
+                  Existing media uses another aspect ratio
+                </div>
+                <p className="text-[11px] text-port-text-muted pl-4">
+                  {plan.formatMismatches.length} media asset(s) will be regenerated at{' '}
+                  {renderFormat.aspectRatio} ({renderFormat.width}×{renderFormat.height}).
+                </p>
+                {plan.formatMismatches.map((mismatch) => (
+                  <button
+                    key={mismatch.assetId || `${mismatch.nodeId}-${mismatch.assetType || 'media'}`}
+                    type="button"
+                    onClick={() => onSelectNode?.(mismatch.nodeId)}
+                    className="block w-full text-left text-[11px] text-port-text-muted pl-4 hover:text-port-text"
+                  >
+                    {mismatch.nodeTitle || mismatch.nodeId} · {(mismatch.assetType || 'media').replaceAll('_', ' ')}: {mismatch.actualWidth}×{mismatch.actualHeight} → {mismatch.expectedAspectRatio}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {readinessBlockers.length > 0 && (
               <div className="p-2.5 rounded bg-port-warning/10 border border-port-warning/30 text-xs space-y-1">
@@ -481,7 +578,7 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
                 <button
                   type="button"
                   onClick={startBatch}
-                  disabled={startingBatch || !canStart}
+                  disabled={startingBatch || savingRenderFormat || !canStart}
                   className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded bg-port-accent text-white hover:bg-port-accent/90 disabled:opacity-50"
                 >
                   {startingBatch ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
@@ -543,96 +640,6 @@ export default function LoomProductionPanel({ loom, episode, onSelectNode }) {
         )}
       </div>
 
-      {/* 2. Episodic Continuity Review */}
-      <div className="border-t border-port-border pt-4">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold flex items-center gap-1.5">
-            <Film size={14} className="text-port-accent" />
-            Continuity Review
-          </h3>
-          <button
-            type="button"
-            onClick={runContinuityReview}
-            disabled={reviewingContinuity}
-            className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50 font-medium"
-          >
-            {reviewingContinuity ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-            Run Continuity Review
-          </button>
-        </div>
-
-        {continuityReview ? (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className={continuityReview.passed ? 'text-port-success font-medium flex items-center gap-1' : 'text-port-error font-medium flex items-center gap-1'}>
-                {continuityReview.passed ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
-                {continuityReview.passed ? 'All continuity checks passed' : `${continuityReview.summary?.errors || 0} error(s), ${continuityReview.summary?.warnings || 0} warning(s)`}
-              </span>
-              <span className="text-port-text-muted text-[11px]">
-                {continuityReview.nodesEvaluated} scenes evaluated
-              </span>
-            </div>
-
-            {/* Category filter pills */}
-            <div className="flex gap-1 overflow-x-auto pb-1 text-[11px]">
-              {['all', 'visual', 'voice', 'playback', 'graph'].map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setCategoryFilter(cat)}
-                  className={`px-2 py-0.5 rounded capitalize ${
-                    categoryFilter === cat
-                      ? 'bg-port-accent text-white font-medium'
-                      : 'bg-port-card border border-port-border text-port-text-muted hover:text-port-text'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-
-            {/* Findings list */}
-            {filteredFindings.length > 0 ? (
-              <div className="space-y-1.5">
-                {filteredFindings.map((finding) => (
-                  <button
-                    key={finding.id}
-                    type="button"
-                    onClick={() => finding.nodeId && onSelectNode && onSelectNode(finding.nodeId)}
-                    disabled={!finding.nodeId}
-                    className={`w-full text-left flex items-start gap-2 text-xs rounded p-2 border border-port-border ${
-                      finding.nodeId ? 'hover:border-port-accent cursor-pointer' : 'cursor-default'
-                    }`}
-                  >
-                    {severityIcon(finding.severity)}
-                    <div className="flex-1">
-                      <div className="font-medium text-port-text">{finding.message}</div>
-                      {finding.remediation && (
-                        <div className="text-[11px] text-port-text-muted mt-0.5">
-                          Remediation: {finding.remediation}
-                        </div>
-                      )}
-                      {finding.nodeId && (
-                        <div className="text-[10px] text-port-accent mt-1">
-                          Jump to scene [{finding.nodeId}]
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-port-text-muted">
-                No {categoryFilter === 'all' ? '' : categoryFilter} continuity issues found.
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-xs text-port-text-muted">
-            Inspect character visual bindings, wardrobe continuity, voice profile drift, pronunciation anchors, and live hold loops.
-          </p>
-        )}
-      </div>
     </div>
   );
 }

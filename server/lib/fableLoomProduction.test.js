@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  asFableLoomRenderSettings,
   buildEpisodeProductionPlan,
   computeTopologicalNodeOrder,
   inspectEpisodeProductionOrder,
@@ -59,6 +60,21 @@ describe('fableLoomProduction', () => {
       },
     ],
   };
+
+  it('defaults every loom to an explicit 16:9 landscape render format', () => {
+    expect(asFableLoomRenderSettings()).toEqual({
+      formatId: 'landscape-16-9',
+      aspectRatio: '16:9',
+      width: 1024,
+      height: 576,
+    });
+    expect(asFableLoomRenderSettings({ formatId: 'portrait-9-16' })).toMatchObject({
+      aspectRatio: '9:16', width: 576, height: 1024,
+    });
+    expect(asFableLoomRenderSettings({ formatId: 'unknown' })).toMatchObject({
+      aspectRatio: '16:9', width: 1024, height: 576,
+    });
+  });
 
   it('computes topological node ordering and detects convergence', () => {
     const topo = computeTopologicalNodeOrder(sampleEpisode);
@@ -233,6 +249,17 @@ describe('fableLoomProduction', () => {
       adapters: [],
       omitted: [],
       warnings: [],
+      render: {
+        parameters: {
+          width: 1024,
+          height: 576,
+          aspectRatio: '16:9',
+          steps: 28,
+          guidance: 3.5,
+          quantize: '8',
+          seed: 42,
+        },
+      },
     };
     const baseOptions = {
       universe: { id: 'univ-1', characters: [], places: [], objects: [] },
@@ -241,6 +268,10 @@ describe('fableLoomProduction', () => {
     };
 
     expect(verifyExactInputProvenance(visualProvenance, baseOptions).valid).toBe(true);
+    const missingRenderTuple = structuredClone(visualProvenance);
+    delete missingRenderTuple.render.parameters.seed;
+    expect(verifyExactInputProvenance(missingRenderTuple, baseOptions).errors)
+      .toContain('Recorded image render parameter "seed" is missing or invalid.');
     expect(verifyExactInputProvenance(visualProvenance, {
       ...baseOptions,
       availableImageModels: [],

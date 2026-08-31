@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import LoomProductionPanel from './LoomProductionPanel';
 import * as api from '../../services/api';
 
@@ -29,6 +29,7 @@ describe('LoomProductionPanel', () => {
     ],
     convergenceIssues: [],
     exactInputIssues: [],
+    formatMismatches: [],
   };
 
   beforeEach(() => {
@@ -39,21 +40,37 @@ describe('LoomProductionPanel', () => {
       status: 'in_progress',
       summary: { total: 6, completed: 2 },
     });
-    api.reviewLoomEpisodeContinuity.mockResolvedValue({
-      passed: false,
-      nodesEvaluated: 3,
-      summary: { errors: 1, warnings: 0, info: 0 },
-      findings: [
-        {
-          id: 'f-1',
-          category: 'visual',
-          severity: 'error',
-          code: 'MISSING_UNIVERSE_CHARACTER',
-          message: 'Character missing in Universe',
-          remediation: 'Rebind character',
-          nodeId: 'node-1',
-        },
-      ],
+    api.updateLoom.mockResolvedValue({
+      ...sampleLoom,
+      renderSettings: { formatId: 'portrait-9-16' },
+    });
+  });
+
+  it('defaults media to 16:9 and persists one shared image/video output format', async () => {
+    const onLoomUpdate = vi.fn();
+    render(
+      <LoomProductionPanel
+        loom={sampleLoom}
+        episode={sampleEpisode}
+        onSelectNode={vi.fn()}
+        onLoomUpdate={onLoomUpdate}
+      />,
+    );
+
+    expect(await screen.findByLabelText('Output')).toHaveValue('landscape-16-9');
+    expect(screen.getByRole('option', { name: '16:9 landscape · 1024×576' })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Output'), { target: { value: 'portrait-9-16' } });
+
+    await waitFor(() => {
+      expect(api.updateLoom).toHaveBeenCalledWith(
+        'loom-1',
+        { renderSettings: { formatId: 'portrait-9-16' } },
+        { silent: true },
+      );
+      expect(onLoomUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        renderSettings: { formatId: 'portrait-9-16' },
+      }));
     });
   });
 
@@ -128,24 +145,70 @@ describe('LoomProductionPanel', () => {
     expect(api.startLoomEpisodeProductionBatch).not.toHaveBeenCalled();
   });
 
-  it('runs continuity review and displays findings with node selection', async () => {
-    const onSelectNode = vi.fn();
-    render(<LoomProductionPanel loom={sampleLoom} episode={sampleEpisode} onSelectNode={onSelectNode} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Run Continuity Review')).toBeInTheDocument();
+  it('explains which portrait assets will be regenerated in the selected format', async () => {
+    api.planLoomEpisodeProduction.mockResolvedValueOnce({
+      ...samplePlan,
+      formatMismatches: [{
+        assetId: 'node-1:image',
+        assetType: 'image',
+        nodeId: 'node-1',
+        nodeTitle: 'Door challenge',
+        actualWidth: 576,
+        actualHeight: 1024,
+        expectedWidth: 1024,
+        expectedHeight: 576,
+        expectedAspectRatio: '16:9',
+      }],
     });
 
-    fireEvent.click(screen.getByText('Run Continuity Review'));
+    render(<LoomProductionPanel loom={sampleLoom} episode={sampleEpisode} onSelectNode={vi.fn()} />);
 
-    await waitFor(() => {
-      expect(api.reviewLoomEpisodeContinuity).toHaveBeenCalledWith('loom-1', 'ep-1', {}, { silent: true });
-      expect(screen.getByText('Character missing in Universe')).toBeInTheDocument();
-      expect(screen.getByText('Remediation: Rebind character')).toBeInTheDocument();
-    });
-
-    const findingButton = screen.getByText('Character missing in Universe').closest('button');
-    fireEvent.click(findingButton);
-    expect(onSelectNode).toHaveBeenCalledWith('node-1');
+    expect(await screen.findByText('Existing media uses another aspect ratio')).toBeInTheDocument();
+    expect(screen.getByText(/1 media asset\(s\).*16:9 \(1024×576\)/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Door challenge · image: 576×1024 → 16:9/i })).toBeInTheDocument();
   });
+
+  it('ignores a stale plan response after the producer changes episodes', async () => {
+    let resolveFirst;
+    let resolveSecond;
+    api.planLoomEpisodeProduction
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+    const { rerender } = render(
+      <LoomProductionPanel loom={sampleLoom} episode={sampleEpisode} onSelectNode={vi.fn()} />,
+    );
+    await waitFor(() => expect(api.planLoomEpisodeProduction).toHaveBeenCalledWith(
+      'loom-1', 'ep-1', { mode: 'current_canon' }, { silent: true },
+    ));
+
+    rerender(
+      <LoomProductionPanel
+        loom={sampleLoom}
+        episode={{ id: 'ep-2', title: 'Episode 2' }}
+        onSelectNode={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(api.planLoomEpisodeProduction).toHaveBeenCalledWith(
+      'loom-1', 'ep-2', { mode: 'current_canon' }, { silent: true },
+    ));
+    await act(async () => resolveSecond({
+      ...samplePlan,
+      plannedAssets: [{
+        id: 'asset-ep-2', nodeId: 'node-ep-2', nodeTitle: 'Episode 2 asset',
+        type: 'image', status: 'ready', stageIndex: 0,
+      }],
+    }));
+    expect(await screen.findByText('Episode 2 asset')).toBeInTheDocument();
+
+    await act(async () => resolveFirst({
+      ...samplePlan,
+      plannedAssets: [{
+        id: 'asset-ep-1', nodeId: 'node-ep-1', nodeTitle: 'Stale Episode 1 asset',
+        type: 'image', status: 'ready', stageIndex: 0,
+      }],
+    }));
+    expect(screen.queryByText('Stale Episode 1 asset')).not.toBeInTheDocument();
+    expect(screen.getByText('Episode 2 asset')).toBeInTheDocument();
+  });
+
 });

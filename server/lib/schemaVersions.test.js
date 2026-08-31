@@ -42,10 +42,10 @@ describe('PORTOS_SCHEMA_VERSIONS', () => {
     expect(PORTOS_SCHEMA_VERSIONS.mediaCollections).toBe(1);
   });
 
-  it('version-gates the canonical FableLoom protagonist continuity shape', () => {
-    // v4 adds the loom-level protagonist/wardrobe pin and per-scene presence;
-    // migration 319 upgrades the shipped prompt contract alongside it.
-    expect(PORTOS_SCHEMA_VERSIONS.fableLoom).toBe(4);
+  it('version-gates the persisted FableLoom render-format shape', () => {
+    // v5 adds renderSettings. Older peers stay on the v4 protagonist-
+    // continuity shape until they advertise support for the render contract.
+    expect(PORTOS_SCHEMA_VERSIONS.fableLoom).toBe(5);
   });
 
   it('version-gates the additive Creative Commission taste brief shape', () => {

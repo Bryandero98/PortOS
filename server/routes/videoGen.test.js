@@ -24,10 +24,12 @@ const compileFableLoomVisualRequest = vi.hoisted(() => vi.fn(async ({ authoredPr
   visualConditioning: compiledVisual,
 })));
 const fableLoomVideoCapabilities = vi.hoisted(() => vi.fn(() => ({ version: 1, kind: 'video' })));
+const getLoom = vi.hoisted(() => vi.fn(async () => null));
 vi.mock('../services/fableLoom/visualConditioning.js', () => ({
   compileFableLoomVisualRequest,
   fableLoomVideoCapabilities,
 }));
+vi.mock('../services/fableLoom/records.js', () => ({ getLoom }));
 
 const installProcess = vi.hoisted(() => {
   const spawn = vi.fn();
@@ -1093,6 +1095,10 @@ describe('videoGen routes', () => {
     });
 
     it('forwards a fableLoom i2v tag into job.params alongside the resolved frame', async () => {
+      getLoom.mockResolvedValueOnce({
+        id: 'loom-1',
+        renderSettings: { formatId: 'portrait-9-16' },
+      });
       const r = await request(app).post('/api/video-gen/').send({
         prompt: 'the gate slowly opens',
         mode: 'image',
@@ -1104,8 +1110,15 @@ describe('videoGen routes', () => {
         kind: 'video',
         params: expect.objectContaining({
           sourceImagePath: '/mock/images/scene-image.png',
+          width: 576,
+          height: 1024,
+          aspectRatio: '9:16',
           fableLoom: { loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-1' },
-          visualConditioning: compiledVisual,
+          visualConditioning: expect.objectContaining({
+            render: expect.objectContaining({
+              parameters: { width: 576, height: 1024, aspectRatio: '9:16' },
+            }),
+          }),
         }),
       }));
       expect(compileFableLoomVisualRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -2125,6 +2138,22 @@ describe('videoGen routes', () => {
     // multipart temp files live under /tmp. Splitting them keeps the
     // "durable survives" assertion below from being satisfied by a temp unlink.
     const durableUnlinks = () => unlinkedPaths().filter((p) => /^[\\/]mock[\\/]uploads[\\/]/.test(p));
+
+    it('drops multipart temp files when FableLoom render settings cannot be loaded', async () => {
+      getLoom.mockRejectedValueOnce(new Error('record store unavailable'));
+      setPendingUpload(sourceUpload);
+
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'the threshold opens',
+        mode: 'image',
+        fableLoom: JSON.stringify({ loomId: 'loom-1', episodeId: 'ep-1', nodeId: 'node-1' }),
+      });
+
+      expect(r.status).toBe(500);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      expect(unlinkedPaths()).toContain(sourceUpload.path);
+      expect(durableUnlinks()).toEqual([]);
+    });
 
     it('unlinks the half-written destination AND every earlier staged copy when copyFile rejects', async () => {
       // sourceImage stages fine, audioFile's copy blows up — the failure has

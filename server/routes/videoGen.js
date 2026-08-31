@@ -79,6 +79,8 @@ import { detectSystemCapabilities, withHardwareCompatibility } from '../lib/syst
 import {
   compileFableLoomVisualRequest, fableLoomVideoCapabilities,
 } from '../services/fableLoom/visualConditioning.js';
+import { getLoom } from '../services/fableLoom/records.js';
+import { asFableLoomRenderSettings } from '../lib/fableLoomProduction.js';
 
 const router = Router();
 
@@ -947,6 +949,18 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     failValidation(parsed);
   }
   const body = parsed.data;
+  let fableLoomRenderSettings = null;
+  if (body.fableLoom) {
+    const taggedLoom = await getLoom(body.fableLoom.loomId).catch(async (error) => {
+      await cleanupMultipartTemp(uploads);
+      throw error;
+    });
+    if (taggedLoom) {
+      fableLoomRenderSettings = asFableLoomRenderSettings(taggedLoom.renderSettings);
+      body.width = fableLoomRenderSettings.width;
+      body.height = fableLoomRenderSettings.height;
+    }
+  }
   // Federated render (#4348): submit to the selected peer instead of running
   // locally. Handled BEFORE prepareVideoGenParams, which resolves this
   // machine's backend and stages uploads a remote render can never use.
@@ -1085,7 +1099,20 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
         prepared.mode = 'text';
       }
       prepared.sourceImagePath = compiled.sourceImagePath;
-      body.visualConditioning = compiled.visualConditioning;
+      const renderSettings = fableLoomRenderSettings || asFableLoomRenderSettings();
+      body.visualConditioning = compiled.visualConditioning ? {
+        ...compiled.visualConditioning,
+        render: {
+          provider: backend,
+          modelId: conditioningModel?.id || null,
+          modelRevision: conditioningModel?.revision || null,
+          parameters: {
+            width: body.width,
+            height: body.height,
+            aspectRatio: renderSettings.aspectRatio,
+          },
+        },
+      } : null;
     }
   }
 
@@ -1107,7 +1134,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       // into its mode selector.
       videoMode: sourceImagePath ? 'image' : 'text',
       grokPath: g.grokPath,
-      aspectRatio: g.aspectRatio,
+      aspectRatio: body.visualConditioning?.render?.parameters?.aspectRatio || g.aspectRatio,
       prompt: body.prompt,
       negativePrompt: body.negativePrompt || '',
       width: body.width,
@@ -1117,6 +1144,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       uploadedTempPath,
       ...(body.musicVideo ? { musicVideo: body.musicVideo } : {}),
       ...(body.fableLoom ? { fableLoom: body.fableLoom } : {}),
+      ...(body.visualConditioning ? { visualConditioning: body.visualConditioning } : {}),
     });
     return res.json({ jobId, generationId: jobId, filename: `${jobId}.mp4`, model: 'grok', mode: 'grok', status, position });
   }
@@ -1137,6 +1165,9 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     modelId: body.modelId,
     width: body.width,
     height: body.height,
+    ...(body.visualConditioning?.render?.parameters?.aspectRatio
+      ? { aspectRatio: body.visualConditioning.render.parameters.aspectRatio }
+      : {}),
     // Duration-driven A2V models derive this from ffprobe over the staged audio;
     // every other request passes the caller's value through unchanged.
     numFrames: effectiveNumFrames,

@@ -88,6 +88,55 @@ describe('FableLoom story beat outlines', () => {
     expect(result.stats.errorCount).toBeGreaterThan(0);
   });
 
+  it('requires every playable challenge to map setup, decision, outcomes, and recovery into reachable scenes', () => {
+    const challenge = { id: 'plot-lock', kind: 'challenge', title: 'Open the sealed door' };
+    const challengeOutline = sanitizeStoryOutline({
+      startKey: 'setup',
+      scenes: [
+        {
+          key: 'setup', title: 'The keypad', summary: 'A prior clue makes the sealed keypad actionable.',
+          plotPointId: challenge.id, challengePhase: 'setup', playbackMode: 'cut',
+          transitions: [{ targetKey: 'decision', intent: 'try the keypad' }],
+        },
+        {
+          key: 'decision', title: 'Choose the code', summary: 'The viewer chooses which remembered code to enter.',
+          plotPointId: challenge.id, challengePhase: 'decision', playbackMode: 'decision',
+          transitions: [
+            { targetKey: 'success', intent: 'enter the remembered code' },
+            { targetKey: 'failure', intent: 'guess under pressure' },
+          ],
+        },
+        {
+          key: 'success', title: 'The lock opens', summary: 'The correct code opens the door quietly.',
+          plotPointId: challenge.id, challengePhase: 'success', playbackMode: 'cut',
+          transitions: [{ targetKey: 'recovery', intent: 'slip through' }],
+        },
+        {
+          key: 'failure', title: 'The alarm chirps', summary: 'The wrong code alerts a guard but leaves an escape route.',
+          plotPointId: challenge.id, challengePhase: 'failure', playbackMode: 'cut',
+          transitions: [{ targetKey: 'recovery', intent: 'improvise a distraction' }],
+        },
+        {
+          key: 'recovery', title: 'Beyond the door', summary: 'Both routes continue with distinct costs into the next blockade.',
+          plotPointId: challenge.id, challengePhase: 'recovery', playbackMode: 'cut',
+          transitions: [{ targetKey: 'ending', intent: 'move deeper inside' }],
+        },
+        {
+          key: 'ending', title: 'Inside', summary: 'The viewer gets the character safely inside.',
+          isEnding: true, endingLabel: 'Through the first blockade', transitions: [],
+        },
+      ],
+    });
+
+    const ready = analyzeStoryOutline(challengeOutline, { challenges: [challenge] });
+    expect(ready.stats).toMatchObject({ challengeCount: 1, readyChallengeCount: 1, errorCount: 0 });
+
+    const missingFailure = structuredClone(challengeOutline);
+    missingFailure.scenes.find((scene) => scene.key === 'failure').challengePhase = null;
+    expect(analyzeStoryOutline(missingFailure, { challenges: [challenge] }).issues)
+      .toContainEqual(expect.objectContaining({ code: 'CHALLENGE_PHASE_MISSING' }));
+  });
+
   it('keeps outline rendering compact for the AI prompt', () => {
     const outline = sanitizeStoryOutline(validOutline);
     const digest = describeStoryOutlineForPrompt(outline);
@@ -169,5 +218,49 @@ describe('FableLoom story beat outlines', () => {
       code: 'TELEPLAY_SCENE_MEMBERSHIP_MISMATCH',
     }));
     expect(series.stats).toMatchObject({ ready: false, readyEpisodeCount: 0 });
+  });
+
+  it('allows one structurally sound outline to replace its older teleplay explicitly', () => {
+    const storyOutline = {
+      ...sanitizeStoryOutline(validOutline),
+      validation: {
+        status: 'invalid',
+        issues: [{
+          code: 'TELEPLAY_SCENE_CONTRACT_MISMATCH',
+          severity: 'error',
+          message: 'The edited beat differs from the old scene.',
+          sceneKey: 's1',
+        }],
+      },
+    };
+    const episode = {
+      id: 'ep-1',
+      number: 1,
+      startNodeId: 's1',
+      storyOutline,
+      nodes: storyOutline.scenes.map((scene) => ({
+        id: scene.key,
+        title: scene.key === 's1' ? 'Old signal' : scene.title,
+        playbackMode: scene.playbackMode,
+        audienceConnection: scene.audienceConnection,
+        protagonistPresence: scene.protagonistPresence,
+        isEnding: scene.isEnding,
+        endingLabel: scene.endingLabel,
+        transitions: scene.transitions.map((item) => ({
+          targetNodeId: item.targetKey,
+          intent: item.intent,
+        })),
+      })),
+    };
+    const loom = { participationMode: 'protagonist', episodes: [episode], seriesPlan: {} };
+
+    expect(analyzeSeriesStoryOutlines(loom).stats.ready).toBe(false);
+    const replacement = analyzeSeriesStoryOutlines(loom, { replacingEpisodeId: episode.id });
+
+    expect(replacement.stats).toMatchObject({ ready: true, readyEpisodeCount: 1, errorCount: 0 });
+    expect(replacement.issues).toContainEqual(expect.objectContaining({
+      code: 'TELEPLAY_REPLACEMENT_PENDING',
+      severity: 'warning',
+    }));
   });
 });

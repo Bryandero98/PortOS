@@ -16,6 +16,7 @@ import {
   analyzeStoryOutline,
   analyzeStoryOutlineTeleplaySync,
   describeStoryOutlineForPrompt,
+  fableLoomEpisodeChallenges,
   sanitizeStoryOutline,
 } from '../../lib/fableLoomOutline.js';
 import {
@@ -222,6 +223,12 @@ const seriesPlanDigest = (loom) => JSON.stringify({
   })),
 }, null, 2);
 
+const exactGraphIdContract = (episode) => asArray(episode.nodes).flatMap((node) => (
+  asArray(node.transitions).map((transition) => (
+    `transition=${transition.id} sourceNode=${node.id} targetNode=${transition.targetNodeId}`
+  ))
+)).join('\n');
+
 const teleplayDigest = (loom) => asArray(loom.episodes).map((episode) => [
   `## Episode ${episode.number}: ${episode.title || 'Untitled'}`,
   `Episode id: ${episode.id}`,
@@ -232,6 +239,9 @@ const teleplayDigest = (loom) => asArray(loom.episodes).map((episode) => [
   episode.nodes.length
     ? describeGraphForPrompt(episode, { proseLimit: 1000, participationMode: loom.participationMode })
     : '(no expanded teleplay scenes)',
+  episode.nodes.length
+    ? `Exact graph ids for patches (copy verbatim):\n${exactGraphIdContract(episode) || '(no transitions)'}`
+    : '',
 ].filter(Boolean).join('\n')).join('\n\n');
 
 // Whole-record writes must conflict on every semantic persisted field. Only
@@ -838,6 +848,7 @@ export function applyFableLoomEditorialPatch(
       const analysis = analyzeStoryOutline(storyOutline, {
         participationMode: candidate.participationMode,
         requireAudienceIntroduction: candidate.episodes[0]?.id === episode.id,
+        challenges: fableLoomEpisodeChallenges(candidate, episode.id),
       });
       if (analysis.stats.errorCount) {
         throw aiShapeError(`The model returned an invalid outline for episode ${episode.id}: ${analysis.issues.find((issue) => issue.severity === 'error')?.message}`);
@@ -1116,10 +1127,12 @@ export const __testing = {
   editorialPromptBudgetChars,
   editorialPromptCharacterCount,
   editorialFingerprint,
+  exactGraphIdContract,
   finalizeEditorialOperation,
   loadEditorialDependencies,
   renderEditorialPrompt,
   sanitizeEvaluation,
   sanitizePlaythroughReview,
+  teleplayDigest,
   withCompletePlaythroughDigest,
 };
