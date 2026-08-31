@@ -152,7 +152,6 @@ const enqueuePlay = async (bytes) => {
   ttsQueueDepth += 1;
   playQueue = playQueue.then(() => new Promise((resolve) => {
     if (generation !== playbackGeneration) {
-      ttsQueueDepth = Math.max(0, ttsQueueDepth - 1);
       resolve();
       return;
     }

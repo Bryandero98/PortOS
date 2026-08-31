@@ -355,6 +355,41 @@ describe('streamChat request lifecycle', () => {
     expect(reader.cancel).toHaveBeenCalledTimes(1);
   });
 
+  it('bounds a stream that keeps yielding without completing', async () => {
+    let releaseRead;
+    let reads = 0;
+    const reader = {
+      read: vi.fn(() => {
+        reads++;
+        if (reads === 1) {
+          return Promise.resolve({
+            value: new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Still working"}}]}\n\n'),
+            done: false,
+          });
+        }
+        return new Promise((resolve) => { releaseRead = resolve; });
+      }),
+      cancel: vi.fn(() => {
+        releaseRead?.({ value: undefined, done: true });
+        return Promise.resolve();
+      }),
+    };
+    installFetch(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      body: { getReader: () => reader },
+    }));
+
+    const result = streamChat([], { provider: 'test-provider', model: 'test-model' });
+    await vi.waitFor(() => expect(reader.read).toHaveBeenCalledTimes(2));
+    const rejection = expect(result).rejects.toThrow(VOICE_LLM_TIMEOUT_MESSAGE);
+    await vi.advanceTimersByTimeAsync(VOICE_LLM_TIMEOUT_MS);
+
+    await rejection;
+    expect(chatSignal.aborted).toBe(true);
+    expect(reader.cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves explicit cancellation when an active reader closes as done', async () => {
     let releaseRead;
     const reader = {
