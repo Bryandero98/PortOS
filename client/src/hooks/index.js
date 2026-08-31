@@ -208,7 +208,6 @@ export * from './useUniverseNav.js';
 export * from './useVideoFileSrc.js';
 export * from './useVideoGenFieldState.js';
 export * from './useVideoGenForm.js';
-export * from './useVideoGenQueue.js';
 export * from './useVideoGenSubmitFlow.js';
 export * from './useVideoGenValidation.js';
 export * from './useVoiceUiSync.js';

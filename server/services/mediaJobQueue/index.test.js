@@ -40,6 +40,7 @@ vi.mock('../../lib/fileUtils.js', async () => {
 const stubs = {
   generateVideo: vi.fn(async () => ({
 tryReadFile: vi.fn().mockResolvedValue(null), jobId: 'whatever' })),
+  generateVideoGrok: vi.fn(async () => ({ jobId: 'whatever' })),
   generateChainedVideo: vi.fn(async () => ({ jobId: 'whatever' })),
   generateImage: vi.fn(async () => ({ jobId: 'whatever' })),
   generateImageCodex: vi.fn(async () => ({ jobId: 'whatever' })),
@@ -64,6 +65,11 @@ tryReadFile: vi.fn().mockResolvedValue(null), jobId: 'whatever' })),
 vi.mock('../videoGen/local.js', () => ({
   generateVideo: (...args) => stubs.generateVideo(...args),
   generateChainedVideo: (...args) => stubs.generateChainedVideo(...args),
+  cancel: (...args) => stubs.cancelVideo(...args),
+}));
+
+vi.mock('../videoGen/grok.js', () => ({
+  generateVideo: (...args) => stubs.generateVideoGrok(...args),
   cancel: (...args) => stubs.cancelVideo(...args),
 }));
 
@@ -212,6 +218,31 @@ describe('mediaJobQueue', () => {
       expect(capacity.lanes.remote).toMatchObject({ running: 1, queued: 0 });
       expect(capacity.runningKind).toBe('video');
       expect(capacity.totals).toEqual({ running: 2, queued: 1 });
+    });
+
+    it('runs local and Grok video renders in parallel lanes', async () => {
+      stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+      stubs.generateVideoGrok.mockImplementation(() => new Promise(() => {}));
+      const local = mediaJobQueue.enqueueJob({ kind: 'video', params: { mode: 'text', prompt: 'local' } });
+      const grok = mediaJobQueue.enqueueJob({
+        kind: 'video',
+        params: { mode: IMAGE_GEN_MODE.GROK, prompt: 'grok' },
+      });
+
+      await waitFor(() => stubs.generateVideo.mock.calls.length === 1
+        && stubs.generateVideoGrok.mock.calls.length === 1);
+
+      expect(mediaJobQueue.getJob(local.jobId).status).toBe('running');
+      expect(mediaJobQueue.getJob(grok.jobId).status).toBe('running');
+      expect(mediaJobQueue.getQueueCapacity().lanes).toMatchObject({
+        gpu: { running: 1, queued: 0 },
+        cloud: { running: 1, queued: 0 },
+      });
+
+      videoGenEvents.emit('failed', { generationId: local.jobId, error: 'cleanup' });
+      videoGenEvents.emit('failed', { generationId: grok.jobId, error: 'cleanup' });
+      await waitFor(() => mediaJobQueue.getJob(local.jobId)?.status === 'failed'
+        && mediaJobQueue.getJob(grok.jobId)?.status === 'failed');
     });
 
     it('counts queue depth per kind', async () => {
@@ -1233,6 +1264,35 @@ describe('Audio kind (#1928)', () => {
     imageGenEvents.emit('completed', { generationId: remote.jobId, filename: `${remote.jobId}.png` });
     imageGenEvents.emit('failed', { generationId: local.jobId, error: 'cleanup' });
     await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'completed');
+  });
+
+  it('runs local and federated video renders in parallel lanes', async () => {
+    stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+    stubs.generateVideoRemote.mockImplementation(() => new Promise(() => {}));
+
+    const local = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'local render' } });
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'video',
+      params: { prompt: '', modelId: null, remoteMedia: remoteVideoMediaParams() },
+    });
+
+    await waitFor(() => stubs.generateVideo.mock.calls.length === 1
+      && stubs.generateVideoRemote.mock.calls.length === 1);
+
+    expect(mediaJobQueue.getJob(local.jobId).status).toBe('running');
+    expect(mediaJobQueue.getJob(remote.jobId).status).toBe('running');
+    expect(stubs.generateVideo).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: remote.jobId }),
+    );
+    expect(mediaJobQueue.getQueueCapacity().lanes).toMatchObject({
+      gpu: { running: 1, queued: 0 },
+      remote: { running: 1, queued: 0 },
+    });
+
+    videoGenEvents.emit('failed', { generationId: local.jobId, error: 'cleanup' });
+    videoGenEvents.emit('failed', { generationId: remote.jobId, error: 'cleanup' });
+    await waitFor(() => mediaJobQueue.getJob(local.jobId)?.status === 'failed'
+      && mediaJobQueue.getJob(remote.jobId)?.status === 'failed');
   });
 
   it('re-enqueues a persisted running remote VIDEO job with reconciliation enabled', async () => {

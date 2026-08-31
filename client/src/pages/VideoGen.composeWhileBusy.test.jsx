@@ -31,7 +31,6 @@ const MODEL = {
 const state = vi.hoisted(() => ({
   generateVideo: vi.fn(),
   attach: vi.fn(),
-  enqueue: vi.fn(),
   eventSourceRef: { current: null },
 }));
 
@@ -98,15 +97,6 @@ vi.mock('../hooks/useMediaAnnotations', () => ({
   useMediaAnnotations: () => ({ annotations: {}, updateAnnotation: vi.fn(), getCardProps: vi.fn(() => ({})) }),
 }));
 vi.mock('../hooks/usePreviewRoute', () => ({ default: () => [null, vi.fn()] }));
-vi.mock('../hooks/useVideoGenQueue.js', () => ({
-  useVideoGenQueue: () => ({
-    queue: [],
-    enqueue: state.enqueue,
-    removeFromQueue: vi.fn(),
-    clearFinishedQueue: vi.fn(),
-    cancelRunning: vi.fn(),
-  }),
-}));
 vi.mock('../components/ui/Toast', () => ({
   default: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), loading: vi.fn() }),
 }));
@@ -138,7 +128,6 @@ vi.mock('../components/videoGen/RuntimeFingerprint', () => ({ default: () => nul
 vi.mock('../components/videoGen/VideoGenGallery', () => ({ default: () => null }));
 vi.mock('../components/media/MediaPreview', () => ({ default: () => null }));
 vi.mock('../components/media/StylePresetPicker', () => ({ default: () => null }));
-vi.mock('../components/media/BatchQueuePanel', () => ({ default: () => null }));
 vi.mock('../components/media/MediaJobsQueue', () => ({ default: () => null }));
 vi.mock('../components/imageGen/LoraPicker', () => ({ default: () => null }));
 vi.mock('../components/media/ResolutionField', () => ({ default: () => null }));
@@ -149,7 +138,6 @@ describe('VideoGen compose-while-busy', () => {
   beforeEach(() => {
     state.generateVideo.mockReset().mockReturnValue(new Promise(() => {}));
     state.attach.mockReset().mockReturnValue(new Promise(() => {}));
-    state.enqueue.mockReset();
     state.eventSourceRef.current = null;
     vi.stubGlobal('open', vi.fn());
     Object.defineProperty(globalThis.navigator, 'clipboard', {
@@ -192,4 +180,28 @@ describe('VideoGen compose-while-busy', () => {
     expect(screen.getByTestId('prompt-from-media')).toHaveAttribute('data-disabled', '0');
     expect(screen.getByRole('button', { name: /Add to queue/ })).toBeEnabled();
   });
+  it('submits an additional render to the server queue while another render is active', async () => {
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/media/video']}>
+          <VideoGen />
+        </MemoryRouter>,
+      );
+    });
+
+    const prompt = await screen.findByLabelText('Prompt');
+    fireEvent.change(prompt, { target: { value: 'a fox watches the rain' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Generate$/ })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Generate$/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Add to queue/ }));
+    await waitFor(() => expect(state.generateVideo).toHaveBeenCalledTimes(2));
+    expect(state.generateVideo.mock.calls[1][0]).toMatchObject({
+      mode: 'text',
+      prompt: 'a fox watches the rain',
+    });
+  });
+
 });
