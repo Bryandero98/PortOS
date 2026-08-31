@@ -101,6 +101,7 @@ A full creative studio for taking an idea from blank page to finished media. Eac
   - **Series Continuity** — An established-facts ledger (timeline, wardrobe, props, who-knows-what) that catches contradictions and knowledge leaks across issues
   - **Voice Fingerprint** — Deterministic prose metrics (sentence rhythm, register, vocabulary wells) that flag voice drift between chapters
   - **Prose Series Export** — Compile a finished prose series into an EPUB or print-ready interior with trim size and title page
+- **FableLoom** — Interactive branching narrative engine: visual scene-graph canvas, camera cuts, decision loops vs automatic cuts, helper vs protagonist participation modes, canonical wardrobe/identity locks, teleplay/prose dual-format conversion, deterministic graph validation, and fal.ai scene video automation ([FableLoom docs](./docs/features/fableloom.md))
 - **Authors** — Reusable author personas: name, writing style, bio, and a physical description that seeds a generated cover-byline headshot
 - **Media Gen** — Unified surface for image and video generation across local and external backends:
   - **Image** — FLUX.1, FLUX.2 (klein), Z-Image via MFLUX/diffusers locally; A1111 / external endpoints; OpenAI Codex `gpt-image` mode
@@ -237,6 +238,7 @@ Everything you need to manage your dev environment without leaving the browser.
 - **Flows** — Rendered architecture/data-flow diagrams of how PortOS subsystems and integrations actually connect
 - **Video Downloader** — Pull clips from YouTube/X via `yt-dlp` into the media library
 - **Local LLM Playground** — Side-by-side comparison of local Ollama/LM Studio models with TTFT and tokens/sec
+- **Local Model Acceleration & Speculative Decoding** — Accelerated local inference via MTPLX (Apple Silicon MTP runtime), DFlash 2 / DSpark speculative drafting, and Docker setups for vLLM / SGLang ([MTPLX docs](./docs/features/mtplx.md) | [DFlash 2 docs](./docs/features/dflash2.md))
 - **API Explorer** — Searchable complete HTTP and Socket.IO inventories, rendered OpenAPI 3.0.3, AsyncAPI 3, and governed agent-tool contracts; external TTS/image exposure remains explicitly gated
 - **Templates** — Scaffold new apps from pre-built templates wired up to your AI providers
 - **Review Hub** — Single inbox for actionable items (CoS approvals, alerts, todos, briefings) across every PortOS subsystem
@@ -401,7 +403,9 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 ### Architecture & Operations
 - [Architecture Overview](./docs/ARCHITECTURE.md) — System design, data flow, and service diagram
 - [API Reference](./docs/API.md) — REST endpoints, full route-domain index, and WebSocket events
+- [API Tool Contract](./docs/API_TOOL_CONTRACT.md) — Unified semantic tool, Persistent Mind, and Agent Tools MCP contract
 - [Companion App API](./docs/COMPANION_APP_API.md) — PortDeck native mobile client discovery and HTTP API contract
+- [Remote Desktop Broker](./docs/REMOTE_DESKTOP.md) — PortDeck VNC broker security, host setup, and session flow
 - [Federated Media Providers](./docs/FEDERATED_MEDIA_PROVIDERS.md) — Authenticated, capacity-aware peer audio provider wire contract and setup
 - [Storage Classification Contract](./docs/STORAGE.md) — when data belongs in PostgreSQL vs the filesystem, plus the new-data-store checklist
 - [Backup & Restore](./docs/BACKUP.md) — filesystem snapshots + mandatory PostgreSQL dumps and how to restore them
@@ -409,6 +413,8 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [PM2 Configuration](./docs/PM2.md) — PM2 patterns and best practices
 - [Quota Burn Automation](./docs/QUOTA-BURN.md) — Subscription quota spending loop and window rules
 - [Three.js Models](./docs/THREEJS_MODELS.md) — Procedural Three.js scene generation and trust boundary
+- [Fork-Aware Self-Update](./docs/SELF_UPDATE.md) — Fork-aware self-update flow, release polling, and sync mechanisms
+- [Windows Console Focus](./docs/WINDOWS_CONSOLE.md) — Console window focus handling and background spawn mitigation on Windows
 - [The `METRICS.md` Convention](./docs/METRICS.md) — How a managed app declares the metrics agents should judge it by
 
 ### Development
