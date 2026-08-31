@@ -286,21 +286,27 @@ export default function ThreejsModelDetail() {
   } = useProviderModels({ filter: providerFilter, silent: true, withEffort: true });
 
   const mountedRef = useMounted();
-  const loadGenerationRef = useRef(0);
+  const lifecycleGenerationRef = useRef(0);
+  const requestSequenceRef = useRef(0);
+  const lastAppliedRequestRef = useRef(0);
   const load = useCallback(async ({ initial = false } = {}) => {
-    const generation = ++loadGenerationRef.current;
-    const isCurrent = () => mountedRef.current && generation === loadGenerationRef.current;
+    const lifecycleGeneration = lifecycleGenerationRef.current;
+    const requestSequence = ++requestSequenceRef.current;
+    const isCurrent = () => mountedRef.current && lifecycleGeneration === lifecycleGenerationRef.current;
+    const isAuthoritative = () => isCurrent() && requestSequence >= lastAppliedRequestRef.current;
     if (initial && isCurrent()) {
       setLoading(true);
       setNotFound(false);
     }
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {
-      if (!isCurrent()) return null;
+      if (!isAuthoritative()) return null;
+      lastAppliedRequestRef.current = requestSequence;
       if (error.status === 404) setNotFound(true);
       else if (initial) toast.error(error.message || 'Failed to load model');
       return null;
     });
-    if (!isCurrent()) return null;
+    if (!isAuthoritative()) return null;
+    lastAppliedRequestRef.current = requestSequence;
     if (next) {
       setRecord(next);
       setNotFound(false);
@@ -310,9 +316,9 @@ export default function ThreejsModelDetail() {
   }, [id, mountedRef]);
 
   useEffect(() => {
-    loadGenerationRef.current += 1;
+    lifecycleGenerationRef.current += 1;
     void load({ initial: true });
-    return () => { loadGenerationRef.current += 1; };
+    return () => { lifecycleGenerationRef.current += 1; };
   }, [id, load]);
 
   useEffect(() => {
@@ -320,7 +326,7 @@ export default function ThreejsModelDetail() {
     const handle = setInterval(() => { void load(); }, 2_000);
     return () => {
       clearInterval(handle);
-      loadGenerationRef.current += 1;
+      lifecycleGenerationRef.current += 1;
     };
   }, [record?.id, record?.status, id, load]);
 

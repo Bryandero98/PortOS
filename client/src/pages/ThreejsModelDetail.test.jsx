@@ -108,6 +108,24 @@ describe('ThreejsModelDetail request lifecycle', () => {
     expect(screen.queryByText('Model A')).not.toBeInTheDocument();
   });
 
+  it('does not starve a slow poll when the next interval tick starts', async () => {
+    vi.useFakeTimers();
+    const initial = deferred();
+    const slowPoll = deferred();
+    const laterPoll = deferred();
+    const requests = [initial, slowPoll, laterPoll];
+    getThreejsModel.mockImplementation(() => requests.shift().promise);
+    renderDetail(['/media/threejs/model-a']);
+
+    await act(async () => { initial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    await act(async () => { vi.advanceTimersByTime(4_000); });
+    await act(async () => { slowPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'ready' }); });
+    expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
+
+    await act(async () => { laterPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
+  });
+
   it('keeps a newer terminal poll result authoritative over an older generating response', async () => {
     vi.useFakeTimers();
     const initial = deferred();
