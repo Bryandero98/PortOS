@@ -533,6 +533,24 @@ export default function MusicDesigner() {
 
       {step === 'render' && (
         <div className="space-y-4">
+          <label htmlFor="music-designer-render-prompt" className="block">
+            <span className={LABEL_CLASS}>Prompt for this render</span>
+            <textarea
+              id="music-designer-render-prompt"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              onBlur={() => saveDraft({ prompt: description.trim() })}
+              disabled={draftLoading}
+              rows={6}
+              maxLength={8000}
+              placeholder={'Describe the sound, arrangement, vocals, instruments, mood, and production direction…'}
+              aria-describedby="music-designer-render-prompt-hint"
+              className={FIELD_CLASS}
+            />
+            <span id="music-designer-render-prompt-hint" className="mt-1 block text-xs text-gray-500">
+              Required. This editable description is the prompt sent to the selected audio engine.
+            </span>
+          </label>
           <label htmlFor="music-designer-title" className="block">
             <span className={LABEL_CLASS}>Title (optional)</span>
             <input
