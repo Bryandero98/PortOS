@@ -97,7 +97,8 @@ describe('voice playback cancellation', () => {
     // The old queue can finish after cancellation. It must not decrement the
     // newly reset depth or create the queued stale source.
     activeSource.onended?.();
-    await vi.waitFor(() => expect(audio.sources).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(audio.sources).toHaveLength(1);
   });
 
   it('drops a frame whose decode finishes after cancellation', async () => {
