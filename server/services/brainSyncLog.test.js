@@ -567,5 +567,25 @@ describe('brainSyncLog', () => {
       const fromZero = await getChangesSince(0);
       expect(fromZero.changes.map(c => c.seq)).toEqual([2, 99]);
     });
+
+    it('applies mixed LWW outcomes across indexed tail entries', async () => {
+      writeLog(
+        '{"seq":1,"op":"create","type":"links","id":"x","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n' +
+        '{"seq":2,"op":"delete","type":"links","id":"x","record":{"updatedAt":"2026-01-02T00:00:00.000Z"}}\n' +
+        '{"seq":3,"op":"create","type":"links","id":"y","record":{"updatedAt":"2026-01-01T00:00:00.000Z"}}\n' +
+        '{"seq":4,"op":"delete","type":"links","id":"y","record":{"updatedAt":"2026-01-03T00:00:00.000Z"}}\n' +
+        '{"seq":50,"op":"update","type":"links","id":"x","record":{"updatedAt":"2026-01-01T12:00:00.000Z"}}\n' +
+        '{"seq":51,"op":"create","type":"links","id":"y","record":{"updatedAt":"2026-01-04T00:00:00.000Z"}}\n' +
+        '{"seq":52,"op":"update","type":"links","id":"x","record":{"updatedAt":"2026-01-01T18:00:00.000Z"}}\n'
+      );
+      await initSyncLog();
+
+      expect(await compactLog(50)).toBe(3);
+
+      const lines = readFileSync(syncLogPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      expect(lines.map(line => line.seq)).toEqual([2, 50, 51, 52]);
+      expect(lines[0].id).toBe('x');
+      expect(lines[0].op).toBe('delete');
+    });
   });
 });

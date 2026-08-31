@@ -303,7 +303,7 @@ export async function compactLog(minSeq = 0) {
       : 0;
 
     const preservedTail = [];
-    const tailKeys = new Set();
+    const tailEntriesByKey = new Map();
     const olderEntriesByKey = new Map();
     const unindexedOrUntypedOlder = [];
 
@@ -312,7 +312,9 @@ export async function compactLog(minSeq = 0) {
       if (seq !== null && floor > 0 && seq >= floor) {
         preservedTail.push(item);
         if (entry?.type && entry?.id) {
-          tailKeys.add(`${entry.type}/${entry.id}`);
+          const key = `${entry.type}/${entry.id}`;
+          if (!tailEntriesByKey.has(key)) tailEntriesByKey.set(key, []);
+          tailEntriesByKey.get(key).push(item);
         }
       } else if (entry?.type && entry?.id) {
         const key = `${entry.type}/${entry.id}`;
@@ -338,8 +340,8 @@ export async function compactLog(minSeq = 0) {
       // If the tail carries ONLY stale/losing operations (e.g. olderWinner is a Jan-02 delete
       // and tail has an echoed Jan-01 create), we MUST retain olderWinner before the verbatim
       // tail so fresh / delta-only peers do not accept the stale create and resurrect the record.
-      if (tailKeys.has(key)) {
-        const tailItems = preservedTail.filter(i => i.entry && `${i.entry.type}/${i.entry.id}` === key);
+      const tailItems = tailEntriesByKey.get(key);
+      if (tailItems) {
         const supersededByTail = tailItems.some(i => {
           const tailTs = i.entry?.record?.updatedAt;
           return tailTs != null && olderWinner.record?.updatedAt != null && tailTs > olderWinner.record.updatedAt;
