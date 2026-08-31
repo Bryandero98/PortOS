@@ -20,7 +20,10 @@
 
 import { composeStyledPrompt } from '../../lib/composeStyledPrompt';
 import { FABLELOOM_CAMERA_MOVEMENTS } from '../../../../server/lib/fableLoomCameraMovements.js';
-import { asFableLoomRenderSettings } from '../../../../server/lib/fableLoomProduction.js';
+import {
+  asFableLoomRenderPreferences,
+  asFableLoomRenderSettings,
+} from '../../../../server/lib/fableLoomProduction.js';
 
 const withLoomStyle = (prompt, styleNotes) => {
   const notes = typeof styleNotes === 'string' ? styleNotes.trim() : '';
@@ -31,9 +34,15 @@ export function buildFableLoomImageRequest({ loom, episodeId, node, stylePreset 
   const authoredPrompt = withLoomStyle((node?.imagePrompt || '').trim(), loom?.styleNotes);
   const styled = composeStyledPrompt(authoredPrompt, '', stylePreset);
   const render = asFableLoomRenderSettings(loom?.renderSettings);
+  const preferences = asFableLoomRenderPreferences(loom?.renderSettings);
   return {
     prompt: styled.prompt,
     ...(styled.negativePrompt ? { negativePrompt: styled.negativePrompt } : {}),
+    ...((preferences.imageMode || preferences.imageModel)
+      ? { mode: preferences.imageMode || 'local' }
+      : {}),
+    ...(preferences.imageModel ? { modelId: preferences.imageModel } : {}),
+    ...(preferences.effort ? { effort: preferences.effort } : {}),
     width: render.width,
     height: render.height,
     fableLoom: { loomId: loom.id, episodeId, nodeId: node.id },
@@ -49,10 +58,12 @@ export function buildFableLoomVideoRequest({ loom, episodeId, node, stylePreset 
     : authoredPrompt;
   const styled = composeStyledPrompt(withLoomStyle(directedPrompt, loom?.styleNotes), '', stylePreset);
   const render = asFableLoomRenderSettings(loom?.renderSettings);
+  const preferences = asFableLoomRenderPreferences(loom?.renderSettings);
   return {
     prompt: styled.prompt,
     ...(styled.negativePrompt ? { negativePrompt: styled.negativePrompt } : {}),
-    backend: 'local',
+    backend: preferences.videoMode || 'local',
+    ...(preferences.videoModel ? { modelId: preferences.videoModel } : {}),
     mode: node?.image ? 'image' : 'text',
     ...(node?.image ? { sourceImageFile: node.image } : {}),
     disableAudio: true,
