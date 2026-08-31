@@ -26,6 +26,8 @@ export const FAL_H3_MAX_FREE_URL = 'https://fal.ai/tools/minimax-h3-max';
 const FAL_RENDER_TIMEOUT_MS = 20 * 60 * 1000;
 const FAL_CONTROL_TIMEOUT_MS = 2 * 60 * 1000;
 const FAL_RESULT_POLL_MS = 2000;
+const FAL_PRIVACY_SETTLE_MS = 1500;
+const FAL_PRIVACY_LATE_CHECK_MS = 250;
 const FAL_JOB_TTL_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const FAL_ASPECT_RATIOS = new Set(['16:9', '9:16', '1:1']);
@@ -81,6 +83,30 @@ const falAspectRatio = (requested) => {
   // fal's free tool has no 4:3 option. Preserve landscape orientation rather
   // than silently rotating or square-cropping a classic FableLoom frame.
   return '16:9';
+};
+
+/**
+ * Dismisses fal.ai's asynchronously injected privacy-choice modal when present.
+ *
+ * The persistent browser profile remembers a prior choice. When no choice is
+ * stored, fal.ai can render the tool controls before the modal arrives, so the
+ * caller gives the CMP a short settle window before touching the form. Reject
+ * All keeps this user-triggered automation from silently opting into tracking.
+ *
+ * @param {import('playwright-core').Page} page - Active Playwright page.
+ * @param {object} [options] - Visibility wait options.
+ * @param {number} [options.waitMs=0] - Maximum time to wait for the choice.
+ * @returns {Promise<boolean>} Whether a visible privacy prompt was dismissed.
+ */
+const dismissFalPrivacyConsent = async (page, { waitMs = 0 } = {}) => {
+  const rejectAll = page.getByRole('button', { name: 'Reject All', exact: true }).first();
+  const visible = waitMs > 0
+    ? await rejectAll.waitFor({ state: 'visible', timeout: waitMs }).then(() => true).catch(() => false)
+    : await rejectAll.isVisible().catch(() => false);
+  if (!visible) return false;
+  await rejectAll.click({ timeout: FAL_CONTROL_TIMEOUT_MS });
+  await rejectAll.waitFor({ state: 'hidden', timeout: FAL_CONTROL_TIMEOUT_MS });
+  return true;
 };
 
 /**
@@ -300,6 +326,10 @@ const executeJob = async (job) => {
     const imageInput = page.locator('input[type="file"][accept*="image"]').first();
     setJobProgress(job, 'Waiting for fal.ai controls…', 0.12);
     await promptInput.waitFor({ state: 'visible', timeout: FAL_CONTROL_TIMEOUT_MS });
+    // The privacy-choice UI is injected after the tool controls become
+    // visible. Let it settle before filling the form so its overlay cannot
+    // clear the prompt or intercept the eventual Generate click.
+    await dismissFalPrivacyConsent(page, { waitMs: FAL_PRIVACY_SETTLE_MS });
 
     setJobProgress(job, 'Uploading the scene image to fal.ai…', 0.15);
     await imageInput.setInputFiles(imagePath, { timeout: FAL_CONTROL_TIMEOUT_MS });
@@ -314,6 +344,9 @@ const executeJob = async (job) => {
     // video. Snapshot it before submitting so that only a new result URL can
     // satisfy this job.
     const previousSourceUrl = await readVideoSource(resultVideo);
+    // Re-check immediately before submission in case the CMP appeared during
+    // the upload/fill sequence rather than during the initial settle window.
+    await dismissFalPrivacyConsent(page, { waitMs: FAL_PRIVACY_LATE_CHECK_MS });
     await generate.click({ timeout: FAL_CONTROL_TIMEOUT_MS });
 
     setJobProgress(job, 'Generating the scene video on fal.ai…', 0.3);

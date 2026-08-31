@@ -9,6 +9,7 @@
 
 import { useState } from 'react';
 import { AlertCircle, ImagePlus, Loader2, Sparkles, Upload, Video } from 'lucide-react';
+import { FAL_H3_MAX_FREE_ALLOWANCE_NOTE } from '../../lib/falVideoHandoff.js';
 import MediaImage from '../MediaImage';
 import GalleryVideoPicker from '../videoGen/GalleryVideoPicker';
 
@@ -222,6 +223,11 @@ export default function LoomSceneMedia({
       {!generationDisabledReason && falRequiresImage && !noticeLabel && !compact && (
         <p className="text-xs text-port-text-muted" role="status">
           Generate a scene image first to use it as fal.ai&apos;s starting frame.
+        </p>
+      )}
+      {onAutomateFalVideo && !compact && (
+        <p className="text-xs text-port-text-muted" role="note">
+          {FAL_H3_MAX_FREE_ALLOWANCE_NOTE}
         </p>
       )}
       {!compact && (

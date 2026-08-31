@@ -51,6 +51,7 @@ const makeBrowser = ({
   errorTexts = [],
   gotoError = null,
   hiddenChallengeFrame = false,
+  privacyConsent = false,
   previousVideoUrl = '',
   resultVideoUrl = 'https://v3.fal.media/files/example.mp4',
 } = {}) => {
@@ -73,6 +74,19 @@ const makeBrowser = ({
     click: vi.fn(async () => {}),
     waitFor: vi.fn(async () => {}),
   }]));
+  let consentVisible = privacyConsent;
+  const privacy = {
+    click: vi.fn(async () => { consentVisible = false; }),
+    first: vi.fn(),
+    isVisible: vi.fn(async () => consentVisible),
+    waitFor: vi.fn(async ({ state }) => {
+      if ((state === 'visible' && !consentVisible) || (state === 'hidden' && consentVisible)) {
+        throw new Error(`privacy prompt is not ${state}`);
+      }
+    }),
+  };
+  privacy.first.mockReturnValue(privacy);
+  const setPrivacyConsent = (visible) => { consentVisible = visible; };
   const apiResponse = {
     body: vi.fn(async () => Buffer.from('example mp4 bytes')),
     dispose: vi.fn(async () => {}),
@@ -83,7 +97,7 @@ const makeBrowser = ({
   const request = { get: vi.fn(async () => apiResponse) };
   const page = {
     close: vi.fn(async () => {}),
-    getByRole: vi.fn((_role, { name }) => controls.get(name)),
+    getByRole: vi.fn((_role, { name }) => name === 'Reject All' ? privacy : controls.get(name)),
     goto: gotoError ? vi.fn(async () => { throw gotoError; }) : vi.fn(async () => {}),
     locator: vi.fn((selector) => {
       if (selector.startsWith('textarea')) return prompt;
@@ -107,7 +121,9 @@ const makeBrowser = ({
     contexts: vi.fn(() => [context]),
   };
   mocks.connectOverCDP.mockResolvedValue(browser);
-  return { apiResponse, browser, context, controls, image, page, prompt, request, video };
+  return {
+    apiResponse, browser, context, controls, image, page, privacy, prompt, request, setPrivacyConsent, video,
+  };
 };
 
 const waitForTerminalJob = async (job) => {
@@ -172,6 +188,23 @@ describe('FableLoom fal.ai browser automation', () => {
       videoHistoryId: 'upload-ab12cd34',
     });
     expect(mocks.browserClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('dismisses a privacy prompt that appears after controls load before filling the scene', async () => {
+    const { page, privacy, prompt, setPrivacyConsent } = makeBrowser();
+    privacy.waitFor.mockImplementationOnce(async ({ state, timeout }) => {
+      expect(state).toBe('visible');
+      expect(timeout).toBe(1500);
+      setPrivacyConsent(true);
+    });
+    const queued = await startFalVideoAutomation('loom-1', 'ep-1', 'node-1', {
+      prompt: 'The example door opens.', aspectRatio: '16:9',
+    });
+
+    await expect(waitForTerminalJob(queued)).resolves.toMatchObject({ status: 'completed' });
+    expect(privacy.click).toHaveBeenCalledTimes(1);
+    expect(privacy.click.mock.invocationCallOrder[0]).toBeLessThan(prompt.fill.mock.invocationCallOrder[0]);
+    expect(page.getByRole).toHaveBeenCalledWith('button', { name: 'Reject All', exact: true });
   });
 
   it('coalesces repeated clicks for one scene instead of spending the free allowance twice', async () => {
