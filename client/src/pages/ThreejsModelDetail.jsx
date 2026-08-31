@@ -327,8 +327,14 @@ export default function ThreejsModelDetail() {
 
   useEffect(() => {
     lifecycleGenerationRef.current += 1;
-    void load({ initial: true });
-    return () => { lifecycleGenerationRef.current += 1; };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
+    void load({ initial: true, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+      lifecycleGenerationRef.current += 1;
+    };
   }, [id, load]);
 
   useEffect(() => {

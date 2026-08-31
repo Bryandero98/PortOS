@@ -108,12 +108,18 @@ describe('ThreejsModelDetail request lifecycle', () => {
       'model-a': [modelAInitial, modelAPoll],
       'model-b': [modelBInitial],
     };
-    getThreejsModel.mockImplementation((id) => requests[id].shift().promise);
+    const signals = [];
+    getThreejsModel.mockImplementation((id, options) => {
+      signals.push(options?.signal);
+      return requests[id].shift().promise;
+    });
     renderLifecycleDetail(['/media/threejs/model-a']);
 
     await act(async () => { modelAInitial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
     await act(async () => { vi.advanceTimersByTime(2_000); });
     fireEvent.click(screen.getByRole('button', { name: 'Switch to model B' }));
+    expect(signals[1]).toBeInstanceOf(AbortSignal);
+    expect(signals[1].aborted).toBe(true);
     await act(async () => { modelBInitial.resolve({ ...baseRecord, id: 'model-b', name: 'Model B', status: 'ready' }); });
     expect(screen.getByText('Model B')).toBeInTheDocument();
 
@@ -171,16 +177,20 @@ describe('ThreejsModelDetail request lifecycle', () => {
     vi.useFakeTimers();
     const initial = deferred();
     const hungPoll = deferred();
+    const secondPoll = deferred();
     const replacementPoll = deferred();
-    const requests = [initial, hungPoll, replacementPoll];
+    const requests = [initial, hungPoll, secondPoll, replacementPoll];
     getThreejsModel.mockImplementation(() => requests.shift().promise);
     renderLifecycleDetail(['/media/threejs/model-a']);
 
     await act(async () => { initial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
-    await act(async () => { vi.advanceTimersByTime(2_000); });
-    await act(async () => { vi.advanceTimersByTime(30_000); });
+    await act(async () => { vi.advanceTimersByTime(4_000); });
+    await act(async () => { vi.advanceTimersByTime(4_000); });
     expect(getThreejsModel).toHaveBeenCalledTimes(3);
 
+    await act(async () => { vi.advanceTimersByTime(24_000); });
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    expect(getThreejsModel).toHaveBeenCalledTimes(4);
     await act(async () => { replacementPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'ready' }); });
   });
 
