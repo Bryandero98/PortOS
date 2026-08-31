@@ -9,6 +9,11 @@
  * breakpoint). Right rail: the selected scene's editor, or the
  * structure/review panel when nothing is selected. On small screens a
  * selected scene slides up over the graph as a dismissible details sheet.
+ * The page never scrolls (the app `<main>` is `overflow-hidden` for this
+ * route), so the stacked graph/rail split is sized in percentages of the pane
+ * left under the header, and the header demotes its actions into an
+ * `OverflowMenu` on phones — `vh` sizing here silently pushes the rail's
+ * content off-screen.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -19,6 +24,7 @@ import Drawer from '../components/Drawer';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import { FormField } from '../components/ui/FormField.jsx';
 import Modal from '../components/ui/Modal';
+import OverflowMenu from '../components/ui/OverflowMenu';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import TabPills from '../components/ui/TabPills';
 import { useAsyncAction } from '../hooks/useAsyncAction';
@@ -51,6 +57,14 @@ import {
   getLoom, getPipelineSeries, getUniverse, updateLoomEpisode, updateLoomNode,
   weaveLoomEpisode,
 } from '../services/api';
+
+// Phone-first sizing: a 44px touch target next to the overflow trigger, then
+// the denser desktop row from `sm` up. Base and variants never both set the
+// same utility — with no tailwind-merge, two border colors resolve by
+// stylesheet order, not by class-string order.
+const headerActionBase = 'flex min-h-[44px] items-center gap-1 rounded border px-2.5 py-2 text-xs sm:min-h-[36px] sm:py-1.5';
+const headerActionClass = `${headerActionBase} border-port-border hover:border-port-accent`;
+const headerPlayClass = `${headerActionBase} border-port-accent bg-port-accent text-white`;
 
 export default function FableLoomStory({ view = 'graph' }) {
   const { loomId, episodeId, nodeId } = useParams();
@@ -411,6 +425,18 @@ export default function FableLoomStory({ view = 'graph' }) {
     }
   };
 
+  // One list drives both header shapes: labelled buttons from `sm` up, and the
+  // same actions inside the overflow menu on phones, where five buttons plus
+  // the loom title ran off the right edge of the screen.
+  const headerActions = [
+    { id: 'settings', label: 'Story settings', short: 'Settings', icon: Settings, onSelect: () => setSettingsOpen(true) },
+    ...(episode ? [
+      { id: 'add-scene', label: 'Add scene', short: 'Scene', icon: Plus, onSelect: handleAddNode },
+      { id: 'edit-episode', label: 'Edit episode', hint: 'Edit episode title and synopsis', icon: PencilLine, onSelect: () => setSetupOpen(true) },
+      { id: 'weave', label: 'Weave', hint: 'Weave this episode with AI', icon: Sparkles, onSelect: () => setSetupOpen(true) },
+    ] : []),
+  ];
+
   const handleMoveNode = (movedNodeId, pos) => {
     // Optimistic: fold the new position into local state, persist silently.
     // The echo is NOT folded back in — pos is already exact client-side, and
@@ -457,77 +483,61 @@ export default function FableLoomStory({ view = 'graph' }) {
         onUpdate={handleMediaJobUpdate}
         onTerminal={handleMediaJobTerminal}
       />
-      <header className="border-b border-port-border px-4 py-2.5 space-y-2">
-        <div className="flex items-center gap-3 flex-wrap">
-          <Link to="/fableloom" className="text-port-text-muted hover:text-port-text" aria-label="Back to FableLoom">
+      <header className="border-b border-port-border px-3 py-2 sm:px-4 sm:py-2.5 space-y-1.5 sm:space-y-2">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <Link to="/fableloom" className="shrink-0 text-port-text-muted hover:text-port-text" aria-label="Back to FableLoom">
             <ArrowLeft size={18} />
           </Link>
-          <h1 className="font-semibold flex items-center gap-2 min-w-0">
+          <h1 className="font-semibold flex items-center gap-2 min-w-0 flex-1">
             <Waypoints size={16} className="text-port-accent shrink-0" />
             <span className="truncate">{loom.name}</span>
           </h1>
           {linkedSeries ? (
             <Link
               to={`/pipeline/series/${encodeURIComponent(linkedSeries.id)}`}
-              className="flex items-center gap-1 px-2 py-1 rounded border border-port-border text-xs text-port-text-muted hover:text-port-text hover:border-port-accent min-w-0"
+              className="flex min-w-0 shrink items-center gap-1 rounded border border-port-border px-2 py-1 text-xs text-port-text-muted hover:border-port-accent hover:text-port-text"
               title="Open the series this branching narrative is linked to"
             >
               <WorkflowIcon size={12} className="shrink-0" />
-              <span className="truncate max-w-[12rem]">{linkedSeries.name || 'Untitled series'}</span>
+              <span className="truncate max-w-[5rem] sm:max-w-[12rem]">{linkedSeries.name || 'Untitled series'}</span>
             </Link>
           ) : null}
-          <div className="flex items-center gap-2 ml-auto">
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Story settings"
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-port-border text-xs hover:border-port-accent"
-            >
-              <Settings size={13} /> Settings
-            </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="hidden items-center gap-2 sm:flex">
+              {headerActions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  onClick={action.onSelect}
+                  aria-label={action.label}
+                  title={action.hint || action.label}
+                  className={headerActionClass}
+                >
+                  <action.icon size={13} /> {action.short || action.label}
+                </button>
+              ))}
+            </div>
+            <OverflowMenu label="Story actions" items={headerActions} className="sm:hidden" />
             {episode && (
-              <>
-              <button
-                type="button"
-                onClick={handleAddNode}
-                aria-label="Add scene"
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-port-border text-xs hover:border-port-accent"
-              >
-                <Plus size={13} /> Scene
-              </button>
-              <button
-                type="button"
-                onClick={() => setSetupOpen(true)}
-                aria-label="Edit episode"
-                title="Edit episode title and synopsis"
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-port-border text-xs hover:border-port-accent"
-              >
-                <PencilLine size={13} /> Edit episode
-              </button>
-              <button
-                type="button"
-                onClick={() => setSetupOpen(true)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-port-border text-xs hover:border-port-accent"
-              >
-                <Sparkles size={13} /> Weave
-              </button>
               <button
                 type="button"
                 onClick={() => setPlayOpen(true)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-port-accent text-white text-xs"
+                aria-label="Play"
+                title="Play this episode"
+                className={headerPlayClass}
               >
                 <BookOpenText size={13} /> Play
               </button>
-              </>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
           <TabPills
             variant="pills"
             size="sm"
             ariaLabel="Series and episodes"
             mobileDropdown
+            mobileSelectClassName="sm:hidden min-w-0 flex-1"
             tabs={[
               { id: 'plan', label: 'Series plan' },
               ...loom.episodes.map((e) => ({ id: e.id, label: `${e.number}. ${e.title || 'Untitled'}` })),
@@ -538,9 +548,11 @@ export default function FableLoomStory({ view = 'graph' }) {
           <button
             type="button"
             onClick={handleAddEpisode}
-            className="px-2.5 py-1 rounded-full text-xs border border-dashed border-port-border text-port-text-muted hover:border-port-accent hover:text-port-accent"
+            aria-label="Add episode"
+            title="Add episode"
+            className="flex min-h-[36px] shrink-0 items-center rounded-full border border-dashed border-port-border px-3 text-xs text-port-text-muted hover:border-port-accent hover:text-port-accent"
           >
-            + Episode
+            + <span className="hidden sm:inline">Episode</span>
           </button>
           {episode && (
             <TabPills
@@ -583,8 +595,13 @@ export default function FableLoomStory({ view = 'graph' }) {
           onSelectNode={(id) => navigate(episodePath(episode.id, id))}
         />
       ) : (
+        // Stacked (phone) split: the graph takes whatever the validation rail
+        // doesn't. The rail is capped as a PERCENTAGE OF THIS PANE, never in
+        // `vh` — the page is `overflow-hidden` under the app chrome, so viewport
+        // units ignored the header and pushed the rail's content off-screen
+        // (the graph claimed 55vh while only ~70vh was left to split).
         <div className="relative flex-1 min-h-0 flex flex-col lg:flex-row">
-          <section className="flex-1 min-h-[55vh] lg:min-h-0 min-w-0 relative">
+          <section className="relative min-h-0 min-w-0 flex-1">
             {episode.nodes.length ? (
               <LoomCanvas
                 episode={episode}
@@ -637,11 +654,8 @@ export default function FableLoomStory({ view = 'graph' }) {
             data-testid={node ? 'scene-details-sheet' : 'loom-validation-rail'}
             aria-label={node ? `${node.title || 'Scene'} details` : 'Episode validation'}
             className={node
-              ? 'absolute inset-x-0 bottom-0 z-20 flex h-[calc(100%_-_0.75rem)] max-h-dvh-cap flex-col overflow-hidden rounded-t-2xl border border-b-0 border-port-border bg-port-card shadow-2xl motion-safe:animate-in motion-safe:slide-in-from-bottom-4 motion-safe:duration-200 lg:static lg:h-auto lg:max-h-none lg:w-[380px] lg:shrink-0 lg:rounded-none lg:border-y-0 lg:border-r-0 lg:border-l'
-              : 'flex max-h-dvh-cap flex-col overflow-hidden border-t border-port-border lg:max-h-none lg:w-[380px] lg:shrink-0 lg:border-t-0 lg:border-l'}
-            style={node
-              ? { '--dvh-cap': '78vh', '--dvh-cap-dynamic': '78dvh' }
-              : { '--dvh-cap': '45vh', '--dvh-cap-dynamic': '45dvh' }}
+              ? 'absolute inset-x-0 bottom-0 z-20 flex h-[calc(100%_-_0.75rem)] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-port-border bg-port-card shadow-2xl motion-safe:animate-in motion-safe:slide-in-from-bottom-4 motion-safe:duration-200 lg:static lg:h-auto lg:w-[380px] lg:shrink-0 lg:rounded-none lg:border-y-0 lg:border-r-0 lg:border-l'
+              : 'flex max-h-[45%] flex-col overflow-hidden border-t border-port-border lg:max-h-none lg:w-[380px] lg:shrink-0 lg:border-t-0 lg:border-l'}
           >
             {node && (
               <div className="relative flex min-h-[4.5rem] shrink-0 items-center justify-center border-b border-port-border px-4 py-3 lg:hidden">

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import userEvent from '@testing-library/user-event';
 
@@ -268,6 +268,38 @@ describe('FableLoomStory episode rail layout', () => {
     const rail = await screen.findByTestId('loom-validation-rail');
     expect(rail).toHaveClass('flex', 'flex-col', 'overflow-hidden');
     expect(rail.firstElementChild).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+  });
+
+  it('sizes the stacked graph/rail split against the pane, never the viewport', async () => {
+    api.getLoom.mockResolvedValue(loom({ episodes: [episode()] }));
+    renderEditor('/fableloom/loom-1/ep-1');
+
+    const rail = await screen.findByTestId('loom-validation-rail');
+    expect(rail).toHaveClass('max-h-[45%]', 'lg:max-h-none');
+    // A `vh` cap ignores the page header the pane sits under, so the rail's
+    // content was clipped below the fold of an `overflow-hidden` page.
+    expect(rail.getAttribute('style') || '').not.toMatch(/vh/);
+    // The graph takes what's left rather than claiming a `vh` floor of its own.
+    expect(rail.previousElementSibling).toHaveClass('flex-1', 'min-h-0');
+  });
+});
+
+describe('FableLoomStory mobile header', () => {
+  it('offers every header action from the phone overflow menu', async () => {
+    const user = userEvent.setup();
+    api.getLoom.mockResolvedValue(loom({ episodes: [episode()] }));
+    renderEditor('/fableloom/loom-1/ep-1');
+
+    // The labelled row is desktop-only; on a phone the same actions live behind
+    // the overflow trigger, because five buttons ran off the right edge.
+    await user.click(await screen.findByRole('button', { name: 'Story actions' }));
+    const menu = screen.getByRole('menu', { name: 'Story actions' });
+    for (const name of ['Story settings', 'Add scene', 'Edit episode', 'Weave']) {
+      expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument();
+    }
+
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit episode' }));
+    expect(screen.getByRole('heading', { name: 'Episode setup' })).toBeInTheDocument();
   });
 });
 
