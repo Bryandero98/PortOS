@@ -61,9 +61,14 @@ const resetMocks = () => {
 const RouteSwitcher = () => {
   const navigate = useNavigate();
   return (
-    <button type="button" onClick={() => navigate('/media/threejs/model-b')}>
-      Switch to model B
-    </button>
+    <>
+      <button type="button" onClick={() => navigate('/media/threejs/model-b')}>
+        Switch to model B
+      </button>
+      <button type="button" onClick={() => navigate('/media/threejs/model-a')}>
+        Switch to model A
+      </button>
+    </>
   );
 };
 
@@ -77,8 +82,12 @@ const renderDetail = (initialEntries = ['/media/threejs/threejs-example']) => re
 
 const deferred = () => {
   let resolve;
-  const promise = new Promise((fulfill) => { resolve = fulfill; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((fulfill, fail) => {
+    resolve = fulfill;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 };
 
 describe('ThreejsModelDetail request lifecycle', () => {
@@ -108,6 +117,31 @@ describe('ThreejsModelDetail request lifecycle', () => {
     expect(screen.queryByText('Model A')).not.toBeInTheDocument();
   });
 
+  it('does not start polling before a new route initial load settles', async () => {
+    vi.useFakeTimers();
+    const modelAInitial = deferred();
+    const modelBInitial = deferred();
+    const modelAReturn = deferred();
+    const modelAReturnPoll = deferred();
+    const requests = {
+      'model-a': [modelAInitial, modelAReturn, modelAReturnPoll],
+      'model-b': [modelBInitial],
+    };
+    getThreejsModel.mockImplementation((id) => requests[id].shift().promise);
+    renderDetail(['/media/threejs/model-a']);
+
+    await act(async () => { modelAInitial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to model B' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to model A' }));
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    expect(getThreejsModel).toHaveBeenCalledTimes(3);
+
+    await act(async () => { modelAReturn.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    expect(getThreejsModel).toHaveBeenCalledTimes(4);
+    await act(async () => { modelAReturnPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'ready' }); });
+  });
+
   it('does not starve a slow poll when the next interval tick starts', async () => {
     vi.useFakeTimers();
     const initial = deferred();
@@ -123,6 +157,23 @@ describe('ThreejsModelDetail request lifecycle', () => {
     expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
 
     await act(async () => { laterPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
+  });
+
+  it('keeps an older terminal poll result when a newer poll fails transiently', async () => {
+    vi.useFakeTimers();
+    const initial = deferred();
+    const olderPoll = deferred();
+    const newerPoll = deferred();
+    const requests = [initial, olderPoll, newerPoll];
+    getThreejsModel.mockImplementation(() => requests.shift().promise);
+    renderDetail(['/media/threejs/model-a']);
+
+    await act(async () => { initial.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'generating' }); });
+    await act(async () => { vi.advanceTimersByTime(4_000); });
+    await act(async () => { newerPoll.reject(new Error('Temporary outage')); });
+    await act(async () => { olderPoll.resolve({ ...baseRecord, id: 'model-a', name: 'Model A', status: 'ready' }); });
+
     expect(screen.getByText('ready', { exact: true })).toBeInTheDocument();
   });
 

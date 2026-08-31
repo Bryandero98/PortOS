@@ -300,14 +300,15 @@ export default function ThreejsModelDetail() {
     }
     const next = await getThreejsModel(id, { silent: true }).catch((error) => {
       if (!isAuthoritative()) return null;
-      lastAppliedRequestRef.current = requestSequence;
-      if (error.status === 404) setNotFound(true);
-      else if (initial) toast.error(error.message || 'Failed to load model');
+      if (error.status === 404) {
+        lastAppliedRequestRef.current = requestSequence;
+        setNotFound(true);
+      } else if (initial) toast.error(error.message || 'Failed to load model');
       return null;
     });
     if (!isAuthoritative()) return null;
-    lastAppliedRequestRef.current = requestSequence;
     if (next) {
+      lastAppliedRequestRef.current = requestSequence;
       setRecord(next);
       setNotFound(false);
     }
@@ -322,13 +323,13 @@ export default function ThreejsModelDetail() {
   }, [id, load]);
 
   useEffect(() => {
-    if (record?.id !== id || record?.status !== 'generating') return undefined;
+    if (loading || record?.id !== id || record?.status !== 'generating') return undefined;
     const handle = setInterval(() => { void load(); }, 2_000);
     return () => {
       clearInterval(handle);
       lifecycleGenerationRef.current += 1;
     };
-  }, [record?.id, record?.status, id, load]);
+  }, [loading, record?.id, record?.status, id, load]);
 
   useEffect(() => {
     if (!record || providers.length === 0) return;
