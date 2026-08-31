@@ -26,6 +26,17 @@ export function countWords(text) {
 }
 
 /**
+ * Trim a string and cap it to a maximum number of characters.
+ *
+ * Kept in this dependency-free module so browser-consumed shared helpers do
+ * not have to import a larger server domain module just for string bounding.
+ * Non-string values normalize to the empty string rather than being coerced.
+ */
+export const trimTo = (value, max) => (
+  typeof value === 'string' ? value.trim().slice(0, max) : ''
+);
+
+/**
  * Escape a string for literal use inside a RegExp.
  *
  * Exported because this was hand-rolled privately in seven other modules
