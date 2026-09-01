@@ -103,6 +103,18 @@ const enabledProcessProviderFilter = (p) => Boolean(p?.enabled) && isProcessProv
 // the chip back on.
 const DEFAULT_HIDDEN_LABELS = ['blocked', 'in-progress'];
 
+const defaultLabelFilter = () => ({
+  mode: 'exclude',
+  names: new Set(DEFAULT_HIDDEN_LABELS),
+});
+
+/** Exclude: drop any issue that carries a named label. Include: keep only issues that carry at least one named label. */
+function issuePassesLabelFilter(issue, { mode, names }) {
+  const labels = issue.labels || [];
+  if (mode === 'include') return labels.some(l => names.has(l.name));
+  return names.size === 0 || !labels.some(l => names.has(l.name));
+}
+
 // Why the forge returned nothing, in the user's terms. Sentinel-aware: a
 // definitive "no open issues" and a failed probe are different sentences, so an
 // unreachable CLI can never read as an empty tracker.
@@ -209,10 +221,11 @@ export default function IssuesTab({ appId, appName }) {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [unassignedOnly, setUnassignedOnly] = useState(false);
-  // Labels whose issues are hidden. Tracking the HIDDEN set (rather than the
-  // shown one) means a label that shows up in a later refresh is visible by
-  // default without reconciling state against the new facet list.
-  const [hiddenLabels, setHiddenLabels] = useState(() => new Set(DEFAULT_HIDDEN_LABELS));
+  // Exclude mode tracks labels to hide (a later refresh's new label stays
+  // visible). Include mode — entered by Hide all labels — tracks labels to
+  // keep, so turning `critical` back on lists every issue that carries it,
+  // even when the issue also has labels that are still off.
+  const [labelFilter, setLabelFilter] = useState(defaultLabelFilter);
   const [expanded, setExpanded] = useState(() => new Set());
   // Per-issue run lifecycle: 'queuing' while the POST is in flight, then the
   // task's live CoS state. Keyed `<action>:<issue number>` so neither one row's
@@ -253,7 +266,7 @@ export default function IssuesTab({ appId, appName }) {
     runsRef.current = {};
     setRuns({});
     setOverrideContext('');
-    setHiddenLabels(new Set(DEFAULT_HIDDEN_LABELS));
+    setLabelFilter(defaultLabelFilter());
     setUnassignedOnly(false);
   }, [appId]);
 
@@ -355,24 +368,32 @@ export default function IssuesTab({ appId, appName }) {
   const issues = useMemo(() => {
     const q = query.trim().toLowerCase();
     const rows = haystacks.filter(h =>
-      (hiddenLabels.size === 0 || !h.issue.labels.some(l => hiddenLabels.has(l.name)))
+      issuePassesLabelFilter(h.issue, labelFilter)
       && (!unassignedOnly || h.issue.assignees.length === 0)
       && (!q || h.hay.includes(q))
     );
     return rows.map(h => h.issue);
-  }, [haystacks, query, hiddenLabels, unassignedOnly]);
+  }, [haystacks, query, labelFilter, unassignedOnly]);
 
   const total = data?.issues?.length ?? 0;
   // Only labels actually on this tracker count as "filtering something" — the
   // seeded defaults must not claim to hide anything in a repo that never uses
-  // them.
-  const hidingByLabel = labelFacets.some(f => hiddenLabels.has(f.name));
+  // them. Include mode is always a filter, even with an empty keep-set.
+  const hidingByLabel = labelFilter.mode === 'include'
+    || labelFacets.some(f => labelFilter.names.has(f.name));
+  const canHideAll = labelFilter.mode !== 'include' || labelFilter.names.size > 0;
 
-  const toggleLabel = (name) => setHiddenLabels(prev => {
-    const next = new Set(prev);
-    if (next.has(name)) next.delete(name); else next.add(name);
-    return next;
+  const toggleLabel = (name) => setLabelFilter(prev => {
+    const names = new Set(prev.names);
+    if (names.has(name)) names.delete(name); else names.add(name);
+    return { mode: prev.mode, names };
   });
+
+  const hideAllLabels = () => setLabelFilter({ mode: 'include', names: new Set() });
+  const showAllLabels = () => setLabelFilter({ mode: 'exclude', names: new Set() });
+  const labelChipHidden = (name) => (labelFilter.mode === 'include'
+    ? !labelFilter.names.has(name)
+    : labelFilter.names.has(name));
 
   const toggleExpanded = (number) => setExpanded(prev => {
     const next = new Set(prev);
@@ -503,18 +524,31 @@ export default function IssuesTab({ appId, appName }) {
             <LabelFilterChip
               key={facet.name}
               facet={facet}
-              hidden={hiddenLabels.has(facet.name)}
+              hidden={labelChipHidden(facet.name)}
               onToggle={toggleLabel}
             />
           ))}
-          {hidingByLabel && (
-            <button
-              type="button"
-              onClick={() => setHiddenLabels(new Set())}
-              className="ml-auto text-xs text-gray-500 hover:text-port-accent transition-colors"
-            >
-              Show all labels
-            </button>
+          {(canHideAll || hidingByLabel) && (
+            <div className="ml-auto flex items-center gap-3">
+              {canHideAll && (
+                <button
+                  type="button"
+                  onClick={hideAllLabels}
+                  className="text-xs text-gray-500 hover:text-port-accent transition-colors"
+                >
+                  Hide all labels
+                </button>
+              )}
+              {hidingByLabel && (
+                <button
+                  type="button"
+                  onClick={showAllLabels}
+                  className="text-xs text-gray-500 hover:text-port-accent transition-colors"
+                >
+                  Show all labels
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -588,7 +622,7 @@ export default function IssuesTab({ appId, appName }) {
             ? <>No open issues match &ldquo;{query}&rdquo;{hidingByLabel ? ' with the current label filters' : ''}.</>
             : unassignedOnly
               ? <>No unassigned open issues{hidingByLabel ? ' match the current label filters' : ''}.</>
-              : 'Every open issue carries a hidden label.'}
+              : 'No open issues match the current label filters.'}
         </div>
       )}
 

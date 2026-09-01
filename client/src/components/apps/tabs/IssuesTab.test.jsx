@@ -419,6 +419,67 @@ describe('IssuesTab', () => {
     expect(await screen.findByText('Crash on save')).toBeInTheDocument();
   });
 
+  it('hides every issue from Hide all labels and restores them from Show all labels', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      { ...ISSUE, number: 43, title: 'Add CSV export', labels: [{ name: 'feature', color: null, description: '' }] },
+      { ...ISSUE, number: 44, title: 'Untagged cleanup', labels: [] },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    expect(screen.getByText('Add CSV export')).toBeInTheDocument();
+    expect(screen.getByText('Untagged cleanup')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Hide all labels' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show all labels' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide all labels' }));
+    await waitFor(() => expect(screen.queryByText('Crash on save')).not.toBeInTheDocument());
+    expect(screen.queryByText('Add CSV export')).not.toBeInTheDocument();
+    expect(screen.queryByText('Untagged cleanup')).not.toBeInTheDocument();
+    expect(screen.getByText('No open issues match the current label filters.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show all labels' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Hide all labels' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all labels' }));
+    expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+    expect(screen.getByText('Add CSV export')).toBeInTheDocument();
+    expect(screen.getByText('Untagged cleanup')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Hide all labels' })).toBeInTheDocument();
+  });
+
+  it('after Hide all, turning one label back on lists every issue that carries it', async () => {
+    // Exclude-all (the naive Hide-all) would still drop a `critical`+`bug`
+    // issue when `bug` stayed hidden. Include mode is what "show only critical"
+    // has to mean.
+    api.getAppIssues.mockResolvedValue(okPayload([
+      {
+        ...ISSUE,
+        title: 'Crash on save',
+        labels: [
+          { name: 'bug', color: '#d73a4a', description: '' },
+          { name: 'critical', color: '#b60205', description: '' },
+        ],
+      },
+      { ...ISSUE, number: 43, title: 'Add CSV export', labels: [{ name: 'feature', color: null, description: '' }] },
+      { ...ISSUE, number: 44, title: 'Page is down', labels: [{ name: 'critical', color: '#b60205', description: '' }] },
+      { ...ISSUE, number: 45, title: 'Untagged cleanup', labels: [] },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    fireEvent.click(screen.getByRole('button', { name: 'Hide all labels' }));
+    await waitFor(() => expect(screen.queryByText('Crash on save')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'critical (2)' }));
+    expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+    expect(screen.getByText('Page is down')).toBeInTheDocument();
+    expect(screen.queryByText('Add CSV export')).not.toBeInTheDocument();
+    expect(screen.queryByText('Untagged cleanup')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'critical (2)' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'bug (1)' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('never ships a filter chip with both a graded color and the theme utilities that override it', async () => {
     // `.bg-port-bg` / `.border-port-border` / day-mode `.text-gray-300` are all
     // `!important` in index.css, and author `!important` beats an inline style —
