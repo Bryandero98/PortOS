@@ -397,9 +397,11 @@ backward-compatible historical snapshot/introspection endpoints.
 | POST | `/brain/links` | Save a new link |
 | PUT | `/brain/links/:id` | Update link |
 | DELETE | `/brain/links/:id` | Delete link |
-| POST | `/brain/links/:id/clone` | Clone GitHub repo |
+| POST | `/brain/links/:id/clone` | Clone repository (github.com / gitlab.com) |
 | POST | `/brain/links/:id/pull` | Pull updates for cloned repo |
 | POST | `/brain/links/:id/open-folder` | Open cloned repo in file manager |
+| POST | `/brain/links/:id/scan` | Queue a read-only malware/risk scan of the clone |
+| POST | `/brain/links/:id/study` | Refresh the clone and queue a repo study with a caller-supplied brief |
 
 ### File Uploads
 

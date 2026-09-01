@@ -207,6 +207,16 @@ export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS)).e
 });
 const repoIntakeInputSchema = repoIntakeSchema.optional();
 
+/**
+ * Body of `POST /api/brain/links/:id/study` — an on-demand re-study of an
+ * already-cloned repo. Same study knobs as the capture-time opt-in (that is the
+ * point: the client renders one shared form for both), minus the action
+ * booleans, plus `pull` so the user can refresh the clone in the same click.
+ */
+export const linkStudyInputSchema = repoIntakeSchema
+  .omit(Object.fromEntries(REPO_INTAKE_KEYS.map(key => [key, true])))
+  .extend({ pull: z.boolean().optional().default(true) });
+
 // Capture input schema
 export const captureInputSchema = z.object({
   text: z.string().min(1).max(10000),
@@ -428,8 +438,10 @@ export const reviewOutputSchema = z.object({
 // LINKS SCHEMAS
 // =============================================================================
 
-// Link type enum
-export const linkTypeEnum = z.enum(['github', 'article', 'documentation', 'tool', 'reference', 'other']);
+// Link type enum. `github` predates multi-host repo support and is retained so
+// links stored (or federated from a peer) before migration 328 still validate;
+// `repo` is what new links are written with.
+export const linkTypeEnum = z.enum(['repo', 'github', 'article', 'documentation', 'tool', 'reference', 'other']);
 
 // Link Record schema
 export const linkRecordSchema = z.object({
@@ -440,10 +452,16 @@ export const linkRecordSchema = z.object({
   note: z.string().max(2000).optional().default(''),
   linkType: linkTypeEnum.default('other'),
   tags: z.array(z.string().max(50)).optional().default([]),
-  // GitHub-specific fields
+  // Repository fields. `repoOwner` may be a GitLab `group/subgroup` path.
+  isRepo: z.boolean().default(false),
+  repoHost: z.string().max(253).nullable().optional(),
+  repoOwner: z.string().max(200).nullable().optional(),
+  repoName: z.string().max(100).nullable().optional(),
+  // Legacy GitHub-only mirror, still written so a peer on older code keeps
+  // recognising a captured GitHub repo — see lib/repoLinkFields.js.
   isGitHubRepo: z.boolean().default(false),
-  gitHubOwner: z.string().max(100).optional(),
-  gitHubRepo: z.string().max(100).optional(),
+  gitHubOwner: z.string().max(100).nullable().optional(),
+  gitHubRepo: z.string().max(100).nullable().optional(),
   localPath: z.string().max(500).optional(),
   cloneStatus: z.enum(['pending', 'cloning', 'cloned', 'failed', 'none']).default('none'),
   cloneError: z.string().max(500).optional(),
@@ -467,7 +485,10 @@ export const linkRecordSchema = z.object({
   // The queued `repo-study` run, once dispatched.
   repoStudy: z.object({
     taskId: z.string().optional(),
-    queuedAt: z.string().datetime().optional()
+    queuedAt: z.string().datetime().optional(),
+    // The brief the last study was dispatched with, so the re-study form opens
+    // pre-filled instead of blank.
+    studyContext: z.string().max(5000).optional()
   }).optional(),
   // Bucket grouping (nullable = ungrouped)
   bucketId: z.string().guid().nullable().optional(),
@@ -509,7 +530,7 @@ export const linksQuerySchema = z.object({
   linkType: linkTypeEnum.optional(),
   // Query params arrive as strings; z.coerce.boolean() treats any non-empty
   // string (including "false") as true, so parse the string value explicitly.
-  isGitHubRepo: z.preprocess(
+  isRepo: z.preprocess(
     v => (typeof v === 'string' ? v === 'true' : v),
     z.boolean()
   ).optional(),

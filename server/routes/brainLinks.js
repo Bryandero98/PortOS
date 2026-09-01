@@ -1,8 +1,8 @@
 /**
  * Brain Links & Buckets Routes
  *
- * Bookmark links (with GitHub clone/pull/scan affordances) and the buckets
- * that group them.
+ * Bookmark links (with repository clone/pull/scan/study affordances for the
+ * hosts in `lib/repoUrl.js`) and the buckets that group them.
  */
 
 import { Router } from 'express';
@@ -16,12 +16,14 @@ import {
   linkUpdateInputSchema,
   linkReorderSchema,
   linksQuerySchema,
+  linkStudyInputSchema,
   bucketInputSchema,
   bucketUpdateInputSchema,
   bucketReorderSchema
 } from '../lib/brainValidation.js';
-import * as githubCloner from '../services/githubCloner.js';
-import { queueMalwareScan } from '../services/repoIntake.js';
+import * as repoCloner from '../services/repoCloner.js';
+import { deriveRepoLinkFields } from '../lib/repoLinkFields.js';
+import { queueMalwareScan, restudyRepoLink } from '../services/repoIntake.js';
 import { getScanReport } from '../services/malwareScanReports.js';
 
 const router = Router();
@@ -35,11 +37,11 @@ const router = Router();
  * Get all links with optional filters
  */
 router.get('/links', asyncHandler(async (req, res) => {
-  const { linkType, isGitHubRepo, limit, offset } = validateRequest(linksQuerySchema, req.query);
+  const { linkType, isRepo, limit, offset } = validateRequest(linksQuerySchema, req.query);
   // Filtering, newest-first ordering, and the total count are answered from
   // brainStorage's cached link-summary index, so only THIS page's records are
   // read and parsed from disk (issue #3509) — not the whole collection.
-  const { links, total } = await brainService.getLinksPage({ linkType, isGitHubRepo, limit, offset });
+  const { links, total } = await brainService.getLinksPage({ linkType, isRepo, limit, offset });
   res.json({ links, total, limit, offset });
 }));
 
@@ -99,7 +101,7 @@ router.post('/links', asyncHandler(async (req, res) => {
     });
   }
 
-  // Title derivation, GitHub metadata, and the background clone all live in the
+  // Title derivation, repository metadata, and the background clone all live in the
   // service so a URL captured in the Brain inbox lands identically (see
   // captureUrlAsLink in services/brain.js).
   const link = await brainService.createLinkFromUrl(url, options);
@@ -118,8 +120,8 @@ router.put('/links/:id', asyncHandler(async (req, res) => {
     throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
   }
 
-  // When the URL changes, re-derive the GitHub-specific fields so the link
-  // type / repo metadata stay consistent with the new target.
+  // When the URL changes, re-derive the repository fields so the link type /
+  // repo metadata stay consistent with the new target.
   if (data.url && data.url !== existing.url) {
     const duplicate = await brainService.getLinkByUrl(data.url);
     if (duplicate && duplicate.id !== existing.id) {
@@ -130,10 +132,7 @@ router.put('/links/:id', asyncHandler(async (req, res) => {
       });
     }
 
-    const parsed = githubCloner.parseGitHubUrl(data.url);
-    data.isGitHubRepo = !!parsed;
-    data.gitHubOwner = parsed?.owner || null;
-    data.gitHubRepo = parsed?.repo || null;
+    Object.assign(data, deriveRepoLinkFields(data.url));
 
     // The previous clone (if any) belongs to the old URL — reset clone state so
     // it doesn't point at the wrong repo. The user can re-clone the new target.
@@ -160,7 +159,7 @@ router.delete('/links/:id', asyncHandler(async (req, res) => {
 
 /**
  * POST /api/brain/links/:id/clone
- * Manually trigger clone for a GitHub repo link
+ * Manually trigger clone for a repository link
  */
 router.post('/links/:id/clone', asyncHandler(async (req, res) => {
   const link = await brainService.getLinkById(req.params.id);
@@ -168,10 +167,10 @@ router.post('/links/:id/clone', asyncHandler(async (req, res) => {
     throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
   }
 
-  if (!link.isGitHubRepo) {
-    throw new ServerError('Link is not a GitHub repository', {
+  if (!link.isRepo) {
+    throw new ServerError('Link is not a repository', {
       status: 400,
-      code: 'NOT_GITHUB_REPO'
+      code: 'NOT_A_REPO'
     });
   }
 
@@ -203,14 +202,14 @@ router.post('/links/:id/pull', asyncHandler(async (req, res) => {
     throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
   }
 
-  if (!link.isGitHubRepo || !link.localPath) {
-    throw new ServerError('Link is not a cloned GitHub repository', {
+  if (!link.isRepo || !link.localPath) {
+    throw new ServerError('Link is not a cloned repository', {
       status: 400,
       code: 'NOT_CLONED'
     });
   }
 
-  const result = await githubCloner.pullRepo(link.localPath);
+  const result = await repoCloner.pullRepo(link.localPath);
   res.json({ message: 'Pull complete', ...result });
 }));
 
@@ -253,8 +252,8 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
   if (!link) {
     throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
   }
-  if (!link.isGitHubRepo || link.cloneStatus !== 'cloned' || !link.localPath) {
-    throw new ServerError('Link is not a cloned GitHub repository', {
+  if (!link.isRepo || link.cloneStatus !== 'cloned' || !link.localPath) {
+    throw new ServerError('Link is not a cloned repository', {
       status: 400,
       code: 'NOT_CLONED'
     });
@@ -275,6 +274,47 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
   await brainService.updateLink(link.id, result.linkPatch);
 
   res.json({ message: 'Scan queued', taskId: result.taskId, linkId: link.id, scanPath: link.localPath });
+}));
+
+/**
+ * POST /api/brain/links/:id/study
+ * Refresh the clone (unless `pull: false`) and queue a fresh `repo-study` run
+ * against it, with the brief the user just wrote. The dispatch shape lives in
+ * services/repoIntake.js so this button and the capture-time "study for app
+ * ideas" checkbox queue exactly the same run.
+ */
+router.post('/links/:id/study', asyncHandler(async (req, res) => {
+  const body = validateRequest(linkStudyInputSchema, req.body);
+  const link = await brainService.getLinkById(req.params.id);
+  if (!link) {
+    throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
+  }
+  if (!link.isRepo || link.cloneStatus !== 'cloned' || !link.localPath) {
+    throw new ServerError('Link is not a cloned repository', {
+      status: 400,
+      code: 'NOT_CLONED'
+    });
+  }
+
+  const result = await restudyRepoLink(link, body);
+  if (!result.queued) {
+    throw result.reason === 'duplicate'
+      ? new ServerError('A study for this repo is already pending or in progress', { status: 409, code: 'DUPLICATE_TASK' })
+      : result.reason === 'app-not-found'
+        ? new ServerError('The app to file study issues against no longer exists', { status: 400, code: 'APP_NOT_FOUND' })
+        : new ServerError('Local clone folder does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
+  }
+  // Record the pending study the same way the capture-time path does, so a
+  // reload shows the queued chip and the brief the run was given.
+  const updated = await brainService.updateLink(link.id, result.linkPatch);
+
+  res.json({
+    message: 'Study queued',
+    taskId: result.taskId,
+    linkId: link.id,
+    pulled: result.pulled,
+    link: updated
+  });
 }));
 
 router.get('/links/:id/scan-report', asyncHandler(async (req, res) => {

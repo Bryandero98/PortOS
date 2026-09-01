@@ -4,6 +4,7 @@ const addTask = vi.fn();
 const getAppById = vi.fn();
 const readOriginRemoteUrl = vi.fn();
 const existsSync = vi.fn();
+const pullRepo = vi.fn();
 
 vi.mock('./cos.js', () => ({ addTask: (...args) => addTask(...args) }));
 vi.mock('./apps.js', () => ({
@@ -15,6 +16,7 @@ vi.mock('./malwareScanReports.js', () => ({
   reportPathForId: (id) => `/scans/${id}.md`,
 }));
 vi.mock('fs', () => ({ existsSync: (...args) => existsSync(...args) }));
+vi.mock('./repoCloner.js', () => ({ pullRepo: (...args) => pullRepo(...args) }));
 // The REAL workTracker resolution runs — the tracker instructions in the prompt
 // are what these tests assert. Only its one shell-out is stubbed; the tracker is
 // steered through the app's own `workTracker` setting, as a user would.
@@ -22,14 +24,14 @@ vi.mock('../lib/gitRemote.js', () => ({
   readOriginRemoteUrl: (...args) => readOriginRemoteUrl(...args),
 }));
 
-const { queueMalwareScan, queueRepoStudy, runRepoIntake, buildRepoStudyContext } = await import('./repoIntake.js');
+const { queueMalwareScan, queueRepoStudy, restudyRepoLink, runRepoIntake, buildRepoStudyContext } = await import('./repoIntake.js');
 
 const LINK = {
   id: 'link-1',
   url: 'https://github.com/example-owner/example-repo',
   title: 'example-owner/example-repo',
-  gitHubOwner: 'example-owner',
-  gitHubRepo: 'example-repo',
+  repoOwner: 'example-owner',
+  repoName: 'example-repo',
   localPath: '/repos/example-owner/example-repo',
 };
 
@@ -41,6 +43,7 @@ beforeEach(() => {
   getAppById.mockResolvedValue(APP);
   readOriginRemoteUrl.mockResolvedValue(null);
   addTask.mockImplementation(async () => ({ id: 'task-abc' }));
+  pullRepo.mockResolvedValue({ success: true });
 });
 
 describe('queueMalwareScan', () => {
@@ -298,5 +301,44 @@ describe('runRepoIntake', () => {
     const patch = await runRepoIntake(LINK, { malwareScan: true, learn: true });
     expect(patch.malwareScan).toBeUndefined();
     expect(patch.repoStudy).toEqual({ taskId: 'task-study', queuedAt: expect.any(String) });
+  });
+});
+
+describe('restudyRepoLink', () => {
+  it('refreshes the clone, then queues the study with the caller\'s brief', async () => {
+    const result = await restudyRepoLink(LINK, { pull: true, studyContext: 'look at its offline sync' });
+
+    expect(pullRepo).toHaveBeenCalledWith(LINK.localPath);
+    expect(result).toMatchObject({ queued: true, taskId: 'task-abc', pulled: { ok: true } });
+    expect(addTask.mock.calls[0][0].context).toContain('look at its offline sync');
+    // The brief is stamped on the link so the form reopens pre-filled.
+    expect(result.linkPatch.repoStudy.studyContext).toBe('look at its offline sync');
+  });
+
+  it('skips the pull when the caller opted out', async () => {
+    const result = await restudyRepoLink(LINK, { pull: false });
+
+    expect(pullRepo).not.toHaveBeenCalled();
+    expect(result.queued).toBe(true);
+    expect(result).not.toHaveProperty('pulled');
+  });
+
+  // A force-pushed or re-tagged upstream must not make a repo permanently
+  // un-studyable — the clone on disk is still readable.
+  it('still queues the study when the pull fails, and reports the failure', async () => {
+    pullRepo.mockRejectedValue(new Error('diverged'));
+
+    const result = await restudyRepoLink(LINK, {});
+
+    expect(result).toMatchObject({ queued: true, pulled: { ok: false, error: 'diverged' } });
+    expect(addTask).toHaveBeenCalled();
+  });
+
+  it('refuses to pull or queue against a clone that is gone from disk', async () => {
+    existsSync.mockReturnValue(false);
+
+    await expect(restudyRepoLink(LINK, {})).resolves.toEqual({ queued: false, reason: 'not-cloned' });
+    expect(pullRepo).not.toHaveBeenCalled();
+    expect(addTask).not.toHaveBeenCalled();
   });
 });

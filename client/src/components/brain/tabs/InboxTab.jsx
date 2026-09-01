@@ -57,7 +57,7 @@ export default function InboxTab({ onRefresh, settings }) {
   // when on, captured thoughts are flagged so they can later be batch-sent to the
   // creative catalog (vs todos/refs that stay out).
   const [creative, setCreative] = useLocalStorageBool('brain.captureCreative', false);
-  // A bare GitHub repo URL is cloned on capture, which unlocks the two post-clone
+  // A bare repo URL is cloned on capture, which unlocks the two post-clone
   // agent opt-ins (malware scan / repo study) — shared with Quick Capture.
   const repoIntake = useRepoIntake(inputText);
   const [entries, setEntries] = useState([]);
@@ -381,7 +381,7 @@ export default function InboxTab({ onRefresh, settings }) {
         <p className="mt-2 text-xs text-gray-500">
           Capture a thought — type or use the mic. AI will classify and route it automatically.
           {inputIsUrl && (repoIntake.repo
-            ? <span className="text-cyan-400"> That&rsquo;s a GitHub repo — it will be saved to Links and cloned.</span>
+            ? <span className="text-cyan-400"> That&rsquo;s a repository — it will be saved to Links and cloned.</span>
             : <span className="text-cyan-400"> That&rsquo;s a URL — it will be saved to Links.</span>)}
           {!inputIsUrl && creative && <span className="text-port-accent-2"> Creative mode on — captures are flagged for the Catalog.</span>}
           {settings?.confidenceThreshold && (
@@ -390,18 +390,7 @@ export default function InboxTab({ onRefresh, settings }) {
         </p>
         <RepoIntakeOptions
           idPrefix="inbox-capture-repo"
-          repo={repoIntake.repo}
-          options={repoIntake.options}
-          managedApps={repoIntake.managedApps}
-          targetAppId={repoIntake.targetAppId}
-          onTargetAppChange={repoIntake.setTargetAppId}
-          studyContext={repoIntake.studyContext}
-          onStudyContextChange={repoIntake.setStudyContext}
-          providerOverride={repoIntake.providerOverride}
-          providers={repoIntake.providers}
-          activeProviderId={repoIntake.activeProviderId}
-          onProviderOverrideChange={repoIntake.setProviderOverride}
-          onToggle={repoIntake.toggle}
+          {...repoIntake}
         />
       </form>
 

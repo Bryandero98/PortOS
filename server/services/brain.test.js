@@ -64,10 +64,11 @@ vi.mock('./brainStorage.js', () => {
   };
 });
 
-// Mock githubCloner — the bare-URL capture path derives GitHub metadata and can
-// kick off a background clone; stub it so no test ever shells out to git.
-vi.mock('./githubCloner.js', () => ({
-  parseGitHubUrl: vi.fn(() => null),
+// Mock repoCloner — the bare-URL capture path can kick off a background clone;
+// stub it so no test ever shells out to git. The URL PARSE is deliberately not
+// stubbed: it is a pure rule in lib/repoUrl.js, so the fixtures below exercise
+// the real "is this a repo URL?" decision.
+vi.mock('./repoCloner.js', () => ({
   cloneRepo: vi.fn(),
   reapStaleCloneStaging: vi.fn(() => Promise.resolve(0))
 }));
@@ -133,7 +134,7 @@ assertProvider: (provider, { message, code, status = 503 } = {}) => {
 }));
 
 import { runPromptThroughProvider } from './promptRunner.js';
-import * as githubCloner from './githubCloner.js';
+import * as repoCloner from './repoCloner.js';
 import * as storage from './brainStorage.js';
 import { deleteMemoryAssets } from './chatgptImport.js';
 import { getProviderById } from './providers.js';
@@ -244,8 +245,6 @@ describe('brain service', () => {
 
   describe('captureThought (bare URL)', () => {
     beforeEach(() => {
-      // mockReturnValue survives clearAllMocks — reset to "not a GitHub URL".
-      githubCloner.parseGitHubUrl.mockReturnValue(null);
       storage.getLinkByUrl.mockResolvedValue(null);
       storage.createLink.mockImplementation(async (data) => ({ id: 'link-001', ...data }));
       storage.createInboxLog.mockImplementation(async (entry) => ({ id: 'inbox-url-1', ...entry }));
@@ -311,15 +310,17 @@ describe('brain service', () => {
       }));
     });
 
-    it('clones a captured GitHub repo the same way the Links tab does', async () => {
-      githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
-      githubCloner.cloneRepo.mockResolvedValue({ localPath: '/repos/acme/widgets' });
+    it('clones a captured repo the same way the Links tab does', async () => {
+      repoCloner.cloneRepo.mockResolvedValue({ localPath: '/repos/acme/widgets' });
 
       await captureThought('https://github.com/acme/widgets');
 
       expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
         title: 'acme/widgets',
-        linkType: 'github',
+        linkType: 'repo',
+        isRepo: true,
+        repoHost: 'github.com',
+        // The legacy GitHub-only mirror rides along for peers on older code.
         isGitHubRepo: true,
         cloneStatus: 'pending'
       }));
@@ -360,13 +361,12 @@ describe('brain service', () => {
     // here is that a request only survives the capture path when a clone will
     // actually happen, since the agents read the clone.
     describe('repoIntake', () => {
-      const asGitHub = () => {
-        githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
-        githubCloner.cloneRepo.mockResolvedValue({ localPath: '/repos/acme/widgets' });
+      const asRepo = () => {
+        repoCloner.cloneRepo.mockResolvedValue({ localPath: '/repos/acme/widgets' });
       };
 
       it('records the requested actions on a newly captured repo link', async () => {
-        asGitHub();
+        asRepo();
         const result = await captureThought('https://github.com/acme/widgets', undefined, undefined, {
           repoIntake: { malwareScan: true, learn: true },
         });
@@ -378,7 +378,7 @@ describe('brain service', () => {
       });
 
       it('normalizes a partial request so an absent action is explicitly off', async () => {
-        asGitHub();
+        asRepo();
         await captureThought('https://github.com/acme/widgets', undefined, undefined, {
           repoIntake: { learn: true },
         });
@@ -389,7 +389,7 @@ describe('brain service', () => {
       });
 
       it('persists repo-study provider pins with the requested intake', async () => {
-        asGitHub();
+        asRepo();
         await captureThought('https://github.com/acme/widgets', undefined, undefined, {
           repoIntake: { learn: true, providerId: 'codex', model: 'gpt-5', effort: 'high' },
         });
@@ -406,7 +406,7 @@ describe('brain service', () => {
       });
 
       it('stores nothing when every box is unticked', async () => {
-        asGitHub();
+        asRepo();
         await captureThought('https://github.com/acme/widgets', undefined, undefined, {
           repoIntake: { malwareScan: false, learn: false },
         });
@@ -416,7 +416,7 @@ describe('brain service', () => {
         );
       });
 
-      it('drops the request for a non-GitHub URL, which is never cloned', async () => {
+      it('drops the request for a URL that is not a repo, which is never cloned', async () => {
         await captureThought('https://example.com', undefined, undefined, {
           repoIntake: { malwareScan: true, learn: true },
         });
@@ -430,7 +430,7 @@ describe('brain service', () => {
       // tab's Clone/Retry button (which calls cloneRepoInBackground with no
       // intake argument) honors a request whose first clone failed.
       it('is stored on the link, not only threaded through the first clone', async () => {
-        asGitHub();
+        asRepo();
         await captureThought('https://github.com/acme/widgets', undefined, undefined, {
           repoIntake: { malwareScan: true, learn: false },
         });
@@ -440,8 +440,8 @@ describe('brain service', () => {
       });
 
       it('does not re-run agents when a saved repo URL is pasted again', async () => {
-        asGitHub();
-        storage.getLinkByUrl.mockResolvedValue({ id: 'link-existing', isGitHubRepo: true });
+        asRepo();
+        storage.getLinkByUrl.mockResolvedValue({ id: 'link-existing', isRepo: true });
 
         const result = await captureThought('https://github.com/acme/widgets', undefined, undefined, {
           repoIntake: { malwareScan: true, learn: true },
@@ -449,7 +449,7 @@ describe('brain service', () => {
 
         // No new link, so no new clone — and nothing for the agents to read.
         expect(storage.createLink).not.toHaveBeenCalled();
-        expect(githubCloner.cloneRepo).not.toHaveBeenCalled();
+        expect(repoCloner.cloneRepo).not.toHaveBeenCalled();
         expect(result.message).toMatch(/already saved/i);
       });
     });
@@ -461,8 +461,6 @@ describe('brain service', () => {
 
   describe('createLinkFromUrl', () => {
     beforeEach(() => {
-      // mockReturnValue survives clearAllMocks — reset to "not a GitHub URL".
-      githubCloner.parseGitHubUrl.mockReturnValue(null);
       storage.createLink.mockImplementation(async (data) => ({ id: 'link-002', ...data }));
     });
 
@@ -470,14 +468,12 @@ describe('brain service', () => {
       await createLinkFromUrl('https://www.example.com/parks');
       expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
         title: 'example.com',
-        isGitHubRepo: false,
+        isRepo: false,
         cloneStatus: 'none'
       }));
     });
 
     it('honors explicit overrides and skips the clone when autoClone is false', async () => {
-      githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
-
       await createLinkFromUrl('https://github.com/acme/widgets', {
         title: 'My Widgets', note: 'Use this as a reference', bucketId: 'bucket-1', autoClone: false
       });
@@ -1050,12 +1046,12 @@ describe('brain service', () => {
       // `Once`, so the never-settling promise can't leak into a later test —
       // mockReturnValue survives clearAllMocks.
       let released;
-      githubCloner.reapStaleCloneStaging.mockReturnValueOnce(new Promise(resolve => { released = resolve; }));
+      repoCloner.reapStaleCloneStaging.mockReturnValueOnce(new Promise(resolve => { released = resolve; }));
       storage.getLinks.mockResolvedValue([]);
 
       await recoverInterruptedRepoClones();
 
-      expect(githubCloner.reapStaleCloneStaging).toHaveBeenCalled();
+      expect(repoCloner.reapStaleCloneStaging).toHaveBeenCalled();
       released(0);
     });
   });

@@ -13,7 +13,7 @@ import { assertMediaRoutingConfig } from '../services/federatedMedia/routingPoli
 import { assertConfiguredEidoverseInstalled, getInstanceFeatures, updateEidoverseWorldsRepo, updateEidoverseWorldsSource, updateInstanceFeature } from '../services/instanceFeatures.js';
 import { installEidoverse } from '../services/eidoverse.js';
 import { ensureEidoverseHost } from '../services/eidoverseHost.js';
-import { isGitHubRepoUrl } from '../lib/githubRepoUrl.js';
+import { isGitHubRepoUrl } from '../lib/repoUrl.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';

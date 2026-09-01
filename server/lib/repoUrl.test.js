@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { posixPath } from './testHelper.js';
 
 import { join } from 'path';
-import { parseGitHubUrl, isGitHubRepoUrl } from './githubRepoUrl.js';
+import { parseRepoUrl, isRepoUrl, repoCloneUrl, parseGitHubUrl, isGitHubRepoUrl } from './repoUrl.js';
 
 const REPOS_ROOT = '/data/repos';
 const clonePath = (url) => {
-  const parsed = parseGitHubUrl(url);
+  const parsed = parseRepoUrl(url);
   return parsed ? join(REPOS_ROOT, parsed.owner, parsed.repo) : null;
 };
 
@@ -53,7 +53,7 @@ describe('parseGitHubUrl', () => {
     expect(parseGitHubUrl(null)).toBeNull();
   });
 
-  // The parsed pair is a PATH OPERAND — githubCloner clones into
+  // The parsed pair is a PATH OPERAND — repoCloner clones into
   // join(reposDir, owner, repo), and that localPath is later handed to an agent
   // as the directory to scan/study. A dot segment escapes (or collapses to) the
   // managed clone root.
@@ -100,5 +100,63 @@ describe('isGitHubRepoUrl', () => {
     expect(isGitHubRepoUrl('https://github.com/example-owner/example-repo')).toBe(true);
     expect(isGitHubRepoUrl('https://github.com/../evil')).toBe(false);
     expect(isGitHubRepoUrl('https://example.com')).toBe(false);
+  });
+});
+
+describe('parseRepoUrl across hosts', () => {
+  it('parses a gitlab.com project the same shapes it parses a GitHub one', () => {
+    for (const url of [
+      'https://gitlab.com/example-group/example-repo',
+      'https://gitlab.com/example-group/example-repo.git',
+      'gitlab.com/example-group/example-repo',
+      'git@gitlab.com:example-group/example-repo.git',
+    ]) {
+      expect(parseRepoUrl(url), url).toEqual({
+        host: 'gitlab.com',
+        provider: 'gitlab',
+        owner: 'example-group',
+        repo: 'example-repo',
+        isGitHub: false,
+      });
+    }
+  });
+
+  it('keeps GitLab subgroups in the owner path', () => {
+    expect(parseRepoUrl('https://gitlab.com/example-group/example-sub/example-repo'))
+      .toMatchObject({ owner: 'example-group/example-sub', repo: 'example-repo' });
+  });
+
+  // GitLab's modern deep links insert /-/ before the UI route; the legacy shape
+  // puts the route word straight after the project, which is why the segment
+  // walk also stops at a reserved word.
+  it('resolves a GitLab deep link back to the project', () => {
+    expect(parseRepoUrl('https://gitlab.com/example-group/example-repo/-/tree/main/src'))
+      .toMatchObject({ owner: 'example-group', repo: 'example-repo' });
+    expect(parseRepoUrl('https://gitlab.com/example-group/example-repo/blob/main/README.md'))
+      .toMatchObject({ owner: 'example-group', repo: 'example-repo' });
+    expect(parseRepoUrl('https://github.com/example-owner/example-repo/tree/main'))
+      .toMatchObject({ owner: 'example-owner', repo: 'example-repo' });
+  });
+
+  it('refuses an unsupported host and a path-unsafe GitLab namespace', () => {
+    expect(parseRepoUrl('https://bitbucket.org/example-owner/example-repo')).toBeNull();
+    expect(parseRepoUrl('https://gitlab.com/../example-group/example-repo')).toBeNull();
+    expect(parseRepoUrl('https://gitlab.com/example-group')).toBeNull();
+    expect(isRepoUrl('https://gitlab.com/example-group/example-repo')).toBe(true);
+    expect(isRepoUrl('https://bitbucket.org/example-owner/example-repo')).toBe(false);
+  });
+
+  it('builds the https clone URL from the parsed host', () => {
+    expect(repoCloneUrl(parseRepoUrl('git@gitlab.com:example-group/example-repo')))
+      .toBe('https://gitlab.com/example-group/example-repo.git');
+    expect(repoCloneUrl(parseRepoUrl('https://github.com/example-owner/example-repo')))
+      .toBe('https://github.com/example-owner/example-repo.git');
+  });
+
+  // The GitHub-only wrapper still exists for the callers whose downstream is
+  // genuinely GitHub-specific (the Eidoverse worlds repo push).
+  it('parseGitHubUrl rejects a valid GitLab repo', () => {
+    expect(parseGitHubUrl('https://gitlab.com/example-group/example-repo')).toBeNull();
+    expect(isGitHubRepoUrl('https://gitlab.com/example-group/example-repo')).toBe(false);
   });
 });

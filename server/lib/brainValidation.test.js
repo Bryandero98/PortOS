@@ -511,7 +511,7 @@ describe('brainValidation.js', () => {
         note: 'Review before sharing with the team',
         linkType: 'github',
         tags: ['reference'],
-        isGitHubRepo: true,
+        isRepo: true,
         gitHubOwner: 'example',
         gitHubRepo: 'repo',
         cloneStatus: 'cloned',
@@ -624,16 +624,16 @@ describe('brainValidation.js', () => {
       expect(result.data.offset).toBe(0);
     });
 
-    it('should coerce isGitHubRepo boolean', () => {
-      const result = linksQuerySchema.safeParse({ isGitHubRepo: 'true' });
+    it('should coerce isRepo boolean', () => {
+      const result = linksQuerySchema.safeParse({ isRepo: 'true' });
       expect(result.success).toBe(true);
-      expect(result.data.isGitHubRepo).toBe(true);
+      expect(result.data.isRepo).toBe(true);
     });
 
     it('should coerce the string "false" to false (not true)', () => {
-      const result = linksQuerySchema.safeParse({ isGitHubRepo: 'false' });
+      const result = linksQuerySchema.safeParse({ isRepo: 'false' });
       expect(result.success).toBe(true);
-      expect(result.data.isGitHubRepo).toBe(false);
+      expect(result.data.isRepo).toBe(false);
     });
 
     it('should filter by linkType', () => {

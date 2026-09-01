@@ -1,16 +1,17 @@
 /**
- * GitHub Repository Cloner Service
+ * Repository Cloner Service
  *
- * Handles cloning GitHub repositories to a local directory for reference.
- * Supports shallow clones to save space and provides progress tracking.
+ * Handles cloning repositories (github.com / gitlab.com — see `REPO_HOSTS` in
+ * lib/repoUrl.js) to a local directory for reference. Supports shallow clones to
+ * save space and provides progress tracking.
  */
 
 import { spawn } from '../lib/childProcess.js';
 import { existsSync } from 'fs';
 import { mkdtemp, readdir, rename, rm } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { ensureDir, PATHS } from '../lib/fileUtils.js';
-import { parseGitHubUrl, isGitHubRepoUrl } from '../lib/githubRepoUrl.js';
+import { parseRepoUrl, isRepoUrl, repoCloneUrl, parseGitHubUrl, isGitHubRepoUrl } from '../lib/repoUrl.js';
 
 // Default directory for cloned repos (can be configured in settings)
 const DEFAULT_CLONE_DIR = PATHS.repos;
@@ -18,10 +19,24 @@ const CLONE_STAGING_PREFIX = '.portos-clone-';
 const CLONE_STAGING_MAX_AGE_MS = 10 * 60 * 1000;
 const CLONE_STAGING_RE = /^\.portos-clone-(\d{13})-[A-Za-z0-9]+$/;
 
-// The owner/repo parse rule lives in lib/ so the client can mirror it — the
+// The host/owner/repo parse rule lives in lib/ so the client can mirror it — the
 // Brain capture boxes have to predict "this URL will be cloned" before submit.
-// Re-exported here so existing `githubCloner.parseGitHubUrl` callers keep working.
-export { parseGitHubUrl, isGitHubRepoUrl };
+// Re-exported here so callers reach the rule through the service they already use.
+export { parseRepoUrl, isRepoUrl, parseGitHubUrl, isGitHubRepoUrl };
+
+/**
+ * The clone directory for a parsed repo, relative to the repos root.
+ *
+ * GitHub keeps the historical flat `<owner>/<repo>` layout so every clone made
+ * before PortOS supported a second host stays exactly where its link record says
+ * it is. Every other host is namespaced under its hostname, which is also what
+ * keeps `gitlab.com/acme/widgets` from colliding with `github.com/acme/widgets`.
+ * A GitLab `owner` may itself be a `group/subgroup` path; every segment is
+ * validated by parseRepoUrl, so the join stays inside the root.
+ */
+export function repoSubPath({ host, owner, repo }) {
+  return host === 'github.com' ? join(owner, repo) : join(host, owner, repo);
+}
 
 /**
  * Get clone directory path
@@ -43,18 +58,18 @@ export async function ensureCloneDir(cloneDir) {
 }
 
 /**
- * Clone a GitHub repository
- * Returns the local path where the repo was cloned
+ * Clone a repository from a supported host.
+ * Returns the local path where the repo was cloned.
  */
 export async function cloneRepo(url, options = {}) {
-  const parsed = parseGitHubUrl(url);
+  const parsed = parseRepoUrl(url);
   if (!parsed) {
-    throw new Error('Invalid GitHub URL');
+    throw new Error('Invalid repository URL');
   }
 
   const { owner, repo } = parsed;
   const cloneDir = await ensureCloneDir(options.cloneDir);
-  const localPath = join(cloneDir, owner, repo);
+  const localPath = join(cloneDir, repoSubPath(parsed));
 
   // Boot recovery marks only a known interrupted attempt. Old PortOS versions
   // cloned straight into localPath, so their partial checkout must be replaced
@@ -74,8 +89,9 @@ export async function cloneRepo(url, options = {}) {
     };
   }
 
-  // Ensure owner directory exists
-  const ownerDir = join(cloneDir, owner);
+  // Ensure the owner directory exists (for a namespaced host, and for a GitLab
+  // subgroup path, that is several levels below the repos root).
+  const ownerDir = dirname(localPath);
   if (!existsSync(ownerDir)) {
     await ensureDir(ownerDir);
   }
@@ -87,7 +103,7 @@ export async function cloneRepo(url, options = {}) {
   const stagingPath = join(stagingRoot, repo);
 
   // Build clone command with shallow clone for space efficiency
-  const httpsUrl = `https://github.com/${owner}/${repo}.git`;
+  const httpsUrl = repoCloneUrl(parsed);
   const args = [
     'clone',
     '--depth', '1',
@@ -156,29 +172,42 @@ export async function cloneRepo(url, options = {}) {
  * Remove only PortOS-owned clone staging directories older than twice the git
  * timeout. A freshly orphaned child may still be writing; the age gate leaves
  * it alone while bounding disk retained across repeated interrupted attempts.
+ *
+ * The sweep RECURSES because staging sits beside the checkout it will become,
+ * and that is no longer always one level down: a namespaced host adds a
+ * hostname level and a GitLab subgroup adds another. `MAX_STAGING_DEPTH` bounds
+ * it to the deepest layout `repoSubPath` can produce, so the sweep never walks
+ * into the clones themselves.
  */
+const MAX_STAGING_DEPTH = 4;
+
 export async function reapStaleCloneStaging({ cloneDir = DEFAULT_CLONE_DIR, now = Date.now() } = {}) {
-  const owners = await readdir(cloneDir, { withFileTypes: true })
-    .catch(err => err.code === 'ENOENT' ? [] : Promise.reject(err));
-  let reaped = 0;
-  for (const owner of owners) {
-    if (!owner.isDirectory()) continue;
-    const ownerDir = join(cloneDir, owner.name);
-    // One unreadable owner directory (removed mid-sweep, or not ours to read)
-    // must not abort the sweep and leave every later owner's staging behind.
-    const entries = await readdir(ownerDir, { withFileTypes: true })
+  // One unreadable directory (removed mid-sweep, or not ours to read) must not
+  // abort the sweep and leave every later branch's staging behind.
+  const sweep = async (dir, depth) => {
+    const entries = await readdir(dir, { withFileTypes: true })
       .catch(err => {
-        console.error(`⚠️ Skipped clone staging sweep for ${owner.name}: ${err.message}`);
+        if (err.code !== 'ENOENT') console.error(`⚠️ Skipped clone staging sweep for ${dir}: ${err.message}`);
         return [];
       });
+    let reaped = 0;
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const match = entry.name.match(CLONE_STAGING_RE);
-      if (!match || now - Number(match[1]) < CLONE_STAGING_MAX_AGE_MS) continue;
-      await rm(join(ownerDir, entry.name), { recursive: true, force: true });
-      reaped++;
+      if (match) {
+        if (now - Number(match[1]) < CLONE_STAGING_MAX_AGE_MS) continue;
+        await rm(join(dir, entry.name), { recursive: true, force: true });
+        reaped++;
+      } else if (depth < MAX_STAGING_DEPTH && !existsSync(join(dir, entry.name, '.git'))) {
+        // A directory holding `.git` is a finished clone, not a namespace level —
+        // descending into it would walk the studied repo's whole source tree.
+        reaped += await sweep(join(dir, entry.name), depth + 1);
+      }
     }
-  }
+    return reaped;
+  };
+
+  const reaped = await sweep(cloneDir, 1);
   if (reaped > 0) console.log(`🧹 Reaped ${reaped} stale repository clone staging director${reaped === 1 ? 'y' : 'ies'}`);
   return reaped;
 }

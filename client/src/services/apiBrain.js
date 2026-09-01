@@ -222,7 +222,7 @@ export const runBrainReview = (providerOverride, modelOverride, options = {}) =>
 export const getBrainLinks = (options = {}) => {
   const params = new URLSearchParams();
   if (options.linkType) params.set('linkType', options.linkType);
-  if (options.isGitHubRepo !== undefined) params.set('isGitHubRepo', options.isGitHubRepo);
+  if (options.isRepo !== undefined) params.set('isRepo', options.isRepo);
   if (options.limit) params.set('limit', options.limit);
   if (options.offset) params.set('offset', options.offset);
   return request(`/brain/links?${params}`);
@@ -251,6 +251,14 @@ export const cloneBrainLink = (id, options = {}) => request(`/brain/links/${id}/
 export const pullBrainLink = (id, options = {}) => request(`/brain/links/${id}/pull`, { method: 'POST', ...options });
 export const openBrainLinkFolder = (id, options = {}) => request(`/brain/links/${id}/open-folder`, { method: 'POST', ...options });
 export const scanBrainLink = (id, options = {}) => request(`/brain/links/${id}/scan`, { method: 'POST', ...options });
+// Refresh the clone (unless `pull: false`) and queue a fresh repo-study run with
+// the brief in `studyContext` — the on-demand twin of the capture-time
+// "study for app ideas" checkbox.
+export const studyBrainLink = (id, data = {}, options = {}) => request(`/brain/links/${id}/study`, {
+  method: 'POST',
+  body: JSON.stringify(data),
+  ...options
+});
 export const brainScanReportPath = (id) => `/brain/links/${encodeURIComponent(id)}/scan-report`;
 export const getBrainScanReport = (id, options = {}) => request(`/brain/links/${encodeURIComponent(id)}/scan-report`, {
   responseType: 'text',

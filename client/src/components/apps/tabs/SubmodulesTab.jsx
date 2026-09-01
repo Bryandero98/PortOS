@@ -5,7 +5,7 @@ import Pill from '../../ui/Pill';
 import ToggleSwitch from '../../ToggleSwitch';
 import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
-import { parseGitHubUrl } from '../../../lib/githubRepoUrl';
+import { parseGitHubUrl } from '../../../lib/repoUrl';
 
 /** Whether a submodule's pointer differs from what its remote default branch has. */
 const needsUpdate = (sub) => sub.behind > 0 || sub.outOfSync || !sub.initialized || sub.conflicted;

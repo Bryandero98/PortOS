@@ -19,7 +19,8 @@ import { runPromptThroughProvider } from './promptRunner.js';
 import { getDomainAutonomyMode } from './cosState.js';
 import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
 import { deleteMemoryAssets } from './chatgptImport.js';
-import * as githubCloner from './githubCloner.js';
+import * as repoCloner from './repoCloner.js';
+import { deriveRepoLinkFields } from '../lib/repoLinkFields.js';
 import { parseBareUrl } from '../lib/bareUrl.js';
 import { normalizeRepoIntake } from '../lib/repoIntakeActions.js';
 import {
@@ -242,12 +243,12 @@ async function captureUrlAsLink(url, capturedText, { repoIntake = null, note } =
     link,
     message: existing
       ? 'Already saved in Links.'
-      : (link.isGitHubRepo ? repoCaptureMessage(link.repoIntake) : 'Saved to Links!')
+      : (link.isRepo ? repoCaptureMessage(link.repoIntake) : 'Saved to Links!')
   };
 }
 
 /**
- * What a freshly-captured GitHub repo link tells the user will happen next. The
+ * What a freshly-captured repo link tells the user will happen next. The
  * clone is always implied; the agent runs only when they ticked the boxes, and
  * they only start once the clone lands.
  */
@@ -257,8 +258,8 @@ function repoCaptureMessage(repoIntake) {
     repoIntake?.learn && 'repo study',
   ].filter(Boolean);
   return queued.length
-    ? `GitHub repo saved — cloning, then queueing ${queued.join(' + ')}.`
-    : 'GitHub repo saved to Links — cloning now.';
+    ? `Repo saved — cloning, then queueing ${queued.join(' + ')}.`
+    : 'Repo saved to Links — cloning now.';
 }
 
 /**
@@ -890,7 +891,7 @@ export async function recoverInterruptedRepoClones() {
   // Detached on purpose: boot AWAITS this function so the first links request
   // can't see an orphaned `cloning` badge, and a recursive scan plus `rm -rf` of
   // abandoned partial checkouts must not sit in front of `startListening()`.
-  githubCloner.reapStaleCloneStaging()
+  repoCloner.reapStaleCloneStaging()
     .catch(err => console.error(`❌ Clone staging recovery failed: ${err.message}`));
 }
 
@@ -1005,7 +1006,7 @@ function hostnameFromUrl(url) {
 }
 
 /**
- * Clone a GitHub repo in the background, tracking progress on the link record.
+ * Clone a repo in the background, tracking progress on the link record.
  * Runs outside the request lifecycle, so every failure is caught and recorded
  * on the link rather than left to bubble.
  *
@@ -1034,7 +1035,7 @@ export async function cloneRepoInBackground(linkId, url) {
     cloneInterrupted: false
   });
 
-  githubCloner.cloneRepo(url, { replaceIncomplete: previous?.cloneInterrupted === true })
+  repoCloner.cloneRepo(url, { replaceIncomplete: previous?.cloneInterrupted === true })
     .then(async (result) => {
       const link = await storage.updateLink(linkId, {
         localPath: result.localPath,
@@ -1072,7 +1073,7 @@ export async function cloneRepoInBackground(linkId, url) {
 }
 
 /**
- * Create a link from a URL: derives the GitHub metadata + a readable default
+ * Create a link from a URL: derives the repository metadata + a readable default
  * title and kicks off the background clone for a repo. Shared by the Links
  * route's quick-add and the bare-URL capture short-circuit so a URL pasted into
  * the Brain inbox lands exactly as it would from the Links tab.
@@ -1083,18 +1084,18 @@ export async function cloneRepoInBackground(linkId, url) {
 export async function createLinkFromUrl(url, {
   title, description, note, linkType, tags, bucketId, bucketOrder, autoClone, repoIntake
 } = {}) {
-  const parsed = githubCloner.parseGitHubUrl(url);
-  const isGitHubRepo = !!parsed;
-  const shouldClone = isGitHubRepo && autoClone !== false;
+  const repoFields = deriveRepoLinkFields(url);
+  const shouldClone = repoFields.isRepo && autoClone !== false;
   // Opt-in post-clone agent actions. Only meaningful when a clone will actually
   // happen, and persisted on the link so the record says what was asked for even
   // if the clone is still running.
   const intake = shouldClone ? normalizeRepoIntake(repoIntake) : null;
 
-  // Derive a readable default title: repo slug for GitHub, hostname for plain
-  // URLs (so quick-added bucket chips read "example.com" instead of the full URL).
-  const defaultTitle = parsed
-    ? `${parsed.owner}/${parsed.repo}`
+  // Derive a readable default title: repo slug for a repository, hostname for
+  // plain URLs (so quick-added bucket chips read "example.com" instead of the
+  // full URL).
+  const defaultTitle = repoFields.isRepo
+    ? `${repoFields.repoOwner}/${repoFields.repoName}`
     : (hostnameFromUrl(url) || url);
   const cleanNote = typeof note === 'string' ? note.trim() : '';
 
@@ -1103,11 +1104,9 @@ export async function createLinkFromUrl(url, {
     title: title || defaultTitle,
     description: description || '',
     note: cleanNote,
-    linkType: linkType || (isGitHubRepo ? 'github' : 'other'),
+    linkType: linkType || (repoFields.isRepo ? 'repo' : 'other'),
     tags: tags || [],
-    isGitHubRepo,
-    gitHubOwner: parsed?.owner,
-    gitHubRepo: parsed?.repo,
+    ...repoFields,
     localPath: null,
     cloneStatus: shouldClone ? 'pending' : 'none',
     cloneError: null,
@@ -1115,7 +1114,7 @@ export async function createLinkFromUrl(url, {
     ...(bucketId !== undefined ? { bucketId } : {}),
     ...(bucketOrder !== undefined ? { bucketOrder } : {})
   });
-  console.log(`🔗 Created link: ${link.id} (${isGitHubRepo ? 'GitHub repo' : 'regular URL'})`);
+  console.log(`🔗 Created link: ${link.id} (${repoFields.isRepo ? `${repoFields.repoHost} repo` : 'regular URL'})`);
 
   if (shouldClone) {
     cloneRepoInBackground(link.id, url).catch(err => {
