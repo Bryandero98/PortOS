@@ -17,12 +17,11 @@ import {
 } from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
-import { I2V_REFERENCE_MODES, isDefaultI2vReferenceMode } from '../lib/videoReferenceModes.js';
+import { I2V_REFERENCE_MODES } from '../lib/videoReferenceModes.js';
 import {
   VIDEO_BACKEND_DISCLOSURES, acceptedVideoModelTerms,
   videoModelTermsGateId,
 } from '../lib/videoDisclosure.js';
-import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
 import {
@@ -41,8 +40,9 @@ import {
   upscaleHistoryItem,
   resolveFflfLtx2PixelBudget,
 } from '../services/videoGen/local.js';
-import { prepareVideoGenParams, cleanupMultipartTemp, withStagedRollback } from '../services/videoGen/prepareParams.js';
-import { enqueueJob, attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
+import { cleanupMultipartTemp } from '../services/videoGen/prepareParams.js';
+import { submitVideoGenJob } from '../services/videoGen/submitJob.js';
+import { attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { repoForModel, getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
 import {
   IC_LORA_MODE_VALUES, icLoraSpecForMode, icLoraRepos, listIcLoraWeights,
@@ -50,10 +50,8 @@ import {
 } from '../lib/icLoraWeights.js';
 import {
   downloadableVideoTextEncoders, downloadableVideoTextEncoder, publicTextEncoderOption,
-  isStockTextEncoder,
 } from '../lib/videoTextEncoders.js';
-import { isDefaultSpeedProfile } from '../lib/videoSpeedProfiles.js';
-import { DRAFT_DECODE_IDS, isFullDecode, downloadableVideoDraftDecoders } from '../lib/videoDraftDecoders.js';
+import { DRAFT_DECODE_IDS, downloadableVideoDraftDecoders } from '../lib/videoDraftDecoders.js';
 import {
   inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
   verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
@@ -63,24 +61,16 @@ import { startHfDownloadStream } from '../services/hfDownloadStream.js';
 import { openSseStream } from '../lib/sseDownload.js';
 import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
-import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
-import { collectRemoteInputAssets } from '../services/federatedMedia/inputAssets.js';
 import {
   FEDERATED_MEDIA_MAX_VIDEO_FRAMES,
   effectiveJobPrompt,
 } from '../lib/federatedMediaWire.js';
 import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
-import { buildFederatedMediaRequest } from '../lib/federatedMediaRequest.js';
 import {
   getVideoRuntimeStatus,
   streamVideoRuntimeInstall,
 } from '../services/videoGen/runtimeInstaller.js';
 import { detectSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js';
-import {
-  compileFableLoomVisualRequest, fableLoomVideoCapabilities,
-} from '../services/fableLoom/visualConditioning.js';
-import { getLoom } from '../services/fableLoom/records.js';
-import { asFableLoomRenderSettings } from '../lib/fableLoomProduction.js';
 
 const router = Router();
 
@@ -938,301 +928,13 @@ router.get('/text-encoder/download', asyncHandler(async (req, res) => {
 }));
 
 router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
-  // The multipart parser already wrote every upload to the OS temp dir before
-  // this handler ran, so a rejected body must drop them explicitly or they
-  // leak. Past this point the service owns cleanup for both temp and durable
-  // copies.
   const uploads = req.files || {};
   const parsed = generateBodySchema.safeParse(req.body);
   if (!parsed.success) {
     await cleanupMultipartTemp(uploads);
     failValidation(parsed);
   }
-  const body = parsed.data;
-  let fableLoomRenderSettings = null;
-  if (body.fableLoom) {
-    const taggedLoom = await getLoom(body.fableLoom.loomId).catch(async (error) => {
-      await cleanupMultipartTemp(uploads);
-      throw error;
-    });
-    if (taggedLoom) {
-      fableLoomRenderSettings = asFableLoomRenderSettings(taggedLoom.renderSettings);
-      body.width = fableLoomRenderSettings.width;
-      body.height = fableLoomRenderSettings.height;
-    }
-  }
-  // Federated render (#4348): submit to the selected peer instead of running
-  // locally. Handled BEFORE prepareVideoGenParams, which resolves this
-  // machine's backend and stages uploads a remote render can never use.
-  if (body.mediaProviderPeerId) {
-    // Start and end FRAMES cross as conditioning (ADR
-    // docs/decisions/2026-08-22-federated-media-input-assets.md rule 1) — but
-    // only when they name an existing gallery image. A multipart upload has been
-    // staged to the OS temp dir by the parser and is not resolvable through the
-    // shared image roots the asset stager reads, so it stays refused here rather
-    // than being silently dropped.
-    //
-    // Everything else below is a decision, not a gap. Model weights are a MODEL
-    // (rule 3), and a video to extend / chained chunks / IC-LoRA references are
-    // multi-step CHAIN STATE whose sequence lives on this machine (rule 4) — a
-    // provider holding one step of a chain cannot see the rest of it.
-    const unsupported = [
-      ['uploaded files', Object.keys(uploads).length],
-      ['keyframes', body.keyframes?.length],
-      ['a source video to extend', body.extendFromVideoId],
-      ['IC-LoRA references', body.icReferenceVideoIds?.length || body.icReferenceImageFiles?.length],
-      ['LoRA weights', body.loraFilenames?.length],
-      ['chained chunks', body.chunks > 1],
-      ['the Grok backend', body.backend === 'grok'],
-      ['a FableLoom scene tag', body.fableLoom],
-      // A loose reference (#4874) is a per-runtime CAPABILITY, and this side
-      // cannot see which runtime the peer will pick — nor can an older peer even
-      // parse the field, which its wire schema would strip on the way in. Sending
-      // it would hand back an anchored clip under an Inspire label, which is the
-      // one outcome the contract exists to make impossible. Refuse instead: the
-      // user renders locally, or switches to Anchor and gets exactly what a peer
-      // can actually deliver.
-      ['a loose reference mode', !isDefaultI2vReferenceMode(body.i2vReferenceMode)],
-      // A director-board render is image-to-video by construction (its scene
-      // reference frame conditions the shot), and its project/scene ids are
-      // validated inside prepareVideoGenParams, which this branch bypasses.
-      ['a music-video scene tag', body.musicVideo],
-    ].filter(([, present]) => present).map(([label]) => label);
-    if (unsupported.length) {
-      await cleanupMultipartTemp(uploads);
-      throw new ServerError(
-        `A federated media provider cannot render this clip — it uses ${unsupported.join(' and ')}. Render locally instead.`,
-        { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
-      );
-    }
-    // An end frame with no start frame is refused — but by the shared
-    // `inputAssetRejection` inside prepareRemoteMediaJob, not here. Every lane
-    // funnels through it, so the rule lives once instead of being written per
-    // route and forgotten on the unattended one. (The wire schema refuses the
-    // same shape but never sees it: a conditioning image reaches the request as
-    // an asset id resolved at submit time.)
-    const inputAssets = collectRemoteInputAssets('video', body);
-    // `mode` is resolved by the peer from the conditioning it receives, so a
-    // caller-supplied pipeline semantic is redundant at best. Refuse a mode that
-    // contradicts what was actually sent instead of rendering the other one.
-    const impliedMode = body.lastImageFile ? 'fflf' : body.sourceImageFile ? 'image' : 'text';
-    if (body.mode !== undefined && body.mode !== impliedMode) {
-      await cleanupMultipartTemp(uploads);
-      throw new ServerError(
-        `A federated render mode must match its conditioning — this request asks for '${body.mode}' but supplies ${impliedMode === 'text' ? 'no frames' : `a ${impliedMode} frame set`}. Render locally instead.`,
-        { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
-      );
-    }
-    // A peer advertises specific models; it has no notion of 'this caller's
-    // default'. Say so rather than letting the wire schema report a bare
-    // 'expected string, received undefined' for a field the local path defaults.
-    if (!body.modelId) {
-      throw new ServerError(
-        'A federated render must name the provider model explicitly (modelId)',
-        { status: 400, code: 'MEDIA_PROVIDER_MODEL_REQUIRED' },
-      );
-    }
-    // Re-validate against the wire schema rather than trusting this route
-    // schema's overlap with it: this object is persisted and replayed on every
-    // reconcile, so it must already be a body the provider accepts.
-    const request = buildFederatedMediaRequest({ kind: 'video', params: body });
-    const { peer, remoteMedia } = await prepareRemoteMediaJob({
-      peerId: body.mediaProviderPeerId,
-      kind: 'video',
-      request,
-      inputAssets,
-    });
-    // Prompt and dials ride only inside the versioned marker: enqueueJob
-    // normalizes any job carrying one into the downgrade-safe shape, so a build
-    // rolled back past `remoteMedia` cannot re-render this locally. Contract:
-    // services/federatedMedia/routedJobParams.js.
-    const { jobId, position, status } = enqueueJob({
-      kind: 'video',
-      params: { remoteMedia },
-    });
-    return res.json({
-      jobId,
-      generationId: jobId,
-      filename: `${jobId}.mp4`,
-      model: request.modelId,
-      // No local backend is running this, so `mode` is null rather than a
-      // backend name the render never used.
-      mode: null,
-      mediaProviderPeerId: peer.id,
-      status,
-      position,
-    });
-  }
-
-  // Everything between validation and enqueue — backend resolution, upload
-  // staging with rollback, mode/reference validation, history lookups — lives
-  // in the service (#3288), mirroring imageGen's prepareGenerateParams. It
-  // throws ServerError (after unwinding every staged file) on any rejection.
-  const prepared = await prepareVideoGenParams({
-    body,
-    uploads,
-    localOnlyParamKeys: Object.keys(LOCAL_ONLY_VIDEO_PARAMS),
-  });
-  const { backend, cleanupStaged } = prepared;
-
-  if (body.fableLoom) {
-    const conditioningModel = backend === IMAGE_GEN_MODE.GROK
-      ? { id: 'grok-video', supportedModes: ['image'] }
-      : prepared.effectiveModel;
-    const compiled = await compileFableLoomVisualRequest({
-      tag: body.fableLoom,
-      kind: 'video',
-      capability: fableLoomVideoCapabilities({ backend, model: conditioningModel }),
-      authoredPrompt: body.prompt,
-      authoredNegativePrompt: body.negativePrompt,
-      sourceImagePath: prepared.sourceImagePath,
-    }).catch(async (error) => {
-      await cleanupStaged();
-      throw error;
-    });
-    if (compiled) {
-      body.prompt = compiled.prompt;
-      body.negativePrompt = compiled.negativePrompt;
-      if (prepared.sourceImagePath && !compiled.sourceImagePath) {
-        await prepared.discardSourceImage();
-        prepared.uploadedTempPath = null;
-        prepared.mode = 'text';
-      }
-      prepared.sourceImagePath = compiled.sourceImagePath;
-      const renderSettings = fableLoomRenderSettings || asFableLoomRenderSettings();
-      body.visualConditioning = compiled.visualConditioning ? {
-        ...compiled.visualConditioning,
-        render: {
-          provider: backend,
-          modelId: conditioningModel?.id || null,
-          modelRevision: conditioningModel?.revision || null,
-          parameters: {
-            width: body.width,
-            height: body.height,
-            aspectRatio: renderSettings.aspectRatio,
-          },
-        },
-      } : null;
-    }
-  }
-
-  // #3326 — `enqueueJob` is the last place a throw can strand the durable
-  // copies the service staged (the job never exists, so the worker's cleanup
-  // never runs). Release them, then rethrow untouched for the error middleware.
-  const enqueue = (params) => withStagedRollback(cleanupStaged, () => enqueueJob({ kind: 'video', params }));
-
-  if (backend === 'grok') {
-    const { grok: g, sourceImagePath, uploadedTempPath } = prepared;
-    const { jobId, position, status } = await enqueue({
-      // `mode: 'grok'` is the queue's discriminator — the cloud lane and
-      // getGenModuleForJob route on it. Local video jobs use `mode` for
-      // the t2v/i2v semantic (text/image/fflf/…), which never collides
-      // with the literal 'grok'.
-      mode: IMAGE_GEN_MODE.GROK,
-      // Semantic t2v/i2v mode, kept separate from the discriminator so a
-      // client restoring form state from /active never feeds 'grok' back
-      // into its mode selector.
-      videoMode: sourceImagePath ? 'image' : 'text',
-      grokPath: g.grokPath,
-      aspectRatio: body.visualConditioning?.render?.parameters?.aspectRatio || g.aspectRatio,
-      prompt: body.prompt,
-      negativePrompt: body.negativePrompt || '',
-      width: body.width,
-      height: body.height,
-      duration: body.grokDuration,
-      sourceImagePath,
-      uploadedTempPath,
-      ...(body.musicVideo ? { musicVideo: body.musicVideo } : {}),
-      ...(body.fableLoom ? { fableLoom: body.fableLoom } : {}),
-      ...(body.visualConditioning ? { visualConditioning: body.visualConditioning } : {}),
-    });
-    return res.json({ jobId, generationId: jobId, filename: `${jobId}.mp4`, model: 'grok', mode: 'grok', status, position });
-  }
-
-  const {
-    pythonPath, effectiveModelId, effectiveNumFrames, mode,
-    sourceImagePath, lastImagePath, audioFilePath, icReferencePaths,
-    resolvedKeyframes, extendFromVideoPath,
-    uploadedTempPath, uploadedTempPaths, loras, effectiveChunks, effectiveChunkPrompts, effectiveContextFrames,
-  } = prepared;
-
-  // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
-  // run this when no other render is in flight. Caller never sees BUSY.
-  const { jobId, position, status } = await enqueue({
-    pythonPath,
-    prompt: body.prompt,
-    negativePrompt: body.negativePrompt || '',
-    modelId: body.modelId,
-    width: body.width,
-    height: body.height,
-    ...(body.visualConditioning?.render?.parameters?.aspectRatio
-      ? { aspectRatio: body.visualConditioning.render.parameters.aspectRatio }
-      : {}),
-    // Duration-driven A2V models derive this from ffprobe over the staged audio;
-    // every other request passes the caller's value through unchanged.
-    numFrames: effectiveNumFrames,
-    fps: body.fps,
-    steps: body.steps,
-    guidanceScale: body.guidanceScale,
-    seed: body.seed,
-    tiling: body.tiling || 'auto',
-    // Only a SUBSTITUTE is persisted: an explicit `textEncoderId: 'stock'` is
-    // semantically identical to omitting the field, so storing it would make a
-    // resumed/remixed render carry a knob that never applied — and would differ
-    // from what the service records in history for the same render.
-    ...(isStockTextEncoder(body.textEncoderId) ? {} : { textEncoderId: body.textEncoderId }),
-    // Same "absence IS the default" rule as textEncoderId: an explicit
-    // 'quality' is semantically identical to omitting the field, so persisting
-    // it would leave a resumed/remixed render carrying a knob that never
-    // applied and differing from what the service records in history.
-    ...(isDefaultSpeedProfile(body.speedProfileId) ? {} : { speedProfileId: body.speedProfileId }),
-    // Same "absence IS the default" rule again: an explicit 'full' decode is
-    // identical to omitting the field, so persisting it would leave a
-    // resumed/remixed render carrying a knob that never applied.
-    ...(isFullDecode(body.draftDecode) ? {} : { draftDecode: body.draftDecode }),
-    disableAudio: body.disableAudio === true || body.disableAudio === 'true',
-    sourceImagePath,
-    audioFilePath,
-    audioStartSec: body.audioStartSec,
-    uploadedTempPath,
-    uploadedTempPaths,
-    lastImagePath,
-    keyframes: resolvedKeyframes,
-    extendFromVideoPath,
-    mode,
-    imageStrength: body.imageStrength,
-    // Persisted only when it is NOT the default, exactly like textEncoderId above:
-    // storing an explicit 'anchor' would make a resumed/remixed render carry a knob
-    // that changed nothing, and would differ from what the service records in
-    // history for the same render.
-    ...(isDefaultI2vReferenceMode(body.i2vReferenceMode) ? {} : { i2vReferenceMode: body.i2vReferenceMode }),
-    chunks: effectiveChunks,
-    // Undefined when the request doesn't chain (or every beat was blank) — the
-    // key is simply absent from job.params then, so a resumed form restores no
-    // stale beats. See prepareVideoGenParams for the normalization.
-    ...(effectiveChunkPrompts ? { chunkPrompts: effectiveChunkPrompts } : {}),
-    // Undefined for a non-chained request, so job.params doesn't carry a knob
-    // that couldn't have applied. `0` is a real value here (last-frame
-    // chaining) and must survive — see resolveContextFrames.
-    ...(effectiveContextFrames != null ? { contextFrames: effectiveContextFrames } : {}),
-    loras,
-    icReferencePaths,
-    icStrength: body.icStrength,
-    icAttentionStrength: body.icAttentionStrength,
-    icSkipStage2: body.icSkipStage2 === true || body.icSkipStage2 === 'true',
-    // Director-board attach tag (#1760 Phase 1). Rides into persisted
-    // job.params so the completion hook can file the clip onto the scene even
-    // if the board unmounted; absent for ordinary VideoGen-page renders.
-    ...(body.musicVideo ? { musicVideo: body.musicVideo } : {}),
-    // FableLoom scene attach tag. Rides into persisted job.params so the
-    // completion hook can file the clip even if the editor unmounted.
-    ...(body.fableLoom ? { fableLoom: body.fableLoom } : {}),
-    ...(body.visualConditioning ? { visualConditioning: body.visualConditioning } : {}),
-  });
-  // Match the legacy response shape (jobId, generationId, filename, model,
-  // mode) so existing client code keeps working; add status+position for
-  // the queue. effectiveModelId was resolved by the service.
-  res.json({ jobId, generationId: jobId, filename: `${jobId}.mp4`, model: effectiveModelId, mode: 'local', status, position });
+  res.json(await submitVideoGenJob(parsed.data, uploads));
 }));
 
 // Currently-running video job (if any) so the page can re-attach after a
