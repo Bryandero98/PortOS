@@ -6,6 +6,7 @@ import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { validateRequest, usageQuerySchema, usageMessagesSchema, providerUsageQuerySchema, subscriptionCostsSchema } from '../lib/validation.js';
 import { saveSubscriptionCosts, getSubscriptionSavings } from '../services/subscriptionCosts.js';
+import { getFleetUsage } from '../services/peerUsage.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import {
@@ -23,19 +24,26 @@ router.get('/', asyncHandler(async (req, res) => {
   const result = await getAllProviders();
   const providers = Array.isArray(result) ? result : (result?.providers || []);
   const summary = usage.getUsageSummary({ from, to, providers });
-  // The report prices this window's usage at published API rates; the savings
-  // block says what the user's flat-rate plans cost over the SAME window, so
-  // the headline figure has something to be compared against.
-  const subscriptionSavings = await getSubscriptionSavings({
-    report: summary.report,
-    providers,
-    from,
-    to,
-    // Only an unbounded ("All time") window needs a start day inferred from
-    // history; every other range already has one, so don't pay the scan.
-    firstActivityDay: from ? null : usage.getFirstActivityDay()
-  });
-  res.json({ ...summary, subscriptionSavings });
+  // Two independent reads over the same resolved window, so they overlap:
+  // - savings: what the user's flat-rate plans cost over the SAME window, so
+  //   the headline API-rate figure has something to be compared against.
+  // - fleet: the per-instance breakdown across the federation, priced over the
+  //   same window by the same report builder. Empty on a single-machine install
+  //   (or before a peer's first usage sync) — the UI hides that section rather
+  //   than showing a one-row "fleet".
+  const [subscriptionSavings, fleet] = await Promise.all([
+    getSubscriptionSavings({
+      report: summary.report,
+      providers,
+      from,
+      to,
+      // Only an unbounded ("All time") window needs a start day inferred from
+      // history; every other range already has one, so don't pay the scan.
+      firstActivityDay: from ? null : usage.getFirstActivityDay()
+    }),
+    getFleetUsage({ from, to, providers }),
+  ]);
+  res.json({ ...summary, subscriptionSavings, fleet });
 }));
 
 // PUT /api/usage/subscriptions - Merge plan prices. An omitted family keeps its

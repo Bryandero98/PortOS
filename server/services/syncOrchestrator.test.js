@@ -1,18 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock all dependencies
-vi.mock('./instances.js', () => ({
+vi.mock('./instances.js', async () => ({
+  // Keep the REAL resolveEffectiveCategories (and the default map it resolves
+  // against): a hand-written stand-in would let the shipped defaults drift from
+  // what these tests assert the sync loop does with them.
+  ...(await vi.importActual('./instances.js')),
   getPeers: vi.fn(),
   updatePeer: vi.fn().mockResolvedValue(undefined),
   // forPeer scoping resolves our own instanceId; the orchestrator catches a
   // throw/UNKNOWN and just omits the query param, so the default mock returns
   // a stable id to exercise the scoped path.
   getInstanceId: vi.fn().mockResolvedValue('our-inst-id'),
-  UNKNOWN_INSTANCE_ID: 'unknown',
-  DEFAULT_SYNC_CATEGORIES: {
-    brain: false, memory: false, goals: false,
-    character: false, digitalTwin: false, meatspace: false, catalog: false
-  }
 }));
 vi.mock('./brainSyncLog.js', () => ({
   getChangesSince: vi.fn(),
@@ -776,6 +775,53 @@ describe('syncOrchestrator', () => {
 
       expect(applyBrainSnapshot).not.toHaveBeenCalled();
       expect(result.brain.totalApplied).toBe(0);
+    });
+  });
+
+  // AI usage metrics are the one DEFAULT-ON sync category: a fresh peer syncs
+  // them without the user enabling anything, and the peer-level `syncEnabled`
+  // master switch (which predates default-on categories and means "don't
+  // replicate my content here") must not silently retract them.
+  describe('default-ON categories', () => {
+    const categoryUrls = () => mockFetch.mock.calls
+      .map((c) => c[0])
+      .filter((url) => url.includes('/api/sync/'));
+
+    beforeEach(async () => {
+      const dataSync = await import('./dataSync.js');
+      dataSync.getSupportedCategories.mockReturnValue(['usage', 'goals']);
+      dataSync.getChecksum.mockResolvedValue({ checksum: 'local' });
+      mockFetch.mockImplementation(async (url) => {
+        if (url.includes('/checksum')) return { ok: true, json: async () => ({ checksum: 'remote' }) };
+        if (url.includes('/snapshot')) return { ok: true, json: async () => ({ data: { instances: {} }, checksum: 'remote' }) };
+        return { ok: true, json: async () => ({}) };
+      });
+      dataSync.applyRemote.mockResolvedValue({ applied: true, count: 1 });
+    });
+
+    it('pulls usage from a peer whose stored map predates the category', async () => {
+      // A peer record written before `usage` existed has no key for it — it must
+      // pick up the shipped default rather than reading as off forever.
+      await syncWithPeer({ ...mockPeer, syncEnabled: true, syncCategories: { goals: false } });
+      expect(categoryUrls().some((url) => url.includes('/api/sync/usage/'))).toBe(true);
+    });
+
+    it('keeps pulling usage — and only usage — when the master switch is off', async () => {
+      await syncWithPeer({ ...mockPeer, syncEnabled: false, syncCategories: { goals: true } });
+      const urls = categoryUrls();
+      expect(urls.some((url) => url.includes('/api/sync/usage/'))).toBe(true);
+      expect(urls.some((url) => url.includes('/api/sync/goals/'))).toBe(false);
+    });
+
+    it('honors an explicit opt-out of the category itself', async () => {
+      await syncWithPeer({ ...mockPeer, syncEnabled: true, syncCategories: { usage: false } });
+      expect(categoryUrls().some((url) => url.includes('/api/sync/usage/'))).toBe(false);
+    });
+
+    it('still syncs nothing for a disabled peer', async () => {
+      getPeers.mockResolvedValue([{ ...mockPeer, enabled: false, syncCategories: { usage: true } }]);
+      await syncAllPeers();
+      expect(categoryUrls()).toHaveLength(0);
     });
   });
 

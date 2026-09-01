@@ -121,7 +121,7 @@ describe('GET /api/sync/:category/checksum — forPeer scoping', () => {
   // is caught here.
   it.each([
     'goals', 'character', 'digitalTwin', 'meatspace',
-    'universe', 'pipeline', 'mediaCollections', 'videoHistory', 'storyBuilder',
+    'universe', 'pipeline', 'mediaCollections', 'videoHistory', 'storyBuilder', 'usage',
   ])('accepts the %s category (enum parity with getSupportedCategories)', async (category) => {
     const res = await request(buildApp()).get(`/api/sync/${category}/checksum`);
     expect(res.status).not.toBe(400);

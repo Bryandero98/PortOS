@@ -139,8 +139,16 @@ export function redactPeerForWire(peer) {
 // `hasApiKey` pattern in server/routes/providers.js. The password stays only
 // on the server-side record, where peerAuthHeaders reads it.
 export function sanitizePeerForClient(peer) {
-  if (!peer || typeof peer !== 'object' || !peer.auth || typeof peer.auth !== 'object') return peer;
-  return { ...peer, auth: { username: peer.auth.username ?? '', hasPassword: Boolean(peer.auth.password) } };
+  if (!peer || typeof peer !== 'object') return peer;
+  const auth = peer.auth && typeof peer.auth === 'object'
+    ? { username: peer.auth.username ?? '', hasPassword: Boolean(peer.auth.password) }
+    : peer.auth;
+  // EFFECTIVE categories, not the raw stored map — the SAME resolution the sync
+  // loop runs. Shipping the raw map would render a default-ON category's
+  // checkbox off while the server is actively syncing it (and make turning it
+  // off take two clicks), and a second, subtly different resolver here would
+  // put the UI and the sync loop back out of step on the legacy no-map peer.
+  return { ...peer, auth, syncCategories: resolveEffectiveCategories(peer) };
 }
 
 // Default data shape
@@ -306,7 +314,9 @@ function validHost(str) {
 
 export { validHost };
 
-// Default sync categories — all disabled until explicitly enabled per-peer
+// Default sync categories. Everything that replicates the user's own CONTENT is
+// off until explicitly enabled per-peer; the exception is `usage`, which is
+// default-ON (see DEFAULT_ON_SYNC_CATEGORIES below).
 const DEFAULT_SYNC_CATEGORIES = {
   brain: false,
   memory: false,
@@ -319,6 +329,9 @@ const DEFAULT_SYNC_CATEGORIES = {
   mediaCollections: false,
   videoHistory: false,
   storyBuilder: false,
+  // ON by default — the only category that is. Rationale + the rules that
+  // follow from it: docs/decisions/2026-09-01-federated-usage-metrics.md.
+  usage: true,
   fableLoom: false,
   authors: false,
   artists: false,
@@ -336,6 +349,58 @@ const DEFAULT_SYNC_CATEGORIES = {
 };
 
 export { DEFAULT_SYNC_CATEGORIES };
+
+// Categories that stay on for a peer even when the user's master `syncEnabled`
+// switch is off — that switch predates them and means "don't replicate my
+// content to this peer", so it must not silently retract a default-ON one.
+// Turning one off is an explicit per-category act; disabling the PEER
+// (`enabled: false`) still stops everything.
+export const DEFAULT_ON_SYNC_CATEGORIES = Object.freeze(
+  Object.entries(DEFAULT_SYNC_CATEGORIES).filter(([, on]) => on).map(([key]) => key)
+);
+const DEFAULT_ON_SET = new Set(DEFAULT_ON_SYNC_CATEGORIES);
+
+/** Is this category one that ships ON? The single definition of that policy. */
+export const isDefaultOnCategory = (key) => DEFAULT_ON_SET.has(key);
+
+// Does this category map enable anything the user actually opted into?
+//
+// `syncEnabled` is derived from this, and it is NOT a cosmetic flag: it also
+// gates per-record OUTBOUND pushes (`peerAllowsOutbound`). A default-ON category
+// must therefore never flip it on by itself, or adding one would silently widen
+// what every existing peer is allowed to receive.
+function hasOptedInCategory(categories) {
+  return Object.entries(categories || {}).some(([key, on]) => on === true && !isDefaultOnCategory(key));
+}
+
+/**
+ * The effective sync-category map for a peer — the single resolution of "what
+ * actually syncs with this peer", used by BOTH the sync loop (syncOrchestrator)
+ * and the client-facing peer payload (sanitizePeerForClient). Two resolvers
+ * would drift, and the UI would then show something the loop doesn't do.
+ *
+ * Three rules, in order:
+ *  - A full-sync ("mirror everything") peer implies every current AND future
+ *    category on, whatever its stored map says.
+ *  - The shipped defaults sit UNDER the stored map, so a category added after
+ *    this peer record was written picks up its default instead of reading as
+ *    `undefined` (= off) forever. No migration needed; a key the user actually
+ *    toggled is present in the stored map and always wins.
+ *  - `syncEnabled: false` — the master "don't replicate my content here" switch
+ *    — masks the result down to the default-ON categories rather than silencing
+ *    the peer outright. Disabling the PEER (`enabled: false`) still stops
+ *    everything.
+ */
+export function resolveEffectiveCategories(peer) {
+  if (peer?.fullSync === true) return allSyncCategoriesOn();
+  const stored = peer?.syncCategories
+    ? { ...DEFAULT_SYNC_CATEGORIES, ...peer.syncCategories }
+    // Legacy fallback: a peer with no stored map but sync on gets brain+memory,
+    // the pre-per-category behavior.
+    : { ...DEFAULT_SYNC_CATEGORIES, ...(peer?.syncEnabled !== false ? { brain: true, memory: true } : {}) };
+  if (peer?.syncEnabled !== false) return stored;
+  return Object.fromEntries(DEFAULT_ON_SYNC_CATEGORIES.map((key) => [key, stored[key] === true]));
+}
 
 // A category map with every key forced on — the effective view a full-sync
 // ("mirror everything") peer presents. Derived from DEFAULT_SYNC_CATEGORIES so a
@@ -473,7 +538,7 @@ export async function updatePeer(id, updates) {
         // Turning full mirror off restores the per-category selection preserved
         // underneath — recompute syncEnabled from it so a peer with no remaining
         // enabled categories doesn't read as "sync on, nothing to sync".
-        peer.syncEnabled = Object.values(peer.syncCategories || {}).some(Boolean);
+        peer.syncEnabled = hasOptedInCategory(peer.syncCategories);
       }
       // Reciprocate the full-sync intent (and its all-on category view) to the
       // peer whenever we know its identity, so a node pair converges to a mutual
@@ -490,6 +555,13 @@ export async function updatePeer(id, updates) {
         if (prev[cat] !== true && incoming[cat] === true) turnedOnKinds.push(kind);
       }
       peer.syncCategories = { ...prev, ...incoming };
+      // `syncEnabled` is DERIVED from the category map — it gates per-record
+      // outbound pushes (peerAllowsOutbound), so it must reflect what the user
+      // opted into, not what a caller computed. Recomputing here (rather than
+      // honoring `updates.syncEnabled` on this path) is what keeps a default-ON
+      // category from widening outbound consent: a client that sums the whole
+      // map would see `usage: true` and send `syncEnabled: true`.
+      peer.syncEnabled = hasOptedInCategory(peer.syncCategories);
       if (turnedOnKinds.length > 0) backfillPeerInstanceId = peer.instanceId || null;
       // Reciprocate so the peer enables the same categories toward us. Only when
       // we know the peer's identity (post-handshake).
@@ -1045,7 +1117,7 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
     if (needsOutboundAdopt) entry.directions = [...directions, 'outbound'];
     // Recompute from the (possibly preserved) stored map — a full-sync peer is
     // always sync-enabled; otherwise it follows the per-category selection.
-    entry.syncEnabled = entry.fullSync === true || Object.values(entry.syncCategories || {}).some(Boolean);
+    entry.syncEnabled = entry.fullSync === true || hasOptedInCategory(entry.syncCategories);
     // Backfill every per-record kind whose push toward this peer just became
     // viable: a kind that flipped false→true, all kinds when full mirror was just
     // adopted, and — when we just adopted outbound on a previously inbound-only
