@@ -851,6 +851,16 @@ export const isLocalInstanceProvider = (provider) => {
   return isLocalEndpoint(endpoint);
 };
 
+/**
+ * Does this provider run on another machine inside the private network?
+ *
+ * This is presentation identity, not a trust escalation: prerequisite and key
+ * rules still come from {@link isPrivateNetworkEndpoint}. Public hosted APIs
+ * stay ordinary remote providers; loopback daemons stay local.
+ */
+export const isFleetProvider = (provider) =>
+  !isLocalInstanceProvider(provider) && isPrivateNetworkEndpoint(provider?.endpoint);
+
 export const isLikelyLargeContextProvider = (provider) => {
   if (isProcessProvider(provider)) return true;
   return isApiProvider(provider) && !isLocalEndpoint(provider.endpoint);

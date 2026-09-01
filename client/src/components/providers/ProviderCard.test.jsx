@@ -62,3 +62,23 @@ describe('ProviderCard context window', () => {
     expect(screen.queryByText(/assumed/)).toBeNull();
   });
 });
+
+describe('ProviderCard fleet identity', () => {
+  it('decorates a private remote runtime and assigns lifecycle to that host', () => {
+    renderCard(wrapper({
+      name: 'Fleet GPU',
+      endpoint: 'http://gpu-host.example.ts.net:18020/v1',
+      vllmBacked: true,
+    }));
+
+    expect(screen.getByText('FLEET HOST')).toBeInTheDocument();
+    expect(screen.getByText(/Fleet vLLM runtime/)).toBeInTheDocument();
+    expect(screen.getByText(/Runs on/)).toHaveTextContent('gpu-host.example.ts.net');
+    expect(screen.queryByText(/Local vLLM container/)).not.toBeInTheDocument();
+  });
+
+  it('does not decorate a public hosted API as a fleet host', () => {
+    renderCard(wrapper({ endpoint: 'https://api.example.com/v1' }));
+    expect(screen.queryByText('FLEET HOST')).not.toBeInTheDocument();
+  });
+});

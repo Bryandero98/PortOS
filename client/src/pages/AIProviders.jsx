@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { AlertTriangle, Gauge } from 'lucide-react';
+import { AlertTriangle, Gauge, Network } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
@@ -27,6 +27,7 @@ import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import ProviderCard from '../components/providers/ProviderCard';
 import { GatewayKeyHint } from '../components/providers/ProviderNotices';
 import CollapsibleSection from '../components/ui/CollapsibleSection';
+import FleetProviderSetup from '../components/providers/FleetProviderSetup';
 
 // The two local apps an API provider can front. Their installer lives on the
 // Models → LLMs page (it starts the service too), so the provider card
@@ -129,6 +130,7 @@ export default function AIProviders() {
   const [sampleProviders, setSampleProviders] = useState([]);
   const [loadingSamples, setLoadingSamples] = useState(false);
   const [addingSample, setAddingSample] = useState({});
+  const [fleetPeers, setFleetPeers] = useState([]);
   // Samples this machine could actually run. One the server marked
   // hardware-`unavailable` has no path to becoming usable here, so it is not
   // listed at all rather than listed with a dead "Unavailable" button.
@@ -174,6 +176,7 @@ export default function AIProviders() {
   const location = useLocation();
   const { providerId: editingProviderId } = useParams();
   const creatingProvider = location.pathname.replace(/\/+$/, '').endsWith('/ai/new');
+  const fleetSetupOpen = location.pathname.replace(/\/+$/, '').endsWith('/ai/fleet');
   const closeForm = useCallback(() => navigate('/ai'), [navigate]);
   const openForm = useCallback((target) => navigate(target ? `/ai/edit/${target.id}` : '/ai/new'), [navigate]);
 
@@ -190,6 +193,13 @@ export default function AIProviders() {
   }, []);
 
   useEffect(() => { loadRuntimes(); }, [loadRuntimes]);
+
+  useEffect(() => {
+    if (!fleetSetupOpen) return;
+    api.getInstances({ silent: true })
+      .then((data) => setFleetPeers(Array.isArray(data?.peers) ? data.peers : []))
+      .catch(() => setFleetPeers([]));
+  }, [fleetSetupOpen]);
 
   useEffect(() => {
     if (!activeRun) return;
@@ -415,6 +425,13 @@ export default function AIProviders() {
     }
   };
 
+  const handleCreateFleetProvider = async (provider) => {
+    const created = await api.createProvider(provider);
+    setProviders((current) => [...current, created]);
+    toast.success(`${created.name} is connected to the fleet GPU host`);
+    return created;
+  };
+
   const handleAddAllSamples = async () => {
     if (addableSamples.length === 0) return;
 
@@ -575,6 +592,12 @@ export default function AIProviders() {
             className="inline-flex items-center gap-1.5 px-4 py-2 bg-port-border hover:bg-port-border/80 text-white rounded-lg transition-colors text-sm sm:text-base"
           >
             <Gauge size={15} /> Compare local models
+          </Link>
+          <Link
+            to="/ai/fleet"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-port-border hover:bg-port-border/80 text-white rounded-lg transition-colors text-sm sm:text-base"
+          >
+            <Network size={15} /> Fleet setup
           </Link>
           <button
             onClick={() => setShowRunPanel(!showRunPanel)}
@@ -896,6 +919,13 @@ export default function AIProviders() {
         flushMs={250}
         description={`Installing ${installingRuntime?.label} from ${installingRuntime?.method === 'script' ? "the vendor's official install script" : 'its global npm package'}.`}
       />
+      {fleetSetupOpen && (
+        <FleetProviderSetup
+          peers={fleetPeers}
+          onClose={closeForm}
+          onCreate={handleCreateFleetProvider}
+        />
+      )}
       {/* The readiness checklist's one-click fix. Same streaming modal as the
           CLI installer, pointed at the local-daemon setup endpoint — which
           re-derives the runtime and its endpoint from the provider record, so

@@ -27,6 +27,12 @@ agent session attached to it dies with it, and a cold start is ~5–7 minutes. T
 symmetry is also why PortOS never auto-starts it — a container that came up on
 boot would silently take the card away from whatever else the box does.
 
+That default is for a mixed workstation. If this machine is intentionally the
+always-on model appliance for several PortOS installs, configure Docker to
+restart the container unless stopped and let the GPU stay allocated. The
+[fleet LLM host guide](./fleet-llm-host.md) covers the Tailscale endpoint,
+client-side OpenCode/API providers, and fallback policy for that topology.
+
 The probe costs nothing on a machine this does not apply to: it is skipped
 entirely when no `vllmBacked` provider is enabled, and on any host without an
 NVIDIA GPU. A probe that fails or times out means the container is *not* serving,
@@ -292,6 +298,23 @@ time-to-first-token dropping from 22.4 s on the first turn to 0.56 s on the
 follow-up, which is what makes a multi-turn TUI session feel different from a
 one-shot completion.
 
+## Why not the EXL3 3.5-bpw kit by default?
+
+The [MiaAI-Lab EXL3 deployment kit](https://github.com/MiaAI-Lab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw)
+is a credible long-context alternative: its 14.2 GB target plus the in-checkpoint
+MTP head leaves enough room for a Hadamard-4 KV cache at the model's native 262k
+window on a 3090. Its DFlash2 draft is about 1.4 GB and trades some of that
+context for throughput.
+
+It does not replace this recipe yet. The EXL3 kit's published throughput and
+quality rows were measured on a DGX Spark/GB10, while the maintainers explicitly
+describe RTX performance as an unmeasured expectation. Its included server also
+generates one request at a time and queues concurrent calls. This vLLM stack has
+reproducible 3090 measurements, structured tool calling, prefix caching, and
+multi-request operation — better evidence for an always-available fleet service.
+Re-evaluate after the EXL3 stack publishes 3090 agent/tool benchmarks and a
+concurrent server result.
+
 ## Environment overrides
 
 | Variable | Default | Purpose |
@@ -302,6 +325,8 @@ one-shot completion.
 ## Related
 
 - [MTPLX](./mtplx.md) — the Apple Silicon native-MTP equivalent.
+- [Dedicated fleet LLM host](./fleet-llm-host.md) — expose this authenticated
+  runtime over Tailscale and create OpenCode/API providers on peer installs.
 - [DFlash 2 / DSpark on llama.cpp](./dflash2.md) — the llama-server path, and the
   2026-08-19 evaluation that concluded PortOS should not vendor an unmerged
   engine patch. That conclusion still holds; what changed is that upstream froze
