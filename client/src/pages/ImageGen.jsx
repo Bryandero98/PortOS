@@ -16,6 +16,7 @@ import MediaCard from '../components/media/MediaCard';
 import MediaPreview from '../components/media/MediaPreview';
 import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import StylePresetPicker from '../components/media/StylePresetPicker';
+import UniverseStylePicker from '../components/media/UniverseStylePicker';
 import PromptEnhancer from '../components/media/PromptEnhancer';
 import PromptFromMedia from '../components/media/PromptFromMedia';
 import BackendChipStrip from '../components/media/BackendChipStrip';
@@ -41,6 +42,7 @@ import {
   AlertTriangle, X, Film,
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
+import { universeStylePreset } from '../lib/universeStylePreset';
 import { isCloudCliMode, deriveAvailableBackends, AGY_IMAGEGEN_DEFAULT_MODEL, IMAGE_GEN_MODE, cloudPromptRequired, imageGenReadiness, isI2iCapableMode, pickI2iMode, modeLabel, referenceSlotsFor, supportsReferenceStrength } from '../lib/imageGenBackends';
 import { clampImageDimensions, clampImageEdge } from '../lib/imageGenResolutions';
 import { peerModelRequiresInput } from '../lib/federatedMediaReadiness.js';
@@ -153,6 +155,7 @@ export default function ImageGen() {
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState(DEFAULT_NEGATIVE_PROMPT);
   const [stylePreset, setStylePreset] = useState(null);
+  const [selectedUniverse, setSelectedUniverse] = useState(null);
   const [modelId, setModelId] = useState('');
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
@@ -382,6 +385,10 @@ export default function ImageGen() {
     // come back to the same prompt + settings + live preview frame.
     getActiveImageJob().then(({ activeJob }) => {
       if (!activeJob) return;
+      // Active-job prompt fields are already style-composed. Do not apply a
+      // newly-selected style a second time while restoring the form.
+      setStylePreset(null);
+      setSelectedUniverse(null);
       if (activeJob.prompt) setPrompt(activeJob.prompt);
       if (activeJob.negativePrompt != null) setNegativePrompt(activeJob.negativePrompt);
       if (activeJob.modelId) setModelId(activeJob.modelId);
@@ -468,7 +475,13 @@ export default function ImageGen() {
     const present = remixKeys.filter((k) => searchParams.get(k) != null);
     if (!initFile && present.length === 0) return;
     const get = (k) => searchParams.get(k);
-    if (get('prompt')) setPrompt(get('prompt'));
+    if (get('prompt')) {
+      setPrompt(get('prompt'));
+      // URL handoffs carry the prompt that was submitted, including any style
+      // layers, so the picker must not compose them again.
+      setStylePreset(null);
+      setSelectedUniverse(null);
+    }
     if (get('negativePrompt')) setNegativePrompt(get('negativePrompt'));
     if (get('modelId')) setModelId(get('modelId'));
     if (get('width')) setWidth(Number(get('width')));
@@ -661,9 +674,13 @@ export default function ImageGen() {
   // trigger-word hint and its "+ trigger" append both judge presence against
   // THIS, not the raw textarea, so neither can disagree with the server-side
   // weave when the style preset already supplies a trigger token.
+  const activeStylePresets = useMemo(() => [
+    selectedUniverse ? universeStylePreset(selectedUniverse) : null,
+    stylePreset,
+  ].filter(Boolean), [selectedUniverse, stylePreset]);
   const styledPrompt = useMemo(
-    () => composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt,
-    [prompt, negativePrompt, stylePreset],
+    () => composeStyledPrompt(prompt, negativePrompt, activeStylePresets).prompt,
+    [prompt, negativePrompt, activeStylePresets],
   );
   const activeReferenceImages = useMemo(
     () => referenceImages.slice(0, referenceSlotCount),
@@ -826,7 +843,7 @@ export default function ImageGen() {
   // POST — the user keeps watching the active render and the new submission
   // sits in the server queue until the active one finishes.
   const submitGenerationPayload = async () => {
-    const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
+    const composed = composeStyledPrompt(prompt, negativePrompt, activeStylePresets);
     // Custom-dimension inputs emit raw values for smooth typing and snap on blur;
     // an Enter-submit (or a field cleared to 0) can bypass that blur, so clamp to
     // the server's per-edge bounds here too — the last line of defense before the
@@ -1003,7 +1020,7 @@ export default function ImageGen() {
         await startLocalGeneration();
         await extras;
       } else {
-        const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
+        const composed = composeStyledPrompt(prompt, negativePrompt, activeStylePresets);
         const payload = {
           prompt: composed.prompt,
           negativePrompt: composed.negativePrompt || undefined,
@@ -1142,6 +1159,7 @@ export default function ImageGen() {
     // Preset was already folded into the recorded prompt at submit time;
     // clear the picker so the user sees what actually produced the image.
     setStylePreset(null);
+    setSelectedUniverse(null);
     if (img.prompt) setPrompt(img.prompt);
     if (img.negativePrompt || img.negative_prompt) setNegativePrompt(img.negativePrompt || img.negative_prompt);
     if (img.seed != null) setSeed(String(img.seed));
@@ -1271,6 +1289,11 @@ export default function ImageGen() {
 
       <form onSubmit={handleGenerate} className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
+          <UniverseStylePicker
+            value={selectedUniverse?.id || ''}
+            onChange={setSelectedUniverse}
+            disabled={statusLoading}
+          />
           <StylePresetPicker
             value={stylePreset?.id || ''}
             onChange={setStylePreset}
