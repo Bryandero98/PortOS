@@ -120,12 +120,24 @@ function escapeCmdMetacharsIfUnquoted(value) {
 // a raw `taskkill` against its pid bypasses node-pty's own Windows teardown
 // (releasing its native ConPTY handle), leaking it. Any non-ChildProcess
 // killable always uses its own `.kill()` instead, on every platform.
+//
+// On Windows node-pty additionally throws `Signals not supported on windows.`
+// for any signal argument — so a signalled kill there killed nothing and threw
+// past this function, and stopping a TUI run silently left it running. The
+// signal is therefore offered first and the signal-free form used only for a
+// handle that refuses it (retrying is harmless — the first attempt did nothing);
+// dropping it unconditionally would downgrade other signal-forwarding killables.
+// Mirrors server/lib/bufferedSpawn.js (this directory stays self-contained).
 function killProcessTree(child) {
-  if (IS_WIN32 && child.pid && child instanceof ChildProcess) {
+  const isChildProcess = child instanceof ChildProcess;
+  if (IS_WIN32 && child.pid && isChildProcess) {
     child.killed = true;
     spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
       .on('error', () => {})
       .unref();
+  } else if (IS_WIN32 && !isChildProcess) {
+    try { child.kill('SIGTERM'); }
+    catch { child.kill(); }
   } else {
     child.kill('SIGTERM');
   }

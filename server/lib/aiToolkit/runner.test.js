@@ -3,6 +3,17 @@ import { mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { join, basename } from 'path';
 import { tmpdir } from 'os';
 import EventEmitter from 'events';
+import { ChildProcess } from 'child_process';
+
+const IS_WIN32 = process.platform === 'win32';
+
+/**
+ * An external run's spawned handle. The prototype matters: killProcessTree
+ * tells a spawned child from a node-pty session by `instanceof ChildProcess`,
+ * and a plain object would silently exercise the pty branch.
+ */
+const externalChild = () =>
+  Object.assign(Object.create(ChildProcess.prototype), { kill: vi.fn(), killed: false });
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal();
@@ -698,7 +709,7 @@ describe('AI Toolkit runner — declared extension points', () => {
     const runner = createRunnerService({ dataDir: './data' });
     expect(await runner.isRunActive('x')).toBe(false);
 
-    const child = { kill: vi.fn(), killed: false };
+    const child = externalChild();
     runner.registerExternalRun('x', child);
     expect(runner.hasExternalRun('x')).toBe(true);
     expect(await runner.isRunActive('x')).toBe(true);
@@ -712,6 +723,19 @@ describe('AI Toolkit runner — declared extension points', () => {
     expect(await runner.stopRun('x')).toBe(false);
   });
 
+  // registerExternalRun also holds node-pty sessions (the host's TUI runs). On
+  // Windows node-pty throws "Signals not supported on windows." for any signal,
+  // so a signalled kill there stopped nothing and threw past stopRun, leaving
+  // the TUI running while the run reported itself stopped.
+  it('stopRun kills a node-pty external run without a signal on Windows', async () => {
+    const runner = createRunnerService({ dataDir: './data' });
+    const pty = { pid: 4321, kill: vi.fn((signal) => { if (signal && IS_WIN32) throw new Error('Signals not supported on windows.'); }) };
+    runner.registerExternalRun('tui-run', pty);
+
+    expect(await runner.stopRun('tui-run')).toBe(true);
+    expect(pty.kill).toHaveBeenCalledWith(...(IS_WIN32 ? [] : ['SIGTERM']));
+  });
+
   it('stopRun aborts an AbortController-style external run', async () => {
     const runner = createRunnerService({ dataDir: './data' });
     const controller = { abort: vi.fn() };
@@ -723,7 +747,7 @@ describe('AI Toolkit runner — declared extension points', () => {
 
   it('unregisterExternalRun clears a stale explicit-stop marker', async () => {
     const runner = createRunnerService({ dataDir: './data' });
-    const child = { kill: vi.fn(), killed: false };
+    const child = externalChild();
     runner.registerExternalRun('done', child);
     await runner.stopRun('done');
     runner.unregisterExternalRun('done');
@@ -733,7 +757,7 @@ describe('AI Toolkit runner — declared extension points', () => {
   it('deleteRun kills an in-flight external run before removing its dir', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-del-'));
     const runner = createRunnerService({ dataDir });
-    const child = { kill: vi.fn(), killed: false };
+    const child = externalChild();
     runner.registerExternalRun('live', child);
 
     // No on-disk dir for this run, but the live process must still be killed.
