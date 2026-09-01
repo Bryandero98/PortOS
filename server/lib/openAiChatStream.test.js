@@ -160,6 +160,39 @@ describe('streamOpenAiChat — pre-header retries', () => {
     expect(reader.cancel).toHaveBeenCalledOnce();
     delete global.fetch;
   });
+
+  it('preserves the callback adapter AbortError and partial-output contract', async () => {
+    const controller = new AbortController();
+    const chunk = new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n');
+    const cancel = vi.fn(async () => {});
+    let reads = 0;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: vi.fn(async () => {
+            reads += 1;
+            if (reads === 1) return { done: false, value: chunk };
+            throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+          }),
+          cancel,
+        }),
+      },
+    });
+
+    const error = await streamOpenAiChat({
+      endpoint: 'https://example.test/v1',
+      model: 'example-model',
+      messages: [],
+      signal: controller.signal,
+      onChunk: () => controller.abort(),
+    }).catch((err) => err);
+
+    expect(error).toMatchObject({ name: 'AbortError', partialOutput: 'partial' });
+    expect(cancel).toHaveBeenCalledOnce();
+    delete global.fetch;
+  });
 });
 
 describe('iterateOpenAiChat', () => {

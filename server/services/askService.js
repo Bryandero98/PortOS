@@ -475,6 +475,7 @@ async function* streamCompletion(provider, model, prompt, signal) {
       // decisions stay canonical without exposing a new Ask event shape.
       if (chunk.kind === 'content') yield chunk.text;
     }
+    if (signal?.aborted) return;
     return;
   }
 
@@ -679,6 +680,7 @@ export async function* runAsk({
     yield { type: 'error', error: `Provider stream failed: ${err.message}` };
     return;
   }
+  if (signal?.aborted) return;
 
   const answer = chunks.join('');
   console.log(`✅ Ask complete: ${provider.id}/${effectiveModel} ${Date.now() - startedAt}ms ${answer.length} chars`);

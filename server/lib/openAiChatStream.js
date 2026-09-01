@@ -249,6 +249,9 @@ function composeStreamSignal(signal, timeoutMs) {
  * @param {AbortSignal} [options.signal]
  * @param {number} [options.timeoutMs] abort the request and reader after this
  *   many milliseconds; the caller's signal remains independently effective.
+ * @param {boolean} [options.stopOnAbort=true] return quietly without reading
+ *   another buffered chunk after caller cancellation. The text adapter disables
+ *   this to preserve its established AbortError plus partial-output contract.
  * @param {(stats: object) => void} [options.onStats] registering one asks the
  *   daemon for a terminal usage frame (`stream_options.include_usage`).
  * @returns {AsyncGenerator<{text:string,kind:'content'|'reasoning'}>}
@@ -263,6 +266,7 @@ export async function* iterateOpenAiChat({
   extraBody = {},
   signal,
   timeoutMs,
+  stopOnAbort = true,
   onStats,
 }) {
   const composed = composeStreamSignal(signal, timeoutMs);
@@ -405,9 +409,10 @@ export async function* iterateOpenAiChat({
     // of discarding them.
     try {
       let terminal = false;
-      while (!terminal) {
+      while (!terminal && (!stopOnAbort || !signal?.aborted)) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (stopOnAbort && signal?.aborted) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -445,6 +450,11 @@ export async function* iterateOpenAiChat({
         });
       await reader.cancel().catch(() => {});
     }
+  } catch (err) {
+    // The iterator is the quiet cancellation seam used by Ask. The convenience
+    // adapter below restores its established AbortError contract for callers
+    // that await a final string instead of consuming chunks directly.
+    if (!stopOnAbort || !signal?.aborted) throw err;
   } finally {
     composed.cleanup();
   }
@@ -462,7 +472,7 @@ export async function streamOpenAiChat(options) {
   let output = '';
   let reasoning = '';
   try {
-    for await (const chunk of iterateOpenAiChat(transportOptions)) {
+    for await (const chunk of iterateOpenAiChat({ ...transportOptions, stopOnAbort: false })) {
       if (chunk.kind === 'content') output += chunk.text;
       else reasoning += chunk.text;
       await onChunk?.(chunk.text, chunk.kind);
