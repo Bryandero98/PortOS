@@ -15,7 +15,7 @@ export const isDisplaySleepEnabled = (settings) => (
 function runPowerCmd(cmd, args) {
   const proc = spawn(cmd, args, { stdio: 'ignore' });
   proc.on('error', () => {});
-  proc.unref();
+  proc.unref?.();
   return proc;
 }
 
