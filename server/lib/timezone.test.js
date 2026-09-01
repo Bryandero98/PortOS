@@ -222,6 +222,14 @@ describe('timezone', () => {
       expect(localClock(anchor, 'America/Los_Angeles')).toBe('00:00')
     })
 
+    it('uses the first representable instant when a timezone skips midnight', () => {
+      const anchor = anchorLocalMidnightUtc('2026-03-08', 'America/Havana')
+      expect(anchor).toBe(Date.parse('2026-03-08T05:00:00Z'))
+      expect(localClock(anchor, 'America/Havana')).toBe('01:00')
+      expect(todayInTimezone('America/Havana', new Date(anchor - 1))).toBe('2026-03-07')
+      expect(todayInTimezone('America/Havana', new Date(anchor))).toBe('2026-03-08')
+    })
+
     it('handles timezones ahead of UTC', () => {
       const anchor = anchorLocalMidnightUtc('2026-04-17', 'Asia/Tokyo')
       expect(anchor).toBe(Date.parse('2026-04-17T00:00:00Z') - 9 * 3600 * 1000)
@@ -241,6 +249,12 @@ describe('timezone', () => {
   })
 
   describe('localDayRangeUtc', () => {
+    it('returns a 24h UTC window for a constant-offset local day', () => {
+      const range = localDayRangeUtc('2026-07-04', 'America/Los_Angeles')
+      expect(range.start.toISOString()).toBe('2026-07-04T07:00:00.000Z')
+      expect(range.end.getTime() - range.start.getTime()).toBe(24 * 60 * 60 * 1000)
+    })
+
     it.each([
       ['2026-03-08', '2026-03-08T08:00:00.000Z', '2026-03-09T07:00:00.000Z', 23],
       ['2026-11-01', '2026-11-01T07:00:00.000Z', '2026-11-02T08:00:00.000Z', 25],
@@ -253,12 +267,39 @@ describe('timezone', () => {
 
     it('rejects malformed dates', () => {
       expect(localDayRangeUtc('not-a-date', 'UTC')).toBeNull()
+      expect(localDayRangeUtc('2026-02-31', 'UTC')).toBeNull()
+      expect(localDayRangeUtc('2026-13-01', 'UTC')).toBeNull()
     })
 
     it('trims surrounding whitespace before anchoring', () => {
       const range = localDayRangeUtc(' 2026-03-08 ', 'America/Los_Angeles')
       expect(range.start.toISOString()).toBe('2026-03-08T08:00:00.000Z')
       expect(range.end.toISOString()).toBe('2026-03-09T07:00:00.000Z')
+    })
+
+    it('rolls the end boundary over month and year edges', () => {
+      const monthEdge = localDayRangeUtc('2026-01-31', 'UTC')
+      expect(monthEdge.end.toISOString()).toBe('2026-02-01T00:00:00.000Z')
+      const yearEdge = localDayRangeUtc('2026-12-31', 'UTC')
+      expect(yearEdge.end.toISOString()).toBe('2027-01-01T00:00:00.000Z')
+    })
+
+    it('bounds a midnight-skipping DST day without including the prior date', () => {
+      const range = localDayRangeUtc('2026-03-08', 'America/Havana')
+      expect(range.start.toISOString()).toBe('2026-03-08T05:00:00.000Z')
+      expect(range.end.toISOString()).toBe('2026-03-09T04:00:00.000Z')
+      expect(range.end.getTime() - range.start.getTime()).toBe(23 * 60 * 60 * 1000)
+    })
+
+    it('handles years below 100 without Date.UTC\'s 1900 offset', () => {
+      const range = localDayRangeUtc('0099-12-31', 'UTC')
+      expect(range.start.toISOString()).toBe('0099-12-31T00:00:00.000Z')
+      expect(range.end.toISOString()).toBe('0100-01-01T00:00:00.000Z')
+    })
+
+    it('rejects a calendar date skipped entirely by its timezone', () => {
+      expect(localDayRangeUtc('2011-12-30', 'Pacific/Apia')).toBeNull()
+      expect(Number.isNaN(anchorLocalMidnightUtc('2011-12-30', 'Pacific/Apia'))).toBe(true)
     })
   })
 
