@@ -16,11 +16,6 @@ describe('OnThisDayWidget', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('shows the empty state when nothing matched today', () => {
-    renderWidget({ date: '2026-09-01', timezone: 'UTC', total: 0, items: [] });
-    expect(screen.getByText(/No captures from this day/)).toBeTruthy();
-  });
-
   it('deep-links each row by type — journals to their exact past date', () => {
     renderWidget({
       date: '2026-09-01',

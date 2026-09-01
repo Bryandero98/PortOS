@@ -62,9 +62,9 @@ const entryFor = (date, content) => ({
 
 let store;
 
-const renderTab = async () => {
-  // Router context is required for the ?date= deep-link search param.
-  const result = render(<MemoryRouter><DailyLogTab /></MemoryRouter>);
+const renderTab = async (initialEntries = ['/']) => {
+  // Router context is required: the open day derives from the ?date= param.
+  const result = render(<MemoryRouter initialEntries={initialEntries}><DailyLogTab /></MemoryRouter>);
   // Flush the mount fetches (entry + server-today + history + settings).
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   return result;
@@ -125,6 +125,19 @@ const typeThenReceiveVoiceSegment = async (typed, spoken = 'spoken words') => {
     });
   });
 };
+
+describe('DailyLogTab deep linking', () => {
+  it('opens the day named by a ?date= param instead of today', async () => {
+    await renderTab([`/?date=${YESTERDAY}`]);
+    expect(api.getDailyLog).toHaveBeenCalledWith(YESTERDAY);
+    expect(editor().value).toBe('old day');
+  });
+
+  it('ignores a malformed ?date= param and falls back to today', async () => {
+    await renderTab(['/?date=not-a-date']);
+    expect(editor().value).toBe('existing');
+  });
+});
 
 describe('DailyLogTab autosave', () => {
   it('saves after the user stops typing', async () => {

@@ -7,6 +7,7 @@ const TODAY = '2026-09-01';
 describe('snippetOf', () => {
   it('flattens markdown chrome and collapses whitespace', () => {
     expect(snippetOf('# Heading\n\n- did a [thing](https://example.com)\n> quote')).toBe('Heading did a thing quote');
+    expect(snippetOf('**Big day** — shipped `it` with ![pic](img.png)')).toBe('Big day — shipped it with pic');
   });
 
   it('drops fenced code blocks and truncates with an ellipsis', () => {

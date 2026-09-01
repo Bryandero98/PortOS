@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import useUrlParams from '../../../hooks/useUrlParams';
 import {BookOpen, ChevronLeft, ChevronRight, Mic, MicOff, Save, Volume2, Settings,
   Plus, Trash2, CloudUpload, Menu, X, Sparkles} from 'lucide-react';
 import * as api from '../../../services/api';
@@ -80,17 +80,24 @@ const STALE_JOURNAL_MAX_ATTEMPTS = 3;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export default function DailyLogTab() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  // Deep-linkable date (?date=YYYY-MM-DD) — the On This Day widget and shared
-  // links open a specific past day; without the param the tab opens on today.
-  const [date, setDate] = useState(() => {
-    const param = searchParams.get('date');
-    return param && ISO_DATE_RE.test(param) ? param : localDateKey();
-  });
+  // The URL is the source of truth for the open day (?date=YYYY-MM-DD) — the
+  // On This Day widget and shared links deep-link a specific past day; without
+  // the param the tab shows the server's today.
+  const [searchParams, updateParams] = useUrlParams();
   // Backend today — resolved via GET /daily-log/today on mount so the
   // "Today" button, disabled-forward-nav check, and isToday chip all match
   // the server's timezone. Falls back to localDateKey() until fetched.
   const [serverToday, setServerToday] = useState(localDateKey());
+  const dateParam = searchParams.get('date');
+  const date = dateParam && ISO_DATE_RE.test(dateParam) ? dateParam : serverToday;
+  // Navigating to today clears the param so the default view keeps a clean
+  // URL. Ref-read so the setter stays referentially stable for the voice-event
+  // handlers that capture it.
+  const serverTodayRef = useRef(serverToday);
+  serverTodayRef.current = serverToday;
+  const setDate = useCallback((next) => {
+    updateParams({ date: next === serverTodayRef.current ? null : next }, { replace: true });
+  }, [updateParams]);
   const [entry, setEntry] = useState(null);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
@@ -178,18 +185,6 @@ export default function DailyLogTab() {
   }, []);
 
   useEffect(() => { loadEntry(date); }, [date, loadEntry]);
-
-  // Reflect non-today dates back into ?date= so the open day stays shareable
-  // and reload-safe. Replace, not push — prev/next taps shouldn't pile up
-  // history entries.
-  useEffect(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (date === serverToday) next.delete('date');
-      else next.set('date', date);
-      return next;
-    }, { replace: true });
-  }, [date, serverToday, setSearchParams]);
   useEffect(() => { loadHistory(); loadSettings(); }, [loadHistory, loadSettings]);
 
   // Keep the server's dictation target date aligned with the UI while
@@ -202,16 +197,15 @@ export default function DailyLogTab() {
 
   // Ask the server for its canonical "today" so a user in a different timezone
   // than the browser (remote/VPN access) doesn't open the tab on the wrong day.
+  // No explicit hop needed: with no ?date= param, `date` derives from
+  // serverToday and follows it the moment this resolves.
   useEffect(() => {
     let cancelled = false;
     api.getDailyLog('today').then((res) => {
       if (cancelled || !res?.date) return;
       setServerToday(res.date);
-      // If we initialized with a wrong local date, hop to the real one.
-      if (date === localDateKey() && res.date !== date) setDate(res.date);
     }).catch(() => null);
     return () => { cancelled = true; };
-    // Only on mount — we intentionally don't re-run when date changes.
   }, []);
 
   useEffect(() => {

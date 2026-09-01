@@ -10,7 +10,9 @@
  */
 
 import * as brainStorage from './brainStorage.js';
+import { getBrainProjections } from './brainSearchIndex.js';
 import { getUserTimezone } from './userTimezone.js';
+import { stripMarkdownEmphasis } from '../lib/markdownText.js';
 import { todayInTimezone } from '../lib/timezone.js';
 
 const SNIPPET_MAX = 160;
@@ -24,10 +26,10 @@ const TYPE_RANK = { journal: 0, memory: 1, idea: 2 };
  */
 export function snippetOf(text, max = SNIPPET_MAX) {
   if (typeof text !== 'string') return '';
-  const flat = text
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/^[#>\-*\s]+/gm, ' ')
+  const flat = stripMarkdownEmphasis(
+    text.replace(/```[\s\S]*?```/g, ' ').replace(/!\[/g, '['),
+  )
+    .replace(/^[#>\-\s]+/gm, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (flat.length <= max) return flat;
@@ -37,12 +39,20 @@ export function snippetOf(text, max = SNIPPET_MAX) {
 const yearOf = (isoDate) => Number(isoDate.slice(0, 4));
 
 /**
+ * Does this local YYYY-MM-DD share `today`'s month-day in a prior year?
+ */
+export const isPriorYearMonthDay = (isoDate, today) =>
+  typeof isoDate === 'string'
+  && isoDate.endsWith(today.slice(4))
+  && Number.isInteger(yearOf(isoDate))
+  && yearOf(isoDate) < yearOf(today);
+
+/**
  * Pure collector: match records to today's month-day in prior years.
  * `today` is the local YYYY-MM-DD; `timezone` converts record timestamps to
  * local dates. Exported for tests.
  */
 export function collectOnThisDay({ today, timezone, journals = [], ideas = [], memories = [] }) {
-  const monthDay = today.slice(5);
   const currentYear = yearOf(today);
   const items = [];
 
@@ -51,17 +61,14 @@ export function collectOnThisDay({ today, timezone, journals = [], ideas = [], m
     const at = Date.parse(stamp ?? '');
     if (!Number.isFinite(at)) return null;
     const localDate = todayInTimezone(timezone, new Date(at));
-    if (localDate.slice(5) !== monthDay || yearOf(localDate) >= currentYear) return null;
-    return localDate;
+    return isPriorYearMonthDay(localDate, today) ? localDate : null;
   };
 
   for (const journal of journals) {
-    if (typeof journal?.date !== 'string' || !journal.date.endsWith(`-${monthDay}`)) continue;
-    const year = yearOf(journal.date);
-    if (!Number.isInteger(year) || year >= currentYear) continue;
+    if (!isPriorYearMonthDay(journal?.date, today)) continue;
     const snippet = snippetOf(journal.content);
     if (!snippet) continue;
-    items.push({ type: 'journal', id: journal.date, date: journal.date, yearsAgo: currentYear - year, title: null, snippet });
+    items.push({ type: 'journal', id: journal.date, date: journal.date, yearsAgo: currentYear - yearOf(journal.date), title: null, snippet });
   }
 
   for (const memory of memories) {
@@ -85,15 +92,25 @@ export function collectOnThisDay({ today, timezone, journals = [], ideas = [], m
 /**
  * The dashboard widget's read: today's lookbacks across journals, memories,
  * and ideas, capped at `limit` rows (total reports the uncapped match count).
+ *
+ * Reads the brainSearchIndex projections rather than `brainStorage.getAll` —
+ * the projection cache is built once and kept fresh by brainEvents, so a
+ * steady-state dashboard load costs zero disk I/O against stores that can
+ * hold thousands of records. Journal projections deliberately carry no body,
+ * so only the handful of matched days are loaded for their snippet.
  */
 export async function getOnThisDay({ limit = 8 } = {}) {
   const timezone = await getUserTimezone();
   const today = todayInTimezone(timezone);
-  const [journals, ideas, memories] = await Promise.all([
-    brainStorage.getAll('journals'),
-    brainStorage.getAll('ideas'),
-    brainStorage.getAll('memories'),
+  const [journalIndex, ideas, memories] = await Promise.all([
+    getBrainProjections('journals', { ranked: false }),
+    getBrainProjections('ideas', { ranked: false }),
+    getBrainProjections('memories', { ranked: false }),
   ]);
+  const journals = (await Promise.all(journalIndex
+    .filter((j) => j.hasBody && isPriorYearMonthDay(j.date, today))
+    .map((j) => brainStorage.getById('journals', j.date))
+  )).filter(Boolean);
   const items = collectOnThisDay({ today, timezone, journals, ideas, memories });
   return { date: today, timezone, total: items.length, items: items.slice(0, limit) };
 }
