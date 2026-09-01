@@ -45,7 +45,7 @@ import {
   isPrBranchWorktree,
   worktreeCommitGuidance,
 } from './promptSections/completion.js';
-import { buildLocalReviewLoopSection, buildReviewLoopFollowUpSection, isMergeOnlyFollowUp, prepareLocalReviewLoopBody } from './promptSections/reviewLifecycle.js';
+import { buildLocalReviewLoopSection, buildReviewLoopFollowUpSection, isMergeOnlyFollowUp, prepareLocalReviewLoopBody, prepareSandboxedReviewLoopBody } from './promptSections/reviewLifecycle.js';
 
 export {
   detectDomainSkillTemplate,
@@ -263,13 +263,15 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
     ? await loadSlashdoLib('local-agent-review-loop').catch(() => null)
     : null;
   const localAgentLoopBodyForInline = (isInlineNeedingRecipes && !isFollowUpNeedingRecipes)
-    ? prepareLocalReviewLoopBody(localAgentLoopBody)
+    ? prepareLocalReviewLoopBody(prepareSandboxedReviewLoopBody(localAgentLoopBody))
     : localAgentLoopBody;
   // The recipe is ~40KB. A follow-up agent inlines it — driving the loop is that
   // agent's entire job, so it will read all of it anyway. An INLINE loop is a
   // later phase of a run whose context is already carrying the actual task, so an
-  // over-budget recipe is staged on disk and pointed at instead (#3110's split,
-  // applied to the same body). Every host that reaches here has file tools.
+  // over-budget recipe is sanitized, then staged on disk and pointed at instead
+  // (#3110's split, applied to the same body). Every host that reaches here has
+  // file tools. Sanitizing before the write is load-bearing: otherwise the file
+  // pointer would bypass the public-content sandbox applied during rendering.
   const localAgentLoopBodyPath = (isInlineNeedingRecipes && !isFollowUpNeedingRecipes
     && localAgentLoopBodyForInline && localAgentLoopBodyForInline.length > SLASHDO_INLINE_BUDGET_CHARS)
     ? await writeResolvedSlashdoBody('local-agent-review-loop', localAgentLoopBodyForInline).catch((err) => {
@@ -417,9 +419,12 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
     reviewerEfforts: taskReviewerEfforts
   } = resolveReviewerConfig(task.metadata, codeReviewDefaults, defaultReviewers);
   const taskReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
-  const taskReviewerApplies = task.metadata?.reviewerApplies !== undefined
+  const configuredTaskReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
     : (codeReviewDefaults?.reviewerApplies === true);
+  // A PR/MR review consumes public contributor-controlled content. Its reviewer
+  // must stay review-only; the orchestrating agent validates and applies fixes.
+  const taskReviewerApplies = willOpenPR ? false : configuredTaskReviewerApplies;
 
   // TUI completion section — delegate to the shared light-path builder so
   // both prompt paths emit byte-identical workflows. (Background: TUI owns
@@ -777,9 +782,14 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     reviewerEfforts: lightReviewerEfforts
   } = resolveReviewerConfig(task.metadata, codeReviewDefaults, defaultReviewers);
   const lightReviewStopMode = task.metadata?.reviewStopMode || codeReviewDefaults?.stopMode || DEFAULT_REVIEW_STOP_MODE;
-  const lightReviewerApplies = task.metadata?.reviewerApplies !== undefined
+  const configuredLightReviewerApplies = task.metadata?.reviewerApplies !== undefined
     ? isTruthyMetaFn(task.metadata?.reviewerApplies)
     : (codeReviewDefaults?.reviewerApplies === true);
+  // Inline PR/MR lifecycles and review-loop follow-ups cross the public-forge
+  // boundary. Preserve reviewer-applies only for non-public local review work.
+  const lightReviewerApplies = (willOpenPR || isReviewLoopFollowUp)
+    ? false
+    : configuredLightReviewerApplies;
   const resolvedForgeCli = manualForgeCli(forgeCli, worktreeInfo);
   // Can this session TYPE a Claude Code slash command (`/do:pr`, `/do:push`,
   // `/simplify`)? One predicate, both prompt paths (#3114): `canTypeSlashCommands`
