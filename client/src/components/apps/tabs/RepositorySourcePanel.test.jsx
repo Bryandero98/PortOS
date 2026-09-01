@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 vi.mock('../../../services/api', () => ({
+  PORTOS_APP_ID: 'portos-default',
   getAppRepositorySources: vi.fn(),
   syncAppRepositoryFork: vi.fn(),
   pullAndUpdateApp: vi.fn(),
+  handleSelfRestart: vi.fn(),
 }));
 
 import * as api from '../../../services/api';
@@ -155,6 +157,45 @@ describe('managed app repository sources', () => {
     ));
     expect(api.syncAppRepositoryFork).not.toHaveBeenCalled();
     await waitFor(() => expect(onUpdated).toHaveBeenCalledOnce());
+  });
+
+  it('refreshes source status when the parent Git tab reports a branch update', async () => {
+    const currentStatus = canonicalStatus();
+    currentStatus.updateAvailable = false;
+    currentStatus.sources[0] = source({
+      id: 'primary',
+      label: 'Example App',
+      branch: 'main',
+      head: '3'.repeat(40),
+      origin: {
+        fullName: 'anima-research/example-app',
+        isUpstream: true,
+        isFork: false,
+      },
+    });
+    api.getAppRepositorySources
+      .mockResolvedValueOnce(canonicalStatus())
+      .mockResolvedValueOnce(currentStatus);
+
+    const { rerender } = render(
+      <RepositorySourcePanel appId="app-example" appName="Example App" refreshKey={0} />,
+    );
+    expect(await screen.findByText('Checkout 1 behind')).toBeInTheDocument();
+
+    rerender(<RepositorySourcePanel appId="app-example" appName="Example App" refreshKey={1} />);
+
+    await waitFor(() => expect(api.getAppRepositorySources).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('repository-source-primary')).toHaveTextContent('Current'));
+  });
+
+  it('treats a PortOS update disconnect as the expected self-restart', async () => {
+    api.pullAndUpdateApp.mockRejectedValueOnce(new Error('Server unreachable — check your connection and try again'));
+    render(<RepositorySourcePanel appId="portos-default" appName="PortOS" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Update app' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Update app' }));
+
+    await waitFor(() => expect(api.handleSelfRestart).toHaveBeenCalledOnce());
   });
 
   it('refuses automatic fork sync after divergence but still permits updating from the fork as-is', async () => {

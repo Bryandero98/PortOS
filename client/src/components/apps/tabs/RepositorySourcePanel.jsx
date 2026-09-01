@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -137,7 +137,7 @@ function RepositoryCard({ source }) {
   );
 }
 
-export default function RepositorySourcePanel({ appId, appName, onUpdated }) {
+export default function RepositorySourcePanel({ appId, appName, onUpdated, refreshKey = 0 }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -145,6 +145,7 @@ export default function RepositorySourcePanel({ appId, appName, onUpdated }) {
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState(null);
   const [updateIntent, setUpdateIntent] = useState(null);
+  const lastRefreshKey = useRef(refreshKey);
 
   const load = useCallback(async ({ initial = false } = {}) => {
     if (initial) setLoading(true);
@@ -163,6 +164,12 @@ export default function RepositorySourcePanel({ appId, appName, onUpdated }) {
   useEffect(() => {
     load({ initial: true });
   }, [load]);
+
+  useEffect(() => {
+    if (lastRefreshKey.current === refreshKey) return;
+    lastRefreshKey.current = refreshKey;
+    load();
+  }, [load, refreshKey]);
 
   const sources = status?.sources || [];
   const primary = sources.find((source) => source.id === 'primary') || sources[0] || null;
@@ -212,9 +219,17 @@ export default function RepositorySourcePanel({ appId, appName, onUpdated }) {
       { syncFork: intent?.syncFork === true },
       { silent: true },
     ).catch((reason) => {
+      if (appId === api.PORTOS_APP_ID && status?.updateRestartsApp && !reason?.status) {
+        api.handleSelfRestart();
+        return { selfRestartTriggered: true };
+      }
       toast.error(reason.message || `Could not update ${appName || 'the app'}`);
       return null;
     });
+    if (result?.selfRestartTriggered) {
+      setUpdating(false);
+      return;
+    }
     if (result?.success) {
       toast.success(`${appName || 'App'} updated${status?.updateRestartsApp ? ' and restarted' : ''}`);
       await load();
