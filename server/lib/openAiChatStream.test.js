@@ -12,6 +12,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   buildMessages,
+  iterateOpenAiChat,
   normalizeUsage,
   normalizeRuntimeTiming,
   parseOllamaStreamFrame,
@@ -158,6 +159,78 @@ describe('streamOpenAiChat — pre-header retries', () => {
     expect(global.fetch).toHaveBeenCalledOnce();
     expect(reader.cancel).toHaveBeenCalledOnce();
     delete global.fetch;
+  });
+});
+
+describe('iterateOpenAiChat', () => {
+  it('streams normalized chunks while skipping malformed frames and preserving usage', async () => {
+    const stats = vi.fn();
+    const payload = [
+      'data: {not json',
+      'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}',
+      'data: {"choices":[{"delta":{"content":"answer"}}]}',
+      'data: {"choices":[],"usage":{"completion_tokens":1,"prompt_tokens":2}}',
+      'data: [DONE]',
+      '',
+    ].join('\r\n');
+    global.fetch = vi.fn().mockResolvedValue(new Response(payload, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }));
+
+    const chunks = [];
+    for await (const chunk of iterateOpenAiChat({
+      endpoint: 'https://example.test/v1',
+      model: 'example-model',
+      messages: [],
+      onStats: stats,
+    })) chunks.push(chunk);
+
+    expect(chunks).toEqual([
+      { text: 'think', kind: 'reasoning' },
+      { text: 'answer', kind: 'content' },
+    ]);
+    expect(stats).toHaveBeenCalledWith({
+      completionTokens: 1,
+      promptTokens: 2,
+      estimated: false,
+    });
+    delete global.fetch;
+  });
+
+  it('aborts and cleans up a stalled reader at the whole-stream timeout', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn(async () => {});
+    global.fetch = vi.fn(async (_url, { signal }) => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: () => new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+          cancel,
+        }),
+      },
+    }));
+
+    const consume = async () => {
+      for await (const _chunk of iterateOpenAiChat({
+        endpoint: 'https://example.test/v1',
+        model: 'example-model',
+        messages: [],
+        timeoutMs: 25,
+      })) { /* drain */ }
+    };
+    const pending = consume();
+    const rejected = expect(pending).rejects.toMatchObject({ message: 'aborted', partialOutput: '' });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(25);
+
+    await rejected;
+    expect(cancel).toHaveBeenCalledOnce();
+    delete global.fetch;
+    vi.useRealTimers();
   });
 });
 
