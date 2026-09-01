@@ -353,6 +353,7 @@ jobs:
       PGPORT: 5432
       PGUSER: portos
       PGPASSWORD: portos
+      PORTOS_REQUIRE_DB: '1'
     steps:
       - uses: actions/checkout@v7
         with:

@@ -10,6 +10,7 @@
 
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { checkHealth, ensureSchema, query, close } from '../../lib/db.js';
+import { requireDbOrSkip } from '../../lib/dbTestGate.js';
 
 let dbReady = false;
 let skipReason = '';
@@ -27,13 +28,13 @@ let skipReason = '';
   }
 }
 
-if (!dbReady) console.log(`⏭️  mediaAssetIndex/db.test.js skipped: ${skipReason}`);
+const runDb = requireDbOrSkip('services/mediaAssetIndex/db.test', dbReady, skipReason);
 
 // Test rows use a recognizable prefix so cleanup can target them without
 // touching any real indexed assets that happen to share the dev DB.
 const PFX = 'test-mai-';
 
-describe.skipIf(!dbReady)('media asset index DB round-trip', () => {
+describe.skipIf(!runDb)('media asset index DB round-trip', () => {
   let db;
   // reconcile is a GLOBAL sweep (it prunes every row not on disk), so it would
   // wipe any real index rows on a shared dev DB. Snapshot the table up front and

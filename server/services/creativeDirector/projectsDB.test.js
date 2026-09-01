@@ -14,6 +14,7 @@
 
 import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import { checkHealth, ensureSchema, query, close } from '../../lib/db.js';
+import { requireDbOrSkip } from '../../lib/dbTestGate.js';
 
 vi.mock('../mediaCollections.js', () => ({
   createCollection: vi.fn(async () => ({ id: 'col-test' })),
@@ -49,7 +50,7 @@ let skipReason = '';
   }
 }
 
-if (!dbReady) console.log(`⏭️  projectsDB.test.js skipped: ${skipReason}`);
+const runDb = requireDbOrSkip('services/creativeDirector/projectsDB.test', dbReady, skipReason);
 
 const CREATE_INPUT = {
   name: 'DB round-trip', aspectRatio: '1:1', quality: 'draft', modelId: 'm', targetDurationSeconds: 9,
@@ -59,7 +60,7 @@ const TREATMENT = {
   scenes: [{ sceneId: 'scene-1', order: 0, intent: 'bounce', prompt: 'a bouncing ball', durationSeconds: 3 }],
 };
 
-describe.skipIf(!dbReady)('projectsDB round-trip', () => {
+describe.skipIf(!runDb)('projectsDB round-trip', () => {
   const created = [];
   let db;
   // Import AFTER the skip gate so a no-DB run never touches the pool.

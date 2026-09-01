@@ -483,6 +483,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 
 | Module | Purpose |
 |---|---|
+| `dbTestGate.js` | `requireDbOrSkip(label, dbReady, reason)` keeps a missing local test database as a visible skipped suite, but throws when `PORTOS_REQUIRE_DB` is set so CI cannot pass after DB-backed suites disappear. |
 | `gitTestRepo.js` | Shared real-git sandbox for integration tests (#4394): one initialized template (working tree + bare origin) per worker, then `fs.cp` into a fresh temp dir. `makeGitSandbox({ origin })`, `attachBareOrigin(scratch, repo)`, `materializeGitRepo(dest)`, `destroyGitSandbox`, plus `SKIP_HEAVY_INTEGRATION` (`VITEST_FAST=1`). Every entry point runs `assertTempPath` first, so a path outside `os.tmpdir()` throws instead of `git init`-ing or `rm -rf`-ing a real checkout (#4554). Still real git — just not rebuilt from `init`+`commit`+`push` in every `beforeEach`. |
 | `mirrorParity.js` | Source-comparison primitives for the `*.mirror.test.js` server↔client parity tests: `stripCommentsAndNormalize` (so per-side commentary may diverge but logic may not), `extractDeclaration(src, name)` (balanced `{}`/`()`/`[]` walk over `function` / `async function` / `const`), and `compareDeclaration(serverSrc, clientSrc, name)`. Use these instead of hand-rolling a brace-walker per mirror. Pure — no `vitest` import — so callers own the assertions. |
 | `mockPathsDataRoot.js` | Shared Vitest helpers for `PATHS.data → temp dir` and no-peer record creation guards. |
