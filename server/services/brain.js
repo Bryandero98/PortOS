@@ -136,7 +136,7 @@ function safeParseJsonResponse(content) {
  * Returns immediately after creating the inbox entry.
  * AI classification runs in the background and emits a socket event on completion.
  */
-export async function captureThought(text, providerOverride, modelOverride, { creative = false, repoIntake = null } = {}) {
+export async function captureThought(text, providerOverride, modelOverride, { creative = false, repoIntake = null, note } = {}) {
   // A capture that is nothing but a URL is a bookmark, not a thought: file it
   // straight to Links exactly as the Links tab would, and skip the classifier
   // LLM call entirely. This outranks the creative flag — a bare URL carries no
@@ -144,7 +144,7 @@ export async function captureThought(text, providerOverride, modelOverride, { cr
   // Creative toggle for a URL rather than the two rules disagreeing.
   const bareUrl = parseBareUrl(text);
   if (bareUrl) {
-    return captureUrlAsLink(bareUrl, text, repoIntake);
+    return captureUrlAsLink(bareUrl, text, { repoIntake, note });
   }
 
   const meta = await storage.loadMeta();
@@ -218,9 +218,9 @@ export async function captureThought(text, providerOverride, modelOverride, { cr
  * an already-saved URL performs no clone, so there is no fresh clone for the
  * agents to read and re-queueing them silently would be a surprise.
  */
-async function captureUrlAsLink(url, capturedText, repoIntake = null) {
+async function captureUrlAsLink(url, capturedText, { repoIntake = null, note } = {}) {
   const existing = await storage.getLinkByUrl(url);
-  const link = existing || await createLinkFromUrl(url, { repoIntake });
+  const link = existing || await createLinkFromUrl(url, { repoIntake, note });
 
   // No `classification` block: nothing classified this — the destination was
   // decided by shape, not by a model, so there is no confidence or extraction to
@@ -1081,7 +1081,7 @@ export async function cloneRepoInBackground(linkId, url) {
  * link) — this always creates.
  */
 export async function createLinkFromUrl(url, {
-  title, description, linkType, tags, bucketId, bucketOrder, autoClone, repoIntake
+  title, description, note, linkType, tags, bucketId, bucketOrder, autoClone, repoIntake
 } = {}) {
   const parsed = githubCloner.parseGitHubUrl(url);
   const isGitHubRepo = !!parsed;
@@ -1096,11 +1096,13 @@ export async function createLinkFromUrl(url, {
   const defaultTitle = parsed
     ? `${parsed.owner}/${parsed.repo}`
     : (hostnameFromUrl(url) || url);
+  const cleanNote = typeof note === 'string' ? note.trim() : '';
 
   const link = await storage.createLink({
     url,
     title: title || defaultTitle,
     description: description || '',
+    note: cleanNote,
     linkType: linkType || (isGitHubRepo ? 'github' : 'other'),
     tags: tags || [],
     isGitHubRepo,

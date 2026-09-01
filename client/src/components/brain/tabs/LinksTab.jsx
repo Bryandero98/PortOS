@@ -116,6 +116,7 @@ function cloneProgressPatch(fresh, current) {
 export default function LinksTab({ onRefresh }) {
   const [inputUrl, setInputUrl] = useState('');
   const [inputTitle, setInputTitle] = useState('');
+  const [inputNote, setInputNote] = useState('');
   const [inputTags, setInputTags] = useState('');
   const [showDetails, setShowDetails] = useState(false);
   const [sending, setSending] = useState(false);
@@ -233,6 +234,7 @@ export default function LinksTab({ onRefresh }) {
         const haystack = [
           link.title,
           link.url,
+          link.note,
           link.description,
           ...(link.tags || [])
         ].filter(Boolean).join(' ').toLowerCase();
@@ -253,6 +255,8 @@ export default function LinksTab({ onRefresh }) {
     const payload = { url };
     const title = inputTitle.trim();
     if (title) payload.title = title;
+    const note = inputNote.trim();
+    if (note) payload.note = note;
     const tags = inputTags.split(',').map(t => t.trim()).filter(Boolean);
     if (tags.length) payload.tags = tags;
 
@@ -272,6 +276,7 @@ export default function LinksTab({ onRefresh }) {
       toast.success(isGitHub ? 'GitHub repo added - cloning in background' : 'Link saved');
       setInputUrl('');
       setInputTitle('');
+      setInputNote('');
       setInputTags('');
       setShowDetails(false);
       fetchLinks();
@@ -352,6 +357,7 @@ export default function LinksTab({ onRefresh }) {
       url: link.url,
       title: link.title,
       description: link.description || '',
+      note: link.note || '',
       linkType: link.linkType,
       tags: link.tags?.join(', ') || ''
     });
@@ -368,6 +374,7 @@ export default function LinksTab({ onRefresh }) {
       url,
       title: editForm.title,
       description: editForm.description,
+      note: editForm.note,
       linkType: editForm.linkType,
       tags: editForm.tags ? editForm.tags.split(',').map(t => t.trim()).filter(Boolean) : []
     };
@@ -499,7 +506,7 @@ export default function LinksTab({ onRefresh }) {
           className="mt-2 flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors"
         >
           {showDetails ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          {showDetails ? 'Hide title & tags' : 'Add title & tags (optional)'}
+          {showDetails ? 'Hide link details' : 'Add title, note & tags (optional)'}
         </button>
 
         {showDetails && (
@@ -513,6 +520,21 @@ export default function LinksTab({ onRefresh }) {
                 onChange={(e) => setInputTitle(e.target.value)}
                 placeholder="Title (defaults to repo name or URL)"
                 className="w-full px-3 py-2 bg-port-card border border-port-border rounded-lg text-white text-sm placeholder-gray-500 focus:outline-hidden focus:border-port-accent"
+                disabled={sending}
+              />
+            </div>
+            <div>
+              <label htmlFor="link-note" className="block text-xs text-gray-400 mb-1">
+                Why are you saving this? <span className="text-gray-600">(optional)</span>
+              </label>
+              <textarea
+                id="link-note"
+                rows={2}
+                maxLength={2000}
+                value={inputNote}
+                onChange={(e) => setInputNote(e.target.value)}
+                placeholder="e.g. Read later, share with the team, or turn into a future task"
+                className="w-full px-3 py-2 bg-port-card border border-port-border rounded-lg text-white text-sm placeholder-gray-500 focus:outline-hidden focus:border-port-accent resize-y"
                 disabled={sending}
               />
             </div>
@@ -574,7 +596,7 @@ export default function LinksTab({ onRefresh }) {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search links by title, URL, description, or tag..."
+          placeholder="Search links by title, URL, note, description, or tag..."
           aria-label="Search links"
           className="w-full pl-9 pr-9 py-2 bg-port-card border border-port-border rounded-lg text-white text-sm placeholder-gray-500 focus:outline-hidden focus:border-port-accent"
         />
@@ -641,6 +663,19 @@ export default function LinksTab({ onRefresh }) {
                     placeholder="Description (optional)"
                     rows={2}
                   />
+                  <div>
+                    <label htmlFor={`link-note-${link.id}`} className="block text-xs text-gray-400 mb-1">
+                      Why are you saving this? <span className="text-gray-600">(optional)</span>
+                    </label>
+                    <textarea
+                      id={`link-note-${link.id}`}
+                      value={editForm.note}
+                      onChange={(e) => setEditForm({ ...editForm, note: e.target.value })}
+                      className="w-full px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm resize-y"
+                      placeholder="Why are you saving this link?"
+                      rows={2}
+                    />
+                  </div>
                   <div className="flex gap-2">
                     <select
                       aria-label="Link type"
@@ -705,6 +740,11 @@ export default function LinksTab({ onRefresh }) {
                     </a>
                     {link.description && (
                       <p className="text-sm text-gray-500 mt-1">{link.description}</p>
+                    )}
+                    {link.note && (
+                      <p className="text-sm text-gray-400 mt-1">
+                        <span className="text-gray-500">Note:</span> {link.note}
+                      </p>
                     )}
                   </div>
 

@@ -212,6 +212,9 @@ export const captureInputSchema = z.object({
   text: z.string().min(1).max(10000),
   providerOverride: z.string().optional(),
   modelOverride: z.string().optional(),
+  // Optional context for a bare URL capture. It is stored on the link rather
+  // than treated as classifier input, so a saved link keeps why it matters.
+  note: z.string().max(2000).optional(),
   // Opt-in flag: the user marked this note as a creative idea at capture time
   // (vs a todo/reference). Creative notes are later batch-sendable into the
   // creative catalog as ingredients (see catalog brain-bridge ingest).
@@ -434,6 +437,7 @@ export const linkRecordSchema = z.object({
   url: z.string().url(),
   title: z.string().min(1).max(500),
   description: z.string().max(2000).optional().default(''),
+  note: z.string().max(2000).optional().default(''),
   linkType: linkTypeEnum.default('other'),
   tags: z.array(z.string().max(50)).optional().default([]),
   // GitHub-specific fields
@@ -478,6 +482,7 @@ export const linkInputSchema = z.object({
   url: z.string().url(),
   title: z.string().min(1).max(500).optional(),
   description: z.string().max(2000).optional(),
+  note: z.string().max(2000).optional(),
   linkType: linkTypeEnum.optional(),
   tags: z.array(z.string().max(50)).optional(),
   bucketId: z.string().guid().nullable().optional(),
@@ -492,6 +497,7 @@ export const linkUpdateInputSchema = z.object({
   url: z.string().url().optional(),
   title: z.string().min(1).max(500).optional(),
   description: z.string().max(2000).optional(),
+  note: z.string().max(2000).optional(),
   linkType: linkTypeEnum.optional(),
   tags: z.array(z.string().max(50)).optional(),
   bucketId: z.string().guid().nullable().optional(),
@@ -810,6 +816,7 @@ export const youtubeIngestSchema = z.object({
   captureTranscript: z.boolean().optional(),
   downloadVideo: z.boolean().optional(),
   ingestAudio: z.boolean().optional(),
+  note: z.string().max(2000).optional(),
   agentPrompt: z.string().max(10000).optional(),
   tags: z.array(z.string().min(1).max(60)).max(20).optional(),
   priority: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']).optional()
