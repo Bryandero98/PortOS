@@ -185,17 +185,23 @@ export function buildNetworkSetupGuide(network = {}, tailscale = {}) {
     setupStep(
       'https-cert',
       'Provision a trusted HTTPS certificate',
-      certMatchesCurrentHost ? 'complete' : canProvision ? 'action' : 'blocked',
+      certMatchesCurrentHost
+        ? 'complete'
+        : canProvision || (magicDnsReady && tailscale?.sandboxed === true)
+          ? 'action'
+          : 'blocked',
       certMatchesCurrentHost
         ? `A Tailscale certificate is installed for ${provisionedHost}.`
         : tailscale?.sandboxed
           ? 'The macOS App Store CLI cannot write PortOS certificate files. Install the writable CLI with `brew install tailscale`, then retry.'
-          : canProvision
-            ? 'Enable HTTPS Certificates in the Tailscale DNS admin, then let PortOS fetch the certificate automatically.'
-            : trustedCertProvisioned && currentDnsName && provisionedHost !== currentDnsName
-              ? `The installed certificate is for ${provisionedHost}; reprovision it for ${currentDnsName}.`
+          : trustedCertProvisioned && currentDnsName && provisionedHost !== currentDnsName
+            ? `The installed certificate is for ${provisionedHost}; reprovision it for ${currentDnsName}.`
+            : canProvision
+              ? 'Enable HTTPS Certificates in the Tailscale DNS admin, then let PortOS fetch the certificate automatically.'
               : 'Complete the Tailscale and MagicDNS steps first.',
-      tailscale?.sandboxed
+      certMatchesCurrentHost
+        ? null
+        : magicDnsReady && tailscale?.sandboxed
         ? { type: 'command', label: 'Install writable CLI', command: 'brew install tailscale' }
         : canProvision && !certMatchesCurrentHost
           ? { type: 'provision-cert', label: 'Enable HTTPS', adminUrl: TAILSCALE_DNS_ADMIN_URL }

@@ -5,6 +5,15 @@ import { promisify } from 'util';
 import { safeJSONParse } from './fileUtils.js';
 
 const execFileAsync = promisify(execFile);
+const STATUS_CACHE_TTL_MS = 10_000;
+
+// Setup, capability, and instance surfaces can poll in the same render cycle.
+// Keep one short-lived local-daemon snapshot so they share a single CLI probe.
+// `null` deliberately means "not fetched"; a valid unavailable status object
+// is still cached instead of re-running the command on every request.
+let statusCacheValue = null;
+let statusCacheAt = 0;
+let statusInFlight = null;
 
 const isWin = () => process.platform === 'win32';
 const tailscaleBin = () => (isWin() ? 'tailscale.exe' : 'tailscale');
@@ -71,7 +80,7 @@ export function isSandboxedTailscale(binPath) {
  * Never throws — execFile failures and non-JSON output degrade to a
  * not-running result so callers can treat this as a plain boolean gate.
  */
-export async function getTailscaleStatus() {
+async function readTailscaleStatus() {
   const bin = findTailscale();
   const unavailable = (reason, { available = true } = {}) => ({
     available,
@@ -117,6 +126,39 @@ export async function getTailscaleStatus() {
     ),
     peers,
   };
+}
+
+export function __resetTailscaleStatusCache() {
+  statusCacheValue = null;
+  statusCacheAt = 0;
+  statusInFlight = null;
+}
+
+export async function getTailscaleStatus({ force = false } = {}) {
+  if (!force && statusCacheValue !== null && Date.now() - statusCacheAt < STATUS_CACHE_TTL_MS) {
+    return statusCacheValue;
+  }
+  if (!force && statusInFlight) return statusInFlight;
+
+  const request = readTailscaleStatus();
+  const tracked = request.then(
+    (value) => {
+      // A forced refresh may have superseded this probe. Only the newest probe
+      // publishes shared state, while existing callers still receive theirs.
+      if (statusInFlight === tracked) {
+        statusCacheValue = value;
+        statusCacheAt = Date.now();
+        statusInFlight = null;
+      }
+      return value;
+    },
+    (error) => {
+      if (statusInFlight === tracked) statusInFlight = null;
+      throw error;
+    },
+  );
+  statusInFlight = tracked;
+  return tracked;
 }
 
 /**

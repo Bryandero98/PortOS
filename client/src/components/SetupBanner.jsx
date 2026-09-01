@@ -21,7 +21,7 @@ export default function SetupBanner() {
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [location.pathname]);
 
   const setup = setupState?.setup;
   if (!setup || setup.complete || location.pathname === '/capabilities') return null;

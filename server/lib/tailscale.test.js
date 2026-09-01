@@ -15,6 +15,7 @@ import {
   findTailscale,
   isSandboxedTailscale,
   hasOnlySandboxedTailscale,
+  __resetTailscaleStatusCache,
   getTailscaleStatus,
   isTailscaleUp,
   MACOS_TAILSCALE_APP_BUNDLE
@@ -155,6 +156,7 @@ describe('getTailscaleStatus / isTailscaleUp', () => {
   beforeEach(() => {
     originalPath = process.env.PATH;
     vi.clearAllMocks();
+    __resetTailscaleStatusCache();
     // Default: a Tailscale binary exists at a known candidate path.
     existsSync.mockImplementation((p) => p === INSTALLED_CANDIDATE);
   });
@@ -193,6 +195,29 @@ describe('getTailscaleStatus / isTailscaleUp', () => {
     const status = await getTailscaleStatus();
     expect(status).toMatchObject({ available: true, running: true, state: 'Running', reason: 'running' });
     expect(await isTailscaleUp()).toBe(true);
+  });
+
+  it('shares and briefly caches local status probes', async () => {
+    let finishProbe;
+    execFile.mockImplementation((cmd, args, opts, cb) => {
+      finishProbe = () => cb(null, { stdout: JSON.stringify({ BackendState: 'Running' }) });
+    });
+
+    const first = getTailscaleStatus();
+    const concurrent = getTailscaleStatus();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    finishProbe();
+    await expect(Promise.all([first, concurrent])).resolves.toEqual([
+      expect.objectContaining({ running: true }),
+      expect.objectContaining({ running: true }),
+    ]);
+
+    await getTailscaleStatus();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    const forced = getTailscaleStatus({ force: true });
+    expect(execFile).toHaveBeenCalledTimes(2);
+    finishProbe();
+    await forced;
   });
 
   it('normalizes the local MagicDNS name, suffix, and peer suggestions', async () => {

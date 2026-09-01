@@ -8,6 +8,7 @@ vi.mock('../hooks/useAutoRefetch', () => ({
     data: {
       setup: { total: 2, ready: 0, remaining: 2, complete: false },
       summary: { ok: 0, warn: 2, error: 0, unconfigured: 1, total: 3, overall: 'warn' },
+      optionalSummary: { ok: 0, warn: 0, error: 0, unconfigured: 1, total: 1, overall: 'unconfigured' },
       network: {
         bind: { port: 5555 },
         setup: {
@@ -55,5 +56,7 @@ describe('CapabilityMap setup walkthrough', () => {
     expect(screen.getByText('Subscription CLI')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Optional capabilities' })).toBeInTheDocument();
     expect(screen.getByText('Calendar')).toBeInTheDocument();
+    expect(screen.getByText('1 not set up')).toBeInTheDocument();
+    expect(screen.queryByText('2 degraded')).not.toBeInTheDocument();
   });
 });

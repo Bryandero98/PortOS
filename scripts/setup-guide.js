@@ -7,7 +7,7 @@
  * never changes state: setup-cert.js owns the safe automatic provisioning
  * attempt, while this script explains the remaining human-only actions.
  */
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { certPaths } from '../lib/certPaths.js';
 import {
@@ -17,6 +17,7 @@ import {
 import { hasTailscaleCert } from '../lib/tailscale-https.js';
 import { buildNetworkSetupGuide } from '../server/lib/networkExposure.js';
 import { getTailscaleStatus } from '../server/lib/tailscale.js';
+import { isDirectlyInvoked } from './lib/directInvocation.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = join(ROOT, 'data');
@@ -72,16 +73,16 @@ export function formatSetupSummary(guide) {
   return next ? `${next.title} — ${next.detail}` : 'Tailscale HTTPS setup needs attention';
 }
 
-async function detectActiveHttps() {
+async function probeHealthScheme(port) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
-  const response = await fetch(`http://localhost:${MIRROR_PORT}/api/system/health`, {
+  const response = await fetch(`http://localhost:${port}/api/system/health`, {
     signal: controller.signal,
   }).catch(() => null);
   clearTimeout(timer);
-  if (!response?.ok) return false;
+  if (!response?.ok) return null;
   const health = await response.json().catch(() => null);
-  return health?.scheme === 'https';
+  return ['http', 'https'].includes(health?.scheme) ? health.scheme : null;
 }
 
 export async function getCliSetupGuide({ assumeActive = null } = {}) {
@@ -91,11 +92,19 @@ export async function getCliSetupGuide({ assumeActive = null } = {}) {
   const provisionedHost = getTailscaleCertHostname(meta);
   // Setup and the pre-restart update phase must not claim a newly written cert
   // is already live. Wrappers pass `--assume-active` only after a successful
-  // PortOS restart; a direct invocation confirms the live scheme through the
-  // always-public loopback health route before dropping the restart action.
+  // PortOS restart; a direct invocation probes both possible live listeners so
+  // it also keeps linking to :5555 while a pre-existing HTTP process is still
+  // running with newly written certificate files on disk.
+  let liveScheme = null;
+  if (certProvisioned && assumeActive === true) {
+    liveScheme = 'https';
+  } else if (certProvisioned && assumeActive === null) {
+    liveScheme = await probeHealthScheme(MIRROR_PORT)
+      ?? await probeHealthScheme(API_PORT);
+  }
   const httpsActive = certProvisioned && (assumeActive === null
-    ? await detectActiveHttps()
-    : assumeActive);
+    ? liveScheme === 'https'
+    : assumeActive === true);
   const network = {
     httpsEnabled: httpsActive,
     bind: { port: API_PORT },
@@ -109,9 +118,9 @@ export async function getCliSetupGuide({ assumeActive = null } = {}) {
   };
   const tailscale = await getTailscaleStatus();
   const guide = buildNetworkSetupGuide(network, tailscale);
-  const localUrl = certProvisioned
-    ? `http://localhost:${MIRROR_PORT}`
-    : `http://localhost:${API_PORT}`;
+  const localUrl = liveScheme === 'http' || !certProvisioned
+    ? `http://localhost:${API_PORT}`
+    : `http://localhost:${MIRROR_PORT}`;
   const browserBase = guide.trustedUrl || localUrl;
   return {
     ...guide,
@@ -140,7 +149,6 @@ async function main() {
   console.log(formatSetupGuide(guide, guide));
 }
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+if (isDirectlyInvoked(import.meta.url)) {
   await main();
 }

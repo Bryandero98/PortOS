@@ -203,6 +203,45 @@ describe('networkExposure.buildNetworkSetupGuide', () => {
     });
   });
 
+  it('offers the writable CLI command when only the sandboxed macOS CLI is available', () => {
+    const guide = buildNetworkSetupGuide(baseNetwork, {
+      available: true,
+      running: true,
+      sandboxed: true,
+      dnsName: 'host-alpha.example-tailnet.ts.net',
+    });
+
+    expect(guide.nextStep).toMatchObject({
+      id: 'https-cert',
+      status: 'action',
+      action: { type: 'command', command: 'brew install tailscale' },
+    });
+  });
+
+  it('names a stale certificate hostname before offering reprovisioning', () => {
+    const guide = buildNetworkSetupGuide({
+      ...baseNetwork,
+      cert: {
+        mode: null,
+        provisioned: true,
+        provisionedMode: 'tailscale',
+        provisionedHost: 'host-old.example-tailnet.ts.net',
+      },
+    }, {
+      available: true,
+      running: true,
+      sandboxed: false,
+      dnsName: 'host-alpha.example-tailnet.ts.net',
+    });
+
+    expect(guide.nextStep).toMatchObject({
+      id: 'https-cert',
+      status: 'action',
+      detail: 'The installed certificate is for host-old.example-tailnet.ts.net; reprovision it for host-alpha.example-tailnet.ts.net.',
+      action: { type: 'provision-cert' },
+    });
+  });
+
   it('asks for a restart when the trusted cert exists but this process booted on HTTP', () => {
     const guide = buildNetworkSetupGuide({
       ...baseNetwork,

@@ -41,6 +41,7 @@ describe('SetupBanner', () => {
     expect(await screen.findByText('Finish setup: Enable MagicDNS and a ready AI provider.')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Review setup' }));
     expect(await screen.findByText('Setup destination')).toBeInTheDocument();
+    await waitFor(() => expect(api.getCapabilities).toHaveBeenCalledTimes(2));
   });
 
   it('dismisses only the current setup state for the browser session', async () => {

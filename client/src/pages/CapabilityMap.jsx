@@ -69,10 +69,11 @@ export default function CapabilityMap() {
 
   const caps = Array.isArray(data.capabilities) ? data.capabilities : [];
   const summary = data.summary || { ok: 0, warn: 0, error: 0, unconfigured: 0, overall: 'unconfigured' };
+  const optionalSummary = data.optionalSummary || summary;
   const setup = data.setup || { total: 0, ready: 0, remaining: 0, complete: false };
   const providerCapability = caps.find((cap) => cap.id === 'providers');
   const optionalCapabilities = caps.filter((cap) => cap.setupRequired !== true);
-  const overallStyle = STATUS_STYLE[summary.overall] || STATUS_STYLE.unconfigured;
+  const overallStyle = STATUS_STYLE[optionalSummary.overall] || STATUS_STYLE.unconfigured;
   const OverallIcon = overallStyle.icon;
 
   return (
@@ -127,15 +128,15 @@ export default function CapabilityMap() {
           </div>
           <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 ${overallStyle.border} ${overallStyle.color} ${overallStyle.bg}`}>
             <OverallIcon size={15} />
-            <span className="text-xs font-semibold">{OVERALL_LABEL[summary.overall] || 'Status'}</span>
+            <span className="text-xs font-semibold">{OVERALL_LABEL[optionalSummary.overall] || 'Status'}</span>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-4 text-xs text-gray-400">
-          <span className="flex items-center gap-1"><CheckCircle size={12} className="text-port-success" /> {summary.ok} ready</span>
-          <span className="flex items-center gap-1"><AlertTriangle size={12} className="text-port-warning" /> {summary.warn} degraded</span>
-          <span className="flex items-center gap-1"><XCircle size={12} className="text-port-error" /> {summary.error} error</span>
-          <span className="flex items-center gap-1"><Circle size={12} className="text-gray-500" /> {summary.unconfigured} not set up</span>
+          <span className="flex items-center gap-1"><CheckCircle size={12} className="text-port-success" /> {optionalSummary.ok} ready</span>
+          <span className="flex items-center gap-1"><AlertTriangle size={12} className="text-port-warning" /> {optionalSummary.warn} degraded</span>
+          <span className="flex items-center gap-1"><XCircle size={12} className="text-port-error" /> {optionalSummary.error} error</span>
+          <span className="flex items-center gap-1"><Circle size={12} className="text-gray-500" /> {optionalSummary.unconfigured} not set up</span>
         </div>
 
         <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">

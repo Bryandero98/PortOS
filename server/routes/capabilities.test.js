@@ -90,6 +90,7 @@ describe('GET /api/capabilities', () => {
     expect(Array.isArray(res.body.capabilities)).toBe(true);
     expect(res.body.capabilities).toHaveLength(9);
     expect(res.body.summary).toMatchObject({ overall: expect.any(String), total: 9 });
+    expect(res.body.optionalSummary).toMatchObject({ overall: expect.any(String), total: 7 });
     expect(res.body.setup).toEqual({ total: 2, ready: 2, remaining: 0, complete: true });
     expect(res.body.network.setup.complete).toBe(true);
     // every row is fully formed + deep-links to settings

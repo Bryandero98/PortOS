@@ -116,6 +116,7 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json({
     timestamp: new Date().toISOString(),
     summary: summarizeCapabilities(rows),
+    optionalSummary: summarizeCapabilities(rows.filter((row) => row.setupRequired !== true)),
     setup: summarizeSetupCapabilities(rows),
     capabilities: rows,
     network,
