@@ -1228,15 +1228,15 @@ export default function ImageGen() {
   const statusUnknown = statusReadiness === 'unknown';
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <div className="flex items-center gap-2 flex-wrap">
+    <div className="min-w-0 max-w-full space-y-3">
+      <div className="flex min-w-0 flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {statusLoading ? (
             <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-port-border bg-port-card text-gray-400">
               <RefreshCw className="w-3 h-3 animate-spin" /> Checking {effectiveMode}…
             </span>
           ) : status ? (
-            <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border ${
+            <span className={`inline-flex min-w-0 max-w-full items-start gap-1.5 px-2 py-1 rounded-full border ${
               statusReady
                 ? 'border-port-success/40 bg-port-success/10 text-port-success'
                 : statusUnknown
@@ -1267,7 +1267,7 @@ export default function ImageGen() {
             />
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1 self-start sm:self-auto">
           <button
             onClick={() => refreshStatus(effectiveMode, modelId)}
             disabled={statusLoading}
@@ -1287,8 +1287,8 @@ export default function ImageGen() {
         </div>
       </div>
 
-      <form onSubmit={handleGenerate} className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
-        <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
+      <form onSubmit={handleGenerate} className="grid min-w-0 max-w-full grid-cols-1 gap-4 lg:grid-cols-[3fr_2fr]">
+        <div className="min-w-0 bg-port-card border border-port-border rounded-xl p-3 sm:p-4 space-y-3">
           <UniverseStylePicker
             value={selectedUniverse?.id || ''}
             onChange={setSelectedUniverse}
@@ -1590,7 +1590,7 @@ export default function ImageGen() {
           )}
         </div>
 
-        <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
+        <div className="min-w-0 bg-port-card border border-port-border rounded-xl p-3 sm:p-4 space-y-2">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Preview</h2>
             {result && !generating && (
