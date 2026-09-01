@@ -2869,6 +2869,17 @@
     },
     {
       "method": "GET",
+      "path": "/api/brain/on-this-day",
+      "mountPath": "/api/brain",
+      "sources": [
+        {
+          "source": "server/routes/brainOnThisDay.js",
+          "line": 14
+        }
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/brain/people",
       "mountPath": "/api/brain",
       "sources": [
@@ -23831,8 +23842,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2150,
-    "declarations": 2153,
-    "sourceFiles": 228
+    "operations": 2151,
+    "declarations": 2154,
+    "sourceFiles": 229
   }
 }

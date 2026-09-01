@@ -111,7 +111,7 @@ const DEFAULT_LAYOUTS = [
       'apps',
       'cos', 'goal-progress', 'upcoming-tasks',
       'proactive-alerts', 'review-hub', 'while-away', 'system-health', 'active-processing', 'network-exposure', 'backup', 'death-clock', 'quick-stats', 'decision-log',
-      'hourly-activity', 'tribe-care', 'feeds', 'today-agenda',
+      'hourly-activity', 'tribe-care', 'feeds', 'today-agenda', 'on-this-day',
     ],
     // Above-the-fold capture row stretches to h=5 so the Quick Task card
     // can show its expanded options (worktree/PR/simplify/etc.) without
@@ -151,6 +151,8 @@ const DEFAULT_LAYOUTS = [
       { id: 'feeds',            x: 8, w: 3,  order: 20, h: 4 },
       // Gated on a connected calendar account — hidden until one exists.
       { id: 'today-agenda',     x: 0, w: 4,  order: 21, h: 4 },
+      // Gated on having past-year Brain captures for today's date.
+      { id: 'on-this-day',      x: 4, w: 4,  order: 22, h: 4 },
     ],
   },
   {
@@ -172,7 +174,7 @@ const DEFAULT_LAYOUTS = [
     id: 'morning-review',
     name: 'Morning Review',
     builtIn: true,
-    widgets: ['proactive-alerts', 'upcoming-tasks', 'review-hub', 'goal-progress', 'death-clock', 'daily-driver', 'today-agenda'],
+    widgets: ['proactive-alerts', 'upcoming-tasks', 'review-hub', 'goal-progress', 'death-clock', 'daily-driver', 'today-agenda', 'on-this-day'],
     // Scan-and-act morning ritual — the classic scan quadrants above the fold.
     // Tasks list takes the tall center column (the actionable hot zone); alerts
     // top-left grab attention first; death-clock top-right for mortality framing;
@@ -192,6 +194,9 @@ const DEFAULT_LAYOUTS = [
       // Gated on a connected calendar account — sequenced last (like the
       // gated tribe-care/feeds widgets) so its absence leaves only trailing space.
       { id: 'today-agenda',     x: 0, w: 4,  order: 6, h: 4 },
+      // Gated on having past-year Brain captures for today's date — same
+      // trailing-space contract as the other gated widgets.
+      { id: 'on-this-day',      x: 4, w: 4,  order: 7, h: 4 },
     ],
   },
   {

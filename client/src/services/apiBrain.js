@@ -321,6 +321,9 @@ export const getEmbeddingsStatus = () => request('/brain/embeddings/status');
 export const syncBrainData = ({ refresh = false, onlyMissing = false } = {}, options = {}) =>
   request('/brain/bridge-sync', { method: 'POST', body: JSON.stringify({ refresh, onlyMissing }), ...options });
 
+// Brain - On This Day (dashboard widget: past-year journals/memories/ideas)
+export const getBrainOnThisDay = (options = {}) => request('/brain/on-this-day', options);
+
 // Brain - Daily Log
 export const listDailyLogs = (options = {}) => {
   const params = new URLSearchParams();

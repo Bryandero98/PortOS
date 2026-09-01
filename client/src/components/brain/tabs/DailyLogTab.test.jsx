@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import { __resetVisibilityEventForTests } from '../../../hooks/useVisibilityEvent';
 
 // ── Mock toast ────────────────────────────────────────────────────────────────
@@ -62,7 +63,8 @@ const entryFor = (date, content) => ({
 let store;
 
 const renderTab = async () => {
-  const result = render(<DailyLogTab />);
+  // Router context is required for the ?date= deep-link search param.
+  const result = render(<MemoryRouter><DailyLogTab /></MemoryRouter>);
   // Flush the mount fetches (entry + server-today + history + settings).
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   return result;

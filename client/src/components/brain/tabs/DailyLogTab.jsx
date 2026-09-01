@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import {BookOpen, ChevronLeft, ChevronRight, Mic, MicOff, Save, Volume2, Settings,
   Plus, Trash2, CloudUpload, Menu, X, Sparkles} from 'lucide-react';
 import * as api from '../../../services/api';
@@ -76,8 +77,16 @@ export const mergeMissingVoiceSegments = (localContent, serverEntry) => {
 // whatever is still dirty if we exhaust the budget mid-burst.
 const STALE_JOURNAL_MAX_ATTEMPTS = 3;
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export default function DailyLogTab() {
-  const [date, setDate] = useState(localDateKey());
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Deep-linkable date (?date=YYYY-MM-DD) — the On This Day widget and shared
+  // links open a specific past day; without the param the tab opens on today.
+  const [date, setDate] = useState(() => {
+    const param = searchParams.get('date');
+    return param && ISO_DATE_RE.test(param) ? param : localDateKey();
+  });
   // Backend today — resolved via GET /daily-log/today on mount so the
   // "Today" button, disabled-forward-nav check, and isToday chip all match
   // the server's timezone. Falls back to localDateKey() until fetched.
@@ -169,6 +178,18 @@ export default function DailyLogTab() {
   }, []);
 
   useEffect(() => { loadEntry(date); }, [date, loadEntry]);
+
+  // Reflect non-today dates back into ?date= so the open day stays shareable
+  // and reload-safe. Replace, not push — prev/next taps shouldn't pile up
+  // history entries.
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (date === serverToday) next.delete('date');
+      else next.set('date', date);
+      return next;
+    }, { replace: true });
+  }, [date, serverToday, setSearchParams]);
   useEffect(() => { loadHistory(); loadSettings(); }, [loadHistory, loadSettings]);
 
   // Keep the server's dictation target date aligned with the UI while

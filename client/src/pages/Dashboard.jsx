@@ -29,6 +29,7 @@ export default function Dashboard() {
   const [feeds, setFeeds] = useState(null);
   const [meatspaceLogging, setMeatspaceLogging] = useState(null);
   const [calendarAgenda, setCalendarAgenda] = useState(null);
+  const [brainOnThisDay, setBrainOnThisDay] = useState(null);
   const [dailyDriver, setDailyDriver] = useState(null);
   const [dailyActions, setDailyActions] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -114,6 +115,7 @@ export default function Dashboard() {
       api.getFeedStats({ silent: true }).catch(() => null).then(setFeeds),
       api.getMeatspaceLoggingStats({ silent: true }).catch(() => null).then(setMeatspaceLogging),
       api.getCalendarAgenda({ silent: true }).catch(() => null).then(setCalendarAgenda),
+      api.getBrainOnThisDay({ silent: true }).catch(() => null).then(setBrainOnThisDay),
       // GET records the first-visit-of-day signal (issue #2666); a failure just
       // hides the Daily Driver card via its gate. No LLM calls here.
       api.getDailyDriverState().catch(() => null).then(setDailyDriver),
@@ -239,8 +241,8 @@ export default function Dashboard() {
   }), [activeApps]);
 
   const dashboardState = useMemo(
-    () => ({ apps: appList, appsLoading, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, calendarAgenda, dailyDriver, dailyActions, instanceFeatures, refetch: fetchData, refetchHealth: refreshHealth }),
-    [appList, appsLoading, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, calendarAgenda, dailyDriver, dailyActions, instanceFeatures, fetchData, refreshHealth]
+    () => ({ apps: appList, appsLoading, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, calendarAgenda, brainOnThisDay, dailyDriver, dailyActions, instanceFeatures, refetch: fetchData, refetchHealth: refreshHealth }),
+    [appList, appsLoading, sortedApps, activeApps, appStats, health, usage, tribeCare, feeds, meatspaceLogging, calendarAgenda, brainOnThisDay, dailyDriver, dailyActions, instanceFeatures, fetchData, refreshHealth]
   );
 
   // Falls back to a local minimal layout only AFTER the initial fetch has
