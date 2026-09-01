@@ -232,6 +232,37 @@ describe('iterateOpenAiChat', () => {
     delete global.fetch;
     vi.useRealTimers();
   });
+
+  it('stops at the terminal marker even when the provider keeps the socket open', async () => {
+    const cancel = vi.fn(async () => {});
+    const read = vi.fn()
+      .mockResolvedValueOnce({
+        done: false,
+        value: new TextEncoder().encode([
+          'data: {"choices":[{"delta":{"content":"done"}}]}',
+          'data: [DONE]',
+          '',
+        ].join('\n')),
+      })
+      .mockRejectedValue(new Error('reader should not continue after [DONE]'));
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({ read, cancel }) },
+    });
+
+    const chunks = [];
+    for await (const chunk of iterateOpenAiChat({
+      endpoint: 'https://example.test/v1',
+      model: 'example-model',
+      messages: [],
+    })) chunks.push(chunk);
+
+    expect(chunks).toEqual([{ text: 'done', kind: 'content' }]);
+    expect(read).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    delete global.fetch;
+  });
 });
 
 describe('parseStreamFrame', () => {

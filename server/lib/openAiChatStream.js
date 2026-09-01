@@ -67,6 +67,11 @@ export function parseStreamFrame(rawLine) {
   return frame;
 }
 
+function isTerminalStreamFrame(rawLine) {
+  const line = rawLine.trim();
+  return line === 'data: [DONE]' || line === 'data: ✅';
+}
+
 // Endpoints that answered 4xx to `stream_options`. A sweep runs hundreds of
 // samples against the same daemon, and re-discovering its incompatibility on
 // every one would double the prefill cost of each — including a 16k-token
@@ -371,8 +376,9 @@ export async function* iterateOpenAiChat({
     let mtplxStats = null;
 
     const consumeLine = (rawLine) => {
+      if (isTerminalStreamFrame(rawLine)) return { chunks: [], terminal: true };
       const delta = parseStreamFrame(rawLine);
-      if (!delta) return [];
+      if (!delta) return { chunks: [], terminal: false };
       if (delta.usage) usage = delta.usage;
       if (delta.timings) runtimeTimings = delta.timings;
       if (delta.mtplxStats) mtplxStats = delta.mtplxStats;
@@ -390,7 +396,7 @@ export async function* iterateOpenAiChat({
         reasoning += delta.reasoning;
         chunks.push({ text: delta.reasoning, kind: 'reasoning' });
       }
-      return chunks;
+      return { chunks, terminal: false };
     };
 
     // Always release the reader (and tear down the socket) on every exit path — a
@@ -398,19 +404,26 @@ export async function* iterateOpenAiChat({
     // throw, surface the tokens already streamed (attached to the error) instead
     // of discarding them.
     try {
-      while (true) {
+      let terminal = false;
+      while (!terminal) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
         for (const line of lines) {
-          for (const chunk of consumeLine(line)) yield chunk;
+          const consumed = consumeLine(line);
+          for (const chunk of consumed.chunks) yield chunk;
+          if (consumed.terminal) {
+            terminal = true;
+            break;
+          }
         }
       }
       buffer += decoder.decode();
-      if (buffer.trim()) {
-        for (const chunk of consumeLine(buffer)) yield chunk;
+      if (!terminal && buffer.trim()) {
+        const consumed = consumeLine(buffer);
+        for (const chunk of consumed.chunks) yield chunk;
       }
     } catch (err) {
       err.partialOutput = resolvePartialOutput({ output, reasoning });
