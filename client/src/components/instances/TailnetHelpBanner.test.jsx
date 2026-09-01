@@ -29,6 +29,33 @@ const tailnetInfo = {
 const networkExposure = {
   httpsEnabled: false,
   bind: { port: 5555 },
+  setup: {
+    complete: false,
+    summary: 'Provision a trusted HTTPS certificate.',
+    pendingTrustedUrl: null,
+    nextStep: {
+      id: 'https-cert',
+      title: 'Provision a trusted HTTPS certificate',
+      status: 'action',
+      detail: 'Enable HTTPS Certificates in the Tailscale DNS admin, then let PortOS fetch the certificate automatically.',
+      action: {
+        type: 'provision-cert',
+        label: 'Enable HTTPS',
+        adminUrl: 'https://login.tailscale.com/admin/dns',
+      },
+    },
+    steps: [{
+      id: 'https-cert',
+      title: 'Provision a trusted HTTPS certificate',
+      status: 'action',
+      detail: 'Enable HTTPS Certificates in the Tailscale DNS admin, then let PortOS fetch the certificate automatically.',
+      action: {
+        type: 'provision-cert',
+        label: 'Enable HTTPS',
+        adminUrl: 'https://login.tailscale.com/admin/dns',
+      },
+    }],
+  },
 };
 
 beforeEach(() => {
@@ -55,7 +82,7 @@ describe('TailnetHelpBanner HTTPS activation', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Enable HTTPS' }));
-    expect(await screen.findByText('Cert installed — restart PortOS to activate HTTPS')).toBeInTheDocument();
+    expect(await screen.findByText('Certificate installed — restart PortOS to activate trusted HTTPS.')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Restart PortOS' }));
 
@@ -83,7 +110,7 @@ describe('TailnetHelpBanner HTTPS activation', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Enable HTTPS' }));
 
-    expect(await screen.findByText('Cert installed and live')).toBeInTheDocument();
+    expect(await screen.findByText('Certificate installed and active.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Restart PortOS' })).not.toBeInTheDocument();
   });
 

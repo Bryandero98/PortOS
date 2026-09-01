@@ -73,19 +73,49 @@ export function isSandboxedTailscale(binPath) {
  */
 export async function getTailscaleStatus() {
   const bin = findTailscale();
-  if (!bin) return { available: false, running: false, state: null, reason: 'tailscale-not-installed' };
+  const unavailable = (reason, { available = true } = {}) => ({
+    available,
+    running: false,
+    state: null,
+    reason,
+    sandboxed: bin ? isSandboxedTailscale(bin) : false,
+    dnsName: null,
+    magicDnsSuffix: null,
+    peers: [],
+  });
+  if (!bin) return unavailable('tailscale-not-installed', { available: false });
   const { stdout } = await execFileAsync(bin, ['status', '--json'], { timeout: 5000 })
     .catch(() => ({ stdout: null }));
-  if (!stdout) return { available: true, running: false, state: null, reason: 'tailscale-status-failed' };
+  if (!stdout) return unavailable('tailscale-status-failed');
   // Guard against non-JSON output (warnings, partial reads) so we never throw.
   const status = safeJSONParse(stdout, null);
-  if (!status) return { available: true, running: false, state: null, reason: 'tailscale-parse-error' };
-  const state = status.BackendState ?? null;
+  if (!status) return unavailable('tailscale-parse-error');
+  const state = typeof status?.BackendState === 'string' && status.BackendState.trim()
+    ? status.BackendState.trim()
+    : null;
+  const trimDnsName = (value) => typeof value === 'string'
+    ? value.trim().replace(/\.$/, '') || null
+    : null;
+  const peers = Object.values(status?.Peer ?? {}).map((peer) => ({
+    dnsName: trimDnsName(peer?.DNSName),
+    hostName: typeof peer?.HostName === 'string' && peer.HostName.trim()
+      ? peer.HostName.trim()
+      : null,
+    ips: Array.isArray(peer?.TailscaleIPs)
+      ? peer.TailscaleIPs.filter((ip) => typeof ip === 'string')
+      : [],
+  }));
   return {
     available: true,
     running: state === 'Running',
     state,
-    reason: state === 'Running' ? 'running' : `tailscale-${(state || 'unknown').toLowerCase()}`
+    reason: state === 'Running' ? 'running' : `tailscale-${(state || 'unknown').toLowerCase()}`,
+    sandboxed: isSandboxedTailscale(bin),
+    dnsName: trimDnsName(status?.Self?.DNSName),
+    magicDnsSuffix: trimDnsName(
+      status?.CurrentTailnet?.MagicDNSSuffix ?? status?.MagicDNSSuffix,
+    ),
+    peers,
   };
 }
 

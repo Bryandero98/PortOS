@@ -174,7 +174,16 @@ describe('getTailscaleStatus / isTailscaleUp', () => {
     existsSync.mockReturnValue(false);
     process.env.PATH = '';
     const status = await getTailscaleStatus();
-    expect(status).toEqual({ available: false, running: false, state: null, reason: 'tailscale-not-installed' });
+    expect(status).toEqual({
+      available: false,
+      running: false,
+      state: null,
+      reason: 'tailscale-not-installed',
+      sandboxed: false,
+      dnsName: null,
+      magicDnsSuffix: null,
+      peers: [],
+    });
     expect(execFile).not.toHaveBeenCalled();
     expect(await isTailscaleUp()).toBe(false);
   });
@@ -184,6 +193,32 @@ describe('getTailscaleStatus / isTailscaleUp', () => {
     const status = await getTailscaleStatus();
     expect(status).toMatchObject({ available: true, running: true, state: 'Running', reason: 'running' });
     expect(await isTailscaleUp()).toBe(true);
+  });
+
+  it('normalizes the local MagicDNS name, suffix, and peer suggestions', async () => {
+    mockStatusJSON({
+      BackendState: 'Running',
+      Self: { DNSName: 'host-alpha.example-tailnet.ts.net.' },
+      CurrentTailnet: { MagicDNSSuffix: 'example-tailnet.ts.net.' },
+      Peer: {
+        peer1: {
+          DNSName: 'host-beta.example-tailnet.ts.net.',
+          HostName: 'host-beta',
+          TailscaleIPs: ['100.64.0.50'],
+        },
+      },
+    });
+
+    await expect(getTailscaleStatus()).resolves.toMatchObject({
+      running: true,
+      dnsName: 'host-alpha.example-tailnet.ts.net',
+      magicDnsSuffix: 'example-tailnet.ts.net',
+      peers: [{
+        dnsName: 'host-beta.example-tailnet.ts.net',
+        hostName: 'host-beta',
+        ips: ['100.64.0.50'],
+      }],
+    });
   });
 
   it('reports not-running when Tailscale is installed but Stopped', async () => {
