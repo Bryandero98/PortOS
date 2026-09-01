@@ -7,12 +7,15 @@ vi.mock('../../../services/api', () => ({
   getBranches: vi.fn(),
   getBranchComparison: vi.fn(),
   getRemoteBranches: vi.fn(),
+  updateBranches: vi.fn(),
   getGitDiff: vi.fn(),
   cleanupMergedBranches: vi.fn(),
   resetToDefaultBranch: vi.fn(),
 }));
 vi.mock('./RepositorySourcePanel', () => ({
-  default: ({ appId }) => <div data-testid="repository-source-panel">{appId}</div>,
+  default: ({ appId, refreshKey }) => (
+    <div data-testid="repository-source-panel" data-refresh-key={refreshKey}>{appId}</div>
+  ),
 }));
 
 import * as api from '../../../services/api';
@@ -38,6 +41,7 @@ beforeEach(() => {
   api.getBranches.mockResolvedValue({ branches: [] });
   api.getBranchComparison.mockResolvedValue(COMPARISON);
   api.getRemoteBranches.mockResolvedValue({ branches: [], defaultBranch: 'main' });
+  api.updateBranches.mockResolvedValue({ currentBranch: 'main', main: 'up to date' });
   api.getGitDiff.mockResolvedValue({ diff: '@@ -1 +1 @@\n-old\n+new' });
   api.cleanupMergedBranches.mockResolvedValue({ deleted: [], skipped: [] });
   api.resetToDefaultBranch.mockResolvedValue({ success: true, branch: 'main', previousBranch: 'main', previousHead: 'b'.repeat(40), head: 'a'.repeat(40), discardedFiles: 1, fetched: true });
@@ -70,6 +74,16 @@ describe('GitTab managed repository sources', () => {
       />,
     );
     expect(screen.getByTestId('repository-source-panel')).toHaveTextContent('app-other');
+  });
+
+  it('refreshes repository sources after fetching branches', async () => {
+    render(<GitTab appId="app-example" appName="Example App" repoPath="/repo" />);
+
+    expect(await screen.findByTestId('repository-source-panel')).toHaveAttribute('data-refresh-key', '0');
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch branches' }));
+
+    await waitFor(() => expect(api.updateBranches).toHaveBeenCalledWith('/repo'));
+    await waitFor(() => expect(screen.getByTestId('repository-source-panel')).toHaveAttribute('data-refresh-key', '1'));
   });
 });
 

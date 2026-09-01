@@ -159,6 +159,7 @@ export default function GitTab({ appId, appName, repoPath }) {
   const [cleanupConfirm, setCleanupConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
+  const [sourceRefreshKey, setSourceRefreshKey] = useState(0);
 
   const loadGitData = useCallback(async (opts = {}) => {
     if (!repoPath) return;
@@ -253,6 +254,7 @@ export default function GitTab({ appId, appName, repoPath }) {
       toast.success(`Branches updated — ${parts.join(', ')}`);
     }
     await loadGitData({ includeRemote: true });
+    setSourceRefreshKey((key) => key + 1);
   };
 
   const handleReleasePR = async () => {
@@ -497,6 +499,7 @@ export default function GitTab({ appId, appName, repoPath }) {
       <RepositorySourcePanel
         appId={appId}
         appName={appName}
+        refreshKey={sourceRefreshKey}
         onUpdated={() => loadGitData({ includeRemote: true })}
       />
 
