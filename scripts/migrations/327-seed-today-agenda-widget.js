@@ -22,11 +22,8 @@ function applyToLayout(layout) {
     // Append at the end of the packing sequence — the widget is gated, so a
     // trailing cell that gates off leaves only harmless trailing space.
     const grid = Array.isArray(layout.grid) ? layout.grid : [];
-    const nextOrder = grid.reduce(
-      (max, item) => (Number.isFinite(item?.order) && item.order >= max ? item.order + 1 : max),
-      grid.length,
-    );
-    layout.grid = [...grid, { id: WIDGET_ID, x: 0, w: 4, order: nextOrder, h: 4 }];
+    const maxOrder = grid.reduce((max, item) => Math.max(max, Number.isFinite(item?.order) ? item.order : -1), -1);
+    layout.grid = [...grid, { id: WIDGET_ID, x: 0, w: 4, order: maxOrder + 1, h: 4 }];
   }
   return true;
 }

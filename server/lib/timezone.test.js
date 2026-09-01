@@ -7,7 +7,7 @@ vi.mock('../services/settings.js', () => ({
 }))
 
 import { getSettings } from '../services/settings.js'
-import { getLocalParts, getUtcOffsetMs, nextLocalTime, todayInTimezone, anchorLocalMidnightUtc, HHMM_RE, HHMM_STRICT_RE, parseHHMM, isWithinTimeWindow } from './timezone.js'
+import { getLocalParts, getUtcOffsetMs, nextLocalTime, todayInTimezone, anchorLocalMidnightUtc, localDayWindowUtc, HHMM_RE, HHMM_STRICT_RE, parseHHMM, isWithinTimeWindow } from './timezone.js'
 import { getTimezoneUpdatedAt } from '../services/userTimezone.js'
 
 describe('timezone', () => {
@@ -226,6 +226,17 @@ describe('timezone', () => {
       const anchor = anchorLocalMidnightUtc('2026-04-17', 'Asia/Tokyo')
       expect(anchor).toBe(Date.parse('2026-04-17T00:00:00Z') - 9 * 3600 * 1000)
       expect(localClock(anchor, 'Asia/Tokyo')).toBe('00:00')
+    })
+  })
+
+  describe('localDayWindowUtc', () => {
+    it('bounds the current local day as UTC ISO strings', () => {
+      // 2026-04-17T03:00Z is still 2026-04-16 evening in Los Angeles.
+      const at = new Date('2026-04-17T03:00:00Z')
+      const { date, startDate, endDate } = localDayWindowUtc('America/Los_Angeles', at)
+      expect(date).toBe('2026-04-16')
+      expect(startDate).toBe('2026-04-16T07:00:00.000Z')
+      expect(endDate).toBe('2026-04-17T06:59:59.999Z')
     })
   })
 

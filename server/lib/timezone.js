@@ -129,6 +129,25 @@ export function anchorLocalMidnightUtc(dayStr, tz) {
   return naiveUtc - refinedOffset
 }
 
+/**
+ * The user's current local calendar day expressed as UTC ISO bounds — the
+ * shared "today's events" query window (calendar agenda route, voice
+ * calendar_today tool). `startDate` is local midnight; `endDate` is
+ * 23:59:59.999 later.
+ * @param {string} timezone - IANA timezone string
+ * @param {Date} [atDate] - instant to key (defaults to now)
+ * @returns {{ date: string, startDate: string, endDate: string }}
+ */
+export function localDayWindowUtc(timezone, atDate = new Date()) {
+  const date = todayInTimezone(timezone, atDate)
+  const startMs = anchorLocalMidnightUtc(date, timezone)
+  return {
+    date,
+    startDate: new Date(startMs).toISOString(),
+    endDate: new Date(startMs + 86399999).toISOString(),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // HH:MM time-window primitives
 //

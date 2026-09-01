@@ -54,9 +54,12 @@ vi.mock('../../lib/timezone.js', () => ({
   todayInTimezone: vi.fn(() => '2026-04-17'),
   getLocalParts: vi.fn(() => ({ year: 2026, month: 4, day: 17 })),
   getUtcOffsetMs: vi.fn(() => -7 * 3600 * 1000),
-  // Pinned PDT midnight for the pinned day; the real DST math is covered in
-  // lib/timezone.test.js.
-  anchorLocalMidnightUtc: vi.fn((dayStr) => Date.parse(`${dayStr}T07:00:00Z`)),
+  // Pinned PDT day window; the real DST math is covered in lib/timezone.test.js.
+  localDayWindowUtc: vi.fn(() => ({
+    date: '2026-04-17',
+    startDate: '2026-04-17T07:00:00.000Z',
+    endDate: '2026-04-18T06:59:59.999Z',
+  })),
 }));
 vi.mock('../userTimezone.js', () => ({
   getUserTimezone: vi.fn(async () => 'America/Los_Angeles'),

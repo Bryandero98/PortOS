@@ -5,7 +5,7 @@
 
 import { getEvents as getCalendarEvents } from '../../calendarSync.js';
 import { fetchWithTimeout } from '../../../lib/fetchWithTimeout.js';
-import { anchorLocalMidnightUtc, todayInTimezone, getLocalParts } from '../../../lib/timezone.js';
+import { localDayWindowUtc, getLocalParts } from '../../../lib/timezone.js';
 import { getUserTimezone } from '../../userTimezone.js';
 import { getSettings } from '../../settings.js';
 import { clampLimit } from './shared.js';
@@ -97,19 +97,9 @@ export const AMBIENT_TOOLS = [
     execute: async ({ limit = 10 } = {}) => {
       const max = clampLimit(limit, 10, 20);
       const tz = await getUserTimezone();
-      const today = todayInTimezone(tz); // YYYY-MM-DD in the user's TZ
-      // The server runs TZ=UTC and event startTimes carry an offset/Z, so the
-      // [startDate, endDate] bounds must be the user's LOCAL day expressed in
-      // UTC — otherwise a late-evening PT event lands on the next UTC day and
-      // gets dropped. Anchor midnight-local by subtracting the TZ offset, but
-      // evaluate that offset at the TARGET day's midnight (not at `now`): on a
-      // DST-transition day the offset at `now` can differ from the offset at
-      // midnight by an hour, shifting the window and dropping/duplicating
-      // boundary events. Two passes converge (the first guess lands within
-      // ~14h of local midnight; the second re-evaluates at that instant).
-      const localMidnightUtc = anchorLocalMidnightUtc(today, tz);
-      const startDate = new Date(localMidnightUtc).toISOString();
-      const endDate = new Date(localMidnightUtc + 86399999).toISOString();
+      // The user's LOCAL day expressed as UTC bounds — the server runs TZ=UTC,
+      // so a naive window would drop late-evening events; see localDayWindowUtc.
+      const { date: today, startDate, endDate } = localDayWindowUtc(tz);
       const { events = [] } = await getCalendarEvents({ startDate, endDate, limit: max });
       const items = events.map((e) => ({
         title: e.title,
