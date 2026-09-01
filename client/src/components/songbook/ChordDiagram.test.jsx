@@ -12,7 +12,7 @@ describe('ChordDiagram', () => {
     const dots = svg.querySelectorAll('g circle');
     expect(dots.length).toBe(3);
     // First position — no window label.
-    expect(container.textContent).not.toMatch(/fr/);
+    expect(svg.textContent).not.toMatch(/fr/);
   });
 
   it('provides an accessible fret description for guitar voicings', () => {
