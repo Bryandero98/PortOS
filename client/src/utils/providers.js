@@ -1507,10 +1507,13 @@ export const PROVIDER_CARD_STATE = Object.freeze({
  *                      explicitly empty configured value is `false`; a missing
  *                      or redacted value is unknown and must not be reported.
  *
- * `blocked` outranks `disabled`: a provider whose CLI isn't installed can't be
- * enabled at all, so it belongs in the "needs setup" bucket whichever way its
- * toggle happens to sit. `benched` only applies to an enabled provider that
- * otherwise meets its prerequisites.
+ * `disabled` outranks `blocked`: a provider the user switched off is not a gap
+ * in this install. PortOS ships dozens of provider records the user may never
+ * want, and calling every switched-off one "needs setup" makes an install with
+ * a perfectly good provider read as degraded or half-configured. What such a
+ * provider is missing is still returned in `missing` — a note for the user IF
+ * they decide to turn it on, not an outstanding task. `benched` only applies to
+ * an enabled provider that otherwise meets its prerequisites.
  *
  * @returns {{state: string, missing: {code: string, label: string}[]}}
  */
@@ -1567,8 +1570,10 @@ export const providerCardState = (provider, {
     }
   }
 
-  if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
+  // Switched off wins over every finding — see the precedence note above. The
+  // findings ride along so the card can still say what enabling it would take.
   if (!provider?.enabled) return { state: PROVIDER_CARD_STATE.DISABLED, missing };
+  if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
   if (status?.available === false) return { state: PROVIDER_CARD_STATE.BENCHED, missing };
   return { state: PROVIDER_CARD_STATE.READY, missing };
 };

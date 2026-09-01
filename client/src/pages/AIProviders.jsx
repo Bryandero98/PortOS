@@ -35,8 +35,10 @@ import FleetProviderSetup from '../components/providers/FleetProviderSetup';
 const LOCAL_APP_LABELS = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 
 // The buckets the cards are grouped into, in the order they render.
-// "Needs setup" sits between them deliberately: a provider missing its CLI or
-// key can't be turned on at all, so it is neither enabled nor merely disabled.
+// "Needs setup" sits second because it is the page's only outstanding-task list,
+// and it is short: it holds ONLY providers the user switched ON that still can't
+// run. A switched-off one files under "Disabled" whatever it is missing — see
+// the precedence note on `providerCardState`.
 //
 // The last bucket is the machine's own veto: a provider the server has marked
 // hardware-`unavailable` can never run here no matter what the user toggles, so
@@ -56,14 +58,14 @@ export const PROVIDER_SECTIONS = [
   {
     key: 'blocked',
     title: 'Needs setup',
-    hint: 'Missing a CLI or an API key — these cannot run yet',
+    hint: 'Switched on but missing a CLI or an API key — these cannot run yet',
     dot: 'bg-port-warning',
     states: [PROVIDER_CARD_STATE.BLOCKED],
   },
   {
     key: 'disabled',
     title: 'Disabled',
-    hint: 'Fully configured, but switched off',
+    hint: 'Switched off — optional, nothing to do unless you want one',
     dot: 'bg-gray-500',
     states: [PROVIDER_CARD_STATE.DISABLED],
   },

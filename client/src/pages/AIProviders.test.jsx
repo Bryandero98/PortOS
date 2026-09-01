@@ -1267,11 +1267,17 @@ describe('readiness grouping', () => {
     expect(screen.getByText('NEEDS SETUP')).toBeInTheDocument();
     // The blocker itself stays where its fix is — the card's API-key row.
     expect(screen.getByText(/not set — Edit this provider to paste one/)).toBeInTheDocument();
+    // "Needs setup" is the only outstanding-task bucket, so it reads before the
+    // long optional catalog rather than being buried under it. Sections render
+    // in `PROVIDER_SECTIONS` order, so the array is what pins it.
+    expect(PROVIDER_SECTIONS.findIndex((s) => s.key === 'blocked'))
+      .toBeLessThan(PROVIDER_SECTIONS.findIndex((s) => s.key === 'disabled'));
   });
 
-  // A missing CLI is what stops the provider — not the toggle — so it belongs in
-  // "Needs setup" whichever way the switch sits.
-  it('files a switched-off provider with a missing CLI under Needs setup', async () => {
+  // "Needs setup" is the outstanding-task list, so only providers the user has
+  // switched ON belong in it. A switched-off one is optional — it files under
+  // Disabled and merely notes what enabling it would take.
+  it('files a switched-off provider with a missing CLI under Disabled, noting the setup', async () => {
     api.getProviders.mockResolvedValue({
       providers: [{ id: 'opencode-ollama', name: 'OpenCode Ollama', type: 'cli', command: 'opencode', enabled: false }],
       activeProvider: null,
@@ -1280,10 +1286,15 @@ describe('readiness grouping', () => {
 
     renderPage();
 
-    expect(await screen.findByText('NEEDS SETUP')).toBeInTheDocument();
-    expect(screen.getByText('OpenCode CLI not installed')).toBeInTheDocument();
-    expect(screen.getByText('SWITCHED OFF')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: new RegExp('^Disabled') })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: new RegExp('^Disabled') })).toBeInTheDocument();
+    expect(screen.getByText('DISABLED')).toBeInTheDocument();
+    expect(screen.getByText('SETUP TO ENABLE')).toBeInTheDocument();
+    // The missing CLI is still named — that IS the note about enabling it — but
+    // in the muted tone, not the amber that would read as a gap in the install.
+    const runtimePill = screen.getByText('OpenCode CLI not installed');
+    expect(runtimePill).toBeInTheDocument();
+    expect(runtimePill.className).not.toMatch(/port-warning/);
+    expect(screen.queryByRole('button', { name: new RegExp('^Needs setup') })).not.toBeInTheDocument();
   });
 
   // The provider list is authoritative: no sibling means the wrapper has no key
