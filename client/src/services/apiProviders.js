@@ -14,9 +14,10 @@ export const createProvider = (data) => request('/providers', {
   method: 'POST',
   body: JSON.stringify(data)
 });
-export const updateProvider = (id, data) => request(`/providers/${id}`, {
+export const updateProvider = (id, data, options = {}) => request(`/providers/${id}`, {
   method: 'PUT',
-  body: JSON.stringify(data)
+  body: JSON.stringify(data),
+  ...options,
 });
 export const deleteProvider = (id) => request(`/providers/${id}`, { method: 'DELETE' });
 export const getSampleProviders = () => request('/providers/samples');

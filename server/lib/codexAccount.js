@@ -272,8 +272,12 @@ export const normalizeCodexLoginStart = (result) => {
   if (!result || typeof result !== 'object') throw new Error('login start returned a non-object result');
   const loginId = trimmedString(result.loginId);
   if (!loginId) throw new Error('login start returned no loginId');
-  const authUrl = trimmedString(result.authUrl);
-  const verificationUrl = trimmedString(result.verificationUrl);
+  const httpsUrl = (value) => {
+    const url = trimmedString(value);
+    return url && URL.canParse(url) && new URL(url).protocol === 'https:' ? url : null;
+  };
+  const authUrl = httpsUrl(result.authUrl);
+  const verificationUrl = httpsUrl(result.verificationUrl);
   if (!authUrl && !verificationUrl) throw new Error('login start returned no sign-in URL');
   return {
     loginId,
