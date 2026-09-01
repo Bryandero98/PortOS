@@ -47,3 +47,22 @@ export const trimTo = (value, max) => (
 export function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+/**
+ * Lowercase + kebab-case a string, ASCII-only, collapsing runs of anything else
+ * to a single `-` and trimming leading/trailing hyphens.
+ *
+ * Lives here, beside `escapeRegExp`, for the same reason: it was private to
+ * `planIds.js` (PLAN.md `[slug]` ids) and the next caller that needed the same
+ * transform — `normalizePlannerId`, which slugs a model id into a `planner:`
+ * label — could only re-inline the regex chain. Non-string input returns the
+ * empty string rather than being coerced, so a caller distinguishes "nothing to
+ * slug" from a real slug without a separate guard.
+ */
+export function kebabCase(text) {
+  if (typeof text !== 'string') return '';
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}

@@ -27,6 +27,7 @@ import { detectSkillTemplates, getAgentInstructionsContext, loadSkillTemplates }
 import { buildCompactionSection, buildTaskBlock, reconcileSplitContext } from './promptSections/taskContext.js';
 import { applySlashdoInvocation } from './promptSections/slashdo.js';
 import { manualForgeCli, resolveManualForgeCli } from './promptSections/forge.js';
+import { buildPlannerAttributionSection } from './promptSections/plannerAttribution.js';
 import {
   DISCARD_WORKTREE_NOTE,
   buildActionOutputCompletionSection,
@@ -55,6 +56,7 @@ export {
   loadSkillTemplate,
   loadSkillTemplates,
 } from './promptSections/instructions.js';
+export { buildPlannerAttributionSection } from './promptSections/plannerAttribution.js';
 export { buildCompactionSection, buildTaskBlock, reconcileSplitContext } from './promptSections/taskContext.js';
 export {
   buildActionOutputCompletionSection,
@@ -210,6 +212,9 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   const providerId = options.providerId || null;
   const providerCommand = options.providerCommand || null;
   const agentId = options.agentId || null;
+  // The model this run was actually dispatched with — the planner identity a
+  // filing agent stamps as `planner:<model>`. It cannot self-report this.
+  const providerModel = options.providerModel || null;
   const isTui = providerType === PROVIDER_TYPES.TUI;
   const leanMode = options.leanMode === true;
 
@@ -282,7 +287,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
     const forgeCli = await resolveManualForgeCli(workspaceDir, worktreeInfo, task);
-    const lightOptions = { isTui, providerId, providerCommand, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody: localAgentLoopBodyForInline, localAgentLoopBodyPath, forgeCli };
+    const lightOptions = { isTui, providerId, providerCommand, providerModel, leanMode, agentId, defaultReviewers, codeReviewDefaults, localAgentLoopBody: localAgentLoopBodyForInline, localAgentLoopBodyPath, forgeCli };
     return options.split === true
       ? buildLightContextPromptParts(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions)
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);
@@ -301,6 +306,14 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // CD plan already receives creative-tool specs via `getToolSpecs()` in its
   // own prompt, not this section.
   const skipDevContext = isCreativeDirectorTask;
+  // Planner attribution for the full path. Skipped for Creative Director runs
+  // alongside the rest of the dev context — a scene evaluation files no issue.
+  // The forge is left at the default here rather than probed: this path is
+  // API-provider-only, and the two CLIs' `label create` idioms differ only in
+  // flag spelling, which the guidance spells out for whichever the agent has.
+  const plannerAttributionSection = skipDevContext
+    ? ''
+    : buildPlannerAttributionSection({ providerId, model: providerModel });
   // Fetch independent context sections in parallel
   const [memorySection, agentInstructionsSection, digitalTwinSection] = await Promise.all([
     skipDevContext
@@ -613,7 +626,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   }).catch(() => null);
 
   if (promptData?.prompt) {
-    return `${promptData.prompt}\n\n${UNATTENDED_RUN_RULE}${uiAuditRuntimeSection ? `\n\n${uiAuditRuntimeSection}` : ''}\n\n${PM2_SAFETY_RULE}`;
+    return `${promptData.prompt}${plannerAttributionSection ? `\n\n${plannerAttributionSection}` : ''}\n\n${UNATTENDED_RUN_RULE}${uiAuditRuntimeSection ? `\n\n${uiAuditRuntimeSection}` : ''}\n\n${PM2_SAFETY_RULE}`;
   }
 
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: false });
@@ -631,7 +644,7 @@ ${taskBlock.attachments}
 ${worktreeSection}
 ${pipelineSection}
 ${jiraSection}
-${simplifySection}
+${plannerAttributionSection ? `${plannerAttributionSection}\n` : ''}${simplifySection}
 ${tuiCompletionSection}
 ${reviewLoopSection}
 ${reviewLoopFollowUpSection}
@@ -748,7 +761,7 @@ export function buildLightContextPromptParts(task, workspaceDir, worktreeInfo, i
 
 const BEGIN_WORKING_LINE = 'Begin working on the task now.';
 
-function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null, localAgentLoopBodyPath = null, forgeCli = null } = {}) {
+function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true, providerId = null, providerCommand = null, providerModel = null, leanMode = false, agentId = null, defaultReviewers, codeReviewDefaults, localAgentLoopBody = null, localAgentLoopBodyPath = null, forgeCli = null } = {}) {
   // Idempotent with the reconcile in buildAgentPrompt; also protects the
   // directly-exported buildLightContextPrompt/Parts entry points.
   task = reconcileSplitContext(task);
@@ -888,6 +901,13 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // something the agent can infer from AGENTS.md or its cwd.
   contractSections.push(UNATTENDED_RUN_RULE);
   if (isUiAuditTask(task)) contractSections.push(UI_AUDIT_RUNTIME_RULE);
+
+  // --- Planner attribution ------------------------------------------------
+  // Unconditional (when resolvable) for the same reason the unattended rule is:
+  // whether a run ends up filing an issue is not knowable from its metadata,
+  // and a model cannot name itself.
+  const lightPlannerSection = buildPlannerAttributionSection({ providerId, model: providerModel, forgeCli: resolvedForgeCli });
+  if (lightPlannerSection) contractSections.push(lightPlannerSection);
 
   // --- Worktree ----------------------------------------------------------
   if (worktreeInfo) {

@@ -7,7 +7,7 @@ import { z } from 'zod';
 import * as cos from '../services/cos.js';
 import * as taskWatcher from '../services/taskWatcher.js';
 import { enhanceTaskPrompt } from '../services/taskEnhancer.js';
-import { buildClaimWorkTask, buildJiraTicketTask } from '../services/cosTaskGenerator.js';
+import { buildClaimWorkTask, buildIssueReplanTask, buildJiraTicketTask } from '../services/cosTaskGenerator.js';
 import { getAppById, getAppWorkTracker, PORTOS_APP_ID } from '../services/apps.js';
 import { getAssignableInstances } from '../services/instances.js';
 import { resolveManagedAppIssueTarget } from '../services/managedAppRepositories.js';
@@ -207,15 +207,20 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
     );
   }
 
-  // Two task shapes, produced whole so the either/or is visible rather than
-  // assembled from separately-mutated locals:
+  // Three task shapes, produced whole so the either/or is visible rather than
+  // assembled from separately-mutated locals. The first two are the TARGETED
+  // shapes: a command pinned to one work item, where PortOS assembles the whole
+  // prompt itself and therefore must NOT also set `slashdoCommand` (that would
+  // append the bundled `/do:<cmd>` body on top of the assembled prompt and
+  // re-point the agent at the command's unpinned behavior).
   //
   // - `/do:next` is the work-claim consumer and is genuinely special: it routes
   //   through the same workTracker-aware logic the scheduled `claim-work` flow
   //   uses, so the manual button honors the app's per-app Work Tracker (PLAN.md /
-  //   GitHub / GitLab / JIRA) instead of always draining PLAN.md. Its assembled
-  //   claim prompt IS the task prompt, so it carries NO `slashdoCommand` — adding one
-  //   would append the whole `/do:next` body on top of the claim prompt.
+  //   GitHub / GitLab / JIRA) instead of always draining PLAN.md.
+  // - `replan` + a `target` is the Issues tab's Replan button: a second model
+  //   reviews ONE already-planned issue. Untargeted, it stays the bundled
+  //   backlog audit and falls through to the generic shape below.
   // - Every other command carries only the bare `slashdoCommand` and lets the
   //   prompt builder render the invocation + inline the body once the provider is
   //   known (`applySlashdoInvocation`). Eagerly inlining the body here — and
@@ -234,7 +239,21 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   // the catalog.
   const { useWorktree, openPR, worktreeChangesExpected } = workflow.settings;
   let shape;
-  if (command === 'next') {
+  if (command === 'replan' && target) {
+    // `replan` + a pinned issue is the Issues tab's Replan button, the same
+    // command/target pairing `next` uses for a pinned claim: a SECOND model
+    // reviews ONE already-planned issue and comments its refinements. Without a
+    // target the command stays the bundled `/do:replan` backlog audit below, so
+    // the Agent Operations button is unaffected. Like the claim branch, its
+    // assembled prompt IS the task prompt and carries no `slashdoCommand` —
+    // appending the whole `/do:replan` body would re-point it at the backlog.
+    const replan = await buildIssueReplanTask(appObj, { target, issueContext, overrideContext });
+    shape = {
+      description: `${workflow.label} for ${appObj.name} — review the plan on ${workTrackerLabel(replan.tracker)} issue ${replan.target}`,
+      prompt: replan.prompt,
+      taskMetadata: { ...replan.taskMetadata, replanTarget: replan.target },
+    };
+  } else if (command === 'next') {
     const claim = await buildClaimWorkTask(appObj, {
       target,
       issueContext,

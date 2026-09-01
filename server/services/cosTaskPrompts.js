@@ -170,3 +170,105 @@ fi
 
   return `${claimCommentGateBlock}\n\n## Local Reviewer Procedure\n\nThe tool-free local reviewers run before any tool-enabled CLI reviewer. Run each configured local reviewer in its listed order using the command below. Only a successfully extracted non-empty \`.findings\` string is a review result. Timeout, transport failure, malformed JSON, an error response, or missing/empty findings is INCONCLUSIVE: do not substitute a self-review. For a required local reviewer, record \`REVIEW_STATUS=review-blocked\`, continue to publish the MR/PR, then leave it open and do not merge until the required review completes; an optional inconclusive result remains non-blocking. Substantive findings, failed tests/build, unpushed fixes, or publication failures still block.\n\n${commands}`;
 }
+
+/**
+ * The per-issue replan prompt — the "Replan" button beside Claim on an app's
+ * Issues tab (#planner-labels). A SECOND model re-reads one already-planned
+ * issue against the current code and leaves refinements, redirections, or
+ * adjustments on the tracker.
+ *
+ * Deliberately NOT a claim: nothing is implemented, no branch is cut, and the
+ * issue is not assigned. The deliverable is a tracker comment (plus label
+ * corrections), which is why the run is queued read-only and its clean worktree
+ * is the success shape rather than a missed commit.
+ *
+ * Deliberately NOT `/do:replan` either: that workflow audits the WHOLE backlog
+ * for staleness. This one is scoped to a single issue the user pointed at — and
+ * to its children when that issue is an epic, since an epic's plan IS its
+ * decomposition and reviewing the parent alone would say nothing about it.
+ *
+ * The body is NEVER rewritten by default. A replan that silently replaces the
+ * author's plan destroys the thing being reviewed and leaves no diff a human can
+ * reject; a comment is reversible and reviewable. Override context can ask for
+ * more, and the prompt honors it.
+ *
+ * @param {object} options
+ * @param {string} options.appName
+ * @param {string} options.repoPath
+ * @param {string} options.target - normalized issue ref (digits for a forge issue)
+ * @param {'gh'|'glab'} options.cli
+ * @param {string} options.trackerName - human tracker name for the prose
+ * @param {string} [options.repoFlag] - `owner/repo` to pin every CLI call to
+ * @returns {string}
+ */
+export function buildIssueReplanPrompt({ appName, repoPath, target, cli, trackerName, repoFlag = '' } = {}) {
+  const issueCmd = cli === 'glab' ? 'glab issue' : 'gh issue';
+  // Every call is pinned to the resolved repo when we know it, for the same
+  // reason plan-task pins its filing target: a checkout whose origin is a fork
+  // would otherwise comment on the fork instead of the repo the user is reading.
+  const repoArg = repoFlag ? ` --repo ${shellQuote(repoFlag)}` : '';
+  const viewCmd = `${issueCmd} view ${target}${repoArg}`;
+  const commentCmd = cli === 'glab'
+    ? `glab issue note ${target}${repoArg} --message "<your comment>"`
+    : `gh issue comment ${target}${repoArg} --body-file <file>`;
+  const editCmd = cli === 'glab'
+    ? `glab issue update ${target}${repoArg} --label <name>`
+    : `gh issue edit ${target}${repoArg} --add-label <name>`;
+
+  return `# Replan ${trackerName} issue #${target} — ${appName}
+
+You are a SECOND opinion on an issue someone (usually another model) already planned. Re-derive the plan from the code as it stands today and leave your refinements on the tracker. **You are not implementing anything.** Do not create a branch, do not write code, do not open a PR, and do not assign the issue.
+
+Repository: \`${repoPath}\`
+
+## Phase 1 — Read what is actually planned
+
+1. \`${viewCmd} --json number,title,body,labels,state,comments\` (glab: \`${viewCmd}\` and read the output) to get the current plan, its labels, and every comment already on it. Later comments may already contain a replan — read them before adding another.
+2. If the issue is CLOSED, stop: post nothing and report that it needs no replan.
+3. If it carries the \`epic\` label, it is an umbrella. Also list and read its child issues (follow the links in its body; \`${issueCmd} list${repoArg} --search "<epic reference>"\` catches children that reference it back). The epic's plan **is** its decomposition, so review that: missing slices, slices that no longer apply, wrong ordering, and children that overlap each other.
+
+## Phase 2 — Check the plan against the code
+
+Read the files the issue names, and the ones it should have named. You are looking for the ways a plan goes wrong between being written and being claimed:
+
+- **Already done / obsolete** — the change landed, or the code it targets no longer exists.
+- **Wrong target** — the fix belongs at a different layer, module, or altitude than the plan picked. Say where instead, and why.
+- **Underspecified** — a decision the plan left open that a claiming agent would have to guess. Make the call yourself and state it; an issue that hands a decision to the implementer is not ready to work.
+- **Missed constraints** — a migration, schema/compatibility gate, federation payload, prompt-version bump, seed file, or test the plan does not mention but the change requires.
+- **Scope** — too large to ship as one PR (propose the split), or so small it should be folded into a neighbouring issue (name it).
+- **Wrong routing** — the \`model:\` / \`effort:\` dispatch hints, \`area:*\` scope, or \`epic\` marker do not match the work you just read.
+
+## Phase 3 — Post the replan
+
+Post exactly ONE comment on #${target}:
+
+\`\`\`
+${commentCmd}
+\`\`\`
+
+Structure it as:
+
+- **Verdict** — one line: \`ready to claim as written\`, \`refined\`, \`redirect\`, \`split\`, or \`close\`. A plan that survives review unchanged is a real and useful outcome — say so plainly and stop; do not invent changes to look productive.
+- **What changed and why** — only the points that alter what an implementer would do. Cite \`file:line\` for each claim you make about the code.
+- **Revised plan** — the steps as you would write them now, decision-complete, only when your verdict is not \`ready to claim as written\`.
+- **Reviewed by** — the planner label named in this run's Planner Attribution section, so the tracker records which model gave this second opinion.
+
+For an epic, comment on the EPIC with the decomposition review, and add a short comment to an individual child only when that specific child needs a redirection.
+
+## Phase 4 — Correct the labels
+
+Fix labels your review proved wrong, one \`--label\` at a time (create a missing label before applying it):
+
+\`\`\`
+${editCmd}
+\`\`\`
+
+Remove a dispatch label only to replace it with the right one. **Never** add \`in-progress\` (you are not claiming it) and never remove another agent's category or scope labels.
+
+## What NOT to do
+
+- Do NOT rewrite the issue body. Your comment is the deliverable — it stays reviewable and reversible next to the original plan. The one exception is an explicit instruction to do so in the override context below.
+- Do NOT close the issue, even when your verdict is \`close\`. Recommend it in the comment and leave the decision to a human.
+- Do NOT file duplicate issues. Propose a split in your comment; only file the split issues if the override context asks you to, and then give each one the full label set.
+- Do NOT modify the working tree. This run makes no commits, and a clean tree is the expected result — not a missed deliverable.`;
+}

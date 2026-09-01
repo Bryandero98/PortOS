@@ -3666,3 +3666,36 @@ describe('TUI reviewLoopFollowUp completion instructions', () => {
     expect(first).not.toMatch(/\.agent-done(?![-\w])/);
   });
 });
+
+// A filing agent cannot reliably name its own model, so PortOS resolves the
+// planner identity from the provider/model the run was actually dispatched with
+// and hands the agent the finished label. The regression this catches is the
+// prompt shipping WITHOUT that value, which strands the shared dispatch guidance
+// pointing at a section that does not exist and invites a self-identified guess.
+describe('planner attribution', () => {
+  it('gives a light-path run the exact planner label for the model it resolved to', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta,
+      { providerId: 'claude-code-tui', providerCommand: 'claude', providerModel: 'claude-opus-5' },
+    );
+    expect(prompt).toMatch(/## Planner Attribution/);
+    expect(prompt).toMatch(/--label planner:opus-5/);
+    expect(prompt).toMatch(/gh label create planner:opus-5/);
+  });
+
+  it('falls back to the provider id when the run pinned no model', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta,
+      { providerId: 'grok', providerCommand: 'grok' },
+    );
+    expect(prompt).toMatch(/--label planner:grok/);
+  });
+
+  it('says nothing at all when PortOS cannot attribute the run', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta, {},
+    );
+    expect(prompt).not.toMatch(/## Planner Attribution/);
+    expect(prompt).not.toMatch(/planner:/);
+  });
+});

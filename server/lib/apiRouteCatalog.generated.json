@@ -5183,7 +5183,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 461
+          "line": 480
         }
       ]
     },
@@ -6250,7 +6250,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 345
+          "line": 364
         }
       ]
     },
@@ -6261,7 +6261,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 403
+          "line": 422
         }
       ]
     },
@@ -6272,7 +6272,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 361
+          "line": 380
         }
       ]
     },
@@ -6283,7 +6283,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 415
+          "line": 434
         }
       ]
     },
@@ -6294,7 +6294,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 428
+          "line": 447
         }
       ]
     },
@@ -6305,7 +6305,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 445
+          "line": 464
         }
       ]
     },
@@ -6316,7 +6316,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 467
+          "line": 486
         }
       ]
     },
@@ -6349,7 +6349,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 311
+          "line": 330
         }
       ]
     },
