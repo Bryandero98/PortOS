@@ -356,6 +356,7 @@ describe('failure paths settle exactly once', () => {
 
       expect(readiness.status).toBe(CODEX_ACCOUNT_STATUS.unknown);
       expect(readiness.error.code).toBe(CODEX_ERROR_CODES.timeout);
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     } finally {
       vi.useRealTimers();
     }
@@ -384,6 +385,18 @@ describe('failure paths settle exactly once', () => {
 
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     expect(peekCodexAccountReadiness()).toBeNull();
+  });
+
+  it('terminates a child that is still handshaking when shutdown begins', async () => {
+    const promise = getCodexAccountReadiness();
+    await vi.waitFor(() => expect(child.lastRequest('initialize')).toBeTruthy());
+
+    await stopCodexAppServer();
+
+    const readiness = await promise;
+    expect(readiness.status).toBe(CODEX_ACCOUNT_STATUS.unknown);
+    expect(readiness.error.code).toBe(CODEX_ERROR_CODES.exited);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
   it('is a no-op on shutdown when nothing was ever spawned', async () => {

@@ -193,10 +193,14 @@ export function anchorLocalMidnightUtc(dayStr, tz) {
 export function localDayWindowUtc(timezone, atDate = new Date()) {
   const date = todayInTimezone(timezone, atDate)
   const startMs = anchorLocalMidnightUtc(date, timezone)
+  const range = localDayRangeUtc(date, timezone)
+  const endMs = range?.end?.getTime()
   return {
     date,
     startDate: new Date(startMs).toISOString(),
-    endDate: new Date(startMs + 86399999).toISOString(),
+    // The inclusive end is derived from the next local-day boundary, so a
+    // 23-hour or 25-hour DST day cannot leak into or omit the adjacent date.
+    endDate: new Date(Number.isFinite(endMs) ? endMs - 1 : startMs + DAY_MS - 1).toISOString(),
   }
 }
 

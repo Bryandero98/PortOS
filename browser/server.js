@@ -26,6 +26,9 @@ let downloadWs = null;
 let downloadWsReconnectTimer = null;
 let shuttingDown = false;
 
+const PREFS_MISSING = Symbol('prefs-missing');
+const PREFS_UNREADABLE = Symbol('prefs-unreadable');
+
 const DEFAULT_MAC_CHROME_APP = '/Applications/Google Chrome.app';
 
 function defaultChromeBinary() {
@@ -106,13 +109,12 @@ async function applyDownloadDirPreference(profileDir, downloadDir) {
   const prefsPath = join(profileDir, 'Default', 'Preferences');
   const raw = await tryReadJson(prefsPath);
   // A profile that has never launched has no Preferences file yet; Chrome
-  // merges our partial object with its defaults on first run. A hand-edited or
-  // truncated file can also parse into a non-object root (a string, an array),
-  // and assigning a property to a string primitive throws under ESM's strict
-  // mode — uncaught out of launchBrowser()→main() into a PM2 restart-loop. So
-  // normalize the root and every branch we spread, the same way loadConfig
-  // above refuses to trust the config file.
-  const prefs = asObject(raw);
+  // merges our partial object with its defaults on first run. Do not treat a
+  // corrupt or unreadable existing file as an empty profile: rewriting it
+  // would discard unrelated Chrome settings. Let Chrome repair it on launch
+  // while preserving the user's original bytes.
+  if (raw === PREFS_UNREADABLE) return false;
+  const prefs = raw === PREFS_MISSING ? {} : raw;
   if (prefs.download?.default_directory === downloadDir
     && prefs.savefile?.default_directory === downloadDir) {
     return false;
@@ -135,13 +137,22 @@ function asObject(value) {
 }
 
 async function tryReadJson(path) {
-  const raw = await readFile(path, 'utf-8').catch(() => null);
-  if (!raw) return null;
+  const raw = await readFile(path, 'utf-8').catch(err => {
+    if (err.code === 'ENOENT') return PREFS_MISSING;
+    console.error(`⚠️ Unable to read Chrome Preferences, preserving file: ${err.message}`);
+    return PREFS_UNREADABLE;
+  });
+  if (raw === PREFS_MISSING || raw === PREFS_UNREADABLE) return raw;
   try {
-    return JSON.parse(raw);
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      console.error('⚠️ Chrome Preferences root is not an object, preserving file');
+      return PREFS_UNREADABLE;
+    }
+    return value;
   } catch (err) {
-    console.error(`⚠️ Corrupt Chrome Preferences, rewriting: ${err.message}`);
-    return null;
+    console.error(`⚠️ Corrupt Chrome Preferences, preserving file: ${err.message}`);
+    return PREFS_UNREADABLE;
   }
 }
 

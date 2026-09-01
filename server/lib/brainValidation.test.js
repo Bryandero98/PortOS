@@ -656,6 +656,12 @@ describe('brainValidation.js', () => {
       expect(result.data.isRepo).toBe(false);
     });
 
+    it('should accept the legacy GitHub-only filter name', () => {
+      const result = linksQuerySchema.safeParse({ isGitHubRepo: 'true' });
+      expect(result.success).toBe(true);
+      expect(result.data.isGitHubRepo).toBe(true);
+    });
+
     it('should filter by linkType', () => {
       const result = linksQuerySchema.safeParse({ linkType: 'documentation' });
       expect(result.success).toBe(true);

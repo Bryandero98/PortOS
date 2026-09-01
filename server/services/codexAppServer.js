@@ -73,6 +73,8 @@ const CLIENT_INFO = Object.freeze({ name: 'PortOS', title: 'PortOS', version: '1
 let connection = null;
 /** Coalesces concurrent connects so one page load cannot spawn two children. */
 let connecting = null;
+/** The child being handshaken, before `connect()` can publish it as live. */
+let connectingTarget = null;
 /** `{ at, readiness }` — the last successful read. `null` = never probed. */
 let readinessCache = null;
 /** `{ loginId, startedAt, expiresAt, timer }` for a PortOS-initiated login. */
@@ -106,6 +108,18 @@ const teardown = (target, error) => {
   target.closed = true;
   for (const entry of pendingEntries) entry.reject(error);
   if (connection === target) connection = null;
+};
+
+/** Reject the target and terminate its child unless it already stopped. */
+const stopTarget = (target, error) => {
+  if (!target || target.closed) return;
+  teardown(target, error);
+  if (target.child.killed) return;
+  try {
+    target.child.kill('SIGTERM');
+  } catch (err) {
+    console.error(`❌ Failed to stop Codex app-server: ${err.message}`);
+  }
 };
 
 /** Settle a pending login once, clearing its deadline. */
@@ -255,10 +269,19 @@ const openConnection = async () => {
     settleLogin('ended because the Codex app-server stopped');
   });
 
-  await sendRequest(target, CODEX_RPC.initialize, { clientInfo: CLIENT_INFO }, HANDSHAKE_TIMEOUT_MS);
-  await sendNotification(target, CODEX_RPC.initialized, {});
-  console.log('🔌 Codex app-server connected');
-  return target;
+  connectingTarget = target;
+  try {
+    await sendRequest(target, CODEX_RPC.initialize, { clientInfo: CLIENT_INFO }, HANDSHAKE_TIMEOUT_MS);
+    await sendNotification(target, CODEX_RPC.initialized, {});
+    console.log('🔌 Codex app-server connected');
+    return target;
+  } catch (err) {
+    // A handshake timeout/rejection happens before `connect()` can publish the
+    // target in `connection`; clean up here so the child cannot become an
+    // orphan that later account checks cannot see or stop.
+    stopTarget(target, err);
+    throw err;
+  }
 };
 
 /** The live connection, opening one if needed. One connect in flight at a time. */
@@ -267,7 +290,7 @@ const connect = async () => {
   if (!connecting) {
     connecting = openConnection()
       .then((target) => { connection = target; return target; })
-      .finally(() => { connecting = null; });
+      .finally(() => { connecting = null; connectingTarget = null; });
   }
   return connecting;
 };
@@ -446,11 +469,10 @@ export async function codexLogout() {
 export async function stopCodexAppServer() {
   settleLogin(null);
   readinessCache = null;
-  const target = connection;
+  const target = connection || connectingTarget;
   connection = null;
   if (!target || target.closed) return;
-  teardown(target, codexError(CODEX_ERROR_CODES.exited, 'PortOS is shutting down the Codex app-server.'));
-  target.child.kill('SIGTERM');
+  stopTarget(target, codexError(CODEX_ERROR_CODES.exited, 'PortOS is shutting down the Codex app-server.'));
   console.log('🔌 Codex app-server stopped');
 }
 
@@ -461,4 +483,5 @@ export function __resetCodexAppServer() {
   readinessCache = null;
   connection = null;
   connecting = null;
+  connectingTarget = null;
 }

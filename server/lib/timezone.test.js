@@ -246,6 +246,15 @@ describe('timezone', () => {
       expect(startDate).toBe('2026-04-16T07:00:00.000Z')
       expect(endDate).toBe('2026-04-17T06:59:59.999Z')
     })
+
+    it.each([
+      ['2026-03-08T12:00:00Z', '2026-03-08', '2026-03-09T06:59:59.999Z'],
+      ['2026-11-01T12:00:00Z', '2026-11-01', '2026-11-02T07:59:59.999Z'],
+    ])('uses the next local-day boundary on the %s DST date', (at, date, endDate) => {
+      const window = localDayWindowUtc('America/Los_Angeles', new Date(at))
+      expect(window.date).toBe(date)
+      expect(window.endDate).toBe(endDate)
+    })
   })
 
   describe('localDayRangeUtc', () => {

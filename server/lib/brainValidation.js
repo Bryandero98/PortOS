@@ -534,6 +534,12 @@ export const linksQuerySchema = z.object({
     v => (typeof v === 'string' ? v === 'true' : v),
     z.boolean()
   ).optional(),
+  // Legacy peers and clients still use the GitHub-only name. Keep accepting it
+  // while the route normalizes it to the host-neutral filter above.
+  isGitHubRepo: z.preprocess(
+    v => (typeof v === 'string' ? v === 'true' : v),
+    z.boolean()
+  ).optional(),
   // LinksTab does its own filtering, search, and bucket assignment client-side
   // over the full set — so the upper cap has to be large enough to return every
   // saved link in one round-trip. 5000 is plenty of headroom for a single-user

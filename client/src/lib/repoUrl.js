@@ -122,21 +122,26 @@ export function parseRepoUrl(url) {
   const hostConfig = REPO_HOSTS[host];
   if (!hostConfig) return null;
 
-  // Drop the query/hash, then GitLab's `/-/` deep-link separator, then walk the
-  // remaining segments until a host UI route word.
+  // Drop the query/hash, then GitLab's `/-/` deep-link separator. GitHub has a
+  // fixed owner/repo pair, so identify those two operands before looking at any
+  // later route words — a repository itself may be named `issues`, `settings`,
+  // or `tree`, and arbitrary GitHub deep links are still valid repo URLs.
   let path = (match[2] || '').split(/[?#]/)[0].replace(/^\//, '');
   const dashIndex = path.indexOf('/-/');
   if (dashIndex !== -1) path = path.slice(0, dashIndex);
 
-  const segments = [];
-  for (const segment of path.split('/')) {
-    if (!segment) continue;
-    if (RESERVED_PATH_SEGMENTS.has(segment.toLowerCase())) break;
-    segments.push(segment);
+  const pathSegments = path.split('/').filter(Boolean);
+  const { maxDepth, allowDots } = hostConfig.namespace;
+  let segments = pathSegments;
+  if (hostConfig.flatClonePath) {
+    segments = pathSegments.slice(0, maxDepth + 1);
+  } else {
+    const routeIndex = pathSegments.findIndex((segment, index) =>
+      index >= 2 && RESERVED_PATH_SEGMENTS.has(segment.toLowerCase()));
+    if (routeIndex !== -1) segments = pathSegments.slice(0, routeIndex);
   }
   if (segments.length < 2) return null;
 
-  const { maxDepth, allowDots } = hostConfig.namespace;
   // Past the cap the path is a deep link into the project, not a deeper
   // namespace — reading it as one would clone into (and create directories
   // inside) an existing checkout.

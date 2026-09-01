@@ -126,6 +126,14 @@ describe('GET /api/brain/links', () => {
     );
   });
 
+  it('maps the legacy isGitHubRepo query name to the host-neutral filter', async () => {
+    await request(app).get('/api/brain/links?isGitHubRepo=true');
+
+    expect(brainService.getLinksPage).toHaveBeenCalledWith(
+      expect.objectContaining({ isRepo: true }),
+    );
+  });
+
   it('rejects an out-of-range limit before touching the service', async () => {
     const res = await request(app).get('/api/brain/links?limit=999999');
 

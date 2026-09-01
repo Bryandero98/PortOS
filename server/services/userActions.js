@@ -207,9 +207,12 @@ export function normalizeUserAction(input = {}) {
 
 /** Clamp list options to the documented bounds. Exported for the route test. */
 export function normalizeListOptions(options = {}) {
+  const types = Array.isArray(options.types)
+    ? options.types
+    : (options.types ? [options.types] : []);
   const rawTypes = [
     ...(options.type ? [options.type] : []),
-    ...(Array.isArray(options.types) ? options.types : []),
+    ...types,
   ].filter((value) => typeof value === 'string' && value);
   const limit = Number.isFinite(Number(options.limit))
     ? Math.min(MAX_LIST_LIMIT, Math.max(1, Math.floor(Number(options.limit))))

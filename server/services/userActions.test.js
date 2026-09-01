@@ -184,6 +184,7 @@ describe('listUserActions', () => {
 
   it('pages with offset and clamps the limit', async () => {
     expect((await listUserActions({ limit: 1, offset: 1 })).map((e) => e.dedupeKey)).toEqual(['l2']);
+    expect(normalizeListOptions({ types: 'cos.task.create' }).types).toEqual(['cos.task.create']);
     expect(normalizeListOptions({}).limit).toBe(DEFAULT_LIST_LIMIT);
     expect(normalizeListOptions({ limit: 5000 }).limit).toBe(MAX_LIST_LIMIT);
     expect(normalizeListOptions({ limit: 0 }).limit).toBe(1);

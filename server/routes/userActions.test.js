@@ -84,6 +84,11 @@ describe('GET /api/user-actions', () => {
     expect(res.body.events.map((e) => e.dedupeKey)).toEqual(['e3', 'e1']);
   });
 
+  it('accepts a single types parameter as one filter value', async () => {
+    const res = await request(buildApp()).get('/api/user-actions?types=cos.task.create');
+    expect(res.body.events.map((e) => e.dedupeKey)).toEqual(['e1']);
+  });
+
   it('clamps an oversized limit instead of rejecting it', async () => {
     const res = await request(buildApp()).get(`/api/user-actions?limit=${MAX_LIST_LIMIT * 10}`);
     expect(res.status).toBe(200);

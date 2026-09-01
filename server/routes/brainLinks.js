@@ -65,11 +65,12 @@ const queueFailure = (reason, what) => (QUEUE_REASON_ERRORS[reason] ?? (() =>
  * Get all links with optional filters
  */
 router.get('/links', asyncHandler(async (req, res) => {
-  const { linkType, isRepo, limit, offset } = validateRequest(linksQuerySchema, req.query);
+  const { linkType, isRepo, isGitHubRepo, limit, offset } = validateRequest(linksQuerySchema, req.query);
+  const repoFilter = isRepo ?? isGitHubRepo;
   // Filtering, newest-first ordering, and the total count are answered from
   // brainStorage's cached link-summary index, so only THIS page's records are
   // read and parsed from disk (issue #3509) — not the whole collection.
-  const { links, total } = await brainService.getLinksPage({ linkType, isRepo, limit, offset });
+  const { links, total } = await brainService.getLinksPage({ linkType, isRepo: repoFilter, limit, offset });
   res.json({ links, total, limit, offset });
 }));
 

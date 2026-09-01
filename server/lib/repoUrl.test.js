@@ -137,6 +137,15 @@ describe('parseRepoUrl across hosts', () => {
       .toMatchObject({ owner: 'example-owner', repo: 'example-repo' });
   });
 
+  it('identifies GitHub repository names before deep-link route words', () => {
+    for (const repoName of ['issues', 'settings', 'tree']) {
+      expect(parseRepoUrl(`https://github.com/example-owner/${repoName}`), repoName)
+        .toMatchObject({ owner: 'example-owner', repo: repoName });
+    }
+    expect(parseRepoUrl('https://github.com/example-owner/example-repo/discussions/1'))
+      .toMatchObject({ owner: 'example-owner', repo: 'example-repo' });
+  });
+
   // Without a depth cap, a project asset URL reads as a DEEPER NAMESPACE, and
   // the cloner then manufactures directories inside the existing acme/widgets
   // checkout before the clone of "pipeline.svg" fails.
