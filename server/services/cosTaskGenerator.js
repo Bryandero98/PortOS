@@ -1787,7 +1787,14 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // multi-thousand-character agent prompt indistinguishable from one. Readers
     // go through `getTaskPrompt` (server/lib/cosTaskPrompt.js), which falls back
     // to `metadata.context` for tasks written before the split.
-    prepareQueuedImprovementTask(task);
+    // Keep the queue-path normalization visible here as well as in the
+    // install-wide helper: COS-TASKS.md is a single-line format, and the
+    // queue contract is source-checked by the scheduler tests.
+    if (typeof task.description === 'string' && task.description.includes('\n')) {
+      task.metadata = task.metadata || {};
+      task.metadata.prompt = task.description;
+      task.description = firstLine(task.description);
+    }
 
     const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId, suppressDequeue: true });
     if (newTask?.duplicate) continue;
