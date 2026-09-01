@@ -141,7 +141,11 @@ const fakeChildProcess = (kill = vi.fn()) =>
 import { hasPauseReleaseAdapter, resolvePausedTaskResume, retirePausedAgent } from '../lib/taskPauseHold.js';
 
 describe('cleanupOrphanedAgents — startup recovery coordination', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeAgents.clear();
+    runnerAgents.clear();
+  });
 
   it('shares one in-flight sweep between concurrent startup callers', async () => {
     let releaseProbe;
@@ -214,6 +218,99 @@ describe('cleanupOrphanedAgents — startup recovery coordination', () => {
 
     expect(markAgentComplete).not.toHaveBeenCalled();
     expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('reaps a durable running record whose runner listing is stale', async () => {
+    getAgents.mockResolvedValueOnce([{
+      id: 'agent-stale',
+      status: 'running',
+      pid: 2147483646,
+      taskId: 'task-1',
+      metadata: { useRunner: true, executionMode: 'runner' },
+    }]);
+    getActiveAgentsFromRunner.mockResolvedValueOnce([{
+      id: 'agent-stale',
+      pid: 2147483646,
+      kind: 'cli',
+      processActive: false,
+      liveness: 'pid',
+    }]);
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+
+    await cleanupOrphanedAgents();
+
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-stale', expect.objectContaining({
+      success: false,
+      orphaned: true,
+    }));
+  });
+
+  it('does not reap a live runner-owned TUI advertised via onExit liveness', async () => {
+    getAgents.mockResolvedValueOnce([{
+      id: 'agent-tui',
+      status: 'running',
+      pid: 0,
+      taskId: 'task-1',
+      metadata: { useRunner: true, executionMode: 'runner-tui' },
+    }]);
+    getActiveAgentsFromRunner.mockResolvedValueOnce([{
+      id: 'agent-tui',
+      pid: 0,
+      kind: 'tui',
+      processActive: true,
+      liveness: 'pty',
+    }]);
+
+    await cleanupOrphanedAgents();
+
+    expect(markAgentComplete).not.toHaveBeenCalled();
+  });
+
+  it('reaps a stale listing even if runnerAgents already adopted the id', async () => {
+    runnerAgents.set('agent-stale', { taskId: 'task-1' });
+    getAgents.mockResolvedValueOnce([{
+      id: 'agent-stale',
+      status: 'running',
+      pid: 2147483646,
+      taskId: 'task-1',
+      metadata: { useRunner: true, executionMode: 'runner' },
+    }]);
+    getActiveAgentsFromRunner.mockResolvedValueOnce([{
+      id: 'agent-stale',
+      pid: 2147483646,
+      kind: 'cli',
+      processActive: false,
+      liveness: 'pid',
+    }]);
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', status: 'in_progress', metadata: {} });
+
+    await cleanupOrphanedAgents();
+
+    expect(markAgentComplete).toHaveBeenCalledWith('agent-stale', expect.objectContaining({
+      success: false,
+      orphaned: true,
+    }));
+    expect(runnerAgents.has('agent-stale')).toBe(false);
+  });
+
+  it('does not reap a pre-fix Windows TUI whose processActive is a pid-0 artifact', async () => {
+    getAgents.mockResolvedValueOnce([{
+      id: 'agent-tui-old',
+      status: 'running',
+      pid: 0,
+      taskId: 'task-1',
+      metadata: { useRunner: true, executionMode: 'runner-tui' },
+    }]);
+    getActiveAgentsFromRunner.mockResolvedValueOnce([{
+      id: 'agent-tui-old',
+      pid: 0,
+      kind: 'tui',
+      processActive: false,
+    }]);
+
+    await cleanupOrphanedAgents();
+
+    expect(markAgentComplete).not.toHaveBeenCalled();
   });
 });
 
