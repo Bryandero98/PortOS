@@ -159,6 +159,16 @@ describe('composable skill template routing', () => {
     }))).toEqual(['simplify']);
   });
 
+  it.each(['analysisType', 'selfImprovementType'])(
+    'prefers authoritative %s routing over broad description keywords',
+    (metadataKey) => {
+      expect(detectSkillTemplates(makeTask({
+        description: 'Audit repository structure',
+        metadata: { [metadataKey]: 'module-hygiene' },
+      }))).toEqual(['module-hygiene']);
+    },
+  );
+
   it('joins templates in routing order and tolerates an unavailable domain guide', async () => {
     const loadTemplate = vi.fn(async (name) => ({
       'security-audit': 'Security lifecycle guidance',
