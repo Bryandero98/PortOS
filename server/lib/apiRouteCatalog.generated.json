@@ -7175,7 +7175,7 @@
       "sources": [
         {
           "source": "server/routes/detect.js",
-          "line": 239
+          "line": 263
         }
       ]
     },
@@ -7186,7 +7186,7 @@
       "sources": [
         {
           "source": "server/routes/detect.js",
-          "line": 215
+          "line": 235
         }
       ]
     },
@@ -7197,7 +7197,7 @@
       "sources": [
         {
           "source": "server/routes/detect.js",
-          "line": 171
+          "line": 191
         }
       ]
     },
@@ -7208,7 +7208,7 @@
       "sources": [
         {
           "source": "server/routes/detect.js",
-          "line": 33
+          "line": 70
         }
       ]
     },
@@ -18590,7 +18590,7 @@
         },
         {
           "source": "server/routes/providers.js",
-          "line": 767
+          "line": 776
         }
       ]
     },
@@ -18643,6 +18643,10 @@
         {
           "source": "server/lib/aiToolkit/routes/providers.js",
           "line": 110
+        },
+        {
+          "source": "server/routes/providers.js",
+          "line": 765
         }
       ]
     },
@@ -19908,7 +19912,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 154
+          "line": 159
         }
       ]
     },
@@ -19919,7 +19923,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 218
+          "line": 223
         }
       ]
     },
@@ -19930,7 +19934,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 490
+          "line": 498
         }
       ]
     },
@@ -19941,7 +19945,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 231
+          "line": 236
         }
       ]
     },
@@ -19952,7 +19956,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 476
+          "line": 484
         }
       ]
     },
@@ -19963,7 +19967,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 278
+          "line": 283
         }
       ]
     },
@@ -19974,7 +19978,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 485
+          "line": 493
         }
       ]
     },
@@ -19985,7 +19989,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 455
+          "line": 463
         }
       ]
     },
@@ -19996,7 +20000,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 468
+          "line": 476
         }
       ]
     },
@@ -20007,7 +20011,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 336
+          "line": 344
         }
       ]
     },
@@ -20018,7 +20022,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 463
+          "line": 471
         }
       ]
     },
@@ -20029,7 +20033,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 286
+          "line": 291
         }
       ]
     },
@@ -20040,7 +20044,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 306
+          "line": 314
         }
       ]
     },
@@ -20051,7 +20055,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 322
+          "line": 330
         }
       ]
     },
@@ -20062,7 +20066,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 329
+          "line": 337
         }
       ]
     },
@@ -20073,7 +20077,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 314
+          "line": 322
         }
       ]
     },
@@ -20084,7 +20088,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 365
+          "line": 373
         }
       ]
     },
@@ -20095,7 +20099,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 358
+          "line": 366
         }
       ]
     },
@@ -20106,7 +20110,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 372
+          "line": 380
         }
       ]
     },
@@ -20117,7 +20121,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 381
+          "line": 389
         }
       ]
     },
@@ -20128,7 +20132,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 344
+          "line": 352
         }
       ]
     },
@@ -20139,7 +20143,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 414
+          "line": 422
         }
       ]
     },
@@ -20150,7 +20154,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 399
+          "line": 407
         }
       ]
     },
@@ -20161,7 +20165,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 423
+          "line": 431
         }
       ]
     },
@@ -20172,7 +20176,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 440
+          "line": 448
         }
       ]
     },
@@ -20183,7 +20187,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 407
+          "line": 415
         }
       ]
     },
@@ -20194,7 +20198,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 447
+          "line": 455
         }
       ]
     },
@@ -20205,7 +20209,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 390
+          "line": 398
         }
       ]
     },
@@ -20216,7 +20220,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 212
+          "line": 217
         }
       ]
     },
@@ -20227,7 +20231,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 183
+          "line": 188
         }
       ]
     },
@@ -20238,7 +20242,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 187
+          "line": 192
         }
       ]
     },
@@ -20249,7 +20253,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 198
+          "line": 203
         }
       ]
     },
@@ -20260,7 +20264,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 192
+          "line": 197
         }
       ]
     },
@@ -20271,7 +20275,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 226
+          "line": 231
         }
       ]
     },
@@ -20282,7 +20286,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 165
+          "line": 170
         }
       ]
     },
@@ -20293,7 +20297,7 @@
       "sources": [
         {
           "source": "server/routes/sprites.js",
-          "line": 171
+          "line": 176
         }
       ]
     },
@@ -23865,7 +23869,7 @@
   "stats": {
     "mounts": 147,
     "operations": 2153,
-    "declarations": 2156,
+    "declarations": 2157,
     "sourceFiles": 229
   }
 }
