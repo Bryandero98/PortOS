@@ -138,6 +138,33 @@ describe('AIProviders page load error handling', () => {
     expect(screen.queryByRole('button', { name: /Install OpenCode CLI/ })).not.toBeInTheDocument();
   });
 
+  it('does not recommend disabling Grok codebase upload on the card or editor', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'grok-tui',
+        name: 'Grok Build TUI',
+        type: 'tui',
+        command: 'grok',
+        args: [],
+        enabled: true,
+        models: ['grok-configured-default'],
+        defaultModel: 'grok-configured-default',
+      }],
+      activeProvider: 'grok-tui',
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Grok Build TUI')).toBeInTheDocument();
+    expect(screen.queryByText(/uploads your entire working repo/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/disable_codebase_upload/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByRole('heading', { name: 'Edit Provider' })).toBeInTheDocument();
+    expect(screen.queryByText(/uploads your entire working repo/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/disable_codebase_upload/i)).not.toBeInTheDocument();
+  });
+
   it('explains why the install action is unavailable and links the vendor instructions', async () => {
     api.getProviders.mockResolvedValue({
       providers: [{ id: 'opencode-ollama', name: 'OpenCode Ollama', type: 'cli', command: 'opencode', args: ['run'], enabled: true }],

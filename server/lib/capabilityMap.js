@@ -73,6 +73,7 @@ export function providersRow(
   let unavailable = 0;
   let blocked = 0;
   let unknown = 0;
+  let standby = 0;
   let setupReady = 0;
   for (const p of enabled) {
     const prerequisite = hasPrerequisiteReadiness ? prerequisiteReadiness[p.id] : null;
@@ -90,6 +91,10 @@ export function providersRow(
     }
     if (localReadinessRequested && localRuntimeForProvider(p)) {
       const local = hasLocalReadiness ? localReadiness[p.id] : null;
+      if (local?.ready !== true && local?.standby === true) {
+        standby += 1;
+        continue;
+      }
       if (local?.ready === false) {
         const checks = Array.isArray(local.checks) ? local.checks : [];
         if (checks.length > 0 && checks.every((check) => check?.ok !== false)) unknown += 1;
@@ -107,18 +112,19 @@ export function providersRow(
     else unavailable += 1;
   }
   let status = OK;
-  if (available === 0) status = unknown > 0 ? WARN : ERROR;
+  if (available === 0) status = unknown > 0 || standby > 0 ? WARN : ERROR;
   else if (unavailable > 0 || blocked > 0 || unknown > 0) status = WARN;
   const parts = [`${enabled.length} enabled`, `${available} ready`];
   if (unavailable > 0) parts.push(`${unavailable} unavailable`);
   if (blocked > 0) parts.push(`${blocked} need setup`);
   if (unknown > 0) parts.push(`${unknown} still checking`);
+  if (standby > 0) parts.push(`${standby} standby`);
   return row('providers', 'AI Providers', '/ai', {
     status,
     configured: true,
     summary: parts.join(' · '),
     detail: prerequisiteReadinessRequested
-      ? { configured: enabled.length, available, unavailable, blocked, unknown, setupReady }
+      ? { configured: enabled.length, available, unavailable, blocked, unknown, standby, setupReady }
       : { configured: enabled.length, available, unavailable },
     setupRequired: true,
     setupComplete: prerequisiteReadinessRequested ? setupReady > 0 : available > 0,
