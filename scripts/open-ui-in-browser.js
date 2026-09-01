@@ -5,12 +5,26 @@
 //
 // Fail-soft: every failure path logs and exits 0 — never break setup/update
 // because Chrome happens to be unreachable.
+//
+// Drives browserService.navigateToUrlPinned() IN-PROCESS rather than POSTing
+// to the running server's `/api/browser/navigate` route. That route sits
+// behind the instance-password auth gate (server/services/authGate.js) when
+// one is set, and this script — a local maintenance step run by the same OS
+// user as the server, never crossing a network trust boundary — has no
+// plaintext password to present. Every navigate attempt over HTTP would 401
+// forever, silently leaving Chrome on a blank tab even after retrying for the
+// full budget below. Calling the service function directly sidesteps the gate
+// (there's no HTTP hop to gate) while still applying the same SSRF pinning
+// (`assertPublicHttpUrl` + `verifyRemoteIp`) the route applies.
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasTailscaleCert } from '../lib/tailscale-https.js';
 import { certPaths } from '../lib/certPaths.js';
 import { getCliSetupGuide } from './setup-guide.js';
 import { isDirectlyInvoked } from './lib/directInvocation.js';
+import { navigateToUrlPinned } from '../server/services/browserService.js';
+import { assertPublicHttpUrl } from '../server/lib/safeUrlFetch.js';
+import { isBlockedIngestHost } from '../server/lib/catalogValidation.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { dir: CERT_DIR } = certPaths(join(ROOT, 'data'));
@@ -27,10 +41,14 @@ const API_TIMEOUT_MS = 90_000;
 // racing the exact moment CPU/disk are busiest (npm install, client build).
 // browser/server.js's own launch-wait is 10s; a single fixed-timeout attempt
 // from here regularly lost that race and left Chrome open with no tab
-// pointed anywhere. Retry navigate on a short interval instead of trying once.
+// pointed anywhere. Retry the navigate on a short interval instead of trying
+// once.
 const NAVIGATE_RETRY_TOTAL_MS = 60_000;
 const NAVIGATE_RETRY_INTERVAL_MS = 2_000;
-const NAVIGATE_ATTEMPT_TIMEOUT_MS = 5_000;
+// Mirrors NAVIGATE_SETTLE_MS in server/routes/browser.js — the settle window
+// the pin holds open after the first document response so a client-side
+// redirect that fires just after load is captured and IP-verified too.
+const NAVIGATE_SETTLE_MS = 1_000;
 const POLL_INTERVAL_MS = 500;
 
 async function poll(checkFn, label, timeoutMs) {
@@ -54,53 +72,31 @@ async function ping(url, fetchImpl = fetch) {
 }
 
 /**
- * POST `navigateUrl` on a fixed interval until it succeeds or the overall
+ * Call `navigateFn` on a fixed interval until it resolves or the overall
  * budget expires. A single early failure (Chrome still cold-launching, CDP
  * not listening yet) must not be treated as final — the caller only gets one
  * shot at auto-opening the dashboard per restart, so this has to outlast the
  * slowest realistic Chrome cold-start rather than the fastest.
  * @param {object} opts
- * @param {string} opts.navigateUrl - the PortOS `/api/browser/navigate` endpoint
- * @param {string} opts.targetUrl - the dashboard URL to open
+ * @param {() => Promise<unknown>} opts.navigateFn - performs one navigate attempt, throwing on failure
  * @param {number} opts.totalTimeoutMs - overall retry budget
  * @param {number} opts.intervalMs - delay between attempts
- * @param {number} opts.attemptTimeoutMs - abort timeout for a single attempt
- * @param {typeof fetch} [opts.fetchImpl]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
- * @returns {Promise<{ok: boolean, status?: number, body?: string, error?: string}>}
+ * @returns {Promise<{ok: boolean, page?: unknown, error?: string}>}
  */
 export async function navigateWithRetry({
-  navigateUrl,
-  targetUrl,
+  navigateFn,
   totalTimeoutMs,
   intervalMs,
-  attemptTimeoutMs,
-  fetchImpl = fetch,
   sleep = (ms) => new Promise(r => setTimeout(r, ms)),
 }) {
   const deadline = Date.now() + totalTimeoutMs;
-  let lastFailure = { ok: false, error: 'navigate was never attempted' };
+  let lastError = new Error('navigate was never attempted');
   while (true) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
-    let networkError = null;
-    const res = await fetchImpl(navigateUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: targetUrl }),
-      signal: controller.signal,
-    }).catch(err => { networkError = err; return null; });
-    clearTimeout(timer);
+    const page = await navigateFn().catch(err => { lastError = err; return undefined; });
+    if (page !== undefined) return { ok: true, page };
 
-    if (res) {
-      if (res.ok) return { ok: true, status: res.status };
-      const body = await res.text().catch(() => '');
-      lastFailure = { ok: false, status: res.status, body: body.slice(0, 200) };
-    } else {
-      lastFailure = { ok: false, error: networkError?.message || 'unknown fetch error' };
-    }
-
-    if (Date.now() + intervalMs >= deadline) return lastFailure;
+    if (Date.now() + intervalMs >= deadline) return { ok: false, error: lastError?.message || 'unknown error' };
     await sleep(intervalMs);
   }
 }
@@ -130,22 +126,30 @@ async function main() {
   const TARGET_URL = setupGuide.trustedUrl || LOCAL_BASE;
 
   const apiHealthUrl = `${LOCAL_BASE}/api/system/health`;
-  const navigateUrl = `${LOCAL_BASE}/api/browser/navigate`;
 
   const apiReady = await poll(() => ping(apiHealthUrl), 'PortOS API', API_TIMEOUT_MS);
   if (!apiReady) process.exit(0);
 
+  // Fail-soft: a target URL this script itself derived should never trip the
+  // SSRF guard, but if it somehow does, don't burn the retry budget re-trying
+  // a URL that will never pass.
+  const unsafeReason = await assertPublicHttpUrl(TARGET_URL).then(() => null).catch(err => err.message || 'unsafe URL');
+  if (unsafeReason) {
+    console.warn(`⚠️  Refusing to auto-open ${TARGET_URL} (${unsafeReason}) — open it manually.`);
+    process.exit(0);
+  }
+
   const result = await navigateWithRetry({
-    navigateUrl,
-    targetUrl: TARGET_URL,
+    navigateFn: () => navigateToUrlPinned(TARGET_URL, {
+      verifyRemoteIp: (ip) => !isBlockedIngestHost(ip),
+      settleMs: NAVIGATE_SETTLE_MS,
+    }),
     totalTimeoutMs: NAVIGATE_RETRY_TOTAL_MS,
     intervalMs: NAVIGATE_RETRY_INTERVAL_MS,
-    attemptTimeoutMs: NAVIGATE_ATTEMPT_TIMEOUT_MS,
   });
 
   if (!result.ok) {
-    const detail = result.error || `HTTP ${result.status}: ${result.body}`;
-    console.warn(`⚠️  Could not auto-open the dashboard within ${NAVIGATE_RETRY_TOTAL_MS / 1000}s (${detail}) — open it manually: ${TARGET_URL}`);
+    console.warn(`⚠️  Could not auto-open the dashboard within ${NAVIGATE_RETRY_TOTAL_MS / 1000}s (${result.error}) — open it manually: ${TARGET_URL}`);
     process.exit(0);
   }
 
