@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 
 // Mock the api barrel (RoundEditor.test.jsx harness style).
 const api = vi.hoisted(() => ({
@@ -35,8 +35,14 @@ const song = (id, title, extra = {}) => ({
   ...extra,
 });
 
+const LocationProbe = () => {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+};
+
 const renderPage = (path = '/songbook') => render(
   <MemoryRouter initialEntries={[path]}>
+    <LocationProbe />
     <Routes><Route path="/songbook" element={<SongBook />} /></Routes>
   </MemoryRouter>,
 );
@@ -67,7 +73,10 @@ describe('SongBook index', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Song' }));
 
     expect(api.createSong).toHaveBeenCalledWith({ title: 'New Example' }, { silent: true });
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByTestId('location').textContent).toBe('/songbook/new-song?mode=edit');
+    });
   });
 
   it('flips a song stage via a partial updateSong and updates local state reactively', async () => {
