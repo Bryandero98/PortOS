@@ -111,6 +111,13 @@ const IS_ASSET_NAME_MAP = (path) => /(?:^|\/)conversation_asset_file_names\.json
 // `${assetDir}/${id}` would then escape the asset dir (Zip Slip).
 const datAssetId = (path) => path.split(/[\\/]/).pop().replace(/\.dat$/i, '');
 
+// Windows resolves these basenames to devices whatever the extension, so a
+// member named `CON.dat` would open the console instead of `CON.part` and the
+// later rename would fail — aborting the whole import. Real exports only ever
+// use `file-…` ids, so they are refused on every platform for one consistent
+// outcome rather than a Windows-only failure.
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
 // A `.dat` member is extractable only when BOTH its ZIP-spec name and the asset
 // id it reduces to are plain filenames.
 //
@@ -127,8 +134,12 @@ const datAssetId = (path) => path.split(/[\\/]/).pop().replace(/\.dat$/i, '');
 // policy, while the consumer is what actually opens the file, and keeping the
 // check at the write site means a future faithful-reader refactor of the parser
 // cannot silently reintroduce the escape.
-const isSafeDatMember = (path) =>
-  isTopLevelEntryName(path.replace(/^.*\//, '')) && isTopLevelEntryName(datAssetId(path));
+const isSafeDatMember = (path) => {
+  const assetId = datAssetId(path);
+  return isTopLevelEntryName(path.replace(/^.*\//, ''))
+    && isTopLevelEntryName(assetId)
+    && !WINDOWS_RESERVED_NAME.test(assetId);
+};
 
 // Single-sourced so both guards below log identically. Deliberately carries NO
 // member path — the name is untrusted third-party text.

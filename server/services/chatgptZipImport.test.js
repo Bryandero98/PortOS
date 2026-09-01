@@ -93,6 +93,10 @@ describe('chatgptZipImport service', () => {
       expect(isSafeDatMember('bad\u0000name.dat')).toBe(false);
       expect(isSafeDatMember('.dat')).toBe(false);     // id becomes ''
       expect(isSafeDatMember('..dat')).toBe(false);    // id becomes '.'
+      // Windows device names resolve to a device, not a file, whatever the ext.
+      expect(isSafeDatMember('CON.dat')).toBe(false);
+      expect(isSafeDatMember('files/lpt1.dat')).toBe(false);
+      expect(isSafeDatMember('com10.dat')).toBe(true);  // only COM1-9 are reserved
       // Forward-slash components ARE directories: the basename is what's used,
       // so traversal components reduce away harmlessly.
       expect(isSafeDatMember('../../evil.dat')).toBe(true);
@@ -232,6 +236,19 @@ describe('chatgptZipImport service', () => {
       const zipPath = await writeZip([
         ['conversations-000.json', JSON.stringify([{ id: 'c1', title: 'A', mapping: {} }])],
         ['bad\u0000name.dat', PNG],
+        ['file-OK.dat', JPEG],
+      ]);
+      const { conversationFiles, stats } = await extractChatgptZip(zipPath, { assetDir });
+      expect(conversationFiles.length).toBe(1);
+      expect(stats.assetCount).toBe(1);
+      expect(await readdir(assetDir)).toEqual(['file-OK.jpg']);
+    });
+
+    it('skips a .dat member named after a Windows device instead of failing the import', async () => {
+      const assetDir = join(TMP, 'assets');
+      const zipPath = await writeZip([
+        ['conversations-000.json', JSON.stringify([{ id: 'c1', title: 'A', mapping: {} }])],
+        ['CON.dat', PNG],
         ['file-OK.dat', JPEG],
       ]);
       const { conversationFiles, stats } = await extractChatgptZip(zipPath, { assetDir });
