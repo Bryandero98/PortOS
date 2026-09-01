@@ -15,9 +15,13 @@ vi.mock('../../../services/api', () => ({
   scanBrainLink: vi.fn(),
   openBrainLinkFolder: vi.fn(),
   brainScanReportPath: vi.fn(() => '/report'),
+  studyBrainLink: vi.fn(),
+  // Read by the shared repo-study form (useRepoStudyConfig).
+  getApps: vi.fn(() => Promise.resolve([])),
+  getProviders: vi.fn(() => Promise.resolve({ providers: [] })),
 }));
 
-vi.mock('../../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('../../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 // Counting stub: the board is the most expensive consumer of the `links`
 // array, so its render count is the direct measure of "the poll does not
@@ -30,16 +34,17 @@ vi.mock('../links/BucketBoard', () => ({
   },
 }));
 
-import { createBrainLink, getBrainLink, getBrainLinks, getBrainBuckets } from '../../../services/api';
+import { createBrainLink, getBrainLink, getBrainLinks, getBrainBuckets, studyBrainLink } from '../../../services/api';
+import toast from '../../ui/Toast';
 import LinksTab from './LinksTab';
 
 const link = (id, cloneStatus, overrides = {}) => ({
   id,
   url: `https://github.com/example/${id}`,
   title: `repo-${id}`,
-  linkType: 'github',
+  linkType: 'repo',
   tags: [],
-  isGitHubRepo: true,
+  isRepo: true,
   cloneStatus,
   bucketId: null,
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -275,7 +280,7 @@ describe('LinksTab link creation form', () => {
     const created = link('new', 'none', {
       url: 'https://example.com/article',
       title: 'example.com',
-      isGitHubRepo: false,
+      isRepo: false,
     });
     createBrainLink.mockResolvedValue(created);
     await renderTab();
@@ -297,5 +302,72 @@ describe('LinksTab link creation form', () => {
       url: 'https://example.com/article',
       note: 'Read this later',
     });
+  });
+});
+
+describe('LinksTab on-demand repo re-study', () => {
+  const cloned = () => link('a', 'cloned', { localPath: '/repos/example/a' });
+
+  const openStudyForm = async () => {
+    getBrainLinks.mockResolvedValue({ links: [cloned()] });
+    const view = await renderTab();
+    await act(async () => { screen.getByRole('button', { name: /update & study/i }).click(); });
+    return view;
+  };
+
+  it('sends the brief, the target app, and the pull flag', async () => {
+    studyBrainLink.mockResolvedValue({ taskId: 'task-1', pulled: { ok: true }, link: cloned() });
+    const { container } = await openStudyForm();
+
+    const brief = container.querySelector('#restudy-a-study-context');
+    await act(async () => {
+      fireEvent.change(brief, { target: { value: 'look at its offline sync' } });
+    });
+    // Two buttons carry the label — the row toggle and the form's submit.
+    await act(async () => { screen.getAllByRole('button', { name: /update & study/i }).at(-1).click(); });
+
+    expect(studyBrainLink).toHaveBeenCalledWith(
+      'a',
+      // targetAppId is asserted explicitly: dropping it from studyPayload() would
+      // silently fall the server back to PortOS rather than fail.
+      { pull: true, studyContext: 'look at its offline sync', targetAppId: 'portos-default' },
+      { silent: true },
+    );
+  });
+
+  it('pre-fills the brief with the one the last study was given', async () => {
+    getBrainLinks.mockResolvedValue({
+      links: [link('a', 'cloned', {
+        localPath: '/repos/example/a',
+        repoStudy: { taskId: 'old', studyContext: 'the previous brief' },
+      })],
+    });
+    const { container } = await renderTab();
+    await act(async () => { screen.getByRole('button', { name: /update & study/i }).click(); });
+
+    expect(container.querySelector('#restudy-a-study-context').value).toBe('the previous brief');
+  });
+
+  it('patches the row with the updated link so the queued chip survives a re-render', async () => {
+    const queued = { ...cloned(), repoStudy: { taskId: 'task-1', queuedAt: '2026-01-02T00:00:00.000Z' } };
+    studyBrainLink.mockResolvedValue({ taskId: 'task-1', pulled: { ok: true }, link: queued });
+    await openStudyForm();
+
+    await act(async () => { screen.getAllByRole('button', { name: /update & study/i }).at(-1).click(); });
+
+    // The form closes and the row now links the queued study — from local state,
+    // with no refetch.
+    expect(screen.getByRole('link', { name: /repo study/i })).toBeTruthy();
+    expect(getBrainLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns rather than claiming success when the pull failed but the study queued', async () => {
+    studyBrainLink.mockResolvedValue({ taskId: 'task-1', pulled: { ok: false, error: 'diverged' }, link: cloned() });
+    await openStudyForm();
+
+    await act(async () => { screen.getAllByRole('button', { name: /update & study/i }).at(-1).click(); });
+
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/pull failed/i));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

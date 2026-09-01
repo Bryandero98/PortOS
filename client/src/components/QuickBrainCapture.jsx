@@ -26,7 +26,7 @@ export default function QuickBrainCapture() {
   // A single-video YouTube URL takes a different path entirely (ingest, not
   // capture) and unlocks the advanced panel below.
   const isYoutube = useMemo(() => isYoutubeVideoUrl(input), [input]);
-  // A bare GitHub repo URL is cloned on capture, which unlocks the two post-clone
+  // A bare repo URL is cloned on capture, which unlocks the two post-clone
   // agent opt-ins (malware scan / repo study).
   const repoIntake = useRepoIntake(input);
 
@@ -279,18 +279,7 @@ export default function QuickBrainCapture() {
 
       <RepoIntakeOptions
         idPrefix="quick-brain-repo"
-        repo={repoIntake.repo}
-        options={repoIntake.options}
-        managedApps={repoIntake.managedApps}
-        targetAppId={repoIntake.targetAppId}
-        onTargetAppChange={repoIntake.setTargetAppId}
-        studyContext={repoIntake.studyContext}
-        onStudyContextChange={repoIntake.setStudyContext}
-        providerOverride={repoIntake.providerOverride}
-        providers={repoIntake.providers}
-        activeProviderId={repoIntake.activeProviderId}
-        onProviderOverrideChange={repoIntake.setProviderOverride}
-        onToggle={repoIntake.toggle}
+        {...repoIntake}
       />
 
       {ingest.active && (
