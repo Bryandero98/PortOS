@@ -176,4 +176,34 @@ describe('GET /api/capabilities', () => {
       detail: { blocked: 1, setupReady: 0 },
     });
   });
+
+  it('does not degrade runnable providers when installed llama.cpp providers are in standby', async () => {
+    getAllProviders.mockResolvedValueOnce({
+      activeProvider: 'cloud',
+      providers: [
+        { id: 'cloud', enabled: true, type: 'api', endpoint: 'https://api.example.com/v1', hasApiKey: true },
+        { id: 'llama-cli', enabled: true, type: 'cli', command: 'opencode', llamaBacked: true, endpoint: 'http://127.0.0.1:5568/v1' },
+        { id: 'llama-tui', enabled: true, type: 'tui', command: 'opencode', llamaBacked: true, endpoint: 'http://127.0.0.1:5568/v1' },
+      ],
+    });
+    getProviderPrerequisiteReadinessMap.mockResolvedValueOnce({
+      cloud: { status: 'ready', reasonCodes: [] },
+      'llama-cli': { status: 'ready', reasonCodes: [] },
+      'llama-tui': { status: 'ready', reasonCodes: [] },
+    });
+    getProviderReadinessMap.mockResolvedValueOnce({
+      'llama-cli': { ready: false, standby: true },
+      'llama-tui': { ready: false, standby: true },
+    });
+
+    const res = await request(makeApp()).get('/api/capabilities');
+
+    expect(res.status).toBe(200);
+    expect(byId(res.body, 'providers')).toMatchObject({
+      status: 'ok',
+      summary: '3 enabled · 1 ready · 2 standby',
+      setupComplete: true,
+      detail: { available: 1, blocked: 0, standby: 2, setupReady: 1 },
+    });
+  });
 });
