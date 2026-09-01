@@ -111,6 +111,19 @@ vi.mock('../components/media/PromptFromMedia', () => ({
     <div data-testid="prompt-from-media" data-disabled={disabled ? '1' : '0'}>Prompt from media</div>
   ),
 }));
+vi.mock('../components/media/UniverseStylePicker', () => ({
+  default: ({ onChange }) => (
+    <button
+      type="button"
+      onClick={() => onChange({
+        id: 'u-1', name: 'Example Universe',
+        influences: { embrace: ['inky linework'], avoid: ['glossy'] },
+      })}
+    >
+      Use universe style
+    </button>
+  ),
+}));
 
 vi.mock('../components/Drawer', () => ({ default: () => null }));
 vi.mock('../components/settings/ImageGenTab', () => ({ ImageGenTab: () => null }));
@@ -180,6 +193,24 @@ describe('VideoGen compose-while-busy', () => {
     expect(screen.getByTestId('prompt-from-media')).toHaveAttribute('data-disabled', '0');
     expect(screen.getByRole('button', { name: /Add to queue/ })).toBeEnabled();
   });
+
+  it('includes the selected universe style in the submitted video prompt', async () => {
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/media/video']}>
+          <VideoGen />
+        </MemoryRouter>,
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use universe style' }));
+    fireEvent.change(await screen.findByLabelText('Prompt'), { target: { value: 'a fox watches the rain' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Generate$/ }));
+
+    await waitFor(() => expect(state.generateVideo).toHaveBeenCalled());
+    expect(state.generateVideo.mock.calls[0][0].prompt).toBe('inky linework. a fox watches the rain');
+  });
+
   it('submits an additional render to the server queue while another render is active', async () => {
     await act(async () => {
       render(

@@ -58,6 +58,7 @@ import VideoGenGallery from '../components/videoGen/VideoGenGallery';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
+import UniverseStylePicker from '../components/media/UniverseStylePicker';
 import PromptEnhancer from '../components/media/PromptEnhancer';
 import PromptFromMedia from '../components/media/PromptFromMedia';
 import { normalizeVideo } from '../components/media/normalize';
@@ -150,7 +151,8 @@ export default function VideoGen() {
   const {
     backend, isGrok, handleBackendChange, grokDuration, setGrokDuration,
     mode, handleModeChange,
-    prompt, setPrompt, envelopedPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset, remixModelFallback,
+    prompt, setPrompt, envelopedPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset,
+    selectedUniverse, setSelectedUniverse, remixModelFallback,
     modelId, handleModelChange, currentModel, visibleModels,
     loraFamily, videoLoras, loraUnavailableHint,
     selectedLoras, setSelectedLoras,
@@ -1023,6 +1025,10 @@ export default function VideoGen() {
               repairing={modelDownload.repairing}
             />
           )}
+          <UniverseStylePicker
+            value={selectedUniverse?.id || ''}
+            onChange={setSelectedUniverse}
+          />
           <StylePresetPicker
             value={stylePreset?.id || ''}
             onChange={setStylePreset}

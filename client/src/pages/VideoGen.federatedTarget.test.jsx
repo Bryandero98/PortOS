@@ -146,6 +146,7 @@ vi.mock('../components/videoGen/RuntimeFingerprint', () => ({ default: () => nul
 vi.mock('../components/videoGen/VideoGenGallery', () => ({ default: () => null }));
 vi.mock('../components/media/MediaPreview', () => ({ default: () => null }));
 vi.mock('../components/media/StylePresetPicker', () => ({ default: () => null }));
+vi.mock('../components/media/UniverseStylePicker', () => ({ default: () => null }));
 vi.mock('../components/media/MediaJobsQueue', () => ({ default: () => null }));
 vi.mock('../components/imageGen/LoraPicker', () => ({ default: () => null }));
 vi.mock('../components/media/ResolutionField', () => ({ default: () => null }));
