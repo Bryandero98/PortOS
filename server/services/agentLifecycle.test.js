@@ -364,8 +364,11 @@ describe('self-update spawn gate — funnel coverage (#4124)', () => {
   it('subAgentSpawner holds the dispatch on the synchronous update flag', () => {
     const src = readFileSync(join(SERVICES_DIR, 'subAgentSpawner.js'), 'utf-8');
     expect(src).toMatch(/import \{ isUpdateInProgress \} from '\.\/updateChecker\.js'/);
-    const idx = src.indexOf("cosEvents.on('task:ready'");
-    expect(idx, 'the task:ready listener must exist').toBeGreaterThan(-1);
+    // The dispatch body lives in `handleTaskReady`, the named function the
+    // `task:ready` registration wraps in a `.catch` (a plain EventEmitter would
+    // otherwise leak an async listener's rejection).
+    const idx = src.indexOf('async function handleTaskReady');
+    expect(idx, 'the task:ready dispatch must exist').toBeGreaterThan(-1);
     const spawnIdx = src.indexOf('await spawnAgentForTask(task)', idx);
     expect(spawnIdx).toBeGreaterThan(idx);
     // The hold is BEFORE the spawn, and before the (awaited) runner probe — a

@@ -1493,7 +1493,7 @@ describe('cos.js source — priority + capacity invariants', () => {
       .toMatch(/acquireLocalEndpointSpawnSlot\(/);
     // The reservation is only correct if it is released once the spawn settles;
     // a missing `finally` leaks the slot and wedges the endpoint forever.
-    const listener = SPAWNER_SRC.slice(SPAWNER_SRC.indexOf("cosEvents.on('task:ready'"));
+    const listener = SPAWNER_SRC.slice(SPAWNER_SRC.indexOf('async function handleTaskReady'));
     expect(listener, 'the acquired slot must be released in a finally')
       .toMatch(/finally\s*\{\s*\n\s*localSlot\.release\(\);/);
     expect(listener, 'a task at capacity must be HELD (left pending), not failed')
