@@ -23,6 +23,9 @@
  */
 
 import { commandExists } from '../lib/commandExists.js';
+import { writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { sleep } from '../lib/fileUtils.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { launchArgs, normalizeTuning, tuningSpecsFor } from '../lib/localModelTuning.js';
@@ -117,18 +120,25 @@ const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server e
 
 const MTPLX_RUNTIME_BOOTSTRAP_ERROR = 'MTPLX\'s own Python runtime failed to bootstrap because Homebrew\'s Python does not provide a working `ensurepip`. Try `brew reinstall python@3.13` (or `brew reinstall --build-from-source youssofal/mtplx/mtplx` to force a rebuild against a working interpreter), then start MTPLX again.';
 
-const MTPLX_LOG_DATE_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSS';
-const PM2_LOG_TIMESTAMP_PATTERN = /(?:^|\s)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})(?::|\s)/;
+/**
+ * Keep MTPLX startup logs raw while scoping each diagnosis to the current
+ * launch. PM2 appends to its configured files across process deletion, so
+ * stable, app-specific paths are truncated before every start.
+ */
+const MTPLX_LOG_FILES = {
+  stdout: join(tmpdir(), 'portos-mtplx-out.log'),
+  stderr: join(tmpdir(), 'portos-mtplx-error.log'),
+};
 
-const currentMtplxLogLines = (lines, launchStartedAt) => lines.filter((line) => {
-  const timestamp = line.match(PM2_LOG_TIMESTAMP_PATTERN)?.[1];
-  const loggedAt = timestamp ? Date.parse(timestamp) : NaN;
-  return Number.isFinite(loggedAt) && loggedAt >= launchStartedAt;
-});
+const resetMtplxLogs = () => Promise.all(
+  Object.values(MTPLX_LOG_FILES).map((path) => writeFile(path, '')),
+);
 
 const isMtplxRuntimeBootstrapFailure = (output) => {
   const text = String(output ?? '');
-  return /runtime is not installed|bootstrapping with pip/i.test(text) && /ensurepip/i.test(text);
+  return /runtime is not installed|bootstrapping with pip/i.test(text)
+    && /ensurepip/i.test(text)
+    && /returned non-zero exit status|no module named ensurepip|ensurepip is not available|failed to bootstrap/i.test(text);
 };
 
 let currentConfig = null;
@@ -465,13 +475,14 @@ export async function startMtplxServer(options = {}) {
   clearJlistCache();
 
   console.log(`🚄 MTPLX starting on ${DEFAULT_HOST}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}${tuningArgs.length ? ` with ${tuningArgs.join(' ')}` : ''}`);
-  const launchStartedAt = Date.now();
+  await resetMtplxLogs();
   await execPm2([
     'start', binaryPath,
     '--name', MTPLX_APP,
     '--interpreter', 'none',
     '--no-autorestart',
-    '--log-date-format', MTPLX_LOG_DATE_FORMAT,
+    '--output', MTPLX_LOG_FILES.stdout,
+    '--error', MTPLX_LOG_FILES.stderr,
     '--',
     ...args,
   ]);
@@ -495,7 +506,7 @@ export async function startMtplxServer(options = {}) {
     for (const line of lines) appendLog(line);
     const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
     lastExitError = `PM2 status: ${currentProc.status}`;
-    const message = isMtplxRuntimeBootstrapFailure(currentMtplxLogLines(lines, launchStartedAt).join('\n'))
+    const message = isMtplxRuntimeBootstrapFailure(lines.join('\n'))
       ? MTPLX_RUNTIME_BOOTSTRAP_ERROR
       : `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`;
 

@@ -206,10 +206,10 @@ describe('mtplxServerManager', () => {
           return {
             stdout: '',
             stderr: [
-              '2000-01-01T00:00:00.000: runtime is not installed',
-              '2000-01-01T00:00:00.000: Bootstrapping with pip',
-              '2000-01-01T00:00:00.000: python3.13 -m ensurepip --upgrade --default-pip',
-              `${new Date().toISOString().slice(0, -1)}: error: model is not available locally`,
+              'runtime is not installed',
+              'Bootstrapping with pip',
+              'python3.13 -m ensurepip --upgrade --default-pip',
+              'error: model is not available locally',
             ].join('\n'),
           };
         }
@@ -228,16 +228,13 @@ describe('mtplxServerManager', () => {
         }
         if (args[0] === 'delete') pm2State = null;
         if (args[0] === 'logs') {
-          const timestamp = new Date().toISOString().slice(0, -1);
           return {
             stdout: '',
             stderr: [
-              ...[
-                'runtime is not installed',
-                'Bootstrapping with pip',
-                'python3.13 -m ensurepip --upgrade --default-pip',
-                "Command '['python3.13', '-m', 'ensurepip']' returned non-zero exit status 1",
-              ].map((line) => timestamp + ': ' + line),
+              'runtime is not installed',
+              'Bootstrapping with pip',
+              'python3.13 -m ensurepip --upgrade --default-pip',
+              "Command '['python3.13', '-m', 'ensurepip']' returned non-zero exit status 1",
             ].join('\n'),
           };
         }
@@ -250,6 +247,9 @@ describe('mtplxServerManager', () => {
       expect(err.message).toContain('Homebrew\'s Python does not provide a working `ensurepip`');
       expect(err.message).toContain('brew reinstall python@3.13');
       expect(err.message).toContain('brew reinstall --build-from-source youssofal/mtplx/mtplx');
+      const start = execPm2Calls.find((args) => args[0] === 'start');
+      expect(start[start.indexOf('--output') + 1]).toMatch(/portos-mtplx-out\.log$/);
+      expect(start[start.indexOf('--error') + 1]).toMatch(/portos-mtplx-error\.log$/);
       expect(err.message).not.toContain('returned non-zero exit status 1');
       expect(pm2State).toBeNull();
     });
