@@ -214,13 +214,16 @@ export default function RepositorySourcePanel({ appId, appName, onUpdated, refre
     setUpdateIntent(null);
     setUpdating(true);
 
+    const targetOrigin = appId === api.PORTOS_APP_ID && status?.updateRestartsApp
+      ? await api.getPreferredSelfRestartOrigin()
+      : null;
     const result = await api.pullAndUpdateApp(
       appId,
       { syncFork: intent?.syncFork === true },
       { silent: true },
     ).catch((reason) => {
       if (appId === api.PORTOS_APP_ID && status?.updateRestartsApp && !reason?.status) {
-        api.handleSelfRestart();
+        api.handleSelfRestart({ targetOrigin });
         return { selfRestartTriggered: true };
       }
       toast.error(reason.message || `Could not update ${appName || 'the app'}`);

@@ -6,6 +6,9 @@ import { tmpdir } from 'os';
 const mock = vi.hoisted(() => ({
   pull: vi.fn(),
   spawn: vi.fn(),
+  dashboardOpen: vi.fn(),
+  dashboardRunning: vi.fn(),
+  dashboardHandle: { on: vi.fn() },
   restart: vi.fn(),
   syncFork: vi.fn(),
 }));
@@ -13,6 +16,10 @@ const mock = vi.hoisted(() => ({
 vi.mock('./git.js', () => ({ pull: mock.pull }));
 vi.mock('./pm2.js', () => ({ restartApp: mock.restart }));
 vi.mock('../lib/bufferedSpawn.js', () => ({ bufferedSpawnOrThrow: mock.spawn }));
+vi.mock('../lib/detachedSpawn.js', () => ({
+  isDetachedRunning: mock.dashboardRunning,
+  spawnDetached: mock.dashboardOpen,
+}));
 vi.mock('./managedAppRepositories.js', () => ({ syncManagedAppFork: mock.syncFork }));
 
 import { updateApp } from './appUpdater.js';
@@ -28,6 +35,8 @@ describe('managed app updates', () => {
     await writeFile(join(repo, 'client', 'package.json'), JSON.stringify({}));
     mock.pull.mockResolvedValue({ output: 'Already up to date' });
     mock.spawn.mockResolvedValue({ stdout: '', stderr: '' });
+    mock.dashboardRunning.mockResolvedValue(false);
+    mock.dashboardOpen.mockResolvedValue(mock.dashboardHandle);
     mock.restart.mockResolvedValue({ success: true });
     mock.syncFork.mockResolvedValue({
       alreadyUpToDate: false,
@@ -37,6 +46,10 @@ describe('managed app updates', () => {
   });
 
   afterEach(async () => {
+    await Promise.all(mock.dashboardOpen.mock.calls
+      .map(([, , options]) => options?.controlDir)
+      .filter(Boolean)
+      .map((controlDir) => rm(controlDir, { recursive: true, force: true })));
     await rm(repo, { recursive: true, force: true });
   });
 
@@ -77,5 +90,53 @@ describe('managed app updates', () => {
       'done',
       'Synced example-owner/example-app from example-org/example-app',
     );
+  });
+
+  it('starts the trusted dashboard handoff before restarting PortOS', async () => {
+    const emit = vi.fn();
+    const managed = {
+      id: 'portos-default',
+      name: 'PortOS',
+      type: 'express',
+      repoPath: repo,
+      pm2ProcessNames: ['portos-server', 'portos-browser'],
+    };
+
+    await updateApp(managed, emit);
+
+    expect(mock.dashboardOpen).toHaveBeenCalledWith(
+      process.execPath,
+      [join(repo, 'scripts/open-ui-in-browser.js')],
+      expect.objectContaining({
+        cwd: repo,
+        cleanup: true,
+        controlDir: expect.stringContaining('portos-dashboard-open'),
+      }),
+    );
+    expect(mock.dashboardRunning).toHaveBeenCalledWith(
+      expect.stringContaining('portos-dashboard-open'),
+      {
+        executable: process.execPath,
+        args: [join(repo, 'scripts/open-ui-in-browser.js')],
+      },
+    );
+    expect(mock.dashboardOpen.mock.invocationCallOrder[0]).toBeLessThan(mock.restart.mock.invocationCallOrder[0]);
+  });
+
+  it('does not overwrite an unreadable dashboard handoff control dir', async () => {
+    const emit = vi.fn();
+    mock.dashboardRunning.mockRejectedValueOnce(new Error('control dir unavailable'));
+    const managed = {
+      id: 'portos-default',
+      name: 'PortOS',
+      type: 'express',
+      repoPath: repo,
+      pm2ProcessNames: ['portos-server'],
+    };
+
+    await updateApp(managed, emit);
+
+    expect(mock.dashboardOpen).not.toHaveBeenCalled();
+    expect(mock.restart).toHaveBeenCalledWith('portos-server', undefined);
   });
 });

@@ -1,10 +1,13 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { readFile } from 'fs/promises';
+import { tmpdir } from 'os';
 import * as gitService from './git.js';
 import * as pm2Service from './pm2.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
 import { parseCommandArgs } from '../lib/commandSecurity.js';
+import { isDetachedRunning, spawnDetached } from '../lib/detachedSpawn.js';
+import { PORTOS_APP_ID } from '../lib/appIdentity.js';
 import { syncManagedAppFork } from './managedAppRepositories.js';
 
 const CMD_TIMEOUT_MS = 5 * 60 * 1000;
@@ -20,6 +23,46 @@ function runCommand(cmd, args, cwd) {
 
 // Per-app lock to prevent concurrent updates
 const updatingApps = new Set();
+const DASHBOARD_OPEN_SCRIPT = 'scripts/open-ui-in-browser.js';
+const DASHBOARD_OPEN_CONTROL_DIR = join(tmpdir(), 'portos-dashboard-open');
+
+/**
+ * Start the post-update dashboard handoff before any PortOS process is
+ * restarted. The handoff is deliberately detached through the shared
+ * double-fork helper: PM2's tree-kill would otherwise take the helper down
+ * with portos-server before it can wait for the browser to return.
+ *
+ * @param {object} app
+ * @returns {Promise<void>}
+ */
+async function startDashboardHandoff(app) {
+  if (app.id !== PORTOS_APP_ID) return;
+
+  const scriptPath = join(app.repoPath, DASHBOARD_OPEN_SCRIPT);
+  const alreadyRunning = await isDetachedRunning(DASHBOARD_OPEN_CONTROL_DIR, {
+    executable: process.execPath,
+    args: [scriptPath],
+  }).catch((err) => {
+    // Do not let an unreadable control dir be mistaken for an idle one: the
+    // detached helper clears stale sentinels before launching and could then
+    // race a handoff that is still alive after the previous PM2 restart.
+    console.error(`⚠️ Dashboard auto-open status check failed: ${err.message}`);
+    return true;
+  });
+  if (alreadyRunning) return;
+
+  const handoff = await spawnDetached(
+    process.execPath,
+    [scriptPath],
+    { cwd: app.repoPath, controlDir: DASHBOARD_OPEN_CONTROL_DIR, cleanup: true },
+  ).catch((err) => {
+    console.error(`⚠️ Dashboard auto-open could not start: ${err.message}`);
+    return null;
+  });
+  handoff?.on('error', (err) => {
+    console.error(`⚠️ Dashboard auto-open failed: ${err.message}`);
+  });
+}
 
 /**
  * Run a full update cycle for an app:
@@ -113,6 +156,7 @@ async function _doUpdate(app, emit, { syncFork }) {
   const processNames = app.pm2ProcessNames || [];
   if (processNames.length > 0) {
     emit('restart', 'running', 'Restarting app...');
+    await startDashboardHandoff(app);
     const restartResults = await Promise.all(
       processNames.map(name =>
         pm2Service.restartApp(name, app.pm2Home).then(() => null, e => e)
