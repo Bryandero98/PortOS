@@ -1267,7 +1267,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 262
+          "line": 264
         }
       ]
     },
@@ -1377,7 +1377,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 310
+          "line": 312
         }
       ]
     },
@@ -1388,7 +1388,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 61
+          "line": 62
         }
       ]
     },
@@ -1399,7 +1399,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 95
+          "line": 96
         }
       ]
     },
@@ -1476,7 +1476,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 326
+          "line": 328
         }
       ]
     },
@@ -1487,7 +1487,7 @@
       "sources": [
         {
           "source": "server/routes/apps/repositorySources.js",
-          "line": 23
+          "line": 18
         }
       ]
     },
@@ -1498,7 +1498,7 @@
       "sources": [
         {
           "source": "server/routes/apps/repositorySources.js",
-          "line": 27
+          "line": 22
         }
       ]
     },
@@ -1509,7 +1509,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 201
+          "line": 202
         }
       ]
     },
@@ -1531,7 +1531,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 110
+          "line": 111
         }
       ]
     },
@@ -1542,7 +1542,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 291
+          "line": 293
         }
       ]
     },
@@ -1553,7 +1553,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 178
+          "line": 179
         }
       ]
     },
@@ -1608,7 +1608,7 @@
       "sources": [
         {
           "source": "server/routes/apps/lifecycle.js",
-          "line": 239
+          "line": 240
         }
       ]
     },
@@ -5172,7 +5172,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 439
+          "line": 461
         }
       ]
     },
@@ -6228,7 +6228,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 79
+          "line": 100
         }
       ]
     },
@@ -6239,7 +6239,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 323
+          "line": 345
         }
       ]
     },
@@ -6250,7 +6250,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 381
+          "line": 403
         }
       ]
     },
@@ -6261,7 +6261,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 339
+          "line": 361
         }
       ]
     },
@@ -6272,7 +6272,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 393
+          "line": 415
         }
       ]
     },
@@ -6283,7 +6283,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 406
+          "line": 428
         }
       ]
     },
@@ -6294,7 +6294,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 423
+          "line": 445
         }
       ]
     },
@@ -6305,7 +6305,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 445
+          "line": 467
         }
       ]
     },
@@ -6316,7 +6316,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 133
+          "line": 154
         }
       ]
     },
@@ -6327,7 +6327,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 109
+          "line": 130
         }
       ]
     },
@@ -6338,7 +6338,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 289
+          "line": 311
         }
       ]
     },
@@ -6349,7 +6349,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 115
+          "line": 136
         }
       ]
     },
@@ -6360,7 +6360,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 121
+          "line": 142
         }
       ]
     },
@@ -6371,7 +6371,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 152
+          "line": 173
         }
       ]
     },
@@ -6382,7 +6382,7 @@
       "sources": [
         {
           "source": "server/routes/cosTaskRoutes.js",
-          "line": 103
+          "line": 124
         }
       ]
     },
