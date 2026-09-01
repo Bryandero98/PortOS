@@ -593,7 +593,9 @@ export async function buildClaimWorkTask(app, {
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
     + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts, promptReviewerModels)
-    + buildLocalReviewerInstructions(reviewersList, promptReviewerModels, promptReviewerEfforts);
+    + buildLocalReviewerInstructions(reviewersList, promptReviewerModels, promptReviewerEfforts, {
+      claimCommentGate: promptTaskType === 'claim-issue',
+    });
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
@@ -2961,7 +2963,9 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     // and give it two owners to drift apart.
     + (rendersReviewers
         ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts, promptReviewerModels)
-          + buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
+          + buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts, {
+            claimCommentGate: promptTaskType === 'claim-issue',
+          })
         : '');
 }
 
