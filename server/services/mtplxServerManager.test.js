@@ -210,6 +210,36 @@ describe('mtplxServerManager', () => {
       expect(pm2State).toBeNull();
     });
 
+    it('explains how to recover when MTPLX cannot bootstrap its Python runtime', async () => {
+      vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
+        execPm2Calls.push(args);
+        if (args[0] === 'start') {
+          pm2State = { name: MTPLX_APP, status: 'errored', pid: null, args: [] };
+        }
+        if (args[0] === 'delete') pm2State = null;
+        if (args[0] === 'logs') {
+          return {
+            stdout: '',
+            stderr: [
+              'runtime is not installed',
+              'Bootstrapping with pip',
+              'python3.13 -m ensurepip --upgrade --default-pip',
+              "Command '['python3.13', '-m', 'ensurepip']' returned non-zero exit status 1",
+            ].join('\n'),
+          };
+        }
+        return { stdout: '', stderr: '' };
+      });
+
+      const err = await startMtplxServer().catch((error) => error);
+
+      expect(err).toMatchObject({ code: 'MTPLX_EXITED' });
+      expect(err.message).toContain('Homebrew\'s Python does not provide a working `ensurepip`');
+      expect(err.message).toContain('brew reinstall python@3.13');
+      expect(err.message).not.toContain('returned non-zero exit status 1');
+      expect(pm2State).toBeNull();
+    });
+
     it('reports the endpoint it actually bound, with no host it never passes', async () => {
       // MTPLX is a loopback daemon and no `--host` ever reaches its launch line,
       // so accepting a host would record an endpoint the server is not bound to.

@@ -115,6 +115,13 @@ export const MTPLX_UNSUPPORTED_REASON = 'MTPLX runs only on macOS with Apple Sil
  */
 const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server exits before it binds a port. Use "Download default checkpoint" on the MTPLX card (or search for another MTP model there) to fetch one — a multi-gigabyte download PortOS will not start without you asking — then start MTPLX again.';
 
+const MTPLX_RUNTIME_BOOTSTRAP_ERROR = 'MTPLX\'s own Python runtime failed to bootstrap because Homebrew\'s Python does not provide a working `ensurepip`. Try `brew reinstall python@3.13` (or `brew install youssofal/mtplx/mtplx --build-from-source` to force a rebuild against a working interpreter), then start MTPLX again.';
+
+const isMtplxRuntimeBootstrapFailure = (output) => {
+  const text = String(output ?? '');
+  return /runtime is not installed|bootstrapping with pip/i.test(text) && /ensurepip/i.test(text);
+};
+
 let currentConfig = null;
 let lastExitError = null;
 
@@ -476,13 +483,16 @@ export async function startMtplxServer(options = {}) {
     const lines = `${pm2Logs?.stderr || pm2Logs?.stdout || ''}`.split('\n').map((l) => l.trimEnd()).filter(Boolean);
     for (const line of lines) appendLog(line);
     const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
-
     lastExitError = `PM2 status: ${currentProc.status}`;
+    const message = isMtplxRuntimeBootstrapFailure(lines.join('\n'))
+      ? MTPLX_RUNTIME_BOOTSTRAP_ERROR
+      : `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`;
+
     await execPm2(['delete', MTPLX_APP]).catch(() => {});
     clearJlistCache();
     currentConfig = null;
     throw new ServerError(
-      `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`,
+      message,
       { status: 500, code: 'MTPLX_EXITED' }
     );
   }
