@@ -1817,6 +1817,9 @@ export const renderDefaultsSettingsSchema = z.object(
 export const videoGenSettingsSchema = z.object({
   mode: videoModePinSchema,
   defaultModelId: z.preprocess(emptyToNull, z.string().trim().max(64).nullable().optional()),
+  // Default-on macOS GPU-watchdog mitigation for sustained MLX video renders.
+  // Set false for a headless display workflow that manages display power itself.
+  displaySleep: z.boolean().optional(),
   // Install-wide acknowledgement of restricted-model license gates, stored as
   // the exact reviewed-license ids (`termsGate.id`). Written through
   // POST /api/video-gen/model-terms; typed here so a Settings save can't put
