@@ -73,16 +73,15 @@ vi.mock('./agentRunTracking.js', () => ({
 // The DEFINING module, not the `cosAgentLifecycle.js` module — mirrors the production
 // import (#3450). Mocking the barrel here would silently stop applying and let
 // the real state layer load.
-const { AGENT_RECORD_UNREADABLE } = vi.hoisted(() => ({
-  AGENT_RECORD_UNREADABLE: Symbol('agent-record-unreadable'),
-}));
-vi.mock('./cosAgentLifecycle.js', () => ({
+// `isLiveAgentRecord` and the sentinel come from the real module — the reverse
+// prune turns on that predicate, so a re-implemented copy here would keep
+// passing while the real one changed underneath it.
+vi.mock('./cosAgentLifecycle.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   completeAgent: vi.fn().mockResolvedValue(undefined),
   updateAgent: vi.fn().mockResolvedValue(undefined),
   getAgents: vi.fn().mockResolvedValue([]),
   getAgentRecord: vi.fn().mockResolvedValue(null),
-  AGENT_RECORD_UNREADABLE,
-  isLiveAgentRecord: (record) => Boolean(record) && record.status !== 'completed',
   readAgentRecordOrUnreadable: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('./cosRunnerClient.js', () => ({
@@ -119,7 +118,7 @@ vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettle
 
 import { handleOrphanedTask, pauseAgent, resumeAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents, terminateAgent, killAgent } from './agentManagement.js';
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
-import { getAgents, updateAgent, getAgentRecord, readAgentRecordOrUnreadable, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
+import { getAgents, updateAgent, getAgentRecord, readAgentRecordOrUnreadable, AGENT_RECORD_UNREADABLE, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
 import { advanceAfterSceneSettled } from './creativeDirector/completionHook.js';

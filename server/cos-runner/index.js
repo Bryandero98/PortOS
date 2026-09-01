@@ -27,6 +27,7 @@ import { createStreamJsonParser } from './streamJsonParser.js';
 import { loadState, saveState, withState } from './runnerState.js';
 import { getProcessStats, checkProcessRunning } from './processStats.js';
 import { ALLOWED_COMMANDS, isAllowedCommand } from './allowedCommands.js';
+import { armForceKill as armForceKillShared } from './forceKill.js';
 import { PORTS } from '../lib/ports.js';
 import { setupProcessErrorHandlers } from '../lib/errorHandler.js';
 import { parseSentinelPayload } from '../lib/agentSentinel.js';
@@ -77,41 +78,19 @@ const activeAgents = new Map();
 const TUI_EXIT_OUTPUT_TAIL_CHARS = 16 * 1024;
 const TUI_SIGNALS = new Set(['SIGTERM', 'SIGKILL', 'SIGINT']);
 
-/**
- * Arm the force-kill escalation for an agent that was just signalled.
- *
- * Every termination path here is SIGTERM-then-SIGKILL: `killProcessTree` sorts
- * out what "kill" means for the agent's kind (a `taskkill /T /F` tree for a
- * cmd.exe-wrapped CLI shim, #2243; a signal-free node-pty kill on Windows), and
- * this is the grace window after it. Dropping the map entry when the grace
- * expires is what keeps `GET /agents` honest: a process that outlives its own
- * SIGKILL must not go on being advertised as an active run, or the PortOS
- * server re-adopts it on every orphan sweep and counts it against the Update
- * page's "N CoS agents running" gate.
- *
- * The handle is stored on the agent so an exit handler can cancel it.
- * `dropState` also clears the durable runner record — used by the `tui:kill`
- * relay, whose kill arrives after the server has ALREADY finalized the agent, so
- * nothing else will ever revisit either copy.
- */
-function armForceKill(agentId, agent, { dropState = false } = {}) {
-  if (agent.killTimer) return;
-  agent.killTimer = setTimeout(() => {
-    // Timer callback: an uncaught throw here has no request to bubble to and
-    // would take the whole runner down.
-    try {
-      if (!activeAgents.delete(agentId)) return;
-      console.log(`💀 Agent ${agentId} outlived its termination grace — force killing`);
-      killProcessTree(agent.process, 'SIGKILL');
-      if (dropState) {
-        withState((state) => { delete state.agents[agentId]; })
-          .catch(err => console.error(`❌ Reap state write failed for ${agentId}: ${err.message}`));
-      }
-    } catch (err) {
-      console.error(`❌ Force kill failed for ${agentId}: ${err.message}`);
-    }
-  }, SIGKILL_GRACE_MS);
-}
+// Bind the shared escalation to this process's map, grace window, and durable
+// state. See forceKill.js for the contract (notably: a fresh termination always
+// re-arms, and `dropState` is only for a kill relayed after the PortOS server
+// has already finalized the agent).
+const armForceKill = (agentId, agent, opts = {}) =>
+  armForceKillShared(activeAgents, agentId, agent, {
+    graceMs: SIGKILL_GRACE_MS,
+    ...opts,
+    onDropState: (id) => {
+      withState((state) => { delete state.agents[id]; })
+        .catch(err => console.error(`❌ Reap state write failed for ${id}: ${err.message}`));
+    },
+  });
 
 // Express app setup
 const app = express();
@@ -281,7 +260,21 @@ app.post('/spawn-tui', async (req, res) => {
       if (!current) return;
       current.doneWatcher?.();
       // Cancel any pending SIGKILL timer — process already exited.
-      if (current.killTimer) clearTimeout(current.killTimer);
+      if (current.killTimer) {
+        clearTimeout(current.killTimer);
+        current.killTimer = null;
+      }
+      // A paused agent's process was stopped deliberately and its record is what
+      // a later resume reads, so report nothing: emitting `agent:completed` here
+      // would finalize it as FAILED and retire the task the pause meant to keep.
+      // Mirrors the CLI close handler's own pause guard below. This became
+      // reachable when the node-pty kill started landing on Windows — before
+      // that, pausing a runner-owned TUI threw and the PTY simply never exited.
+      if (current.paused === true) {
+        console.log(`⏸️ TUI agent ${agentId} exited after pause`);
+        activeAgents.delete(agentId);
+        return;
+      }
       const duration = Date.now() - current.startedAt;
       const success = current.completedBySentinel;
       const effectiveExitCode = success ? 0 : exitCode;
@@ -723,6 +716,7 @@ app.post('/pause/:agentId', async (req, res) => {
   // NOT armForceKill: a pause keeps its map entry (the agent is meant to be
   // resumable) and only escalates while the pause is still in force.
   agent.killTimer = setTimeout(() => {
+    agent.killTimer = null;
     const current = activeAgents.get(agentId);
     if (current?.paused) killProcessTree(current.process, 'SIGKILL');
   }, SIGKILL_GRACE_MS);
@@ -840,7 +834,11 @@ io.on('connection', (socket) => {
       const [agentId, agent] = entry;
       if (agent.kind !== 'tui') return;
       killProcessTree(agent.process, signal);
-      armForceKill(agentId, agent, { dropState: true });
+      // `dropState` only for an agent the server has already FINALIZED. A pause
+      // also relays a kill (the server stops a TUI session through this socket),
+      // and its durable record is exactly what a later resume reads — reaping it
+      // would strand the paused run.
+      armForceKill(agentId, agent, { dropState: agent.paused !== true });
     } catch (err) {
       console.error(`❌ TUI termination relay failed: ${err.message}`);
     }

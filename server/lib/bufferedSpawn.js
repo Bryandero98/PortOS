@@ -215,17 +215,25 @@ export const MAX_OUTPUT_BYTES = 64 * 1024;
  * ConPTY handle), leaking it — so any non-ChildProcess killable always uses
  * its own `.kill()` instead, on every platform.
  *
- * That killable gets NO signal on Windows: node-pty's Windows backend throws
- * `Signals not supported on windows.` for any signal argument, so `kill(signal)`
- * against a pty there never kills anything — it throws past the caller, which
- * typically logs it and moves on while the PTY keeps running. A bare `kill()`
- * still tears down node-pty's whole console process list, so the graceful/forced
- * distinction is simply not expressible for a Windows pty. This is why every CoS
- * Runner TUI kill (terminate, force-kill, pause, and the server's post-finalize
- * relay) was a silent no-op on Windows: the codex/claude PTY survived, held its
- * worktree locked, and stayed in the runner's active set — which the PortOS
- * server re-adopted on every orphan sweep and counted against the Update page's
+ * node-pty's Windows backend additionally throws `Signals not supported on
+ * windows.` for ANY signal argument, so `kill(signal)` against a pty there never
+ * kills anything — it throws past the caller, which typically logs it and moves
+ * on while the PTY keeps running. That is why every CoS Runner TUI kill
+ * (terminate, force-kill, pause, and the server's post-finalize relay) was a
+ * silent no-op on Windows: the codex/claude PTY survived, held its worktree
+ * locked, and stayed in the runner's active set — which the PortOS server
+ * re-adopted on every orphan sweep and counted against the Update page's
  * "N CoS agents running" gate, pausing updates indefinitely.
+ *
+ * So a non-ChildProcess killable is offered the caller's signal FIRST and falls
+ * back to a bare `kill()` only when the handle rejects it. Dropping the signal
+ * unconditionally would be wrong for the other non-ChildProcess killables in
+ * this codebase, which do accept one and forward it — `cosRunnerClient`'s TUI
+ * proxy relays `{ signal }` over a socket, so an unconditional drop would
+ * silently downgrade a force-kill to a graceful one. A bare `kill()` still tears
+ * down node-pty's whole console process list, so nothing is lost where the
+ * fallback does fire: the graceful/forced distinction simply is not expressible
+ * for a Windows pty.
  *
  * `processGroup` is for a child spawned `detached` on POSIX: without it the
  * non-Windows branch signals a single pid, which leaves a shell's own children
@@ -246,10 +254,11 @@ export const MAX_OUTPUT_BYTES = 64 * 1024;
  * @param {import('child_process').ChildProcess} child
  * @param {NodeJS.Signals} [signal] - POSIX signal to send (default `SIGTERM`); ignored on Windows
  * @param {{processGroup?: boolean}} [opts] - POSIX: signal the child's process group (it must have been spawned `detached`)
+ * @param {boolean} [isWin32] - platform override, injected so the Windows branches are testable off Windows (same shape as `resolveWindowsExecutable`)
  */
-export function killProcessTree(child, signal = 'SIGTERM', { processGroup = false } = {}) {
+export function killProcessTree(child, signal = 'SIGTERM', { processGroup = false } = {}, isWin32 = IS_WIN32) {
   const isChildProcess = child instanceof ChildProcess;
-  if (IS_WIN32 && child.pid && isChildProcess) {
+  if (isWin32 && child.pid && isChildProcess) {
     child.killed = true;
     spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' })
       .on('error', () => {})
@@ -260,8 +269,15 @@ export function killProcessTree(child, signal = 'SIGTERM', { processGroup = fals
     try { process.kill(-child.pid, signal); return; }
     catch { /* ESRCH — the group is already gone; fall through to the pid */ }
   }
-  // A Windows pty rejects every signal — see the note above.
-  if (IS_WIN32 && !isChildProcess) return child.kill();
+  if (isWin32 && !isChildProcess) {
+    // node-pty rejects the signal outright on Windows (see the note above);
+    // every other killable here accepts and forwards it, so ask first and only
+    // fall back to the signal-free form for the handle that refuses. Retrying a
+    // kill is harmless — the first attempt did nothing.
+    try { child.kill(signal); }
+    catch { child.kill(); }
+    return;
+  }
   child.kill(signal);
 }
 

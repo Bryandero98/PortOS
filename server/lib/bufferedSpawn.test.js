@@ -148,6 +148,58 @@ describe('killProcessTree', () => {
     killSpy.mockRestore();
   });
 
+  // A killable that exposes .kill()/.pid like a ChildProcess but isn't one
+  // (node-pty's IPty, registered via registerExternalRun for TUI runs). taskkill
+  // against its pid would bypass node-pty's own native teardown (releasing a
+  // Windows ConPTY handle) and leak it.
+  //
+  // The platform is INJECTED on these, not read from the host: the branch below
+  // is Windows-only, and a `if (!IS_WIN32) return` guard would assert nothing on
+  // a Linux CI runner — leaving the fix free to regress everywhere but a
+  // developer's Windows box.
+  const ptyLike = (onSignal) => ({ pid: 4321, kill: vi.fn(onSignal) });
+  // node-pty's Windows backend throws for ANY signal argument. A signalled kill
+  // there therefore killed nothing and threw past the caller, which logged it
+  // and moved on — which is how every CoS Runner TUI kill became a silent no-op
+  // on Windows, stranding the process and pinning the Update page on
+  // "N CoS agents running".
+  const rejectsSignals = (signal) => { if (signal) throw new Error('Signals not supported on windows.'); };
+
+  it('falls back to a signal-free kill on Windows for a handle that rejects signals', () => {
+    const pty = ptyLike(rejectsSignals);
+    killProcessTree(pty, 'SIGKILL', {}, true);
+    expect(pty.kill.mock.calls).toEqual([['SIGKILL'], []]);
+    // Never taskkill — that bypasses node-pty's ConPTY teardown and leaks the handle.
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the signal on Windows for a non-ChildProcess killable that accepts one', () => {
+    // cosRunnerClient's TUI proxy relays { signal } over a socket. Dropping the
+    // signal unconditionally would silently downgrade a force-kill to graceful.
+    const proxy = ptyLike(undefined);
+    killProcessTree(proxy, 'SIGKILL', {}, true);
+    expect(proxy.kill.mock.calls).toEqual([['SIGKILL']]);
+  });
+
+  it('forwards the signal to a node-pty handle off Windows, where node-pty honors it', () => {
+    const pty = ptyLike(undefined);
+    killProcessTree(pty, 'SIGKILL', {}, false);
+    expect(pty.kill.mock.calls).toEqual([['SIGKILL']]);
+  });
+
+  it('on Windows ignores processGroup — taskkill /T is already the tree', () => {
+    if (!IS_WIN32) return; // platform-gated behavior
+    const child = makeFakeChild({ pid: 777 });
+    const tk = makeFakeChild();
+    tk.unref = vi.fn();
+    spawnMock.mockReturnValueOnce(tk);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    killProcessTree(child, undefined, { processGroup: true });
+    expect(spawnMock).toHaveBeenCalledWith('taskkill', ['/T', '/F', '/PID', '777'], expect.anything());
+    expect(killSpy).not.toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
   it('on Windows kills a non-ChildProcess killable (a node-pty session) with .kill() and NO signal', () => {
     if (!IS_WIN32) return; // can't simulate platform branch from outside
     // A killable that exposes .kill()/.pid like a ChildProcess but isn't one

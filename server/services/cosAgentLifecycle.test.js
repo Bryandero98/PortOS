@@ -18,7 +18,10 @@ vi.mock('./cosState.js', () => ({
   AGENTS_DIR: mockCosState.agentsDir,
   loadState: vi.fn(async () => mockCosState.state),
   saveState: vi.fn(),
-  withStateLock: async (fn) => fn()
+  withStateLock: async (fn) => fn(),
+  // The uncached, non-defaulting read the update gate uses. Defaults to
+  // "trusted, and these are the records"; one test drives the untrusted answer.
+  readAgentsStateForSafetyCheck: vi.fn(async () => ({ trusted: true, agents: mockCosState.state?.agents ?? {} })),
 }));
 
 vi.mock('./domainUsage.js', () => ({
@@ -52,7 +55,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 import { getAgent, createAgentOutputBatcher, completeAgent, updateAgent, registerAgent, filterLiveAgentIds, readAgentRecordOrUnreadable, AGENT_RECORD_UNREADABLE, AGENT_OUTPUT_TAIL_LINES } from './cosAgentLifecycle.js';
-import { saveState, loadState } from './cosState.js';
+import { saveState, loadState, readAgentsStateForSafetyCheck } from './cosState.js';
 import { recordDomainUsage } from './domainUsage.js';
 import { cosEvents } from './cosEvents.js';
 
@@ -106,6 +109,18 @@ describe('cosAgentLifecycle', () => {
       'agent-running', 'agent-running', 'agent-paused', 'agent-done', 'agent-archived-away'
     ])).resolves.toEqual(['agent-running', 'agent-paused']);
     await expect(filterLiveAgentIds([])).resolves.toEqual([]);
+  });
+
+  // The gate this feeds authorizes a pm2 restart that severs live agents, so an
+  // unreadable state file must not read as "nothing is running". `loadState`
+  // substitutes an EMPTY default state for a corrupt file — trusting that would
+  // hand the gate a confident zero and restart PortOS out from under whatever
+  // was live.
+  it('treats every tracked id as live when the records cannot be established', async () => {
+    vi.mocked(readAgentsStateForSafetyCheck).mockResolvedValueOnce({ trusted: false, agents: null });
+
+    await expect(filterLiveAgentIds(['agent-a', 'agent-b']))
+      .resolves.toEqual(['agent-a', 'agent-b']);
   });
 
   // "The read failed" and "there is no such record" lead to opposite decisions —

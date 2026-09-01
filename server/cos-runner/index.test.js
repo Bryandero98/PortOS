@@ -72,34 +72,38 @@ describe('cos-runner spawn — per-provider prompt delivery (antigravity --print
 });
 
 describe('cos-runner termination', () => {
-  // How to kill an agent is the shared helper's job, not the runner's: a
-  // `taskkill /T /F` tree for a cmd.exe-wrapped CLI shim (#2243) and a
-  // signal-free node-pty kill on Windows, both decided by `instanceof
-  // ChildProcess` inside killProcessTree. bufferedSpawn.test.js owns those
-  // semantics; this file's job is that no path here hand-rolls its own kill.
+  // Both halves of a kill now live in modules that can actually be imported:
+  // killProcessTree (bufferedSpawn.js) decides what "kill" means for the
+  // handle, and armForceKill (forceKill.js) owns the SIGTERM -> grace ->
+  // SIGKILL escalation. bufferedSpawn.test.js and forceKill.test.js exercise
+  // those for real; all this file pins is that index.js delegates to both
+  // rather than hand-rolling either.
   it('kills only through the shared killProcessTree helper', () => {
     expect(RUNNER_SRC).toContain("import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';");
-    // No path may signal a handle itself. (A BARE `.kill()` is still fine —
-    // the sentinel watcher closes a finished TUI session that way, and a bare
-    // kill is the one form node-pty accepts on every platform.)
+    // A BARE `.kill()` is still fine — the sentinel watcher closes a finished
+    // TUI session that way, and a bare kill is the one form node-pty accepts
+    // on every platform. What must not reappear is a hand-rolled signal kill.
     expect(RUNNER_SRC).not.toContain(".process.kill('SIG");
   });
 
-  // Every terminate path is SIGTERM-then-SIGKILL, and the escalation must drop
-  // the map entry: a process that outlives its own SIGKILL can't stay in
-  // GET /agents, or the PortOS server re-adopts it on each orphan sweep and
-  // counts it against the Update page's "N CoS agents running" gate.
-  it('escalates through one shared force-kill that drops the agent from the active set', () => {
-    const helperIdx = RUNNER_SRC.indexOf('function armForceKill(');
-    expect(helperIdx, 'armForceKill must exist').toBeGreaterThan(-1);
-    const helper = RUNNER_SRC.slice(helperIdx, helperIdx + 900);
-    expect(helper).toContain('activeAgents.delete(agentId)');
-    expect(helper).toContain("killProcessTree(agent.process, 'SIGKILL')");
-    expect(helper).toContain('SIGKILL_GRACE_MS');
-    // /terminate, /terminate-all and the post-finalize tui:kill relay all use
-    // it; only the relay also clears the durable runner record.
+  it('escalates through the shared armForceKill on every terminate path', () => {
+    expect(RUNNER_SRC).toContain("import { armForceKill as armForceKillShared } from './forceKill.js';");
+    // /terminate and /terminate-all, plus the post-finalize tui:kill relay.
     expect(RUNNER_SRC.split('armForceKill(agentId, agent);')).toHaveLength(3);
-    expect(RUNNER_SRC).toContain('armForceKill(agentId, agent, { dropState: true })');
+    expect(RUNNER_SRC).toContain('armForceKill(agentId, agent, { dropState: agent.paused !== true })');
+  });
+
+  // A paused agent was stopped deliberately and its record is what a later
+  // resume reads. The CLI close handler always had this guard; the TUI one did
+  // not, and the node-pty kill fix is what made that path reachable on Windows
+  // (before it, the kill threw and the PTY never exited at all).
+  it('reports nothing when a paused TUI exits, instead of finalizing it failed', () => {
+    const exitIdx = RUNNER_SRC.indexOf('tuiProcess.onExit(');
+    expect(exitIdx, 'the TUI exit handler must exist').toBeGreaterThan(-1);
+    const completedIdx = RUNNER_SRC.indexOf("emitToServer('agent:completed'", exitIdx);
+    const handler = RUNNER_SRC.slice(exitIdx, completedIdx);
+    expect(handler).toContain('current.paused === true');
+    expect(handler).toContain('activeAgents.delete(agentId)');
   });
 });
 

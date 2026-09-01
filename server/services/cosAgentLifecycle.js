@@ -15,7 +15,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { cosEvents } from './cosEvents.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { loadState, saveState, withStateLock, AGENTS_DIR } from './cosState.js';
+import { loadState, saveState, withStateLock, readAgentsStateForSafetyCheck, AGENTS_DIR } from './cosState.js';
 import { atomicWrite, ensureDir, readFileTail, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { recordDomainUsage } from './domainUsage.js';
 import { repairCodexTaskSummary } from './codexSummaryRepair.js';
@@ -419,12 +419,24 @@ export const readAgentRecordOrUnreadable = (agentId) =>
  * runner was still advertising, blocking the restart that would have cleared
  * them. `registerAgent` writes the record before the spawn, and the whole spawn
  * runs inside `spawningTasks`, so no genuinely starting agent falls through.
+ *
+ * **Fails CLOSED.** The one caller gates a pm2 restart that severs live agents,
+ * so this reads the records through `readAgentsStateForSafetyCheck` — which
+ * reports whether they could be established at all — rather than `loadState`,
+ * which silently substitutes an EMPTY default state for a corrupt file. Reading
+ * that default would judge every tracked id finalized and hand the gate a
+ * confident zero, restarting PortOS out from under whatever was running. When
+ * the records cannot be trusted, every tracked id counts as live instead.
  */
 export async function filterLiveAgentIds(agentIds) {
   if (agentIds.length === 0) return [];
   const ids = [...new Set(agentIds)];
-  const state = await loadState();
-  return ids.filter(id => isLiveAgentRecord(state.agents[id]));
+  const { trusted, agents } = await readAgentsStateForSafetyCheck();
+  if (!trusted || !agents) {
+    console.warn(`⚠️ CoS agent records could not be established — treating all ${ids.length} tracked agent(s) as live`);
+    return ids;
+  }
+  return ids.filter(id => isLiveAgentRecord(agents[id]));
 }
 
 // Get agent by ID with full output from file

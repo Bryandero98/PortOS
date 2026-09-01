@@ -30,14 +30,12 @@ vi.mock('./cos.js', () => ({
   }),
 }));
 
-// The real sentinel + predicate: the adoption guard's whole job is telling a
-// failed READ from an absent record, so a stubbed sentinel would prove nothing.
-const { AGENT_RECORD_UNREADABLE } = vi.hoisted(() => ({
-  AGENT_RECORD_UNREADABLE: Symbol('agent-record-unreadable'),
-}));
-vi.mock('./cosAgentLifecycle.js', () => ({
-  AGENT_RECORD_UNREADABLE,
-  isLiveAgentRecord: (record) => Boolean(record) && record.status !== 'completed',
+// Stub ONLY the read. `isLiveAgentRecord` is the contract this guard turns on,
+// so it comes from the real module — a re-implemented copy here would keep
+// passing if the real predicate changed (e.g. started treating `paused` as
+// terminal) while production behavior flipped underneath it.
+vi.mock('./cosAgentLifecycle.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   readAgentRecordOrUnreadable: vi.fn(),
 }));
 
@@ -49,7 +47,7 @@ vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
 
 import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
-import { readAgentRecordOrUnreadable } from './cosAgentLifecycle.js';
+import { AGENT_RECORD_UNREADABLE, readAgentRecordOrUnreadable } from './cosAgentLifecycle.js';
 import { activeAgents, runnerAgents } from './agentState.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 
