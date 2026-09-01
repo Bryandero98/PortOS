@@ -759,6 +759,15 @@ export function createPortOSProviderRoutes(aiToolkit) {
     res.json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
+  // POST /:id/refresh-models — intercept the toolkit response so the refreshed
+  // provider record receives the same secret redaction as every other provider
+  // response. The toolkit returns its raw persisted record here.
+  router.post('/:id/refresh-models', asyncHandler(async (req, res) => {
+    const provider = await providerService.refreshProviderModels(req.params.id);
+    if (!provider) throw new ServerError('Provider not found', { status: 404 });
+    res.json(presentProvider(provider, await detectSystemCapabilities()));
+  }));
+
   // POST / — intercept to (a) validate the body against providerSchema so
   // invalid fields like `timeout: "abc"` or non-object `envVars` don't
   // persist and later break runner behavior, and (b) sanitize the created
@@ -773,8 +782,10 @@ export function createPortOSProviderRoutes(aiToolkit) {
     res.status(201).json(presentProvider(provider, await detectSystemCapabilities()));
   }));
 
-  // Mount base toolkit routes last (GET/PUT /:id and POST / are now shadowed
-  // by sanitized versions above)
+  // Mount base toolkit routes last (GET/PUT /:id, POST /, and
+  // POST /:id/refresh-models are now shadowed by sanitized versions above).
+  // DELETE /:id has no provider body; POST /:id/test returns only its test
+  // result, so neither endpoint needs a sanitizing shadow.
   router.use('/', aiToolkit.routes.providers);
 
   return router;
