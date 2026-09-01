@@ -98,7 +98,8 @@ const handshake = async () => awaitRequest(child, 'initialize', {});
 describe('running a text turn', () => {
   it('confines the turn to an empty directory with no tools, no network, and no writes', async () => {
     // This is the boundary that lets a Brain/JIRA summary use the same record
-    // as the coding harness: nothing about the PortOS checkout is reachable.
+    // as the coding harness without writes or network access. Local reads stay
+    // possible and are gated by the provider acknowledgement in codexTurn.js.
     const promise = runCodexTextTurn({ prompt: 'Summarize this.' });
     await handshake();
     await driveTurn(child, { deltas: ['ok'] });
@@ -109,7 +110,7 @@ describe('running a text turn', () => {
     expect(start.approvalPolicy).toBe('never');
     expect(start.ephemeral).toBe(true);
     expect(start.config).toEqual({
-      mcp_servers: {}, tools: { web_search: false }, web_search: false, sandbox_permissions: [],
+      mcp_servers: {}, tools: { web_search: false }, sandbox_permissions: [],
     });
     expect(start.cwd).toEqual(expect.stringContaining('portos-codex-text-'));
     expect(start.cwd.includes('PortOS')).toBe(false);

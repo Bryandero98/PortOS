@@ -2029,11 +2029,86 @@ function initializePipelineMetadata(metadata) {
   }
 }
 
+const SECURITY_SCAN_ACTIVE_TASK_STATUSES = new Set(['pending', 'in_progress', 'blocked'])
+const SECURITY_SCAN_PIPELINE_OUTPUT_MAX_CHARS = 11_000
+
+function securityScanReports(scan) {
+  if (Array.isArray(scan?.reports)) return scan.reports
+  if (Array.isArray(scan?.reviewedPrs)) return scan.reviewedPrs
+  return []
+}
+
+const reportIsSafe = (report) => report?.safe === true || report?.passed === true
+
+const reportFindingCount = (report) => (
+  Array.isArray(report?.securityFindings) && report.securityFindings.length > 0
+    ? report.securityFindings.length
+    : reportIsSafe(report) ? 0 : 1
+)
+
+/**
+ * Serialize only the trust decision needed by the app-code reviewer. The
+ * human-facing report and the raw model response deliberately never cross
+ * this boundary: even a report that calls itself an explanation is still
+ * untrusted model output and could contain a second prompt injection.
+ */
+export function buildSecurityScanPipelineOutput(scan, reports, status) {
+  const base = {
+    securityScan: status,
+    scanCode: scan.code || null,
+    reviewedCount: reports.length,
+    reviewedPrs: [],
+  }
+  const included = []
+  for (const report of reports) {
+    const candidate = {
+      number: report.number,
+      safe: reportIsSafe(report),
+      headRefOid: reportIsSafe(report) && typeof report.headRefOid === 'string' ? report.headRefOid : null,
+      findingCount: reportFindingCount(report),
+    }
+    const next = JSON.stringify({ ...base, reviewedPrs: [...included, candidate] })
+    if (next.length <= SECURITY_SCAN_PIPELINE_OUTPUT_MAX_CHARS) {
+      included.push(candidate)
+      continue
+    }
+    return JSON.stringify({ ...base, complete: false, reviewedPrs: included })
+  }
+  return JSON.stringify({ ...base, complete: true, reviewedPrs: included })
+}
+
+function formatSecurityScanContext(scan, reports, status) {
+  const findingCount = reports.filter((report) => !reportIsSafe(report)).length
+  return [
+    `Security scan status: ${status}.`,
+    `Reviewed ${reports.length} external pull request${reports.length === 1 ? '' : 's'}${findingCount ? `; ${findingCount} contained model-abuse flags or an unvalidated response` : ''}.`,
+    'No GitHub pull request or issue actions have been taken.',
+    status === 'findings'
+      ? 'This scan is only a model-abuse boundary. Flagged PR content and the human-facing report are withheld from Stage 2; Stage 2 may process only PRs explicitly marked safe and must not fetch or inspect flagged PRs.'
+      : status === 'unavailable'
+        ? `The scan stopped with ${scan.code || 'an unknown error'} after retaining the reports collected so far. No PR has a safe status; leave every PR untouched until the scan can be completed.`
+        : 'All reviewed PRs have an explicit model-abuse safety status. Stage 2 may review only the PRs marked safe, after approval.',
+  ].join('\n')
+}
+
+async function findActiveSecurityScanTask(appId, scanKey) {
+  if (!scanKey) return { unavailable: false, task: null }
+  const cosTasks = await getCosTasks().catch(() => null)
+  if (!cosTasks) return { unavailable: true, task: null }
+  const task = cosTasks.tasks?.find((candidate) => (
+    SECURITY_SCAN_ACTIVE_TASK_STATUSES.has(candidate.status)
+    && candidate.metadata?.analysisType === 'pr-reviewer'
+    && candidate.metadata?.app === appId
+    && candidate.metadata?.pipeline?.securityScan?.scanKey === scanKey
+  )) || null
+  return { unavailable: false, task }
+}
+
 /**
  * Run pr-reviewer's Security Scan through the direct local, no-tools path and
- * hand a passing result to the next pipeline stage. A normal stage-0 agent is
- * intentionally never spawned: `readOnly` is prompt guidance, not an OS
- * sandbox, and the generic agent resolver rejects API providers anyway.
+ * hand only safe PR metadata to the next pipeline stage. A normal stage-0
+ * agent is intentionally never spawned: `readOnly` is prompt guidance, not an
+ * OS sandbox, and the generic agent resolver rejects API providers anyway.
  *
  * External contributor PRs are held for human approval before the stage that
  * can review, comment, or merge. The preflight itself remains read-only and
@@ -2050,20 +2125,39 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata) {
     return { skipped: true };
   }
 
-  const { runPrReviewerSecurityScan } = await import('./prReviewerSecurity.js');
+  const { listExternalOpenPullRequests, runPrReviewerSecurityScan, securityScanFingerprint } = await import('./prReviewerSecurity.js');
+  const target = await listExternalOpenPullRequests(app);
+  if (!target.ok) {
+    emitLog('warn', `Skipping pr-reviewer for ${app.name}: ${target.code || 'security-scan-target-unavailable'}`, { appId: app.id, analysisType: taskType });
+    return { skipped: true };
+  }
+  const scanKey = securityScanFingerprint(target);
+  const active = await findActiveSecurityScanTask(app.id, scanKey);
+  if (active.unavailable) {
+    emitLog('warn', `Skipping pr-reviewer for ${app.name}: security-scan-task-state-unavailable`, { appId: app.id, analysisType: taskType });
+    return { skipped: true };
+  }
+  if (active.task) {
+    emitLog('info', `Skipping pr-reviewer for ${app.name}: security-scan-report-pending`, { appId: app.id, analysisType: taskType, taskId: active.task.id });
+    return { skipped: true, reason: 'security-scan-report-pending', task: active.task };
+  }
+
   const scan = await runPrReviewerSecurityScan({
     app,
     providerId: securityStage.providerId,
     model: securityStage.model,
     effort: securityStage.effort || null,
+    target,
   });
-  if (!scan.ok || !scan.passed) {
+  const reports = securityScanReports(scan);
+  if (!scan.ok && !reports.length) {
     emitLog('warn', `Skipping pr-reviewer for ${app.name}: ${scan.code || 'security-scan-not-passed'}`, { appId: app.id, analysisType: taskType });
     return { skipped: true };
   }
 
-  const reviewedPrs = scan.reviewedPrs || [];
-  const requiresApproval = reviewedPrs.length > 0;
+  const status = !scan.ok ? 'unavailable' : (scan.passed ? 'passed' : 'findings');
+  const requiresApproval = reports.length > 0;
+  const reviewOutput = buildSecurityScanPipelineOutput(scan, reports, status);
   metadata.pipeline = {
     ...metadata.pipeline,
     currentStage: 1,
@@ -2073,20 +2167,33 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata) {
       agentId: null,
       success: true,
       completedAt: new Date().toISOString(),
-      summary: { backend: scan.backend, reviewedPrCount: reviewedPrs.length },
+      summary: {
+        backend: scan.backend || null,
+        code: scan.code || null,
+        reviewedPrCount: reports.length,
+        findingCount: reports.filter((report) => !reportIsSafe(report)).length,
+        reportStatus: status,
+      },
     }],
     previousStageAgentId: null,
-    previousStageOutput: JSON.stringify({
-      securityScan: 'passed',
-      reviewedPrs: reviewedPrs.map(({ number, passed }) => ({ number, passed })),
-    }),
+    previousStageOutput: reviewOutput,
     securityScan: {
-      completed: true,
+      completed: scan.ok,
+      status,
+      code: scan.code || null,
       backend: scan.backend,
-      reviewedPrCount: reviewedPrs.length,
+      model: scan.model || null,
+      repoFullName: scan.repoFullName || target.repoFullName,
+      defaultBranch: scan.defaultBranch || target.defaultBranch,
+      scanKey: scan.scanKey || scanKey,
+      reviewedPrCount: reports.length,
+      findingCount: reports.filter((report) => !reportIsSafe(report)).length,
+      reports,
+      noActionsTaken: true,
       requiresApproval,
     },
   };
+  metadata.context = formatSecurityScanContext(scan, reports, status);
 
   // Apply the next stage's provider/model/effort and behavior flags exactly as
   // the ordinary agent-completion hand-off does. Keeping this in the generator
@@ -2114,7 +2221,11 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata) {
   // applyOnDemandConsent deliberately honors this marker, so a user-triggered
   // run cannot silently bypass the human gate for external contributor PRs.
   if (requiresApproval) metadata.requireApproval = true;
-  emitLog('info', `pr-reviewer security scan passed for ${app.name}: ${reviewedPrs.length} external PR(s)`, { appId: app.id, analysisType: taskType });
+  emitLog(
+    status === 'passed' ? 'info' : 'warn',
+    `pr-reviewer security scan ${status} for ${app.name}: ${reports.length} external PR(s)`,
+    { appId: app.id, analysisType: taskType },
+  );
   return { skipped: false, scan };
 }
 

@@ -418,31 +418,45 @@ export async function spawnDirectly({
     env: childEnv
   });
 
-  registerSpawnedAgent(claudeProcess.pid, {
-    fullCommand,
-    agentId,
-    taskId: task.id,
-    model,
-    workspacePath: cwd,
-    prompt: (task.description || '').substring(0, 500)
+  // spawn() can hand back a handle with no pid or stdio when command lookup
+  // fails. Listen immediately so that failure cannot become an unhandled error
+  // while the async setup below is still yielding.
+  let pendingSpawnError = null;
+  let handleSpawnError = null;
+  claudeProcess.on('error', (err) => {
+    if (handleSpawnError) void handleSpawnError(err);
+    else pendingSpawnError = err;
   });
 
-  if (writePromptToStdin) claudeProcess.stdin.write(prompt);
-  claudeProcess.stdin.end();
+  const spawnedPid = claudeProcess.pid;
+  if (spawnedPid != null) {
+    registerSpawnedAgent(spawnedPid, {
+      fullCommand,
+      agentId,
+      taskId: task.id,
+      model,
+      workspacePath: cwd,
+      prompt: (task.description || '').substring(0, 500)
+    });
 
-  activeAgents.set(agentId, {
-    process: claudeProcess,
-    taskId: task.id,
-    startedAt: Date.now(),
-    runId,
-    pid: claudeProcess.pid,
-    providerId: provider.id,
-    executionId,
-    laneName
-  });
+    if (writePromptToStdin && claudeProcess.stdin) claudeProcess.stdin.write(prompt);
+    claudeProcess.stdin?.end();
 
-  // Store PID in persisted state for zombie detection
-  await updateAgent(agentId, { pid: claudeProcess.pid });
+    activeAgents.set(agentId, {
+      process: claudeProcess,
+      taskId: task.id,
+      startedAt: Date.now(),
+      runId,
+      pid: spawnedPid,
+      providerId: provider.id,
+      executionId,
+      laneName
+    });
+
+    // Store PID in persisted state for zombie detection only after spawn gave
+    // us a live process identity.
+    await updateAgent(agentId, { pid: spawnedPid });
+  }
 
   let outputBuffer = '';
   let rawStreamBuffer = ''; // Raw stdout for stream-json (used for error analysis)
@@ -618,13 +632,14 @@ export async function spawnDirectly({
     }
   });
 
-  claudeProcess.on('error', async (err) => {
+  handleSpawnError = async (err) => {
     // Runs outside the request lifecycle — an uncaught throw from the awaited
     // completeAgent/completeAgentRun would crash the process, so wrap the body.
     try {
       clearTimeout(initializationTimeout);
       cleanupPromptFile();
       console.error(`❌ Agent ${agentId} spawn error: ${err.message}`);
+      outputBatcher.push(`❌ Agent ${agentId} spawn error: ${err.message}`);
 
       // Release execution lane
       if (laneName) {
@@ -656,7 +671,8 @@ export async function spawnDirectly({
       console.error(`❌ Agent ${agentId} error handler failed: ${handlerErr.message}`);
       activeAgents.delete(agentId);
     }
-  });
+  };
+  if (pendingSpawnError) void handleSpawnError(pendingSpawnError);
 
   claudeProcess.on('close', async (code) => {
     // Runs outside the request lifecycle — a throw from outputBatcher.flush,

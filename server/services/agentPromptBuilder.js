@@ -154,6 +154,31 @@ function pipelineContextLines(pipelineCtx) {
   return lines;
 }
 
+/**
+ * Keep the human-facing Security Scan report out of every Stage 2 prompt,
+ * including an install's customized briefing template. The report is useful
+ * to the operator in the task card, but it is untrusted model output and must
+ * not become an alternate instruction channel for the downstream reviewer.
+ */
+function taskVisibleToPipelineReviewer(task) {
+  const metadata = task?.metadata;
+  const pipeline = metadata?.pipeline;
+  if (metadata?.analysisType !== 'pr-reviewer' || !(Number(pipeline?.currentStage) > 0)) return task;
+
+  const { securityScan: _legacyReport, ...metadataWithoutLegacyReport } = metadata;
+  if (!pipeline || typeof pipeline !== 'object') {
+    return { ...task, metadata: metadataWithoutLegacyReport };
+  }
+  const { securityScan: _report, ...pipelineWithoutReport } = pipeline;
+  return {
+    ...task,
+    metadata: {
+      ...metadataWithoutLegacyReport,
+      pipeline: pipelineWithoutReport,
+    },
+  };
+}
+
 // Appended to every agent briefing. PortOS shares ONE pm2 daemon across many
 // apps; an agent restarting "the server" once ran `pm2 kill` and took the whole
 // machine (incl. PortOS) down. A PATH shim (server/lib/agentGuard) hard-blocks
@@ -627,11 +652,12 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   // back into that key for rendering instead of being pushed out to every
   // template on every install. `metadata.prompt` still travels untouched for a
   // custom template that wants to address it directly.
-  const contextBlock = taskContextBlock(task);
+  const briefingSourceTask = taskVisibleToPipelineReviewer(task);
+  const contextBlock = taskContextBlock(briefingSourceTask);
   const uiAuditRuntimeSection = isUiAuditTask(task) ? UI_AUDIT_RUNTIME_RULE : '';
-  const briefingTask = contextBlock === (task.metadata?.[TASK_CONTEXT_KEY] ?? null)
-    ? task
-    : { ...task, metadata: { ...task.metadata, [TASK_CONTEXT_KEY]: contextBlock } };
+  const briefingTask = contextBlock === (briefingSourceTask.metadata?.[TASK_CONTEXT_KEY] ?? null)
+    ? briefingSourceTask
+    : { ...briefingSourceTask, metadata: { ...briefingSourceTask.metadata, [TASK_CONTEXT_KEY]: contextBlock } };
   const promptData = isReviewLoopFollowUp ? null : await buildPrompt('cos-agent-briefing', {
     task: briefingTask,
     targetAppLabel,
