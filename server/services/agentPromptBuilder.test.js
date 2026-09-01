@@ -3666,3 +3666,49 @@ describe('TUI reviewLoopFollowUp completion instructions', () => {
     expect(first).not.toMatch(/\.agent-done(?![-\w])/);
   });
 });
+
+// A filing agent cannot reliably name its own model, so PortOS resolves the
+// planner identity from the provider/model the run was actually dispatched with
+// and hands the agent the finished label. The regression this catches is the
+// prompt shipping WITHOUT that value, which strands the shared dispatch guidance
+// pointing at a section that does not exist and invites a self-identified guess.
+describe('planner attribution', () => {
+  it('gives a light-path run the exact planner label for the model it resolved to', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta,
+      { providerId: 'claude-code-tui', providerCommand: 'claude', providerModel: 'claude-opus-5' },
+    );
+    expect(prompt).toMatch(/## Planner Attribution/);
+    expect(prompt).toMatch(/--label planner:opus-5/);
+    expect(prompt).toMatch(/gh label create planner:opus-5/);
+  });
+
+  it('falls back to the provider id when the run pinned no model', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta,
+      { providerId: 'grok', providerCommand: 'grok' },
+    );
+    expect(prompt).toMatch(/--label planner:grok/);
+  });
+
+  // The full path is a separate render (API providers never take the light
+  // path), and it appends the section rather than filling a template variable —
+  // an install's stored prompt template predates it and would silently drop it.
+  it('reaches an api provider through the full path too', async () => {
+    const prompt = await buildAgentPrompt(
+      makeTask({ metadata: { openPR: false } }), {}, '/repo', null, isTruthyMeta,
+      { providerType: 'api', providerId: 'lmstudio', providerModel: 'claude-opus-5' },
+    );
+    const text = typeof prompt === 'string' ? prompt : prompt.userPrompt;
+    expect(text).toMatch(/## Planner Attribution/);
+    expect(text).toMatch(/--label planner:opus-5/);
+  });
+
+  it('says nothing at all when PortOS cannot attribute the run', () => {
+    const prompt = buildLightContextPrompt(
+      makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta, {},
+    );
+    expect(prompt).not.toMatch(/## Planner Attribution/);
+    expect(prompt).not.toMatch(/planner:/);
+  });
+});
