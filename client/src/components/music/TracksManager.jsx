@@ -518,6 +518,8 @@ export default function TracksManager() {
                 ) : genMode === 'chiptune' ? (
                   <ChiptunePanel
                     track={persisted}
+                    sourcePrompt={form.prompt}
+                    sourceLyrics={form.lyrics}
                     remix={chiptuneRemix}
                     onTrackUpdate={(updated) => {
                       upsertLocal(updated); // list update is id-keyed → always safe
