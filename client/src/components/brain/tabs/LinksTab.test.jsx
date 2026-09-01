@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../../services/api', () => ({
@@ -30,7 +30,7 @@ vi.mock('../links/BucketBoard', () => ({
   },
 }));
 
-import { getBrainLink, getBrainLinks, getBrainBuckets } from '../../../services/api';
+import { createBrainLink, getBrainLink, getBrainLinks, getBrainBuckets } from '../../../services/api';
 import LinksTab from './LinksTab';
 
 const link = (id, cloneStatus, overrides = {}) => ({
@@ -266,5 +266,36 @@ describe('LinksTab clone-status polling', () => {
     const beforeExtra = getBrainLink.mock.calls.length;
     await tick(3 * 60 * 1000);
     expect(getBrainLink.mock.calls.length).toBeGreaterThan(beforeExtra);
+  });
+});
+
+describe('LinksTab link creation form', () => {
+  it('sends an optional note with a directly saved link', async () => {
+    getBrainLinks.mockResolvedValue({ links: [] });
+    const created = link('new', 'none', {
+      url: 'https://example.com/article',
+      title: 'example.com',
+      isGitHubRepo: false,
+    });
+    createBrainLink.mockResolvedValue(created);
+    await renderTab();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add title, note & tags (optional)' }));
+    fireEvent.change(screen.getByLabelText('Link URL to save'), {
+      target: { value: 'https://example.com/article' },
+    });
+    fireEvent.change(screen.getByLabelText(/Why are you saving this/i), {
+      target: { value: '  Read this later  ' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle('Save link'));
+      await Promise.resolve();
+    });
+
+    expect(createBrainLink).toHaveBeenCalled();
+    expect(createBrainLink.mock.calls[0][0]).toEqual({
+      url: 'https://example.com/article',
+      note: 'Read this later',
+    });
   });
 });

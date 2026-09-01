@@ -288,6 +288,16 @@ describe('brain service', () => {
       );
     });
 
+    it('stores the capture note on a newly saved URL', async () => {
+      await captureThought('https://example.com', undefined, undefined, {
+        note: 'Read this before the next planning session',
+      });
+
+      expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
+        note: 'Read this before the next planning session',
+      }));
+    });
+
     it('reuses an existing link instead of failing on a re-paste', async () => {
       storage.getLinkByUrl.mockResolvedValue({ id: 'link-existing', title: 'example.com' });
 
@@ -469,11 +479,12 @@ describe('brain service', () => {
       githubCloner.parseGitHubUrl.mockReturnValue({ owner: 'acme', repo: 'widgets', isGitHub: true });
 
       await createLinkFromUrl('https://github.com/acme/widgets', {
-        title: 'My Widgets', bucketId: 'bucket-1', autoClone: false
+        title: 'My Widgets', note: 'Use this as a reference', bucketId: 'bucket-1', autoClone: false
       });
 
       expect(storage.createLink).toHaveBeenCalledWith(expect.objectContaining({
         title: 'My Widgets',
+        note: 'Use this as a reference',
         bucketId: 'bucket-1',
         cloneStatus: 'none'
       }));

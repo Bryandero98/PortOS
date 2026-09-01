@@ -2378,7 +2378,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 71
+          "line": 73
         }
       ]
     },
@@ -2620,7 +2620,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 36
+          "line": 38
         }
       ]
     },
@@ -2631,7 +2631,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 127
+          "line": 129
         }
       ]
     },
@@ -2642,7 +2642,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 49
+          "line": 51
         }
       ]
     },
@@ -2653,7 +2653,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 114
+          "line": 116
         }
       ]
     },
@@ -2664,7 +2664,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 91
+          "line": 93
         }
       ]
     },
@@ -2675,7 +2675,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 81
+          "line": 83
         }
       ]
     },
@@ -2686,7 +2686,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 104
+          "line": 106
         }
       ]
     },
@@ -3049,7 +3049,7 @@
       "sources": [
         {
           "source": "server/routes/brainCapture.js",
-          "line": 61
+          "line": 63
         }
       ]
     },

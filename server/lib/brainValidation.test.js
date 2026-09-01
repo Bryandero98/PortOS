@@ -438,6 +438,15 @@ describe('brainValidation.js', () => {
       expect(result.success).toBe(true);
     });
 
+    it('should accept an optional note for a URL capture', () => {
+      const result = captureInputSchema.safeParse({
+        text: 'https://example.com',
+        note: 'Read this before the next planning session',
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.note).toBe('Read this before the next planning session');
+    });
+
     it('should allow provider pins inside a repo-study intake', () => {
       const result = captureInputSchema.safeParse({
         text: 'https://github.com/example/repo',
@@ -499,6 +508,7 @@ describe('brainValidation.js', () => {
         url: 'https://github.com/example/repo',
         title: 'Example Repository',
         description: 'A great example repo',
+        note: 'Review before sharing with the team',
         linkType: 'github',
         tags: ['reference'],
         isGitHubRepo: true,
@@ -550,6 +560,15 @@ describe('brainValidation.js', () => {
       expect(result.data.autoClone).toBe(true);
     });
 
+    it('should accept a note', () => {
+      const result = linkInputSchema.safeParse({
+        url: 'https://example.com',
+        note: 'Save for later reading',
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.note).toBe('Save for later reading');
+    });
+
     it('should reject invalid URL', () => {
       expect(linkInputSchema.safeParse({ url: 'not-valid' }).success).toBe(false);
     });
@@ -586,6 +605,10 @@ describe('brainValidation.js', () => {
       const result = linkUpdateInputSchema.safeParse({ title: 'New title' });
       expect(result.success).toBe(true);
       expect(result.data.url).toBeUndefined();
+    });
+
+    it('should accept a note-only update, including an intentional clear', () => {
+      expect(linkUpdateInputSchema.safeParse({ note: '' }).data.note).toBe('');
     });
 
     it('should reject an invalid url', () => {
