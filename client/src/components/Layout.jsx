@@ -349,7 +349,7 @@ const SECTION_PRESENTATION = {
   Create: { icon: Sparkles, defaultTo: '/media' },
   'Dev Tools': { icon: Terminal },
   Health: { icon: Heart, defaultTo: '/meatspace/overview' },
-  Models: { icon: Cpu, defaultTo: '/models/performance' },
+  Models: { icon: Cpu, defaultTo: '/models/llms' },
   Settings: { icon: Settings, defaultTo: '/settings/general' },
   Identity: { icon: Fingerprint, defaultTo: '/digital-twin/overview' },
   POST: { icon: Zap, defaultTo: '/post/launcher' },

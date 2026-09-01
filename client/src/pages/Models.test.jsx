@@ -74,12 +74,11 @@ describe('Models', () => {
     },
   );
 
-  // A stale ⌘K entry or a typo must not produce a blank page — Performance is
-  // the tab that answers "which model should I use?", which is why people land
-  // here at all.
-  it('redirects an unknown tab slug to Performance', async () => {
+  // A stale ⌘K entry or a typo must not produce a blank page; it follows the
+  // same LLMs default as the bare route and primary navigation.
+  it('redirects an unknown tab slug to LLMs', async () => {
     renderAt('/models/not-a-tab');
-    expect(await screen.findByText('assessments panel')).toBeInTheDocument();
+    expect(await screen.findByText('llms panel')).toBeInTheDocument();
   });
 
   // The slug comes straight off the URL, so a plain `TAB_CONTENT[tab]` lookup
@@ -89,7 +88,7 @@ describe('Models', () => {
     'treats the inherited property %s as an unknown tab',
     async (slug) => {
       renderAt(`/models/${slug}`);
-      expect(await screen.findByText('assessments panel')).toBeInTheDocument();
+      expect(await screen.findByText('llms panel')).toBeInTheDocument();
     },
   );
 
@@ -116,10 +115,10 @@ describe('Models', () => {
   });
 
   // A tab listed in the header but missing from TAB_CONTENT falls through to the
-  // unknown-slug redirect and silently lands on Performance. Selection state is
-  // what distinguishes "rendered this tab" from "bounced to Performance" — the
+  // unknown-slug redirect and silently lands on LLMs. Selection state is what
+  // distinguishes "rendered this tab" from "bounced to LLMs" — the
   // per-path cases above can't see it, because a bounced tab still renders A panel.
-  it('serves every /models tab the header advertises, without bouncing to Performance', () => {
+  it('serves every /models tab the header advertises, without bouncing to LLMs', () => {
     for (const tab of ownTabs) {
       const { unmount } = renderAt(tab.to);
       expect(screen.getByRole('tab', { name: tab.label })).toHaveAttribute('aria-selected', 'true');
