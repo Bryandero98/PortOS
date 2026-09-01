@@ -113,11 +113,38 @@ describe('fableLoomHosted Socket.IO namespace', () => {
       expect(socket.hostedSessionId).toBe(session.id);
     });
 
-    it('allows host connection with valid sessionId', async () => {
+    it('rejects host connection without a token', async () => {
       const { session } = await createHostedSession('loom-1', 'ep-1');
       const socket = {
         handshake: {
           auth: { sessionId: session.id, role: 'host' },
+        },
+      };
+      const next = vi.fn();
+      await middleware(socket, next);
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+      expect(next.mock.calls[0][0].message).toBe('HOSTED_SESSION_UNAUTHORIZED');
+    });
+
+    it('rejects a host connection using another session token', async () => {
+      const { session } = await createHostedSession('loom-1', 'ep-1');
+      const { token: otherToken } = await createHostedSession('loom-1', 'ep-1');
+      const socket = {
+        handshake: {
+          auth: { sessionId: session.id, role: 'host', token: otherToken },
+        },
+      };
+      const next = vi.fn();
+      await middleware(socket, next);
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+      expect(next.mock.calls[0][0].message).toBe('HOSTED_SESSION_UNAUTHORIZED');
+    });
+
+    it('allows host connection with its session token', async () => {
+      const { session, token } = await createHostedSession('loom-1', 'ep-1');
+      const socket = {
+        handshake: {
+          auth: { sessionId: session.id, role: 'host', token },
         },
       };
       const next = vi.fn();
@@ -129,6 +156,24 @@ describe('fableLoomHosted Socket.IO namespace', () => {
   });
 
   describe('socket event exchange', () => {
+    it('ignores audience mic controls from a host socket', async () => {
+      const { session } = await createHostedSession('loom-1', 'ep-1');
+      const listeners = {};
+      const socket = {
+        id: 'host-sock',
+        hostedRole: 'host',
+        hostedSessionId: session.id,
+        join: vi.fn(),
+        emit: vi.fn(),
+        on: vi.fn((event, fn) => { listeners[event] = fn; }),
+        removeAllListeners: vi.fn(),
+      };
+
+      connectionHandler(socket);
+      await listeners['hosted:mic:start']();
+      expect(getHostedSession(session.id).turnPhase).toBe('idle');
+    });
+
     it('synchronizes session on connection and handles events', async () => {
       const { session, token } = await createHostedSession('loom-1', 'ep-1');
       const listeners = {};
