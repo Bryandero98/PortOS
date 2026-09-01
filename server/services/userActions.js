@@ -40,13 +40,15 @@
  * fire-and-forget layer.
  */
 
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createPgFileFacade, resolvePgBackend } from '../lib/pgFileFacade.js';
 import { isTestRunner } from '../lib/db.js';
+import { resolveInstallRoot } from '../lib/dataRoot.js';
 import { isUserActionActor, isUserActionType } from '../lib/userActionTypes.js';
 import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } from './userActionsDb.js';
 
@@ -54,6 +56,40 @@ import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } fr
 // test proxy (lib/mockPathsDataRoot.js), and a load-time join would both bind the
 // pre-mock value and crash any suite whose fileUtils stub omits PATHS.data.
 const eventsFile = () => join(PATHS.data, 'user-action-events.json');
+
+// The REAL repo data/ dir, computed independently of the (possibly test-mocked)
+// `PATHS` import above via the same fileURLToPath/resolveInstallRoot technique
+// lib/paths.js itself uses — so a suite that redirects PATHS.data to a temp
+// root can't accidentally spoof this comparison too. `dataRoot.js` reads its
+// own env var directly rather than through anything a PATHS mock would touch.
+const REAL_REPO_DATA_DIR = join(
+  resolveInstallRoot(join(dirname(fileURLToPath(import.meta.url)), '../..')),
+  'data',
+);
+
+/**
+ * Structural guard against the bug class in #3683/#3687/#5605: a suite that
+ * exercises a route wired to `recordUserAction` without redirecting
+ * PATHS.data to a temp root would otherwise silently write
+ * `user-action-events.json` into the developer's live `data/` tree the next
+ * time such a route gets exercised — #5594 patched three known offenders
+ * one at a time, which is a per-suite fix, not a guard against the next one.
+ * Fires only under the test runner, and only at the moment a write is
+ * actually attempted, so a suite that merely reads (or never triggers a
+ * `recordUserAction` call) is unaffected either way.
+ */
+function assertTestDataRootRedirected() {
+  if (!isTestRunner() || PATHS.data !== REAL_REPO_DATA_DIR) return;
+  throw new Error(
+    'recordUserAction attempted a file-backend write of user-action-events.json ' +
+      "into the repo's real data/ tree. This suite exercises a route wired to " +
+      'recordUserAction but never redirected PATHS.data to a temp root - mock ' +
+      "`../lib/fileUtils.js` with lib/mockPathsDataRoot.js's makePathsProxy/" +
+      'createTempDataRoot (the same fix #5594 applied to cos.test.js / ' +
+      'cosTaskRoutes.test.js / cosAgentFeedback.test.js) rather than letting the ' +
+      'write land here.',
+  );
+}
 
 /** LLM-readable one-liner cap — the ledger is read by a model, not paged through. */
 export const SUMMARY_MAX_CHARS = 240;
@@ -283,6 +319,7 @@ function makeFileBackend() {
     record: (event) => queueWrite(async () => {
       const events = await loadFileEvents();
       if (events.some((row) => row.type === event.type && row.dedupeKey === event.dedupeKey)) return null;
+      assertTestDataRootRedirected();
       await ensureDir(PATHS.data);
       await atomicWrite(eventsFile(), { events: pruneEvents([...events, event]) });
       return event;
