@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { posixPath } from '../lib/testHelper.js';
 
 import { EventEmitter } from 'events';
+import { ChildProcess } from '../lib/childProcess.js';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -142,6 +143,10 @@ describe('prepareCliVisionRun', () => {
 // A minimal child-process double: an EventEmitter with stdin/stdout/stderr.
 function makeFakeChild() {
   const child = new EventEmitter();
+  // killProcessTree tells a spawned child from a node-pty session by
+  // `instanceof ChildProcess` (a pty takes a different kill shape), so the fake
+  // has to carry the prototype the way a real spawn() result does.
+  Object.setPrototypeOf(child, ChildProcess.prototype);
   child.killed = false;
   child.kill = vi.fn(() => { child.killed = true; });
   child.stdin = { write: vi.fn(), end: vi.fn() };

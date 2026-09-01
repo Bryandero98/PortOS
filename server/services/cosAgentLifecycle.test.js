@@ -51,8 +51,8 @@ vi.mock('fs/promises', async (importOriginal) => {
   };
 });
 
-import { getAgent, createAgentOutputBatcher, completeAgent, updateAgent, registerAgent, AGENT_OUTPUT_TAIL_LINES } from './cosAgentLifecycle.js';
-import { saveState } from './cosState.js';
+import { getAgent, createAgentOutputBatcher, completeAgent, updateAgent, registerAgent, filterLiveAgentIds, readAgentRecordOrUnreadable, AGENT_RECORD_UNREADABLE, AGENT_OUTPUT_TAIL_LINES } from './cosAgentLifecycle.js';
+import { saveState, loadState } from './cosState.js';
 import { recordDomainUsage } from './domainUsage.js';
 import { cosEvents } from './cosEvents.js';
 
@@ -88,6 +88,39 @@ describe('cosAgentLifecycle', () => {
       { line: 'full line two', timestamp: pausedAt }
     ]);
     expect(agent.outputTruncated).toBe(false);
+  });
+
+  // The predicate behind the "CoS agents running" update gate. Its whole job is
+  // to keep the two failure directions apart: a tracked id whose run PortOS has
+  // already finalized must not block a restart forever, and a genuinely live one
+  // must still block it.
+  it('narrows tracked ids to live records, dropping finalized and unknown ones', async () => {
+    mockCosState.state.agents = {
+      'agent-running': { id: 'agent-running', status: 'running' },
+      // A paused agent is still owed a resume, so its record stays live.
+      'agent-paused': { id: 'agent-paused', status: 'paused' },
+      'agent-done': { id: 'agent-done', status: 'completed', completedAt: '2026-05-25T12:00:00.000Z' }
+    };
+
+    await expect(filterLiveAgentIds([
+      'agent-running', 'agent-running', 'agent-paused', 'agent-done', 'agent-archived-away'
+    ])).resolves.toEqual(['agent-running', 'agent-paused']);
+    await expect(filterLiveAgentIds([])).resolves.toEqual([]);
+  });
+
+  // "The read failed" and "there is no such record" lead to opposite decisions —
+  // one leaves live tracking alone, the other retires it — so the reader must
+  // never let an I/O failure arrive as a plain null.
+  it('reports an unreadable record as its own sentinel, not as an absent one', async () => {
+    mockCosState.state.agents = { 'agent-running': { id: 'agent-running', status: 'running' } };
+
+    await expect(readAgentRecordOrUnreadable('agent-running'))
+      .resolves.toMatchObject({ id: 'agent-running' });
+    await expect(readAgentRecordOrUnreadable('agent-never-existed')).resolves.toBeNull();
+
+    loadState.mockRejectedValueOnce(new Error('state.json unreadable'));
+    await expect(readAgentRecordOrUnreadable('agent-running'))
+      .resolves.toBe(AGENT_RECORD_UNREADABLE);
   });
 
   // #3498: output.txt is unbounded — a long TUI run writes tens of MB. Reading it

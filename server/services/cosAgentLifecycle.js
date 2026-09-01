@@ -375,6 +375,58 @@ export async function getAgents() {
   return Object.values(state.agents);
 }
 
+/**
+ * Is this agent record still work in flight, rather than a run PortOS has
+ * already finalized?
+ *
+ * `completed` is the only terminal status; a missing record is terminal too,
+ * because a finalized agent is archived out of `state.agents` into its date
+ * bucket, and an id that was never registered is not a run at all. `paused`
+ * counts as live: its task is still owed a resume, and pausing already removes
+ * the agent from the in-memory maps, so it can never inflate a map-derived
+ * count on its own.
+ */
+export const isLiveAgentRecord = (record) => Boolean(record) && record.status !== 'completed';
+
+/**
+ * Returned by `readAgentRecordOrUnreadable` when the READ ITSELF failed — which
+ * is not the same answer as `null` ("there is genuinely no such record"), and
+ * leads to the opposite decision: an absent record means the run is finalized
+ * and its tracking can go, while a failed read proves nothing and must leave
+ * live state alone.
+ */
+export const AGENT_RECORD_UNREADABLE = Symbol('agent-record-unreadable');
+
+/**
+ * `getAgentRecord` that reports an I/O failure as `AGENT_RECORD_UNREADABLE`
+ * instead of collapsing it into `null`. Pair it with `isLiveAgentRecord`:
+ *
+ *   const read = await readAgentRecordOrUnreadable(id);
+ *   if (read !== AGENT_RECORD_UNREADABLE && !isLiveAgentRecord(read)) { … }
+ */
+export const readAgentRecordOrUnreadable = (agentId) =>
+  getAgentRecord(agentId).then(record => record, () => AGENT_RECORD_UNREADABLE);
+
+/**
+ * Narrow a set of in-memory agent ids to the ones PortOS still considers work
+ * in flight.
+ *
+ * The in-memory maps (`activeAgents` / `runnerAgents`) are not self-cleaning:
+ * `syncRunnerAgents` adopts whatever `GET /agents` on the CoS Runner reports,
+ * so a TUI PTY the runner never managed to kill stays "active" for the life of
+ * the process. That is how the Update page came to sit on "4 CoS agents are
+ * currently running" above an empty agent list — four finalized codex TUIs the
+ * runner was still advertising, blocking the restart that would have cleared
+ * them. `registerAgent` writes the record before the spawn, and the whole spawn
+ * runs inside `spawningTasks`, so no genuinely starting agent falls through.
+ */
+export async function filterLiveAgentIds(agentIds) {
+  if (agentIds.length === 0) return [];
+  const ids = [...new Set(agentIds)];
+  const state = await loadState();
+  return ids.filter(id => isLiveAgentRecord(state.agents[id]));
+}
+
 // Get agent by ID with full output from file
 /**
  * The agent record WITHOUT its transcript — in-memory state first, falling back

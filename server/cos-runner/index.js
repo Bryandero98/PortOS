@@ -68,6 +68,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 
 // Active agent processes (in memory)
 const activeAgents = new Map();
+
 // `tui:output` is live telemetry, so an immediate process exit can beat its
 // socket delivery. Keep a small terminal tail with the exit event: the PortOS
 // spawner owns failure analysis and can persist it when no ordinary TUI chunk
@@ -76,13 +77,41 @@ const activeAgents = new Map();
 const TUI_EXIT_OUTPUT_TAIL_CHARS = 16 * 1024;
 const TUI_SIGNALS = new Set(['SIGTERM', 'SIGKILL', 'SIGINT']);
 
-const terminateRunnerProcess = (agent, signal = 'SIGTERM') => {
-  if (agent.kind === 'tui') {
-    agent.process.kill(signal);
-    return;
-  }
-  killProcessTree(agent.process, signal);
-};
+/**
+ * Arm the force-kill escalation for an agent that was just signalled.
+ *
+ * Every termination path here is SIGTERM-then-SIGKILL: `killProcessTree` sorts
+ * out what "kill" means for the agent's kind (a `taskkill /T /F` tree for a
+ * cmd.exe-wrapped CLI shim, #2243; a signal-free node-pty kill on Windows), and
+ * this is the grace window after it. Dropping the map entry when the grace
+ * expires is what keeps `GET /agents` honest: a process that outlives its own
+ * SIGKILL must not go on being advertised as an active run, or the PortOS
+ * server re-adopts it on every orphan sweep and counts it against the Update
+ * page's "N CoS agents running" gate.
+ *
+ * The handle is stored on the agent so an exit handler can cancel it.
+ * `dropState` also clears the durable runner record — used by the `tui:kill`
+ * relay, whose kill arrives after the server has ALREADY finalized the agent, so
+ * nothing else will ever revisit either copy.
+ */
+function armForceKill(agentId, agent, { dropState = false } = {}) {
+  if (agent.killTimer) return;
+  agent.killTimer = setTimeout(() => {
+    // Timer callback: an uncaught throw here has no request to bubble to and
+    // would take the whole runner down.
+    try {
+      if (!activeAgents.delete(agentId)) return;
+      console.log(`💀 Agent ${agentId} outlived its termination grace — force killing`);
+      killProcessTree(agent.process, 'SIGKILL');
+      if (dropState) {
+        withState((state) => { delete state.agents[agentId]; })
+          .catch(err => console.error(`❌ Reap state write failed for ${agentId}: ${err.message}`));
+      }
+    } catch (err) {
+      console.error(`❌ Force kill failed for ${agentId}: ${err.message}`);
+    }
+  }, SIGKILL_GRACE_MS);
+}
 
 // Express app setup
 const app = express();
@@ -251,6 +280,8 @@ app.post('/spawn-tui', async (req, res) => {
       const current = activeAgents.get(agentId);
       if (!current) return;
       current.doneWatcher?.();
+      // Cancel any pending SIGKILL timer — process already exited.
+      if (current.killTimer) clearTimeout(current.killTimer);
       const duration = Date.now() - current.startedAt;
       const success = current.completedBySentinel;
       const effectiveExitCode = success ? 0 : exitCode;
@@ -635,18 +666,8 @@ app.post('/terminate/:agentId', (req, res) => {
 
   console.log(`🔪 Terminating agent ${agentId}`);
 
-  // killProcessTree (not .kill) so a Windows cmd.exe-wrapped CLI shim's real
-  // child is taken down too, not orphaned (#2243). No-op difference on POSIX.
-  terminateRunnerProcess(agent, 'SIGTERM');
-
-  // Force kill after timeout; store handle so it can be cancelled if the
-  // process exits cleanly before the grace window expires.
-  agent.killTimer = setTimeout(() => {
-    if (activeAgents.has(agentId)) {
-      terminateRunnerProcess(agent, 'SIGKILL');
-      activeAgents.delete(agentId);
-    }
-  }, SIGKILL_GRACE_MS);
+  killProcessTree(agent.process, 'SIGTERM');
+  armForceKill(agentId, agent);
 
   res.json({ success: true, agentId });
 });
@@ -664,9 +685,7 @@ app.post('/kill/:agentId', async (req, res) => {
 
   console.log(`💀 Force killing agent ${agentId} (PID: ${agent.pid})`);
 
-  // Use SIGKILL for immediate termination — killProcessTree so a Windows
-  // cmd.exe-wrapped shim's real child isn't orphaned (#2243). POSIX unchanged.
-  terminateRunnerProcess(agent, 'SIGKILL');
+  killProcessTree(agent.process, 'SIGKILL');
 
   // Clean up immediately
   activeAgents.delete(agentId);
@@ -700,12 +719,12 @@ app.post('/pause/:agentId', async (req, res) => {
   agent.pausedAt = pausedAt;
   agent.pauseReason = reason;
 
-  // killProcessTree so a Windows cmd.exe-wrapped shim's child isn't orphaned (#2243).
-  terminateRunnerProcess(agent, 'SIGTERM');
-  // Store handle so the close handler can clear it when the process exits first.
+  killProcessTree(agent.process, 'SIGTERM');
+  // NOT armForceKill: a pause keeps its map entry (the agent is meant to be
+  // resumable) and only escalates while the pause is still in force.
   agent.killTimer = setTimeout(() => {
     const current = activeAgents.get(agentId);
-    if (current?.paused) terminateRunnerProcess(current, 'SIGKILL');
+    if (current?.paused) killProcessTree(current.process, 'SIGKILL');
   }, SIGKILL_GRACE_MS);
 
   res.json({ success: true, agentId, pid: agent.pid, pausedAt });
@@ -724,14 +743,8 @@ app.post('/terminate-all', async (req, res) => {
   for (const agentId of agentIds) {
     const agent = activeAgents.get(agentId);
     if (agent) {
-      // killProcessTree so a Windows cmd.exe-wrapped shim's child isn't orphaned (#2243).
-      terminateRunnerProcess(agent, 'SIGTERM');
-      agent.killTimer = setTimeout(() => {
-        if (activeAgents.has(agentId)) {
-          terminateRunnerProcess(agent, 'SIGKILL');
-          activeAgents.delete(agentId);
-        }
-      }, SIGKILL_GRACE_MS);
+      killProcessTree(agent.process, 'SIGTERM');
+      armForceKill(agentId, agent);
     }
   }
 
@@ -822,8 +835,12 @@ io.on('connection', (socket) => {
   socket.on('tui:kill', ({ sessionId, signal = 'SIGTERM' }) => {
     try {
       if (!TUI_SIGNALS.has(signal)) return;
-      const agent = [...activeAgents.values()].find(candidate => candidate.sessionId === sessionId);
-      if (agent?.kind === 'tui') terminateRunnerProcess(agent, signal);
+      const entry = [...activeAgents.entries()].find(([, candidate]) => candidate.sessionId === sessionId);
+      if (!entry) return;
+      const [agentId, agent] = entry;
+      if (agent.kind !== 'tui') return;
+      killProcessTree(agent.process, signal);
+      armForceKill(agentId, agent, { dropState: true });
     } catch (err) {
       console.error(`❌ TUI termination relay failed: ${err.message}`);
     }
@@ -903,7 +920,7 @@ process.on('SIGTERM', async () => {
   // Terminate all agents
   for (const [agentId, agent] of activeAgents) {
     console.log(`🔪 Terminating agent ${agentId}`);
-    terminateRunnerProcess(agent, 'SIGTERM');
+    killProcessTree(agent.process, 'SIGTERM');
   }
 
   // Wait for agents to terminate

@@ -14,7 +14,7 @@ import { emitLog } from './cosEvents.js';
 // to open. Inside the closure the single address for a transition is the module
 // that declares it; a barrel would be a third answer to "where does completeAgent
 // live", which is the thing this sequencing keeps removing.
-import { completeAgent, updateAgent, getAgents, getAgentRecord } from './cosAgentLifecycle.js';
+import { completeAgent, updateAgent, getAgents, getAgentRecord, AGENT_RECORD_UNREADABLE, isLiveAgentRecord, readAgentRecordOrUnreadable } from './cosAgentLifecycle.js';
 import { updateTask, addTask, getTaskById, reviveBlockedTask, evaluateTasks } from './cos.js';
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, pauseMetadata, isAgentPausedTask, isResumablePausedTask, registerPauseReleaseAdapter } from '../lib/taskPauseHold.js';
 import { terminateAgentViaRunner, killAgentViaRunner, pauseAgentViaRunner, getAgentStatsFromRunner, getActiveAgentsFromRunner } from './cosRunnerClient.js';
@@ -1030,6 +1030,27 @@ async function runCleanupOrphanedAgents() {
     if (synced > 0) {
       console.log(`🔄 Synced ${synced} agents from CoS Runner`);
     }
+  }
+
+  // The reverse pass: drop `runnerAgents` entries with nothing behind them.
+  // The sweep below walks durable RECORDS, so it can never reach a map entry
+  // that has no record — and nothing else prunes the map either, so a phantom
+  // adopted from the runner survived until the process restarted. It then
+  // over-protected worktrees from the cleanup job, and counted against the
+  // update gate that blocks a restart, which is the one thing that would have
+  // cleared it.
+  //
+  // Scoped to `runnerAgents` on purpose. `activeAgents` entries hold live
+  // PTY/child handles owned by this process's own spawn closures; dropping one
+  // would flip `isAgentOwnedLocally` to false and re-open the #4540
+  // double-finalize that `agentRunnerSync`'s ownership check exists to prevent.
+  // A runner-side entry is only ever a mirror, so losing it costs nothing but a
+  // re-adoption on the next sweep if the runner still advertises it.
+  for (const agentId of [...runnerAgents.keys()]) {
+    const read = await readAgentRecordOrUnreadable(agentId);
+    if (read === AGENT_RECORD_UNREADABLE || isLiveAgentRecord(read)) continue;
+    runnerAgents.delete(agentId);
+    emitLog('info', `🧹 Dropped stale runner-agent tracking for ${agentId} — no live record behind it`, { agentId });
   }
 
   for (const agent of agents) {

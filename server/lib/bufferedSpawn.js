@@ -215,6 +215,18 @@ export const MAX_OUTPUT_BYTES = 64 * 1024;
  * ConPTY handle), leaking it — so any non-ChildProcess killable always uses
  * its own `.kill()` instead, on every platform.
  *
+ * That killable gets NO signal on Windows: node-pty's Windows backend throws
+ * `Signals not supported on windows.` for any signal argument, so `kill(signal)`
+ * against a pty there never kills anything — it throws past the caller, which
+ * typically logs it and moves on while the PTY keeps running. A bare `kill()`
+ * still tears down node-pty's whole console process list, so the graceful/forced
+ * distinction is simply not expressible for a Windows pty. This is why every CoS
+ * Runner TUI kill (terminate, force-kill, pause, and the server's post-finalize
+ * relay) was a silent no-op on Windows: the codex/claude PTY survived, held its
+ * worktree locked, and stayed in the runner's active set — which the PortOS
+ * server re-adopted on every orphan sweep and counted against the Update page's
+ * "N CoS agents running" gate, pausing updates indefinitely.
+ *
  * `processGroup` is for a child spawned `detached` on POSIX: without it the
  * non-Windows branch signals a single pid, which leaves a shell's own children
  * (the uv / pip / git an installer script shells out to) running. With it the
@@ -236,7 +248,8 @@ export const MAX_OUTPUT_BYTES = 64 * 1024;
  * @param {{processGroup?: boolean}} [opts] - POSIX: signal the child's process group (it must have been spawned `detached`)
  */
 export function killProcessTree(child, signal = 'SIGTERM', { processGroup = false } = {}) {
-  if (IS_WIN32 && child.pid && child instanceof ChildProcess) {
+  const isChildProcess = child instanceof ChildProcess;
+  if (IS_WIN32 && child.pid && isChildProcess) {
     child.killed = true;
     spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' })
       .on('error', () => {})
@@ -247,6 +260,8 @@ export function killProcessTree(child, signal = 'SIGTERM', { processGroup = fals
     try { process.kill(-child.pid, signal); return; }
     catch { /* ESRCH — the group is already gone; fall through to the pid */ }
   }
+  // A Windows pty rejects every signal — see the note above.
+  if (IS_WIN32 && !isChildProcess) return child.kill();
   child.kill(signal);
 }
 

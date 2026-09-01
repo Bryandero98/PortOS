@@ -71,22 +71,35 @@ describe('cos-runner spawn — per-provider prompt delivery (antigravity --print
   });
 });
 
-describe('cos-runner termination — Windows tree-kill for cmd.exe-wrapped shims (#2243)', () => {
-  it('imports killProcessTree from the shared bufferedSpawn helper', () => {
-    expect(RUNNER_SRC).toMatch(
-      /import\s*\{[^}]*\bkillProcessTree\b[^}]*\}\s*from\s*'\.\.\/lib\/bufferedSpawn\.js';/
-    );
+describe('cos-runner termination', () => {
+  // How to kill an agent is the shared helper's job, not the runner's: a
+  // `taskkill /T /F` tree for a cmd.exe-wrapped CLI shim (#2243) and a
+  // signal-free node-pty kill on Windows, both decided by `instanceof
+  // ChildProcess` inside killProcessTree. bufferedSpawn.test.js owns those
+  // semantics; this file's job is that no path here hand-rolls its own kill.
+  it('kills only through the shared killProcessTree helper', () => {
+    expect(RUNNER_SRC).toContain("import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';");
+    // No path may signal a handle itself. (A BARE `.kill()` is still fine —
+    // the sentinel watcher closes a finished TUI session that way, and a bare
+    // kill is the one form node-pty accepts on every platform.)
+    expect(RUNNER_SRC).not.toContain(".process.kill('SIG");
   });
 
-  it('tree-kills wrapped CLI agents while using node-pty kill for TUI handles', () => {
-    // Once an agent is spawned as `cmd.exe /c opencode.cmd …` on Windows, a
-    // plain agent.process.kill() signals only cmd.exe and orphans the real CLI.
-    // node-pty handles are the exception: their own kill API releases the
-    // native PTY resources correctly.
-    expect(RUNNER_SRC).toMatch(
-      /if\s*\(\s*agent\.kind\s*===\s*'tui'\s*\)\s*\{[\s\S]{0,100}?agent\.process\.kill\(signal\)[\s\S]{0,100}?return;/
-    );
-    expect(RUNNER_SRC).toMatch(/killProcessTree\(agent\.process,\s*signal\)/);
+  // Every terminate path is SIGTERM-then-SIGKILL, and the escalation must drop
+  // the map entry: a process that outlives its own SIGKILL can't stay in
+  // GET /agents, or the PortOS server re-adopts it on each orphan sweep and
+  // counts it against the Update page's "N CoS agents running" gate.
+  it('escalates through one shared force-kill that drops the agent from the active set', () => {
+    const helperIdx = RUNNER_SRC.indexOf('function armForceKill(');
+    expect(helperIdx, 'armForceKill must exist').toBeGreaterThan(-1);
+    const helper = RUNNER_SRC.slice(helperIdx, helperIdx + 900);
+    expect(helper).toContain('activeAgents.delete(agentId)');
+    expect(helper).toContain("killProcessTree(agent.process, 'SIGKILL')");
+    expect(helper).toContain('SIGKILL_GRACE_MS');
+    // /terminate, /terminate-all and the post-finalize tui:kill relay all use
+    // it; only the relay also clears the durable runner record.
+    expect(RUNNER_SRC.split('armForceKill(agentId, agent);')).toHaveLength(3);
+    expect(RUNNER_SRC).toContain('armForceKill(agentId, agent, { dropState: true })');
   });
 });
 

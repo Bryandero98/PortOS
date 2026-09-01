@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import EventEmitter from 'events';
+import { ChildProcess } from '../lib/childProcess.js';
 
 // executeCliRun validates that a requested workspace actually exists before
 // spawning (#3180 — a bad repoPath used to silently run in the PortOS root), so
@@ -106,6 +107,10 @@ const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
 
 function makeChild() {
   const child = new EventEmitter();
+  // killProcessTree tells a spawned child from a node-pty session by
+  // `instanceof ChildProcess` (a pty takes a different kill shape), so the fake
+  // has to carry the prototype the way a real spawn() result does.
+  Object.setPrototypeOf(child, ChildProcess.prototype);
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.stdin = { write: vi.fn(), end: vi.fn() };

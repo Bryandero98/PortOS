@@ -27,6 +27,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ChildProcess } from '../lib/childProcess.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -72,11 +73,17 @@ vi.mock('./agentRunTracking.js', () => ({
 // The DEFINING module, not the `cosAgentLifecycle.js` module — mirrors the production
 // import (#3450). Mocking the barrel here would silently stop applying and let
 // the real state layer load.
+const { AGENT_RECORD_UNREADABLE } = vi.hoisted(() => ({
+  AGENT_RECORD_UNREADABLE: Symbol('agent-record-unreadable'),
+}));
 vi.mock('./cosAgentLifecycle.js', () => ({
   completeAgent: vi.fn().mockResolvedValue(undefined),
   updateAgent: vi.fn().mockResolvedValue(undefined),
   getAgents: vi.fn().mockResolvedValue([]),
   getAgentRecord: vi.fn().mockResolvedValue(null),
+  AGENT_RECORD_UNREADABLE,
+  isLiveAgentRecord: (record) => Boolean(record) && record.status !== 'completed',
+  readAgentRecordOrUnreadable: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('./cosRunnerClient.js', () => ({
   terminateAgentViaRunner: vi.fn(),
@@ -112,7 +119,7 @@ vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettle
 
 import { handleOrphanedTask, pauseAgent, resumeAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents, terminateAgent, killAgent } from './agentManagement.js';
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
-import { getAgents, updateAgent, getAgentRecord, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
+import { getAgents, updateAgent, getAgentRecord, readAgentRecordOrUnreadable, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
 import { advanceAfterSceneSettled } from './creativeDirector/completionHook.js';
@@ -123,6 +130,15 @@ import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShut
 import { completeAgentRun } from './agentRunTracking.js';
 import { committedDuringRun } from '../lib/gitCommitProbe.js';
 import { activeAgents, runnerAgents, pausedAgents } from './agentState.js';
+
+/**
+ * A direct-mode agent's spawned handle. Its prototype is ChildProcess so it
+ * takes killProcessTree's spawned-child branch (Windows `taskkill` tree / POSIX
+ * signal) rather than the node-pty branch, exactly as a real `spawn()` result
+ * would — mirroring `makeFakeChild` in `lib/bufferedSpawn.test.js`.
+ */
+const fakeChildProcess = (kill = vi.fn()) =>
+  Object.assign(Object.create(ChildProcess.prototype), { kill });
 import { hasPauseReleaseAdapter, resolvePausedTaskResume, retirePausedAgent } from '../lib/taskPauseHold.js';
 
 describe('cleanupOrphanedAgents — startup recovery coordination', () => {
@@ -156,6 +172,34 @@ describe('cleanupOrphanedAgents — startup recovery coordination', () => {
 
     expect(markAgentComplete).not.toHaveBeenCalled();
     expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  // The sweep walks durable RECORDS, so it can never reach a `runnerAgents`
+  // entry that has no record — and nothing else prunes that map. A phantom
+  // adopted from the runner therefore survived until the process restarted,
+  // over-protecting worktrees from the cleanup job and counting against the
+  // update gate that blocks the very restart that would clear it.
+  it('drops runner-agent tracking whose record is gone or finalized, keeping live and unknowable ones', async () => {
+    runnerAgents.set('agent-ghost', { taskId: 'task-1' });
+    runnerAgents.set('agent-done', { taskId: 'task-1' });
+    runnerAgents.set('agent-live', { taskId: 'task-1' });
+    runnerAgents.set('agent-unreadable', { taskId: 'task-1' });
+    readAgentRecordOrUnreadable.mockImplementation(async (id) => {
+      if (id === 'agent-ghost') return null;
+      if (id === 'agent-done') return { id, status: 'completed' };
+      if (id === 'agent-unreadable') return AGENT_RECORD_UNREADABLE;
+      return { id, status: 'running' };
+    });
+
+    await cleanupOrphanedAgents();
+
+    expect(runnerAgents.has('agent-ghost')).toBe(false);
+    expect(runnerAgents.has('agent-done')).toBe(false);
+    expect(runnerAgents.has('agent-live')).toBe(true);
+    // A failed read proves nothing — dropping tracking on it would strand a run
+    // whose completion event still has to land.
+    expect(runnerAgents.has('agent-unreadable')).toBe(true);
+    runnerAgents.clear();
   });
 
   it('treats a malformed runner probe as unavailable', async () => {
@@ -400,7 +444,7 @@ describe('pauseAgent', () => {
   it('marks a direct agent paused, blocks the task as agent-paused, and signals SIGTERM', async () => {
     const kill = vi.fn();
     activeAgents.set('agent-1', {
-      process: { kill },
+      process: fakeChildProcess(kill),
       taskId: 'task-1',
       runId: 'run-1',
       pid: 123,
@@ -666,7 +710,7 @@ describe('pauseAgent — TUI branch', () => {
   it('sends ESC to the TUI session and schedules a delayed killSession', async () => {
     const sessionId = 'tui-session-99';
     activeAgents.set('tui-agent-1', {
-      process: { kill: vi.fn() },
+      process: fakeChildProcess(),
       taskId: 'task-tui-1',
       tuiSessionId: sessionId,
       runId: 'run-tui-1',
@@ -698,7 +742,7 @@ describe('pauseAgent — TUI branch', () => {
   it('does NOT call process.kill (SIGTERM) for a TUI agent', async () => {
     const kill = vi.fn();
     activeAgents.set('tui-agent-2', {
-      process: { kill },
+      process: fakeChildProcess(kill),
       taskId: 'task-tui-2',
       tuiSessionId: 'tui-session-100',
       pid: 888,
@@ -1794,7 +1838,7 @@ describe('lifecycle ledger — pause and interruption', () => {
     // markAgentPaused is the single chokepoint both pause arms funnel through,
     // and `at: pausedAt` is what makes a retried persist file one paused event
     // instead of two.
-    activeAgents.set('agent-1', { process: { kill: vi.fn() }, taskId: 'task-1', runId: 'run-1', pid: 123, workspacePath: '/repo/worktree' });
+    activeAgents.set('agent-1', { process: fakeChildProcess(), taskId: 'task-1', runId: 'run-1', pid: 123, workspacePath: '/repo/worktree' });
 
     await pauseAgent('agent-1', 'billing window');
 
@@ -1811,7 +1855,7 @@ describe('lifecycle ledger — pause and interruption', () => {
     // for a pause that never stuck — the exact class of lie the ledger exists
     // to catch.
     const kill = vi.fn();
-    activeAgents.set('agent-1', { process: { kill }, taskId: 'task-1', runId: 'run-1', pid: 123 });
+    activeAgents.set('agent-1', { process: fakeChildProcess(kill), taskId: 'task-1', runId: 'run-1', pid: 123 });
     updateAgent.mockRejectedValueOnce(new Error('agent record unwritable'));
 
     await pauseAgent('agent-1', 'billing window').catch(() => null);
@@ -1821,7 +1865,7 @@ describe('lifecycle ledger — pause and interruption', () => {
   });
 
   it('records a termination REQUEST before either arm runs', async () => {
-    activeAgents.set('agent-1', { process: { kill: vi.fn() }, taskId: 'task-1', runId: 'run-1', pid: 123 });
+    activeAgents.set('agent-1', { process: fakeChildProcess(), taskId: 'task-1', runId: 'run-1', pid: 123 });
 
     await terminateAgent('agent-1');
 
