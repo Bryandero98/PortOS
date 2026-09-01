@@ -1698,11 +1698,12 @@ describe('providerCardState', () => {
       .toBe(PROVIDER_CARD_STATE.DISABLED);
   });
 
-  // The toggle is not what's stopping a provider whose CLI is missing, so the
-  // missing prerequisite outranks it — that's the bucket the user must act in.
-  it('keeps a switched-off provider with a missing prerequisite in the blocked bucket', () => {
-    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: false } }).state)
-      .toBe(PROVIDER_CARD_STATE.BLOCKED);
+  // Switched off outranks every finding, and the findings ride along so the
+  // card can still say what enabling it would take.
+  it('reads a switched-off provider with a missing prerequisite as disabled, keeping the findings', () => {
+    const readiness = providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: false } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.DISABLED);
+    expect(readiness.missing).toEqual([{ code: 'runtime', label: 'OpenCode CLI is not installed' }]);
   });
 
   it('collects every missing prerequisite at once', () => {

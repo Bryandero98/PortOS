@@ -20,7 +20,9 @@ const renderCard = (provider) => render(
   <MemoryRouter>
     <ProviderCard
       provider={provider}
-      cardState={{ state: PROVIDER_CARD_STATE.READY }}
+      // `providerCardState` returns `missing` on every path, so the fixture
+      // carries it too — the card reads it without a defensive guard.
+      cardState={{ state: PROVIDER_CARD_STATE.READY, missing: [] }}
       runtime={null}
       status={null}
       isDefault={false}

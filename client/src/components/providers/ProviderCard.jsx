@@ -69,7 +69,7 @@ export const CARD_STATE_STYLES = {
     // Switched-off cards recede until hovered, so a long list reads as the
     // handful of providers that are actually live.
     dim: 'opacity-70 hover:opacity-100 transition-opacity',
-    hint: 'Ready to go, but switched off.',
+    hint: 'Switched off — nothing to do unless you want to use it.',
   },
 };
 
@@ -104,6 +104,13 @@ export default function ProviderCard({
   const fleetHost = fleetProvider && URL.canParse(provider.endpoint)
     ? new URL(provider.endpoint).hostname
     : null;
+  // What the provider is missing — carried by both BLOCKED and DISABLED.
+  const missingSummary = cardState.missing.map(m => m.label).join(' · ');
+  // Switched off, so every finding on this card is a note about enabling it
+  // rather than an outstanding task (see `providerCardState`). Read from
+  // `cardState`, not `provider.enabled`, so the setup widgets below can never
+  // tone one way while the badge, border, and section file the card another.
+  const optional = cardState.state === PROVIDER_CARD_STATE.DISABLED;
   return (
     <div
       className={`@container bg-port-card border border-l-4 rounded-xl p-4 ${style.border} ${style.dim || ''} ${
@@ -165,7 +172,7 @@ export default function ProviderCard({
           <span
             className={`text-xs px-2 py-0.5 rounded ${style.badge}`}
             title={cardState.state === PROVIDER_CARD_STATE.BLOCKED
-              ? cardState.missing.map(m => m.label).join(' · ')
+              ? missingSummary
               : (status?.message || style.hint)}
           >
             {style.label}
@@ -173,12 +180,15 @@ export default function ProviderCard({
               ? ` · ${status.reason}`
               : ''}
           </span>
-          {/* A blocked provider's toggle is not what's stopping it, so
-              spell out which way it sits rather than leaving the reader
-              to infer it from the Enable/Disable button. */}
-          {cardState.state === PROVIDER_CARD_STATE.BLOCKED && (
-            <span className="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">
-              {provider.enabled ? 'SWITCHED ON' : 'SWITCHED OFF'}
+          {/* A switched-off provider that would also need a CLI or a key says
+              so — wearing the DISABLED badge's own colors, because it is an FYI
+              for the day the user wants it, not a task this install is behind on. */}
+          {optional && missingSummary && (
+            <span
+              className={`text-xs px-2 py-0.5 rounded ${style.badge}`}
+              title={`To enable: ${missingSummary}`}
+            >
+              SETUP TO ENABLE
             </span>
           )}
           {/* Off the CoS Agent Runner's exec allowlist: the provider still
@@ -285,6 +295,7 @@ export default function ProviderCard({
         <ProviderRuntimeStatus
           runtime={runtime}
           onInstall={onInstallRuntime}
+          optional={optional}
         />
 
         {/* The other half of "can this actually run": is the local daemon this
@@ -298,6 +309,7 @@ export default function ProviderCard({
           onUseServedModel={(modelId) => onUseServedModel?.(provider, modelId)}
           onServeWantedModel={onServeWantedModel ? () => onServeWantedModel(provider) : undefined}
           serving={servingModel}
+          optional={optional}
         />
 
         {provider.enabled && status?.available === false && (
@@ -368,7 +380,9 @@ export default function ProviderCard({
                  orange "API key: not set" line for exactly those endpoints. */
               <p className="text-xs">API key: <span className="text-gray-500">none (private network endpoint)</span></p>
             ) : (
-              <p className="text-xs">API key: <span className="text-port-warning">not set — Edit this provider to paste one</span></p>
+              /* Amber only while the provider is switched ON, where a missing
+                 key is what's stopping it — `optional` mutes it otherwise. */
+              <p className="text-xs">API key: <span className={optional ? 'text-gray-400' : 'text-port-warning'}>not set — Edit this provider to paste one</span></p>
             )
           )}
           {compatibleModels.length > 0 && (
