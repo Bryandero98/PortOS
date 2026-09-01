@@ -144,6 +144,7 @@ export { default as useCatalogTypes } from './useCatalogTypes.jsx';
 export * from './useCatalogTypes.jsx';
 
 // === Sockets & lifecycle ===
+export * from './useCosTaskUpdates.js';
 export * from './usePrevious.js';
 export * from './useShellSession.js';
 export * from './useSocket.js';

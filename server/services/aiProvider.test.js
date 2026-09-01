@@ -168,6 +168,7 @@ const CODEX_ENABLED = {
   command: 'codex',
   textTransport: 'codex-app-server',
   textTransportEnabled: true,
+  textTransportReadRiskAcknowledged: true,
   defaultModel: 'model-alpha',
 };
 const CODEX_ADVERTISED_ONLY = { ...CODEX_ENABLED, textTransportEnabled: undefined };

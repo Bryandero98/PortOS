@@ -9,11 +9,12 @@
  * or execution of the contributor branch.
  */
 
+import { createHash } from 'node:crypto'
 import { execGh, ensureForgeReachable } from './github.js'
 import { getProviderById } from './providers.js'
 import { listModels } from './localLlm.js'
 import { getModelCapabilities } from './ollamaManager.js'
-import { runLocalCodeReview } from './codeReview.js'
+import { runLocalSecurityScan } from './codeReview.js'
 import { getSelfLogin } from './prWatcher.js'
 import { getOriginInfo } from '../lib/gitRemote.js'
 import { githubApiHost, githubRepoSpec } from '../lib/workTracker.js'
@@ -24,10 +25,11 @@ import { LOCAL_LLM_REVIEWERS } from '../lib/validation.js'
 export const TOOL_FREE_LOCAL_BACKENDS = Object.freeze([...LOCAL_LLM_REVIEWERS])
 export const SECURITY_SCAN_MAX_OPEN_PRS = 200
 export const SECURITY_SCAN_MAX_DIFF_CHARS = 500_000
-export const SECURITY_SCAN_MAX_VERDICT_CHARS = 20_000
+export const SECURITY_SCAN_MAX_REPORT_CHARS = 100_000
 const TOOL_FREE_LOCAL_TEXT_CAPABILITIES = new Set(['chat', 'completion'])
 
 const failure = (code, extra = {}) => ({ ok: false, passed: false, code, ...extra })
+const isHeadRefOid = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value)
 
 const modelId = (model) => {
   if (typeof model === 'string') return model.trim()
@@ -115,7 +117,7 @@ export async function resolveToolFreeLocalSecurityModel({ providerId, model } = 
   }
 }
 
-async function listExternalOpenPullRequests(app) {
+export async function listExternalOpenPullRequests(app) {
   const origin = await getOriginInfo(app?.repoPath).catch(() => null)
   const repoSpec = githubRepoSpec(origin)
   if (!repoSpec) return failure('security-scan-not-a-github-repo')
@@ -148,7 +150,9 @@ async function listExternalOpenPullRequests(app) {
   const prs = parsed.map((pr) => ({
     number: pr?.number,
     authorLogin: pr?.author?.login,
-    headRefOid: pr?.headRefOid || null,
+    headRefOid: isHeadRefOid(pr?.headRefOid)
+      ? pr.headRefOid
+      : null,
     updatedAt: pr?.updatedAt || null,
     url: pr?.url || '',
   }))
@@ -166,29 +170,64 @@ async function listExternalOpenPullRequests(app) {
 }
 
 /**
+ * Return a stable identity for the public PR set that was scanned. The head
+ * commit is the important part: the same PR number with a new head must be
+ * eligible for a fresh scan, while an unresolved report for the same heads
+ * must not burn another local-model call on every scheduler tick.
+ *
+ * A missing head SHA is not a safe identity. Callers must retry rather than
+ * treating an incomplete forge response as the same code under review.
+ */
+export function securityScanFingerprint(target) {
+  if (!target?.ok || !Array.isArray(target.prs)) return null
+  if (target.prs.some((pr) => !Number.isInteger(pr?.number) || !isHeadRefOid(pr.headRefOid))) return null
+  const identity = {
+    repoFullName: target.repoFullName || null,
+    defaultBranch: target.defaultBranch || null,
+    prs: target.prs
+      .map((pr) => ({ number: pr.number, headRefOid: pr.headRefOid }))
+      .sort((a, b) => a.number - b.number),
+  }
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
+}
+
+const reportChars = (reports) => reports.reduce((total, report) => (
+  total
+    + (typeof report?.findings === 'string' ? report.findings.length : 0)
+    + (typeof report?.modelResponse === 'string' ? report.modelResponse.length : 0)
+), 0)
+
+const formatSecurityFindings = (findings) => findings.map((finding) => (
+  `${finding.severity} — ${finding.location}: ${finding.reason}`
+)).join('\n')
+
+/**
  * Scan every currently-open PR from an external contributor. Any inability to
  * read the current PR, diff, model capabilities, or verdict fails closed.
- * Findings are summarized as verdict tokens only; model prose never becomes a
- * pipeline instruction or a persisted task prompt.
+ * The model only screens for content that could abuse the downstream reviewer
+ * or its tools. Its bounded response is retained for the human-facing report,
+ * never treated as an instruction, and never forwarded to the code reviewer.
  */
-export async function runPrReviewerSecurityScan({ app, providerId, model, effort = null, timeoutMs = 120_000 } = {}) {
+export async function runPrReviewerSecurityScan({ app, providerId, model, effort = null, timeoutMs = 120_000, target = null } = {}) {
   const selected = await resolveToolFreeLocalSecurityModel({ providerId, model })
   if (!selected.ok) return selected
 
-  const target = await listExternalOpenPullRequests(app)
-  if (!target.ok) return target
+  const resolvedTarget = target || await listExternalOpenPullRequests(app)
+  if (!resolvedTarget.ok) return resolvedTarget
+  const scanKey = securityScanFingerprint(resolvedTarget)
+  if (!scanKey) return failure('security-scan-target-unidentifiable')
 
   const reviewedPrs = []
   let hasFindings = false
-  for (const pr of target.prs) {
-    const diff = await execGh(['pr', 'diff', String(pr.number), '--repo', target.repoSpec]).catch(() => null)
+  for (const pr of resolvedTarget.prs) {
+    const diff = await execGh(['pr', 'diff', String(pr.number), '--repo', resolvedTarget.repoSpec]).catch(() => null)
     if (diff === null) return failure('security-scan-diff-unavailable', { reviewedPrs })
     if (typeof diff !== 'string' || diff.length > SECURITY_SCAN_MAX_DIFF_CHARS) {
       return failure('security-scan-diff-too-large', { reviewedPrs })
     }
     if (!diff.trim()) return failure('security-scan-empty-diff', { reviewedPrs })
 
-    const verdict = await runLocalCodeReview({
+    const verdict = await runLocalSecurityScan({
       backend: selected.backend,
       model: selected.model,
       diff,
@@ -196,14 +235,40 @@ export async function runPrReviewerSecurityScan({ app, providerId, model, effort
       timeoutMs,
       baseUrl: selected.endpoint,
     })
-    if (!verdict.ok) return failure('security-scan-verdict-unavailable', { reviewedPrs })
-    if (typeof verdict.findings !== 'string' || verdict.findings.length > SECURITY_SCAN_MAX_VERDICT_CHARS) {
-      return failure('security-scan-verdict-unbounded', { reviewedPrs })
+    if (!verdict.ok) {
+      if (typeof verdict.rawResponse === 'string' && verdict.rawResponse) {
+        reviewedPrs.push({
+          number: pr.number,
+          url: pr.url,
+          headRefOid: pr.headRefOid,
+          updatedAt: pr.updatedAt,
+          passed: false,
+          safe: false,
+          findings: 'The model response could not be validated as a safe model-abuse verdict.',
+          securityFindings: [],
+          modelResponse: verdict.rawResponse,
+          modelResponseTruncated: verdict.rawResponseTruncated === true,
+        })
+      }
+      return failure('security-scan-verdict-unavailable', { reviewedPrs, scanKey })
     }
 
-    const passed = verdict.findings.trim() === 'No findings.'
-    reviewedPrs.push({ number: pr.number, passed })
-    if (!passed) hasFindings = true
+    const report = {
+      number: pr.number,
+      url: pr.url,
+      headRefOid: pr.headRefOid,
+      updatedAt: pr.updatedAt,
+      passed: verdict.safe === true,
+      safe: verdict.safe === true,
+      findings: verdict.safe === true ? 'No findings.' : formatSecurityFindings(verdict.findings),
+      securityFindings: verdict.findings,
+      modelResponse: verdict.rawResponse,
+    }
+    reviewedPrs.push(report)
+    if (reportChars(reviewedPrs) > SECURITY_SCAN_MAX_REPORT_CHARS) {
+      return failure('security-scan-report-too-large', { reviewedPrs, scanKey })
+    }
+    if (!report.safe) hasFindings = true
   }
 
   if (hasFindings) {
@@ -213,9 +278,11 @@ export async function runPrReviewerSecurityScan({ app, providerId, model, effort
       code: 'security-scan-findings',
       backend: selected.backend,
       model: selected.model,
-      repoFullName: target.repoFullName,
-      defaultBranch: target.defaultBranch,
+      repoFullName: resolvedTarget.repoFullName,
+      defaultBranch: resolvedTarget.defaultBranch,
+      scanKey,
       reviewedPrs,
+      reports: reviewedPrs,
     }
   }
 
@@ -225,8 +292,10 @@ export async function runPrReviewerSecurityScan({ app, providerId, model, effort
     code: 'security-scan-passed',
     backend: selected.backend,
     model: selected.model,
-    repoFullName: target.repoFullName,
-    defaultBranch: target.defaultBranch,
+    repoFullName: resolvedTarget.repoFullName,
+    defaultBranch: resolvedTarget.defaultBranch,
+    scanKey,
     reviewedPrs,
+    reports: reviewedPrs,
   }
 }

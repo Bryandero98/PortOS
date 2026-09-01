@@ -5,7 +5,7 @@ const ensureForgeReachableMock = vi.fn()
 const getProviderByIdMock = vi.fn()
 const listModelsMock = vi.fn()
 const getModelCapabilitiesMock = vi.fn()
-const runLocalCodeReviewMock = vi.fn()
+const runLocalSecurityScanMock = vi.fn()
 const getSelfLoginMock = vi.fn()
 const getOriginInfoMock = vi.fn()
 
@@ -23,7 +23,7 @@ vi.mock('./ollamaManager.js', () => ({
   getModelCapabilities: (...args) => getModelCapabilitiesMock(...args),
 }))
 vi.mock('./codeReview.js', () => ({
-  runLocalCodeReview: (...args) => runLocalCodeReviewMock(...args),
+  runLocalSecurityScan: (...args) => runLocalSecurityScanMock(...args),
 }))
 vi.mock('./prWatcher.js', () => ({
   getSelfLogin: (...args) => getSelfLoginMock(...args),
@@ -44,6 +44,7 @@ import {
   isToolFreeLocalModel,
   isToolFreeLocalProvider,
   resolveToolFreeLocalSecurityModel,
+  securityScanFingerprint,
   runPrReviewerSecurityScan,
 } from './prReviewerSecurity.js'
 
@@ -111,10 +112,33 @@ describe('pr-reviewer Security Scan execution', () => {
     ensureForgeReachableMock.mockResolvedValue({ ok: true })
     getOriginInfoMock.mockResolvedValue({ host: 'github.com', fullName: 'example/repo' })
     getSelfLoginMock.mockResolvedValue('maintainer')
-    runLocalCodeReviewMock.mockResolvedValue({ ok: true, findings: 'No findings.' })
+    runLocalSecurityScanMock.mockResolvedValue({
+      ok: true,
+      safe: true,
+      findings: [],
+      rawResponse: '{"safe":true,"findings":[]}',
+    })
   })
 
-  it('reviews every open external PR and never asks the local reviewer for tools', async () => {
+  it('keys a pending report to the exact external PR head set', () => {
+    const base = {
+      ok: true,
+      repoFullName: 'example/repo',
+      defaultBranch: 'main',
+      prs: [{ number: 12, headRefOid: 'a'.repeat(40) }],
+    }
+    expect(securityScanFingerprint(base)).toBe(securityScanFingerprint({
+      ...base,
+      prs: [{ number: 12, headRefOid: 'a'.repeat(40) }],
+    }))
+    expect(securityScanFingerprint({
+      ...base,
+      prs: [{ number: 12, headRefOid: 'b'.repeat(40) }],
+    })).not.toBe(securityScanFingerprint(base))
+    expect(securityScanFingerprint({ ...base, prs: [{ number: 12, headRefOid: null }] })).toBeNull()
+  })
+
+  it('reviews every open external PR through the structured no-tools abuse scan', async () => {
     execGhMock
       .mockResolvedValueOnce('main')
       .mockResolvedValueOnce(JSON.stringify([
@@ -128,9 +152,13 @@ describe('pr-reviewer Security Scan execution', () => {
     const result = await runPrReviewerSecurityScan({ app, providerId: 'ollama', model: 'safe-model' })
 
     expect(result).toMatchObject({ ok: true, passed: true, code: 'security-scan-passed', backend: 'ollama' })
-    expect(result.reviewedPrs).toEqual([{ number: 12, passed: true }, { number: 13, passed: true }])
-    expect(runLocalCodeReviewMock).toHaveBeenCalledTimes(2)
-    expect(runLocalCodeReviewMock.mock.calls.every(([request]) => request.backend === 'ollama' && !('tools' in request))).toBe(true)
+    expect(result.reviewedPrs).toEqual([
+      expect.objectContaining({ number: 12, passed: true, findings: 'No findings.' }),
+      expect.objectContaining({ number: 13, passed: true, findings: 'No findings.' }),
+    ])
+    expect(result.scanKey).toMatch(/^[a-f0-9]{64}$/)
+    expect(runLocalSecurityScanMock).toHaveBeenCalledTimes(2)
+    expect(runLocalSecurityScanMock.mock.calls.every(([request]) => request.backend === 'ollama' && !('tools' in request))).toBe(true)
     expect(execGhMock.mock.calls.map(([args]) => args.slice(0, 2))).toEqual([
       ['repo', 'view'],
       ['pr', 'list'],
@@ -140,12 +168,17 @@ describe('pr-reviewer Security Scan execution', () => {
   })
 
   it('reviews every external PR before failing the pipeline on any non-clean verdict', async () => {
-    runLocalCodeReviewMock.mockResolvedValue({ ok: true, findings: 'Finding: suspicious install script.' })
+    runLocalSecurityScanMock.mockResolvedValue({
+      ok: true,
+      safe: false,
+      findings: [{ severity: 'blocking', location: 'package.json:12', reason: 'Attempts to direct the downstream reviewer to run an installer.' }],
+      rawResponse: '{"safe":false,"findings":[{"severity":"blocking","location":"package.json:12","reason":"unsafe instruction"}]}',
+    })
     execGhMock
       .mockResolvedValueOnce('main')
       .mockResolvedValueOnce(JSON.stringify([
-        { number: 12, author: { login: 'contributor-a' } },
-        { number: 13, author: { login: 'contributor-b' } },
+        { number: 12, author: { login: 'contributor-a' }, headRefOid: 'b'.repeat(40) },
+        { number: 13, author: { login: 'contributor-b' }, headRefOid: 'c'.repeat(40) },
       ]))
       .mockResolvedValueOnce('diff for twelve')
       .mockResolvedValueOnce('diff for thirteen')
@@ -153,7 +186,11 @@ describe('pr-reviewer Security Scan execution', () => {
     const result = await runPrReviewerSecurityScan({ app, providerId: 'ollama', model: 'safe-model' })
 
     expect(result).toMatchObject({ ok: true, passed: false, code: 'security-scan-findings' })
-    expect(result.reviewedPrs).toEqual([{ number: 12, passed: false }, { number: 13, passed: false }])
-    expect(runLocalCodeReviewMock).toHaveBeenCalledTimes(2)
+    expect(result.reviewedPrs).toEqual([
+      expect.objectContaining({ number: 12, passed: false, safe: false, findings: 'blocking — package.json:12: Attempts to direct the downstream reviewer to run an installer.' }),
+      expect.objectContaining({ number: 13, passed: false, safe: false, findings: 'blocking — package.json:12: Attempts to direct the downstream reviewer to run an installer.' }),
+    ])
+    expect(result.reports).toEqual(result.reviewedPrs)
+    expect(runLocalSecurityScanMock).toHaveBeenCalledTimes(2)
   })
 })

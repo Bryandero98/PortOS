@@ -84,3 +84,52 @@ describe('ProviderCard fleet identity', () => {
     expect(screen.queryByText('FLEET HOST')).not.toBeInTheDocument();
   });
 });
+
+describe('ProviderCard ChatGPT subscription', () => {
+  it('shows a safe sign-in action without rendering account identity or credentials', () => {
+    render(
+      <MemoryRouter>
+        <ProviderCard
+          provider={{ id: 'codex', name: 'Codex', type: 'cli', command: 'codex', models: [], enabled: true }}
+          cardState={{ state: PROVIDER_CARD_STATE.BLOCKED, missing: [{ code: 'codexAccount', label: 'No ChatGPT account is signed in' }] }}
+          runtime={null}
+          status={null}
+          isDefault={false}
+          providersById={{}}
+          runnerAllowedCommands={[]}
+          testResult={null}
+          codexAccount={{
+            status: 'signed-out',
+            account: { accountId: 'private-account', email: 'private@example.test' },
+            rateLimits: null,
+          }}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use device code' })).toBeInTheDocument();
+    expect(screen.queryByText('private-account')).toBeNull();
+    expect(screen.queryByText('private@example.test')).toBeNull();
+  });
+
+  it('does not render a non-HTTPS sign-in link', () => {
+    render(
+      <MemoryRouter>
+        <ProviderCard
+          provider={{ id: 'codex', name: 'Codex', type: 'cli', command: 'codex', models: [], enabled: true }}
+          cardState={{ state: PROVIDER_CARD_STATE.BLOCKED, missing: [{ code: 'codexAccount', label: 'No ChatGPT account is signed in' }] }}
+          runtime={null}
+          status={null}
+          isDefault={false}
+          providersById={{}}
+          runnerAllowedCommands={[]}
+          testResult={null}
+          codexAccount={{ status: 'login-pending', login: { authUrl: 'javascript:alert(1)' } }}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole('link', { name: 'Open ChatGPT sign-in' })).toBeNull();
+  });
+});

@@ -16,8 +16,9 @@
  *     the SAME record is selected as a text transport it runs under
  *     {@link CODEX_TEXT_THREAD_CONFIG}: an empty throwaway cwd, a read-only
  *     sandbox with no network, approvals that can only deny, no MCP servers,
- *     and no web search. Nothing about the PortOS checkout or `data/` is
- *     reachable from a Brain or JIRA summary call.
+ *     and no web search. Codex can still read local files by absolute path, so
+ *     the Providers UI requires an explicit acknowledgement before this
+ *     transport can be enabled.
  *   - **Partial output is not an answer.** A turn that is interrupted, fails,
  *     or never reaches `turn/completed` yields an error, never the text
  *     accumulated so far — a half-streamed JSON object that parsed would be
@@ -71,11 +72,11 @@ export const CODEX_TURN_NOTIFICATIONS = Object.freeze({
  * `disk-full-read-access`).
  *
  * What it does NOT guarantee: Codex's read-only sandbox still lets the model's
- * own shell tool READ files by absolute path. So a prompt carrying injected
- * instructions could, in principle, quote local file contents back into its
- * answer. Narrowing that needs a Codex permission profile verified against a
- * live signed-in account, which is #5628 — do not describe this envelope as
- * read-confinement until that lands.
+ * own shell tool READ files by absolute path. Live verification for #5628
+ * confirmed that Codex's narrowest built-in permission profile (`:read-only`)
+ * has the same gap, so a prompt carrying injected instructions can quote local
+ * file contents back into its answer. The transport therefore stays gated on
+ * `textTransportReadRiskAcknowledged`; this envelope is NOT read confinement.
  *
  * The `cwd` is supplied per call because it is a runtime path, not a constant.
  */
@@ -86,7 +87,6 @@ export const CODEX_TEXT_THREAD_CONFIG = Object.freeze({
   config: Object.freeze({
     mcp_servers: {},
     tools: { web_search: false },
-    web_search: false,
     // An explicit empty list, not an omission: Codex's opt-in widenings (e.g.
     // `disk-full-read-access`) are additive, so declaring none can only narrow.
     sandbox_permissions: [],
@@ -130,7 +130,8 @@ export const providerDeclaresCodexTextTransport = (provider) =>
 export const isCodexTextTransportEnabled = (provider) =>
   providerDeclaresCodexTextTransport(provider)
   && provider.enabled !== false
-  && provider.textTransportEnabled === true;
+  && provider.textTransportEnabled === true
+  && provider.textTransportReadRiskAcknowledged === true;
 
 const trimmed = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
 

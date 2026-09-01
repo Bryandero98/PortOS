@@ -79,6 +79,69 @@ const getTaskEditData = (task, providers) => {
 
 export const taskRowId = (taskId, source) => `cos-task-${source}-${encodeURIComponent(taskId)}`;
 
+function SecurityScanReport({ scan, idScope, taskId }) {
+  const reports = Array.isArray(scan?.reports) ? scan.reports : [];
+  if (!reports.length || !['findings', 'unavailable'].includes(scan?.status)) return null;
+  const incomplete = scan.status === 'unavailable';
+
+  return (
+    <section
+      className="mt-2 px-2 py-2 bg-port-error/10 border border-port-error/20 rounded text-sm"
+      aria-label="Security scan report"
+    >
+      <div className="flex items-center gap-2 text-port-error/90">
+        <AlertCircle size={14} aria-hidden="true" />
+        <span className="font-medium">{incomplete ? 'Security scan report' : 'Security scan findings'}</span>
+        <span className="text-xs text-gray-400">read-only report · no PR actions taken</span>
+      </div>
+      <p className="mt-1 text-xs text-gray-400">
+        {incomplete
+          ? 'Stage 1 could not complete safely. Any collected report remains human-only and no PR actions have been taken.'
+          : 'Stage 1 flagged possible model-abuse content. The flagged diff and report are withheld from the Stage 2 model; no PR actions have been taken.'}
+      </p>
+      <div className="space-y-2 mt-2">
+        {reports.map((report) => {
+          const number = String(report?.number ?? 'unknown');
+          const url = typeof report?.url === 'string' && /^https?:\/\//i.test(report.url) ? report.url : null;
+          return (
+            <div key={`${taskId}-security-report-${number}`} className="pl-2 border-l border-port-error/30">
+              <div className="flex items-center gap-2 flex-wrap text-xs text-gray-300">
+                <span className="font-medium">PR #{number}</span>
+                {url && (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-port-accent hover:text-port-accent/80"
+                  >
+                    Open PR
+                  </a>
+                )}
+                {report?.passed === true && <span className="text-port-success">clean</span>}
+              </div>
+              <CollapsibleText
+                id={`security-report-${idScope}-${taskId}-${number}`}
+                text={typeof report?.findings === 'string' && report.findings ? report.findings : 'No findings.'}
+                className="mt-1 text-gray-300 whitespace-pre-wrap"
+              />
+              {typeof report?.modelResponse === 'string' && report.modelResponse && (
+                <div className="mt-1">
+                  <span className="text-xs text-gray-500">Model response (untrusted)</span>
+                  <CollapsibleText
+                    id={`security-model-response-${idScope}-${taskId}-${number}`}
+                    text={report.modelResponse}
+                    className="mt-1 text-gray-400 whitespace-pre-wrap"
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // Get success rate styling based on percentage
 function getSuccessRateStyle(rate) {
   if (rate >= 70) return { bg: 'bg-port-success/15', text: 'text-port-success', label: 'high' };
@@ -558,6 +621,11 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                   className="text-sm text-gray-500 mt-1"
                 />
               )}
+              <SecurityScanReport
+                scan={task.metadata?.pipeline?.securityScan}
+                idScope={idScope}
+                taskId={task.id}
+              />
               {(task.metadata?.model || task.metadata?.provider || task.metadata?.effort) && (
                 <div className="flex flex-wrap items-center gap-2 mt-1">
                   {task.metadata?.model && (

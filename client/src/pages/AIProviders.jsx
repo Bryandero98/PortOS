@@ -4,7 +4,9 @@ import { AlertTriangle, Gauge, Network } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterHardwareCompatibleProviderModels, filterSelectableModels, filterGenerationModels, isEmbeddingModel, isProviderHardwareCompatible, isProviderModelHardwareCompatible, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, gatewayForProvider, isClaudeCommandProvider, generationControlsFor, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
+import { filterHardwareCompatibleProviderModels, filterSelectableModels, filterGenerationModels, isEmbeddingModel, isProviderHardwareCompatible, isProviderModelHardwareCompatible, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isCodexSubscriptionProvider, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, gatewayForProvider, isClaudeCommandProvider, generationControlsFor, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
+import { copyToClipboard } from '../lib/clipboard';
+import { isHttpsUrl } from '../utils/urlNormalize';
 import useLocalModels from '../hooks/useLocalModels';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -60,7 +62,7 @@ export const PROVIDER_SECTIONS = [
     title: 'Needs setup',
     hint: 'Switched on but missing a CLI or an API key — these cannot run yet',
     dot: 'bg-port-warning',
-    states: [PROVIDER_CARD_STATE.BLOCKED],
+    states: [PROVIDER_CARD_STATE.BLOCKED, PROVIDER_CARD_STATE.UNKNOWN],
   },
   {
     key: 'disabled',
@@ -122,6 +124,13 @@ export default function AIProviders() {
   const [loadError, setLoadError] = useState(false);
   const [testResults, setTestResults] = useState({});
   const [refreshing, setRefreshing] = useState({});
+  // `undefined` = this page has not asked the account endpoint yet; `null` =
+  // the endpoint did not give a verdict. The distinction keeps a failed fetch
+  // from posing as either signed out or ready.
+  const [codexAccount, setCodexAccount] = useState(undefined);
+  const [codexModels, setCodexModels] = useState(null);
+  const [codexAccountLoading, setCodexAccountLoading] = useState(false);
+  const [codexLoginLoading, setCodexLoginLoading] = useState(false);
   const [showRunPanel, setShowRunPanel] = useState(false);
   const [runPrompt, setRunPrompt] = useState('');
   const [selectedWorkspace, setSelectedWorkspace] = useState('');
@@ -140,6 +149,52 @@ export default function AIProviders() {
     () => sampleProviders.filter(isProviderHardwareCompatible),
     [sampleProviders],
   );
+  const hasCodexSubscriptionProvider = providers.some(isCodexSubscriptionProvider);
+
+  const mergeCodexCatalog = useCallback((catalog) => {
+    if (!Array.isArray(catalog)) return;
+    const ids = catalog.map((model) => (typeof model === 'string' ? model : model?.id))
+      .filter((id) => typeof id === 'string' && id.trim() !== '');
+    setProviders((current) => current.map((provider) => (
+      isCodexSubscriptionProvider(provider)
+        ? { ...provider, models: mergeModelLists(provider.models, ids) }
+        : provider
+    )));
+  }, []);
+
+  const loadCodexModels = useCallback(async (fresh = false) => {
+    const result = await api.getCodexModels({ fresh, silent: true }).catch(() => null);
+    if (!result || !Object.hasOwn(result, 'models')) return null;
+    setCodexModels(result);
+    // `null` is never fetched; an empty list is a real catalog. Only merge a
+    // real array, preserving every current default/tier pin even if it is no
+    // longer in the catalog so the form can show it as stale rather than clear
+    // a saved choice behind the user's back.
+    mergeCodexCatalog(result.models);
+    return result;
+  }, [mergeCodexCatalog]);
+
+  const loadCodexAccount = useCallback(async (fresh = false) => {
+    // Compatibility with a server that predates the account endpoint. The
+    // normal client library always has this function; the guard makes a mixed
+    // client/server upgrade leave the established provider controls intact.
+    if (typeof api.getCodexAccount !== 'function') return undefined;
+    setCodexAccountLoading(true);
+    const result = await api.getCodexAccount({ fresh, silent: true }).catch(() => null);
+    const readiness = result?.readiness && typeof result.readiness === 'object' ? result.readiness : null;
+    setCodexAccount(readiness);
+    setCodexAccountLoading(false);
+    if (readiness?.status === 'ready') loadCodexModels(fresh);
+    return readiness;
+  }, [loadCodexModels]);
+
+  useEffect(() => {
+    if (hasCodexSubscriptionProvider) loadCodexAccount();
+    else {
+      setCodexAccount(undefined);
+      setCodexModels(null);
+    }
+  }, [hasCodexSubscriptionProvider, loadCodexAccount]);
   // CLI availability per provider card, keyed by `providerRuntimeKey`. An empty
   // map means the endpoint was not reached (for example, an older server during
   // an upgrade) — distinct from a confirmed missing CLI — and simply renders no
@@ -274,7 +329,11 @@ export default function AIProviders() {
   // `useAutoRefetch` rather than a raw interval so both polls pause while the
   // tab is hidden — a readiness tick costs one HTTP probe per distinct local
   // endpoint, which a backgrounded settings tab should not keep spending.
-  const pollCards = useCallback(() => Promise.all([refreshStatuses(), loadReadiness()]), [refreshStatuses, loadReadiness]);
+  const pollCards = useCallback(() => Promise.all([
+    refreshStatuses(),
+    loadReadiness(),
+    hasCodexSubscriptionProvider ? loadCodexAccount() : Promise.resolve(),
+  ]), [refreshStatuses, loadReadiness, hasCodexSubscriptionProvider, loadCodexAccount]);
   useAutoRefetch(pollCards, 20000, { pollOnly: true });
 
   // Clear a provider's bench (runtime unavailability) so the next call retries it.
@@ -310,8 +369,71 @@ export default function AIProviders() {
   };
 
   const handleToggleEnabled = async (provider) => {
-    await api.updateProvider(provider.id, { enabled: !provider.enabled });
+    await api.updateProvider(provider.id, {
+      enabled: !provider.enabled,
+    });
     loadData();
+  };
+
+  const handleEnableCodexSubscription = async (provider) => {
+    const updated = await api.updateProvider(provider.id, { textTransportEnabled: true }, { silent: true }).catch(() => null);
+    if (!updated) {
+      toast.error('Could not save the ChatGPT subscription transport');
+      return;
+    }
+    setProviders((current) => current.map((entry) => (
+      entry.id === provider.id ? { ...entry, textTransportEnabled: true } : entry
+    )));
+    toast.success('ChatGPT subscription transport enabled');
+  };
+
+  const handleCodexSignIn = async (deviceCode) => {
+    setCodexLoginLoading(true);
+    const result = await api.startCodexLogin(deviceCode, { silent: true }).catch(() => null);
+    setCodexLoginLoading(false);
+    if (!result?.login) {
+      toast.error('Could not start ChatGPT sign-in');
+      return;
+    }
+    const login = {
+      ...result.login,
+      authUrl: isHttpsUrl(result.login.authUrl) ? result.login.authUrl : null,
+      verificationUrl: isHttpsUrl(result.login.verificationUrl) ? result.login.verificationUrl : null,
+    };
+    setCodexAccount((current) => ({
+      ...(current && typeof current === 'object' ? current : {}),
+      status: 'login-pending',
+      login,
+    }));
+    if (login.authUrl) window.open(login.authUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleCancelCodexLogin = async (loginId) => {
+    setCodexLoginLoading(true);
+    const result = await api.cancelCodexLogin(loginId, { silent: true }).catch(() => null);
+    setCodexLoginLoading(false);
+    if (!result?.readiness) {
+      toast.error('Could not cancel ChatGPT sign-in');
+      return;
+    }
+    setCodexAccount(result.readiness);
+  };
+
+  const handleCodexLogout = async () => {
+    setCodexAccountLoading(true);
+    const result = await api.codexLogout({ silent: true }).catch(() => null);
+    setCodexAccountLoading(false);
+    if (!result?.readiness) {
+      toast.error('Could not log out of ChatGPT');
+      return;
+    }
+    setCodexAccount(result.readiness);
+    toast.success('ChatGPT subscription signed out');
+  };
+
+  const handleCopyCodexDeviceCode = async (code) => {
+    if (await copyToClipboard(code)) toast.success('Device code copied');
+    else toast.error('Could not copy the device code');
   };
 
   // llama.cpp (and similar local daemons) answer as a single model id — the
@@ -511,6 +633,7 @@ export default function AIProviders() {
     const readinessById = Object.fromEntries(providers.map((provider) => [provider.id, providerCardState(provider, {
       runtime: runtimeById[provider.id],
       status: statuses[provider.id],
+      codexAccount: isCodexSubscriptionProvider(provider) ? codexAccount : undefined,
       keySetFor: (id) => {
         const referenced = byId[id];
         // The list is authoritative once this memo runs. A missing sibling was
@@ -541,7 +664,7 @@ export default function AIProviders() {
           : runnable.filter(p => section.states.includes(readinessById[p.id].state))),
       ])),
     };
-  }, [providers, statuses, activeProviderId, runtimeForProvider]);
+  }, [providers, statuses, activeProviderId, runtimeForProvider, codexAccount]);
 
   // Resolved only once the list has loaded, so an /ai/edit/:providerId reload can't
   // flash the editor in "Add Provider" mode before the record arrives. An id
@@ -870,7 +993,18 @@ export default function AIProviders() {
                       onUseServedModel={handleUseServedModel}
                       onServeWantedModel={handleServeWantedModel}
                       servingModel={Boolean(servingModel[provider.id])}
-                    />
+                      codexAccount={isCodexSubscriptionProvider(provider) ? codexAccount : undefined}
+                      codexModels={codexModels}
+                      codexAccountLoading={codexAccountLoading}
+                      codexLoginLoading={codexLoginLoading}
+                      onCodexCheckAccount={() => loadCodexAccount(true)}
+                      onCodexSignIn={handleCodexSignIn}
+                      onCodexCancelLogin={handleCancelCodexLogin}
+                      onCodexLogout={handleCodexLogout}
+                      onCodexRefreshModels={() => loadCodexModels(true)}
+                      onCodexCopyCode={handleCopyCodexDeviceCode}
+                      onCodexEnable={() => handleEnableCodexSubscription(provider)}
+                   />
                   ))}
                 </CollapsibleSection>
               );
@@ -981,6 +1115,9 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     contextWindow: provider?.contextWindow ?? '',
     timeout: provider?.timeout || 300000,
     enabled: provider?.enabled !== false,
+    textTransportEnabled: provider?.textTransportEnabled === true
+      && provider?.textTransportReadRiskAcknowledged === true,
+    textTransportReadRiskAcknowledged: provider?.textTransportReadRiskAcknowledged === true,
     envVars: provider?.envVars || {},
     secretEnvVars: provider?.secretEnvVars || [],
     headlessArgs: provider?.headlessArgs?.join(' ') || '',
@@ -1252,6 +1389,13 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     } else {
       delete data.tuiPromptDelayMs;
     }
+    // These controls belong only to the advertised Codex subscription
+    // transport. Do not stamp false capability fields onto unrelated provider
+    // records when their editor saves an ordinary connection change.
+    if (provider?.textTransport !== 'codex-app-server') {
+      delete data.textTransportEnabled;
+      delete data.textTransportReadRiskAcknowledged;
+    }
 
     // Only send apiKey if user entered a new value (avoid overwriting existing key with empty string)
     if (!data.apiKey && provider) {
@@ -1500,6 +1644,53 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 />
                 <span className="text-sm text-gray-400">Enabled</span>
               </label>
+
+              {provider?.textTransport === 'codex-app-server' && (
+                <div className="max-w-3xl rounded-lg border border-port-warning/40 bg-port-warning/10 p-3 space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-port-warning">ChatGPT subscription text calls</p>
+                    <p className="text-xs text-gray-300">
+                      PortOS blocks writes, network access, MCP servers, and web search for these calls.
+                      Codex can still read local files by absolute path, so untrusted prompt text could make
+                      a saved response contain local file contents.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2">
+                      <input
+                        id="codex-text-read-risk"
+                        type="checkbox"
+                        checked={formData.textTransportReadRiskAcknowledged}
+                        onChange={(e) => setFormData(prev => ({
+                          ...prev,
+                          textTransportReadRiskAcknowledged: e.target.checked,
+                          textTransportEnabled: e.target.checked ? prev.textTransportEnabled : false,
+                        }))}
+                        className="mt-0.5 w-4 h-4 rounded border-port-border bg-port-bg"
+                      />
+                      <label htmlFor="codex-text-read-risk" className="text-sm text-gray-300">
+                        I understand that Codex may read local files during generic text calls.
+                      </label>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <input
+                        id="codex-text-transport-enabled"
+                        type="checkbox"
+                        checked={formData.textTransportEnabled}
+                        disabled={!formData.textTransportReadRiskAcknowledged}
+                        onChange={(e) => setFormData(prev => ({ ...prev, textTransportEnabled: e.target.checked }))}
+                        className="mt-0.5 w-4 h-4 rounded border-port-border bg-port-bg disabled:opacity-50"
+                      />
+                      <label
+                        htmlFor="codex-text-transport-enabled"
+                        className={`text-sm ${formData.textTransportReadRiskAcknowledged ? 'text-gray-300' : 'text-gray-500'}`}
+                      >
+                        Allow this provider to serve generic text calls.
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {gatewayForProvider(provider) && (
                 <GatewayKeyHint

@@ -521,12 +521,15 @@ describe('buildCliSpawnConfig', () => {
 
 describe('stream error containment', () => {
   // Build a minimal fake process with stdin/stdout/stderr EventEmitters.
-  function makeFakeProcess() {
+  function makeFakeProcess({ failWith = null, noStdin = false } = {}) {
     const proc = new EventEmitter();
-    proc.pid = 12345;
-    proc.stdin = { write: vi.fn(), end: vi.fn() };
+    if (!noStdin) {
+      proc.pid = 12345;
+      proc.stdin = { write: vi.fn(), end: vi.fn() };
+    }
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
+    if (failWith) setImmediate(() => proc.emit('error', failWith));
     return proc;
   }
 
@@ -576,6 +579,60 @@ describe('stream error containment', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  describe('spawn failure containment', () => {
+    const failedSpawn = () => makeFakeProcess({
+      noStdin: true,
+      failWith: Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }),
+    });
+
+    const waitForSpawnFailure = async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    it('the failing fake really has no stdin (bypass probe)', () => {
+      expect(makeFakeProcess({ noStdin: true }).stdin).toBeUndefined();
+    });
+
+    it('settles with a startup failure when the provider CLI is missing', async () => {
+      fakeProcess = failedSpawn();
+
+      await expect(spawnDirectly(minimalArgs)).resolves.toBe('agent-test');
+      await waitForSpawnFailure();
+
+      expect(agentStateMocks.completeAgent).toHaveBeenCalledWith(
+        'agent-test',
+        expect.objectContaining({ success: false, error: expect.stringContaining('ENOENT') }),
+      );
+    });
+
+    it('does not leave the agent registered in activeAgents after a failed spawn', async () => {
+      const { activeAgents, registerSpawnedAgent } = await import('./agentState.js');
+      activeAgents.clear();
+      registerSpawnedAgent.mockClear();
+      agentStateMocks.updateAgent.mockClear();
+      fakeProcess = failedSpawn();
+
+      await spawnDirectly(minimalArgs);
+      await waitForSpawnFailure();
+
+      expect(activeAgents.has('agent-test')).toBe(false);
+      expect(registerSpawnedAgent).not.toHaveBeenCalled();
+      expect(agentStateMocks.updateAgent).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the spawn error message to the run log', async () => {
+      agentStateMocks.appendAgentOutputLines.mockClear();
+      fakeProcess = failedSpawn();
+
+      await spawnDirectly(minimalArgs);
+      await waitForSpawnFailure();
+
+      const lines = agentStateMocks.appendAgentOutputLines.mock.calls.flatMap(([, batch]) => batch);
+      expect(lines.some((line) => line.includes('ENOENT'))).toBe(true);
+    });
   });
 
   // ─── Lifecycle ledger — the first-output boundary (#4540) ─────────────────
