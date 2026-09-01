@@ -459,4 +459,5 @@ export * from './zodCompat.js';
 export * from './gitTestRepo.js';
 export * from './mockPathsDataRoot.js';
 export * from './settingsTestUtil.js';
+export * from './dbTestGate.js';
 export * from './testHelper.js';

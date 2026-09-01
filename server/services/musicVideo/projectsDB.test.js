@@ -11,6 +11,7 @@ import { describe, it, expect, vi, afterAll, beforeAll, beforeEach } from 'vites
 import { rmSync } from 'fs';
 import { join } from 'path';
 import { checkHealth, ensureSchema, query, close } from '../../lib/db.js';
+import { requireDbOrSkip } from '../../lib/dbTestGate.js';
 import { getSyncBaseHash, __resetBaseHashCacheForTests } from '../../lib/conflictJournal.js';
 
 const testState = vi.hoisted(() => ({ dataRoot: null, writeCounter: { baseHash: 0 } }));
@@ -46,7 +47,7 @@ let skipReason = '';
   }
 }
 
-if (!dbReady) console.log(`⏭️  musicVideo/projectsDB.test.js skipped: ${skipReason}`);
+const runDb = requireDbOrSkip('services/musicVideo/projectsDB.test', dbReady, skipReason);
 
 afterAll(() => rmSync(testState.dataRoot, { recursive: true, force: true }));
 
@@ -62,7 +63,7 @@ const project = (id, deletedAt) => ({
   deletedAt,
 });
 
-describe.skipIf(!dbReady)('music video projects DB adapter', () => {
+describe.skipIf(!runDb)('music video projects DB adapter', () => {
   let db;
 
   beforeAll(async () => { db = await import('./projectsDB.js'); });
