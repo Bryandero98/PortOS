@@ -71,16 +71,15 @@ const TAB_DETAIL = {
 
 export default function Models() {
   const { tab, recordId } = useParams();
-  // An unknown slug lands on Performance rather than rendering a blank page —
-  // it is the tab that answers "which model should I use?", which is what most
-  // people arrive here for.
+  // An unknown slug lands on LLMs rather than rendering a blank page, matching
+  // the section's default destination in App and the primary navigation.
   //
   // OWN-property lookup, not plain indexing: the slug comes straight off the URL,
   // so `/models/constructor` (or `toString`, `__proto__`) would otherwise resolve
   // to an Object.prototype member, read as a valid tab, and get rendered as a
   // component. Same reason `unavailableReasonLabel` guards its map.
   const activeTab = tab && Object.hasOwn(TAB_CONTENT, tab) ? tab : null;
-  if (!activeTab) return <Navigate to="/models/performance" replace />;
+  if (!activeTab) return <Navigate to="/models/llms" replace />;
 
   // A record id in the URL selects the tab's drill-down, when it has one. A tab
   // with no detail view ignores the extra segment and renders its index — better
