@@ -1571,6 +1571,69 @@ export function buildImprovementDedupSets(existingTasks, { ignoreTaskId = null }
   return { existingTaskTypes, appsWithPendingImprovement, blockedTaskTypes, appsWithBlockedImprovement };
 }
 
+function prepareQueuedImprovementTask(task) {
+  // Queued tasks round-trip through COS-TASKS.md, whose task description field
+  // is single-line. Preserve the full prompt in metadata so the agent receives
+  // it after the task is re-read from disk.
+  if (typeof task.description === 'string' && task.description.includes('\n')) {
+    task.metadata = task.metadata || {};
+    task.metadata.prompt = task.description;
+    task.description = firstLine(task.description);
+  }
+  return task;
+}
+
+export async function queueDueInstallWideImprovementTasks({
+  dueTasks,
+  state,
+  taskSchedule,
+  existingTaskTypes,
+  blockedTaskTypes,
+  ignoreTaskId = null,
+  wakeAfterRecord = true,
+  generateTask = generateSelfImprovementTaskForType,
+  persistTask = addTask,
+  wake = () => cosEvents.emit('cos:dequeue-requested')
+}) {
+  let queued = 0;
+  const dueInstallWideTasks = dueTasks
+    .filter(({ taskType }) => taskSchedule.INSTALL_WIDE_TASK_TYPES.has(taskType));
+
+  for (const { taskType } of dueInstallWideTasks) {
+    const taskKey = taskType;
+    if (existingTaskTypes.has(taskKey)) {
+      if (blockedTaskTypes.has(taskKey)) {
+        emitLog('info', `⛔ Skipping install-wide ${taskType}: blocked task ${blockedTaskTypes.get(taskKey)} already exists — resolve or delete it to resume`, { analysisType: taskType });
+      } else {
+        emitLog('debug', `Install-wide improvement task ${taskType} already queued`);
+      }
+      continue;
+    }
+
+    const task = await generateTask(taskType, state);
+    // Hooks such as user-action-review's empty-ledger check deliberately
+    // advance their cadence while returning no task, so do not record a second
+    // execution here when the generator declines to dispatch.
+    if (!task) continue;
+
+    task.priority = 'LOW';
+    task.priorityValue = PRIORITY_VALUES.LOW;
+    task.id = `sys-install-${taskType}-${Date.now().toString(36)}`;
+    prepareQueuedImprovementTask(task);
+
+    const newTask = await persistTask(task, 'internal', { raw: true, ignoreTaskId, suppressDequeue: true });
+    if (newTask?.duplicate) continue;
+    if (wakeAfterRecord) wake();
+
+    await taskSchedule.recordExecution(`task:${taskType}`);
+    emitLog('info', `Queued install-wide improvement task: ${taskType}`, { taskId: newTask.id, analysisType: taskType });
+    existingTaskTypes.add(taskKey);
+    queued++;
+  }
+
+  return queued;
+}
+
 /**
  * Queue eligible self-improvement and app improvement tasks as system tasks
  * Called during every evaluation to ensure system tasks are queued even when user tasks exist
@@ -1578,7 +1641,7 @@ export function buildImprovementDedupSets(existingTasks, { ignoreTaskId = null }
  */
 export async function queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId = null, wakeAfterRecord = true } = {}) {
   const taskSchedule = await import('./taskSchedule.js');
-  const { getNextTaskType, recordExecution } = taskSchedule;
+  const { getDueTasks, getNextTaskType, recordExecution } = taskSchedule;
 
   if (!isImprovementEnabled(state)) return;
 
@@ -1591,6 +1654,21 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     buildImprovementDedupSets(existingTasks, { ignoreTaskId });
 
   let queued = 0;
+
+  // Install-wide task types have no managed-app target: their cadence is
+  // tracked by the global execution record, and one task is the complete run
+  // for this PortOS install. Run this before the per-app pass: an install-wide
+  // hook may deliberately reject app targets while recording that app-scoped
+  // check, which must not consume the global due window first.
+  //
+  // Do not select a single generic next task here — every install-wide type
+  // that is independently due must get its own lane. The dedup key is the bare
+  // analysis type, matching buildImprovementDedupSets for globally-scoped tasks
+  // and ensuring one pending/blocked task suppresses only its own duplicate.
+  queued += await queueDueInstallWideImprovementTasks({
+    dueTasks: await getDueTasks(), state, taskSchedule, existingTaskTypes,
+    blockedTaskTypes, ignoreTaskId, wakeAfterRecord
+  });
 
   // Load the activity snapshot ONCE before the per-app loop. Both the
   // cooldown gate and the rotation `lastType` lookup are derived from
@@ -1709,11 +1787,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // multi-thousand-character agent prompt indistinguishable from one. Readers
     // go through `getTaskPrompt` (server/lib/cosTaskPrompt.js), which falls back
     // to `metadata.context` for tasks written before the split.
-    if (typeof task.description === 'string' && task.description.includes('\n')) {
-      task.metadata = task.metadata || {};
-      task.metadata.prompt = task.description;
-      task.description = firstLine(task.description);
-    }
+    prepareQueuedImprovementTask(task);
 
     const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId, suppressDequeue: true });
     if (newTask?.duplicate) continue;
