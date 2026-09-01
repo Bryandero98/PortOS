@@ -230,9 +230,9 @@ export function resolveEventInstant(value, timezone) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?$/.exec(s);
   if (m && timezone) {
     const [, y, mo, d, hh, mm, ss] = m;
-    const midnight = new Date(anchorLocalMidnightUtc(`${y}-${mo}-${d}`, timezone));
+    const midnightMs = anchorLocalMidnightUtc(`${y}-${mo}-${d}`, timezone);
     const dayMs = ((Number(hh) || 0) * 3600 + (Number(mm) || 0) * 60 + (Number(ss) || 0)) * 1000;
-    return new Date(midnight.getTime() + dayMs);
+    return new Date(midnightMs + dayMs);
   }
   const parsed = new Date(s);
   return Number.isNaN(parsed.getTime()) ? null : parsed;

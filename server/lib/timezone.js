@@ -54,6 +54,13 @@ export function getLocalParts(utcDate, timezone) {
 /**
  * Get the UTC offset (in ms) for a timezone at a given UTC time.
  * Positive = ahead of UTC (e.g., +9h for Tokyo), negative = behind (e.g., -7h for PDT).
+ *
+ * Callers doing DST-safe midnight anchoring (`anchorLocalMidnightUtc` below)
+ * re-sample this at their candidate instant rather than trusting a single
+ * call made at the approximate time — this function's own `toLocaleString`
+ * round-trip mis-parses ambiguous wall-clock times right at a transition
+ * (the same local time occurs twice on a fall-back day), which is exactly
+ * when that correction matters.
  * @param {Date} utcDate - Reference UTC date
  * @param {string} timezone - IANA timezone string
  * @returns {number} Offset in milliseconds
@@ -153,9 +160,12 @@ export function localDayWindowUtc(timezone, atDate = new Date()) {
 }
 
 /**
- * Return the half-open UTC bounds for a local calendar day.
- * Unlike localDayWindowUtc, the end is the next local midnight, preserving
- * the actual 23- or 25-hour length of DST transition days.
+ * UTC `[start, end)` instants that bound a local calendar day (`YYYY-MM-DD`)
+ * in `timezone`. The end is the next local date's boundary rather than a
+ * fixed 24 hours after the start, preserving 23- and 25-hour DST days.
+ * This remains separate from `localDayWindowUtc`, whose inclusive end serves
+ * callers with a different boundary contract.
+ *
  * @param {string} dateStr - Local day as `YYYY-MM-DD`
  * @param {string} timezone - IANA timezone string
  * @returns {{ start: Date, end: Date } | null}
