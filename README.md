@@ -304,14 +304,15 @@ npm run setup
 npm start
 ```
 
-`npm run setup` (aliased as `npm run install:all`) initializes bundled submodules; installs the root, client, server, and Autofixer dependencies; runs the trusted native rebuilds; prepares runtime data; and provisions PostgreSQL, local LLM tooling, and the headless browser. `npm start` builds the client and starts the managed processes with PM2. Access PortOS at `http://localhost:5555` (or via Tailscale at `http://<machine>.<tailnet>.ts.net:5555`).
+`npm run setup` (aliased as `npm run install:all`) initializes bundled submodules; installs the root, client, server, and Autofixer dependencies; runs the trusted native rebuilds; prepares runtime data; provisions PostgreSQL, local LLM tooling, and the headless browser; safely attempts a trusted Tailscale certificate; and prints an ordered setup walkthrough. `npm start` builds the client and starts the managed processes with PM2. Before HTTPS is ready, access PortOS locally at `http://localhost:5555`.
 
 For a guided setup that also checks optional local media and command-line tooling, run `./setup.sh` instead. It prompts before starting PortOS; choose that option or run `npm start` afterward, not both.
 
-For HTTPS (recommended — required for the in-browser microphone, and you'll get a trusted cert via Tailscale's Let's Encrypt integration):
+For HTTPS (recommended — required for the in-browser microphone away from loopback), setup tells you when Tailscale, MagicDNS, or the tailnet's HTTPS Certificates toggle is still missing and automatically fetches the trusted certificate once those prerequisites are ready:
 
 ```bash
 npm run setup:cert                   # Tailscale + Let's Encrypt (trusted)
+npm run setup:guide                  # show the next setup action + correct URL
 npm run setup:cert -- --self-signed  # fallback if you don't have Tailscale
 pm2 restart ecosystem.config.cjs
 ```
@@ -319,6 +320,8 @@ pm2 restart ecosystem.config.cjs
 After that, `https://<machine>.<tailnet>.ts.net:5555` is the user-facing URL on every device. The same `:5555` is used for both HTTP and HTTPS — only the scheme changes. When HTTPS is enabled a loopback-only HTTP mirror also spawns at `http://localhost:5553` so local curl/scripts skip cert warnings (override with `PORTOS_HTTP_PORT`).
 
 > A fresh install with no Tailscale **stays on HTTP**, so `http://localhost:5555` works out of the box. `npm start` will only auto-provision a cert when Tailscale's `tailscale cert` succeeds — it won't silently flip you to a self-signed HTTPS that breaks the URL above. Pass `--self-signed` if you want HTTPS without Tailscale (browser warning included).
+
+The same walkthrough is always available in **Settings → Setup**. It verifies one runnable AI provider as well as secure remote access, and links directly to every action PortOS cannot perform at the account level. The Dashboard and Instances page surface the same network state; Unix and Windows update scripts retry certificate provisioning and print the guide after every update. See the [complete setup guide](./docs/SETUP.md).
 
 PM2 keeps PortOS running in the background and auto-restarts on reboot (with `pm2 save` + `pm2 startup`).
 
@@ -405,6 +408,7 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [API Reference](./docs/API.md) — REST endpoints, full route-domain index, and WebSocket events
 - [API Tool Contract](./docs/API_TOOL_CONTRACT.md) — Unified semantic tool, Persistent Mind, and Agent Tools MCP contract
 - [Companion App API](./docs/COMPANION_APP_API.md) — PortDeck native mobile client discovery and HTTP API contract
+- [Setup Guide](./docs/SETUP.md) — Tailscale, MagicDNS, trusted HTTPS, launch URLs, and AI-provider readiness
 - [Remote Desktop Broker](./docs/REMOTE_DESKTOP.md) — PortDeck VNC broker security, host setup, and session flow
 - [Federated Media Providers](./docs/FEDERATED_MEDIA_PROVIDERS.md) — Authenticated, capacity-aware peer audio provider wire contract and setup
 - [Storage Classification Contract](./docs/STORAGE.md) — when data belongs in PostgreSQL vs the filesystem, plus the new-data-store checklist

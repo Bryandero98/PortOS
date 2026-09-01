@@ -3852,7 +3852,7 @@
       "sources": [
         {
           "source": "server/routes/capabilities.js",
-          "line": 51
+          "line": 57
         }
       ]
     },
@@ -11288,7 +11288,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 126
+          "line": 121
         }
       ]
     },
@@ -11299,7 +11299,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 141
+          "line": 136
         }
       ]
     },
@@ -11310,7 +11310,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 264
+          "line": 250
         }
       ]
     },
@@ -11321,7 +11321,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 292
+          "line": 278
         }
       ]
     },
@@ -11332,7 +11332,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 278
+          "line": 264
         }
       ]
     },
@@ -11343,7 +11343,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 299
+          "line": 285
         }
       ]
     },
@@ -11354,7 +11354,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 364
+          "line": 350
         }
       ]
     },
@@ -11365,7 +11365,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 336
+          "line": 322
         }
       ]
     },
@@ -11376,7 +11376,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 379
+          "line": 365
         }
       ]
     },
@@ -11387,7 +11387,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 324
+          "line": 310
         }
       ]
     },
@@ -11398,7 +11398,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 348
+          "line": 334
         }
       ]
     },
@@ -11409,7 +11409,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 237
+          "line": 223
         }
       ]
     },
@@ -11420,7 +11420,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 309
+          "line": 295
         }
       ]
     },
@@ -11431,7 +11431,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 206
+          "line": 192
         }
       ]
     },
@@ -11442,7 +11442,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 216
+          "line": 202
         }
       ]
     },
@@ -11453,7 +11453,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 229
+          "line": 215
         }
       ]
     },
@@ -11464,7 +11464,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 167
+          "line": 162
         }
       ]
     },
@@ -11475,7 +11475,7 @@
       "sources": [
         {
           "source": "server/routes/instances.js",
-          "line": 182
+          "line": 177
         }
       ]
     },

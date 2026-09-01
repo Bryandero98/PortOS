@@ -305,11 +305,11 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `sharingOrigin.js` | Origin metadata for records imported from share buckets. |
 | `syncIntegrity.js` | Pure diff of local vs remote manifest lists. `INTEGRITY_STATUS` constants + `computeRecordIntegrity(localList, remoteList)` — classifies each record as `in-parity`, `local-only`, `peer-only`, `diverged`, or `assets-missing`. No I/O. |
 | `syncWire.js` | Single source of truth for what fields cross the federated-peer wire (snapshot loop + per-record push agree). |
-| `tailscale.js` | Locate the Tailscale CLI binary, flag the sandboxed macOS App-bundle build (which can't write `tailscale cert` output outside its container), and read backend state (`getTailscaleStatus` / `isTailscaleUp`) to know whether we're actually connected to the tailnet. |
+| `tailscale.js` | Locate the Tailscale CLI binary, flag the sandboxed macOS App-bundle build, and return a normalized backend/MagicDNS/peer snapshot (`getTailscaleStatus` / `isTailscaleUp`). |
 | `httpsState.js` | Captures whether PortOS booted with HTTPS active. |
 | `bareUrl.js` | `parseBareUrl(text)` — returns the normalized URL when a captured string is nothing *but* a URL (bare host gets `https://`), else null. Drives the brain-capture short-circuit that files a pasted URL straight to Links instead of running the classifier. Stricter than the client's `urlNormalize.js` `isUrl` (needs a plausible TLD; http/https/`git@` only) because it picks a storage destination rather than a hint. |
 | `isSafeHref.js` | Pure http(s)-only scheme check (`isSafeHref`) for user-supplied URL fields that get rendered as a clickable `<a href>` — rejects `javascript:`/`data:`/etc. stored-XSS payloads. Mirrors client `urlNormalize.js`'s `isHttpUrl`. |
-| `networkExposure.js` | Snapshot of scheme + bind + cert mode for the dashboard's Network Exposure widget. |
+| `networkExposure.js` | Runtime scheme/bind/cert snapshot plus the shared ordered Tailscale, MagicDNS, certificate, and trusted-launch setup guide used by CLI and UI. |
 
 ## Search & indexing
 
@@ -351,7 +351,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 |---|---|
 | `appIdentity.js` | The baseline managed-app id (`PORTOS_APP_ID`) — importable without pulling in the `services/apps.js` graph (pm2, scheduler, settings) behind it. Re-exported by `apps.js`. |
 | `appResolver.js` | Fuzzy-match a spoken/typed phrase to a managed app (`{ id, name }`). Tiered exact → prefix → substring, used by voice tools that target a specific app. |
-| `capabilityMap.js` | Pure row builders for the Capability Map (per-integration status tiers + rollup); fed by `routes/capabilities.js`. |
+| `capabilityMap.js` | Pure row builders for Setup & Capabilities, including strict network/provider first-run readiness and optional-integration health rollups; fed by `routes/capabilities.js`. |
 | `chiptuneRender.js` | Deterministic chiptune score → mono PCM → 16-bit WAV buffer (pure Node, no audio deps); `renderScoreToPcm` / `pcmToWavBuffer` / `renderScoreToWav`. |
 | `chiptuneScore.js` | Chiptune score contract (#2911): `chiptuneScoreSchema` (Zod) + `sanitizeChiptuneScore`, pitch math (`pitchToMidi`/`midiToFreq`), and `buildScoreEvents` — the pattern/order → absolute-time flatten mirrored by `client/src/lib/chiptunePlayback.js`. |
 | `civitai.js` | Civitai URL parsing + API client. |
