@@ -3522,7 +3522,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 85
+          "line": 87
         }
       ]
     },
@@ -3533,7 +3533,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 90
+          "line": 92
         }
       ]
     },
@@ -3544,7 +3544,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 108
+          "line": 110
         }
       ]
     },
@@ -3555,7 +3555,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 97
+          "line": 99
         }
       ]
     },
@@ -3566,7 +3566,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 166
+          "line": 205
         }
       ]
     },
@@ -3577,7 +3577,18 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 175
+          "line": 214
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/calendar/agenda",
+      "mountPath": "/api/calendar",
+      "sources": [
+        {
+          "source": "server/routes/calendar.js",
+          "line": 146
         }
       ]
     },
@@ -3588,7 +3599,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 365
+          "line": 404
         }
       ]
     },
@@ -3599,7 +3610,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 342
+          "line": 381
         }
       ]
     },
@@ -3610,7 +3621,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 337
+          "line": 376
         }
       ]
     },
@@ -3621,7 +3632,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 139
+          "line": 178
         }
       ]
     },
@@ -3632,7 +3643,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 156
+          "line": 195
         }
       ]
     },
@@ -3643,7 +3654,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 265
+          "line": 304
         }
       ]
     },
@@ -3654,7 +3665,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 226
+          "line": 265
         }
       ]
     },
@@ -3665,7 +3676,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 221
+          "line": 260
         }
       ]
     },
@@ -3676,7 +3687,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 236
+          "line": 275
         }
       ]
     },
@@ -3687,7 +3698,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 277
+          "line": 316
         }
       ]
     },
@@ -3698,7 +3709,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 283
+          "line": 322
         }
       ]
     },
@@ -3709,7 +3720,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 271
+          "line": 310
         }
       ]
     },
@@ -3720,7 +3731,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 245
+          "line": 284
         }
       ]
     },
@@ -3731,7 +3742,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 317
+          "line": 356
         }
       ]
     },
@@ -3742,7 +3753,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 326
+          "line": 365
         }
       ]
     },
@@ -3753,7 +3764,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 311
+          "line": 350
         }
       ]
     },
@@ -3764,7 +3775,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 120
+          "line": 122
         }
       ]
     },
@@ -3775,7 +3786,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 291
+          "line": 330
         }
       ]
     },
@@ -3786,7 +3797,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 200
+          "line": 239
         }
       ]
     },
@@ -3797,7 +3808,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 300
+          "line": 339
         }
       ]
     },
@@ -3808,7 +3819,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 211
+          "line": 250
         }
       ]
     },
@@ -3819,7 +3830,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 189
+          "line": 228
         }
       ]
     },
@@ -3830,7 +3841,7 @@
       "sources": [
         {
           "source": "server/routes/calendar.js",
-          "line": 129
+          "line": 131
         }
       ]
     },
@@ -23753,8 +23764,8 @@
   ],
   "stats": {
     "mounts": 146,
-    "operations": 2143,
-    "declarations": 2146,
+    "operations": 2144,
+    "declarations": 2147,
     "sourceFiles": 227
   }
 }

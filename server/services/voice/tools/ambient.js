@@ -5,7 +5,7 @@
 
 import { getEvents as getCalendarEvents } from '../../calendarSync.js';
 import { fetchWithTimeout } from '../../../lib/fetchWithTimeout.js';
-import { todayInTimezone, getLocalParts, getUtcOffsetMs } from '../../../lib/timezone.js';
+import { anchorLocalMidnightUtc, todayInTimezone, getLocalParts } from '../../../lib/timezone.js';
 import { getUserTimezone } from '../../userTimezone.js';
 import { getSettings } from '../../settings.js';
 import { clampLimit } from './shared.js';
@@ -35,20 +35,6 @@ const summarizeEvent = (e, tz) => {
   const when = e?.isAllDay ? 'all day' : (start || 'time TBD');
   const loc = e?.location ? ` at ${e.location}` : '';
   return `${e?.title || 'Untitled event'} (${when})${loc}`;
-};
-// UTC timestamp (ms) of local midnight for the `YYYY-MM-DD` day string in `tz`.
-// The server runs TZ=UTC, so we subtract the TZ offset from the naive UTC parse
-// of the day string. Evaluate the offset AT the target day's midnight (not at
-// `now`) so a DST transition elsewhere in the day can't shift the result by an
-// hour. The naive parse lands within ~14h of local midnight — close enough that
-// re-evaluating the offset at that candidate instant converges to the correct
-// offset across a DST boundary.
-export const anchorLocalMidnightUtc = (dayStr, tz) => {
-  const naiveUtc = Date.parse(`${dayStr}T00:00:00Z`);
-  const firstOffset = getUtcOffsetMs(new Date(naiveUtc), tz);
-  const candidate = naiveUtc - firstOffset;
-  const refinedOffset = getUtcOffsetMs(new Date(candidate), tz);
-  return naiveUtc - refinedOffset;
 };
 
 // ----- Weather helpers (weather_now) -----
