@@ -31,8 +31,10 @@
 
 import { createReadStream, createWriteStream } from 'fs';
 import { rename, unlink } from 'fs/promises';
+import { join } from 'path';
 import { Writable } from 'stream';
 import { PATHS, getMimeType, ensureDir } from '../lib/fileUtils.js';
+import { isTopLevelEntryName } from '../lib/pathSafety.js';
 import { parseZip, collectZipEntry, MAX_ZIP_MEMBER_BYTES } from '../lib/zipStream.js';
 import { parseExport, importConversations, assetPointerId } from './chatgptImport.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -102,7 +104,35 @@ const IS_ASSET_NAME_MAP = (path) => /(?:^|\/)conversation_asset_file_names\.json
 // A `.dat` member's asset id is its basename without extension. Conversations
 // reference assets as `file-service://file-XXX` / `sediment://file_HASH`, both
 // of which `assetPointerId()` reduces to that same bare id.
-const datAssetId = (path) => path.replace(/^.*\//, '').replace(/\.dat$/i, '');
+//
+// Splits on BOTH separators so the id is always a real basename on every
+// platform: a hostile archive can name a member `a\..\..\evil.dat`, and a
+// forward-slash-only strip would leave the backslashes in the id — on Windows
+// `${assetDir}/${id}` would then escape the asset dir (Zip Slip).
+const datAssetId = (path) => path.split(/[\\/]/).pop().replace(/\.dat$/i, '');
+
+// A `.dat` member is extractable only when BOTH its ZIP-spec name and the asset
+// id it reduces to are plain filenames.
+//
+// The ZIP spec mandates `/` as the only separator, so everything after the last
+// `/` is one filename — a `\` or `..` surviving there means a hostile or
+// malformed member, not a nested directory, and it is skipped rather than
+// silently normalized into an extracted file. The second half catches ids that
+// degenerate once `.dat` is dropped (`.dat` -> ``, `..dat` -> `.`), which would
+// otherwise write a `.png` / `..png` dotfile into the served dir.
+//
+// `zipStream.js` also sanitizes separators and `.`/`..` components as it decodes
+// each header, so a traversal has to defeat two independent layers to land. This
+// one is the layer that matters here: the parser's sanitizing is its own private
+// policy, while the consumer is what actually opens the file, and keeping the
+// check at the write site means a future faithful-reader refactor of the parser
+// cannot silently reintroduce the escape.
+const isSafeDatMember = (path) =>
+  isTopLevelEntryName(path.replace(/^.*\//, '')) && isTopLevelEntryName(datAssetId(path));
+
+// Single-sourced so both guards below log identically. Deliberately carries NO
+// member path — the name is untrusted third-party text.
+const UNSAFE_MEMBER_WARNING = '⚠️ ChatGPT import: skipped a ZIP member with an unsafe asset name';
 
 // Stream a `.dat` entry straight to `filePath`, holding only the leading
 // `SNIFF_BYTES` so the asset's real extension can be sniffed without buffering
@@ -206,8 +236,18 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
           // bytes to sniff the extension. Peak RAM is one chunk regardless of
           // asset size, so there is no aggregate ceiling and a multi-GB export
           // imports without OOM risk. Renamed to its final served name below.
+          // Refuse any member whose name isn't a plain filename BEFORE the temp
+          // file is opened. Skip the member rather than failing the whole
+          // import: one malformed member in a multi-GB export shouldn't cost the
+          // user the entire ingest, and a conversation referencing it simply
+          // renders without its asset (the resolver already returns null).
+          if (!isSafeDatMember(path)) {
+            console.warn(UNSAFE_MEMBER_WARNING);
+            entry.autodrain();
+            return;
+          }
           const assetId = datAssetId(path);
-          const tempPath = `${assetDir}/${assetId}.part`;
+          const tempPath = join(assetDir, `${assetId}.part`);
           tempPaths.add(tempPath);
           inFlight.push(streamAssetToFile(entry, tempPath, MAX_MEMBER_BYTES)
             .then((sniffedExt) => { pendingAssets.set(assetId, { datPath: path, tempPath, sniffedExt }); })
@@ -250,7 +290,16 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
       const friendlyName = assetNameMap[`${assetId}.dat`] || assetNameMap[datPath] || null;
       const ext = sniffedExt || extFromName(friendlyName) || '.bin';
       const fileName = `${assetId}${ext}`;
-      const filePath = `${assetDir}/${fileName}`;
+      // Defense in depth: `assetId` was already vetted above, but `ext` comes
+      // from `extFromName`/the sniffer — re-check the composed name so a future
+      // change there can't reintroduce a traversal.
+      if (!isTopLevelEntryName(fileName)) {
+        console.warn(UNSAFE_MEMBER_WARNING);
+        // eslint-disable-next-line no-await-in-loop -- same sequential loop
+        await unlink(tempPath).catch(() => {});
+        continue;
+      }
+      const filePath = join(assetDir, fileName);
       // eslint-disable-next-line no-await-in-loop -- sequential rename keeps peak
       // disk/IO bounded; an export has a few hundred assets, not millions.
       await rename(tempPath, filePath);
@@ -359,4 +408,4 @@ export async function importChatgptZip(zipPath, { tags, skipEmpty } = {}) {
   };
 }
 
-export const __test = { sniffExtension, extFromName, datAssetId, makeAssetResolver, cleanupExtractedAssets };
+export const __test = { sniffExtension, extFromName, datAssetId, isSafeDatMember, makeAssetResolver, cleanupExtractedAssets };
