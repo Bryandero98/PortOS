@@ -252,7 +252,13 @@ describe('<MusicDesigner>', () => {
       fireEvent.click(screen.getByRole('button', { name: /generate lyrics/i }));
 
       await waitFor(() => expect(screen.getByLabelText('Lyrics')).toHaveValue('[verse]\nrain on the window'));
-      expect(screen.getByText(/manual composition structure/i)).toBeInTheDocument();
+      const lyricsField = screen.getByLabelText('Lyrics');
+      const guide = screen.getByText(/manual composition structure/i);
+      expect(guide).toBeInTheDocument();
+      expect(guide.closest('details')).not.toHaveAttribute('open');
+      expect(lyricsField.compareDocumentPosition(guide)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      fireEvent.click(guide);
+      expect(guide.closest('details')).toHaveAttribute('open');
       expect(api.generateLyrics).toHaveBeenCalledWith({
         description: 'Lush pads over a broken beat.',
         guidance: 'about leaving at dawn',
