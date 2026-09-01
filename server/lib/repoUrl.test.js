@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { posixPath } from './testHelper.js';
 
 import { join } from 'path';
-import { parseRepoUrl, isRepoUrl, repoCloneUrl, repoBrowseUrl, parseGitHubUrl, isGitHubRepoUrl } from './repoUrl.js';
+import { MAX_REPO_PATH_DEPTH, parseRepoUrl, isRepoUrl, repoCloneUrl, repoBrowseUrl, parseGitHubUrl, isGitHubRepoUrl } from './repoUrl.js';
 
 const REPOS_ROOT = '/data/repos';
 const clonePath = (url) => {
@@ -135,6 +135,48 @@ describe('parseRepoUrl across hosts', () => {
       .toMatchObject({ owner: 'example-group', repo: 'example-repo' });
     expect(parseRepoUrl('https://github.com/example-owner/example-repo/tree/main'))
       .toMatchObject({ owner: 'example-owner', repo: 'example-repo' });
+  });
+
+  // Without a depth cap, a project asset URL reads as a DEEPER NAMESPACE, and
+  // the cloner then manufactures directories inside the existing acme/widgets
+  // checkout before the clone of "pipeline.svg" fails.
+  it('reads a GitLab project asset path as the project, not a deeper namespace', () => {
+    for (const url of [
+      'https://gitlab.com/acme/widgets/badges/main/pipeline.svg',
+      'https://gitlab.com/acme/widgets/uploads/abc/screenshot.png',
+      'https://gitlab.com/acme/widgets/edit',
+    ]) {
+      expect(parseRepoUrl(url), url).toMatchObject({ owner: 'acme', repo: 'widgets' });
+    }
+  });
+
+  it('caps the GitLab namespace depth instead of walking an unbounded path', () => {
+    expect(parseRepoUrl('https://gitlab.com/g1/g2/g3/example-repo'))
+      .toMatchObject({ owner: 'g1/g2/g3', repo: 'example-repo' });
+    // Past the cap the extra segments are a deep link, not a namespace — and an
+    // unbounded owner would also push the clone below the staging sweep's reach.
+    expect(parseRepoUrl('https://gitlab.com/g1/g2/g3/g4/example-repo')).toBeNull();
+  });
+
+  it('allows a dot in a GitLab group path but never in a GitHub owner', () => {
+    expect(parseRepoUrl('https://gitlab.com/foo.bar/widgets'))
+      .toMatchObject({ owner: 'foo.bar', repo: 'widgets' });
+    // A dotted GitHub owner is not a real login, and admitting one would let
+    // `github.com/gitlab.com/x` land on the gitlab clone root (GitHub clones use
+    // the flat layout, so its owner segment IS the top level).
+    expect(parseRepoUrl('https://github.com/gitlab.com/foo')).toBeNull();
+  });
+
+  // WHATWG maps a backslash to a slash inside the authority, so a browser
+  // resolves this to evil.example.com while a naive regex reads github.com.
+  it('refuses a backslash that would spoof the host past the anchor', () => {
+    expect(parseRepoUrl(String.raw`https://evil.example.com\@github.com/example-owner/example-repo`)).toBeNull();
+    expect(parseRepoUrl(String.raw`https://github.com\evil.example.com/o/r`)).toBeNull();
+  });
+
+  it('derives the clone-path depth bound from the host table', () => {
+    // repos/<host>/<group>/<subgroup>/<subsubgroup>/<repo>
+    expect(MAX_REPO_PATH_DEPTH).toBe(5);
   });
 
   it('refuses an unsupported host and a path-unsafe GitLab namespace', () => {

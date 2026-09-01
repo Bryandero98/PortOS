@@ -328,9 +328,37 @@ describe('LinksTab on-demand repo re-study', () => {
 
     expect(studyBrainLink).toHaveBeenCalledWith(
       'a',
-      expect.objectContaining({ pull: true, studyContext: 'look at its offline sync' }),
+      // targetAppId is asserted explicitly: dropping it from studyPayload() would
+      // silently fall the server back to PortOS rather than fail.
+      { pull: true, studyContext: 'look at its offline sync', targetAppId: 'portos-default' },
       { silent: true },
     );
+  });
+
+  it('pre-fills the brief with the one the last study was given', async () => {
+    getBrainLinks.mockResolvedValue({
+      links: [link('a', 'cloned', {
+        localPath: '/repos/example/a',
+        repoStudy: { taskId: 'old', studyContext: 'the previous brief' },
+      })],
+    });
+    const { container } = await renderTab();
+    await act(async () => { screen.getByRole('button', { name: /update & study/i }).click(); });
+
+    expect(container.querySelector('#restudy-a-study-context').value).toBe('the previous brief');
+  });
+
+  it('patches the row with the updated link so the queued chip survives a re-render', async () => {
+    const queued = { ...cloned(), repoStudy: { taskId: 'task-1', queuedAt: '2026-01-02T00:00:00.000Z' } };
+    studyBrainLink.mockResolvedValue({ taskId: 'task-1', pulled: { ok: true }, link: queued });
+    await openStudyForm();
+
+    await act(async () => { screen.getAllByRole('button', { name: /update & study/i }).at(-1).click(); });
+
+    // The form closes and the row now links the queued study — from local state,
+    // with no refetch.
+    expect(screen.getByRole('link', { name: /repo study/i })).toBeTruthy();
+    expect(getBrainLinks).toHaveBeenCalledTimes(1);
   });
 
   it('warns rather than claiming success when the pull failed but the study queued', async () => {

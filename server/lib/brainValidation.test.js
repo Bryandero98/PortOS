@@ -509,16 +509,36 @@ describe('brainValidation.js', () => {
         title: 'Example Repository',
         description: 'A great example repo',
         note: 'Review before sharing with the team',
-        linkType: 'github',
+        linkType: 'repo',
         tags: ['reference'],
         isRepo: true,
-        gitHubOwner: 'example',
-        gitHubRepo: 'repo',
+        repoHost: 'gitlab.com',
+        repoOwner: 'example/group',
+        repoName: 'repo',
         cloneStatus: 'cloned',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z'
       };
       const result = linkRecordSchema.safeParse(record);
+      expect(result.success).toBe(true);
+    });
+
+    // The federation contract the compatibility shim exists for: a record
+    // written before migration 330 — or arriving from a peer still on the
+    // GitHub-only field names — must still validate here.
+    it('should validate a pre-migration GitHub-only link record', () => {
+      const result = linkRecordSchema.safeParse({
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        url: 'https://github.com/example/repo',
+        title: 'Example Repository',
+        linkType: 'github',
+        isGitHubRepo: true,
+        gitHubOwner: 'example',
+        gitHubRepo: 'repo',
+        cloneStatus: 'cloned',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z'
+      });
       expect(result.success).toBe(true);
     });
 

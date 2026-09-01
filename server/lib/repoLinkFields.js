@@ -4,7 +4,7 @@
  *
  * The fields used to be GitHub-only (`isGitHubRepo` / `gitHubOwner` /
  * `gitHubRepo`). They are now host-generic (`isRepo` / `repoHost` / `repoOwner`
- * / `repoName`) so gitlab.com repos are first-class, and migration 328 rewrites
+ * / `repoName`) so gitlab.com repos are first-class, and migration 330 rewrites
  * every stored link.
  *
  * PortOS is DISTRIBUTED and brain links FEDERATE verbatim between peers, so a

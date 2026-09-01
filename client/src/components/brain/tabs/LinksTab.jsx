@@ -60,7 +60,7 @@ const REPO_TYPE_COLOR = 'bg-purple-500/20 text-purple-400 border-purple-500/30';
 
 const LINK_TYPE_COLORS = {
   repo: REPO_TYPE_COLOR,
-  // Pre-multi-host records still carry `github`; migration 328 renames the
+  // Pre-multi-host records still carry `github`; migration 330 renames the
   // stored value but a peer on older code can still federate one in.
   github: REPO_TYPE_COLOR,
   article: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
@@ -691,6 +691,11 @@ export default function LinksTab({ onRefresh }) {
                       className="px-2 py-1 bg-port-bg border border-port-border rounded text-white text-sm"
                     >
                       <option value="repo">Repository</option>
+                      {/* Pre-multi-host records (and any federated in from a peer on
+                          older code) still carry `github`. Without an option to match,
+                          the select renders BLANK on those rows — the value is intact
+                          but it reads as data loss. */}
+                      {editForm.linkType === 'github' && <option value="github">GitHub (legacy)</option>}
                       <option value="article">Article</option>
                       <option value="documentation">Documentation</option>
                       <option value="tool">Tool</option>

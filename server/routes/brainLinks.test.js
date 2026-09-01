@@ -248,6 +248,21 @@ describe('POST /api/brain/links/:id/study', () => {
     expect(brainService.updateLink).not.toHaveBeenCalled();
   });
 
+  it('maps a missing target app and an unknown reason to distinct errors', async () => {
+    restudyRepoLink.mockResolvedValue({ queued: false, reason: 'app-not-found' });
+    const missingApp = await request(app).post('/api/brain/links/repo-link/study').send({});
+    expect(missingApp.status).toBe(400);
+    expect(missingApp.body.code).toBe('APP_NOT_FOUND');
+
+    // Anything the table doesn't name falls back to the clone-gone error rather
+    // than to whichever branch happened to be last.
+    restudyRepoLink.mockResolvedValue({ queued: false, reason: 'not-cloned' });
+    const gone = await request(app).post('/api/brain/links/repo-link/study').send({});
+    expect(gone.status).toBe(400);
+    expect(gone.body.code).toBe('PATH_NOT_FOUND');
+    expect(brainService.updateLink).not.toHaveBeenCalled();
+  });
+
   it('rejects a link that has no clone to study', async () => {
     brainService.getLinkById.mockResolvedValue({ ...cloned(), cloneStatus: 'none', localPath: null });
 

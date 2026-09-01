@@ -11,7 +11,7 @@ import { existsSync } from 'fs';
 import { access, mkdtemp, readdir, rename, rm } from 'fs/promises';
 import { dirname, join } from 'path';
 import { ensureDir, PATHS } from '../lib/fileUtils.js';
-import { REPO_HOSTS, parseRepoUrl, repoCloneUrl } from '../lib/repoUrl.js';
+import { MAX_REPO_PATH_DEPTH, REPO_HOSTS, parseRepoUrl, repoCloneUrl } from '../lib/repoUrl.js';
 
 // Default directory for cloned repos (can be configured in settings)
 const DEFAULT_CLONE_DIR = PATHS.repos;
@@ -171,11 +171,18 @@ export async function cloneRepo(url, options = {}) {
  *
  * The sweep RECURSES because staging sits beside the checkout it will become,
  * and that is no longer always one level down: a namespaced host adds a
- * hostname level and a GitLab subgroup adds another. `MAX_STAGING_DEPTH` bounds
- * it to the deepest layout `repoSubPath` can produce, so the sweep never walks
- * into the clones themselves.
+ * hostname level and each GitLab subgroup adds another. The bound is DERIVED
+ * from the host table's namespace caps rather than hardcoded — a hand-picked
+ * number silently stops reaping the moment a host's `maxDepth` is raised, and
+ * an unreaped interrupted clone is hundreds of MB that nothing ever frees.
+ *
+ * Staging sits beside the repo segment, so the sweep must be able to LIST the
+ * directory one level above the deepest repo — and `sweep` is called with
+ * `depth = level + 1` (the repos root itself is depth 1). Recursing into that
+ * directory therefore needs the guard to still pass at depth
+ * `MAX_REPO_PATH_DEPTH - 1`, which makes the bound `MAX_REPO_PATH_DEPTH` exactly.
  */
-const MAX_STAGING_DEPTH = 4;
+const MAX_STAGING_DEPTH = MAX_REPO_PATH_DEPTH;
 
 // A directory holding `.git` is a finished clone, not a namespace level —
 // descending into it would walk the studied repo's whole source tree.

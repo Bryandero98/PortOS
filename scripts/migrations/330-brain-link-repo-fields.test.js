@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import migration from './328-brain-link-repo-fields.js';
+import migration from './330-brain-link-repo-fields.js';
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
-describe('migration 328 — brain link repository fields', () => {
+describe('migration 330 — brain link repository fields', () => {
   let rootDir;
   let linksDir;
 

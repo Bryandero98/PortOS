@@ -18,20 +18,37 @@
 // has to be decided deliberately for the new host rather than inherited from
 // whichever existing host the branch happened to compare against.
 //
-//   provider          stable id stored on a link record (`repoHost` holds the
-//                     hostname itself)
-//   nestedNamespaces  the host nests groups arbitrarily (GitLab subgroups), so
-//                     everything before the last path segment is the namespace.
-//                     GitHub has no subgroups: anything past owner/repo is a
-//                     deep link.
-//   flatClonePath     LEGACY CARVE-OUT — clone to `<owner>/<repo>` with no
-//                     hostname level, so clones made before PortOS supported a
-//                     second host stay exactly where their link record says they
-//                     are. Never set this for a newly added host.
+//   provider           stable id stored on a link record (`repoHost` holds the
+//                      hostname itself)
+//   namespace.maxDepth how many path segments before the project may be the
+//                      namespace. 1 = no subgroups (GitHub: anything past
+//                      owner/repo is a deep link). GitLab nests subgroups, but
+//                      the depth is CAPPED rather than unbounded: a bare GitLab
+//                      URL carries no marker separating `group/sub/project` from
+//                      `group/project/route/...`, so an unbounded walk reads a
+//                      project asset URL as a deep namespace and manufactures
+//                      directories INSIDE an existing clone. The cap also bounds
+//                      the on-disk layout, which `repoCloner`'s staging sweep
+//                      derives its recursion depth from.
+//   namespace.allowDots whether a namespace segment may contain a dot. GitHub
+//                      logins may not; GitLab group paths may. Keeping it off
+//                      for the flat-clone host is also what makes a hostname
+//                      collision impossible (`github.com/gitlab.com/x` cannot
+//                      parse, so it cannot land on another host's clone root).
+//   flatClonePath      LEGACY CARVE-OUT — clone to `<owner>/<repo>` with no
+//                      hostname level, so clones made before PortOS supported a
+//                      second host stay exactly where their link record says
+//                      they are. Never set this for a newly added host.
 export const REPO_HOSTS = Object.freeze({
-  'github.com': { provider: 'github', nestedNamespaces: false, flatClonePath: true },
-  'gitlab.com': { provider: 'gitlab', nestedNamespaces: true, flatClonePath: false },
+  'github.com': { provider: 'github', namespace: { maxDepth: 1, allowDots: false }, flatClonePath: true },
+  'gitlab.com': { provider: 'gitlab', namespace: { maxDepth: 3, allowDots: true }, flatClonePath: false },
 });
+
+/** The deepest `<host>/<namespace…>/<repo>` layout any host in the table produces. */
+export const MAX_REPO_PATH_DEPTH = Object.values(REPO_HOSTS).reduce(
+  (deepest, { namespace, flatClonePath }) => Math.max(deepest, (flatClonePath ? 0 : 1) + namespace.maxDepth + 1),
+  0,
+);
 
 // The owner/repo pair is a PATH OPERAND, not just a label: the cloner clones
 // into `join(reposDir, …owner, repo)` and the resulting `localPath` is later
@@ -39,10 +56,13 @@ export const REPO_HOSTS = Object.freeze({
 // matched against the character sets the hosts actually allow, NOT "anything
 // but a slash" — the loose form parsed `https://github.com/../evil` as owner
 // `..`, which resolves OUTSIDE the managed clone root.
-//   owner: a login (or a GitLab group/subgroup) — alphanumeric with internal
-//          hyphens, no dots, so no segment can ever be `.` or `..`
-//   repo:  alphanumerics plus `_`, `.`, `-`
+//   owner: a login (or a GitLab group/subgroup). Both forms REQUIRE a leading
+//          alphanumeric, which is what makes `.` and `..` unrepresentable; the
+//          dotted form is gated per host (see `namespace.allowDots`).
+//   repo:  alphanumerics plus `_`, `.`, `-` — a leading dot is legal (`.github`
+//          is a real repository), so dot segments are rejected explicitly below.
 const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+const DOTTED_OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+$/;
 
 // `REPO_RE`'s character class admits the dot segments `.` and `..`, which would
@@ -66,6 +86,11 @@ const RESERVED_PATH_SEGMENTS = new Set([
   'tree', 'blob', 'raw', 'commit', 'commits', 'compare', 'branches', 'tags',
   'releases', 'issues', 'pull', 'pulls', 'merge_requests', 'wiki', 'wikis',
   'actions', 'pipelines', 'settings', 'activity', 'network', 'graphs', 'blame',
+  // GitLab serves these directly off the project path with no `/-/` marker, so
+  // without them a badge or upload URL parses as a deeper namespace.
+  'badges', 'uploads', 'archive', 'edit', 'forks', 'starrers', 'members',
+  'artifacts', 'jobs', 'boards', 'milestones', 'labels', 'snippets',
+  'environments', 'analytics', 'insights', 'hooks', 'container_registry',
 ]);
 
 /**
@@ -82,6 +107,13 @@ const RESERVED_PATH_SEGMENTS = new Set([
 export function parseRepoUrl(url) {
   if (!url) return null;
   const normalized = String(url).trim();
+  // A backslash defeats the host anchor: WHATWG maps `\` to `/` inside the
+  // authority, so `https://evil.example.com\@github.com/o/r` resolves to
+  // evil.example.com in a browser while the regex below reads github.com. The
+  // clone would still go to the real github.com (repoCloneUrl rebuilds from the
+  // parsed host), but the link would be STORED and rendered as a trusted repo
+  // whose href points at the attacker.
+  if (normalized.includes('\\')) return null;
 
   const match = normalized.match(SSH_RE) || normalized.match(HTTP_RE);
   if (!match) return null;
@@ -104,11 +136,17 @@ export function parseRepoUrl(url) {
   }
   if (segments.length < 2) return null;
 
-  const ownerSegments = hostConfig.nestedNamespaces ? segments.slice(0, -1) : segments.slice(0, 1);
-  const repo = (hostConfig.nestedNamespaces ? segments[segments.length - 1] : segments[1])
-    .replace(/\.git$/i, '');
+  const { maxDepth, allowDots } = hostConfig.namespace;
+  // Past the cap the path is a deep link into the project, not a deeper
+  // namespace — reading it as one would clone into (and create directories
+  // inside) an existing checkout.
+  if (segments.length > maxDepth + 1) return null;
 
-  if (!ownerSegments.every(segment => OWNER_RE.test(segment))) return null;
+  const ownerSegments = segments.slice(0, -1);
+  const repo = segments[segments.length - 1].replace(/\.git$/i, '');
+
+  const ownerPattern = allowDots ? DOTTED_OWNER_RE : OWNER_RE;
+  if (!ownerSegments.every(segment => ownerPattern.test(segment))) return null;
   if (!repo || DOT_SEGMENTS.has(repo) || !REPO_RE.test(repo)) return null;
 
   return {

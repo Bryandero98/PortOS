@@ -439,7 +439,7 @@ export const reviewOutputSchema = z.object({
 // =============================================================================
 
 // Link type enum. `github` predates multi-host repo support and is retained so
-// links stored (or federated from a peer) before migration 328 still validate;
+// links stored (or federated from a peer) before migration 330 still validate;
 // `repo` is what new links are written with.
 export const linkTypeEnum = z.enum(['repo', 'github', 'article', 'documentation', 'tool', 'reference', 'other']);
 

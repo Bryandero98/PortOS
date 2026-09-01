@@ -32,7 +32,7 @@ import { join } from 'path';
 import { readJSONFile } from '../../server/lib/fileUtils.js';
 import { writeJsonAtomic } from './_lib.js';
 
-const LABEL = 'migration 328';
+const LABEL = 'migration 330';
 
 /** The upgraded record, or null when nothing needs to change. */
 export function upgradeLinkRecord(record) {

@@ -188,14 +188,18 @@ describe('reapStaleCloneStaging', () => {
     expect(readdir).not.toHaveBeenCalledWith(LOCAL_PATH, expect.anything());
   });
 
-  it('reaps staging nested under a namespaced host and a GitLab subgroup', async () => {
+  // The DEEPEST layout the host table allows: hostname + the full subgroup cap.
+  // A hardcoded sweep bound stops one level short of this and leaks the staging
+  // tree of every interrupted clone in a deeply-nested group.
+  it('reaps staging nested under a namespaced host and the deepest allowed subgroup path', async () => {
     const hostDir = join(REPOS_DIR, 'gitlab.com');
     const groupDir = join(hostDir, 'example-group');
-    const subgroupDir = join(groupDir, 'example-sub');
+    const subgroupDir = join(groupDir, 'example-sub', 'example-sub-sub');
     mockTree({
       [REPOS_DIR]: [directory('gitlab.com')],
       [hostDir]: [directory('example-group')],
       [groupDir]: [directory('example-sub')],
+      [join(groupDir, 'example-sub')]: [directory('example-sub-sub')],
       [subgroupDir]: [directory('.portos-clone-1000000000000-old123')],
     });
 
