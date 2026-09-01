@@ -125,14 +125,16 @@ const MTPLX_RUNTIME_BOOTSTRAP_ERROR = 'MTPLX\'s own Python runtime failed to boo
  * launch. PM2 appends to its configured files across process deletion, so
  * stable, app-specific paths are truncated before every start.
  */
-const MTPLX_LOG_FILES = {
+const DEFAULT_MTPLX_LOG_FILES = {
   stdout: join(tmpdir(), 'portos-mtplx-out.log'),
   stderr: join(tmpdir(), 'portos-mtplx-error.log'),
 };
 
+let mtplxLogFiles = DEFAULT_MTPLX_LOG_FILES;
+
 const resetMtplxLogs = async () => {
   const results = await Promise.all(
-    Object.entries(MTPLX_LOG_FILES).map(([stream, path]) => (
+    Object.entries(mtplxLogFiles).map(([stream, path]) => (
       writeFile(path, '')
         .then(() => true)
         .catch((error) => {
@@ -491,8 +493,8 @@ export async function startMtplxServer(options = {}) {
     '--name', MTPLX_APP,
     '--interpreter', 'none',
     '--no-autorestart',
-    '--output', MTPLX_LOG_FILES.stdout,
-    '--error', MTPLX_LOG_FILES.stderr,
+    '--output', mtplxLogFiles.stdout,
+    '--error', mtplxLogFiles.stderr,
     '--',
     ...args,
   ]);
@@ -515,10 +517,10 @@ export async function startMtplxServer(options = {}) {
     const lines = `${pm2Logs?.stderr || pm2Logs?.stdout || ''}`.split('\n').map((l) => l.trimEnd()).filter(Boolean);
     const currentLines = logsReset ? lines : [];
     for (const line of currentLines) appendLog(line);
-    const tail = (currentLines.length ? currentLines : (logsReset ? daemon.snapshotLogs() : [])).slice(-4).join(' | ');
+    const tail = (currentLines.length ? currentLines : daemon.snapshotLogs()).slice(-4).join(' | ');
     lastExitError = `PM2 status: ${currentProc.status}`;
     const message = logsReset && isMtplxRuntimeBootstrapFailure(currentLines.join('\n'))
-      ? MTPLX_RUNTIME_BOOTSTRAP_ERROR
+      ? `${MTPLX_RUNTIME_BOOTSTRAP_ERROR}${tail ? ` Last output: ${tail}` : ''}`
       : `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`;
 
     await execPm2(['delete', MTPLX_APP]).catch(() => {});
@@ -752,8 +754,13 @@ export function _resetMtplxServerStateForTests({
   relaunchReadyTimeout,
   relaunchPoll,
   idleMinutes = 0,
+  logFiles,
 } = {}) {
   idleMinutesOverride = idleMinutes;
+  mtplxLogFiles = logFiles ? {
+    stdout: logFiles.stdout || DEFAULT_MTPLX_LOG_FILES.stdout,
+    stderr: logFiles.stderr || DEFAULT_MTPLX_LOG_FILES.stderr,
+  } : DEFAULT_MTPLX_LOG_FILES;
   currentConfig = null;
   daemon.resetLogs();
   lastExitError = null;
