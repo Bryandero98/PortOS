@@ -8,6 +8,14 @@ const api = vi.hoisted(() => ({
   getProviderStatuses: vi.fn(),
   getProviderRuntimes: vi.fn(),
   getProviderReadiness: vi.fn(),
+  // Kept pending by default so existing page tests that use a Codex fixture do
+  // not accidentally assert a subscription account state. Subscription-specific
+  // tests replace this with a bounded readiness response.
+  getCodexAccount: vi.fn(() => new Promise(() => {})),
+  getCodexModels: vi.fn(),
+  startCodexLogin: vi.fn(),
+  cancelCodexLogin: vi.fn(),
+  codexLogout: vi.fn(),
   getInstances: vi.fn(),
   getSampleProviders: vi.fn(),
   createProvider: vi.fn(),
@@ -90,6 +98,7 @@ describe('AIProviders page load error handling', () => {
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
     api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getCodexAccount.mockImplementation(() => new Promise(() => {}));
     localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
   });
 
@@ -952,6 +961,73 @@ describe('provider reasoning defaults', () => {
     expect(payload).not.toHaveProperty('temperature');
     expect(payload).not.toHaveProperty('topP');
     expect(payload).not.toHaveProperty('thinking');
+  });
+});
+
+describe('Codex subscription text read-risk gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'codex',
+        name: 'Codex',
+        type: 'cli',
+        command: 'codex',
+        enabled: true,
+        textTransport: 'codex-app-server',
+      }],
+      activeProvider: 'codex',
+    });
+  });
+
+  it('requires the read-risk acknowledgement before enabling generic text calls', async () => {
+    renderPage('/ai/edit/codex');
+
+    const acknowledgement = await screen.findByLabelText(/Codex may read local files/i);
+    const enable = screen.getByLabelText(/serve generic text calls/i);
+    expect(acknowledgement).not.toBeChecked();
+    expect(enable).toBeDisabled();
+
+    fireEvent.click(acknowledgement);
+    expect(enable).toBeEnabled();
+    fireEvent.click(enable);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        textTransportEnabled: true,
+        textTransportReadRiskAcknowledged: true,
+      }),
+    ));
+  });
+
+  it('turns the transport back off when the acknowledgement is withdrawn', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'codex',
+        name: 'Codex',
+        type: 'cli',
+        command: 'codex',
+        enabled: true,
+        textTransport: 'codex-app-server',
+        textTransportEnabled: true,
+        textTransportReadRiskAcknowledged: true,
+      }],
+      activeProvider: 'codex',
+    });
+    renderPage('/ai/edit/codex');
+
+    const acknowledgement = await screen.findByLabelText(/Codex may read local files/i);
+    const enable = screen.getByLabelText(/serve generic text calls/i);
+    expect(enable).toBeChecked();
+    fireEvent.click(acknowledgement);
+    expect(enable).not.toBeChecked();
+    expect(enable).toBeDisabled();
   });
 });
 

@@ -26,11 +26,20 @@ describe('the transport capability gate', () => {
     // or updating PortOS would start billing a ChatGPT plan on its own.
     expect(providerDeclaresCodexTextTransport(CODEX_CLI)).toBe(true);
     expect(isCodexTextTransportEnabled(CODEX_CLI)).toBe(false);
-    expect(isCodexTextTransportEnabled({ ...CODEX_CLI, textTransportEnabled: true })).toBe(true);
+    expect(isCodexTextTransportEnabled({ ...CODEX_CLI, textTransportEnabled: true })).toBe(false);
+    expect(isCodexTextTransportEnabled({
+      ...CODEX_CLI,
+      textTransportEnabled: true,
+      textTransportReadRiskAcknowledged: true,
+    })).toBe(true);
   });
 
   it('refuses a record that is not the Codex harness, however it is labelled', () => {
-    const enabled = { ...CODEX_CLI, textTransportEnabled: true };
+    const enabled = {
+      ...CODEX_CLI,
+      textTransportEnabled: true,
+      textTransportReadRiskAcknowledged: true,
+    };
     // An API record authenticates with its own stored key and has nothing to do
     // with a subscription.
     expect(isCodexTextTransportEnabled({ ...enabled, type: 'api' })).toBe(false);
@@ -43,7 +52,11 @@ describe('the transport capability gate', () => {
 
   it('matches a renamed clone by its command path', () => {
     expect(isCodexTextTransportEnabled({
-      ...CODEX_CLI, id: 'codex-review', command: '/opt/homebrew/bin/codex', textTransportEnabled: true,
+      ...CODEX_CLI,
+      id: 'codex-review',
+      command: '/opt/homebrew/bin/codex',
+      textTransportEnabled: true,
+      textTransportReadRiskAcknowledged: true,
     })).toBe(true);
   });
 });
@@ -56,7 +69,7 @@ describe('the generic-text safety envelope', () => {
       approvalPolicy: 'never',
       sandbox: 'read-only',
       ephemeral: true,
-      config: { mcp_servers: {}, tools: { web_search: false }, web_search: false },
+      config: { mcp_servers: {}, tools: { web_search: false } },
     });
   });
 });
