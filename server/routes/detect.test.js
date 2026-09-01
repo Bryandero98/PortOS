@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
-import { mkdtempSync, realpathSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { realpathSync } from 'fs';
+import { homedir } from 'os';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import { request } from '../lib/testHelper.js';
 import detectRoutes from './detect.js';
@@ -48,14 +47,21 @@ describe('Detect Routes', () => {
   });
 });
 
+// A directory that exists on the host but sits OUTSIDE DEFAULT_WORKSPACE_ROOTS,
+// so the only thing that can admit it is PORTOS_WORKSPACE_ROOTS. Deliberately not
+// a mkdtemp() directory: `tmpdir()` is itself a default root on Linux (/tmp) and
+// Windows, so a temp dir is always allowed there and would make the refusal test
+// pass only on macOS. realpathSync because macOS's /etc is a symlink to
+// /private/etc and the route realpath()s before checking containment.
+const OUTSIDE_DEFAULT_ROOTS = realpathSync(
+  process.platform === 'win32' ? (process.env.SystemRoot || 'C:\\Windows') : '/etc'
+);
+
 // PORTOS_WORKSPACE_ROOTS is read once at module load, so these stub the env and
 // re-import a fresh copy of the route graph. The module-registry reset drops the
 // hoisted vi.mock above with it, so the AI service is re-mocked per load via
 // vi.doMock (which applies to subsequent dynamic imports).
 describe('POST /api/detect/ai workspace-root confinement', () => {
-  let roots;
-  let outside;
-
   const loadApp = async (workspaceRoots) => {
     vi.resetModules();
     vi.stubEnv('PORTOS_WORKSPACE_ROOTS', workspaceRoots);
@@ -70,48 +76,39 @@ describe('POST /api/detect/ai workspace-root confinement', () => {
     return { app: scoped, detect };
   };
 
-  beforeEach(() => {
-    // realpathSync so macOS's /var -> /private/var symlink doesn't make the
-    // configured root and the resolved request path disagree.
-    roots = realpathSync(mkdtempSync(join(tmpdir(), 'portos-roots-')));
-    outside = realpathSync(mkdtempSync(join(tmpdir(), 'portos-outside-')));
-  });
-
   afterEach(() => {
     vi.doUnmock('../services/aiDetect.js');
     vi.unstubAllEnvs();
     vi.resetModules();
-    rmSync(roots, { recursive: true, force: true });
-    rmSync(outside, { recursive: true, force: true });
   });
 
   it('refuses a path outside the configured roots without invoking the provider', async () => {
-    const { app: scoped, detect } = await loadApp(roots);
+    const { app: scoped, detect } = await loadApp(homedir());
 
     const response = await request(scoped)
       .post('/api/detect/ai')
-      .send({ path: outside });
+      .send({ path: OUTSIDE_DEFAULT_ROOTS });
 
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE_ROOTS' });
     // The refusal must not echo the rejected filesystem path back to the caller.
-    expect(JSON.stringify(response.body)).not.toContain(outside);
+    expect(JSON.stringify(response.body)).not.toContain(OUTSIDE_DEFAULT_ROOTS);
     // The regression this uniquely catches: no file was read and nothing was
     // shipped to a (possibly hosted) AI provider.
     expect(detect).not.toHaveBeenCalled();
   });
 
-  it('allows a path inside the configured roots', async () => {
-    const { app: scoped, detect } = await loadApp(roots);
+  it('allows a path the configured roots admit but the defaults would not', async () => {
+    const { app: scoped, detect } = await loadApp(OUTSIDE_DEFAULT_ROOTS);
     detect.mockResolvedValue({ success: true, app: { name: 'example' } });
 
     const response = await request(scoped)
       .post('/api/detect/ai')
-      .send({ path: roots });
+      .send({ path: OUTSIDE_DEFAULT_ROOTS });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ success: true, app: { name: 'example' } });
-    expect(detect).toHaveBeenCalledWith(roots, undefined);
+    expect(detect).toHaveBeenCalledWith(OUTSIDE_DEFAULT_ROOTS, undefined);
   });
 
   it('stays unrestricted when PORTOS_WORKSPACE_ROOTS is unset', async () => {
@@ -120,9 +117,9 @@ describe('POST /api/detect/ai workspace-root confinement', () => {
 
     const response = await request(scoped)
       .post('/api/detect/ai')
-      .send({ path: outside });
+      .send({ path: OUTSIDE_DEFAULT_ROOTS });
 
     expect(response.status).toBe(200);
-    expect(detect).toHaveBeenCalledWith(outside, undefined);
+    expect(detect).toHaveBeenCalledWith(OUTSIDE_DEFAULT_ROOTS, undefined);
   });
 });
