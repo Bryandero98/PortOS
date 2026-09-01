@@ -1,3 +1,4 @@
+import { readFile, writeFile } from 'fs/promises';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getMtplxServerStatus,
@@ -251,6 +252,48 @@ describe('mtplxServerManager', () => {
       expect(start[start.indexOf('--output') + 1]).toMatch(/portos-mtplx-out\.log$/);
       expect(start[start.indexOf('--error') + 1]).toMatch(/portos-mtplx-error\.log$/);
       expect(err.message).not.toContain('returned non-zero exit status 1');
+      expect(pm2State).toBeNull();
+    });
+
+    it('does not classify bootstrap text left by a previous launch', async () => {
+      await startMtplxServer();
+      const firstStart = execPm2Calls.find((args) => args[0] === 'start');
+      const outputPath = firstStart[firstStart.indexOf('--output') + 1];
+      const errorPath = firstStart[firstStart.indexOf('--error') + 1];
+      await stopMtplxServer();
+
+      const staleBootstrap = [
+        'runtime is not installed',
+        'Bootstrapping with pip',
+        'python3.13 -m ensurepip --upgrade --default-pip',
+        "Command '['python3.13', '-m', 'ensurepip']' returned non-zero exit status 1",
+      ].join('\n');
+      await writeFile(outputPath, staleBootstrap);
+      await writeFile(errorPath, staleBootstrap);
+
+      execPm2Calls = [];
+      pm2Module.execPm2.mockImplementation(async (args) => {
+        execPm2Calls.push(args);
+        if (args[0] === 'start') {
+          pm2State = { name: MTPLX_APP, status: 'errored', pid: null, args: [] };
+        }
+        if (args[0] === 'delete') pm2State = null;
+        if (args[0] === 'logs') {
+          return {
+            stdout: await readFile(outputPath, 'utf8'),
+            stderr: await readFile(errorPath, 'utf8'),
+          };
+        }
+        return { stdout: '', stderr: '' };
+      });
+
+      const err = await startMtplxServer().catch((error) => error);
+
+      expect(err).toMatchObject({ code: 'MTPLX_EXITED' });
+      expect(err.message).toMatch(/MTPLX exited immediately/);
+      expect(err.message).not.toMatch(/Homebrew/);
+      expect(await readFile(outputPath, 'utf8')).toBe('');
+      expect(await readFile(errorPath, 'utf8')).toBe('');
       expect(pm2State).toBeNull();
     });
 

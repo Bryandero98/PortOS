@@ -130,9 +130,19 @@ const MTPLX_LOG_FILES = {
   stderr: join(tmpdir(), 'portos-mtplx-error.log'),
 };
 
-const resetMtplxLogs = () => Promise.all(
-  Object.values(MTPLX_LOG_FILES).map((path) => writeFile(path, '')),
-);
+const resetMtplxLogs = async () => {
+  const results = await Promise.all(
+    Object.entries(MTPLX_LOG_FILES).map(([stream, path]) => (
+      writeFile(path, '')
+        .then(() => true)
+        .catch((error) => {
+          console.error(`❌ MTPLX: could not reset ${stream} startup log (${error?.code || 'unknown'}); bootstrap diagnosis disabled for this launch`);
+          return false;
+        })
+    )),
+  );
+  return results.every(Boolean);
+};
 
 const isMtplxRuntimeBootstrapFailure = (output) => {
   const text = String(output ?? '');
@@ -475,7 +485,7 @@ export async function startMtplxServer(options = {}) {
   clearJlistCache();
 
   console.log(`🚄 MTPLX starting on ${DEFAULT_HOST}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}${tuningArgs.length ? ` with ${tuningArgs.join(' ')}` : ''}`);
-  await resetMtplxLogs();
+  const logsReset = await resetMtplxLogs();
   await execPm2([
     'start', binaryPath,
     '--name', MTPLX_APP,
@@ -503,10 +513,11 @@ export async function startMtplxServer(options = {}) {
   if (currentProc && ['errored', 'stopped', 'not_found'].includes(currentProc.status)) {
     const pm2Logs = await execPm2(['logs', MTPLX_APP, '--nostream', '--lines', '15']).catch(() => null);
     const lines = `${pm2Logs?.stderr || pm2Logs?.stdout || ''}`.split('\n').map((l) => l.trimEnd()).filter(Boolean);
-    for (const line of lines) appendLog(line);
-    const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
+    const currentLines = logsReset ? lines : [];
+    for (const line of currentLines) appendLog(line);
+    const tail = (currentLines.length ? currentLines : (logsReset ? daemon.snapshotLogs() : [])).slice(-4).join(' | ');
     lastExitError = `PM2 status: ${currentProc.status}`;
-    const message = isMtplxRuntimeBootstrapFailure(lines.join('\n'))
+    const message = logsReset && isMtplxRuntimeBootstrapFailure(currentLines.join('\n'))
       ? MTPLX_RUNTIME_BOOTSTRAP_ERROR
       : `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`;
 
