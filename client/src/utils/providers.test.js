@@ -51,6 +51,7 @@ import {
   isGrokBuildCli,
   isKimiProvider,
   isCodexProvider,
+  isCodexSubscriptionProvider,
   supportsModelRefresh,
   isAntigravityProvider,
   effortLevelsForProvider,
@@ -1482,6 +1483,17 @@ describe('credentialSource', () => {
     })).toEqual({ kind: 'none', ref: null });
   });
 
+  it('keeps a Codex ChatGPT subscription separate from API-key credentials', () => {
+    expect(credentialSource({ id: 'codex', type: 'cli', command: 'codex', apiKey: 'legacy-key' }))
+      .toEqual({ kind: 'subscription', ref: 'codex' });
+  });
+
+  it('keys Codex subscription credentials on the command, not an editable id', () => {
+    const renamed = { id: 'codex', type: 'cli', command: 'opencode', envVars: { CUSTOM_API_KEY: '' } };
+    expect(isCodexSubscriptionProvider(renamed)).toBe(false);
+    expect(credentialSource(renamed)).toEqual({ kind: 'env', ref: 'CUSTOM_API_KEY' });
+  });
+
   it('lets a wrapper carrying its own key stand down from inheritance', () => {
     expect(credentialSource({ id: 'wrapper', type: 'cli', apiKey: 'sk-example', orcarouterBacked: true }))
       .toEqual({ kind: 'stored', ref: 'wrapper' });
@@ -1503,6 +1515,20 @@ describe('providerCardState', () => {
     expect(providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: true } }))
       .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
     expect(providerCardState(cloudApi({ hasApiKey: true })))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
+  });
+
+  it('uses bounded Codex account states without calling a subscription an API-key provider', () => {
+    const codex = { id: 'codex', type: 'cli', command: 'codex', enabled: true };
+    expect(providerCardState(codex, { codexAccount: { status: 'signed-out' } })).toEqual({
+      state: PROVIDER_CARD_STATE.BLOCKED,
+      missing: [{ code: 'codexAccount', label: 'No ChatGPT account is signed in' }],
+    });
+    expect(providerCardState(codex, { codexAccount: { status: 'unknown' } }))
+      .toEqual({ state: PROVIDER_CARD_STATE.UNKNOWN, missing: [] });
+    expect(providerCardState(codex, { codexAccount: null }))
+      .toEqual({ state: PROVIDER_CARD_STATE.UNKNOWN, missing: [] });
+    expect(providerCardState(codex, { codexAccount: { status: 'ready' } }))
       .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
   });
 

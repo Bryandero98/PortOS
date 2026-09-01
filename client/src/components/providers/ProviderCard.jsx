@@ -12,12 +12,13 @@
  */
 
 import { Link } from 'react-router';
-import { Network, Terminal } from 'lucide-react';
+import { ExternalLink, Network, Terminal } from 'lucide-react';
 import {
   CONTEXT_WINDOW_SOURCE,
   PROVIDER_CARD_STATE,
   filterHardwareCompatibleProviderModels,
   isApiProvider,
+  isCodexSubscriptionProvider,
   gatewayForProvider,
   isPrivateNetworkEndpoint,
   isFleetProvider,
@@ -31,6 +32,7 @@ import {
   supportsModelRefresh,
 } from '../../utils/providers';
 import { formatContextLength } from '../../utils/formatters';
+import { isHttpsUrl } from '../../utils/urlNormalize';
 import ProviderRuntimeStatus from './ProviderRuntimeStatus';
 import ProviderReadiness from './ProviderReadiness';
 import { GatewayKeyHint } from './ProviderNotices';
@@ -61,6 +63,12 @@ export const CARD_STATE_STYLES = {
     border: 'border-port-warning/50',
     badge: 'bg-port-warning/20 text-port-warning',
     hint: 'Missing a prerequisite — install the CLI or add the API key to use it.',
+  },
+  [PROVIDER_CARD_STATE.UNKNOWN]: {
+    label: 'CHECK ACCOUNT',
+    border: 'border-port-warning/50',
+    badge: 'bg-port-warning/20 text-port-warning',
+    hint: 'PortOS could not determine the ChatGPT subscription state yet.',
   },
   [PROVIDER_CARD_STATE.DISABLED]: {
     label: 'DISABLED',
@@ -97,6 +105,17 @@ export default function ProviderCard({
   onUseServedModel,
   onServeWantedModel,
   servingModel = false,
+  codexAccount,
+  codexModels = null,
+  codexAccountLoading = false,
+  codexLoginLoading = false,
+  onCodexCheckAccount,
+  onCodexSignIn,
+  onCodexCancelLogin,
+  onCodexLogout,
+  onCodexRefreshModels,
+  onCodexCopyCode,
+  onCodexEnable,
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
   const compatibleModels = filterHardwareCompatibleProviderModels(provider.models, provider);
@@ -111,6 +130,9 @@ export default function ProviderCard({
   // `cardState`, not `provider.enabled`, so the setup widgets below can never
   // tone one way while the badge, border, and section file the card another.
   const optional = cardState.state === PROVIDER_CARD_STATE.DISABLED;
+  const codexSubscription = isCodexSubscriptionProvider(provider);
+  const subscriptionAccountReady = !codexSubscription || codexAccount?.status === 'ready';
+  const subscriptionReady = !codexSubscription || (subscriptionAccountReady && provider.textTransportEnabled === true);
   return (
     <div
       className={`@container bg-port-card border border-l-4 rounded-xl p-4 ${style.border} ${style.dim || ''} ${
@@ -236,7 +258,7 @@ export default function ProviderCard({
 
           <button
             onClick={() => onTest(provider.id)}
-            disabled={testResult?.testing}
+            disabled={testResult?.testing || !subscriptionReady}
             className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50"
           >
             {testResult?.testing ? 'Testing...' : 'Test'}
@@ -255,6 +277,7 @@ export default function ProviderCard({
 
           <button
             onClick={() => onToggleEnabled(provider)}
+            disabled={!provider.enabled && !subscriptionAccountReady}
             className={`px-3 py-1.5 text-sm rounded transition-colors ${
               provider.enabled
                 ? 'bg-port-warning/20 text-port-warning hover:bg-port-warning/30'
@@ -267,6 +290,7 @@ export default function ProviderCard({
           {!isDefault && provider.enabled && (
             <button
               onClick={() => onSetActive(provider.id)}
+              disabled={!subscriptionReady}
               className="px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"
             >
               Set Default
@@ -292,6 +316,22 @@ export default function ProviderCard({
       {/* Card body — full width, below the header row rather than beside the
           action buttons. */}
       <div className="mt-3 space-y-2">
+        {codexSubscription && (
+          <CodexSubscriptionPanel
+            account={codexAccount}
+            models={codexModels}
+            loading={codexAccountLoading}
+            loginLoading={codexLoginLoading}
+            onCheck={onCodexCheckAccount}
+            onSignIn={onCodexSignIn}
+            onCancel={onCodexCancelLogin}
+            onLogout={onCodexLogout}
+            onRefreshModels={onCodexRefreshModels}
+            onCopyCode={onCodexCopyCode}
+            subscriptionEnabled={provider.textTransportEnabled === true}
+            onEnable={onCodexEnable}
+          />
+        )}
         <ProviderRuntimeStatus
           runtime={runtime}
           onInstall={onInstallRuntime}
@@ -480,6 +520,114 @@ export default function ProviderCard({
               : `✗ ${testResult.error}`
             }
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const BUTTON_CLASS = 'px-3 py-1.5 text-sm rounded transition-colors bg-port-accent/20 text-port-accent hover:bg-port-accent/30 disabled:opacity-50 disabled:cursor-not-allowed';
+
+const quotaText = (window) => {
+  if (!window || typeof window !== 'object') return null;
+  const used = typeof window.usedPercent === 'number' ? Math.max(0, Math.min(100, Math.round(window.usedPercent))) : null;
+  const label = typeof window.limitName === 'string' && window.limitName.trim() ? window.limitName.trim() : 'Usage window';
+  const reset = typeof window.resetsAt === 'string' && window.resetsAt.trim() ? ` · resets ${window.resetsAt.trim()}` : '';
+  return used === null ? `${label}${reset}` : `${label}: ${used}% used${reset}`;
+};
+
+function CodexSubscriptionPanel({
+  account,
+  models,
+  loading,
+  loginLoading,
+  onCheck,
+  onSignIn,
+  onCancel,
+  onLogout,
+  onRefreshModels,
+  onCopyCode,
+  subscriptionEnabled,
+  onEnable,
+}) {
+  const status = account?.status || 'unknown';
+  const login = account?.login;
+  const verificationUrl = isHttpsUrl(login?.verificationUrl) ? login.verificationUrl : null;
+  const authUrl = isHttpsUrl(login?.authUrl) ? login.authUrl : null;
+  const windows = [quotaText(account?.rateLimits?.primary), quotaText(account?.rateLimits?.secondary)].filter(Boolean);
+  const catalogCount = Array.isArray(models?.models) ? models.models.length : null;
+  const modelError = models?.error;
+  const action = status === 'runtime-missing'
+    ? 'Install Codex CLI from the runtime control below.'
+    : status === 'signed-out' || status === 'reauth-required'
+      ? 'Sign in with ChatGPT to use this subscription.'
+      : status === 'quota-exhausted'
+        ? 'Wait for a reported usage window to reset, then check the account again.'
+        : status === 'login-pending'
+          ? 'Finish sign-in in the opened browser or use the device-code fallback.'
+          : status === 'ready'
+            ? 'This provider uses ChatGPT subscription limits, not an OpenAI API key.'
+            : 'Check the account again. PortOS could not determine this state.';
+
+  return (
+    <div className="max-w-3xl text-xs rounded border border-port-border bg-port-bg/50 px-3 py-2.5 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium text-gray-200">ChatGPT subscription</p>
+        <span className="text-gray-400">{account?.account?.planType ? `${account.account.planType} plan` : status.replaceAll('-', ' ')}</span>
+      </div>
+      <p className="text-gray-400">{action}</p>
+      {windows.length > 0 && <p className="text-gray-400">{windows.join(' · ')}</p>}
+      {typeof account?.checkedAt === 'number' && <p className="text-gray-500">Last usage refresh: {new Date(account.checkedAt).toLocaleString()}</p>}
+      {catalogCount !== null && <p className="text-gray-500">Subscription catalog: {catalogCount} model{catalogCount === 1 ? '' : 's'} available.</p>}
+      {modelError && <p className="text-port-warning">Using the last known model catalog while a refresh is unavailable.</p>}
+      {verificationUrl && (
+        <div className="rounded bg-port-card px-2.5 py-2 text-gray-300 space-y-1">
+          <p>Headless sign-in: open the verification page and enter this code.</p>
+          {login.userCode && (
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="text-port-accent font-semibold">{login.userCode}</code>
+              <button type="button" className={BUTTON_CLASS} onClick={() => onCopyCode?.(login.userCode)}>Copy code</button>
+            </div>
+          )}
+          <a className="inline-flex items-center gap-1 text-port-accent hover:underline" href={verificationUrl} target="_blank" rel="noreferrer">
+            Open verification page <ExternalLink size={12} />
+          </a>
+        </div>
+      )}
+      {authUrl && (
+        <a className="inline-flex items-center gap-1 text-port-accent hover:underline" href={authUrl} target="_blank" rel="noreferrer">
+          Open ChatGPT sign-in <ExternalLink size={12} />
+        </a>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {(status === 'signed-out' || status === 'reauth-required' || status === 'unknown') && (
+          <button type="button" className={BUTTON_CLASS} disabled={loading || loginLoading} onClick={() => onSignIn?.(false)}>
+            {loginLoading ? 'Starting sign-in…' : 'Sign in with ChatGPT'}
+          </button>
+        )}
+        {(status === 'signed-out' || status === 'reauth-required' || status === 'login-pending' || status === 'unknown') && (
+          <button type="button" className="px-3 py-1.5 text-sm rounded transition-colors bg-port-border hover:bg-port-border/80 text-white disabled:opacity-50" disabled={loading || loginLoading} onClick={() => onSignIn?.(true)}>
+            Use device code
+          </button>
+        )}
+        {status === 'login-pending' && login?.loginId && (
+          <button type="button" className="px-3 py-1.5 text-sm rounded transition-colors bg-port-warning/20 text-port-warning hover:bg-port-warning/30 disabled:opacity-50" disabled={loading || loginLoading} onClick={() => onCancel?.(login.loginId)}>
+            Cancel sign-in
+          </button>
+        )}
+        {status === 'ready' && (
+          <>
+            {!subscriptionEnabled && (
+              <button type="button" className={BUTTON_CLASS} disabled={loading} onClick={onEnable}>
+                Enable subscription transport
+              </button>
+            )}
+            <button type="button" className={BUTTON_CLASS} disabled={loading} onClick={onRefreshModels}>Refresh subscription models</button>
+            <button type="button" className="px-3 py-1.5 text-sm rounded transition-colors bg-port-warning/20 text-port-warning hover:bg-port-warning/30 disabled:opacity-50" disabled={loading} onClick={onLogout}>Log out</button>
+          </>
+        )}
+        {(status === 'quota-exhausted' || status === 'unknown') && (
+          <button type="button" className={BUTTON_CLASS} disabled={loading} onClick={onCheck}>{loading ? 'Checking…' : 'Check account'}</button>
         )}
       </div>
     </div>
