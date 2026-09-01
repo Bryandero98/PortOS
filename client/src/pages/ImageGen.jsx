@@ -242,7 +242,11 @@ export default function ImageGen() {
   // CLI, so every local readiness gate below is answered by the peer’s own
   // capacity instead. Its job is queued locally as a proxy, hence the async lane.
   const remoteTarget = useFederatedMediaTarget('image');
-  const isAsyncMode = isLocalMode || isCloudMode || remoteTarget.isRemote;
+  // Grok is a fixed cloud backend; selecting a federated instance does not
+  // apply to it. Keep the target state intact so switching back to another
+  // backend restores the user's previous target selection.
+  const remoteTargetActive = effectiveMode !== IMAGE_GEN_MODE.GROK && remoteTarget.isRemote;
+  const isAsyncMode = isLocalMode || isCloudMode || remoteTargetActive;
   // Only probe `agy models` while Agy is the active backend — it spawns a
   // child process server-side, so an unselected backend must not pay for it.
   const agy = useAgyModels(isAgyMode);
@@ -693,7 +697,7 @@ export default function ImageGen() {
   // fails closed on a provider too old to advertise anything. LoRA weights stay
   // refused on every peer — a LoRA is a MODEL, not conditioning (rule 3).
   const remoteUnsupportedInputs = useMemo(() => {
-    if (!remoteTarget.isRemote) return null;
+    if (!remoteTargetActive) return null;
     const model = remoteTarget.model;
     const present = [
       ['an init image', initImage.source != null && !remoteTarget.acceptsInput('initImage')],
@@ -710,9 +714,9 @@ export default function ImageGen() {
       return `${model?.modelName || 'The selected peer model'} renders only from a source image — add an init image, or pick a text-to-image model.`;
     }
     return null;
-  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, initImage.source, populatedRefs.length, selectedLoras.length]);
+  }, [remoteTargetActive, remoteTarget.model, remoteTarget.acceptsInput, initImage.source, populatedRefs.length, selectedLoras.length]);
   // One reading for the submit button and the picker caption alike.
-  const remoteBlocked = remoteTarget.isRemote
+  const remoteBlocked = remoteTargetActive
     ? (remoteTarget.blockedReason || remoteUnsupportedInputs)
     : null;
   // Cloud text-to-image still needs a prompt — mirror the server rule
@@ -833,7 +837,7 @@ export default function ImageGen() {
     // selectors (`mode`, `cloudModel`, `quantize`) and the cleaner toggles all
     // describe work on THIS machine, so sending them would either be dropped
     // server-side or, worse, read as a local dispatch.
-    const payload = remoteTarget.isRemote ? {
+    const payload = remoteTargetActive ? {
       prompt: composed.prompt,
       negativePrompt: composed.negativePrompt || undefined,
       width: w, height: h,
@@ -965,7 +969,7 @@ export default function ImageGen() {
     // expires on the clock, so an enabled button can already be pointing at a
     // lapsed peer. Re-derive here and say so, rather than letting the server
     // reject a render the user just committed to.
-    if (remoteTarget.isRemote) {
+    if (remoteTargetActive) {
       if (remoteUnsupportedInputs) { toast.error(remoteUnsupportedInputs); return; }
       const fresh = remoteTarget.verify();
       if (!fresh.ok) { toast.error(fresh.message); return; }
@@ -1344,12 +1348,14 @@ export default function ImageGen() {
             />
           )}
 
-          <RemoteMediaTargetPicker
-            target={remoteTarget}
-            kind="image"
-            disabled={statusLoading}
-            localBlockedReason={remoteUnsupportedInputs}
-          />
+          {effectiveMode !== IMAGE_GEN_MODE.GROK && (
+            <RemoteMediaTargetPicker
+              target={remoteTarget}
+              kind="image"
+              disabled={statusLoading}
+              localBlockedReason={remoteUnsupportedInputs}
+            />
+          )}
 
           <ImageGenControls
             mode={effectiveMode}
@@ -1371,8 +1377,8 @@ export default function ImageGen() {
             // The peer advertises its own models and runs its own quantization;
             // the local dropdowns would name neither. Resolution/steps/guidance/
             // seed do cross the wire, so those stay.
-            showModel={!remoteTarget.isRemote}
-            showQuantize={!remoteTarget.isRemote}
+            showModel={!remoteTargetActive}
+            showQuantize={!remoteTargetActive}
             modelStatus={isLocalMode ? modelDownload.getStatus(modelId) : null}
             onModelDownload={isLocalMode ? modelDownload.start : undefined}
             onModelDownloadCancel={modelDownload.cancel}
@@ -1447,7 +1453,7 @@ export default function ImageGen() {
           <div className="flex items-center gap-2 pt-1 flex-wrap">
             <button
               type="submit"
-              disabled={remoteTarget.isRemote
+              disabled={remoteTargetActive
                 ? remoteBlocked !== null
                 : (notConnected || editImageMissing || cloudNeedsPrompt)}
               title={remoteBlocked || (editImageMissing ? 'This image-edit model needs a source image — upload one below first' : cloudNeedsPrompt ? cloudPromptHint : undefined)}
