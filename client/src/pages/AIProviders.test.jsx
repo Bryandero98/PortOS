@@ -8,6 +8,14 @@ const api = vi.hoisted(() => ({
   getProviderStatuses: vi.fn(),
   getProviderRuntimes: vi.fn(),
   getProviderReadiness: vi.fn(),
+  // Kept pending by default so existing page tests that use a Codex fixture do
+  // not accidentally assert a subscription account state. Subscription-specific
+  // tests replace this with a bounded readiness response.
+  getCodexAccount: vi.fn(() => new Promise(() => {})),
+  getCodexModels: vi.fn(),
+  startCodexLogin: vi.fn(),
+  cancelCodexLogin: vi.fn(),
+  codexLogout: vi.fn(),
   getInstances: vi.fn(),
   getSampleProviders: vi.fn(),
   createProvider: vi.fn(),
@@ -90,6 +98,7 @@ describe('AIProviders page load error handling', () => {
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
     api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getCodexAccount.mockImplementation(() => new Promise(() => {}));
     localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
   });
 

@@ -88,6 +88,17 @@ export const isCodexProvider = (provider) => {
 };
 
 /**
+ * True when a CLI/TUI record uses Codex's ChatGPT subscription. This mirrors
+ * server/lib/codexAccount.js: the command, not an editable provider id, owns
+ * the account contract.
+ * @param {{type?:string, command?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const isCodexSubscriptionProvider = (provider) =>
+  (provider?.type === 'cli' || provider?.type === 'tui')
+  && commandBasename(provider?.command) === 'codex';
+
+/**
  * True when a provider is Kimi-Code-flavored — the shipped `kimi-cli`/`kimi-tui`
  * ids or any provider whose launch command basename is `kimi` (path/exe tolerant).
  * MIRROR of `isKimiProvider` in server/lib/providerModels.js — keep in lockstep.
@@ -1382,9 +1393,16 @@ const credentialEnvVars = (provider) => {
  * provider carrying `provider.apiKey` untouched at spawn time.
  *
  * @param {{id?:string,type?:string,endpoint?:string,apiKey?:string,hasApiKey?:boolean,gatewayBacked?:string,orcarouterBacked?:boolean,envVars?:Record<string,string>,secretEnvVars?:string[]}|null|undefined} provider
- * @returns {{kind:'stored'|'inherited'|'env'|'none',ref:string|null}}
+ * @returns {{kind:'stored'|'inherited'|'env'|'subscription'|'none',ref:string|null}}
  */
 export const credentialSource = (provider) => {
+  // Codex CLI/TUI providers can use the ChatGPT subscription that Codex owns
+  // outside PortOS. It is neither a stored API key nor an environment
+  // credential, so the regular credential UI must not tell the user to paste a
+  // key. `providerCardState` receives the separate, bounded account verdict.
+  if (isCodexSubscriptionProvider(provider)) {
+    return { kind: 'subscription', ref: 'codex' };
+  }
   // Local API endpoints need no credential, even if an old record happens to
   // retain one from before the endpoint was changed.
   if (isApiProvider(provider) && isPrivateNetworkEndpoint(provider?.endpoint)) {
@@ -1460,7 +1478,7 @@ const inheritedCredentialMissing = (provider, keySetFor) => {
 
 const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}) => {
   const source = credentialSource(provider);
-  if (source.kind === 'none' || !source.ref) return null;
+  if (source.kind === 'none' || source.kind === 'subscription' || !source.ref) return null;
 
   if (source.kind === 'env') {
     const groups = credentialEnvGroups(provider).map((group) => group.map((name) => {
@@ -1515,6 +1533,7 @@ export const PROVIDER_CARD_STATE = Object.freeze({
   READY: 'ready',
   BENCHED: 'benched',
   BLOCKED: 'blocked',
+  UNKNOWN: 'unknown',
   DISABLED: 'disabled',
 });
 
@@ -1575,6 +1594,10 @@ export const providerCardState = (provider, {
   status = null,
   keySetFor = null,
   envVarSet = null,
+  // `undefined` means an older server did not provide the account feature at
+  // all; `null` means this page tried to fetch it but could not determine a
+  // verdict. They must not collapse into "signed out" or "ready".
+  codexAccount = undefined,
 } = {}) => {
   // The server publishes its own verdict on `GET /api/providers`
   // (`missingPrerequisites`, from server/lib/providerPrerequisites.js) and
@@ -1623,9 +1646,23 @@ export const providerCardState = (provider, {
     }
   }
 
+  const codexSubscription = isCodexSubscriptionProvider(provider);
+  const accountStatus = codexAccount && typeof codexAccount === 'object'
+    ? codexAccount.status
+    : null;
+  if (codexSubscription && accountStatus === 'signed-out') {
+    addMissing('codexAccount', 'No ChatGPT account is signed in');
+  } else if (codexSubscription && accountStatus === 'reauth-required') {
+    addMissing('codexAccount', 'ChatGPT sign-in has expired');
+  } else if (codexSubscription && accountStatus === 'quota-exhausted') {
+    addMissing('codexQuota', 'ChatGPT usage limit reached');
+  }
+
   // Switched off wins over every finding — see the precedence note above. The
   // findings ride along so the card can still say what enabling it would take.
   if (!provider?.enabled) return { state: PROVIDER_CARD_STATE.DISABLED, missing };
+  if (codexSubscription && codexAccount === null) return { state: PROVIDER_CARD_STATE.UNKNOWN, missing };
+  if (codexSubscription && accountStatus === 'unknown') return { state: PROVIDER_CARD_STATE.UNKNOWN, missing };
   if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
   if (status?.available === false) return { state: PROVIDER_CARD_STATE.BENCHED, missing };
   return { state: PROVIDER_CARD_STATE.READY, missing };
