@@ -8,8 +8,8 @@ import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
 import Pill from '../../ui/Pill';
 import toast from '../../ui/Toast';
+import { useCosTaskUpdates } from '../../../hooks/useCosTaskUpdates';
 import * as api from '../../../services/api';
-import socket from '../../../services/socket';
 import { timeAgo } from '../../../utils/formatters';
 
 const FORGE_LABEL = { github: 'GitHub', gitlab: 'GitLab' };
@@ -110,60 +110,29 @@ export default function PullRequestsTab({ appId, appName }) {
     setActions({});
   }, [appId]);
 
-  useEffect(() => {
-    const subscribe = () => socket.emit('cos:subscribe');
-    if (socket.connected) subscribe();
-    socket.on('connect', subscribe);
+  const applyTaskUpdate = useCallback(task => {
+    if (!task?.id) return;
+    const nextStatus = actionStatusForTask(task.status);
+    if (!nextStatus) return;
 
-    const applyTaskUpdate = task => {
-      if (!task?.id) return;
-      const nextStatus = actionStatusForTask(task.status);
-      if (!nextStatus) return;
-
-      replaceActions(current => {
-        const next = { ...current };
-        let changed = false;
-        for (const [number, action] of Object.entries(current)) {
-          const matches = action.taskId === task.id || (
-            !action.taskId
-            && task.metadata?.app === appId
-            && Number(task.metadata?.reviewLoopPRNumber) === Number(number)
-          );
-          if (!matches || actionRank(nextStatus) < actionRank(action.status)) continue;
-          next[number] = { ...action, taskId: action.taskId || task.id, status: nextStatus };
-          changed = true;
-        }
-        return changed ? next : current;
-      });
-    };
-
-    const handleTaskChanged = event => applyTaskUpdate(event?.task);
-    const handleTaskListChanged = event => (event?.tasks || []).forEach(applyTaskUpdate);
-    const handleTaskCompleted = event => (event?.tasks || []).forEach(applyTaskUpdate);
-    const handleAgentSpawned = agent => {
-      if (agent?.taskId) applyTaskUpdate({ id: agent.taskId, status: 'in_progress' });
-    };
-    const handleAgentCompleted = agent => {
-      if (agent?.taskId && agent.result?.success === true) {
-        applyTaskUpdate({ id: agent.taskId, status: 'completed' });
+    replaceActions(current => {
+      const next = { ...current };
+      let changed = false;
+      for (const [number, action] of Object.entries(current)) {
+        const matches = action.taskId === task.id || (
+          !action.taskId
+          && task.metadata?.app === appId
+          && Number(task.metadata?.reviewLoopPRNumber) === Number(number)
+        );
+        if (!matches || actionRank(nextStatus) < actionRank(action.status)) continue;
+        next[number] = { ...action, taskId: action.taskId || task.id, status: nextStatus };
+        changed = true;
       }
-    };
-
-    socket.on('cos:tasks:changed', handleTaskChanged);
-    socket.on('cos:tasks:user:changed', handleTaskListChanged);
-    socket.on('cos:tasks:user:completed', handleTaskCompleted);
-    socket.on('cos:agent:spawned', handleAgentSpawned);
-    socket.on('cos:agent:completed', handleAgentCompleted);
-
-    return () => {
-      socket.off('connect', subscribe);
-      socket.off('cos:tasks:changed', handleTaskChanged);
-      socket.off('cos:tasks:user:changed', handleTaskListChanged);
-      socket.off('cos:tasks:user:completed', handleTaskCompleted);
-      socket.off('cos:agent:spawned', handleAgentSpawned);
-      socket.off('cos:agent:completed', handleAgentCompleted);
-    };
+      return changed ? next : current;
+    });
   }, [appId, replaceActions]);
+
+  useCosTaskUpdates(applyTaskUpdate);
 
   const load = useCallback(async () => {
     const generation = requestRef.current + 1;

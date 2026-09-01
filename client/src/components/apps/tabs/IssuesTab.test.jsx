@@ -180,6 +180,57 @@ describe('IssuesTab', () => {
     expect(await screen.findByRole('link', { name: /Completed/ })).toBeInTheDocument();
   });
 
+  it('does not treat a failed agent completion as a completed task', async () => {
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Claim/ }));
+    expect(await screen.findByRole('link', { name: /Queued/ })).toBeInTheDocument();
+
+    act(() => socketHandlers.get('cos:agent:completed')({
+      taskId: 'task-1', result: { success: false },
+    }));
+
+    expect(screen.getByRole('link', { name: /Queued/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Completed/ })).not.toBeInTheDocument();
+  });
+
+  it('applies every task from a user task-list update', async () => {
+    const SECOND_ISSUE = {
+      ...ISSUE,
+      number: 43,
+      title: 'Sync conflict',
+      url: 'https://github.com/acme/widget/issues/43',
+    };
+    api.getAppIssues.mockResolvedValue(okPayload([ISSUE, SECOND_ISSUE]));
+    api.createSlashdoTask
+      .mockResolvedValueOnce({ id: 'task-1' })
+      .mockResolvedValueOnce({ id: 'task-2' });
+    await renderTab();
+
+    const claimButtons = await screen.findAllByRole('button', { name: /Claim/ });
+    fireEvent.click(claimButtons[0]);
+    fireEvent.click(claimButtons[1]);
+    await waitFor(() => expect(api.createSlashdoTask).toHaveBeenCalledTimes(2));
+
+    act(() => socketHandlers.get('cos:tasks:user:changed')({
+      tasks: [
+        { id: 'task-1', status: 'completed' },
+        { id: 'task-2', status: 'completed' },
+      ],
+    }));
+
+    await waitFor(() => expect(screen.getAllByRole('link', { name: /Completed/ })).toHaveLength(2));
+  });
+
+  it('removes every CoS socket listener when unmounted', async () => {
+    const listenerCountBeforeMount = socketHandlers.size;
+    const { unmount } = await renderTab();
+
+    expect(socketHandlers.size).toBe(listenerCountBeforeMount + 6);
+    unmount();
+    expect(socketHandlers.size).toBe(listenerCountBeforeMount);
+  });
+
   it('does not lose an active socket update that arrives before the POST response', async () => {
     let resolveClaim;
     api.createSlashdoTask.mockImplementation(() => new Promise(resolve => { resolveClaim = resolve; }));
