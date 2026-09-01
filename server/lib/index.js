@@ -199,6 +199,7 @@ export * from './borderKey.js';
 export * from './boundedStateMap.js';
 export * from './collectionStore.js';
 export * from './conflictJournal.js';
+export * from './projectStoreKit.js';
 export * from './createKeyCachedQueue.js';
 export * from './createNewestWinsGuard.js';
 export * from './dataRoot.js';
