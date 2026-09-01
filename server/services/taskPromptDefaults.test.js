@@ -35,6 +35,25 @@ const SNAPSHOT = JSON.parse(readFileSync(
 ));
 
 describe('taskPromptDefaults integrity snapshot', () => {
+  it('module-hygiene v1 is generic, evidence-led, and bounded', () => {
+    const current = DEFAULT_TASK_PROMPTS['module-hygiene'];
+
+    expect(PROMPT_VERSIONS['module-hygiene']).toBe(1);
+    expect(current).toContain('{appName}');
+    expect(current).toContain('{repoPath}');
+    expect(current).toContain('{modeInstructions}');
+    expect(current).toMatch(/crossing one is never a\s+finding by itself/);
+    expect(current).toContain('Reuse-search proof');
+    expect(current).toContain('Discoverability without catalog burden');
+    expect(current).toContain('closed tracker items, and merged changes');
+    expect(current).toContain('zero to three high-confidence findings');
+    expect(current).toMatch(/highest\s+practical public boundary/);
+    expect(current).not.toContain('PortOS');
+    expect(current).not.toContain('server/lib/README.md');
+    expect(current).not.toContain('client/src/lib/README.md');
+    expect(current).not.toMatch(/localhost|:\d{4}/);
+  });
+
   it('code-quality v3 inventories structural drift while preserving v2', () => {
     const current = DEFAULT_TASK_PROMPTS['code-quality'];
     const previous = PREVIOUS_DEFAULT_PROMPTS['code-quality'][0];

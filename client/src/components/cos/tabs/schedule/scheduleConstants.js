@@ -199,20 +199,26 @@ export const FILE_ISSUES_MANAGED_FIELDS = ['useWorktree', 'openPR', 'simplify'];
 
 export function managedAgentOptionsFor(config, overrideMetadata) {
   const managed = [...(config?.managedAgentOptions || [])];
-  if (config?.fileIssuesCapable && fileIssuesEffective(config, overrideMetadata)) {
+  const fileIssues = fileIssuesEffective(config, overrideMetadata);
+  if (config?.fileIssuesCapable && fileIssues) {
     for (const field of FILE_ISSUES_MANAGED_FIELDS) {
       if (!managed.includes(field)) managed.push(field);
     }
   }
+  if (config?.doWorkRequiresWorktree && !fileIssues && !managed.includes('useWorktree')) {
+    managed.push('useWorktree');
+  }
   return managed;
 }
 
-export function toggleFileIssuesMetadata(metadata, next) {
+export function toggleFileIssuesMetadata(metadata, next, doWorkRequiresWorktree = false) {
   const taskMetadata = { ...(metadata || {}), fileIssues: next };
   if (next) {
     taskMetadata.useWorktree = false;
     taskMetadata.openPR = false;
     taskMetadata.simplify = false;
+  } else if (doWorkRequiresWorktree) {
+    taskMetadata.useWorktree = true;
   }
   return taskMetadata;
 }

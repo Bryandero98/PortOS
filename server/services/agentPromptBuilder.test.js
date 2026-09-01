@@ -64,11 +64,23 @@ assertProvider: (provider, { message, code, status = 503 } = {}) => {
 }));
 vi.mock('../lib/fileUtils.js', async (importOriginal) => {
   const actual = await importOriginal();
+  const { readFile } = await import('fs/promises');
   return {
     ...actual,
     // getAppWorkspace reads data/apps.json through this — mocked so the tilde
     // tests below never touch the real registry.
     readJSONFile: vi.fn(actual.readJSONFile),
+    // The production install copies shipped templates into data/. This test
+    // reads the committed module-hygiene template directly so the API-path
+    // assembly assertion stays independent of ignored runtime state.
+    tryReadFile: vi.fn(async (path, ...args) => {
+      const normalized = String(path).replace(/\\/g, '/');
+      if (normalized.endsWith('/data/prompts/skills/module-hygiene.md')) {
+        return readFile(`${actual.PATHS.root}/data.reference/prompts/skills/module-hygiene.md`, 'utf8')
+          .catch(() => null);
+      }
+      return actual.tryReadFile(path, ...args);
+    }),
   };
 });
 vi.mock('../lib/slashdoLoader.js', async (importOriginal) => {
@@ -102,6 +114,7 @@ import { getDigitalTwinForPrompt } from './digital-twin.js';
 import { getToolsSummaryForPrompt } from './tools.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
 import { SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
+import { DEFAULT_TASK_PROMPTS } from './taskPromptDefaults.js';
 // The heading a task-type hook's prompt points at to locate the sentinel path.
 import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
 
@@ -134,7 +147,10 @@ describe('composable skill template routing', () => {
     }))).toEqual(['security-audit', 'threejs-visual']);
   });
 
-  it('routes data-safety and dead-code audits to their own skill templates', () => {
+  it('routes module-hygiene, data-safety, and dead-code audits to their own skill templates', () => {
+    expect(detectSkillTemplates(makeTask({
+      description: '[Improvement] Module hygiene audit for shared components',
+    }))).toEqual(['module-hygiene']);
     expect(detectSkillTemplates(makeTask({
       description: '[Improvement] Data and upgrade-safety audit',
     }))).toEqual(['data-safety']);
@@ -153,6 +169,48 @@ describe('composable skill template routing', () => {
       .resolves.toBe('Security lifecycle guidance');
     expect(loadTemplate).toHaveBeenNthCalledWith(1, 'security-audit');
     expect(loadTemplate).toHaveBeenNthCalledWith(2, 'threejs-visual');
+  });
+
+  it('keeps the final module-hygiene mission generic across API and TUI/CLI paths', async () => {
+    const description = DEFAULT_TASK_PROMPTS['module-hygiene']
+      .replaceAll('{appName}', 'Example App')
+      .replaceAll('{repoPath}', '/workspace/example-app')
+      .replace('{modeInstructions}', '## Mode: file issues, change nothing');
+    const task = makeTask({
+      description,
+      metadata: { analysisType: 'module-hygiene', noCodeOutput: true },
+    });
+
+    const lightPrompt = buildLightContextPrompt(
+      task,
+      '/workspace/example-app',
+      null,
+      isTruthyMeta,
+      { providerId: 'codex-tui', providerCommand: 'codex' },
+    );
+    const apiPrompt = await buildAgentPrompt(
+      task,
+      {},
+      '/workspace/example-app',
+      null,
+      isTruthyMeta,
+      { providerType: 'api' },
+    );
+
+    for (const prompt of [lightPrompt, apiPrompt]) {
+      expect(prompt).toMatch(/crossing one is never a\s+finding by itself/);
+      expect(prompt).toContain('Reuse-search proof');
+      expect(prompt).toContain('closed tracker items, and merged changes');
+      expect(prompt).not.toContain('{appName}');
+      expect(prompt).not.toContain('{repoPath}');
+      expect(prompt).not.toContain('{modeInstructions}');
+      expect(prompt).not.toContain('server/lib/README.md');
+      expect(prompt).not.toContain('client/src/lib/README.md');
+      expect(prompt).not.toContain('localhost:5555');
+    }
+    expect(apiPrompt).toContain('## Task-Type Skill Guidelines');
+    expect(apiPrompt).toContain('Thresholds nominate; evidence decides');
+    expect(lightPrompt).not.toContain('## Task-Type Skill Guidelines');
   });
 });
 

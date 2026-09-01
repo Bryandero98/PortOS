@@ -1749,8 +1749,8 @@ describe('taskSchedule', () => {
   })
 
   describe('audit file-issues types', () => {
-    it('registers data-safety and simplify as enabled on-demand file-issues audits', () => {
-      for (const taskType of ['data-safety', 'simplify']) {
+    it('registers data-safety, simplify, and module-hygiene as enabled on-demand file-issues audits', () => {
+      for (const taskType of ['data-safety', 'simplify', 'module-hygiene']) {
         expect(SELF_IMPROVEMENT_TASK_TYPES).toContain(taskType)
         expect(TASK_TYPE_DESCRIPTIONS[taskType]).toBeTruthy()
         const cfg = DEFAULT_TASK_INTERVALS[taskType]
@@ -1761,6 +1761,10 @@ describe('taskSchedule', () => {
         expect(cfg.taskMetadata.openPR).toBe(false)
         expect(MANAGED_AGENT_OPTIONS[taskType]).toBeUndefined()
       }
+      expect(DEFAULT_TASK_INTERVALS['module-hygiene'].dataInputs).toEqual([
+        'open-issues',
+        'open-pull-requests',
+      ])
     })
 
     it('surfaces fileIssuesCapable on audit types in getScheduleStatus', async () => {
@@ -1771,6 +1775,10 @@ describe('taskSchedule', () => {
       expect(status.tasks['ux'].fileIssuesCapable).toBe(true)
       expect(status.tasks['ux'].defaultFileIssues).toBe(true)
       expect(status.tasks['data-safety'].fileIssuesCapable).toBe(true)
+      expect(status.tasks['module-hygiene'].fileIssuesCapable).toBe(true)
+      expect(status.tasks['module-hygiene'].defaultFileIssues).toBe(true)
+      expect(status.tasks['module-hygiene'].doWorkRequiresWorktree).toBe(true)
+      expect(status.tasks['simplify'].doWorkRequiresWorktree).toBeUndefined()
       expect(status.tasks['claim-issue'].fileIssuesCapable).toBeUndefined()
     })
 

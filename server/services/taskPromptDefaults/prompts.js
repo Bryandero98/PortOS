@@ -555,6 +555,118 @@ Cross-version and cross-install compatibility code is NOT dead code, even when
 this install no longer hits it. Read the project's rules on migrations and
 version gates before proposing any such removal.`,
 
+  'module-hygiene': `[Improvement: {appName}] Module hygiene audit
+
+Make {appName} easier to extend by improving responsibility boundaries, reuse,
+ownership, and discovery of reusable code. A large codebase is not itself a
+problem; the target is code whose organization makes correct changes harder.
+
+Repository: {repoPath}
+
+{modeInstructions}
+
+## Choose one bounded slice
+
+Start with a cheap repository-wide inventory, then audit one coherent slice.
+Rank candidates using several signals together: size, recent churn, import
+fan-in, mixed responsibilities, and whether prior audit history already covered
+the area. Prefer a previously uncovered slice over repeatedly scanning the same
+hotspot. Name the chosen slice before investigating it.
+
+These numeric thresholds generate candidates only; crossing one is never a
+finding by itself:
+
+- cyclomatic complexity above 15
+- a function body above 50 lines
+- nesting depth above 4
+- a file above 500 lines that appears to mix responsibilities
+
+For declarative UI, schemas, registries, and configuration, distinguish data or
+markup volume from branching, state, side effects, and change coupling.
+
+## Prove structural maintenance cost
+
+Keep a candidate only when the code proves at least one concrete consequence:
+
+- one change repeatedly touches unrelated responsibilities
+- high-churn behavior is concentrated behind an unstable or oversized boundary
+- callers depend on internal details because ownership is unclear
+- duplicated behavior has already drifted or makes fixes repeat across copies
+- reusable code exists but agents or contributors cannot reliably discover it
+- a public surface has no clear owner, placement rule, or compatibility policy
+
+Read the producer, consumers/importers, tests, repository instructions, and
+recent history before deciding. A subjective preference for smaller files or a
+different folder layout is not a finding.
+
+## Reuse-search proof
+
+Before proposing a new helper, hook, service, component, or primitive:
+
+1. Search the repository's catalogs, README/domain maps, barrels or public
+   exports, and likely shared directories.
+2. Search semantically related terms as well as the proposed symbol name.
+3. Inspect existing candidates and their importers to decide whether one should
+   be extended.
+4. Record what was searched, why reuse is or is not appropriate, the intended
+   public owner, the internal seam, target location, and migration path.
+
+For duplication, cite both locations and prefer a deletion-oriented
+consolidation. Do not propose a wrapper that leaves both implementations alive.
+
+## Discoverability without catalog burden
+
+Use the lightest durable discovery mechanism appropriate to the surface:
+
+- A genuinely reusable/public surface may need a curated catalog with a cheap,
+  mechanical parity check.
+- A broad implementation directory usually needs a lightweight domain map,
+  placement rule, or ownership note rather than a barrel or exhaustive manual
+  inventory.
+- Pages, routes, and application implementations do not need catalogs merely
+  because the directory is large.
+
+A proposed catalog must name its consumer and its parity mechanism. Prefer
+clear naming and placement, or a generated index, when a handwritten inventory
+would become a second maintenance burden.
+
+## Exclusions
+
+Do not file or implement shallow findings against generated, vendored, build,
+snapshot, fixture, test, migration, or historical-default sources; primarily
+declarative registries or schemas; documented compatibility facades or re-export
+barrels; intentional cross-runtime mirrors; semantic adapters; or coherent large
+modules with no proven change cost. Compatibility code is not dead code merely
+because the current checkout no longer exercises it.
+
+## Ownership and prior-work deduplication
+
+This audit owns responsibility boundaries, module topology, reusable-surface
+discoverability, and complexity caused by structural mixing. Pure dead-code
+removal and direct copy-paste deletion belong to the repository's simplification
+work; broader correctness and registry/generated-source drift belong to its
+general code-quality work. Link or reuse a sibling finding instead of filing the
+same work under a new category.
+
+Search current open work, closed tracker items, and merged changes by file,
+symbol, and behavior—not only by this audit's name. Treat a previously shipped
+split, compatibility facade, or deliberate adapter as history to understand,
+not as proof the same refactor should be filed again.
+
+## Result quality
+
+Normally produce zero to three high-confidence findings; five is the hard mode
+contract maximum, not a quota. Each finding must include exact file:line
+evidence, maintenance impact, relevant producers/consumers/tests/history,
+reuse-search and prior-work evidence, a decided destination and what remains
+behind, compatibility obligations, and acceptance criteria at the highest
+practical public boundary.
+
+If the evidence is insufficient, file or change nothing. In every outcome,
+report the audited slice, the searches performed, the findings kept, and the
+candidates deliberately rejected so a no-finding run still records useful
+coverage.`,
+
   'api-contract': `[Improvement: {appName}] API and route-contract audit
 
 Audit {appName}'s API endpoints and route handlers for contract drift,

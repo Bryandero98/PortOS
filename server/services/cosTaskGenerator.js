@@ -50,6 +50,7 @@ import { NON_ACTIONABLE_ISSUE_LABELS } from './perpetualWork.js';
 import {
   isAuditTaskType,
   isFileIssuesMode,
+  auditDoWorkRequiresWorktree,
   modeContractFor,
   applyAuditModeWrapper,
 } from '../lib/auditCatalog.js';
@@ -3214,6 +3215,12 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     metadata.useWorktree = false;
     metadata.openPR = false;
     metadata.simplify = false;
+  } else if (auditDoWorkRequiresWorktree(taskType)) {
+    // Some structural audits are safe to remediate only in isolation. Enforce
+    // this after schedule/app defaults so a stale file-issues toggle transition
+    // cannot dispatch edits into the app's live checkout. PR creation remains
+    // independently configurable through metadata.openPR.
+    metadata.useWorktree = true;
   }
   // The app's per-app provider/model pin (#4783). Resolved through the shared
   // harness guard, so an api-typed pin falls back to the Schedule pin instead of

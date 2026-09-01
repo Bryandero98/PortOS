@@ -17,6 +17,10 @@ const SKILLS_DIR = join(PATHS.root, 'data/prompts/skills');
  */
 const SKILL_MATCHERS = [
   {
+    skill: 'module-hygiene',
+    keywords: ['module-hygiene', 'module hygiene']
+  },
+  {
     skill: 'data-safety',
     keywords: ['data-safety', 'upgrade-safety', 'schema parity', 'schemaversion', 'seed file', 'data.reference']
   },
