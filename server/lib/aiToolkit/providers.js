@@ -637,6 +637,8 @@ export function createProviderService(config = {}) {
         ...(typeof providerData.textTransport === 'string' && providerData.textTransport
           ? { textTransport: providerData.textTransport } : {}),
         ...(providerData.textTransportEnabled === true ? { textTransportEnabled: true } : {}),
+        ...(providerData.textTransportReadRiskAcknowledged === true
+          ? { textTransportReadRiskAcknowledged: true } : {}),
         // Claude Ollama marker — preserve so adopting the sample via POST drives
         // ollama-backed model refresh (see isOllamaBackedProvider).
         ...(providerData.ollamaBacked === true ? { ollamaBacked: true } : {}),
