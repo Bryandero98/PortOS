@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { Writable } from 'stream';
 import { mkdtemp, writeFile, rm, access } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -53,6 +54,18 @@ vi.mock('fs/promises', async (importOriginal) => {
   };
 });
 
+// Swap in a parser that fails on its first write, to reject while the source
+// stream is still mid-file (the state a real parser/stream error leaves behind).
+const parser = vi.hoisted(() => ({ impl: null }));
+vi.mock('./appleHealthXmlParser.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createAppleHealthRecordStream: (opts) =>
+      (parser.impl ? parser.impl(opts) : actual.createAppleHealthRecordStream(opts)),
+  };
+});
+
 const { importAppleHealthXml } = await import('./appleHealthXml.js');
 
 const XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -70,8 +83,9 @@ describe('importAppleHealthXml temp-file lifecycle', () => {
   beforeEach(async () => {
     streams.length = 0;
     trace.length = 0;
+    parser.impl = null;
     store.writeDayFile = async () => {};
-    dir = await mkdtemp(join(tmpdir(), 'portos-apple-health-test-'));
+    dir = await mkdtemp(join(tmpdir(), 'portos-ahxml-fixture-'));
     xmlPath = join(dir, 'export.xml');
     await writeFile(xmlPath, XML, 'utf-8');
   });
@@ -102,6 +116,20 @@ describe('importAppleHealthXml temp-file lifecycle', () => {
     expect(streams[0].destroyed).toBe(true);
     // Order matters: destroy() releases the fd asynchronously, so unlinking
     // before 'close' would fail on Windows and silently leak the file.
+    expect(trace).toEqual(['close', 'unlink']);
+  });
+
+  it('removes the input file when the parse fails with the source mid-file', async () => {
+    // Pad past the read stream's high-water mark so the source is still open
+    // (not at EOF) when the parser errors — .pipe() unpipes but never destroys
+    // it, which is how the fd used to stay held for the life of the process.
+    await writeFile(xmlPath, `${XML}\n<!--${'x'.repeat(1024 * 1024)}-->`, 'utf-8');
+    parser.impl = () => new Writable({ write(_chunk, _enc, cb) { cb(new Error('parser exploded')); } });
+
+    await expect(importAppleHealthXml(xmlPath, null)).rejects.toThrow('parser exploded');
+
+    expect(await exists(xmlPath)).toBe(false);
+    expect(streams[0].destroyed).toBe(true);
     expect(trace).toEqual(['close', 'unlink']);
   });
 });
