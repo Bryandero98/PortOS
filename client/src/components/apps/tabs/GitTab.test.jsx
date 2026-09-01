@@ -11,8 +11,8 @@ vi.mock('../../../services/api', () => ({
   cleanupMergedBranches: vi.fn(),
   resetToDefaultBranch: vi.fn(),
 }));
-vi.mock('./EidoverseSourcePanel', () => ({
-  default: ({ appId }) => <div data-testid="eidoverse-source-panel">{appId}</div>,
+vi.mock('./RepositorySourcePanel', () => ({
+  default: ({ appId }) => <div data-testid="repository-source-panel">{appId}</div>,
 }));
 
 import * as api from '../../../services/api';
@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 describe('GitTab managed repository sources', () => {
-  it('shows the Eidoverse source stack only for the managed Eidoverse process', async () => {
+  it('shows repository topology for every managed app', async () => {
     const { rerender } = render(
       <GitTab
         appId="app-eidoverse"
@@ -59,7 +59,7 @@ describe('GitTab managed repository sources', () => {
       />,
     );
 
-    expect(await screen.findByTestId('eidoverse-source-panel')).toHaveTextContent('app-eidoverse');
+    expect(await screen.findByTestId('repository-source-panel')).toHaveTextContent('app-eidoverse');
 
     rerender(
       <GitTab
@@ -69,7 +69,7 @@ describe('GitTab managed repository sources', () => {
         repoPath="/repo"
       />,
     );
-    expect(screen.queryByTestId('eidoverse-source-panel')).toBeNull();
+    expect(screen.getByTestId('repository-source-panel')).toHaveTextContent('app-other');
   });
 });
 

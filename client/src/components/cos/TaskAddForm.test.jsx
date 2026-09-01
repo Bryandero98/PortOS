@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   getLocalLlmStatus: vi.fn(),
   getProviders: vi.fn(),
   getAppWorkTracker: vi.fn(),
+  getAppRepositorySources: vi.fn(),
   applyCosTaskTemplate: vi.fn(),
   addCosTask: vi.fn()
 }));
@@ -40,6 +41,14 @@ describe('TaskAddForm responsive layout', () => {
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
     api.getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
+    api.getAppRepositorySources.mockResolvedValue({
+      issueTargets: {
+        default: 'origin',
+        canChoose: false,
+        origin: { fullName: 'example-org/example-app' },
+        upstream: { fullName: 'example-org/example-app' },
+      },
+    });
     api.applyCosTaskTemplate.mockResolvedValue({ success: true });
     apiSystem.getAssignableInstances.mockResolvedValue({ instances: [] });
   });
@@ -201,6 +210,38 @@ describe('TaskAddForm responsive layout', () => {
       expect(worktreeToggle()).toBeChecked();
       expect(openPrToggle()).toBeChecked();
     });
+  });
+
+  it('defaults a forked app plan to upstream and permits an explicit origin target', async () => {
+    const user = userEvent.setup();
+    api.addCosTask.mockResolvedValue({ success: true });
+    api.getAppRepositorySources.mockResolvedValue({
+      issueTargets: {
+        default: 'upstream',
+        canChoose: true,
+        origin: { fullName: 'example-owner/example-app' },
+        upstream: { fullName: 'example-org/example-app' },
+      },
+    });
+    render(<TaskAddForm
+      providers={[]}
+      apps={[{ id: 'example-app', name: 'Example App', repoPath: '/example/app' }]}
+      defaultApp="example-app"
+      onTaskAdded={vi.fn()}
+    />);
+
+    await user.type(screen.getByPlaceholderText('Task description *'), 'Plan a feature');
+    await user.click(await screen.findByLabelText(/Plan & file issue/i));
+    const target = await screen.findByLabelText('File issue on');
+    expect(target).toHaveValue('upstream');
+    expect(target).toHaveTextContent('Upstream · example-org/example-app');
+    await user.selectOptions(target, 'origin');
+    await user.click(screen.getByRole('button', { name: 'Plan & File Issue' }));
+
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalledWith(
+      expect.objectContaining({ planOnly: true, issueTarget: 'origin' }),
+      { silent: true },
+    ));
   });
 
   it('offers and submits the non-worktree completion choice', async () => {

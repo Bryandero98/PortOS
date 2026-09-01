@@ -5,7 +5,7 @@ import Modal from '../../ui/Modal';
 import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
 import { formatDateNumeric } from '../../../utils/formatters';
-import EidoverseSourcePanel from './EidoverseSourcePanel';
+import RepositorySourcePanel from './RepositorySourcePanel';
 
 function buildReleasePrompt({ repoPath, appName, comparison, baseBranch, devBranch, hasChangelog }) {
   const commitList = comparison.commits
@@ -131,7 +131,7 @@ function ConfirmModal({ open, onClose, titleId, icon, title, tone = 'accent', co
   );
 }
 
-export default function GitTab({ appId, app, appName, repoPath }) {
+export default function GitTab({ appId, appName, repoPath }) {
   const [gitInfo, setGitInfo] = useState(null);
   const [diff, setDiff] = useState('');
   const [showDiff, setShowDiff] = useState(false);
@@ -482,12 +482,11 @@ export default function GitTab({ appId, app, appName, repoPath }) {
 
   return (
     <div className="space-y-6">
-      {app?.pm2ProcessNames?.includes('eidoverse-worlds') && (
-        <EidoverseSourcePanel
-          appId={appId}
-          onUpdated={() => loadGitData({ includeRemote: true })}
-        />
-      )}
+      <RepositorySourcePanel
+        appId={appId}
+        appName={appName}
+        onUpdated={() => loadGitData({ includeRemote: true })}
+      />
 
       {/* Wraps rather than overflows: three actions no longer fit one phone row. */}
       <div className="flex flex-wrap items-center justify-between gap-2">

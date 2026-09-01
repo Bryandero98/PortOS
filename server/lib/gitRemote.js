@@ -73,7 +73,13 @@ export function parseGitRemoteUrl(url) {
  * isn't a git repo or has no `origin` remote (rare, e.g. a tarball install).
  */
 export async function readOriginRemoteUrl(cwd = PATHS.root) {
-  const result = await execGit(['remote', 'get-url', 'origin'], cwd, { ignoreExitCode: true });
+  return readRemoteUrl('origin', cwd);
+}
+
+/** Read a named git remote without exposing it to a shell. */
+export async function readRemoteUrl(remote, cwd = PATHS.root) {
+  if (typeof remote !== 'string' || !/^[A-Za-z0-9._-]+$/.test(remote)) return null;
+  const result = await execGit(['remote', 'get-url', remote], cwd, { ignoreExitCode: true });
   if (result.exitCode !== 0) return null;
   const url = result.stdout.trim();
   return url || null;

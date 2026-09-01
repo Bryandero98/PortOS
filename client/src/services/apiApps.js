@@ -4,11 +4,11 @@ import { request, API_BASE } from './apiCore.js';
 // Apps
 export const getApps = (options) => request('/apps', options);
 export const getApp = (id, options) => request(`/apps/${id}`, options);
-// Multi-checkout managed integrations (currently Eidoverse): returns sanitized
-// local/fork/upstream revision state without exposing machine-local repo paths.
+// Managed checkout topology: returns sanitized local/fork/upstream revision
+// state without exposing machine-local repo paths.
 export const getAppRepositorySources = (id, options = {}) =>
   request(`/apps/${id}/repository-sources`, { silent: true, ...options });
-// Fast-forward the integration's configured GitHub fork from canonical
+// Fast-forward the app's configured GitHub fork from canonical
 // upstream. The server deliberately refuses divergence and never forces.
 export const syncAppRepositoryFork = (id, options = {}) =>
   request(`/apps/${id}/repository-sources/sync-fork`, {
@@ -134,8 +134,9 @@ export const openAppFolder = (id) => request(`/apps/${id}/open-folder`, { method
 // comes back as a real error instead of a silent `xcode://` no-op.
 export const openAppInXcode = (id) => request(`/apps/${id}/open-xcode`, { method: 'POST' });
 export const refreshAppConfig = (id) => request(`/apps/${id}/refresh-config`, { method: 'POST' });
-export const pullAndUpdateApp = (id, options = {}) => request(`/apps/${id}/update`, {
+export const pullAndUpdateApp = (id, body = {}, options = {}) => request(`/apps/${id}/update`, {
   method: 'POST',
+  body: JSON.stringify(body),
   ...options,
 });
 // `options` lets a caller suppress request()'s auto-toast with `{ silent: true }`

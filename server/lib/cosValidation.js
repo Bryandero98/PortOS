@@ -1270,6 +1270,10 @@ export const createCosTaskSchema = z.object({
     v => v === 'true' ? true : v === 'false' ? false : v,
     z.boolean().optional()
   ),
+  // Plan-only issue destination when the selected app is a fork. The server
+  // resolves this role to a validated forge repository; callers never provide
+  // an arbitrary owner/repo string.
+  issueTarget: z.enum(['upstream', 'origin']).optional(),
   openPR: z.preprocess(
     v => v === 'true' ? true : v === 'false' ? false : v,
     z.boolean().optional()
@@ -1836,7 +1840,7 @@ export const slashdoTaskSchema = createCosTaskSchema
   .pick({
     model: true, provider: true, effort: true, simplify: true,
     reviewers: true, usernames: true, optionalReviewers: true, reviewerMaxRounds: true,
-    reviewerModels: true, reviewerEfforts: true
+    reviewerModels: true, reviewerEfforts: true, issueTarget: true
   })
   .extend({
     command: z.string().min(1),
