@@ -57,6 +57,19 @@ describe('SongBook index', () => {
     expect(screen.getByText('The Placeholders')).toBeTruthy();
   });
 
+  it('opens creation from the header and navigates to edit mode after submitting', async () => {
+    api.createSong.mockResolvedValue({ id: 'new-song' });
+    renderPage();
+    await screen.findByText('Example Song');
+
+    fireEvent.click(screen.getByRole('button', { name: 'New Song' }));
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New Example' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Song' }));
+
+    expect(api.createSong).toHaveBeenCalledWith({ title: 'New Example' }, { silent: true });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
   it('flips a song stage via a partial updateSong and updates local state reactively', async () => {
     api.updateSong.mockResolvedValue(song('s1', 'Example Song', { stage: 'learning' }));
     renderPage();
