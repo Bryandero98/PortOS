@@ -42,14 +42,30 @@ describe('managedAgentOptionsFor', () => {
   it('leaves non-audit tasks alone', () => {
     expect(managedAgentOptionsFor({ managedAgentOptions: ['useWorktree'] })).toEqual(['useWorktree']);
   });
+
+  it('locks the worktree on for an isolation-required audit in do-work mode', () => {
+    expect(managedAgentOptionsFor({
+      fileIssuesCapable: true,
+      defaultFileIssues: true,
+      doWorkRequiresWorktree: true,
+    }, { fileIssues: false })).toEqual(['useWorktree']);
+  });
 });
 
 describe('toggleFileIssuesMetadata', () => {
-  it('forces the no-code posture on and leaves it when turning off', () => {
+  it('forces the no-code posture on and otherwise leaves agent options alone', () => {
     expect(toggleFileIssuesMetadata({ useWorktree: true, openPR: true, simplify: true }, true))
       .toEqual({ useWorktree: false, openPR: false, simplify: false, fileIssues: true });
     expect(toggleFileIssuesMetadata({ fileIssues: true, useWorktree: false }, false))
       .toEqual({ fileIssues: false, useWorktree: false });
+  });
+
+  it('restores required worktree isolation when do-work mode is selected', () => {
+    expect(toggleFileIssuesMetadata(
+      { fileIssues: true, useWorktree: false, openPR: false },
+      false,
+      true,
+    )).toEqual({ fileIssues: false, useWorktree: true, openPR: false });
   });
 });
 

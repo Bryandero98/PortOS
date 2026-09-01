@@ -526,7 +526,11 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
           onClick={async () => {
             setUpdating(true);
             await onUpdate(taskType, {
-              taskMetadata: toggleFileIssuesMetadata(config.taskMetadata, !fileIssuesEffective(config))
+              taskMetadata: toggleFileIssuesMetadata(
+                config.taskMetadata,
+                !fileIssuesEffective(config),
+                config.doWorkRequiresWorktree,
+              )
             });
             setUpdating(false);
           }}

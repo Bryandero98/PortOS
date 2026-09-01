@@ -45,6 +45,7 @@ export const PROMPT_VERSIONS = {
   'ux': 1, // v1: walk the running UI with Playwright MCP against a 7-item named UX checklist and file ONE tracker item per finding via {trackerInstructions} — read-only on source, no branches/PRs. Mode (file-issues vs implement) is injected at dispatch via {modeInstructions} / applyAuditModeWrapper — no prompt bump required.
   'data-safety': 1, // v1: data/upgrade-safety audit (migrations, schema parity, version gates). Mode injected at dispatch.
   'simplify': 1, // v1: dead-code/duplication audit. Mode injected at dispatch.
+  'module-hygiene': 1, // v1: evidence-led complexity, responsibility, reuse, and reusable-surface discoverability audit. Mode injected at dispatch.
   'api-contract': 1, // v1: API/route-contract audit (validation gaps, client/server drift, status envelopes, asyncHandler). Net-new type (no PREVIOUS_DEFAULT_PROMPTS entry needed). Mode injected at dispatch.
   'react-lifecycle': 1, // v1: React lifecycle/state audit (effect teardowns, stale closures, unmounted setState, derived state). Net-new type. Mode injected at dispatch.
   'observability': 1, // v1: logging/observability audit (silent catches, log noise, missing error context, uninstrumented pipelines). Net-new type. Mode injected at dispatch.

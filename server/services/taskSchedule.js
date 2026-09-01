@@ -28,7 +28,7 @@ import { loadState, isImprovementEnabled } from './cosState.js';
 import { getLocalParts } from '../lib/timezone.js';
 import { getUserTimezone } from './userTimezone.js';
 import { parseCronToNextRun, parseCronToPrevRun } from './eventScheduler.js';
-import { isAuditTaskType, defaultFileIssuesFor } from '../lib/auditCatalog.js';
+import { isAuditTaskType, defaultFileIssuesFor, auditDoWorkRequiresWorktree } from '../lib/auditCatalog.js';
 import { DEFAULT_TASK_PROMPTS } from './taskPromptDefaults.js';
 import {
   DEFAULT_PERPETUAL_RECHECK_MS,
@@ -1321,6 +1321,9 @@ export async function getScheduleStatus() {
     if (isAuditTaskType(taskType)) {
       taskStatus.fileIssuesCapable = true;
       taskStatus.defaultFileIssues = defaultFileIssuesFor(taskType);
+      if (auditDoWorkRequiresWorktree(taskType)) {
+        taskStatus.doWorkRequiresWorktree = true;
+      }
     }
 
     // Perpetual tasks park PER-APP (parkPerpetual is called with the appId), so

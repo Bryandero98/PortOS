@@ -43,6 +43,10 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // copy-paste drift — distinct from `code-quality` (which is the broader DRY /
   // long-function / TODO pass). Defaults to file-issues.
   'simplify',
+  // Structural-maintainability audit. Treats complexity thresholds as candidate
+  // signals, then proves responsibility, reuse, or discoverability impact before
+  // filing. Direct remediation is isolated in a managed worktree.
+  'module-hygiene',
   // Quota-burn `api-contract-audit` counterpart. Route validation, client/server
   // drift, status envelopes, and missing `asyncHandler`. Defaults to file-issues.
   'api-contract',
@@ -357,6 +361,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // defaults keep manual filing available without opting into scheduling.
   'data-safety':         { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   'simplify':            { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
+  'module-hygiene':      { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, dataInputs: ['open-issues', 'open-pull-requests'], taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   'api-contract':      { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   'react-lifecycle':   { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   'observability':     { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
@@ -522,6 +527,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'ux': 'UX/design audit — file issues (default) or implement fixes',
   'data-safety': 'Data/upgrade-safety audit — file issues (default) or implement fixes',
   'simplify': 'Dead-code/duplication audit — file issues (default) or implement removals',
+  'module-hygiene': 'Module hygiene — complexity, reuse, ownership, and discoverability; file issues (default) or implement one refactor',
   'api-contract': 'API/route-contract audit — file issues (default) or implement fixes',
   'react-lifecycle': 'React lifecycle/state audit — file issues (default) or implement fixes',
   'observability': 'Logging/observability audit — file issues (default) or implement fixes',
