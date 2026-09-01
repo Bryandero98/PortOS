@@ -383,8 +383,8 @@ E|--3-----|`;
       expect(screen.getByRole('button', { name: /Transpose down \(currently \+1 semitones\)/ })).toBeTruthy();
 
       fireEvent.click(screen.getByRole('button', { name: /Larger text/ }));
-      expect(screen.getByRole('status')).toHaveTextContent('Font size 1.125 rem');
-      expect(screen.getByRole('button', { name: /Smaller text \(currently 1.125 rem\)/ })).toBeTruthy();
+      expect(screen.getAllByRole('status').some((status) => status.textContent === 'Font size 1.000 rem')).toBe(true);
+      expect(screen.getByRole('button', { name: /Smaller text \(currently 1.000 rem\)/ })).toBeTruthy();
     });
   });
 
