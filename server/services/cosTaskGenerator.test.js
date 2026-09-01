@@ -71,6 +71,7 @@ import {
   buildJiraTicketTask,
   buildClaimWorkTask,
   buildImprovementDedupSets,
+  queueDueInstallWideImprovementTasks,
   normalizeWorkItemRef,
   buildTargetWorkItemBlock,
   buildPrefetchedIssueContextBlock,
@@ -1383,6 +1384,85 @@ describe('buildImprovementDedupSets (#2614 — failure-blocked tasks occupy thei
     // Source-pinned: the queue path must consume buildImprovementDedupSets so
     // its occupancy semantics can't silently drift from the tested helper.
     expect(GEN_SRC).toMatch(/buildImprovementDedupSets\(existingTasks/);
+  });
+
+  it('queues a due install-wide task once and skips blocked or hook-declined types', async () => {
+    const generateTask = vi.fn(async (taskType) => (taskType === 'user-action-review'
+      ? null
+      : { id: 'generated', description: 'Global task\nwith full prompt', metadata: {} }));
+    const persistTask = vi.fn(async (task) => ({ ...task, id: 'persisted-task' }));
+    const recordExecution = vi.fn();
+    const wake = vi.fn();
+    const existingTaskTypes = new Set(['repo-sync']);
+    const blockedTaskTypes = new Map([['repo-sync', 'blocked-repo-sync']]);
+
+    const queued = await queueDueInstallWideImprovementTasks({
+      dueTasks: [
+        { taskType: 'repo-sync' },
+        { taskType: 'user-action-review' },
+        { taskType: 'unrelated-task' }
+      ],
+      state: { config: {} },
+      taskSchedule: {
+        INSTALL_WIDE_TASK_TYPES: new Set(['repo-sync', 'user-action-review']),
+        recordExecution
+      },
+      existingTaskTypes,
+      blockedTaskTypes,
+      generateTask,
+      persistTask,
+      wake
+    });
+
+    expect(queued).toBe(0);
+    expect(generateTask).toHaveBeenCalledTimes(1);
+    expect(generateTask).toHaveBeenCalledWith('user-action-review', { config: {} });
+    expect(persistTask).not.toHaveBeenCalled();
+    expect(recordExecution).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
+    expect(existingTaskTypes).toEqual(new Set(['repo-sync']));
+  });
+
+  it('persists and records one global dispatch when a due type appears twice', async () => {
+    const generateTask = vi.fn(async () => ({ id: 'generated', description: 'Global task\nwith full prompt', metadata: {} }));
+    const persistTask = vi.fn(async (task) => ({ ...task, id: 'persisted-task' }));
+    const recordExecution = vi.fn();
+    const wake = vi.fn();
+    const existingTaskTypes = new Set();
+
+    const queued = await queueDueInstallWideImprovementTasks({
+      dueTasks: [{ taskType: 'user-action-review' }, { taskType: 'user-action-review' }],
+      state: { config: {} },
+      taskSchedule: {
+        INSTALL_WIDE_TASK_TYPES: new Set(['user-action-review']),
+        recordExecution
+      },
+      existingTaskTypes,
+      blockedTaskTypes: new Map(),
+      generateTask,
+      persistTask,
+      wake
+    });
+
+    expect(queued).toBe(1);
+    expect(generateTask).toHaveBeenCalledTimes(1);
+    expect(persistTask).toHaveBeenCalledTimes(1);
+    expect(persistTask.mock.calls[0][0]).toMatchObject({
+      id: expect.stringMatching(/^sys-install-user-action-review-/),
+      description: 'Global task',
+      metadata: { prompt: 'Global task\nwith full prompt' }
+    });
+    expect(recordExecution).toHaveBeenCalledTimes(1);
+    expect(recordExecution).toHaveBeenCalledWith('task:user-action-review');
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(existingTaskTypes).toEqual(new Set(['user-action-review']));
+  });
+
+  it('uses the global due list before the per-app loop', () => {
+    const start = GEN_SRC.indexOf('export async function queueEligibleImprovementTasks');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n/**', start + 1));
+    expect(body).toContain('queueDueInstallWideImprovementTasks({');
+    expect(body.indexOf('queueDueInstallWideImprovementTasks({')).toBeLessThan(body.indexOf('for (const app of apps)'));
   });
 });
 
