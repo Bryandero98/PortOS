@@ -10,11 +10,11 @@ import Pill from '../../ui/Pill';
 import toast from '../../ui/Toast';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import { useThemeContext } from '../../ThemeContext';
+import { useCosTaskUpdates } from '../../../hooks/useCosTaskUpdates';
 import useProviderModels from '../../../hooks/useProviderModels';
 import { chipColors } from '../../../lib/chipContrast';
 import { isProcessProvider } from '../../../utils/providers';
 import * as api from '../../../services/api';
-import socket from '../../../services/socket';
 import { timeAgo } from '../../../utils/formatters';
 
 const FORGE_LABEL = { github: 'GitHub', gitlab: 'GitLab' };
@@ -257,89 +257,51 @@ export default function IssuesTab({ appId, appName }) {
     setUnassignedOnly(false);
   }, [appId]);
 
-  useEffect(() => {
-    const subscribe = () => socket.emit('cos:subscribe');
-    if (socket.connected) subscribe();
-    socket.on('connect', subscribe);
+  const applyTaskUpdate = useCallback((task) => {
+    if (!task?.id) return;
+    const nextStatus = runStatusForTask(task.status);
+    if (!nextStatus) return;
 
-    const applyTaskUpdate = (task) => {
-      if (!task?.id) return;
-      const nextStatus = runStatusForTask(task.status);
-      if (!nextStatus) return;
+    const currentRuns = runsRef.current;
+    const nextRuns = { ...currentRuns };
+    const transitions = [];
 
-      const currentRuns = runsRef.current;
-      const nextRuns = { ...currentRuns };
-      const transitions = [];
+    for (const [key, rawRun] of Object.entries(currentRuns)) {
+      const { action, issueNumber } = parseRunKey(key);
+      const spec = ISSUE_ACTIONS[action];
+      if (!spec) continue;
+      const run = typeof rawRun === 'string' ? { status: rawRun } : rawRun;
+      // Before the POST resolves there is no task id to match on, so fall back
+      // to the durable per-action target the server stamped. Reading THIS
+      // action's key is what keeps a claim's events off a replan's row.
+      const matchesTask = run.taskId === task.id || (
+        !run.taskId && task.metadata?.app === appId &&
+        String(task.metadata?.[spec.targetKey]) === issueNumber
+      );
+      if (!matchesTask) continue;
 
-      for (const [key, rawRun] of Object.entries(currentRuns)) {
-        const { action, issueNumber } = parseRunKey(key);
-        const spec = ISSUE_ACTIONS[action];
-        if (!spec) continue;
-        const run = typeof rawRun === 'string' ? { status: rawRun } : rawRun;
-        // Before the POST resolves there is no task id to match on, so fall back
-        // to the durable per-action target the server stamped. Reading THIS
-        // action's key is what keeps a claim's events off a replan's row.
-        const matchesTask = run.taskId === task.id || (
-          !run.taskId && task.metadata?.app === appId &&
-          String(task.metadata?.[spec.targetKey]) === issueNumber
-        );
-        if (!matchesTask) continue;
+      const currentStatus = run.status || 'queuing';
+      if ((RUN_STATUS_RANK[nextStatus] ?? 0) < (RUN_STATUS_RANK[currentStatus] ?? 0)) continue;
+      if (run.taskId === task.id && currentStatus === nextStatus) continue;
 
-        const currentStatus = run.status || 'queuing';
-        if ((RUN_STATUS_RANK[nextStatus] ?? 0) < (RUN_STATUS_RANK[currentStatus] ?? 0)) continue;
-        if (run.taskId === task.id && currentStatus === nextStatus) continue;
+      nextRuns[key] = { ...run, taskId: run.taskId || task.id, status: nextStatus };
+      transitions.push({ action, issueNumber, from: currentStatus, to: nextStatus });
+    }
 
-        nextRuns[key] = { ...run, taskId: run.taskId || task.id, status: nextStatus };
-        transitions.push({ action, issueNumber, from: currentStatus, to: nextStatus });
-      }
+    if (transitions.length === 0) return;
+    replaceRuns(() => nextRuns);
 
-      if (transitions.length === 0) return;
-      replaceRuns(() => nextRuns);
-
-      for (const { action, issueNumber, from, to } of transitions) {
-        if (to === from) continue;
-        const message = ISSUE_ACTIONS[action].transition(issueNumber, to);
-        if (!message) continue;
-        if (to === 'active') toast(message, { icon: '▶️' });
-        else if (to === 'completed') toast.success(message);
-        else if (to === 'blocked') toast.error(message);
-      }
-    };
-
-    const handleTaskChanged = (data) => applyTaskUpdate(data?.task);
-    const handleTaskListChanged = (data) => {
-      for (const task of data?.tasks || []) applyTaskUpdate(task);
-    };
-    const handleTaskCompleted = (data) => {
-      for (const task of data?.tasks || []) applyTaskUpdate(task);
-    };
-    const handleAgentSpawned = (agent) => {
-      if (agent?.taskId) applyTaskUpdate({ id: agent.taskId, status: 'in_progress' });
-    };
-    const handleAgentCompleted = (agent) => {
-      // A failed agent can be requeued or blocked by its completion path, so
-      // only the success signal is safe as an early terminal hint. The task
-      // lifecycle event below remains authoritative for all outcomes.
-      if (agent?.taskId && agent.result?.success === true) {
-        applyTaskUpdate({ id: agent.taskId, status: 'completed' });
-      }
-    };
-
-    socket.on('cos:tasks:changed', handleTaskChanged);
-    socket.on('cos:tasks:user:changed', handleTaskListChanged);
-    socket.on('cos:tasks:user:completed', handleTaskCompleted);
-    socket.on('cos:agent:spawned', handleAgentSpawned);
-    socket.on('cos:agent:completed', handleAgentCompleted);
-
-    return () => {
-      socket.off('connect', subscribe);
-      socket.off('cos:tasks:changed', handleTaskChanged);
-      socket.off('cos:tasks:user:changed', handleTaskListChanged);
-      socket.off('cos:tasks:user:completed', handleTaskCompleted);
-      socket.off('cos:agent:spawned', handleAgentSpawned);
-      socket.off('cos:agent:completed', handleAgentCompleted);
-    };
+    for (const { action, issueNumber, from, to } of transitions) {
+      if (to === from) continue;
+      const message = ISSUE_ACTIONS[action].transition(issueNumber, to);
+      if (!message) continue;
+      if (to === 'active') toast(message, { icon: '▶️' });
+      else if (to === 'completed') toast.success(message);
+      else if (to === 'blocked') toast.error(message);
+    }
   }, [appId, replaceRuns]);
+
+  useCosTaskUpdates(applyTaskUpdate);
 
   const load = useCallback(async () => {
     const generation = requestRef.current + 1;
