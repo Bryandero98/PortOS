@@ -3691,6 +3691,19 @@ describe('planner attribution', () => {
     expect(prompt).toMatch(/--label planner:grok/);
   });
 
+  // The full path is a separate render (API providers never take the light
+  // path), and it appends the section rather than filling a template variable —
+  // an install's stored prompt template predates it and would silently drop it.
+  it('reaches an api provider through the full path too', async () => {
+    const prompt = await buildAgentPrompt(
+      makeTask({ metadata: { openPR: false } }), {}, '/repo', null, isTruthyMeta,
+      { providerType: 'api', providerId: 'lmstudio', providerModel: 'claude-opus-5' },
+    );
+    const text = typeof prompt === 'string' ? prompt : prompt.userPrompt;
+    expect(text).toMatch(/## Planner Attribution/);
+    expect(text).toMatch(/--label planner:opus-5/);
+  });
+
   it('says nothing at all when PortOS cannot attribute the run', () => {
     const prompt = buildLightContextPrompt(
       makeTask({ metadata: { openPR: false } }), '/repo', null, isTruthyMeta, {},
