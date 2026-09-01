@@ -36,10 +36,12 @@ vi.mock('../services/cosTaskGenerator.js', () => ({
 vi.mock('../services/apps.js', () => ({ getAppById: vi.fn(), getAppWorkTracker: vi.fn(), PORTOS_APP_ID: 'portos-default' }));
 vi.mock('../services/streamingDetect.js', () => ({ NON_PM2_TYPES: new Set() }));
 vi.mock('../services/instances.js', () => ({ getAssignableInstances: vi.fn() }));
+vi.mock('../services/managedAppRepositories.js', () => ({ resolveManagedAppIssueTarget: vi.fn() }));
 
 import * as cos from '../services/cos.js';
 import { getAssignableInstances } from '../services/instances.js';
-import { getAppWorkTracker } from '../services/apps.js';
+import { getAppById, getAppWorkTracker } from '../services/apps.js';
+import { resolveManagedAppIssueTarget } from '../services/managedAppRepositories.js';
 import cosTaskRoutes from './cosTaskRoutes.js';
 
 const SELF = 'self-instance-id';
@@ -61,6 +63,13 @@ beforeEach(() => {
   ]);
   cos.addTask.mockImplementation(async (taskData) => ({ id: 'task-1', ...taskData }));
   cos.updateTask.mockResolvedValue({ id: 'task-1' });
+  getAppById.mockResolvedValue({ id: 'portos-default', name: 'PortOS', repoPath: '/example/portos' });
+  resolveManagedAppIssueTarget.mockResolvedValue({
+    role: 'upstream',
+    forge: 'github',
+    fullName: 'example-org/example-app',
+    repoSpec: 'github.com/example-org/example-app',
+  });
 });
 
 describe('POST /api/cos/tasks — targetInstanceId (#4520)', () => {
@@ -110,6 +119,37 @@ describe('POST /api/cos/tasks — plan-only tracker gate', () => {
 
     expect(res.status).toBe(200);
     expect(cos.addTask).toHaveBeenCalledWith(expect.objectContaining({ planOnly: true }), 'user');
+  });
+
+  it('pins plan-only GitHub commands to the detected upstream repository', async () => {
+    getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
+
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'plan the change', app: 'forked-app', planOnly: true });
+
+    expect(res.status).toBe(200);
+    expect(resolveManagedAppIssueTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ repoPath: '/example/portos' }),
+      'upstream',
+    );
+    expect(cos.addTask.mock.calls[0][0].prompt).toContain('github.com/example-org/example-app');
+    expect(cos.addTask.mock.calls[0][0].prompt).toContain('canonical upstream');
+  });
+
+  it('honors a deliberate origin target for a plan-only task', async () => {
+    getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
+    resolveManagedAppIssueTarget.mockResolvedValue({
+      role: 'origin', fullName: 'example-owner/example-app', repoSpec: 'github.com/example-owner/example-app',
+    });
+
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'plan the change', app: 'forked-app', planOnly: true, issueTarget: 'origin' });
+
+    expect(res.status).toBe(200);
+    expect(resolveManagedAppIssueTarget).toHaveBeenCalledWith(expect.anything(), 'origin');
+    expect(cos.addTask.mock.calls[0][0].prompt).toContain('configured origin');
   });
 });
 

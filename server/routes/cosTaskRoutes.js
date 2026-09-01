@@ -10,6 +10,7 @@ import { enhanceTaskPrompt } from '../services/taskEnhancer.js';
 import { buildClaimWorkTask, buildJiraTicketTask } from '../services/cosTaskGenerator.js';
 import { getAppById, getAppWorkTracker, PORTOS_APP_ID } from '../services/apps.js';
 import { getAssignableInstances } from '../services/instances.js';
+import { resolveManagedAppIssueTarget } from '../services/managedAppRepositories.js';
 import { workTrackerLabel } from '../lib/workTracker.js';
 import { getSlashdoWorkflow, slashdoWorkflowAppliesTo, SLASHDO_COMMAND_NAMES } from '../lib/slashdoCatalog.js';
 import { NON_PM2_TYPES } from '../services/streamingDetect.js';
@@ -50,17 +51,37 @@ async function assertAssignableInstance(instanceId) {
 
 const ISSUE_TRACKERS = new Set(['github', 'gitlab']);
 
-// The bundled plan-task workflow files an issue; it cannot target PLAN.md or
-// JIRA. Keep the API contract aligned with the quick-task form so direct
-// callers cannot bypass the tracker gate.
-async function assertPlanOnlyTracker(taskData) {
-  if (taskData.planOnly !== true && taskData.slashdoCommand !== 'plan-task') return;
-  const trackerInfo = await getAppWorkTracker(taskData.app || PORTOS_APP_ID);
-  if (!trackerInfo || ISSUE_TRACKERS.has(trackerInfo.resolved)) return;
-  throw new ServerError(
-    `Plan-and-file tasks require a GitHub or GitLab issue tracker (resolved to ${trackerInfo.resolved})`,
-    { status: 400, code: 'UNSUPPORTED_PLAN_ONLY_TRACKER' }
-  );
+function issueTargetInstructions(target, tracker) {
+  if (!target?.fullName) {
+    return '## Issue repository\n\nBefore filing, inspect whether the checkout origin is a fork. If it is, file on the canonical upstream repository rather than the origin fork. Do not rely on the working directory\'s implicit forge target.';
+  }
+  const role = target.role === 'upstream' ? 'canonical upstream' : 'configured origin';
+  const repoFlag = tracker === 'github' ? (target.repoSpec || target.fullName) : target.fullName;
+  const cli = tracker === 'github' ? 'gh' : 'glab';
+  return `## Issue repository\n\nFile this issue on the ${role} repository \`${target.fullName}\`. Pass \`--repo ${repoFlag}\` to every \`${cli} issue\`, label, and related repository command; do not let \`${cli}\` infer the origin fork from the working directory.`;
+}
+
+// The bundled plan-task workflow files an issue; resolve the app's canonical
+// destination before queueing so a checkout whose origin is a fork does not
+// silently file project work on that fork. The form may deliberately choose the
+// origin; upstream is the unattended/default posture.
+async function preparePlanOnlyTask(taskData, knownApp = null) {
+  if (taskData.planOnly !== true && taskData.slashdoCommand !== 'plan-task') return taskData;
+  const appId = taskData.app || PORTOS_APP_ID;
+  const [trackerInfo, app] = await Promise.all([
+    getAppWorkTracker(appId),
+    knownApp ? Promise.resolve(knownApp) : getAppById(appId),
+  ]);
+  if (trackerInfo && !ISSUE_TRACKERS.has(trackerInfo.resolved)) {
+    throw new ServerError(
+      `Plan-and-file tasks require a GitHub or GitLab issue tracker (resolved to ${trackerInfo.resolved})`,
+      { status: 400, code: 'UNSUPPORTED_PLAN_ONLY_TRACKER' }
+    );
+  }
+  if (!app || !trackerInfo) return taskData;
+  const target = await resolveManagedAppIssueTarget(app, taskData.issueTarget || 'upstream').catch(() => null);
+  const targetPrompt = issueTargetInstructions(target, target?.forge || trackerInfo.resolved);
+  return { ...taskData, prompt: [taskData.prompt, targetPrompt].filter(Boolean).join('\n\n') };
 }
 
 const router = Router();
@@ -151,7 +172,7 @@ router.post('/tasks/enhance', asyncHandler(async (req, res) => {
 // source, so the two surfaces can't drift.
 router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   const {
-    command, app, provider, model, effort, simplify,
+    command, app, provider, model, effort, simplify, issueTarget,
     target, issueContext, overrideContext, issueAuthorFilter, reviewers, usernames, optionalReviewers,
     reviewerMaxRounds, reviewerModels, reviewerEfforts
   } = validateRequest(slashdoTaskSchema, req.body);
@@ -169,10 +190,11 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
     throw new ServerError(`App not found: ${app}`, { status: 404, code: 'APP_NOT_FOUND' });
   }
 
-  // `plan-task` is also a plan-only quick action, so it must use the same
-  // forge-only gate as the general task endpoint rather than reaching
-  // `cos.addTask` through this separate route.
-  if (command === 'plan-task') await assertPlanOnlyTracker({ app, slashdoCommand: command });
+  // `plan-task` is also a plan-only quick action, so resolve its forge target
+  // before it reaches the store through this separate route.
+  const planTask = command === 'plan-task'
+    ? await preparePlanOnlyTask({ app, slashdoCommand: command, issueTarget }, appObj)
+    : null;
 
   // Enforce the catalog's stack gate server-side. The Agent Operations panel only
   // offers the applicable one of `better` / `better-swift`, but the API must not
@@ -272,7 +294,7 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
     simplify: simplify === true,
     reviewLoop: false
   };
-  const result = await cos.addTask(taskData, 'user');
+  const result = await cos.addTask(planTask ? { ...taskData, prompt: planTask.prompt } : taskData, 'user');
 
   if (result?.duplicate) {
     throw new ServerError(`A task with this description is already ${result.status}`, { status: 409, code: 'DUPLICATE_TASK' });
@@ -325,8 +347,8 @@ router.post('/tasks', asyncHandler(async (req, res) => {
   if (!parsed.success) failValidation(parsed);
   const { type, ...taskData } = parsed.data;
   if (taskData.targetInstanceId) await assertAssignableInstance(taskData.targetInstanceId);
-  await assertPlanOnlyTracker(taskData);
-  const result = await cos.addTask(taskData, type);
+  const preparedTask = await preparePlanOnlyTask(taskData);
+  const result = await cos.addTask(preparedTask, type);
 
   if (result?.duplicate) {
     throw new ServerError(`A task with this description is already ${result.status}`, { status: 409, code: 'DUPLICATE_TASK' });

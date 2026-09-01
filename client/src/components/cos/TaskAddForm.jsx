@@ -57,6 +57,8 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [openPR, setOpenPR] = useState(true);
   const [simplify, setSimplify] = useState(true);
   const [planOnly, setPlanOnly] = useState(false);
+  const [issueTarget, setIssueTarget] = useState('upstream');
+  const [issueTargets, setIssueTargets] = useState({ appId: null, value: null });
   // Hidden run-shape state, never a user-facing toggle: the slashdo catalog's
   // deliverable posture (#3636/#3651). `undefined` = the form pins no opinion,
   // so the server keeps its own default. Only a slashdo-backed template sets it.
@@ -224,6 +226,30 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     return tracker === 'github' || tracker === 'gitlab' ? 'supported' : 'unsupported';
   }, [resolvedWorkTracker, selectedApp]);
   const planOnlySupported = planOnlyTrackerStatus === 'supported';
+
+  // A fork has two legitimate issue destinations. Default to canonical
+  // upstream, but make the origin an explicit per-task choice rather than
+  // silently inheriting whichever remote the checkout calls `origin`.
+  useEffect(() => {
+    const appId = selectedApp?.id || PORTOS_APP_ID;
+    if (!planOnly || !planOnlySupported) {
+      setIssueTargets({ appId, value: null });
+      return undefined;
+    }
+    let cancelled = false;
+    setIssueTargets({ appId, value: null });
+    Promise.resolve(api.getAppRepositorySources(appId, { silent: true }))
+      .then((status) => {
+        if (cancelled) return;
+        const value = status?.issueTargets || null;
+        setIssueTargets({ appId, value });
+        setIssueTarget(value?.default || 'upstream');
+      })
+      .catch(() => {
+        if (!cancelled) setIssueTargets({ appId, value: null });
+      });
+    return () => { cancelled = true; };
+  }, [planOnly, planOnlySupported, selectedApp?.id]);
 
   // Clear a template or an already-selected mode when an app resolves to a
   // tracker that cannot receive the issue-only plan-task workflow.
@@ -517,6 +543,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       app: newTask.app || undefined,
       targetInstanceId: targetInstanceId || undefined,
       planOnly,
+      issueTarget: planOnly ? issueTarget : undefined,
       slashdoCommand: planOnly ? 'plan-task' : (slashdoCommand || undefined),
       slashdoArgs: planOnly ? '--yes' : undefined,
       createJiraTicket: planOnly ? false : createJiraTicket,
@@ -774,9 +801,26 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
             </p>
           )}
           {planOnly && (
-            <p className="basis-full text-xs text-gray-500">
-              Read-only planning: file the issue without code changes, a worktree, PR, simplify pass, or review.
-            </p>
+            <div className="basis-full space-y-2">
+              <p className="text-xs text-gray-500">
+                Read-only planning: file the issue without code changes, a worktree, PR, simplify pass, or review.
+              </p>
+              {issueTargets.appId === (selectedApp?.id || PORTOS_APP_ID) && issueTargets.value?.canChoose && (
+                <div className="max-w-md">
+                  <label htmlFor="task-issue-target" className="mb-1 block text-xs text-gray-400">File issue on</label>
+                  <select
+                    id="task-issue-target"
+                    value={issueTarget}
+                    onChange={(event) => setIssueTarget(event.target.value)}
+                    className="w-full rounded-lg border border-port-border bg-port-bg px-3 py-2 text-sm text-white"
+                  >
+                    <option value="upstream">Upstream · {issueTargets.value.upstream?.fullName}</option>
+                    <option value="origin">Origin fork · {issueTargets.value.origin?.fullName}</option>
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500">Upstream is the default so project work is not stranded on a personal fork.</p>
+                </div>
+              )}
+            </div>
           )}
           {!planOnly && (
             <>

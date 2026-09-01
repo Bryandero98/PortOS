@@ -16,7 +16,7 @@
  *   launch     — open-editor, open-claude, open-folder, open-xcode
  *   documents  — planning-doc read/list/commit
  *   agents     — recent CoS agent history
- *   repositorySources — multi-checkout version and upstream management
+ *   repositorySources — checkout origin/upstream status and fork synchronization
  *
  * Route ordering is safe across sub-routers: every param route is either the
  * single-segment `/:id` or a deeper `/:id/...`, and the static routes
