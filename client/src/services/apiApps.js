@@ -87,7 +87,8 @@ export const getNativeLaunchStatus = (id, options = {}) =>
 export const startApp = (id, options = {}) =>
   request(`/apps/${id}/start`, { method: 'POST', ...options });
 export const stopApp = (id) => request(`/apps/${id}/stop`, { method: 'POST' });
-export const restartApp = (id) => request(`/apps/${id}/restart`, { method: 'POST' });
+export const restartApp = (id, options = {}) =>
+  request(`/apps/${id}/restart`, { method: 'POST', ...options });
 export const upgradeAppTls = (id, body) => request(`/apps/${id}/upgrade-tls`, {
   method: 'POST',
   body: JSON.stringify(body),
@@ -95,18 +96,35 @@ export const upgradeAppTls = (id, body) => request(`/apps/${id}/upgrade-tls`, {
 });
 
 /**
- * Handle PortOS self-restart: show a loading toast, poll for server recovery, then reload.
+ * Handle PortOS self-restart: show a loading toast, poll for server recovery,
+ * then reload. When a restart changes HTTP to HTTPS, `targetOrigin` points the
+ * health probe and final navigation at the newly-secured listener.
  * Call this after restartApp() returns { selfRestart: true }.
  */
-export function handleSelfRestart() {
+export function handleSelfRestart({ targetOrigin = null } = {}) {
+  const restartOrigin = targetOrigin?.replace(/\/+$/, '') || null;
+  const healthUrl = restartOrigin
+    ? `${restartOrigin}${API_BASE}/system/health`
+    : `${API_BASE}/system/health`;
+
   toast.loading('Restarting PortOS...', { id: 'self-restart', duration: Infinity });
   const poll = async () => {
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 2000));
-      const ok = await fetch(`${API_BASE}/system/health`).then(() => true).catch(() => false);
+      const healthRequest = restartOrigin
+        ? fetch(healthUrl, { mode: 'no-cors' })
+        : fetch(healthUrl);
+      const ok = await healthRequest.then(() => true).catch(() => false);
       if (ok) {
         toast.success('PortOS restarted successfully', { id: 'self-restart' });
-        setTimeout(() => window.location.reload(), 1000);
+        setTimeout(() => {
+          if (restartOrigin) {
+            const currentRoute = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+            window.location.assign(`${restartOrigin}${currentRoute}`);
+            return;
+          }
+          window.location.reload();
+        }, 1000);
         return;
       }
     }
