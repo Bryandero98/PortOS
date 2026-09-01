@@ -128,6 +128,11 @@ describe('normalizeCodexLoginStart', () => {
     expect(() => normalizeCodexLoginStart({ authUrl: 'https://auth.example.com/x' })).toThrow(/loginId/);
     expect(() => normalizeCodexLoginStart({ loginId: 'login-3' })).toThrow(/sign-in URL/);
   });
+
+  it('refuses a non-HTTPS browser handoff', () => {
+    expect(() => normalizeCodexLoginStart({ loginId: 'login-4', authUrl: 'javascript:alert(1)' })).toThrow(/sign-in URL/);
+    expect(() => normalizeCodexLoginStart({ loginId: 'login-5', verificationUrl: 'http://auth.example.com/device' })).toThrow(/sign-in URL/);
+  });
 });
 
 describe('deriveCodexAccountStatus', () => {
