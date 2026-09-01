@@ -8,10 +8,10 @@
 
 import { spawn } from '../lib/childProcess.js';
 import { existsSync } from 'fs';
-import { mkdtemp, readdir, rename, rm } from 'fs/promises';
+import { access, mkdtemp, readdir, rename, rm } from 'fs/promises';
 import { dirname, join } from 'path';
 import { ensureDir, PATHS } from '../lib/fileUtils.js';
-import { parseRepoUrl, isRepoUrl, repoCloneUrl, parseGitHubUrl, isGitHubRepoUrl } from '../lib/repoUrl.js';
+import { REPO_HOSTS, parseRepoUrl, repoCloneUrl } from '../lib/repoUrl.js';
 
 // Default directory for cloned repos (can be configured in settings)
 const DEFAULT_CLONE_DIR = PATHS.repos;
@@ -19,23 +19,19 @@ const CLONE_STAGING_PREFIX = '.portos-clone-';
 const CLONE_STAGING_MAX_AGE_MS = 10 * 60 * 1000;
 const CLONE_STAGING_RE = /^\.portos-clone-(\d{13})-[A-Za-z0-9]+$/;
 
-// The host/owner/repo parse rule lives in lib/ so the client can mirror it — the
-// Brain capture boxes have to predict "this URL will be cloned" before submit.
-// Re-exported here so callers reach the rule through the service they already use.
-export { parseRepoUrl, isRepoUrl, parseGitHubUrl, isGitHubRepoUrl };
-
 /**
  * The clone directory for a parsed repo, relative to the repos root.
  *
- * GitHub keeps the historical flat `<owner>/<repo>` layout so every clone made
- * before PortOS supported a second host stays exactly where its link record says
- * it is. Every other host is namespaced under its hostname, which is also what
- * keeps `gitlab.com/acme/widgets` from colliding with `github.com/acme/widgets`.
- * A GitLab `owner` may itself be a `group/subgroup` path; every segment is
- * validated by parseRepoUrl, so the join stays inside the root.
+ * A host flagged `flatClonePath` keeps the historical `<owner>/<repo>` layout so
+ * every clone made before PortOS supported a second host stays exactly where its
+ * link record says it is. Every other host is namespaced under its hostname,
+ * which is also what keeps `gitlab.com/acme/widgets` from colliding with
+ * `github.com/acme/widgets`. A GitLab `owner` may itself be a `group/subgroup`
+ * path; every segment is validated by parseRepoUrl, so the join stays inside
+ * the root.
  */
 export function repoSubPath({ host, owner, repo }) {
-  return host === 'github.com' ? join(owner, repo) : join(host, owner, repo);
+  return REPO_HOSTS[host]?.flatClonePath ? join(owner, repo) : join(host, owner, repo);
 }
 
 /**
@@ -181,6 +177,10 @@ export async function cloneRepo(url, options = {}) {
  */
 const MAX_STAGING_DEPTH = 4;
 
+// A directory holding `.git` is a finished clone, not a namespace level —
+// descending into it would walk the studied repo's whole source tree.
+const isCheckout = (dir) => access(join(dir, '.git')).then(() => true, () => false);
+
 export async function reapStaleCloneStaging({ cloneDir = DEFAULT_CLONE_DIR, now = Date.now() } = {}) {
   // One unreadable directory (removed mid-sweep, or not ours to read) must not
   // abort the sweep and leave every later branch's staging behind.
@@ -198,9 +198,7 @@ export async function reapStaleCloneStaging({ cloneDir = DEFAULT_CLONE_DIR, now 
         if (now - Number(match[1]) < CLONE_STAGING_MAX_AGE_MS) continue;
         await rm(join(dir, entry.name), { recursive: true, force: true });
         reaped++;
-      } else if (depth < MAX_STAGING_DEPTH && !existsSync(join(dir, entry.name, '.git'))) {
-        // A directory holding `.git` is a finished clone, not a namespace level —
-        // descending into it would walk the studied repo's whole source tree.
+      } else if (depth < MAX_STAGING_DEPTH && !await isCheckout(join(dir, entry.name))) {
         reaped += await sweep(join(dir, entry.name), depth + 1);
       }
     }

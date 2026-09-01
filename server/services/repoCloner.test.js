@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 vi.mock('fs', () => ({ existsSync: vi.fn() }));
 vi.mock('fs/promises', () => ({
+  access: vi.fn(),
   mkdtemp: vi.fn(),
   readdir: vi.fn(),
   rename: vi.fn(),
@@ -16,7 +17,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 }));
 
 import { existsSync } from 'fs';
-import { mkdtemp, readdir, rename, rm } from 'fs/promises';
+import { access, mkdtemp, readdir, rename, rm } from 'fs/promises';
 import { spawn } from '../lib/childProcess.js';
 import { cloneRepo, reapStaleCloneStaging } from './repoCloner.js';
 
@@ -150,13 +151,15 @@ describe('reapStaleCloneStaging', () => {
       return entries;
     });
     // A directory holding `.git` is a finished clone; the sweep must not walk in.
-    existsSync.mockImplementation(path => clones.includes(String(path).replace(/[/\\]\.git$/, '')));
+    access.mockImplementation(async (path) => {
+      if (!clones.includes(String(path).replace(/[/\\]\.git$/, ''))) throw Object.assign(new Error('nope'), { code: 'ENOENT' });
+    });
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     readdir.mockReset();
-    existsSync.mockReset();
+    access.mockReset();
     rm.mockResolvedValue();
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -237,6 +240,7 @@ describe('cloneRepo across hosts', () => {
     vi.clearAllMocks();
     readdir.mockReset();
     existsSync.mockReset();
+    access.mockReset();
     existsSync.mockImplementation(path => !String(path).endsWith('.git'));
     mkdtemp.mockImplementation(async (prefix) => `${prefix}staging`);
     readdir.mockResolvedValue([]);

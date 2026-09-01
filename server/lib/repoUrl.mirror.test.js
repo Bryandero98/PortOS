@@ -31,6 +31,7 @@ const MIRRORED_NAMES = [
   'RESERVED_PATH_SEGMENTS',
   'parseRepoUrl',
   'isRepoUrl',
+  'repoBrowseUrl',
   'parseGitHubUrl',
   'isGitHubRepoUrl',
 ];

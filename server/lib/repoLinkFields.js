@@ -21,8 +21,8 @@
 
 import { parseRepoUrl } from './repoUrl.js';
 
-/** Host assumed for a legacy record, whose fields could only ever be GitHub's. */
-const LEGACY_REPO_HOST = 'github.com';
+/** The one host the legacy GitHub-only mirror can describe. */
+const GITHUB_HOST = 'github.com';
 
 /**
  * The repo fields for a captured URL — new shape plus the legacy mirror.
@@ -34,14 +34,15 @@ const LEGACY_REPO_HOST = 'github.com';
  */
 export function deriveRepoLinkFields(url) {
   const parsed = parseRepoUrl(url);
+  const isGitHub = parsed?.host === GITHUB_HOST;
   return {
     isRepo: Boolean(parsed),
     repoHost: parsed?.host ?? null,
     repoOwner: parsed?.owner ?? null,
     repoName: parsed?.repo ?? null,
-    isGitHubRepo: Boolean(parsed?.isGitHub),
-    gitHubOwner: parsed?.isGitHub ? parsed.owner : null,
-    gitHubRepo: parsed?.isGitHub ? parsed.repo : null,
+    isGitHubRepo: isGitHub,
+    gitHubOwner: isGitHub ? parsed.owner : null,
+    gitHubRepo: isGitHub ? parsed.repo : null,
   };
 }
 
@@ -60,7 +61,7 @@ export function normalizeRepoLinkFields(link) {
   return {
     ...link,
     isRepo: true,
-    repoHost: LEGACY_REPO_HOST,
+    repoHost: GITHUB_HOST,
     repoOwner: link.gitHubOwner ?? null,
     repoName: link.gitHubRepo ?? null,
   };
@@ -75,13 +76,15 @@ export function normalizeRepoLinkFields(link) {
 export const linkIsRepo = (link) => Boolean(link?.isRepo ?? link?.isGitHubRepo);
 
 /**
- * `owner/repo` for a link record (either shape), else its display title.
+ * `owner/repo` for a link record, else its display title. Reads only the new
+ * shape: every link reaches a caller through a `brainStorage` read, which has
+ * already run `normalizeRepoLinkFields`.
  *
  * @param {object|null|undefined} link
  * @returns {string}
  */
 export function repoLinkLabel(link) {
-  const owner = link?.repoOwner ?? link?.gitHubOwner;
-  const repo = link?.repoName ?? link?.gitHubRepo;
-  return owner && repo ? `${owner}/${repo}` : (link?.title || link?.url || 'unknown repo');
+  return link?.repoOwner && link?.repoName
+    ? `${link.repoOwner}/${link.repoName}`
+    : (link?.title || link?.url || 'unknown repo');
 }

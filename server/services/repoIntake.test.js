@@ -109,7 +109,7 @@ describe('queueRepoStudy', () => {
   it('files against the selected managed app', async () => {
     const target = { id: 'app-2', name: 'Example App', repoPath: '/srv/example-app', workTracker: 'github' };
     getAppById.mockImplementation(async id => id === target.id ? target : null);
-    await queueRepoStudy(LINK, target.id);
+    await queueRepoStudy(LINK, { targetAppId: target.id });
     expect(getAppById).toHaveBeenCalledWith(target.id);
     expect(addTask.mock.calls[0][0].app).toBe(target.id);
     expect(addTask.mock.calls[0][0].context).toContain('Example App');
@@ -118,11 +118,7 @@ describe('queueRepoStudy', () => {
   });
 
   it('passes the selected provider, model, and effort to the repo-study task', async () => {
-    await queueRepoStudy(LINK, undefined, undefined, {
-      providerId: 'codex',
-      model: 'gpt-5',
-      effort: 'high',
-    });
+    await queueRepoStudy(LINK, { providerId: 'codex', model: 'gpt-5', effort: 'high' });
 
     expect(addTask.mock.calls[0][0]).toEqual(expect.objectContaining({
       provider: 'codex',
@@ -319,8 +315,7 @@ describe('restudyRepoLink', () => {
     const result = await restudyRepoLink(LINK, { pull: false });
 
     expect(pullRepo).not.toHaveBeenCalled();
-    expect(result.queued).toBe(true);
-    expect(result).not.toHaveProperty('pulled');
+    expect(result).toMatchObject({ queued: true, pulled: null });
   });
 
   // A force-pushed or re-tagged upstream must not make a repo permanently

@@ -12,7 +12,7 @@ export const updateBrainSettings = (settings, options = {}) => request('/brain/s
 // Brain - Capture & Inbox
 // `repoIntake` ({ malwareScan, learn, targetAppId, studyContext, providerId,
 // model, effort }) is the capture box's post-clone agent opt-in; the server
-// ignores it unless the text is a bare GitHub repo URL. Provider pins apply to
+// ignores it unless the text is a bare repository URL. Provider pins apply to
 // the optional repo study only. `note` is saved on a bare-URL link.
 export const captureBrainThought = (text, providerOverride, modelOverride, { creative, repoIntake, note } = {}, options = {}) => request('/brain/capture', {
   method: 'POST',

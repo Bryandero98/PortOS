@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { posixPath } from './testHelper.js';
 
 import { join } from 'path';
-import { parseRepoUrl, isRepoUrl, repoCloneUrl, parseGitHubUrl, isGitHubRepoUrl } from './repoUrl.js';
+import { parseRepoUrl, isRepoUrl, repoCloneUrl, repoBrowseUrl, parseGitHubUrl, isGitHubRepoUrl } from './repoUrl.js';
 
 const REPOS_ROOT = '/data/repos';
 const clonePath = (url) => {
@@ -116,7 +116,6 @@ describe('parseRepoUrl across hosts', () => {
         provider: 'gitlab',
         owner: 'example-group',
         repo: 'example-repo',
-        isGitHub: false,
       });
     }
   });
@@ -146,7 +145,10 @@ describe('parseRepoUrl across hosts', () => {
     expect(isRepoUrl('https://bitbucket.org/example-owner/example-repo')).toBe(false);
   });
 
-  it('builds the https clone URL from the parsed host', () => {
+  it('builds the https clone and browse URLs from the parsed host', () => {
+    expect(repoBrowseUrl(parseRepoUrl('git@gitlab.com:example-group/example-repo')))
+      .toBe('https://gitlab.com/example-group/example-repo');
+
     expect(repoCloneUrl(parseRepoUrl('git@gitlab.com:example-group/example-repo')))
       .toBe('https://gitlab.com/example-group/example-repo.git');
     expect(repoCloneUrl(parseRepoUrl('https://github.com/example-owner/example-repo')))

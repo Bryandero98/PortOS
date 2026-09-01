@@ -4,7 +4,7 @@ import * as api from '../../services/api';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import RepoStudyFields from './RepoStudyFields';
-import { useRepoStudyConfig } from '../../hooks';
+import { useAsyncAction, useRepoStudyConfig } from '../../hooks';
 
 /**
  * The Links tab's on-demand "Update & study" form for an already-cloned repo:
@@ -27,29 +27,19 @@ export default function RepoRestudyPanel({ link, onClose, onQueued }) {
     initialStudyContext: link.repoStudy?.studyContext || '',
   });
   const [pull, setPull] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async () => {
-    setSubmitting(true);
-    const result = await api
-      .studyBrainLink(link.id, { pull, ...study.studyPayload() }, { silent: true })
-      .catch(err => {
-        toast.error(err.message || 'Failed to queue study');
-        return null;
-      });
-    setSubmitting(false);
-    if (!result) return;
+  const [handleSubmit, submitting] = useAsyncAction(async () => {
+    const result = await api.studyBrainLink(link.id, { pull, ...study.studyPayload() }, { silent: true });
 
     // A pull failure does not stop the study — say so, or the user has no way to
     // know the agent is reading a checkout that never got refreshed.
-    toast[result.pulled && !result.pulled.ok ? 'warning' : 'success'](
-      result.pulled && !result.pulled.ok
-        ? 'Study queued — the pull failed, so it reads the existing checkout'
-        : 'Study queued — track it in Chief of Staff'
-    );
+    const pullFailed = result.pulled?.ok === false;
+    toast[pullFailed ? 'warning' : 'success'](pullFailed
+      ? 'Study queued — the pull failed, so it reads the existing checkout'
+      : 'Study queued — track it in Chief of Staff');
     onQueued?.(result.link);
     onClose?.();
-  };
+  }, { errorMessage: 'Failed to queue study' });
 
   return (
     <div className="mt-2 w-full rounded-lg border border-port-border bg-port-bg/60 p-3 space-y-2">
@@ -58,7 +48,7 @@ export default function RepoRestudyPanel({ link, onClose, onQueued }) {
         <h4 className="text-sm font-medium text-gray-200">Update &amp; study this repo</h4>
         <button
           onClick={onClose}
-          className="ml-auto p-1 text-gray-400 hover:text-white transition-colors"
+          className="ml-auto flex min-h-[44px] min-w-[44px] items-center justify-center text-gray-400 hover:text-white transition-colors"
           title="Close" aria-label="Close study form"
         >
           <X size={14} />

@@ -170,11 +170,16 @@ End with: the studied repo, its license, how many proposals you filed (with thei
 }
 
 /**
- * Queue the `repo-study` review of a cloned link against PortOS.
+ * Queue the `repo-study` review of a cloned link.
  *
+ * @param {object} link
+ * @param {object} [study] the study knobs — `targetAppId` (the managed app whose
+ *   tracker receives the issues; PortOS when absent), `studyContext` (the brief),
+ *   and the optional `providerId`/`model`/`effort` pins for this one run. Same
+ *   shape the capture-time intake stores, so both callers pass it straight through.
  * @returns {Promise<{ queued: boolean, reason?: string, taskId?: string, linkPatch?: object }>}
  */
-export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID, studyContext, { providerId, model, effort } = {}) {
+export async function queueRepoStudy(link, { targetAppId, studyContext, providerId, model, effort } = {}) {
   if (!isCloneReadable(link)) return { queued: false, reason: 'not-cloned' };
 
   const app = await getAppById(targetAppId || PORTOS_APP_ID);
@@ -256,9 +261,10 @@ export async function queueRepoStudy(link, targetAppId = PORTOS_APP_ID, studyCon
  * the study ran against a stale checkout.
  *
  * @returns {Promise<{ queued: boolean, reason?: string, taskId?: string,
- *   linkPatch?: object, pulled?: { ok: boolean, error?: string } }>}
+ *   linkPatch?: object, pulled: { ok: boolean, error?: string }|null }>}
+ *   `pulled` is null when the caller opted out of the refresh.
  */
-export async function restudyRepoLink(link, { pull = true, targetAppId, studyContext, providerId, model, effort } = {}) {
+export async function restudyRepoLink(link, { pull = true, ...study } = {}) {
   if (!isCloneReadable(link)) return { queued: false, reason: 'not-cloned' };
 
   const pulled = pull
@@ -269,10 +275,9 @@ export async function restudyRepoLink(link, { pull = true, targetAppId, studyCon
         return { ok: false, error: err.message };
       },
     )
-    : undefined;
+    : null;
 
-  const result = await queueRepoStudy(link, targetAppId, studyContext, { providerId, model, effort });
-  return pulled ? { ...result, pulled } : result;
+  return { ...await queueRepoStudy(link, study), pulled };
 }
 
 const INTAKE_QUEUERS = { malwareScan: queueMalwareScan, learn: queueRepoStudy };
@@ -293,9 +298,7 @@ export async function runRepoIntake(link, intake) {
   let patch = {};
   for (const [key, queue] of Object.entries(INTAKE_QUEUERS)) {
     if (!requested[key]) continue;
-    const result = key === 'learn'
-      ? await queue(link, requested.targetAppId, requested.studyContext, requested).catch(err => ({ queued: false, reason: err.message }))
-      : await queue(link).catch(err => ({ queued: false, reason: err.message }));
+    const result = await queue(link, requested).catch(err => ({ queued: false, reason: err.message }));
     if (result.queued) patch = { ...patch, ...result.linkPatch };
     else console.error(`❌ Capture-time ${key} not queued for link ${link.id}: ${result.reason}`);
   }

@@ -28,6 +28,34 @@ import { getScanReport } from '../services/malwareScanReports.js';
 
 const router = Router();
 
+/**
+ * Resolve a link that has a readable clone, or throw the right 404/400. Every
+ * clone-reading action (open-folder aside, which only needs a path) shares these
+ * preconditions, so they are stated once rather than re-spelled per route.
+ */
+async function requireClonedRepoLink(id) {
+  const link = await brainService.getLinkById(id);
+  if (!link) {
+    throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
+  }
+  if (!link.isRepo || link.cloneStatus !== 'cloned' || !link.localPath) {
+    throw new ServerError('Link is not a cloned repository', { status: 400, code: 'NOT_CLONED' });
+  }
+  return link;
+}
+
+/**
+ * How a `{ queued: false, reason }` from services/repoIntake.js is reported. A
+ * lookup rather than a ternary chain so a reason added there surfaces as itself
+ * instead of falling through to whichever branch happened to be last.
+ */
+const QUEUE_REASON_ERRORS = {
+  duplicate: (what) => new ServerError(`A ${what} for this repo is already pending or in progress`, { status: 409, code: 'DUPLICATE_TASK' }),
+  'app-not-found': () => new ServerError('The app to file study issues against no longer exists', { status: 400, code: 'APP_NOT_FOUND' }),
+};
+const queueFailure = (reason, what) => (QUEUE_REASON_ERRORS[reason] ?? (() =>
+  new ServerError('Local clone folder does not exist', { status: 400, code: 'PATH_NOT_FOUND' })))(what);
+
 // =============================================================================
 // LINKS CRUD
 // =============================================================================
@@ -248,26 +276,13 @@ router.post('/links/:id/open-folder', asyncHandler(async (req, res) => {
  * capture-time "scan for malware" checkbox queue exactly the same run.
  */
 router.post('/links/:id/scan', asyncHandler(async (req, res) => {
-  const link = await brainService.getLinkById(req.params.id);
-  if (!link) {
-    throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
-  }
-  if (!link.isRepo || link.cloneStatus !== 'cloned' || !link.localPath) {
-    throw new ServerError('Link is not a cloned repository', {
-      status: 400,
-      code: 'NOT_CLONED'
-    });
-  }
+  const link = await requireClonedRepoLink(req.params.id);
 
   // `not-cloned` here means the recorded localPath is gone from disk — the
   // service re-checks existence so the background capture path can't queue a
   // scan against a directory that was deleted after the clone.
   const result = await queueMalwareScan(link);
-  if (!result.queued) {
-    throw result.reason === 'duplicate'
-      ? new ServerError('A scan for this repo is already pending or in progress', { status: 409, code: 'DUPLICATE_TASK' })
-      : new ServerError('Local clone folder does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
-  }
+  if (!result.queued) throw queueFailure(result.reason, 'scan');
   // Record the pending scan the same way the capture-time path does, so a
   // reload shows the "Scan queued" chip instead of re-arming the button (whose
   // second click would 409 as a duplicate).
@@ -285,25 +300,10 @@ router.post('/links/:id/scan', asyncHandler(async (req, res) => {
  */
 router.post('/links/:id/study', asyncHandler(async (req, res) => {
   const body = validateRequest(linkStudyInputSchema, req.body);
-  const link = await brainService.getLinkById(req.params.id);
-  if (!link) {
-    throw new ServerError('Link not found', { status: 404, code: 'NOT_FOUND' });
-  }
-  if (!link.isRepo || link.cloneStatus !== 'cloned' || !link.localPath) {
-    throw new ServerError('Link is not a cloned repository', {
-      status: 400,
-      code: 'NOT_CLONED'
-    });
-  }
+  const link = await requireClonedRepoLink(req.params.id);
 
   const result = await restudyRepoLink(link, body);
-  if (!result.queued) {
-    throw result.reason === 'duplicate'
-      ? new ServerError('A study for this repo is already pending or in progress', { status: 409, code: 'DUPLICATE_TASK' })
-      : result.reason === 'app-not-found'
-        ? new ServerError('The app to file study issues against no longer exists', { status: 400, code: 'APP_NOT_FOUND' })
-        : new ServerError('Local clone folder does not exist', { status: 400, code: 'PATH_NOT_FOUND' });
-  }
+  if (!result.queued) throw queueFailure(result.reason, 'study');
   // Record the pending study the same way the capture-time path does, so a
   // reload shows the queued chip and the brief the run was given.
   const updated = await brainService.updateLink(link.id, result.linkPatch);

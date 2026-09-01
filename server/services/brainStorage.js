@@ -1031,19 +1031,21 @@ export const deleteMemoryEntry = (id) => remove('memories', id);
 
 // Links
 //
-// Every read is passed through `normalizeRepoLinkFields` so a record written by
-// an older PortOS (or arriving from a peer still on the GitHub-only field names)
-// reads as a repo here — see lib/repoLinkFields.js. Writes are NOT normalized:
-// the derivation belongs to `createLinkFromUrl`, which owns the URL.
-const normalizeLinks = (links) => links.map(normalizeRepoLinkFields);
-export const getLinks = async (filters) =>
-  normalizeLinks(await (filters ? query('links', filters) : getAll('links')));
-export const getLinkById = async (id) => normalizeRepoLinkFields(await getById('links', id));
-export const createLink = async (data) => normalizeRepoLinkFields(await create('links', data));
-export const updateLink = async (id, data) => normalizeRepoLinkFields(await update('links', id, data));
+// EVERY link leaves this module through `readLink`/`readLinks`, which apply
+// `normalizeRepoLinkFields` so a record written by an older PortOS (or arriving
+// from a peer still on the GitHub-only field names) reads as a repo — see
+// lib/repoLinkFields.js. Route through them when adding an accessor; the
+// persisted payload itself is never rewritten (the derivation belongs to
+// `createLinkFromUrl`, which owns the URL).
+const readLink = async (record) => normalizeRepoLinkFields(await record);
+const readLinks = async (records) => (await records).map(normalizeRepoLinkFields);
+export const getLinks = (filters) => readLinks(filters ? query('links', filters) : getAll('links'));
+export const getLinkById = (id) => readLink(getById('links', id));
+export const createLink = (data) => readLink(create('links', data));
+export const updateLink = (id, data) => readLink(update('links', id, data));
 // Batch reorder: per-id write queues so a multi-chip drag merges each link
 // against its freshest persisted record.
-export const reorderLinks = async (updates) => normalizeLinks(await updateMany('links', updates));
+export const reorderLinks = (updates) => readLinks(updateMany('links', updates));
 export const deleteLink = (id) => remove('links', id);
 
 // ─── Link summary index (issue #3509) ───────────────────────────────────────
@@ -1113,7 +1115,7 @@ export async function getLinksPage({ linkType, isRepo, limit = 50, offset = 0 } 
 
   const total = matching.length;
   const pageIds = matching.slice(offset, offset + limit).map(([id]) => id);
-  const page = normalizeLinks(await Promise.all(pageIds.map((id) => getById('links', id))));
+  const page = await readLinks(Promise.all(pageIds.map((id) => getById('links', id))));
   // A record deleted between the index read and the body read comes back null —
   // drop it rather than emitting a hole in the page.
   return { links: page.filter(Boolean), total };
@@ -1135,7 +1137,7 @@ export async function listLinkIds() {
 export async function getLinkByUrl(url) {
   const rows = await resolveLinkSummaries();
   const hit = rows.find(([, summary]) => summary && summary.url === url);
-  return hit ? normalizeRepoLinkFields(await getById('links', hit[0])) : null;
+  return hit ? readLink(getById('links', hit[0])) : null;
 }
 
 // Buckets (bookmark groups for links)

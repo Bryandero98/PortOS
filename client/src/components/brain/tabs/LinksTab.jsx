@@ -56,11 +56,13 @@ function normalizeUrl(raw) {
   return normalizeUrlShared(raw, { allowGit: true, requireDot: true });
 }
 
+const REPO_TYPE_COLOR = 'bg-purple-500/20 text-purple-400 border-purple-500/30';
+
 const LINK_TYPE_COLORS = {
-  repo: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  repo: REPO_TYPE_COLOR,
   // Pre-multi-host records still carry `github`; migration 328 renames the
   // stored value but a peer on older code can still federate one in.
-  github: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  github: REPO_TYPE_COLOR,
   article: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
   documentation: 'bg-green-500/20 text-green-400 border-green-500/30',
   tool: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',

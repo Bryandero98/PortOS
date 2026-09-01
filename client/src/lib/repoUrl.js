@@ -12,12 +12,25 @@
  * `server/lib/repoUrl.mirror.test.js`.
  */
 
-// The host allowlist. `provider` is the stable id stored on a link record
-// (`repoHost` holds the hostname itself), so adding a host here is the only
-// change needed to clone from it — everything downstream is host-generic.
+// The host allowlist, and the two behaviors that actually differ between hosts.
+// They live IN the table rather than as `host === 'github.com'` branches further
+// down, so adding a host is one entry here and nothing else — and so each flag
+// has to be decided deliberately for the new host rather than inherited from
+// whichever existing host the branch happened to compare against.
+//
+//   provider          stable id stored on a link record (`repoHost` holds the
+//                     hostname itself)
+//   nestedNamespaces  the host nests groups arbitrarily (GitLab subgroups), so
+//                     everything before the last path segment is the namespace.
+//                     GitHub has no subgroups: anything past owner/repo is a
+//                     deep link.
+//   flatClonePath     LEGACY CARVE-OUT — clone to `<owner>/<repo>` with no
+//                     hostname level, so clones made before PortOS supported a
+//                     second host stay exactly where their link record says they
+//                     are. Never set this for a newly added host.
 export const REPO_HOSTS = Object.freeze({
-  'github.com': 'github',
-  'gitlab.com': 'gitlab',
+  'github.com': { provider: 'github', nestedNamespaces: false, flatClonePath: true },
+  'gitlab.com': { provider: 'gitlab', nestedNamespaces: true, flatClonePath: false },
 });
 
 // The owner/repo pair is a PATH OPERAND, not just a label: the cloner clones
@@ -56,15 +69,15 @@ const RESERVED_PATH_SEGMENTS = new Set([
 ]);
 
 /**
- * Parse a repository URL into `{ host, provider, owner, repo, isGitHub }`, or
- * null when the URL isn't a repository on a supported host (or names a
- * path-unsafe owner/repo).
+ * Parse a repository URL into `{ host, provider, owner, repo }`, or null when
+ * the URL isn't a repository on a supported host (or names a path-unsafe
+ * owner/repo).
  *
  * `owner` is a single login on GitHub and may be a `group/subgroup` path on
  * GitLab; every one of its segments is validated, so it stays path-safe.
  *
  * @param {string} url
- * @returns {{ host: string, provider: string, owner: string, repo: string, isGitHub: boolean } | null}
+ * @returns {{ host: string, provider: string, owner: string, repo: string } | null}
  */
 export function parseRepoUrl(url) {
   if (!url) return null;
@@ -74,8 +87,8 @@ export function parseRepoUrl(url) {
   if (!match) return null;
 
   const host = match[1].toLowerCase().replace(/^www\./, '').replace(/:\d+$/, '');
-  const provider = REPO_HOSTS[host];
-  if (!provider) return null;
+  const hostConfig = REPO_HOSTS[host];
+  if (!hostConfig) return null;
 
   // Drop the query/hash, then GitLab's `/-/` deep-link separator, then walk the
   // remaining segments until a host UI route word.
@@ -91,11 +104,8 @@ export function parseRepoUrl(url) {
   }
   if (segments.length < 2) return null;
 
-  // GitHub has no subgroups: anything past owner/repo is a deep link. GitLab
-  // nests groups arbitrarily, so everything before the last segment is the
-  // namespace.
-  const ownerSegments = provider === 'github' ? segments.slice(0, 1) : segments.slice(0, -1);
-  const repo = (provider === 'github' ? segments[1] : segments[segments.length - 1])
+  const ownerSegments = hostConfig.nestedNamespaces ? segments.slice(0, -1) : segments.slice(0, 1);
+  const repo = (hostConfig.nestedNamespaces ? segments[segments.length - 1] : segments[1])
     .replace(/\.git$/i, '');
 
   if (!ownerSegments.every(segment => OWNER_RE.test(segment))) return null;
@@ -103,10 +113,9 @@ export function parseRepoUrl(url) {
 
   return {
     host,
-    provider,
+    provider: hostConfig.provider,
     owner: ownerSegments.join('/'),
     repo,
-    isGitHub: provider === 'github',
   };
 }
 
@@ -121,6 +130,17 @@ export function isRepoUrl(url) {
 }
 
 /**
+ * The browsable web URL for a parsed repo — what to `href` when a record stores
+ * the scp-style SSH remote a browser can't follow.
+ *
+ * @param {{ host: string, owner: string, repo: string }} parsed
+ * @returns {string}
+ */
+export function repoBrowseUrl({ host, owner, repo }) {
+  return `https://${host}/${owner}/${repo}`;
+}
+
+/**
  * Parse a URL only when it is a GitHub repository. The GitHub-only callers are
  * the ones whose downstream really is GitHub-specific (the Eidoverse worlds
  * repo, which is pushed to with a GitHub token), NOT the Brain's repo capture.
@@ -130,7 +150,7 @@ export function isRepoUrl(url) {
  */
 export function parseGitHubUrl(url) {
   const parsed = parseRepoUrl(url);
-  return parsed?.isGitHub ? { owner: parsed.owner, repo: parsed.repo, isGitHub: true } : null;
+  return parsed?.provider === 'github' ? { owner: parsed.owner, repo: parsed.repo, isGitHub: true } : null;
 }
 
 /**

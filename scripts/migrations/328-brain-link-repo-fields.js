@@ -21,10 +21,15 @@
  *
  * Idempotent: a record that already carries `isRepo` is skipped, so a re-run
  * after a partial pass finishes the remainder without rewriting the rest.
+ *
+ * The legacy → new mapping is deliberately duplicated from
+ * `server/lib/repoLinkFields.js` rather than imported: a migration is a
+ * point-in-time record and must not drift when that module changes.
  */
 
-import { readdir, readFile } from 'fs/promises';
+import { readdir } from 'fs/promises';
 import { join } from 'path';
+import { readJSONFile } from '../../server/lib/fileUtils.js';
 import { writeJsonAtomic } from './_lib.js';
 
 const LABEL = 'migration 328';
@@ -60,9 +65,7 @@ export default {
       const path = join(linksDir, entry.name, 'index.json');
       // A record that is missing or unreadable is left exactly as it is — this
       // migration is a field rename, not a repair pass.
-      const record = await readFile(path, 'utf8')
-        .then(JSON.parse)
-        .catch(() => null);
+      const record = await readJSONFile(path, null);
       const upgraded = upgradeLinkRecord(record);
       if (!upgraded) continue;
       await writeJsonAtomic(path, upgraded);
