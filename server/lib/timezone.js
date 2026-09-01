@@ -109,6 +109,45 @@ export function todayInTimezone(timezone, atDate = new Date()) {
   return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
 }
 
+/**
+ * UTC timestamp (ms) of local midnight for the `YYYY-MM-DD` day string in `tz`.
+ * The server runs TZ=UTC, so we subtract the TZ offset from the naive UTC parse
+ * of the day string. Evaluate the offset AT the target day's midnight (not at
+ * `now`) so a DST transition elsewhere in the day can't shift the result by an
+ * hour. The naive parse lands within ~14h of local midnight — close enough that
+ * re-evaluating the offset at that candidate instant converges to the correct
+ * offset across a DST boundary.
+ * @param {string} dayStr - Local day as `YYYY-MM-DD`
+ * @param {string} tz - IANA timezone string
+ * @returns {number} UTC timestamp (ms) of that day's local midnight
+ */
+export function anchorLocalMidnightUtc(dayStr, tz) {
+  const naiveUtc = Date.parse(`${dayStr}T00:00:00Z`)
+  const firstOffset = getUtcOffsetMs(new Date(naiveUtc), tz)
+  const candidate = naiveUtc - firstOffset
+  const refinedOffset = getUtcOffsetMs(new Date(candidate), tz)
+  return naiveUtc - refinedOffset
+}
+
+/**
+ * The user's current local calendar day expressed as UTC ISO bounds — the
+ * shared "today's events" query window (calendar agenda route, voice
+ * calendar_today tool). `startDate` is local midnight; `endDate` is
+ * 23:59:59.999 later.
+ * @param {string} timezone - IANA timezone string
+ * @param {Date} [atDate] - instant to key (defaults to now)
+ * @returns {{ date: string, startDate: string, endDate: string }}
+ */
+export function localDayWindowUtc(timezone, atDate = new Date()) {
+  const date = todayInTimezone(timezone, atDate)
+  const startMs = anchorLocalMidnightUtc(date, timezone)
+  return {
+    date,
+    startDate: new Date(startMs).toISOString(),
+    endDate: new Date(startMs + 86399999).toISOString(),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // HH:MM time-window primitives
 //

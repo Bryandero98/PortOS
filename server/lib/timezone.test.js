@@ -7,7 +7,7 @@ vi.mock('../services/settings.js', () => ({
 }))
 
 import { getSettings } from '../services/settings.js'
-import { getLocalParts, getUtcOffsetMs, nextLocalTime, todayInTimezone, HHMM_RE, HHMM_STRICT_RE, parseHHMM, isWithinTimeWindow } from './timezone.js'
+import { getLocalParts, getUtcOffsetMs, nextLocalTime, todayInTimezone, anchorLocalMidnightUtc, localDayWindowUtc, HHMM_RE, HHMM_STRICT_RE, parseHHMM, isWithinTimeWindow } from './timezone.js'
 import { getTimezoneUpdatedAt } from '../services/userTimezone.js'
 
 describe('timezone', () => {
@@ -193,6 +193,50 @@ describe('timezone', () => {
       const instant = new Date('2026-07-16T05:00:00.000Z')
       expect(todayInTimezone('America/Los_Angeles', instant)).toBe('2026-07-15')
       expect(todayInTimezone('UTC', instant)).toBe('2026-07-16')
+    })
+  })
+
+  describe('anchorLocalMidnightUtc (DST-safe local-midnight anchor)', () => {
+    const localClock = (ms, tz) =>
+      new Date(ms).toLocaleTimeString('en-US', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit' })
+
+    it('anchors a constant-offset day to local midnight (PDT midnight = 07:00 UTC)', () => {
+      const anchor = anchorLocalMidnightUtc('2026-04-17', 'America/Los_Angeles')
+      expect(anchor).toBe(Date.parse('2026-04-17T00:00:00Z') + 7 * 3600 * 1000)
+      expect(localClock(anchor, 'America/Los_Angeles')).toBe('00:00')
+    })
+
+    it('uses the PRE-transition offset on a spring-forward day (midnight is still PST)', () => {
+      // US DST starts 2026-03-08 at 02:00 local — midnight that day is still
+      // PST (-8), even though most of the day runs PDT (-7). A single-pass
+      // offset evaluated later in the day would shift the window by an hour.
+      const anchor = anchorLocalMidnightUtc('2026-03-08', 'America/Los_Angeles')
+      expect(anchor).toBe(Date.parse('2026-03-08T00:00:00Z') + 8 * 3600 * 1000)
+      expect(localClock(anchor, 'America/Los_Angeles')).toBe('00:00')
+    })
+
+    it('anchors a fall-back day to the still-PDT midnight', () => {
+      // US DST ends 2026-11-01 at 02:00 local — midnight that day is still PDT.
+      const anchor = anchorLocalMidnightUtc('2026-11-01', 'America/Los_Angeles')
+      expect(anchor).toBe(Date.parse('2026-11-01T00:00:00Z') + 7 * 3600 * 1000)
+      expect(localClock(anchor, 'America/Los_Angeles')).toBe('00:00')
+    })
+
+    it('handles timezones ahead of UTC', () => {
+      const anchor = anchorLocalMidnightUtc('2026-04-17', 'Asia/Tokyo')
+      expect(anchor).toBe(Date.parse('2026-04-17T00:00:00Z') - 9 * 3600 * 1000)
+      expect(localClock(anchor, 'Asia/Tokyo')).toBe('00:00')
+    })
+  })
+
+  describe('localDayWindowUtc', () => {
+    it('bounds the current local day as UTC ISO strings', () => {
+      // 2026-04-17T03:00Z is still 2026-04-16 evening in Los Angeles.
+      const at = new Date('2026-04-17T03:00:00Z')
+      const { date, startDate, endDate } = localDayWindowUtc('America/Los_Angeles', at)
+      expect(date).toBe('2026-04-16')
+      expect(startDate).toBe('2026-04-16T07:00:00.000Z')
+      expect(endDate).toBe('2026-04-17T06:59:59.999Z')
     })
   })
 
