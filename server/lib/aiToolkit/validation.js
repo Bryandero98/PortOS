@@ -139,6 +139,10 @@ export const providerSchema = z.object({
   // fresh install never bills a subscription for a background feature the user
   // has not knowingly pointed at it.
   textTransportEnabled: z.boolean().optional(),
+  // The read-only sandbox blocks writes but not absolute-path reads. This
+  // acknowledgement is separate from the enable flag so an API/client cannot
+  // turn the transport on without recording the user's explicit consent.
+  textTransportReadRiskAcknowledged: z.boolean().optional(),
   // Marks a `claude` CLI/TUI provider whose ANTHROPIC_BASE_URL points at a
   // local Ollama daemon — the "Claude Ollama" pattern. Drives model refresh to
   // pull tool-use-capable Ollama models instead of the static Anthropic list.

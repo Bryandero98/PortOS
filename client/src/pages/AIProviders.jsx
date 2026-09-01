@@ -981,6 +981,9 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     contextWindow: provider?.contextWindow ?? '',
     timeout: provider?.timeout || 300000,
     enabled: provider?.enabled !== false,
+    textTransportEnabled: provider?.textTransportEnabled === true
+      && provider?.textTransportReadRiskAcknowledged === true,
+    textTransportReadRiskAcknowledged: provider?.textTransportReadRiskAcknowledged === true,
     envVars: provider?.envVars || {},
     secretEnvVars: provider?.secretEnvVars || [],
     headlessArgs: provider?.headlessArgs?.join(' ') || '',
@@ -1252,6 +1255,13 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     } else {
       delete data.tuiPromptDelayMs;
     }
+    // These controls belong only to the advertised Codex subscription
+    // transport. Do not stamp false capability fields onto unrelated provider
+    // records when their editor saves an ordinary connection change.
+    if (provider?.textTransport !== 'codex-app-server') {
+      delete data.textTransportEnabled;
+      delete data.textTransportReadRiskAcknowledged;
+    }
 
     // Only send apiKey if user entered a new value (avoid overwriting existing key with empty string)
     if (!data.apiKey && provider) {
@@ -1500,6 +1510,53 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 />
                 <span className="text-sm text-gray-400">Enabled</span>
               </label>
+
+              {provider?.textTransport === 'codex-app-server' && (
+                <div className="max-w-3xl rounded-lg border border-port-warning/40 bg-port-warning/10 p-3 space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-port-warning">ChatGPT subscription text calls</p>
+                    <p className="text-xs text-gray-300">
+                      PortOS blocks writes, network access, MCP servers, and web search for these calls.
+                      Codex can still read local files by absolute path, so untrusted prompt text could make
+                      a saved response contain local file contents.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2">
+                      <input
+                        id="codex-text-read-risk"
+                        type="checkbox"
+                        checked={formData.textTransportReadRiskAcknowledged}
+                        onChange={(e) => setFormData(prev => ({
+                          ...prev,
+                          textTransportReadRiskAcknowledged: e.target.checked,
+                          textTransportEnabled: e.target.checked ? prev.textTransportEnabled : false,
+                        }))}
+                        className="mt-0.5 w-4 h-4 rounded border-port-border bg-port-bg"
+                      />
+                      <label htmlFor="codex-text-read-risk" className="text-sm text-gray-300">
+                        I understand that Codex may read local files during generic text calls.
+                      </label>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <input
+                        id="codex-text-transport-enabled"
+                        type="checkbox"
+                        checked={formData.textTransportEnabled}
+                        disabled={!formData.textTransportReadRiskAcknowledged}
+                        onChange={(e) => setFormData(prev => ({ ...prev, textTransportEnabled: e.target.checked }))}
+                        className="mt-0.5 w-4 h-4 rounded border-port-border bg-port-bg disabled:opacity-50"
+                      />
+                      <label
+                        htmlFor="codex-text-transport-enabled"
+                        className={`text-sm ${formData.textTransportReadRiskAcknowledged ? 'text-gray-300' : 'text-gray-500'}`}
+                      >
+                        Allow this provider to serve generic text calls.
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {gatewayForProvider(provider) && (
                 <GatewayKeyHint
