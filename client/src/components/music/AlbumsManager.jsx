@@ -22,6 +22,7 @@ import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import { DEFAULT_NEGATIVE_PROMPT } from '../../lib/imageGenDefaults';
 import { formatTimecode } from '../../utils/formatters';
 import ArtistPicker from './ArtistPicker';
+import AlbumTrackPicker from './AlbumTrackPicker';
 import {
   listAlbums, createAlbum, updateAlbum, deleteAlbum,
   listTracks, generateImage,
@@ -75,6 +76,7 @@ export default function AlbumsManager() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [startingGen, setStartingGen] = useState(false);
   const [genJobId, setGenJobId] = useState(null);
+  const [trackPickerOpen, setTrackPickerOpen] = useState(false);
   const genRequestRef = useRef(0);
 
   const gen = useMediaJobProgress(genJobId);
@@ -131,6 +133,7 @@ export default function AlbumsManager() {
     hydratedRef.current = selectionKey;
     cancelDelete();
     clearGeneration();
+    setTrackPickerOpen(false);
     if (isCreate) setForm(emptyForm());
     else if (selected) setForm(formFromAlbum(selected));
   }, [selectionKey, isCreate, selected, loading]);
@@ -229,6 +232,7 @@ export default function AlbumsManager() {
   };
 
   const availableTracks = allTracks.filter((t) => !form.trackIds.includes(t.id));
+  const addTracks = (tracks) => tracks.forEach((track) => addTrack(track.id));
 
   return (
     <div>
@@ -365,17 +369,9 @@ export default function AlbumsManager() {
                   </ol>
                 )}
                 {availableTracks.length > 0 ? (
-                  <select
-                    aria-label="Add a track"
-                    value=""
-                    onChange={(e) => { if (e.target.value) addTrack(e.target.value); }}
-                    className="mt-2 w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                  >
-                    <option value="">+ Add a track…</option>
-                    {availableTracks.map((t) => (
-                      <option key={t.id} value={t.id}>{t.title}</option>
-                    ))}
-                  </select>
+                  <button type="button" onClick={() => setTrackPickerOpen(true)} className="mt-2 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent">
+                    <Plus size={14} aria-hidden="true" /> Add tracks
+                  </button>
                 ) : (
                   <p className="text-[11px] text-gray-500 mt-2">All your tracks are on this album. Create more in the Tracks tab.</p>
                 )}
@@ -409,6 +405,7 @@ export default function AlbumsManager() {
       </div>
 
       <GalleryImagePicker open={galleryOpen} onClose={() => setGalleryOpen(false)} onSelect={handleCoverPick} allowUpload maxBytes={COVER_MAX_BYTES} />
+      <AlbumTrackPicker open={trackPickerOpen} tracks={availableTracks} onClose={() => setTrackPickerOpen(false)} onAdd={addTracks} />
     </div>
   );
 }
