@@ -7,7 +7,7 @@ vi.mock('../services/settings.js', () => ({
 }))
 
 import { getSettings } from '../services/settings.js'
-import { getLocalParts, getUtcOffsetMs, nextLocalTime, todayInTimezone, anchorLocalMidnightUtc, localDayWindowUtc, HHMM_RE, HHMM_STRICT_RE, parseHHMM, isWithinTimeWindow } from './timezone.js'
+import { getLocalParts, getUtcOffsetMs, nextLocalTime, todayInTimezone, anchorLocalMidnightUtc, localDayWindowUtc, localDayRangeUtc, HHMM_RE, HHMM_STRICT_RE, parseHHMM, isWithinTimeWindow } from './timezone.js'
 import { getTimezoneUpdatedAt } from '../services/userTimezone.js'
 
 describe('timezone', () => {
@@ -237,6 +237,28 @@ describe('timezone', () => {
       expect(date).toBe('2026-04-16')
       expect(startDate).toBe('2026-04-16T07:00:00.000Z')
       expect(endDate).toBe('2026-04-17T06:59:59.999Z')
+    })
+  })
+
+  describe('localDayRangeUtc', () => {
+    it.each([
+      ['2026-03-08', '2026-03-08T08:00:00.000Z', '2026-03-09T07:00:00.000Z', 23],
+      ['2026-11-01', '2026-11-01T07:00:00.000Z', '2026-11-02T08:00:00.000Z', 25],
+    ])('preserves the %s DST day as a half-open %s → %s window', (date, start, end, hours) => {
+      const range = localDayRangeUtc(date, 'America/Los_Angeles')
+      expect(range.start.toISOString()).toBe(start)
+      expect(range.end.toISOString()).toBe(end)
+      expect(range.end.getTime() - range.start.getTime()).toBe(hours * 60 * 60 * 1000)
+    })
+
+    it('rejects malformed dates', () => {
+      expect(localDayRangeUtc('not-a-date', 'UTC')).toBeNull()
+    })
+
+    it('trims surrounding whitespace before anchoring', () => {
+      const range = localDayRangeUtc(' 2026-03-08 ', 'America/Los_Angeles')
+      expect(range.start.toISOString()).toBe('2026-03-08T08:00:00.000Z')
+      expect(range.end.toISOString()).toBe('2026-03-09T07:00:00.000Z')
     })
   })
 

@@ -120,6 +120,10 @@ export function todayInTimezone(timezone, atDate = new Date()) {
  * @param {string} dayStr - Local day as `YYYY-MM-DD`
  * @param {string} tz - IANA timezone string
  * @returns {number} UTC timestamp (ms) of that day's local midnight
+ *
+ * `getUtcOffsetMs` uses a locale-string round trip that can mis-parse an
+ * ambiguous wall-clock value at a DST transition. Sampling at the naive
+ * midnight and refining the candidate avoids relying on that ambiguous value.
  */
 export function anchorLocalMidnightUtc(dayStr, tz) {
   const naiveUtc = Date.parse(`${dayStr}T00:00:00Z`)
@@ -146,6 +150,26 @@ export function localDayWindowUtc(timezone, atDate = new Date()) {
     startDate: new Date(startMs).toISOString(),
     endDate: new Date(startMs + 86399999).toISOString(),
   }
+}
+
+/**
+ * Return the half-open UTC bounds for a local calendar day.
+ * Unlike localDayWindowUtc, the end is the next local midnight, preserving
+ * the actual 23- or 25-hour length of DST transition days.
+ * @param {string} dateStr - Local day as `YYYY-MM-DD`
+ * @param {string} timezone - IANA timezone string
+ * @returns {{ start: Date, end: Date } | null}
+ */
+export function localDayRangeUtc(dateStr, timezone) {
+  const normalizedDate = String(dateStr || '').trim()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalizedDate)
+  if (!m) return null
+  const [, y, mo, d] = m.map(Number)
+  const start = new Date(anchorLocalMidnightUtc(normalizedDate, timezone))
+  const next = new Date(Date.UTC(y, mo - 1, d + 1))
+  const nextDate = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`
+  const end = new Date(anchorLocalMidnightUtc(nextDate, timezone))
+  return { start, end }
 }
 
 // ---------------------------------------------------------------------------
