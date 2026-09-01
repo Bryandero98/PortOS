@@ -209,7 +209,10 @@ router.post('/import/xml', uploadXml, asyncHandler(async (req, res) => {
       throw err;
     });
 
-    await fs.unlink(filePath);
+    // Tolerate a failed unlink of the uploaded ZIP (same posture as the reject
+    // branch above): throwing here would skip the finally that removes
+    // extractDir and leak the far larger extracted export.xml.
+    await fs.unlink(filePath).catch(() => {});
     filePath = xmlPath;
     console.log(`📋 Found ${clinicalJsons.length} clinical record files in ZIP`);
   }

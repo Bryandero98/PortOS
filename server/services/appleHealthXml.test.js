@@ -24,17 +24,31 @@ vi.mock('./appleHealthIngest.js', async (importOriginal) => {
   };
 });
 
-// Capture the read streams the service opens so the fd-release half of the
-// contract is assertable (unlink alone succeeds on POSIX with the fd still open).
+// Capture the read streams the service opens, and trace stream-close vs unlink
+// order: unlink alone succeeds on POSIX with the fd still open, so only the
+// ordering proves the fd was released first (it is what Windows requires).
 const streams = [];
+const trace = vi.hoisted(() => []);
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     createReadStream: (...args) => {
       const s = actual.createReadStream(...args);
+      s.on('close', () => trace.push('close'));
       streams.push(s);
       return s;
+    },
+  };
+});
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    default: actual,
+    unlink: async (...args) => {
+      trace.push('unlink');
+      return actual.unlink(...args);
     },
   };
 });
@@ -55,6 +69,7 @@ describe('importAppleHealthXml temp-file lifecycle', () => {
 
   beforeEach(async () => {
     streams.length = 0;
+    trace.length = 0;
     store.writeDayFile = async () => {};
     dir = await mkdtemp(join(tmpdir(), 'portos-apple-health-test-'));
     xmlPath = join(dir, 'export.xml');
@@ -72,6 +87,7 @@ describe('importAppleHealthXml temp-file lifecycle', () => {
     expect(await exists(xmlPath)).toBe(false);
     expect(streams).toHaveLength(1);
     expect(streams[0].destroyed).toBe(true);
+    expect(trace).toEqual(['close', 'unlink']);
   });
 
   it('removes the input file and releases its fd when the flush rejects', async () => {
@@ -84,5 +100,8 @@ describe('importAppleHealthXml temp-file lifecycle', () => {
     expect(await exists(xmlPath)).toBe(false);
     expect(streams).toHaveLength(1);
     expect(streams[0].destroyed).toBe(true);
+    // Order matters: destroy() releases the fd asynchronously, so unlinking
+    // before 'close' would fail on Windows and silently leak the file.
+    expect(trace).toEqual(['close', 'unlink']);
   });
 });

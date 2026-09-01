@@ -322,6 +322,10 @@ export async function importAppleHealthXml(filePath, io = null) {
     // Windows unlink fails while the file is open. An Apple Health export.xml
     // is routinely 0.5-3GB, so a leaked temp file is expensive.
     inputStream.destroy();
+    // destroy() tears the fd down asynchronously, so wait for 'close' before
+    // unlinking — on Windows the unlink fails while the handle is open and the
+    // failure is swallowed below (same wait the ZIP write-stream cleanup does).
+    if (!inputStream.closed) await new Promise((res) => inputStream.once('close', res));
     await unlink(filePath).catch(() => {});
   }
 
