@@ -115,7 +115,16 @@ export const MTPLX_UNSUPPORTED_REASON = 'MTPLX runs only on macOS with Apple Sil
  */
 const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server exits before it binds a port. Use "Download default checkpoint" on the MTPLX card (or search for another MTP model there) to fetch one — a multi-gigabyte download PortOS will not start without you asking — then start MTPLX again.';
 
-const MTPLX_RUNTIME_BOOTSTRAP_ERROR = 'MTPLX\'s own Python runtime failed to bootstrap because Homebrew\'s Python does not provide a working `ensurepip`. Try `brew reinstall python@3.13` (or `brew install youssofal/mtplx/mtplx --build-from-source` to force a rebuild against a working interpreter), then start MTPLX again.';
+const MTPLX_RUNTIME_BOOTSTRAP_ERROR = 'MTPLX\'s own Python runtime failed to bootstrap because Homebrew\'s Python does not provide a working `ensurepip`. Try `brew reinstall python@3.13` (or `brew reinstall --build-from-source youssofal/mtplx/mtplx` to force a rebuild against a working interpreter), then start MTPLX again.';
+
+const MTPLX_LOG_DATE_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSS';
+const PM2_LOG_TIMESTAMP_PATTERN = /(?:^|\s)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})(?::|\s)/;
+
+const currentMtplxLogLines = (lines, launchStartedAt) => lines.filter((line) => {
+  const timestamp = line.match(PM2_LOG_TIMESTAMP_PATTERN)?.[1];
+  const loggedAt = timestamp ? Date.parse(timestamp) : NaN;
+  return Number.isFinite(loggedAt) && loggedAt >= launchStartedAt;
+});
 
 const isMtplxRuntimeBootstrapFailure = (output) => {
   const text = String(output ?? '');
@@ -456,11 +465,13 @@ export async function startMtplxServer(options = {}) {
   clearJlistCache();
 
   console.log(`🚄 MTPLX starting on ${DEFAULT_HOST}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}${tuningArgs.length ? ` with ${tuningArgs.join(' ')}` : ''}`);
+  const launchStartedAt = Date.now();
   await execPm2([
     'start', binaryPath,
     '--name', MTPLX_APP,
     '--interpreter', 'none',
     '--no-autorestart',
+    '--log-date-format', MTPLX_LOG_DATE_FORMAT,
     '--',
     ...args,
   ]);
@@ -484,7 +495,7 @@ export async function startMtplxServer(options = {}) {
     for (const line of lines) appendLog(line);
     const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
     lastExitError = `PM2 status: ${currentProc.status}`;
-    const message = isMtplxRuntimeBootstrapFailure(lines.join('\n'))
+    const message = isMtplxRuntimeBootstrapFailure(currentMtplxLogLines(lines, launchStartedAt).join('\n'))
       ? MTPLX_RUNTIME_BOOTSTRAP_ERROR
       : `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`;
 
