@@ -255,7 +255,10 @@ export default function AlbumsManager() {
           {loading ? (
             <div className="text-sm p-2"><BrailleSpinner text="Loading…" /></div>
           ) : albums.length === 0 ? (
-            <div className="text-gray-500 text-sm p-2">No albums yet. Click <span className="text-port-accent">New Album</span>.</div>
+            <div className="text-gray-500 text-sm p-2">
+              No albums yet.{' '}
+              <button type="button" onClick={startCreate} className="text-port-accent hover:underline">New Album</button>
+            </div>
           ) : (
             <ul className="space-y-1">
               {albums.map((a) => (
@@ -292,7 +295,12 @@ export default function AlbumsManager() {
               </button>
             </div>
           ) : !isCreate && !selected ? (
-            <div className="text-gray-500 text-sm">Select an album to edit, or create a new one.</div>
+            <div className="text-gray-500 text-sm">
+              <p>Select an album to edit, or create a new one.</p>
+              <button type="button" onClick={startCreate} className="mt-3 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium">
+                <Plus size={16} aria-hidden="true" /> New Album
+              </button>
+            </div>
           ) : (
             <div className="space-y-3">
               <div className="flex gap-4 items-start">
