@@ -95,7 +95,9 @@ export const buildApiCatalog = (settings = {}) => {
   const modeled = operations.filter((operation) => operation.contractStatus === 'modeled').length;
 
   return {
-    schemaVersion: 1,
+    // Bumped to 2 with the manifest: `operations[].sources` is now a list of
+    // repo-relative file paths rather than `{ source, line }` records.
+    schemaVersion: 2,
     generatedFrom: 'server/index.js and mounted Express routers',
     regenerateCommand: 'node scripts/generate-api-route-catalog.js',
     stats: { ...routeManifest.stats, domains: domains.length, modeled, generated: operations.length - modeled },

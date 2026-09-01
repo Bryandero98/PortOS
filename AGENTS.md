@@ -176,6 +176,10 @@ This is the one rule that keeps catalogs from rotting, and it is enforced: `serv
 
 Existing deep imports (`import { x } from '../lib/foo.js'`) keep working — the barrel exists for *discovery*, not to force a re-import. New code may use either form. The worked example for "barrel + documented exports" is `server/lib/aiToolkit/index.js`.
 
+### Generated manifests are addressed by content, never by position
+
+A checked-in `*.generated.json` is derived from source and kept honest by a drift test that regenerates and compares. That only works if the file changes when the thing it describes changes — and *only* then. A record pointing at `foo.js:412` is rewritten by any edit that inserts a line above 412, so the drift test fires on commits that change nothing it describes, each parallel branch regenerates it differently, and **every rebase conflicts on it**. Key each record by the declaring file plus the semantic identity of what it declares (`routeDeclarationKey` in `scripts/generate-api-route-catalog.js`); keep line/column detail in memory, where a fresh scan can still use it to verify coverage. `server/lib/generatedManifests.test.js` enforces this across every tracked `*.generated.json`. This lives in root rather than `server/AGENTS.md` because the generators it governs are in `scripts/`, which carries no nested file of its own; the longer rationale is in `server/AGENTS.md`.
+
 ## Scope Boundary
 
 When CoS agents or AI tools work on managed apps outside PortOS, all research, plans, docs, and code for those apps must be written to the target app's own repository/directory — never to this repo. PortOS stores only its own features, plans, and documentation. A PLAN.md, research doc, or feature spec generated for another app goes in that app's directory.

@@ -52,7 +52,7 @@ export const apiOperationId = (method, path) => {
 
 const generatedOperation = (operation) => {
   const parameters = pathParametersFor(operation.path);
-  const source = operation.sources.map(({ source: file, line }) => `${file}:${line}`).join(', ');
+  const source = operation.sources.join(', ');
   return {
     operationId: apiOperationId(operation.method, operation.path),
     summary: operation.summary,

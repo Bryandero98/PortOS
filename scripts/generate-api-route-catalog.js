@@ -18,6 +18,16 @@
  * is deterministic, works in packaged installs without a source scan, and is
  * guarded against drift by `generate-api-route-catalog.test.js`.
  *
+ * The manifest records WHICH FILE declares an operation, never which line.
+ * Line numbers move whenever anything above a declaration is edited, so a
+ * manifest carrying them is rewritten by refactors that change no route at
+ * all — which turns the drift guard into a rebase/merge conflict generator on
+ * every parallel branch. Declarations are therefore identified semantically
+ * (`file#routerId METHOD /path`, see `routeDeclarationKey`), and the positional
+ * information stays in memory for the scanner's own verification. Same rule as
+ * `promptStageCallSites.generated.json`, enforced for every checked-in manifest
+ * by `server/lib/generatedManifests.test.js`.
+ *
  * Usage: node scripts/generate-api-route-catalog.js
  */
 
@@ -30,6 +40,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, '..');
 export const MANIFEST_RELATIVE_PATH = 'server/lib/apiRouteCatalog.generated.json';
 export const REGENERATE_COMMAND = 'node scripts/generate-api-route-catalog.js';
+export const SCHEMA_VERSION = 2;
 
 const INDEX_RELATIVE_PATH = 'server/index.js';
 const ROUTE_METHODS = Object.freeze(['delete', 'get', 'head', 'options', 'patch', 'post', 'put']);
@@ -87,7 +98,16 @@ export function parseImports(source, filePath) {
   return imports;
 }
 
-const sourceLineFor = (source, index) => source.slice(0, index).split('\n').length;
+/**
+ * Position-independent identity for one `router.<method>('<path>')` call.
+ *
+ * Two declarations collide only when the same file registers the same method
+ * and path on the same router variable — which is a duplicate registration,
+ * not two distinct bindings. Unlike a line number, this key survives every
+ * edit that does not change the declaration itself.
+ */
+export const routeDeclarationKey = ({ source, routerId, method, path }) =>
+  `${source}#${routerId} ${method.toUpperCase()} ${path || '/'}`;
 
 const resolveComposedRouter = (expression, repoRoot) => {
   const routeName = expression.match(COMPOSED_ROUTER_RE)?.[2];
@@ -114,7 +134,6 @@ export function parseRouteModule(filePath, repoRoot = REPO_ROOT) {
         method,
         path: match[4],
         source: toPosix(relative(repoRoot, filePath)),
-        line: sourceLineFor(source, match.index),
       });
     }
   }
@@ -148,11 +167,7 @@ const joinRoutePath = (...parts) => {
   return `/${joined}`.replace(/\/{2,}/g, '/');
 };
 
-const uniqueSortedSources = (sources) => [...new Map(
-  sources
-    .sort((a, b) => a.source.localeCompare(b.source) || a.line - b.line)
-    .map((entry) => [`${entry.source}:${entry.line}`, entry]),
-).values()];
+const uniqueSortedSources = (sources) => [...new Set(sources)].sort((a, b) => a.localeCompare(b));
 
 export function parseTopLevelMounts({ source, filePath, repoRoot = REPO_ROOT }) {
   const imports = parseImports(source, filePath);
@@ -166,13 +181,21 @@ export function parseTopLevelMounts({ source, filePath, repoRoot = REPO_ROOT }) 
       filePath: imported.file,
       imported: imported.imported,
       source: toPosix(relative(repoRoot, filePath)),
-      line: sourceLineFor(source, match.index),
     });
   }
   return mounts;
 }
 
-export function buildApiRouteCatalog({ repoRoot = REPO_ROOT, indexSource } = {}) {
+/**
+ * Walk the mounted route graph and return everything the scan learned,
+ * including the declaration keys that never reach the manifest.
+ *
+ * `buildApiRouteCatalog` narrows this to the serializable subset. Tests that
+ * need to prove every declaration in `server/routes/**` was reached compare
+ * two fresh in-memory scans, so the manifest does not have to carry pointers
+ * back into the source it was derived from.
+ */
+export function scanRouteGraph({ repoRoot = REPO_ROOT, indexSource } = {}) {
   const indexPath = join(repoRoot, INDEX_RELATIVE_PATH);
   const source = indexSource ?? readFileSync(indexPath, 'utf8');
   const topLevelMounts = parseTopLevelMounts({ source, filePath: indexPath, repoRoot });
@@ -187,14 +210,14 @@ export function buildApiRouteCatalog({ repoRoot = REPO_ROOT, indexSource } = {})
 
   const record = ({ method, path, mountPath, declaration }) => {
     const key = `${method.toUpperCase()} ${path}`;
-    declarationKeys.add(`${declaration.source}:${declaration.line}:${method}`);
+    declarationKeys.add(routeDeclarationKey(declaration));
     const existing = operations.get(key) || {
       method: method.toUpperCase(),
       path,
       mountPath,
       sources: [],
     };
-    existing.sources.push({ source: declaration.source, line: declaration.line });
+    existing.sources.push(declaration.source);
     operations.set(key, existing);
   };
 
@@ -264,14 +287,24 @@ export function buildApiRouteCatalog({ repoRoot = REPO_ROOT, indexSource } = {})
     .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
 
   return {
-    schemaVersion: 1,
     mounts: [...new Set(topLevelMounts.map((mount) => mount.mountPath))].sort(),
     routes,
+    declarationKeys,
+    sourceFileCount: moduleCache.size,
+  };
+}
+
+export function buildApiRouteCatalog(options = {}) {
+  const { mounts, routes, declarationKeys, sourceFileCount } = scanRouteGraph(options);
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    mounts,
+    routes,
     stats: {
-      mounts: new Set(topLevelMounts.map((mount) => mount.mountPath)).size,
+      mounts: mounts.length,
       operations: routes.length,
       declarations: declarationKeys.size,
-      sourceFiles: moduleCache.size,
+      sourceFiles: sourceFileCount,
     },
   };
 }

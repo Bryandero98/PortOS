@@ -7,10 +7,13 @@ import {
   MANIFEST_RELATIVE_PATH,
   REGENERATE_COMMAND,
   REPO_ROOT,
+  SCHEMA_VERSION,
   buildApiRouteCatalog,
   generateApiRouteCatalog,
   parseRouteModule,
   readApiRouteCatalog,
+  routeDeclarationKey,
+  scanRouteGraph,
   serializeApiRouteCatalog,
 } from './generate-api-route-catalog.js';
 
@@ -89,7 +92,7 @@ describe('API route catalog scanner', () => {
 
     const catalog = buildApiRouteCatalog({ repoRoot: root });
     expect(catalog.routes).toHaveLength(1);
-    expect(catalog.routes[0].sources).toHaveLength(2);
+    expect(catalog.routes[0].sources).toEqual(['server/routes/first.js', 'server/routes/second.js']);
     expect(catalog.stats.declarations).toBe(2);
   });
 
@@ -145,6 +148,11 @@ describe('API route catalog scanner', () => {
 });
 
 describe('generated API route catalog', () => {
+  // One scan serves every coverage assertion below — each call re-reads and
+  // re-parses the whole ~229-file route graph.
+  let scan;
+  const routeGraph = () => (scan ??= scanRouteGraph());
+
   it('matches a fresh scan of the mounted route graph', () => {
     const stale = `${MANIFEST_RELATIVE_PATH} is stale — run \`${REGENERATE_COMMAND}\` and commit the result.`;
     const fresh = generateApiRouteCatalog();
@@ -153,11 +161,11 @@ describe('generated API route catalog', () => {
       .toBe(serializeApiRouteCatalog(fresh));
   });
 
+  // Both sides of this comparison are fresh in-memory scans, which is what
+  // lets the committed manifest stay free of line numbers: the manifest never
+  // has to point back at the source it was derived from for the guard to work.
   it('covers every HTTP declaration mounted below /api or /sdapi', () => {
-    const catalog = readApiRouteCatalog();
-    const covered = new Set(catalog.routes.flatMap((route) => route.sources.map(
-      (source) => `${source.source}:${source.line}:${route.method.toLowerCase()}`,
-    )));
+    const { declarationKeys } = routeGraph();
     const routeFiles = walk(join(REPO_ROOT, 'server', 'routes'))
       .filter((path) => path.endsWith('.js') && !path.endsWith('.test.js'));
     const omitted = [];
@@ -166,8 +174,8 @@ describe('generated API route catalog', () => {
         // The noVNC HTML viewer intentionally lives outside /api. Its actual
         // control API is mounted at /api/remote-desktop and is cataloged.
         if (route.source === 'server/routes/remoteDesktopViewer.js') continue;
-        const key = `${route.source}:${route.line}:${route.method}`;
-        if (!covered.has(key)) omitted.push(key);
+        const key = routeDeclarationKey(route);
+        if (!declarationKeys.has(key)) omitted.push(key);
       }
     }
     expect(omitted).toEqual([]);
@@ -175,6 +183,7 @@ describe('generated API route catalog', () => {
 
   it('is a unique, stable, complete inventory with source pointers', () => {
     const catalog = readApiRouteCatalog();
+    expect(catalog.schemaVersion).toBe(SCHEMA_VERSION);
     expect(catalog.stats.mounts).toBeGreaterThan(140);
     expect(catalog.stats.operations).toBeGreaterThan(2_000);
     expect(catalog.routes).toHaveLength(catalog.stats.operations);
@@ -184,9 +193,9 @@ describe('generated API route catalog', () => {
       expect(route.path).toMatch(/^\/(?:api|sdapi)(?:\/|$)/);
       expect(route.sources.length).toBeGreaterThan(0);
       for (const source of route.sources) {
-        expect(source.source).toMatch(/^server\/(?:routes|lib\/aiToolkit\/routes)\/[\w./-]+\.js$/);
-        expect(source.line).toBeGreaterThan(0);
+        expect(source).toMatch(/^server\/(?:routes|lib\/aiToolkit\/routes)\/[\w./-]+\.js$/);
       }
+      expect(route.sources).toEqual([...new Set(route.sources)].sort());
     }
   });
 
@@ -209,16 +218,14 @@ describe('generated API route catalog', () => {
   });
 
   it('covers every declaration in the mounted toolkit providers and runs routers', () => {
-    const catalog = readApiRouteCatalog();
-    const covered = new Set(catalog.routes.flatMap((route) => route.sources.map(
-      (source) => `${source.source}:${source.line}:${route.method.toLowerCase()}`,
-    )));
+    const { declarationKeys } = routeGraph();
     for (const relativePath of [
       'server/lib/aiToolkit/routes/providers.js',
       'server/lib/aiToolkit/routes/runs.js',
     ]) {
       for (const route of parseRouteModule(join(REPO_ROOT, relativePath)).routes) {
-        expect(covered.has(`${route.source}:${route.line}:${route.method}`), `${relativePath}:${route.line}:${route.method}`).toBe(true);
+        const key = routeDeclarationKey(route);
+        expect(declarationKeys.has(key), key).toBe(true);
       }
     }
   });
