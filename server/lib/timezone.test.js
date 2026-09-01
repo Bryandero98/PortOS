@@ -254,6 +254,12 @@ describe('timezone', () => {
     it('rejects malformed dates', () => {
       expect(localDayRangeUtc('not-a-date', 'UTC')).toBeNull()
     })
+
+    it('trims surrounding whitespace before anchoring', () => {
+      const range = localDayRangeUtc(' 2026-03-08 ', 'America/Los_Angeles')
+      expect(range.start.toISOString()).toBe('2026-03-08T08:00:00.000Z')
+      expect(range.end.toISOString()).toBe('2026-03-09T07:00:00.000Z')
+    })
   })
 
   describe('getTimezoneUpdatedAt (#2040)', () => {

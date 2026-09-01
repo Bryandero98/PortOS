@@ -161,10 +161,11 @@ export function localDayWindowUtc(timezone, atDate = new Date()) {
  * @returns {{ start: Date, end: Date } | null}
  */
 export function localDayRangeUtc(dateStr, timezone) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || '').trim())
+  const normalizedDate = String(dateStr || '').trim()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalizedDate)
   if (!m) return null
   const [, y, mo, d] = m.map(Number)
-  const start = new Date(anchorLocalMidnightUtc(dateStr, timezone))
+  const start = new Date(anchorLocalMidnightUtc(normalizedDate, timezone))
   const next = new Date(Date.UTC(y, mo - 1, d + 1))
   const nextDate = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`
   const end = new Date(anchorLocalMidnightUtc(nextDate, timezone))
