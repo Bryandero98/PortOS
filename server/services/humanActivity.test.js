@@ -5,9 +5,11 @@
  * listEvents / getDaySummary idempotency) is covered in humanActivity.db.test.js.
  */
 import { describe, it, expect } from 'vitest';
+import { localDayRangeUtc as canonicalLocalDayRangeUtc } from '../lib/timezone.js';
 import {
   shortSummary,
   localDayKey,
+  localDayRangeUtc,
   normalizeParticipant,
   normalizeParticipants,
   normalizeCandidate,
@@ -45,6 +47,10 @@ describe('localDayKey', () => {
   it('rejects a malformed date string', () => {
     expect(localDayKey('not-a-date', 'UTC')).toBeNull();
   });
+});
+
+it('keeps the localDayRangeUtc compatibility export wired to lib/timezone.js', () => {
+  expect(localDayRangeUtc).toBe(canonicalLocalDayRangeUtc);
 });
 
 // localDayRangeUtc itself (24h window, DST 23h/25h days, month/year rollover,

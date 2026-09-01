@@ -56,11 +56,8 @@ export function getLocalParts(utcDate, timezone) {
  * Positive = ahead of UTC (e.g., +9h for Tokyo), negative = behind (e.g., -7h for PDT).
  *
  * Callers doing DST-safe midnight anchoring (`anchorLocalMidnightUtc` below)
- * re-sample this at their candidate instant rather than trusting a single
- * call made at the approximate time — this function's own `toLocaleString`
- * round-trip mis-parses ambiguous wall-clock times right at a transition
- * (the same local time occurs twice on a fall-back day), which is exactly
- * when that correction matters.
+ * re-sample this at their candidate instant because the offset can change
+ * between the approximate UTC time and the target local boundary.
  * @param {Date} utcDate - Reference UTC date
  * @param {string} timezone - IANA timezone string
  * @returns {number} Offset in milliseconds
@@ -116,28 +113,72 @@ export function todayInTimezone(timezone, atDate = new Date()) {
   return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+const LOCAL_DAY_SEARCH_RADIUS_MS = 36 * 60 * 60 * 1000
+
+function parseIsoDay(dayStr) {
+  const normalized = String(dayStr || '').trim()
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized)
+  if (!match || Number(match[1]) === 0) return null
+  const utcMs = Date.parse(`${normalized}T00:00:00Z`)
+  if (!Number.isFinite(utcMs) || new Date(utcMs).toISOString().slice(0, 10) !== normalized) return null
+  const [, year, month, day] = match.map(Number)
+  return { normalized, utcMs, ordinal: year * 10_000 + month * 100 + day }
+}
+
+function localDayOrdinalAt(utcMs, timezone) {
+  const { year, month, day } = getLocalParts(new Date(utcMs), timezone)
+  return year * 10_000 + month * 100 + day
+}
+
+function findLocalDayBoundary(parsed, tz) {
+  // Keep the common path cheap: offset refinement lands exactly on midnight
+  // for ordinary days and transitions that happen later in the day.
+  const firstOffset = getUtcOffsetMs(new Date(parsed.utcMs), tz)
+  const candidate = parsed.utcMs - firstOffset
+  const refinedOffset = getUtcOffsetMs(new Date(candidate), tz)
+  const refined = parsed.utcMs - refinedOffset
+  const refinedParts = getLocalParts(new Date(refined), tz)
+  const refinedOrdinal = refinedParts.year * 10_000 + refinedParts.month * 100 + refinedParts.day
+  if (
+    refinedOrdinal === parsed.ordinal
+    && refinedParts.hour === 0
+    && refinedParts.minute === 0
+    && localDayOrdinalAt(refined - 1, tz) < parsed.ordinal
+  ) {
+    return refined
+  }
+
+  // Midnight-offset arithmetic can oscillate across a transition that occurs
+  // at 00:00. Local calendar dates remain ordered across UTC instants, so find
+  // the first instant whose local date is not before the requested date.
+  let low = parsed.utcMs - LOCAL_DAY_SEARCH_RADIUS_MS
+  let high = parsed.utcMs + LOCAL_DAY_SEARCH_RADIUS_MS
+  if (localDayOrdinalAt(low, tz) >= parsed.ordinal || localDayOrdinalAt(high, tz) < parsed.ordinal) return NaN
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2)
+    if (localDayOrdinalAt(mid, tz) < parsed.ordinal) low = mid + 1
+    else high = mid
+  }
+  return low
+}
+
 /**
- * UTC timestamp (ms) of local midnight for the `YYYY-MM-DD` day string in `tz`.
- * The server runs TZ=UTC, so we subtract the TZ offset from the naive UTC parse
- * of the day string. Evaluate the offset AT the target day's midnight (not at
- * `now`) so a DST transition elsewhere in the day can't shift the result by an
- * hour. The naive parse lands within ~14h of local midnight — close enough that
- * re-evaluating the offset at that candidate instant converges to the correct
- * offset across a DST boundary.
+ * UTC timestamp (ms) of the first instant belonging to the `YYYY-MM-DD`
+ * local day in `tz`. This is normally local midnight. When a timezone jumps
+ * forward at 00:00 and midnight does not exist, it is the first representable
+ * instant on that date rather than an instant from the previous local day.
  * @param {string} dayStr - Local day as `YYYY-MM-DD`
  * @param {string} tz - IANA timezone string
- * @returns {number} UTC timestamp (ms) of that day's local midnight
- *
- * `getUtcOffsetMs` uses a locale-string round trip that can mis-parse an
- * ambiguous wall-clock value at a DST transition. Sampling at the naive
- * midnight and refining the candidate avoids relying on that ambiguous value.
+ * @returns {number} UTC timestamp (ms), or `NaN` for an invalid or skipped date
  */
 export function anchorLocalMidnightUtc(dayStr, tz) {
-  const naiveUtc = Date.parse(`${dayStr}T00:00:00Z`)
-  const firstOffset = getUtcOffsetMs(new Date(naiveUtc), tz)
-  const candidate = naiveUtc - firstOffset
-  const refinedOffset = getUtcOffsetMs(new Date(candidate), tz)
-  return naiveUtc - refinedOffset
+  const parsed = parseIsoDay(dayStr)
+  if (!parsed) return NaN
+  const boundary = findLocalDayBoundary(parsed, tz)
+  return Number.isFinite(boundary) && localDayOrdinalAt(boundary, tz) === parsed.ordinal
+    ? boundary
+    : NaN
 }
 
 /**
@@ -171,15 +212,20 @@ export function localDayWindowUtc(timezone, atDate = new Date()) {
  * @returns {{ start: Date, end: Date } | null}
  */
 export function localDayRangeUtc(dateStr, timezone) {
-  const normalizedDate = String(dateStr || '').trim()
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalizedDate)
-  if (!m) return null
-  const [, y, mo, d] = m.map(Number)
-  const start = new Date(anchorLocalMidnightUtc(normalizedDate, timezone))
-  const next = new Date(Date.UTC(y, mo - 1, d + 1))
-  const nextDate = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`
-  const end = new Date(anchorLocalMidnightUtc(nextDate, timezone))
-  return { start, end }
+  const parsed = parseIsoDay(dateStr)
+  if (!parsed) return null
+  const startMs = anchorLocalMidnightUtc(parsed.normalized, timezone)
+  // A timezone can skip a complete calendar date when it crosses the date
+  // line. That is not a valid local-day range, even though the next boundary
+  // is well-defined for the preceding day's end.
+  if (!Number.isFinite(startMs) || localDayOrdinalAt(startMs, timezone) !== parsed.ordinal) return null
+
+  // ISO arithmetic avoids Date.UTC's special 1900 offset for years 00–99.
+  const nextDate = new Date(parsed.utcMs + DAY_MS).toISOString().slice(0, 10)
+  const nextParsed = parseIsoDay(nextDate)
+  const endMs = nextParsed ? findLocalDayBoundary(nextParsed, timezone) : NaN
+  if (!Number.isFinite(endMs)) return null
+  return { start: new Date(startMs), end: new Date(endMs) }
 }
 
 // ---------------------------------------------------------------------------
