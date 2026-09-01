@@ -12,7 +12,7 @@
  */
 
 import { Link } from 'react-router';
-import { Terminal } from 'lucide-react';
+import { Network, Terminal } from 'lucide-react';
 import {
   CONTEXT_WINDOW_SOURCE,
   PROVIDER_CARD_STATE,
@@ -20,6 +20,7 @@ import {
   isApiProvider,
   gatewayForProvider,
   isPrivateNetworkEndpoint,
+  isFleetProvider,
   isProcessProvider,
   isRunnerAllowedCommand,
   isProviderHardwareCompatible,
@@ -99,6 +100,10 @@ export default function ProviderCard({
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
   const compatibleModels = filterHardwareCompatibleProviderModels(provider.models, provider);
+  const fleetProvider = isFleetProvider(provider);
+  const fleetHost = fleetProvider && URL.canParse(provider.endpoint)
+    ? new URL(provider.endpoint).hostname
+    : null;
   return (
     <div
       className={`@container bg-port-card border border-l-4 rounded-xl p-4 ${style.border} ${style.dim || ''} ${
@@ -122,6 +127,14 @@ export default function ProviderCard({
           {isDefault && (
             <span className="text-xs px-2 py-0.5 rounded bg-port-accent/20 text-port-accent">
               DEFAULT
+            </span>
+          )}
+          {fleetProvider && (
+            <span
+              className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+              title={`Runs on ${fleetHost || 'another private-network machine'}`}
+            >
+              <Network size={11} /> FLEET HOST
             </span>
           )}
           {provider.llamaBacked && (
@@ -322,7 +335,7 @@ export default function ProviderCard({
           )}
           {provider.vllmBacked && (
             <p className="text-xs text-emerald-300/90">
-              Local vLLM container (endpoint: <code className="text-emerald-200">{provider.endpoint}</code>) — Qwen3.8-27B with DFlash 2 drafting. It holds the whole GPU, so stop it before running local image/video generation.
+              {fleetProvider ? 'Fleet vLLM runtime' : 'Local vLLM container'} (endpoint: <code className="text-emerald-200">{provider.endpoint}</code>) — Qwen3.8-27B with DFlash 2 drafting. {fleetProvider ? 'This PortOS sends work over the private network; runtime lifecycle stays on the GPU host.' : 'It holds the whole GPU, so stop it before running local image/video generation.'}
             </p>
           )}
           {provider.sglangBacked && (
@@ -335,6 +348,11 @@ export default function ProviderCard({
           )}
           {isApiProvider(provider) && (
             <p className="break-words">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
+          )}
+          {fleetProvider && (
+            <p className="text-xs text-cyan-300/90">
+              Runs on <span className="font-medium">{fleetHost || 'another private-network machine'}</span>; install, start, and GPU-memory controls belong to that host.
+            </p>
           )}
           {/* API-type providers auth solely via the stored apiKey (sent as a
               Bearer header) — surface its state here so "where does the key

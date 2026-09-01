@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   getProviderStatuses: vi.fn(),
   getProviderRuntimes: vi.fn(),
   getProviderReadiness: vi.fn(),
+  getInstances: vi.fn(),
   getSampleProviders: vi.fn(),
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
@@ -58,6 +59,7 @@ const renderPage = (initialPath = '/ai') => render(
     <Routes>
       <Route path="/ai" element={<AIProviders />} />
       <Route path="/ai/new" element={<AIProviders />} />
+      <Route path="/ai/fleet" element={<AIProviders />} />
       <Route path="/ai/edit/:providerId" element={<AIProviders />} />
     </Routes>
   </MemoryRouter>
@@ -496,6 +498,81 @@ describe('an API provider pointed at another machine', () => {
     renderPage();
 
     expect(await screen.findByText(/LM Studio not installed/)).toBeInTheDocument();
+  });
+});
+
+describe('fleet LLM setup walkthrough', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU host',
+        host: 'gpu-host.example.ts.net',
+        address: '100.64.0.10',
+        status: 'online',
+        enabled: true,
+      }],
+    });
+    api.createProvider.mockImplementation(async (provider) => ({
+      id: 'fleet-gpu-opencode-tui',
+      ...provider,
+      hasApiKey: true,
+    }));
+  });
+
+  it('creates an OpenCode provider whose actual baseURL points at the selected peer', async () => {
+    renderPage('/ai/fleet');
+
+    expect(await screen.findByRole('heading', { name: 'Fleet LLM setup' })).toBeInTheDocument();
+    expect(screen.getByText(/Recommended for one RTX 3090/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Connect client' }));
+    fireEvent.change(await screen.findByLabelText('Known PortOS peer'), { target: { value: 'peer-example' } });
+    fireEvent.change(screen.getByLabelText('vLLM API key'), { target: { value: 'example-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create fleet provider' }));
+
+    await waitFor(() => expect(api.createProvider).toHaveBeenCalledTimes(1));
+    const created = api.createProvider.mock.calls[0][0];
+    expect(created).toMatchObject({
+      type: 'tui',
+      command: 'opencode',
+      endpoint: 'http://gpu-host.example.ts.net:18020/v1',
+      apiKey: 'example-secret',
+      defaultModel: 'qwen3.8-27b',
+      vllmBacked: true,
+      thinking: false,
+      enabled: true,
+    });
+    expect(JSON.parse(created.envVars.OPENCODE_CONFIG_CONTENT).provider.vllm.options.baseURL)
+      .toBe('http://gpu-host.example.ts.net:18020/v1');
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Fleet LLM setup' })).not.toBeInTheDocument());
+    expect(toast.success).toHaveBeenCalledWith('Fleet GPU · OpenCode TUI is connected to the fleet GPU host');
+  });
+
+  it('creates a direct API provider without an inert OpenCode config', async () => {
+    renderPage('/ai/fleet?fleetStep=client');
+
+    fireEvent.change(await screen.findByLabelText('Known PortOS peer'), { target: { value: 'peer-example' } });
+    fireEvent.change(screen.getByLabelText('Harness'), { target: { value: 'api' } });
+    fireEvent.change(screen.getByLabelText('vLLM API key'), { target: { value: 'example-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create fleet provider' }));
+
+    await waitFor(() => expect(api.createProvider).toHaveBeenCalledTimes(1));
+    const created = api.createProvider.mock.calls[0][0];
+    expect(created).toMatchObject({
+      name: 'Fleet GPU · API',
+      type: 'api',
+      endpoint: 'http://gpu-host.example.ts.net:18020/v1',
+      vllmBacked: true,
+    });
+    expect(created).not.toHaveProperty('command');
+    expect(created).not.toHaveProperty('envVars');
   });
 });
 
