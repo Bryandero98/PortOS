@@ -25,23 +25,7 @@ import {
   prepareVideoGenParams,
   withStagedRollback,
 } from './prepareParams.js';
-
-// These names mirror the route-owned Zod schema. The service needs only their
-// names to decide whether a request can honor a Grok pin; it deliberately does
-// not import HTTP validation back into the service layer.
-const LOCAL_ONLY_VIDEO_PARAM_KEYS = [
-  'numFrames',
-  'fps',
-  'steps',
-  'guidanceScale',
-  'seed',
-  'imageStrength',
-  'i2vReferenceMode',
-  'tiling',
-  'textEncoderId',
-  'speedProfileId',
-  'draftDecode',
-];
+import { VIDEO_GEN_LOCAL_ONLY_FIELD_NAMES } from './requestFields.js';
 
 const submitValidatedVideoGenJob = async (body, uploads) => {
   let fableLoomRenderSettings = null;
@@ -58,6 +42,10 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
   // locally. Handled before local preparation, which resolves this machine's
   // backend and stages uploads a remote render can never use.
   if (body.mediaProviderPeerId) {
+    // Start/end gallery frames may cross to an allowlisted peer, but multipart
+    // files, model weights, and multi-step chain state stay local under the
+    // federated-input contract in ADR 2026-08-22. Each entry here is a deliberate
+    // refusal, not a missing transport implementation.
     const unsupported = [
       ['uploaded files', Object.keys(uploads).length],
       ['keyframes', body.keyframes?.length],
@@ -67,6 +55,8 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
       ['chained chunks', body.chunks > 1],
       ['the Grok backend', body.backend === 'grok'],
       ['a FableLoom scene tag', body.fableLoom],
+      // Inspire is a per-runtime capability the caller cannot prove for a peer.
+      // Refuse it instead of returning an anchored clip under an Inspire label.
       ['a loose reference mode', !isDefaultI2vReferenceMode(body.i2vReferenceMode)],
       ['a music-video scene tag', body.musicVideo],
     ].filter(([, present]) => present).map(([label]) => label);
@@ -118,7 +108,7 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
   const prepared = await prepareVideoGenParams({
     body,
     uploads,
-    localOnlyParamKeys: LOCAL_ONLY_VIDEO_PARAM_KEYS,
+    localOnlyParamKeys: VIDEO_GEN_LOCAL_ONLY_FIELD_NAMES,
   });
   const { backend, cleanupStaged } = prepared;
 
@@ -171,6 +161,8 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
   if (backend === IMAGE_GEN_MODE.GROK) {
     const { grok: g, sourceImagePath, uploadedTempPath } = prepared;
     const { jobId, position, status } = await enqueue({
+      // This literal is the queue discriminator. Local jobs use mode for their
+      // t2v/i2v semantic, while the Grok lane stores that as videoMode.
       mode: IMAGE_GEN_MODE.GROK,
       videoMode: sourceImagePath ? 'image' : 'text',
       grokPath: g.grokPath,
@@ -220,6 +212,8 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
     guidanceScale: body.guidanceScale,
     seed: body.seed,
     tiling: body.tiling || 'auto',
+    // Default-valued delivery controls stay absent from persisted params so a
+    // resumed form cannot restore a knob that never changed the render.
     ...(isStockTextEncoder(body.textEncoderId) ? {} : { textEncoderId: body.textEncoderId }),
     ...(isDefaultSpeedProfile(body.speedProfileId) ? {} : { speedProfileId: body.speedProfileId }),
     ...(isFullDecode(body.draftDecode) ? {} : { draftDecode: body.draftDecode }),
@@ -237,6 +231,7 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
     ...(isDefaultI2vReferenceMode(body.i2vReferenceMode) ? {} : { i2vReferenceMode: body.i2vReferenceMode }),
     chunks: effectiveChunks,
     ...(effectiveChunkPrompts ? { chunkPrompts: effectiveChunkPrompts } : {}),
+    // Zero is a real last-frame-chaining value; only nullish means absent.
     ...(effectiveContextFrames != null ? { contextFrames: effectiveContextFrames } : {}),
     loras,
     icReferencePaths,
@@ -259,14 +254,18 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
 };
 
 /**
- * @param {object} body - validated and coerced request body
+ * @param {object} body - validated/coerced request body, mutated with compiled
+ *   FableLoom dimensions, prompts, and visual conditioning when present
  * @param {object} uploads - multipart uploads keyed by field name
  */
 export async function submitVideoGenJob(body, uploads) {
   try {
     return await submitValidatedVideoGenJob(body, uploads);
   } catch (err) {
-    await cleanupMultipartTemp(uploads);
+    // Preparation may already have released these request-scoped files. The
+    // cleanup helper is idempotent, so this remains the one submission-level
+    // unwind path without issuing duplicate unlinks.
+    await cleanupMultipartTemp(uploads).catch(() => {});
     throw err;
   }
 }

@@ -42,6 +42,7 @@ import {
 } from '../services/videoGen/local.js';
 import { cleanupMultipartTemp } from '../services/videoGen/prepareParams.js';
 import { submitVideoGenJob } from '../services/videoGen/submitJob.js';
+import { VIDEO_GEN_LOCAL_ONLY_FIELDS } from '../services/videoGen/requestFields.js';
 import { attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { repoForModel, getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
 import {
@@ -174,35 +175,35 @@ const listPreprocess = (v) => {
 // together so Grok eligibility and request validation cannot drift when a new
 // local-only knob is added.
 export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
-  numFrames: optionalInt(1, FEDERATED_MEDIA_MAX_VIDEO_FRAMES, 'numFrames'),
-  fps: optionalNum(1, 60, 'fps'),
-  steps: optionalNum(1, 200, 'steps'),
-  guidanceScale: optionalNum(0, 30, 'guidanceScale'),
-  seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
-  imageStrength: optionalNum(0, 1, 'imageStrength'),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.NUM_FRAMES]: optionalInt(1, FEDERATED_MEDIA_MAX_VIDEO_FRAMES, 'numFrames'),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.FPS]: optionalNum(1, 60, 'fps'),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.STEPS]: optionalNum(1, 200, 'steps'),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.GUIDANCE_SCALE]: optionalNum(0, 30, 'guidanceScale'),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.SEED]: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.IMAGE_STRENGTH]: optionalNum(0, 1, 'imageStrength'),
   // What the conditioning image PROMISES (#4874) — 'anchor' (default) pins it as
   // frame one, 'inspire' conditions loosely for subject/style. Local-only by
   // construction: grok's image_to_video always anchors, so a request that names a
   // mode is not grok-deliverable and must stay on the local lane rather than be
   // rerouted into a render that silently ignores it. Preprocessed like the numeric
   // knobs because a multipart body sends an unset select as ''.
-  i2vReferenceMode: z.preprocess(
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.I2V_REFERENCE_MODE]: z.preprocess(
     (v) => (v == null || v === '' ? undefined : v),
     z.enum(I2V_REFERENCE_MODES).optional(),
   ),
-  tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.TILING]: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   // Which prompt conditioner reads the prompt (lib/videoTextEncoders.js).
   // Validated loosely here and resolved against the MODEL's own option list in
   // the service — the set is per-runtime, so a route-level enum would either
   // have to enumerate every runtime's options or reject a legitimate one.
-  textEncoderId: z.string().min(1).max(64).optional(),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.TEXT_ENCODER_ID]: z.string().min(1).max(64).optional(),
   // Named sampler schedule to render with (lib/videoSpeedProfiles.js). Loosely
   // validated here for the same reason as textEncoderId — the option list is
   // per-MODEL. Deliberately never rejected downstream either: an id this model
   // doesn't offer (or a mode the profile isn't validated for) falls back to the
   // model's own sampler with the reason logged, because a knob that only makes
   // a render faster must degrade rather than 400 a submitted job.
-  speedProfileId: z.string().min(1).max(64).optional(),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.SPEED_PROFILE_ID]: z.string().min(1).max(64).optional(),
   // Decode this render's latents on the model's own decoder or on its declared
   // preview-fidelity one (lib/videoDraftDecoders.js). A closed enum, unlike the
   // two ids above, because there is at most ONE draft decoder per model — the
@@ -210,7 +211,7 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
   // model declares", not from a per-model list. Never rejected downstream
   // either: an unsupported model, an old runner checkout, a missing download or
   // a delivery render all fall back to the full decoder with the reason logged.
-  draftDecode: z.enum(DRAFT_DECODE_IDS).optional(),
+  [VIDEO_GEN_LOCAL_ONLY_FIELDS.DRAFT_DECODE]: z.enum(DRAFT_DECODE_IDS).optional(),
 });
 
 const generateBodySchema = z.object({
@@ -928,6 +929,8 @@ router.get('/text-encoder/download', asyncHandler(async (req, res) => {
 }));
 
 router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
+  // The route owns cleanup before validation succeeds; the submit service owns
+  // every failure after it receives parsed data.
   const uploads = req.files || {};
   const parsed = generateBodySchema.safeParse(req.body);
   if (!parsed.success) {

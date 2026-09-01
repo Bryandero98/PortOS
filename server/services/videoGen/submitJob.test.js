@@ -27,22 +27,37 @@ vi.mock('../fableLoom/visualConditioning.js', () => ({
   fableLoomVideoCapabilities: mocks.fableLoomVideoCapabilities,
 }));
 vi.mock('../mediaJobQueue/index.js', () => ({ enqueueJob: mocks.enqueueJob }));
-vi.mock('./prepareParams.js', () => ({
+vi.mock('./prepareParams.js', async (importOriginal) => ({
+  ...await importOriginal(),
   cleanupMultipartTemp: mocks.cleanupMultipartTemp,
   prepareVideoGenParams: mocks.prepareVideoGenParams,
-  withStagedRollback: async (cleanup, fn) => {
-    try {
-      return await fn();
-    } catch (error) {
-      await cleanup();
-      throw error;
-    }
-  },
 }));
 
 import { submitVideoGenJob } from './submitJob.js';
 
 const queued = { jobId: 'job-123', position: 2, status: 'queued' };
+
+const localPrepared = (overrides = {}) => ({
+  backend: 'local',
+  cleanupStaged: vi.fn(async () => {}),
+  pythonPath: '/example/python',
+  effectiveModelId: 'local-model',
+  effectiveNumFrames: 121,
+  mode: 'text',
+  sourceImagePath: null,
+  lastImagePath: null,
+  audioFilePath: null,
+  icReferencePaths: [],
+  resolvedKeyframes: [],
+  extendFromVideoPath: null,
+  uploadedTempPath: null,
+  uploadedTempPaths: [],
+  loras: [],
+  effectiveChunks: 1,
+  effectiveChunkPrompts: undefined,
+  effectiveContextFrames: undefined,
+  ...overrides,
+});
 
 describe('submitVideoGenJob', () => {
   beforeEach(() => {
@@ -108,27 +123,7 @@ describe('submitVideoGenJob', () => {
   });
 
   it('submits a local job with the effective model response contract', async () => {
-    const cleanupStaged = vi.fn(async () => {});
-    mocks.prepareVideoGenParams.mockResolvedValue({
-      backend: 'local',
-      cleanupStaged,
-      pythonPath: '/example/python',
-      effectiveModelId: 'local-model',
-      effectiveNumFrames: 121,
-      mode: 'text',
-      sourceImagePath: null,
-      lastImagePath: null,
-      audioFilePath: null,
-      icReferencePaths: [],
-      resolvedKeyframes: [],
-      extendFromVideoPath: null,
-      uploadedTempPath: null,
-      uploadedTempPaths: [],
-      loras: [],
-      effectiveChunks: 1,
-      effectiveChunkPrompts: undefined,
-      effectiveContextFrames: undefined,
-    });
+    mocks.prepareVideoGenParams.mockResolvedValue(localPrepared({ effectiveContextFrames: 0 }));
 
     await expect(submitVideoGenJob({
       prompt: 'Example shot',
@@ -147,8 +142,13 @@ describe('submitVideoGenJob', () => {
         pythonPath: '/example/python',
         numFrames: 121,
         mode: 'text',
+        contextFrames: 0,
       }),
     }));
+    const params = mocks.enqueueJob.mock.calls[0][0].params;
+    for (const key of ['textEncoderId', 'speedProfileId', 'draftDecode', 'i2vReferenceMode', 'chunkPrompts']) {
+      expect(params).not.toHaveProperty(key);
+    }
   });
 
   it('cleans multipart uploads exactly once when submission fails', async () => {
@@ -159,5 +159,30 @@ describe('submitVideoGenJob', () => {
     await expect(submitVideoGenJob({ prompt: 'Example shot' }, uploads)).rejects.toBe(failure);
     expect(mocks.cleanupMultipartTemp).toHaveBeenCalledTimes(1);
     expect(mocks.cleanupMultipartTemp).toHaveBeenCalledWith(uploads);
+  });
+
+  it('rolls staged assets back when enqueueing throws', async () => {
+    const failure = new Error('queue full');
+    const prepared = localPrepared();
+    mocks.prepareVideoGenParams.mockResolvedValue(prepared);
+    mocks.enqueueJob.mockImplementation(() => { throw failure; });
+
+    await expect(submitVideoGenJob({ prompt: 'Example shot' }, {})).rejects.toBe(failure);
+    expect(prepared.cleanupStaged).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls staged assets back when FableLoom compilation rejects', async () => {
+    const failure = new Error('conditioning failed');
+    const prepared = localPrepared();
+    mocks.getLoom.mockResolvedValue({ renderSettings: {} });
+    mocks.prepareVideoGenParams.mockResolvedValue(prepared);
+    mocks.fableLoomVideoCapabilities.mockReturnValue({ modes: ['text'] });
+    mocks.compileFableLoomVisualRequest.mockRejectedValue(failure);
+
+    await expect(submitVideoGenJob({
+      prompt: 'Example shot',
+      fableLoom: { loomId: 'loom-example', sceneId: 'scene-example' },
+    }, {})).rejects.toBe(failure);
+    expect(prepared.cleanupStaged).toHaveBeenCalledTimes(1);
   });
 });
