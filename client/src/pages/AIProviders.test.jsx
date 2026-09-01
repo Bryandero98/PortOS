@@ -1240,6 +1240,114 @@ describe('readiness grouping', () => {
   });
 });
 
+describe('hardware-incompatible providers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getSampleProviders.mockResolvedValue({ providers: [] });
+  });
+
+  // A provider this machine cannot run is not a choice the user can act on, so
+  // it must not sit among the enabled cards adding a HARDWARE MISMATCH badge to
+  // a section that otherwise lists live providers.
+  it('parks an unrunnable provider in a collapsed section instead of Enabled', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [
+        { id: 'ok', name: 'Runs Here', type: 'cli', command: 'claude', enabled: true },
+        {
+          id: 'huge',
+          name: 'Needs More RAM',
+          type: 'api',
+          enabled: true,
+          endpoint: 'http://localhost:1234',
+          hardwareCompatibility: { state: 'unavailable', reasons: ['needs 128GB of RAM'] },
+        },
+      ],
+      activeProvider: 'ok',
+    });
+
+    renderPage();
+
+    const enabled = await screen.findByRole('button', { name: new RegExp('^Enabled') });
+    expect(enabled).toHaveTextContent('1');
+    expect(screen.getByText('Runs Here')).toBeInTheDocument();
+
+    // Collapsed by default: neither the card nor its badge is on screen.
+    const parked = screen.getByRole('button', { name: /Unavailable on this machine/ });
+    expect(parked).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Needs More RAM')).not.toBeInTheDocument();
+    expect(screen.queryByText('HARDWARE MISMATCH')).not.toBeInTheDocument();
+
+    // Still one click from being edited or deleted.
+    fireEvent.click(parked);
+    expect(screen.getByText('Needs More RAM')).toBeInTheDocument();
+  });
+
+  it('omits the section entirely when every provider runs here', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'ok', name: 'Runs Here', type: 'cli', command: 'claude', enabled: true }],
+      activeProvider: 'ok',
+    });
+
+    renderPage();
+
+    await screen.findByText('Runs Here');
+    expect(screen.queryByRole('button', { name: /Unavailable on this machine/ })).not.toBeInTheDocument();
+  });
+
+  it('leaves an unrunnable sample out of the sample list', async () => {
+    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
+    api.getSampleProviders.mockResolvedValue({
+      providers: [
+        { id: 'sample-ok', name: 'Sample Runs Here', type: 'api', enabled: true, endpoint: 'https://api.example.com', models: ['m1'] },
+        {
+          id: 'sample-huge',
+          name: 'Sample Needs More RAM',
+          type: 'api',
+          enabled: true,
+          endpoint: 'https://api.example.com',
+          models: ['m2'],
+          hardwareCompatibility: { state: 'unavailable', reasons: ['needs 128GB of RAM'] },
+        },
+      ],
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load Samples' }));
+
+    expect(await screen.findByText('Sample Runs Here')).toBeInTheDocument();
+    expect(screen.queryByText('Sample Needs More RAM')).not.toBeInTheDocument();
+    // One addable sample, so no Add All button and no dead 'Unavailable' action.
+    expect(screen.queryByRole('button', { name: /^Add All/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unavailable' })).not.toBeInTheDocument();
+  });
+
+  it('says why the sample list is empty when nothing on offer runs here', async () => {
+    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
+    api.getSampleProviders.mockResolvedValue({
+      providers: [{
+        id: 'sample-huge',
+        name: 'Sample Needs More RAM',
+        type: 'api',
+        enabled: true,
+        endpoint: 'https://api.example.com',
+        models: ['m2'],
+        hardwareCompatibility: { state: 'unavailable', reasons: ['needs 128GB of RAM'] },
+      }],
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load Samples' }));
+
+    expect(await screen.findByText(/cannot run on this machine/)).toBeInTheDocument();
+  });
+});
+
 // Both tables are keyed off PROVIDER_CARD_STATE, and a state missing from either
 // fails quietly: no PROVIDER_SECTIONS row and those cards vanish from the page,
 // no CARD_STATE_STYLES row and the card throws on `style.border`.
