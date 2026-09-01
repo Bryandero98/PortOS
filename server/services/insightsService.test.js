@@ -1,101 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock the provider-readiness check and the HTTP client so the call runs offline.
+// Mock the provider-readiness check so any code path that touches it runs offline.
 vi.mock('./ollamaManager.js', () => ({
   ensureProviderReady: vi.fn().mockResolvedValue({ success: true }),
 }));
-vi.mock('../lib/fetchWithTimeout.js', () => ({
-  fetchWithTimeout: vi.fn(),
-}));
-
-import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
-import { mockJsonResponse, mockTextResponse } from '../lib/testHelper.js';
-import {
-  callProviderAISimple,
-  getThemeAnalysis,
-  getCrossDomainNarrative,
-} from './insightsService.js';
-
-const PROVIDER = { type: 'api', endpoint: 'http://localhost:1234/v1' };
-
-describe('insightsService.callProviderAISimple — non-JSON-body guard', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  // The regression this guards: a non-JSON 200 body used to return { text: '' },
-  // which refreshCrossDomainNarrative / generateThemeAnalysis then persisted over
-  // narrative.json / themes.json — overwriting the cached result with nothing.
-  // It must surface as { error } so the `if (result.error) return` guard bails
-  // before any write.
-  it('returns { error } (not empty success) on a non-JSON 200 body', async () => {
-    fetchWithTimeout.mockResolvedValue(mockTextResponse('<html><body>502 Bad Gateway</body></html>'));
-    const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
-    expect(result.text).toBeUndefined();
-    expect(result.error).toMatch(/non-JSON response/);
-  });
-
-  it('returns { error } on a blank 200 body', async () => {
-    fetchWithTimeout.mockResolvedValue(mockTextResponse(''));
-    const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
-    expect(result.error).toMatch(/non-JSON response/);
-  });
-
-  // A valid body with empty content is a legitimate (if unusual) result and must
-  // still flow through as { text: '' } — the guard must not conflate valid-empty
-  // with a parse failure.
-  it('returns { text: "" } for a valid body with empty content', async () => {
-    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: '' } }] }));
-    const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
-    expect(result).toEqual({ text: '' });
-  });
-
-  it('returns the content for a valid populated body', async () => {
-    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'hello' } }] }));
-    const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
-    expect(result).toEqual({ text: 'hello' });
-  });
-
-  it('returns { error } with the status code on a non-2xx response', async () => {
-    fetchWithTimeout.mockResolvedValue(mockTextResponse('boom', { ok: false, status: 500 }));
-    const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
-    expect(result.error).toMatch(/Provider returned 500: boom/);
-  });
+// generateThemeAnalysis/refreshCrossDomainNarrative now call the shared
+// aiProvider.callProviderAISimple transport (see aiProvider.test.js for its own
+// contract coverage) — stub only that export so the disk-only read paths below
+// can assert it's never reached, while stripCodeFences/parseLLMJSON (also
+// imported from this module) stay real.
+vi.mock('./aiProvider.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, callProviderAISimple: vi.fn() };
 });
 
-describe('insightsService.callProviderAISimple — endpoint guard (SSRF / key-exfiltration)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('blocks a keyed provider pointed at a non-allowlisted endpoint and never calls fetch', async () => {
-    const result = await callProviderAISimple(
-      { ...PROVIDER, apiKey: 'secret-key', endpoint: 'https://not-an-allowlisted-host.example' },
-      'm', 'prompt',
-    );
-    expect(result.error).toContain('Provider endpoint blocked');
-    expect(fetchWithTimeout).not.toHaveBeenCalled();
-  });
-
-  it('allows a keyed provider on a non-allowlisted host through when allowCustomEndpoint is true', async () => {
-    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'hello' } }] }));
-    const result = await callProviderAISimple(
-      { ...PROVIDER, apiKey: 'secret-key', endpoint: 'https://not-an-allowlisted-host.example', allowCustomEndpoint: true },
-      'm', 'prompt',
-    );
-    expect(result).toEqual({ text: 'hello' });
-    expect(fetchWithTimeout).toHaveBeenCalled();
-  });
-
-  it('allows a keyless provider on a non-allowlisted host through (guard only applies when apiKey is set)', async () => {
-    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'hello' } }] }));
-    const result = await callProviderAISimple(
-      { ...PROVIDER, endpoint: 'https://not-an-allowlisted-host.example' },
-      'm', 'prompt',
-    );
-    expect(result).toEqual({ text: 'hello' });
-  });
-});
+import { callProviderAISimple } from './aiProvider.js';
+import { getThemeAnalysis, getCrossDomainNarrative } from './insightsService.js';
 
 // Enforces the no-cold-bootstrap trigger contract documented at the generation
 // entry points: the cached-read paths the Insights page mounts with must be
@@ -109,13 +29,13 @@ describe('insightsService read paths — disk-only, no provider call', () => {
 
   it('getThemeAnalysis performs no provider call (returns not_generated when uncached)', async () => {
     const result = await getThemeAnalysis();
-    expect(fetchWithTimeout).not.toHaveBeenCalled();
+    expect(callProviderAISimple).not.toHaveBeenCalled();
     expect(result.available === false || result.available === true).toBe(true);
   });
 
   it('getCrossDomainNarrative performs no provider call (returns not_generated when uncached)', async () => {
     const result = await getCrossDomainNarrative();
-    expect(fetchWithTimeout).not.toHaveBeenCalled();
+    expect(callProviderAISimple).not.toHaveBeenCalled();
     expect(result.available === false || result.available === true).toBe(true);
   });
 });

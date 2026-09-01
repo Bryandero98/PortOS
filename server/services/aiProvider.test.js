@@ -363,3 +363,94 @@ describe('callProviderAISimple through the ChatGPT subscription', () => {
     expect(result).toMatchObject({ text: 'fallback answer' });
   });
 });
+
+// The regression these two guard: a non-JSON/blank 200 body used to return
+// { text: '' } from the (now-deleted) insightsService copy of this transport,
+// which refreshCrossDomainNarrative / generateThemeAnalysis then persisted over
+// narrative.json / themes.json — overwriting the cached result with nothing.
+// The shared transport must surface an error instead, so the `if (result.error)
+// return` guard at both call sites bails before any write.
+describe('callProviderAISimple — malformed / non-2xx responses', () => {
+  const provider = { id: 'provider-1', name: 'Example Provider', type: 'api', endpoint: 'https://api.example.com/v1' };
+
+  const respondWithText = (text, { ok = true, status = 200 } = {}) =>
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok, status, text: async () => text })));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns an error, not an empty success, on a non-JSON 200 body', async () => {
+    respondWithText('<html><body>502 Bad Gateway</body></html>');
+
+    const result = await callProviderAISimple(provider, 'model-1', 'prompt');
+
+    expect(result.text).toBeUndefined();
+    expect(result.error).toMatch(/malformed/i);
+  });
+
+  it('returns an error on a blank 200 body', async () => {
+    respondWithText('');
+
+    const result = await callProviderAISimple(provider, 'model-1', 'prompt');
+
+    expect(result.error).toMatch(/malformed/i);
+  });
+
+  it('returns an error with the status and body on a non-2xx response', async () => {
+    respondWithText('boom', { ok: false, status: 500 });
+
+    const result = await callProviderAISimple(provider, 'model-1', 'prompt');
+
+    expect(result.error).toMatch(/Provider returned 500: boom/);
+  });
+});
+
+describe('callProviderAISimple — endpoint guard (SSRF / key-exfiltration)', () => {
+  const provider = { id: 'provider-1', name: 'Example Provider', type: 'api', endpoint: 'https://api.example.com/v1' };
+
+  const respondWithHello = () => vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ choices: [{ message: { content: 'hello' } }] }),
+  })));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('blocks a keyed provider pointed at a non-allowlisted endpoint and never calls fetch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await callProviderAISimple(
+      { ...provider, apiKey: 'secret-key', endpoint: 'https://not-an-allowlisted-host.example' },
+      'model-1', 'prompt',
+    );
+
+    expect(result.error).toContain('Provider endpoint blocked');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('allows a keyed provider on a non-allowlisted host through when allowCustomEndpoint is true', async () => {
+    respondWithHello();
+
+    const result = await callProviderAISimple(
+      { ...provider, apiKey: 'secret-key', endpoint: 'https://not-an-allowlisted-host.example', allowCustomEndpoint: true },
+      'model-1', 'prompt',
+    );
+
+    expect(result).toMatchObject({ text: 'hello' });
+  });
+
+  it('allows a keyless provider on a non-allowlisted host through (guard only applies when apiKey is set)', async () => {
+    respondWithHello();
+
+    const result = await callProviderAISimple(
+      { ...provider, endpoint: 'https://not-an-allowlisted-host.example' },
+      'model-1', 'prompt',
+    );
+
+    expect(result).toMatchObject({ text: 'hello' });
+  });
+});
