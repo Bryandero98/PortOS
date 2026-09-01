@@ -1,5 +1,6 @@
 import toast from '../components/ui/Toast';
 import { request, API_BASE } from './apiCore.js';
+import { getNetworkExposure } from './apiSystem.js';
 
 // Apps
 export const getApps = (options) => request('/apps', options);
@@ -152,6 +153,17 @@ export const openAppFolder = (id) => request(`/apps/${id}/open-folder`, { method
 // comes back as a real error instead of a silent `xcode://` no-op.
 export const openAppInXcode = (id) => request(`/apps/${id}/open-xcode`, { method: 'POST' });
 export const refreshAppConfig = (id) => request(`/apps/${id}/refresh-config`, { method: 'POST' });
+// Capture the server's currently trusted origin before a PortOS restart. A
+// Vite dev UI on :5554 must not be reused after the server comes back when a
+// Tailscale HTTPS origin is available. The read is best-effort so an instance
+// without trusted HTTPS keeps the existing same-origin recovery behavior.
+export const getPreferredSelfRestartOrigin = async () => {
+  const exposure = await getNetworkExposure({ silent: true }).catch(() => null);
+  const trustedUrl = exposure?.setup?.trustedUrl;
+  return typeof trustedUrl === 'string' && trustedUrl.startsWith('https://')
+    ? trustedUrl
+    : null;
+};
 export const pullAndUpdateApp = (id, body = {}, options = {}) => request(`/apps/${id}/update`, {
   method: 'POST',
   body: JSON.stringify(body),

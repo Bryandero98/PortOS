@@ -6,6 +6,7 @@ vi.mock('../../../services/api', () => ({
   getAppRepositorySources: vi.fn(),
   syncAppRepositoryFork: vi.fn(),
   pullAndUpdateApp: vi.fn(),
+  getPreferredSelfRestartOrigin: vi.fn(),
   handleSelfRestart: vi.fn(),
 }));
 
@@ -189,13 +190,16 @@ describe('managed app repository sources', () => {
   });
 
   it('treats a PortOS update disconnect as the expected self-restart', async () => {
+    api.getPreferredSelfRestartOrigin.mockResolvedValueOnce('https://host-alpha.example-tailnet.ts.net:5555');
     api.pullAndUpdateApp.mockRejectedValueOnce(new Error('Server unreachable — check your connection and try again'));
     render(<RepositorySourcePanel appId="portos-default" appName="PortOS" />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Update app' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Update app' }));
 
-    await waitFor(() => expect(api.handleSelfRestart).toHaveBeenCalledOnce());
+    await waitFor(() => expect(api.handleSelfRestart).toHaveBeenCalledWith({
+      targetOrigin: 'https://host-alpha.example-tailnet.ts.net:5555',
+    }));
   });
 
   it('refuses automatic fork sync after divergence but still permits updating from the fork as-is', async () => {
