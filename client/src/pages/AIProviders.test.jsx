@@ -514,7 +514,7 @@ describe('fleet LLM setup walkthrough', () => {
         id: 'peer-example',
         name: 'Example GPU host',
         host: 'gpu-host.example.ts.net',
-        address: '100.64.0.10',
+        address: '192.0.2.10',
         status: 'online',
         enabled: true,
       }],
