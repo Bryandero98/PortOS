@@ -63,6 +63,7 @@ import {
   SONGBOOK_ATTACHMENT_EXTENSIONS,
   saveBase64Upload,
   saveImageUpload,
+  importFileToDir,
   serveLocalFile,
   watchForFile,
 } from './fileUtils.js';
@@ -77,6 +78,26 @@ const __dirname_test = dirname(fileURLToPath(import.meta.url));
 let realFsPromises;
 beforeAll(async () => {
   realFsPromises = await vi.importActual('fs/promises');
+});
+
+describe('importFileToDir', () => {
+  let dir;
+  let source;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'import-file-test-'));
+    source = join(dir, 'source.bin');
+    await writeFile(source, 'fixture');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('rejects a persisted extension outside an explicit allowlist', async () => {
+    await expect(importFileToDir(source, 'payload.svg', join(dir, 'dest'), { extensions: ['.png'] }))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_FILE_TYPE' });
+  });
 });
 
 const restoreFsMocks = () => {
