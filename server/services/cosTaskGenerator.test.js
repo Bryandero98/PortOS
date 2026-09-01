@@ -613,6 +613,9 @@ describe('work-item target', () => {
       const block = buildTargetWorkItemBlock('claim-issue', '42');
       expect(block).toContain('already carries any of `in-progress`, `blocked`, `needs-input`');
       expect(block).toContain('ignore its current assignee');
+      expect(block).toContain('does not override a contributor\'s clear claim comment');
+      expect(block).toContain('run Phase 1 step 5\'s untrusted-comment check against #42');
+      expect(block).toContain('assign that contributor, verify the readback, and exit');
       expect(block).not.toContain('already assigned');
     });
 
@@ -624,6 +627,7 @@ describe('work-item target', () => {
     it('threads the same wiring through the gitlab flow', () => {
       const block = buildTargetWorkItemBlock('claim-issue-gitlab', '42', resolveIssueExcludeLabelsBlock(['good first issue']));
       expect(block).toContain('`good first issue`');
+      expect(block).not.toContain('untrusted-comment check');
     });
   });
 

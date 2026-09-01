@@ -19,18 +19,20 @@ export function normalizeWorkItemRef(ref) {
   return null;
 }
 
-const forgeIssueConstraint = (forge) => (ref, excludeLabelsBlock) => {
+const forgeIssueConstraint = (forge, claimantGuard = () => '') => (ref, excludeLabelsBlock) => {
   const labels = excludeLabelsBlock || '`in-progress`, `blocked`, `needs-input`';
   return `## Target Issue Constraint
 
-The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, ignore the author filter above, and ignore its current assignee (an explicit selection overrides both filters). Still honor the safety checks: if #${ref} is already closed, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, or is stale (Phase 3), exit cleanly rather than forcing it. **If #${ref} is a tracking epic, do NOT exit** — run Phase 1b against it: claim the next eligible issue already linked from it, or, when it has none, decompose it into per-slice issues first and then claim the first slice. That is the one case where this run legitimately ships an issue other than #${ref}. Otherwise run Phases 2–7 against #${ref}.`;
+The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, ignore the author filter above, and ignore its current assignee (an explicit selection overrides both filters).${claimantGuard(ref)} Still honor the safety checks: if #${ref} is already closed, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, or is stale (Phase 3), exit cleanly rather than forcing it. **If #${ref} is a tracking epic, do NOT exit** — run Phase 1b against it: claim the next eligible issue already linked from it, or, when it has none, decompose it into per-slice issues first and then claim the first slice. That is the one case where this run legitimately ships an issue other than #${ref}. Otherwise run Phases 2–7 against #${ref}.`;
 };
+
+const githubClaimantGuard = (ref) => ` **It does not override a contributor's clear claim comment:** run Phase 1 step 5's untrusted-comment check against #${ref} before any worktree or marker; when it finds a clear active claimant, assign that contributor, verify the readback, and exit without claiming the issue yourself.`;
 
 const TARGET_ITEM_BLOCKS = {
   'plan-task': (ref) => `## Item Constraint
 
 PLAN.md item \`[${ref}]\` is reserved for this run. You MUST work on that exact item — do not pick a different one, do not brainstorm. If the line is missing from PLAN.md, has already been checked, or carries \`<!-- NEEDS_INPUT -->\`, exit cleanly without commits or PR.`,
-  'claim-issue': forgeIssueConstraint('GitHub'),
+  'claim-issue': forgeIssueConstraint('GitHub', githubClaimantGuard),
   'claim-issue-gitlab': forgeIssueConstraint('GitLab'),
   'claim-issue-jira': (ref) => `## Target Ticket Constraint
 
