@@ -202,12 +202,14 @@ describe('chatgptZipImport service', () => {
     });
 
     it('writes nothing outside the asset dir for a member whose name carries backslashes', async () => {
-      // `a\..\..\evil.dat` is the classic Zip Slip shape. Two independent
-      // layers stop it: `zipStream.js` sanitizes separators/traversal on the way
-      // out of the parser, and `isSafeDatMember` refuses anything that still
-      // isn't a plain filename before the temp file is opened. This pins the
-      // end-to-end outcome — no write lands outside `assetDir` on any platform,
-      // and the rest of the import still succeeds.
+      // `a\..\..\evil.dat` is the classic Zip Slip shape. Two layers stand
+      // between it and an escape: `zipStream.js` flattens separators and
+      // `.`/`..` components as it decodes the header (so the consumer sees
+      // `a/evil.dat` and extracts a harmless `evil.png` INSIDE the asset dir),
+      // and `isSafeDatMember` refuses anything that still isn't a plain filename
+      // before the temp file is opened. This pins the end-to-end outcome that
+      // matters: whichever layer acts, no write lands outside `assetDir` on any
+      // platform, and the rest of the import still succeeds.
       const assetDir = join(TMP, 'nest', 'assets');
       const zipPath = await writeZip([
         ['conversations-000.json', JSON.stringify([{ id: 'c1', title: 'A', mapping: {} }])],
@@ -218,14 +220,11 @@ describe('chatgptZipImport service', () => {
 
       expect(conversationFiles.length).toBe(1);
       expect(assets.get('file-OK').file).toBe('file-OK.jpg');
-      // Nothing escaped into a sibling or parent directory.
+      // The hostile member was flattened to a basename and landed inside the
+      // asset dir — never at `${TMP}/evil.png` or above it.
+      expect((await readdir(assetDir)).sort()).toEqual(['evil.png', 'file-OK.jpg']);
       expect((await readdir(join(TMP, 'nest'))).sort()).toEqual(['assets']);
       expect((await readdir(TMP)).sort()).toEqual(['export.zip', 'nest']);
-      // Every extracted file sits directly inside the asset dir.
-      for (const name of await readdir(assetDir)) {
-        expect(name.includes('/')).toBe(false);
-        expect(name.includes('\\')).toBe(false);
-      }
     });
 
     it('skips a .dat member whose name contains a NUL instead of failing the whole import', async () => {

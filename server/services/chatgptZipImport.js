@@ -128,11 +128,13 @@ const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 // degenerate once `.dat` is dropped (`.dat` -> ``, `..dat` -> `.`), which would
 // otherwise write a `.png` / `..png` dotfile into the served dir.
 //
-// `zipStream.js` also sanitizes separators and `.`/`..` components as it decodes
-// each header, so a traversal has to defeat two independent layers to land. This
-// one is the layer that matters here: the parser's sanitizing is its own private
-// policy, while the consumer is what actually opens the file, and keeping the
-// check at the write site means a future faithful-reader refactor of the parser
+// Today `zipStream.js` sanitizes separators and `.`/`..` components as it decodes
+// each header, so a `\` never actually reaches this predicate — the flattened
+// basename is what arrives. That makes this guard the SECOND layer, not the
+// first, and it is deliberately kept anyway: the parser's sanitizing is its own
+// private policy (its header comment describes it as a faithful sequential
+// reader), while this is the code that actually opens the file. Validating at
+// the write site means a future refactor that makes the parser truly faithful
 // cannot silently reintroduce the escape.
 const isSafeDatMember = (path) => {
   const assetId = datAssetId(path);
