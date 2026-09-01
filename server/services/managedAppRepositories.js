@@ -186,7 +186,12 @@ async function inspectCheckout({ id, label, repoPath }) {
       shortHead: originHead?.slice(0, 7) || null,
     },
     upstream: topology.upstream
-      ? { fullName: topology.upstream.fullName, branch: topology.upstream.branch, host: topology.upstream.host }
+      ? {
+        fullName: topology.upstream.fullName,
+        owner: topology.upstream.owner,
+        branch: topology.upstream.branch,
+        host: topology.upstream.host,
+      }
       : null,
     localVsOrigin: countsResult ? parseRevisionCounts(countsResult) : null,
     remoteFresh: fetchResult.fresh,

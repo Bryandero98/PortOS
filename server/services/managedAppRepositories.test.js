@@ -117,6 +117,16 @@ describe('managed app repository topology', () => {
         forkVsUpstream: { ahead: 0, behind: 2, state: 'behind' },
       }],
     });
+    expect(mock.execGh).toHaveBeenCalledWith(
+      [
+        'api',
+        'repos/example-org/example-app/compare/example-org%3Amain...example-owner%3Amain',
+        '--jq',
+        '{status: .status, ahead: .ahead_by, behind: .behind_by}',
+      ],
+      60000,
+      expect.objectContaining({ cwd: REPO }),
+    );
     expect(JSON.stringify(result)).not.toContain(REPO);
   });
 
