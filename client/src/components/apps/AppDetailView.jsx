@@ -312,7 +312,12 @@ export default function AppDetailView() {
           </Link>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-xl font-bold text-white truncate">{app.name}</h1>
+              <h1
+                className="min-w-0 line-clamp-2 break-words text-xl font-bold text-white"
+                title={app.name}
+              >
+                {app.name}
+              </h1>
               {NON_PM2_TYPES.has(app.type) ? (
                 <span className="px-1.5 py-0.5 bg-port-accent/20 text-port-accent text-xs rounded">
                   {getAppTypeLabel(app.type)}
