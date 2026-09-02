@@ -38,7 +38,7 @@ function StatBlock({ label, value, tone = 'text-cyan-300' }) {
 export default function OpenWorldFocusPanel({ app, notFound = false, agents = [], onClose, onFocusInWorld, isDesktop = true }) {
   // Desktop: occupy the Intel-pane slot. Compact: a bottom sheet above the dock.
   const containerClass = isDesktop
-    ? 'absolute top-20 right-4 bottom-24 w-[19rem] pointer-events-auto'
+    ? 'absolute top-20 right-4 bottom-24 w-[19rem] max-w-[calc(100vw-1rem)] pointer-events-auto'
     : 'absolute inset-x-2 bottom-16 pointer-events-auto';
 
   // Live per-process PM2 telemetry (roadmap 1.1) — same aggregation the building

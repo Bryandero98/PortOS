@@ -391,7 +391,7 @@ export default function OpenWorldIntelPane({ apps, cosAgents, reviewCounts, inst
   };
 
   return (
-    <div className={`absolute top-20 right-4 ${collapsed ? '' : 'bottom-24'} w-[19rem] pointer-events-auto`}>
+    <div className={`absolute top-20 right-4 ${collapsed ? '' : 'bottom-24'} w-[19rem] max-w-[calc(100vw-1rem)] pointer-events-auto`}>
       <div className={`${collapsed ? '' : 'h-full'} openworld-intel-surface overflow-hidden flex flex-col`}>
         <div className="flex items-stretch border-b border-cyan-500/20">
           {/* Deliberately NOT `ui/TabPills`: this bar wears the immersive OpenWorld

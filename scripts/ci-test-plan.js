@@ -257,11 +257,13 @@ const structuralTestsFor = (changedFiles, trackedSet) => {
   // Both `.js` and `.jsx`: the StrictMode mounted-ref bug the first guard covers
   // reached its widest blast radius through a plain-`.js` hook (`useAsyncAction`),
   // so a `.jsx`-only trigger would miss the case that matters most, and the
-  // responsive-grid guard reads class strings out of both extensions. Neither
-  // file has a source sibling or imports an app module, so nothing else selects
-  // them — without this entry they only ever run on a full suite.
+  // responsive-grid and popover-clamp guards read class strings out of both
+  // extensions. None of these files has a source sibling or imports an app
+  // module, so nothing else selects them — without this entry they only ever
+  // run on a full suite.
   if (changedFiles.some((path) => /^client\/src\/.*\.jsx?$/.test(path))) {
     add('client/src/hooks/mountedRefConventions.test.js');
+    add('client/src/popoverClampConventions.test.js');
     add('client/src/responsiveGridConventions.test.js');
   }
 
