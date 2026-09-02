@@ -4,9 +4,10 @@ import { getClaudeCodeUsage } from '../services/claudeCodeUsage.js';
 import { getProviderQuotas } from '../services/providerUsage.js';
 import { getAllProviders } from '../services/providers.js';
 import { asyncHandler } from '../lib/errorHandler.js';
-import { validateRequest, usageQuerySchema, usageMessagesSchema, providerUsageQuerySchema, subscriptionCostsSchema } from '../lib/validation.js';
+import { validateRequest, usageQuerySchema, usageMessagesSchema, providerUsageQuerySchema, subscriptionCostsSchema, usageFleetBillingSchema } from '../lib/validation.js';
 import { saveSubscriptionCosts, getSubscriptionSavings } from '../services/subscriptionCosts.js';
 import { getFleetUsage } from '../services/peerUsage.js';
+import { getApiBilledInstanceIds, setInstanceUsesSubscriptions } from '../services/usageFleetBilling.js';
 import { resolveUsageRange } from '../lib/usageRange.js';
 import { WAIT } from '../lib/staleWhileRevalidate.js';
 import {
@@ -41,7 +42,8 @@ router.get('/', asyncHandler(async (req, res) => {
       // history; every other range already has one, so don't pay the scan.
       firstActivityDay: from ? null : usage.getFirstActivityDay()
     }),
-    getFleetUsage({ from, to, providers }),
+    getApiBilledInstanceIds().then((apiBilledInstanceIds) =>
+      getFleetUsage({ from, to, providers, apiBilledInstanceIds })),
   ]);
   res.json({ ...summary, subscriptionSavings, fleet });
 }));
@@ -51,6 +53,15 @@ router.get('/', asyncHandler(async (req, res) => {
 router.put('/subscriptions', asyncHandler(async (req, res) => {
   const { costs } = validateRequest(subscriptionCostsSchema, req.body);
   res.json({ costs: await saveSubscriptionCosts(costs, { actor: 'user' }) });
+}));
+
+// PUT /api/usage/fleet-billing - Mark one federated instance as paying API
+// rates (`usesSubscriptions: false`) or riding the viewer's subscriptions
+// (`true`). The Across Instances combined total skips API-billed rows.
+router.put('/fleet-billing', asyncHandler(async (req, res) => {
+  const { instanceId, usesSubscriptions } = validateRequest(usageFleetBillingSchema, req.body);
+  const apiBilledInstanceIds = await setInstanceUsesSubscriptions(instanceId, usesSubscriptions, { actor: 'user' });
+  res.json({ instanceId, usesSubscriptions, apiBilledInstanceIds });
 }));
 
 // GET /api/usage/providers - Subscription-quota status for every enabled

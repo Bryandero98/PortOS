@@ -275,6 +275,21 @@ describe('fleet report', () => {
     expect(fleet.instances[1].capturedAt).toBe('2026-08-30T09:00:00.000Z');
     expect(fleet.totals.tokensOut).toBe(5000);
     expect(fleet.totals.sessions).toBe(4);
+    expect(fleet.instances.every((i) => i.usesSubscriptions)).toBe(true);
+  });
+
+  // A machine that pays API rates is still listed — the spend is real — but
+  // must not inflate the combined "what subscriptions covered" total.
+  it('leaves an API-billed instance listed but out of the combined total', async () => {
+    await applyUsageRemote({ instances: { 'inst-peer': peerEntry() } });
+    const fleet = await getFleetUsage({ providers: [], apiBilledInstanceIds: ['inst-peer'] });
+
+    expect(fleet.instances.map((i) => [i.instanceId, i.usesSubscriptions])).toEqual([
+      ['inst-self', true],
+      ['inst-peer', false],
+    ]);
+    expect(fleet.totals.tokensOut).toBe(1000);
+    expect(fleet.totals.sessions).toBe(2);
   });
 
   // The wire digest folds days past its retention window into WHOLE months, and

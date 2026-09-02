@@ -16215,6 +16215,14 @@
       ]
     },
     {
+      "method": "PUT",
+      "path": "/api/usage/fleet-billing",
+      "mountPath": "/api/usage",
+      "sources": [
+        "server/routes/usage.js"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/usage/messages",
       "mountPath": "/api/usage",
@@ -17417,8 +17425,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2157,
-    "declarations": 2161,
+    "operations": 2158,
+    "declarations": 2162,
     "sourceFiles": 229
   }
 }
