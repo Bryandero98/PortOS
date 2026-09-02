@@ -36,6 +36,15 @@ vi.mock('../../services/api', () => ({
   installLlamaServer: vi.fn().mockResolvedValue({ success: true }),
   upgradeLlamaServer: vi.fn().mockResolvedValue({ success: true, note: 'updated' }),
   downloadSpecDecodeModel: vi.fn(),
+  previewLocalLlmDownload: vi.fn(async () => ({
+    kind: 'spec-decode',
+    destPath: 'models/example.gguf',
+    expectedBytes: 6,
+    freeBytes: 1e12,
+    requiredBytes: 6,
+    headroomBytes: 0,
+    verdict: 'ok',
+  })),
   cancelSpecDecodeModelDownload: vi.fn(),
 }));
 vi.mock('../../services/socket', () => ({
@@ -285,6 +294,7 @@ describe('LocalLlmTab runtime servers', () => {
 
     await renderTab();
     fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/no space left on device/)));
     expect(toast.success).not.toHaveBeenCalled();
@@ -299,6 +309,7 @@ describe('LocalLlmTab runtime servers', () => {
 
     await renderTab();
     fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
 
     // `null` (not a repo id the card invented) = MTPLX's own verified default.
     await waitFor(() => expect(pullMtplxModel).toHaveBeenCalledWith(null));
@@ -348,6 +359,7 @@ describe('LocalLlmTab installed models', () => {
     installLocalLlmModel.mockResolvedValue({ success: true });
     await renderTab('library');
     fireEvent.click(screen.getByRole('button', { name: `Redownload ${LONG_ID}` }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
     await waitFor(() => expect(installLocalLlmModel).toHaveBeenCalledWith(
       'ollama',
       LONG_ID,
@@ -414,6 +426,7 @@ describe('LocalLlmTab installed models', () => {
     );
     await waitFor(() => expect(screen.getByText(/Installed on LM Studio/)).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Redownload Qwen3.8 27B' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
     await waitFor(() => expect(installLocalLlmModel).toHaveBeenCalledWith(
       'lmstudio',
       'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M',
@@ -516,6 +529,7 @@ describe('LocalLlmTab recommendations', () => {
     await renderTab('library');
     expect(await screen.findByText('Qwen3.8 27B')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /^Redownload$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
     await waitFor(() => expect(installLocalLlmModel).toHaveBeenCalledWith(
       'ollama',
       'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M',
@@ -906,6 +920,7 @@ describe('LocalLlmTab llama-server management', () => {
     expect(screen.getByText(/Downloaded \(1\.1 GB\)/)).toBeInTheDocument();
     const downloadBtn = screen.getByRole('button', { name: /^Download$/ });
     fireEvent.click(downloadBtn);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
 
     await waitFor(() => {
       expect(downloadSpecDecodeModel).toHaveBeenCalledWith('qwen3.8-27b-dspark', 'model', { silent: true });
@@ -932,6 +947,7 @@ describe('LocalLlmTab llama-server management', () => {
     await renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: /^Download$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
 
     await waitFor(() => {
       expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/still running in the background/));

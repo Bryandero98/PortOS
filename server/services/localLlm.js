@@ -33,6 +33,8 @@ import { tmpdir } from 'os'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { PATHS, atomicWrite, ensureDir, pathExists, sleep } from '../lib/fileUtils.js'
+import { ServerError } from '../lib/errorHandler.js'
+import { assessDownloadPreflight, assertDownloadFits } from '../lib/downloadPreflight.js'
 import { compareSemver } from '../lib/versionUtils.js'
 import { getCatalog, isBackend, mapModelToBackend, getOllamaImportSpec } from '../lib/localLlmCatalog.js'
 import { sanitizeOllamaName } from '../lib/localLlmDisk.js'
@@ -907,8 +909,32 @@ export function describeInstallProgress(p) {
  *   files first so `lms get` actually re-fetches in-place GGUF replacements.
  *   Ollama's pull already re-checks the registry digest, so force is a no-op there.
  */
+async function localInstallDest(backend) {
+  return backend === 'ollama' ? ollamaManager.getModelsDir() : lmStudioManager.getModelsDir()
+}
+
+export async function previewInstallModel(backend, modelId) {
+  if (!isBackend(backend)) {
+    throw new ServerError(`Unknown backend: ${backend}`, { status: 400 })
+  }
+  const destPath = await localInstallDest(backend)
+  const preflight = await assessDownloadPreflight({ destPath, expectedBytes: 0 })
+  return {
+    kind: 'install',
+    backend,
+    modelId,
+    ...preflight,
+    destPath,
+    alreadyDownloaded: false,
+  }
+}
+
 export async function installModel(backend, modelId, onProgress, { force = false } = {}) {
   if (!isBackend(backend)) return { success: false, error: `Unknown backend: ${backend}` }
+  assertDownloadFits(await assessDownloadPreflight({
+    destPath: await localInstallDest(backend),
+    expectedBytes: 0,
+  }))
   if (backend === 'ollama') {
     const importSpec = getOllamaImportSpec(modelId)
     const result = importSpec

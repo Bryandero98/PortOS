@@ -1,0 +1,324 @@
+import { createHash } from 'crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { Readable } from 'stream';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  DOWNLOAD_HEADROOM_BYTES,
+  DOWNLOAD_VERDICTS,
+  assessDownloadPreflight,
+  assertDownloadFits,
+  normalizeSha256,
+  siblingDownloadMeta,
+  streamResumableDownload,
+  verifyDownloadHash,
+  partialPathFor,
+  probeRemoteSize,
+} from './downloadPreflight.js';
+
+const GiB = 1024 ** 3;
+
+describe('normalizeSha256 / siblingDownloadMeta', () => {
+  it('accepts bare, prefixed, and quoted sha256 hex', () => {
+    const hex = 'a'.repeat(64);
+    expect(normalizeSha256(hex)).toBe(hex);
+    expect(normalizeSha256(`sha256:${hex}`)).toBe(hex);
+    expect(normalizeSha256(`"${hex}"`)).toBe(hex);
+    expect(normalizeSha256('nope')).toBeNull();
+    expect(normalizeSha256(null)).toBeNull();
+  });
+
+  it('reads size and digest from an LFS sibling', () => {
+    expect(siblingDownloadMeta({
+      rfilename: 'model.gguf',
+      size: 12,
+      lfs: { size: 99, sha256: 'B'.repeat(64) },
+    })).toEqual({ bytes: 99, sha256: 'b'.repeat(64) });
+  });
+
+  it('falls back to the sibling size when LFS is absent', () => {
+    expect(siblingDownloadMeta({ rfilename: 'model.gguf', size: 12 })).toEqual({
+      bytes: 12,
+      sha256: null,
+    });
+  });
+});
+
+describe('assessDownloadPreflight', () => {
+  const statfsImpl = async () => ({ bavail: 10, bsize: GiB }); // 10 GiB free
+
+  it('reports ok when free space covers the payload plus headroom', async () => {
+    const result = await assessDownloadPreflight({
+      destPath: '/models/example.gguf',
+      expectedBytes: 2 * GiB,
+      statfsImpl,
+    });
+    expect(result).toMatchObject({
+      destPath: '/models/example.gguf',
+      expectedBytes: 2 * GiB,
+      requiredBytes: 2 * GiB + DOWNLOAD_HEADROOM_BYTES,
+      freeBytes: 10 * GiB,
+      verdict: DOWNLOAD_VERDICTS.OK,
+    });
+    expect(assertDownloadFits(result)).toBe(result);
+  });
+
+  it('marks tight when the download would leave less than the headroom', async () => {
+    const result = await assessDownloadPreflight({
+      destPath: '/models/example.gguf',
+      expectedBytes: 9.6 * GiB,
+      statfsImpl,
+    });
+    expect(result.verdict).toBe(DOWNLOAD_VERDICTS.TIGHT);
+    expect(() => assertDownloadFits(result)).not.toThrow();
+  });
+
+  it('refuses with DISK_INSUFFICIENT when free space cannot hold the payload', async () => {
+    const result = await assessDownloadPreflight({
+      destPath: '/models/example.gguf',
+      expectedBytes: 12 * GiB,
+      statfsImpl,
+    });
+    expect(result.verdict).toBe(DOWNLOAD_VERDICTS.INSUFFICIENT);
+    expect(result.requiredBytes).toBe(12 * GiB + DOWNLOAD_HEADROOM_BYTES);
+    try {
+      assertDownloadFits(result);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err.code).toBe('DISK_INSUFFICIENT');
+      expect(err.status).toBe(507);
+      expect(err.context.freeBytes).toBe(10 * GiB);
+      expect(err.context.expectedBytes).toBe(12 * GiB);
+    }
+  });
+
+  it('does not refuse when the advertised size is unknown', async () => {
+    const result = await assessDownloadPreflight({
+      destPath: '/models/example.gguf',
+      expectedBytes: 0,
+      statfsImpl: async () => ({ bavail: 1, bsize: 1024 }),
+    });
+    expect(result.verdict).toBe(DOWNLOAD_VERDICTS.OK);
+    expect(result.requiredBytes).toBe(0);
+  });
+
+  it('fails open when statfs is unavailable', async () => {
+    const result = await assessDownloadPreflight({
+      destPath: '/models/example.gguf',
+      expectedBytes: 50 * GiB,
+      statfsImpl: async () => { throw new Error('statfs unavailable'); },
+    });
+    expect(result.freeBytes).toBeNull();
+    expect(result.verdict).toBe(DOWNLOAD_VERDICTS.OK);
+  });
+});
+
+describe('probeRemoteSize', () => {
+  it('prefers HEAD Content-Length and an LFS etag', async () => {
+    const fetchImpl = async (_url, opts) => {
+      expect(opts.method).toBe('HEAD');
+      return {
+        ok: true,
+        headers: {
+          get: (name) => ({
+            'content-length': '12345',
+            'x-linked-etag': `"${'c'.repeat(64)}"`,
+          }[name] || null),
+        },
+      };
+    };
+    await expect(probeRemoteSize('https://example.com/w.gguf', { fetchImpl }))
+      .resolves.toEqual({ bytes: 12345, sha256: 'c'.repeat(64) });
+  });
+
+  it('falls back to a 0-byte Range GET when HEAD is silent', async () => {
+    const fetchImpl = async (_url, opts) => {
+      if (opts.method === 'HEAD') return { ok: false, status: 405, headers: { get: () => null } };
+      expect(opts.headers.Range).toBe('bytes=0-0');
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? 'bytes 0-0/999' : null) },
+        body: { cancel: async () => {} },
+      };
+    };
+    await expect(probeRemoteSize('https://example.com/w.gguf', { fetchImpl }))
+      .resolves.toEqual({ bytes: 999, sha256: null });
+  });
+});
+
+describe('streamResumableDownload', () => {
+  let dir;
+
+  const makeDir = async () => {
+    dir = await mkdtemp(join(tmpdir(), 'portos-dl-preflight-'));
+    return join(dir, 'weights.gguf');
+  };
+
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  const webBody = (...chunks) => Readable.toWeb(Readable.from(chunks.map((c) => Buffer.from(c))));
+
+  it('writes the full body and renames the partial into place', async () => {
+    const destPath = await makeDir();
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-length' ? '6' : null) },
+      body: webBody('gg', 'ufgg'),
+    });
+    const ticks = [];
+    const result = await streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      fetchImpl,
+      onBytes: (received, total) => ticks.push({ received, total }),
+    });
+    expect(result.bytes).toBe(6);
+    expect(result.resumed).toBe(false);
+    expect(await readFile(destPath, 'utf8')).toBe('ggufgg');
+    expect(await readFile(partialPathFor(destPath)).catch(() => null)).toBeNull();
+    expect(ticks.at(-1)).toEqual({ received: 6, total: 6 });
+  });
+
+  it('keeps the .partial on a transport failure so a retry can resume', async () => {
+    const destPath = await makeDir();
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => '99' },
+      body: Readable.toWeb(new Readable({
+        read() { this.destroy(new Error('connection reset')); },
+      })),
+    });
+    await expect(streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl,
+    })).rejects.toThrow(/connection reset/);
+    // The file may be empty if the reset happened before the first chunk, but
+    // it must still be there for Range resume — not unlinked.
+    const leftover = await readFile(partialPathFor(destPath)).catch(() => null);
+    expect(leftover).not.toBeNull();
+    expect(await readFile(destPath).catch(() => null)).toBeNull();
+  });
+
+  it('discards the partial when the caller reports a user cancel', async () => {
+    const destPath = await makeDir();
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => '99' },
+      body: Readable.toWeb(new Readable({
+        read() { this.destroy(new Error('aborted')); },
+      })),
+    });
+    await expect(streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      fetchImpl,
+      isCancelled: () => true,
+    })).rejects.toThrow(/aborted/);
+    expect(await readFile(partialPathFor(destPath)).catch(() => null)).toBeNull();
+  });
+
+  it('resumes with Range from the leftover partial and appends', async () => {
+    const destPath = await makeDir();
+    await writeFile(partialPathFor(destPath), 'gg');
+    const fetchImpl = async (_url, opts) => {
+      expect(opts.headers.Range).toBe('bytes=2-');
+      return {
+        ok: true,
+        status: 206,
+        headers: {
+          get: (name) => ({
+            'content-length': '4',
+            'content-range': 'bytes 2-5/6',
+          }[name] || null),
+        },
+        body: webBody('ufgg'),
+      };
+    };
+    const result = await streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl,
+    });
+    expect(result.resumed).toBe(true);
+    expect(result.bytes).toBe(6);
+    expect(await readFile(destPath, 'utf8')).toBe('ggufgg');
+  });
+
+  it('restarts cleanly when the server ignores Range and sends 200', async () => {
+    const destPath = await makeDir();
+    await writeFile(partialPathFor(destPath), 'XX');
+    const fetchImpl = async (_url, opts) => {
+      expect(opts.headers.Range).toBe('bytes=2-');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-length' ? '4' : null) },
+        body: webBody('full'),
+      };
+    };
+    await streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl,
+    });
+    expect(await readFile(destPath, 'utf8')).toBe('full');
+  });
+
+  it('deletes a completed download that does not match the published hash', async () => {
+    const destPath = await makeDir();
+    const payload = Buffer.from('ggufgg');
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-length' ? String(payload.length) : null) },
+      body: webBody(payload),
+    });
+    await expect(streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      fetchImpl,
+      expectedSha256: 'a'.repeat(64),
+    })).rejects.toMatchObject({ code: 'DOWNLOAD_HASH_MISMATCH' });
+    expect(await readFile(destPath).catch(() => null)).toBeNull();
+    expect(await readFile(partialPathFor(destPath)).catch(() => null)).toBeNull();
+  });
+
+  it('accepts a matching published hash', async () => {
+    const destPath = await makeDir();
+    const payload = Buffer.from('ggufgg');
+    const digest = createHash('sha256').update(payload).digest('hex');
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-length' ? String(payload.length) : null) },
+      body: webBody(payload),
+    });
+    await streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl, expectedSha256: digest,
+    });
+    expect(await readFile(destPath)).toEqual(payload);
+  });
+});
+
+describe('verifyDownloadHash', () => {
+  let dir;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('skips when no digest was published', async () => {
+    expect(await verifyDownloadHash('/nope', null)).toEqual({ ok: true, skipped: true });
+  });
+
+  it('compares the on-disk digest case-insensitively', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'portos-dl-hash-'));
+    const path = join(dir, 'f.bin');
+    const payload = Buffer.from('abc');
+    await writeFile(path, payload);
+    const digest = createHash('sha256').update(payload).digest('hex').toUpperCase();
+    await expect(verifyDownloadHash(path, digest)).resolves.toMatchObject({ ok: true });
+  });
+});

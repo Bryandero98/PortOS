@@ -21,12 +21,16 @@
  * so. What changed is that the button now exists.
  */
 
+import { homedir } from 'os';
 import { bufferedSpawn, spawnFailureDetail } from '../lib/bufferedSpawn.js';
 import { ServerError } from '../lib/errorHandler.js';
+import { assessDownloadPreflight, assertDownloadFits } from '../lib/downloadPreflight.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
+import { fetchHuggingfaceModel } from '../lib/huggingfaceLora.js';
 import { listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { fetchRepoPublishedDates } from './huggingFaceCatalog.js';
+import { getHfToken } from './hfToken.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 
 /** A Hugging Face search is one API call — short, and worth failing fast. */
@@ -56,6 +60,24 @@ const PULL_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const REPO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const isMtplxRepoId = (value) => typeof value === 'string' && REPO_ID_RE.test(value);
+
+const mtplxCachePath = () => homedir();
+
+async function expectedMtplxBytes(repo) {
+  if (!repo) return 0;
+  const token = await getHfToken();
+  const model = await fetchHuggingfaceModel(repo, { token }).catch(() => null);
+  return Number(model?.usedStorage) || 0;
+}
+
+export async function previewMtplxPull({ model = null } = {}) {
+  const repo = model ? requireRepoId(model) : null;
+  const preflight = await assessDownloadPreflight({
+    destPath: mtplxCachePath(),
+    expectedBytes: await expectedMtplxBytes(repo),
+  });
+  return { kind: 'mtplx', ...preflight, destPath: repo || 'MTPLX cache', alreadyDownloaded: false };
+}
 
 /** Resolve `mtplx`, or say why the operation cannot run at all. */
 function requireBinary() {
@@ -179,6 +201,10 @@ export async function pullMtplxModel({ model = null, onProgress = () => {} } = {
   const binary = requireBinary();
   const repo = model ? requireRepoId(model) : null;
   const label = repo || 'MTPLX\'s default verified checkpoint';
+  assertDownloadFits(await assessDownloadPreflight({
+    destPath: mtplxCachePath(),
+    expectedBytes: await expectedMtplxBytes(repo),
+  }));
 
   onProgress({ event: 'start', model: repo, message: `Downloading ${label}. This is a multi-gigabyte download and can take a while.` });
   console.log(`⬇️  MTPLX pull started for ${label}`);

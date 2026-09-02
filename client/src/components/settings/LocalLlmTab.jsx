@@ -7,11 +7,12 @@ import BrailleSpinner from '../BrailleSpinner';
 import { formatAgeDays, formatBytes, formatContextLength, timeAgo, recommendedRamGb, formatDateNumeric } from '../../utils/formatters';
 import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
+import useDownloadPreflightConfirm from '../../hooks/useDownloadPreflightConfirm';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, getLlamaServerUpdateStatus, startLlamaServer, stopLlamaServer, installLlamaServer, upgradeLlamaServer,
-  downloadSpecDecodeModel, cancelSpecDecodeModelDownload, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
+  downloadSpecDecodeModel, cancelSpecDecodeModelDownload, previewLocalLlmDownload, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
   searchMtplxModels, pullMtplxModel, removeMtplxModel,
   getSlotstreamServerStatus, startSlotstreamServer, stopSlotstreamServer, installSlotstream,
   saveRuntimeStartupList
@@ -25,6 +26,7 @@ import SlotstreamServerCard from './SlotstreamServerCard.jsx';
 import LocalLlmBackendCard from './LocalLlmBackendCard.jsx';
 import LocalLlmInstalledModels from './LocalLlmInstalledModels.jsx';
 import ModelAbuseGuardPanel from '../models/ModelAbuseGuardPanel.jsx';
+import DownloadPreflightConfirm from '../models/DownloadPreflightConfirm.jsx';
 import TabPills from '../ui/TabPills.jsx';
 
 const BACKENDS = [
@@ -204,6 +206,7 @@ export function LocalLlmTab({ view }) {
   // at a time on purpose: a checkpoint is tens of gigabytes, so two concurrent
   // pulls just make both slower.
   const [mtplxDownload, setMtplxDownload] = useState(null);
+  const { confirm: downloadConfirm, request: requestWeightDownload, cancel: cancelDownloadConfirm, confirmRun: runDownloadConfirm } = useDownloadPreflightConfirm();
   const [llamaLoading, setLlamaLoading] = useState(false);
   // Anchor for the unified server card's "Configure" action — llama-server needs
   // a model path, so its Start lives in the launcher rather than in that row.
@@ -606,7 +609,7 @@ export function LocalLlmTab({ view }) {
   // The pull resolves only when the weights are on disk; byte progress arrives
   // on `mtplx:download` (subscribed above), so the button spinner is not the
   // only sign of life during a multi-gigabyte transfer.
-  const mtplxPull = (model) => runAction(
+  const startMtplxPull = (model) => runAction(
     model ? `mtplx-pull-${model}` : 'mtplx-pull',
     // A failed download RESOLVES `{success: false, error}` rather than throwing
     // (its progress already streamed), so convert it to the rejection
@@ -621,6 +624,11 @@ export function LocalLlmTab({ view }) {
   ).then(() => {
     setMtplxDownload(null);
     return loadMtplxStatus();
+  });
+  const mtplxPull = (model) => requestWeightDownload({
+    title: 'Download MTPLX checkpoint',
+    preview: () => previewLocalLlmDownload({ kind: 'mtplx', model: model || null }, { silent: true }),
+    run: () => startMtplxPull(model),
   });
   const mtplxRemove = (model) => runAction(
     `mtplx-remove-${model}`,
@@ -686,7 +694,7 @@ export function LocalLlmTab({ view }) {
   // queued, not finished — so don't claim "installed" in that case. Install is
   // silent so an OLLAMA_OUTDATED failure can take over the UI with the upgrade
   // banner instead of stacking a useless toast with the auto-upgrade flow.
-  const install = (modelId, { force = false } = {}) => runAction(
+  const startInstall = (modelId, { force = false } = {}) => runAction(
     `install-${modelId}`,
     () => installLocalLlmModel(selected, modelId, { silent: true, force }),
     (r) => r?.pending ? `${modelId} download started` : `${modelId} ${force ? 'redownloaded' : 'installed'}`,
@@ -710,6 +718,11 @@ export function LocalLlmTab({ view }) {
       clearConfirm: false
     }
   );
+  const install = (modelId, opts = {}) => requestWeightDownload({
+    title: opts.force ? 'Redownload local model' : 'Install local model',
+    preview: () => previewLocalLlmDownload({ kind: 'install', backend: selected, modelId }, { silent: true }),
+    run: () => startInstall(modelId, opts),
+  });
   // Audio/music models don't run on Ollama/LM Studio — they install into the
   // shared audio-model registry (server/services/audioModels.js) via the Music
   // studio's streaming HF-download endpoint, so the Music studio picks them up.
@@ -779,7 +792,7 @@ export function LocalLlmTab({ view }) {
     ).then((r) => {
       if (r?.success && modelId) {
         setUpgradeFlow({ modelId, phase: 'retrying' });
-        install(modelId);
+        startInstall(modelId);
         // install() either succeeds (its own success toast + status reload covers
         // it) or re-enters the OLLAMA_OUTDATED branch above and resets the flow.
         // Clear after a beat so the banner doesn't linger past the retry kickoff.
@@ -854,7 +867,7 @@ export function LocalLlmTab({ view }) {
         ? 'Download the drafter, or clear the field to run without it'
         : '';
 
-  const handleDownloadSpecModel = async (role) => {
+  const startSpecDownload = async (role) => {
     const presetId = llamaPresetId;
     const key = downloadKey(presetId, role);
     setLlamaDownloads((prev) => ({ ...prev, [key]: { received: 0, total: 0 } }));
@@ -891,6 +904,15 @@ export function LocalLlmTab({ view }) {
       loadLlamaStatus();
     }
   };
+
+  const handleDownloadSpecModel = (role) => requestWeightDownload({
+    title: 'Download speculative-decoding weights',
+    preview: () => previewLocalLlmDownload(
+      { kind: 'spec-decode', presetId: llamaPresetId, role },
+      { silent: true },
+    ),
+    run: () => startSpecDownload(role),
+  });
 
   const handleCancelSpecModelDownload = async (role) => {
     try {
@@ -1949,6 +1971,16 @@ export function LocalLlmTab({ view }) {
       </div>
         </section>
       )}
+      <DownloadPreflightConfirm
+        open={Boolean(downloadConfirm)}
+        title={downloadConfirm?.title}
+        loading={Boolean(downloadConfirm?.loading)}
+        error={downloadConfirm?.error}
+        assessment={downloadConfirm?.assessment}
+        confirmLabel="Start download"
+        onCancel={cancelDownloadConfirm}
+        onConfirm={runDownloadConfirm}
+      />
     </div>
   );
 }

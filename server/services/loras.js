@@ -11,20 +11,21 @@
  * thing is one POST; progress is reported through the existing image-gen
  * SSE channel (TBD — for v1 the client polls).
  *
- * No try/catch — errors bubble. Stream-failure cleanup is handled inline by
- * downloadToFile's pipeline().catch (the .partial gets unlinked on network
- * drops, disk full, etc.); only a process crash or power loss can leave a
- * .partial behind, and listLoras() filters those out by extension.
+ * No try/catch — errors bubble. `downloadToFile` Range-resumes a leftover
+ * `.partial` after a transport drop; a user-cancelled SSE disconnect still
+ * discards it. listLoras() filters `.partial` files out by extension.
  */
 
 import { existsSync } from 'fs';
 import { link, readFile, rename, rm, stat, unlink } from 'fs/promises';
-import { createWriteStream } from 'fs';
-import { randomBytes } from 'crypto';
-import { Readable, Transform } from 'stream';
-import { pipeline } from 'stream/promises';
 import { basename, join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
+import {
+  assessDownloadPreflight,
+  assertDownloadFits,
+  siblingDownloadMeta,
+  streamResumableDownload,
+} from '../lib/downloadPreflight.js';
 import { atomicWrite, assertSafeFilename, ensureDir, listDirectoryByExtension, sha256File, PATHS } from '../lib/fileUtils.js';
 import { verifySafetensorsStructure } from '../lib/hfCache.js';
 import { isPlainObject } from '../lib/objects.js';
@@ -414,40 +415,24 @@ export const resolveCivitaiKey = async () => {
   return fromSettings || env || '';
 };
 
-// Stream-download a URL to a temp file in PATHS.loras then rename into place.
-// The temp suffix prevents the listLoras endpoint from picking up a
-// half-downloaded file. The random suffix avoids clobbering a leftover
-// `.partial` from a previous crashed install (and prevents two concurrent
-// installs of the same target from racing on the same temp path).
-// fetchImpl is injectable for tests.
+// Stream-download a URL to `${destPath}.partial` then link/rename into place.
+// A leftover `.partial` is Range-resumed on retry; a user-cancelled SSE
+// disconnect still discards it. The `.partial` suffix keeps listLoras from
+// picking up a half-written file. fetchImpl is injectable for tests.
 // `onProgress({ received, total })` (optional) fires with byte counts during
 // the stream download — the manager's streaming install endpoint forwards these
 // as SSE `progress` frames so the UI can show a percentage. `total` is 0 when
 // the response carries no Content-Length (chunked / some CDN redirects), in
 // which case the client renders an indeterminate bar.
 const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} , hasApiKey = false, source = 'civitai', onProgress = null, signal = null } = {}) => {
-  const tmpPath = `${destPath}.${randomBytes(6).toString('hex')}.partial`;
-  // `signal` (optional) aborts the fetch + stream mid-download — the streaming
-  // install route passes it so an SSE client disconnect actually cancels a
-  // multi-GB transfer instead of letting it run to completion unwatched. On
-  // abort the fetch rejects (or the body stream errors), the pipeline().catch
-  // below unlinks the .partial, and the throw propagates before any sidecar is
-  // written — so a cancelled install leaves nothing behind.
-  const res = await fetchImpl(url, { headers, redirect: 'follow', signal });
-  if (!res.ok) {
+  const onHttpError = (res) => {
     if (res.status === 401 || res.status === 403) {
-      // HuggingFace LoRAs: a 401/403 means the repo is gated and the token is
-      // missing/insufficient — point the user at the license + HF token UI.
       if (source === 'huggingface') {
         const message = hasApiKey
           ? `HuggingFace rejected the download (${res.status}) even with your saved token — accept the model's license on its HF page, or the token may be expired/scoped.`
           : `HuggingFace download rejected (${res.status}) — this LoRA's repo is gated. Accept its license on HuggingFace and add your HF token in Image Gen settings, then retry.`;
         throw new ServerError(message, { status: res.status, code: 'HF_AUTH' });
       }
-      // When a key was supplied and Civitai still rejects, the cause is
-      // almost always early-access content or a deactivated/scoped key —
-      // not a missing key. Don't tell the user to set a key they've
-      // already set; surface both possibilities instead.
       const message = hasApiKey
         ? `Civitai rejected the download (${res.status}) even with your saved API key. The LoRA is likely in early-access (Civitai supporters only) or your key has expired/been revoked.`
         : `Civitai download rejected (${res.status}) — this LoRA may require an API key. Configure a Civitai API key in PortOS Settings (or set the CIVITAI_API_KEY env var) and retry.`;
@@ -456,42 +441,30 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
     const label = source === 'huggingface' ? 'HuggingFace' : 'Civitai';
     const code = source === 'huggingface' ? 'HF_DOWNLOAD_FAILED' : 'CIVITAI_DOWNLOAD_FAILED';
     throw new ServerError(`${label} download failed: ${res.status} ${res.statusText}`, { status: 502, code });
-  }
-  if (!res.body) {
-    throw new ServerError('Civitai download returned no body', { status: 502, code: 'CIVITAI_DOWNLOAD_FAILED' });
-  }
-  // Node 18+ fetch returns a web ReadableStream; pipeline accepts it directly
-  // when wrapped in Readable.fromWeb (also handles backpressure correctly).
-  // On stream failure (network drop, disk full) the .partial would otherwise
-  // accumulate in PATHS.loras across retries.
-  const writer = createWriteStream(tmpPath);
-  const stages = [Readable.fromWeb(res.body)];
-  if (onProgress) {
-    // Count bytes via a passthrough Transform — NOT a bare `.on('data')`
-    // listener, which flips the source into flowing mode and defeats pipeline's
-    // backpressure. `res.headers?.get?.` is defensive: injected test fetch
-    // mocks return a bare `{ ok, body }` with no headers object.
-    const total = Number(res.headers?.get?.('content-length')) || 0;
-    let received = 0;
-    let lastEmit = 0;
-    stages.push(new Transform({
-      transform(chunk, _enc, cb) {
-        received += chunk.length;
-        // Throttle to ~150ms so a fast link doesn't flood the SSE stream.
+  };
+
+  let lastEmit = 0;
+  let lastTick = { received: 0, total: 0 };
+  const { tmpPath } = await streamResumableDownload({
+    url,
+    destPath,
+    headers,
+    fetchImpl,
+    signal,
+    finalize: false,
+    isCancelled: () => Boolean(signal?.aborted),
+    onHttpError,
+    onBytes: onProgress
+      ? (received, total) => {
+        lastTick = { received, total };
         const now = Date.now();
-        if (now - lastEmit >= 150) { lastEmit = now; onProgress({ received, total }); }
-        cb(null, chunk);
-      },
-      // Final flush guarantees a 100% (received === total) tick even if the
-      // last data chunk landed inside the throttle window.
-      flush(cb) { onProgress({ received, total }); cb(); },
-    }));
-  }
-  stages.push(writer);
-  await pipeline(...stages).catch(async (err) => {
-    await rm(tmpPath, { force: true }).catch(() => {});
-    throw err;
+        if (now - lastEmit < 150) return;
+        lastEmit = now;
+        onProgress({ received, total });
+      }
+      : undefined,
   });
+  if (onProgress) onProgress(lastTick);
   // Atomic no-clobber finalize: `link` is POSIX-atomic and fails with EEXIST
   // when destPath already exists (concurrent install that snuck past our
   // pre-check). On success we unlink the tmp; on EEXIST we clean up and
@@ -622,6 +595,8 @@ const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) =
   }
 
   await ensureDir(PATHS.loras);
+  const expectedBytes = Number(file.sizeKB) > 0 ? Number(file.sizeKB) * 1024 : 0;
+  assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes }));
 
   console.log(`📥 Installing Civitai LoRA: ${model.name} v${version.id} → ${filename} (${file.sizeKB ? Math.round(file.sizeKB / 1024) + ' MB' : 'size unknown'})`);
   // Authenticate downloads via `?token=` only — the Authorization header
@@ -649,6 +624,26 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
     installKey,
     () => performCivitaiInstall(input, { modelId, versionId, fetchImpl }),
   );
+};
+
+/** Size / dest / free-disk numbers for the LoRA confirm step — no transfer. */
+export const previewCivitaiInstall = async (input, { fetchImpl = fetch } = {}) => {
+  const { modelId, versionId } = parseCivitaiUrl(input?.url);
+  const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
+  const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
+  const version = pickVersion(model, versionId);
+  const file = pickPrimaryFile(version);
+  const slug = slugifyForFilename(model.name || file.name?.replace(/\.safetensors$/i, ''));
+  const filename = `lora-${slug}-v${version.id}.safetensors`;
+  const destPath = join(PATHS.loras, filename);
+  const expectedBytes = Number(file.sizeKB) > 0 ? Number(file.sizeKB) * 1024 : 0;
+  const preflight = await assessDownloadPreflight({ destPath, expectedBytes });
+  return {
+    kind: 'civitai',
+    ...preflight,
+    destPath: filename,
+    alreadyDownloaded: existsSync(destPath),
+  };
 };
 
 // Set of recognized LoRA families an HF import may target (image runners +
@@ -727,6 +722,9 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
   }
 
   await ensureDir(PATHS.loras);
+  const hfSibling = (Array.isArray(model?.siblings) ? model.siblings : []).find((row) => row?.rfilename === file);
+  const expectedBytes = siblingDownloadMeta(hfSibling).bytes;
+  assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes }));
   console.log(`📥 Installing HuggingFace LoRA: ${repo} (${file}) → ${filename} [family=${family}]`);
   await downloadToFile(buildHfResolveUrl(repo, revision, file), destPath, {
     fetchImpl,
@@ -748,4 +746,22 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
   await writeLoraSidecar(filename, sidecar);
   console.log(`✅ Installed HuggingFace LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
+};
+
+export const previewHuggingfaceInstall = async (input, { fetchImpl = fetch } = {}) => {
+  const { repo, revision, file: parsedFile } = parseHuggingfaceLoraRef(input?.url);
+  const token = (typeof input?.token === 'string' && input.token.trim()) || (await getHfToken()) || '';
+  const model = await fetchHuggingfaceModel(repo, { token, revision, fetchImpl });
+  const file = pickHfLoraFile(model, parsedFile || input?.file || null);
+  const sibling = (Array.isArray(model?.siblings) ? model.siblings : []).find((row) => row?.rfilename === file);
+  const preflight = await assessDownloadPreflight({
+    destPath: PATHS.loras,
+    expectedBytes: siblingDownloadMeta(sibling).bytes,
+  });
+  return {
+    kind: 'huggingface',
+    ...preflight,
+    destPath: file,
+    alreadyDownloaded: false,
+  };
 };

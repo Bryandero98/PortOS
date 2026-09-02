@@ -17,6 +17,8 @@ import {
   getLora,
   installFromCivitai,
   installFromHuggingface,
+  previewCivitaiInstall,
+  previewHuggingfaceInstall,
   listLoras,
   patchLoraSidecar,
 } from '../services/loras.js';
@@ -138,6 +140,21 @@ router.post('/install', asyncHandler(async (req, res) => {
   const data = validateRequest(installSchema, req.body);
   const sidecar = await installFromCivitai(data);
   res.status(201).json(sidecar);
+}));
+
+// Confirm-step disk preflight for a LoRA install. `source` picks Civitai vs
+// HuggingFace; the URL is the same shape the install endpoints already take.
+const installPreflightSchema = z.object({
+  url: z.string().min(1).max(1024),
+  source: z.enum(['civitai', 'huggingface']).optional().default('civitai'),
+  apiKey: z.string().min(1).max(256).optional(),
+});
+router.post('/install/preflight', asyncHandler(async (req, res) => {
+  const data = validateRequest(installPreflightSchema, req.body);
+  const preview = data.source === 'huggingface'
+    ? await previewHuggingfaceInstall(data)
+    : await previewCivitaiInstall(data);
+  res.json(preview);
 }));
 
 // Install an image or video LoRA from a HuggingFace repo (Flux.2 Klein,

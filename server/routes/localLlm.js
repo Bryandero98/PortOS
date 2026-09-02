@@ -38,7 +38,8 @@ import {
   localLlmMtplxSearchSchema,
   localLlmMtplxPullSchema,
   localLlmMtplxRemoveSchema,
-  localLlmSpecModelDownloadSchema
+  localLlmSpecModelDownloadSchema,
+  localLlmDownloadPreflightSchema,
 } from '../lib/validation.js'
 import {
   getLlamaServerStatus,
@@ -50,9 +51,9 @@ import {
 } from '../services/llamaServerManager.js'
 import { MTPLX_APP, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
 import { SLOTSTREAM_APP, getSlotstreamServerStatus, startSlotstreamServer, stopSlotstreamServer, installSlotstream } from '../services/slotstreamServerManager.js'
-import { searchMtplxCatalog, pullMtplxModel, removeMtplxModel } from '../services/mtplxModelManager.js'
+import { searchMtplxCatalog, pullMtplxModel, previewMtplxPull, removeMtplxModel } from '../services/mtplxModelManager.js'
 import { saveProcessList } from '../services/pm2.js'
-import { getSpecDecodePresetStatus, downloadSpecDecodeModel, cancelSpecDecodeModelDownload } from '../services/specDecodeModels.js'
+import { getSpecDecodePresetStatus, downloadSpecDecodeModel, previewSpecDecodeDownload, cancelSpecDecodeModelDownload } from '../services/specDecodeModels.js'
 import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { MODEL_ABUSE_GUARD } from '../lib/modelAbuseGuard.js'
@@ -66,7 +67,7 @@ import {
 import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js'
 import { getMeasuredFits } from '../services/localModelAssessmentStore.js'
 import {
-  getStatus, listModels, listVisionModels, listToolUseModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer,
+  getStatus, listModels, listVisionModels, listToolUseModels, installModel, previewInstallModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer,
   describeInstallProgress
 } from '../services/localLlm.js'
 import { getModelAbuseGuardStatus, installModelAbuseGuard, cancelModelAbuseGuardInstall } from '../services/modelAbuseGuard.js'
@@ -312,6 +313,23 @@ router.post('/lmstudio-service', asyncHandler(async (req, res) => {
   resetProviderReadinessCache()
   emit('complete', action === 'start' ? 'LM Studio server is running' : 'LM Studio server stopped')
   res.json(result)
+}))
+
+// POST /api/local-llm/download-preflight — size / dest / free-disk numbers for
+// the confirm step. Does not start a transfer. An `insufficient` verdict is
+// returned in the body so the UI can disable Confirm; the download endpoints
+// still throw DISK_INSUFFICIENT if the confirm is skipped.
+router.post('/download-preflight', asyncHandler(async (req, res) => {
+  const body = validateRequest(localLlmDownloadPreflightSchema, req.body)
+  if (body.kind === 'spec-decode') {
+    res.json(await previewSpecDecodeDownload({ presetId: body.presetId, role: body.role }))
+    return
+  }
+  if (body.kind === 'mtplx') {
+    res.json(await previewMtplxPull({ model: body.model }))
+    return
+  }
+  res.json(await previewInstallModel(body.backend, body.modelId))
 }))
 
 // POST /api/local-llm/install — pull/download a model (streams progress)

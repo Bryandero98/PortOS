@@ -12,6 +12,9 @@ import { listLorasFull, deleteLoraFull, installLoraFromHuggingfaceStream, probeL
 vi.mock('../services/api', () => ({
   listLorasFull: vi.fn(),
   installLoraFromCivitai: vi.fn(),
+  previewLoraInstall: vi.fn(async () => ({
+    kind: 'civitai', destPath: 'lora-x.safetensors', expectedBytes: 1024, freeBytes: 1e12, requiredBytes: 1024, headroomBytes: 0, verdict: 'ok',
+  })),
   installLoraFromHuggingfaceStream: vi.fn(),
   deleteLoraFull: vi.fn(),
   getCivitaiAuth: vi.fn(async () => ({ hasKey: false, source: 'none' })),
@@ -128,6 +131,7 @@ describe('Loras HuggingFace family picker', () => {
     const input = await screen.findByLabelText('HuggingFace LoRA URL');
     fireEvent.change(input, { target: { value: 'https://huggingface.co/Alissonerdx/CharacterSheet' } });
     fireEvent.submit(input.closest('form'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start download' }));
     expect(await screen.findByRole('button', { name: 'Install as Flux 2' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Install as Flux 1' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Install as LTX-Video' })).toBeInTheDocument();

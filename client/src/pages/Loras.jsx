@@ -14,17 +14,20 @@ import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
+import DownloadPreflightConfirm from '../components/models/DownloadPreflightConfirm.jsx';
 import Banner from '../components/ui/Banner';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
 import ProgressBar from '../components/ui/ProgressBar';
 import { FormField } from '../components/ui/FormField';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
+import useDownloadPreflightConfirm from '../hooks/useDownloadPreflightConfirm';
 import { formatBytes } from '../utils/formatters';
 import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES, isVideoLoraFamily } from '../lib/runnerFamilies';
 import { LORA_EFFECT_STATUSES, formatLoraEffect, loraEffectBadge } from '../lib/loraEffect';
 import {
   listLorasFull,
   installLoraFromCivitai,
+  previewLoraInstall,
   installLoraFromHuggingfaceStream,
   deleteLoraFull,
   getCivitaiAuth,
@@ -127,6 +130,7 @@ export default function Loras() {
   const [suggestions, setSuggestions] = useState(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [installingSuggestion, setInstallingSuggestion] = useState(null);
+  const { confirm: downloadConfirm, request: requestDownloadConfirm, cancel: cancelDownloadConfirm, confirmRun: runDownloadConfirm } = useDownloadPreflightConfirm();
   // Repo+file key of the video suggestion currently installing. A single HF
   // repo can publish multiple versions that must remain independently selectable.
   const [installingVideoKey, setInstallingVideoKey] = useState(null);
@@ -161,7 +165,13 @@ export default function Loras() {
   // silent:true so the auth-error path goes through the modal instead of a
   // one-shot toast the user can't act on. Shared by the initial install
   // submit and the post-key-save retry so both behave identically.
-  const performInstall = useCallback(async (url) => {
+  const requestLoraDownload = useCallback((title, url, source, run) => requestDownloadConfirm({
+    title,
+    preview: () => previewLoraInstall({ url, source, silent: true }),
+    run,
+  }), [requestDownloadConfirm]);
+
+  const startCivitaiInstall = useCallback(async (url) => {
     if (!url || installing) return;
     setInstalling(true);
     await installLoraFromCivitai({ url, silent: true })
@@ -184,7 +194,12 @@ export default function Loras() {
         }
       })
       .finally(() => setInstalling(false));
-  }, [installing]);
+  }, [installing, refresh]);
+
+  const performInstall = useCallback((url) => {
+    if (!url || installing) return undefined;
+    return requestLoraDownload('Install LoRA', url, 'civitai', () => startCivitaiInstall(url));
+  }, [installing, requestLoraDownload, startCivitaiInstall]);
 
   const handleInstall = (e) => {
     e?.preventDefault?.();
@@ -227,8 +242,10 @@ export default function Loras() {
   const handleHfInstall = useCallback((e) => {
     e?.preventDefault?.();
     setHfFamilyPrompt(null);
-    return runHfInstall(hfUrl.trim(), undefined);
-  }, [hfUrl, runHfInstall]);
+    const url = hfUrl.trim();
+    if (!url) return undefined;
+    return requestLoraDownload('Install HuggingFace LoRA', url, 'huggingface', () => runHfInstall(url, undefined));
+  }, [hfUrl, runHfInstall, requestLoraDownload]);
 
   // Quick-install a curated video LoRA suggestion. Routes through the HF
   // installer (not the Civitai one) with the card's known family. Tracks the
@@ -471,6 +488,16 @@ export default function Loras() {
             : <LoraGrid loras={visibleLoras} deleting={deleting} onDelete={handleDelete} onMeasured={handleMeasured} deleteConfirm={deleteConfirm} />
         )}
       </div>
+      <DownloadPreflightConfirm
+        open={Boolean(downloadConfirm)}
+        title={downloadConfirm?.title}
+        loading={Boolean(downloadConfirm?.loading)}
+        error={downloadConfirm?.error}
+        assessment={downloadConfirm?.assessment}
+        confirmLabel="Start download"
+        onCancel={cancelDownloadConfirm}
+        onConfirm={runDownloadConfirm}
+      />
     </div>
   );
 }

@@ -157,6 +157,13 @@ export const upgradeLlamaServer = () =>
 // from Hugging Face into the path the launcher passes llama.cpp. Byte progress
 // arrives on the `llamaServer:download` socket event, not in this response —
 // a multi-GB transfer resolves only when the file is on disk.
+export const previewLocalLlmDownload = (body, options) =>
+  request('/local-llm/download-preflight', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    ...options,
+  });
+
 export const downloadSpecDecodeModel = (presetId, role, options) =>
   request('/local-llm/llama-server/download-model', {
     method: 'POST',

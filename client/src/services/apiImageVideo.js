@@ -430,6 +430,12 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
   silent,
 });
 
+export const previewLoraInstall = ({ url, source = 'civitai', silent = false } = {}) => request('/loras/install/preflight', {
+  method: 'POST',
+  body: JSON.stringify({ url, source }),
+  silent,
+});
+
 // Streaming HF LoRA install — reads a byte-level progress stream. Resolves
 // with the new sidecar on the `complete` frame; rejects with an Error carrying
 // `.code` (e.g. 'HF_UNKNOWN_FAMILY', 'HF_ALREADY_INSTALLED') on an `error`
