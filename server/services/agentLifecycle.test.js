@@ -308,13 +308,33 @@ describe('agentLifecycle — guard wiring', () => {
     expect(AGENT_LIFECYCLE_SRC).toContain('public-review-security-scan-incomplete');
     expect(AGENT_LIFECYCLE_SRC).toContain('public-review-no-cleared-prs');
     expect(AGENT_LIFECYCLE_SRC).toContain('public-review-eligibility-incomplete');
-    expect(AGENT_LIFECYCLE_SRC).toContain('public-review-actions-provider-unsupported');
+    // The provider-unsupported categories moved to `publicReviewProviderBlock`
+    // with the gate decision itself; their exact values are asserted there
+    // (providerVendors.publicReview.test.js).
     expect(AGENT_LIFECYCLE_SRC).toMatch(/if \(scanBlock\) \{[\s\S]*?status: 'blocked'/);
     expect(AGENT_LIFECYCLE_SRC).toMatch(/expected fail-closed safety outcome/);
     const gateStart = AGENT_LIFECYCLE_SRC.indexOf('const scanBlock = publicReviewScanBlock(task)');
-    const gateEnd = AGENT_LIFECYCLE_SRC.indexOf('if (!supportsPublicReviewPosture(provider, publicReviewPosture', gateStart);
+    const gateEnd = AGENT_LIFECYCLE_SRC.indexOf('const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture', gateStart);
     expect(gateEnd).toBeGreaterThan(gateStart);
     expect(AGENT_LIFECYCLE_SRC.slice(gateStart, gateEnd)).not.toContain("cosEvents.emit('agent:error'");
+  });
+
+  // #5830 collapsed the two per-stage provider gates into one and dropped the
+  // `publicReview &&` guard with them, so an ORDINARY task — posture `null`,
+  // which no vendor declares a recipe for — was blocked at spawn with
+  // "has no enforced null public-content review mode". The decision now lives
+  // in `publicReviewProviderBlock` (unit-tested in
+  // providerVendors.publicReview.test.js), which returns null for a task that
+  // requested no posture. Pin the call so the caller cannot re-derive it from a
+  // boolean support check and reintroduce the same collapse.
+  it('asks the posture helper for the provider gate rather than re-deriving it', () => {
+    expect(AGENT_LIFECYCLE_SRC).toContain('const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture, { tui: isTui })');
+    expect(AGENT_LIFECYCLE_SRC).toMatch(/if \(postureBlock\) \{[\s\S]*?status: 'blocked'/);
+    expect(AGENT_LIFECYCLE_SRC).toContain('blockedCategory: postureBlock.category');
+    // The reason text belongs to the helper — building it here means the gate
+    // decided for itself whether the posture was supported.
+    expect(AGENT_LIFECYCLE_SRC).not.toContain('public-content review mode');
+    expect(AGENT_LIFECYCLE_SRC).not.toMatch(/supportsPublicReviewPosture\(/);
   });
 });
 

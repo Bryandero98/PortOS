@@ -9,6 +9,7 @@ import {
 import {
   buildVendorSpawnConfig,
   publicReviewPosturesForProvider,
+  publicReviewProviderBlock,
   supportsPublicReviewProvider,
   supportsPublicReviewActionsProvider,
 } from './providerVendors.js';
@@ -38,6 +39,37 @@ describe('public-review provider postures', () => {
     // Claude Code has permission modes but no OS-level sandbox flag, so it is
     // deliberately tool-free-only and fails closed for the actions stage.
     expect(publicReviewPosturesForProvider(localClaude)).toEqual([PUBLIC_REVIEW_NO_TOOL_POSTURE]);
+  });
+
+  // Regression (#5830): the spawn gate passes the posture a STAGE requires,
+  // which is `null` for every ordinary agent task. Answering "unsupported" for
+  // a task that requested no posture blocked all normal work — scheduled tasks
+  // included — with "has no enforced null public-content review mode".
+  it('does not block a task that requested no posture', () => {
+    expect(publicReviewProviderBlock(codex, null)).toBeNull();
+    expect(publicReviewProviderBlock(codex, undefined)).toBeNull();
+    // The transport is irrelevant when nothing is being enforced: a TUI session
+    // and an api provider run ordinary tasks all day.
+    expect(publicReviewProviderBlock({ ...codex, type: 'tui' }, null, { tui: true })).toBeNull();
+    expect(publicReviewProviderBlock({ ...codex, type: 'api' }, null)).toBeNull();
+  });
+
+  it('blocks a requested posture the provider has no recipe for, naming that posture', () => {
+    expect(publicReviewProviderBlock(codex, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBeNull();
+    expect(publicReviewProviderBlock(codex, PUBLIC_REVIEW_ACTIONS_POSTURE)).toBeNull();
+
+    // claude has permission modes but no sandbox flag — tool-free only.
+    expect(publicReviewProviderBlock(localClaude, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBeNull();
+    expect(publicReviewProviderBlock(localClaude, PUBLIC_REVIEW_ACTIONS_POSTURE)).toEqual({
+      reason: "Provider 'claude-ollama' has no enforced sandboxed-actions public-content review mode",
+      category: 'public-review-actions-provider-unsupported',
+    });
+
+    // A TUI session has no enforced argv, whatever its vendor row declares.
+    expect(publicReviewProviderBlock({ ...codex, type: 'tui' }, PUBLIC_REVIEW_NO_TOOL_POSTURE, { tui: true })).toEqual({
+      reason: "Provider 'codex-cli' has no enforced no-tool public-content review mode",
+      category: 'public-review-provider-unsupported',
+    });
   });
 
   it('fails closed for transports and vendors with no maintained recipe', () => {

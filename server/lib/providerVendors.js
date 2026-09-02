@@ -678,6 +678,30 @@ export function supportsPublicReviewPosture(provider, posture, { tui = false } =
   return Boolean(publicReviewRecipe(provider, posture));
 }
 
+/**
+ * The spawn-time gate for a public-content stage, as a block or `null`.
+ *
+ * Takes the POSTURE (what the stage requires), not a boolean, because the
+ * caller's posture is `null` for every ordinary task — and `null` has no
+ * recipe, so asking `supportsPublicReviewPosture` about it answers "false"
+ * for work that was never public-content at all. Deciding here keeps the
+ * "no posture requested" case explicit instead of a caller-side `&&` that a
+ * refactor can drop (it was, in #5830: every ordinary agent task blocked with
+ * "has no enforced null public-content review mode").
+ *
+ * @returns {{ reason: string, category: string }|null}
+ */
+export function publicReviewProviderBlock(provider, posture, { tui = false } = {}) {
+  if (!posture) return null;
+  if (supportsPublicReviewPosture(provider, posture, { tui })) return null;
+  return {
+    reason: `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${posture} public-content review mode`,
+    category: posture === PUBLIC_REVIEW_ACTIONS_POSTURE
+      ? 'public-review-actions-provider-unsupported'
+      : 'public-review-provider-unsupported',
+  };
+}
+
 /** Whether a provider can run a tool-free public-content stage. */
 export function supportsPublicReviewProvider(provider, options) {
   return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_NO_TOOL_POSTURE, options);
