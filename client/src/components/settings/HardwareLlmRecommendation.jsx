@@ -3,40 +3,75 @@ import { Link } from 'react-router';
 import { CheckCircle2, Cpu, Gauge, Sparkles } from 'lucide-react';
 import { getSystemCapabilities } from '../../services/api';
 
+/**
+ * The launch context on each profile below is arithmetic, not taste, so it is
+ * stated here rather than typed into a string nobody can check.
+ *
+ * Qwen3.8-27B is 64 layers: 48 Gated DeltaNet (a constant-size recurrent state,
+ * independent of window) plus 16 full-attention GQA layers, which are the only
+ * ones that hold a per-token KV cache. That geometry costs 65.5 KB per token at
+ * a bf16/fp16 cache — the same `KV_KB_PER_TOKEN` the SGLang recipe sizes its
+ * pools from (`server/lib/sglangQwenRecipe.js`). MTPLX allocates the window up
+ * front (`--context-window`, see `server/lib/localModelTuning.js`), so the
+ * window is a memory reservation, not a ceiling that costs nothing until used.
+ *
+ * The budget it has to fit inside is the GPU's share of unified memory, which
+ * macOS defaults to ~75% of installed RAM — and PortOS, Postgres, the browser
+ * and the harness live in the remaining quarter alongside the OS.
+ *
+ * The checkpoint's own ceiling is 262,144 tokens (`localLlmCatalog.js`), so no
+ * Apple tier is offered more. A 1M-token window would need 65.5 GiB of KV cache
+ * on its own — more than a 48 GB machine has in total, and past every tier's
+ * GPU budget even before the 15 GB of weights. The 1M-context local model in
+ * the catalog is Nemotron 3 Nano 30B-A3B, not this one.
+ */
+const MLX_4BIT_WEIGHTS_GIB = 15;
+const KV_KB_PER_TOKEN = 65.5;
+export const QWEN38_MAX_CONTEXT_TOKENS = 262_144;
+
+/** Weights + the KV cache a window of `tokens` reserves, in GiB. */
+export const qwen38ResidentGib = (tokens) =>
+  MLX_4BIT_WEIGHTS_GIB + (tokens * KV_KB_PER_TOKEN) / (1024 * 1024);
+
+/** The GPU's default share of unified memory on Apple Silicon, in GiB. */
+export const appleGpuBudgetGib = (totalMemoryGb) => totalMemoryGb * 0.75;
+
+const contextLabel = (tokens) => `${tokens / 1024}K context`;
+
 const APPLE_PROFILES = [
   {
     id: 'apple-48',
     minMemoryGb: 48,
     maxMemoryGb: 63,
     machine: '48 GB Apple Silicon',
-    context: '64K context',
+    contextTokens: 131_072,
     runtime: 'MTPLX',
     harness: 'OpenCode MTPLX TUI',
     model: 'Qwen3.8-27B MTPLX Optimized Speed',
-    note: 'Keeps the 27B coding agent responsive while leaving practical unified-memory headroom for PortOS and the harness.',
-    alternatives: 'Slotstream is for the much larger SSD-streamed Flash-Next model, not this 27B coding path. llama.cpp remains the compatibility fallback.',
+    note: 'Weights and a 128K KV cache reserve about 23 GiB of the ~36 GiB this machine gives the GPU, leaving practical unified-memory headroom for PortOS and the harness.',
+    alternatives: 'Going further costs more than it buys here: 256K would reserve ~31 GiB and squeeze everything else, and the checkpoint stops at 256K regardless. Set --kv-quant q8 to halve the cache when a longer window matters more than long-context decode speed. Slotstream is for the much larger SSD-streamed Flash-Next model, not this 27B coding path. llama.cpp remains the compatibility fallback.',
   },
   {
     id: 'apple-64',
     minMemoryGb: 64,
     maxMemoryGb: 127,
     machine: '64 GB Apple Silicon',
-    context: '128K context',
+    contextTokens: 262_144,
     runtime: 'MTPLX',
     harness: 'OpenCode MTPLX TUI',
     model: 'Qwen3.8-27B MTPLX Optimized Speed',
-    note: 'Uses native MTP speculative decoding for the standard local coding-agent setup, with room for a generous agent context.',
+    note: 'Uses native MTP speculative decoding, with room to reserve the checkpoint’s full 256K window: ~31 GiB of the ~48 GiB GPU budget.',
     alternatives: 'Use Slotstream only when deliberately running the SSD-streamed Flash-Next model. llama.cpp is the useful GGUF compatibility and tuning route.',
   },
   {
     id: 'apple-128',
     minMemoryGb: 128,
     machine: '128 GB Apple Silicon',
-    context: '128K context',
+    contextTokens: 262_144,
     runtime: 'MTPLX',
     harness: 'OpenCode MTPLX TUI',
     model: 'Qwen3.8-27B MTPLX Optimized Quality',
-    note: 'Prioritizes the quality checkpoint while retaining a long agent context on the largest supported Apple-memory tier.',
+    note: 'Prioritizes the quality checkpoint at the same full 256K window — the checkpoint’s ceiling, reached with GPU budget to spare for local image and video work.',
     alternatives: 'Slotstream is an optional path for the larger SSD-streamed Flash-Next model. Use llama.cpp when a GGUF or its speculative-decoding controls are required.',
   },
 ];
@@ -44,12 +79,12 @@ const APPLE_PROFILES = [
 const RTX_3090_PROFILE = {
   id: 'rtx-3090',
   machine: 'Windows + NVIDIA RTX 3090 (24 GB VRAM)',
-  context: '64K context',
+  contextTokens: 65_536,
   runtime: 'llama.cpp',
   harness: 'OpenCode llama TUI',
   model: 'Qwen3.8-27B GGUF (Q4)',
-  note: 'Runs the 27B coding model directly on the 3090 through the mature GGUF path; use one request slot for an interactive coding agent.',
-  alternatives: 'MTPLX and Slotstream are Apple-Silicon runtimes. Ollama is fine for a simpler general-purpose local setup, but this profile keeps llama.cpp controls available.',
+  note: 'Runs the 27B coding model directly on the 3090 through the mature GGUF path; use one request slot for an interactive coding agent. Weights plus a 64K KV cache already claim ~19 of the card’s 24 GB, which is what caps the window here.',
+  alternatives: 'Quantize the KV cache (--cache-type-k q8_0 with flash attention on) to buy a longer window on this card. MTPLX and Slotstream are Apple-Silicon runtimes. Ollama is fine for a simpler general-purpose local setup, but this profile keeps llama.cpp controls available.',
 };
 
 /**
@@ -106,7 +141,7 @@ export default function HardwareLlmRecommendation() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
         <div className="bg-port-bg/70 rounded-lg p-2.5 min-w-0"><span className="text-gray-500">Runtime</span><p className="text-gray-200 mt-0.5 font-medium">{profile.runtime}</p></div>
         <div className="bg-port-bg/70 rounded-lg p-2.5 min-w-0"><span className="text-gray-500">Harness</span><p className="text-gray-200 mt-0.5 font-medium">{profile.harness}</p></div>
-        <div className="bg-port-bg/70 rounded-lg p-2.5 min-w-0"><span className="text-gray-500">Launch target</span><p className="text-gray-200 mt-0.5 font-medium">{profile.context}</p></div>
+        <div className="bg-port-bg/70 rounded-lg p-2.5 min-w-0"><span className="text-gray-500">Launch target</span><p className="text-gray-200 mt-0.5 font-medium">{contextLabel(profile.contextTokens)}</p></div>
       </div>
 
       <div className="text-xs text-gray-300 space-y-1.5 leading-relaxed">
