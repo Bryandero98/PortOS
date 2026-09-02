@@ -768,6 +768,66 @@ export function resolveBedrockCliModel(id, { env = process.env, providerId } = {
 }
 
 /**
+ * Claude Code's first-party model ids spell a version with DASHES
+ * (`claude-fable-5-1`, `claude-opus-4-8`), while the release is spoken and
+ * written with a dot ("Fable 5.1"). A stored `claude-fable-5.1` therefore looks
+ * right in the picker and is rejected by the CLI at spawn time — the run dies
+ * with "model not found", the task blocks, and nothing about the id says why.
+ *
+ * This canonicalizes the dotted spelling to the dashed one, and ONLY that:
+ *
+ *  - the id must start with a first-party family prefix (`claude-opus-`,
+ *    `claude-sonnet-`, `claude-haiku-`, `claude-fable-`), so a vendor id that
+ *    merely mentions Claude (cursor's `claude-4.6-sonnet-medium`) is untouched;
+ *  - only a dot BETWEEN DIGITS is rewritten, leaving any other dot alone;
+ *  - a Bedrock region-prefixed id (`global.anthropic.…`) is left alone, since
+ *    its prefix dots are structural.
+ *
+ * @param {string|null|undefined} id
+ * @returns {string|null|undefined} the canonical id (or the input unchanged)
+ */
+export function normalizeClaudeModelId(id) {
+  if (typeof id !== 'string' || !id) return id;
+  if (hasBedrockRegionPrefix(id)) return id;
+  if (!/^claude-(?:opus|sonnet|haiku|fable)-/i.test(id)) return id;
+  return id.replace(/(\d)\.(?=\d)/g, '$1-');
+}
+
+// Dedup so the canonicalization notice prints once per (provider, model) per
+// process rather than on every run, matching `warnBareBedrockModel`.
+const _warnedDottedClaudeModels = new Set();
+
+/**
+ * The model string a Claude Code spawn should pass to `--model`: canonicalize a
+ * dotted first-party id, then map it to its Bedrock form when the box is in
+ * Bedrock mode. The single home for both corrections, called from every
+ * Claude-command argv builder (`claudeCliArgs`, `claudeSpawnArgs`,
+ * `resolveInjectedTuiModel`) so a fix in one is a fix in all.
+ *
+ * Deliberately NOT folded into `resolveBedrockCliModel`: that helper is also the
+ * documented Bedrock-only mapper, and the dot rewrite is gated on the caller
+ * already having resolved a Claude *Code* command — cursor and friends label
+ * Anthropic models under their own dotted ids and must not be rewritten.
+ *
+ * @param {string|null|undefined} id
+ * @param {{env?:NodeJS.ProcessEnv, providerId?:string}} [opts]
+ * @returns {string|null|undefined}
+ */
+export function resolveClaudeCliModel(id, { env = process.env, providerId } = {}) {
+  const canonical = normalizeClaudeModelId(id);
+  if (canonical !== id) {
+    const key = `${providerId || 'claude-code'}::${id}`;
+    if (!_warnedDottedClaudeModels.has(key)) {
+      _warnedDottedClaudeModels.add(key);
+      console.error(
+        `⚠️ Provider '${providerId || 'claude-code'}' model '${id}' spells its version with a dot — Claude Code only serves the dashed id, using '${canonical}' for this run (update the provider's model list to silence).`,
+      );
+    }
+  }
+  return resolveBedrockCliModel(canonical, { env, providerId });
+}
+
+/**
  * The model string a TUI spawn should actually pass to `--model`, given the
  * resolved launch command. The single home for a decision that used to be
  * open-coded in TWO parallel ladders — `tuiHandshake.js#buildTuiInvocation`
@@ -777,8 +837,10 @@ export function resolveBedrockCliModel(id, { env = process.env, providerId } = {
  * only answers "which id".
  *
  *  - OpenCode: namespace a bare Ollama id (`ollama/<id>`); never Bedrock-mapped.
- *  - Claude Code: map a bare Claude id to its region-prefixed Bedrock form when
- *              the box is in Bedrock mode (no-op off Bedrock / for non-Claude ids).
+ *  - Claude Code: canonicalize a dotted first-party id (`claude-fable-5.1` →
+ *              `claude-fable-5-1`), then map a bare Claude id to its
+ *              region-prefixed Bedrock form when the box is in Bedrock mode
+ *              (no-op off Bedrock / for non-Claude ids).
  *  - Anything else: passed through verbatim.
  *
  * The Bedrock arm is deliberately OPT-IN on the launch command rather than the
@@ -801,7 +863,7 @@ export function resolveBedrockCliModel(id, { env = process.env, providerId } = {
 export function resolveInjectedTuiModel(model, provider, command = provider?.command) {
   if (isOpencodeCommand(command)) return prefixOpencodeModel(provider, model);
   if (!isClaudeCommand(command)) return model;
-  return resolveBedrockCliModel(model, {
+  return resolveClaudeCliModel(model, {
     env: { ...process.env, ...provider?.envVars },
     providerId: provider?.id,
   });
