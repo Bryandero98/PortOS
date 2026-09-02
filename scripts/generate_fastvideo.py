@@ -120,6 +120,10 @@ def build_command(args, entry_script: Path, model_root: Path, mlx_checkpoint: Pa
     single list with `if family == ...` guards around half its elements reads
     as one contract when it is two.
     """
+    # Shared prefix only. The step/rate flags and the trailing seed/output pair
+    # are appended per family so FastMetal keeps the EXACT argv it emitted
+    # before the split — argparse is order-insensitive, but an identical
+    # ordering is what makes "FastMetal is untouched" checkable by eye.
     common = [
         sys.executable,
         str(entry_script),
@@ -129,14 +133,13 @@ def build_command(args, entry_script: Path, model_root: Path, mlx_checkpoint: Pa
         "--width", str(args.width),
         "--height", str(args.height),
         "--num-frames", str(args.num_frames),
-        "--seed", str(args.seed),
-        "--output-path", str(args.output),
     ]
+    tail = ["--seed", str(args.seed), "--output-path", str(args.output)]
     if args.family != "fasth3":
         cmd = common + [
             "--num-inference-steps", str(args.steps),
             "--fps", str(args.fps),
-        ]
+        ] + tail
         if args.fast:
             cmd.append("--fast")
         if args.enhance_prompt:
@@ -163,7 +166,7 @@ def build_command(args, entry_script: Path, model_root: Path, mlx_checkpoint: Pa
     if args.fps and args.fps != FASTH3_NATIVE_FPS:
         print(f"STATUS:FastH3 always writes {FASTH3_NATIVE_FPS} fps — ignoring the requested {args.fps} fps",
               file=sys.stderr, flush=True)
-    cmd = common + ["--steps", str(args.steps)]
+    cmd = common + ["--steps", str(args.steps)] + tail
     if args.fast:
         cmd.append("--fast")
     return cmd

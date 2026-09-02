@@ -76,6 +76,25 @@ class BuildCommandTest(unittest.TestCase):
         self.assertEqual(self.flag(cmd, "--mlx-checkpoint"), str(self.ckpt))
         self.assertNotIn("--steps", cmd)
 
+    def test_fastmetal_argv_is_byte_identical_to_the_pre_split_baseline(self):
+        # The exact list this helper emitted before the family split. Pinned so
+        # a later edit to the shared prefix cannot quietly reshape the argv of
+        # the three FastMetal rows that already ship.
+        cmd, _ = self.build(family="fastmetal")
+        self.assertEqual(cmd[1:], [
+            str(self.entry),
+            "--model-root", str(self.root),
+            "--mlx-checkpoint", str(self.ckpt),
+            "--prompt", "a paper boat on a puddle",
+            "--width", "832",
+            "--height", "480",
+            "--num-frames", "124",
+            "--num-inference-steps", "4",
+            "--fps", "24",
+            "--seed", "2026",
+            "--output-path", "/fixture/out/render.mp4",
+        ])
+
     def test_fastmetal_forwards_its_optional_flags(self):
         cmd, _ = self.build(family="fastmetal", fast=True, enhance_prompt=True, refine=True,
                             image="/fixture/first.png")
