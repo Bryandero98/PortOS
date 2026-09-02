@@ -375,6 +375,20 @@ describe('schedule() lifecycle with fake timers', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it('triggerNow() replaces the pending timer instead of leaving a duplicate run armed', async () => {
+    const handler = vi.fn();
+    schedule({ id: 'trigger-dup', type: 'interval', intervalMs: 60000, handler });
+
+    expect(await triggerNow('trigger-dup')).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(getStats().activeTimers).toBe(1);
+
+    // The original 60s deadline must have been cleared by the re-arm, so only the
+    // fresh 60s-from-now timer fires in the next minute.
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
   it('triggerNow() returns false for an unknown id', async () => {
     expect(await triggerNow('does-not-exist')).toBe(false);
   });
@@ -431,7 +445,7 @@ describe('schedule() lifecycle with fake timers', () => {
     }
   });
 
-  it('stops a cron event whose expression became unparseable, with one error log', async () => {
+  it('stops a cron event whose expression became unparseable, naming the reason', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
@@ -456,7 +470,7 @@ describe('schedule() lifecycle with fake timers', () => {
     }
   });
 
-  it('stops a recurrence event that yields no next occurrence, with one error log', async () => {
+  it('stops a recurrence event that yields no next occurrence, naming the reason', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {

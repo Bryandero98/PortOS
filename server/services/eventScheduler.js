@@ -516,6 +516,9 @@ function scheduleNextRun(event) {
     return
   }
 
+  // Drop any handle this arm replaces (e.g. triggerNow re-arming ahead of the
+  // pending deadline) so the old timeout can't fire a duplicate run later.
+  clearPendingTimer(event.id)
   const timer = createSafeTimer(() => runEventFloating(event), delay, event.id)
   activeTimers.set(event.id, timer)
 }
@@ -534,12 +537,22 @@ function runEventFloating(event) {
 }
 
 /**
+ * Clear an event's pending timeout and forget its handle.
+ * @param {string} id - Event identifier
+ */
+function clearPendingTimer(id) {
+  const timer = activeTimers.get(id)
+  if (timer) clearTimeout(timer.timerId)
+  activeTimers.delete(id)
+}
+
+/**
  * Stop an event and drop its pending timer handle.
  * @param {Object} event - Event object
  */
 function deactivate(event) {
   event.active = false
-  activeTimers.delete(event.id)
+  clearPendingTimer(event.id)
 }
 
 /**
@@ -547,9 +560,10 @@ function deactivate(event) {
  *
  * Runs from runEvent's `finally`, so a throw anywhere earlier in the run can
  * never leave a recurring schedule un-armed but still listed as active. A next
- * run time that cannot be computed (malformed cron, recurrence past its `until`)
- * deactivates the event with one error line rather than leaving the CoS Schedule
- * tab showing an armed schedule that will never fire again.
+ * run time that cannot be computed (malformed cron, a recurrence with no
+ * occurrence left in the search horizon) deactivates the event with an error
+ * line naming the reason, rather than leaving the CoS Schedule tab showing an
+ * armed schedule that will never fire again.
  *
  * @param {Object} event - Event object
  */
@@ -671,12 +685,7 @@ function cancel(id) {
   if (!event) return false
 
   event.active = false
-
-  const timer = activeTimers.get(id)
-  if (timer) {
-    clearTimeout(timer.timerId)
-    activeTimers.delete(id)
-  }
+  clearPendingTimer(id)
 
   scheduledEvents.delete(id)
   console.log(`📅 Event cancelled: ${id}`)
@@ -695,12 +704,7 @@ function pause(id) {
   if (!event) return false
 
   event.active = false
-
-  const timer = activeTimers.get(id)
-  if (timer) {
-    clearTimeout(timer.timerId)
-    activeTimers.delete(id)
-  }
+  clearPendingTimer(id)
 
   console.log(`⏸️ Event paused: ${id}`)
   return true
