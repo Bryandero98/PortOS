@@ -216,6 +216,28 @@ describe('mediaModels registry', () => {
     }
   });
 
+  it('offers FastH3 only frame counts its pipeline will accept', async () => {
+    const { loadMediaModels, FASTH3_OUTPUT_PROFILE } = await import('./mediaModels.js');
+    // mlx_fasth3.py renders at a fixed 24 fps and resolve_geometry hard-refuses
+    // anything outside 5-15 s, so a frame count off that window reaches the
+    // runtime and RAISES rather than rendering. 107 and 362 both did.
+    const FPS = 24;
+    for (const frames of FASTH3_OUTPUT_PROFILE.frameOptions) {
+      expect((frames - 5) % 17).toBe(0);
+      expect(frames / FPS).toBeGreaterThanOrEqual(5);
+      expect(frames / FPS).toBeLessThanOrEqual(15);
+    }
+    expect(FASTH3_OUTPUT_PROFILE.frameOptions).not.toContain(107);
+    expect(FASTH3_OUTPUT_PROFILE.frameOptions).not.toContain(362);
+    // Every shipped FastH3 row, not just the profile constant.
+    const rows = loadMediaModels().video.mlx.filter((m) => m.fastvideoFamily === 'fasth3');
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.frameOptions).toEqual([...FASTH3_OUTPUT_PROFILE.frameOptions]);
+      expect(row.frameOptions).toContain(row.defaultFrames);
+    }
+  });
+
   it('ships MiniMax H3 as a pinned, keyframe-capable 128 GB BYOV profile', async () => {
     const { loadMediaModels } = await import('./mediaModels.js');
     // H3 is an Apple-silicon MLX runtime, so inspect the shipped macOS catalog

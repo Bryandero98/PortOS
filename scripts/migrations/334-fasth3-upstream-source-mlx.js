@@ -10,18 +10,21 @@
  * before the first render. One download serves all three rows.
  */
 
-import { readFile } from 'fs/promises';
-import { join } from 'path';
-import { atomicWrite } from '../../server/lib/fileUtils.js';
 import { VIDEO_BUCKET_MLX, readVideoBucket } from '../../server/lib/mediaModelBuckets.js';
+import { readMediaRegistry, writeMediaRegistry } from './_lib.js';
 
-const REL_PATH = 'data/media-models.json';
+// H3's video VAE decodes only 17n+5 frame counts, and the MLX pipeline refuses
+// anything outside 5-15 s at 24 fps, so the grid is 124..345. Inlined rather
+// than imported from lib/mediaModels.js: a migration must keep writing the
+// values it shipped with, not whatever the live constant becomes three releases
+// later.
+const FRAME_OPTIONS = [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345];
 
-// H3's video VAE decodes only 17n+5 frame counts, and FastH3 is a distilled H3.
-// Inlined rather than imported from lib/mediaModels.js: a migration must keep
-// writing the values it shipped with, not whatever the live constant becomes
-// three releases later.
-const FRAME_OPTIONS = [107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362];
+// What migration 333 wrote. Its two extra ends — 107 (4.46 s) and 362 (15.08 s)
+// — sit outside the pipeline's window and raise instead of rendering, so an
+// install that already ran 333 carries a picker with a broken value at each end.
+const MIGRATION_333_FRAME_OPTIONS = [107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362];
+const REPACK_ID = 'fasth3_dense_datafree_mlx_int4';
 const RESOLUTION_OPTIONS = [
   { label: '832x480 (16:9 FastH3 default)', w: 832, h: 480 },
   { label: '1280x720 (16:9 HD)', w: 1280, h: 720 },
@@ -43,10 +46,10 @@ const NEW_ENTRIES = [
   defaultWidth: 832,
   defaultHeight: 480,
   defaultFrames: 124,
-  frameOptions: [...FRAME_OPTIONS],
+  frameOptions: FRAME_OPTIONS,
   fpsOptions: [24],
   resolutionStep: 32,
-  resolutionOptions: RESOLUTION_OPTIONS.map((preset) => ({ ...preset })),
+  resolutionOptions: RESOLUTION_OPTIONS,
   memoryGb,
   steps: 4,
   guidance: 1,
@@ -59,20 +62,8 @@ const NEW_ENTRIES = [
 
 export default {
   async up({ rootDir }) {
-    const path = join(rootDir, REL_PATH);
-    const raw = await readFile(path, 'utf-8').catch((err) => {
-      if (err.code === 'ENOENT') return null;
-      throw err;
-    });
-    if (raw == null) return;
-    let config;
-    try {
-      config = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`Cannot migrate ${REL_PATH}: invalid JSON (${err.message})`, { cause: err });
-    }
-    const mlxEntries = readVideoBucket(config?.video, VIDEO_BUCKET_MLX);
-    if (!Array.isArray(mlxEntries)) return;
+    const { ok, config, entries: mlxEntries, path } = await readMediaRegistry({ rootDir, bucket: VIDEO_BUCKET_MLX });
+    if (!ok) return;
 
     let changed = false;
     const present = new Set(mlxEntries.map((entry) => entry?.id));
@@ -82,6 +73,16 @@ export default {
       present.add(entry.id);
       changed = true;
     }
+    // Repair the row 333 shipped, but only while it still holds 333's exact
+    // list — a user who edited their own frame options keeps them.
+    const repack = mlxEntries.find((entry) => entry?.id === REPACK_ID);
+    if (repack && Array.isArray(repack.frameOptions)
+      && repack.frameOptions.length === MIGRATION_333_FRAME_OPTIONS.length
+      && repack.frameOptions.every((frames, i) => frames === MIGRATION_333_FRAME_OPTIONS[i])) {
+      repack.frameOptions = [...FRAME_OPTIONS];
+      changed = true;
+    }
+
     const shipped = readVideoBucket(config?._shippedDefaults?.video, VIDEO_BUCKET_MLX);
     if (Array.isArray(shipped)) {
       for (const entry of NEW_ENTRIES) {
@@ -92,8 +93,8 @@ export default {
       }
     }
     if (changed) {
-      await atomicWrite(path, `${JSON.stringify(config, null, 2)}\n`);
-      console.log(`📝 ${REL_PATH}: added the upstream FastH3 Dense Data-Free MLX models`);
+      await writeMediaRegistry(path, config);
+      console.log('📝 data/media-models.json: added the upstream FastH3 Dense Data-Free MLX models');
     }
   },
 };

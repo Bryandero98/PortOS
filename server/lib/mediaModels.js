@@ -134,13 +134,19 @@ const h3FrameGrid = (min, max) => {
 
 // FastH3 Preview v1's output contract (#5860). It is a distilled MiniMax H3, so
 // it inherits H3's 17n+5 VAE frame grid and 32px edge rounding — but NOT H3's
+// full frame range: the MLX pipeline hard-refuses anything outside 5-15 s at its
+// fixed 24 fps ("H3 generates 5-15 s at 24 fps", resolve_geometry in
+// fastvideo/mlx_runtime/minimax_h3_pipeline.py), so the grid is clamped to
+// 120..360 frames. The unclamped 107..362 this shipped with put a too-short AND
+// a too-long value at the two ends of the picker, each of which reached the
+// runtime and raised instead of rendering.
 // canvas: the MLX FastH3 entry point is validated at 832x480 (its own default,
 // and the resolution upstream's conversion manifest records a passing 124-frame
 // generation at), and its docstring documents 1280x720 as the other supported
 // request. `resolutionOptions` are presets rather than a whitelist, so a custom
 // size still resolves through `resolutionStep`.
 export const FASTH3_OUTPUT_PROFILE = Object.freeze({
-  frameOptions: h3FrameGrid(107, 362),
+  frameOptions: h3FrameGrid(124, 345),
   fpsOptions: Object.freeze([24]),
   resolutionStep: 32,
   resolutionOptions: Object.freeze([
@@ -164,7 +170,7 @@ const FASTH3_SOURCE_FORMATS = Object.freeze([
   Object.freeze({ format: 'int4', memoryGb: 36, label: 'INT4 (smallest)' }),
 ]);
 
-export const fastH3SourceEntries = () => FASTH3_SOURCE_FORMATS.map(({ format, memoryGb, label }) => ({
+const FASTH3_SOURCE_ENTRIES = FASTH3_SOURCE_FORMATS.map(({ format, memoryGb, label }) => ({
   id: `fasth3_dense_datafree_${format}`,
   name: `FastH3 Preview v1 Dense Data-Free — MLX ${label} (video + audio, ~144 GB download, ${memoryGb}+ GB RAM, 4-step)`,
   repo: FASTH3_SOURCE_REPO,
@@ -678,7 +684,7 @@ const DEFAULT_REGISTRY = {
       // FastVideo's own FastH3 Dense / Data-Free snapshot, converted to MLX on
       // this machine. Listed before the third-party repack below because it is
       // the upstream checkpoint the repack is derived from.
-      ...fastH3SourceEntries(),
+      ...FASTH3_SOURCE_ENTRIES,
       // FastH3 Preview v1 Dense / Data-Free, packed for MLX (#5860). Same
       // `fastvideo` venv and checkout as FastMetal above, but a different entry
       // script and argv shape — `fastvideoFamily` is what routes it, see

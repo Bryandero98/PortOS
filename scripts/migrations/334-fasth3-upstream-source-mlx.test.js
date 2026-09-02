@@ -62,13 +62,42 @@ describe('334-fasth3-upstream-source-mlx migration', () => {
     }
   });
 
-  it('leaves the pre-converted repack row from migration 333 in place', async () => {
+  it('leaves the pre-converted repack row from migration 333 otherwise in place', async () => {
     write({ video: { mlx: [{ id: 'fasth3_dense_datafree_mlx_int4', repo: 'MrMofer/x' }] } });
 
     await migration.up({ rootDir });
 
     const packed = read().video.mlx.find((m) => m.id === 'fasth3_dense_datafree_mlx_int4');
     expect(packed).toEqual({ id: 'fasth3_dense_datafree_mlx_int4', repo: 'MrMofer/x' });
+  });
+
+  it('drops the two out-of-window frame counts migration 333 shipped', async () => {
+    // 107 is 4.46 s and 362 is 15.08 s at FastH3's fixed 24 fps; the pipeline
+    // refuses both, so they were a broken value at each end of the picker.
+    write({
+      video: {
+        mlx: [{
+          id: 'fasth3_dense_datafree_mlx_int4',
+          frameOptions: [107, 124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362],
+        }],
+      },
+    });
+
+    await migration.up({ rootDir });
+
+    const packed = read().video.mlx.find((m) => m.id === 'fasth3_dense_datafree_mlx_int4');
+    expect(packed.frameOptions).not.toContain(107);
+    expect(packed.frameOptions).not.toContain(362);
+    expect(packed.frameOptions.every((f) => f / 24 >= 5 && f / 24 <= 15)).toBe(true);
+  });
+
+  it('keeps a user own frame options rather than overwriting them', async () => {
+    write({ video: { mlx: [{ id: 'fasth3_dense_datafree_mlx_int4', frameOptions: [124, 141] }] } });
+
+    await migration.up({ rootDir });
+
+    expect(read().video.mlx.find((m) => m.id === 'fasth3_dense_datafree_mlx_int4').frameOptions)
+      .toEqual([124, 141]);
   });
 
   it('leaves the CUDA bucket untouched', async () => {

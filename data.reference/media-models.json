@@ -691,7 +691,6 @@
         "defaultHeight": 480,
         "defaultFrames": 124,
         "frameOptions": [
-          107,
           124,
           141,
           158,
@@ -705,8 +704,7 @@
           294,
           311,
           328,
-          345,
-          362
+          345
         ],
         "fpsOptions": [
           24
@@ -774,7 +772,6 @@
         "defaultHeight": 480,
         "defaultFrames": 124,
         "frameOptions": [
-          107,
           124,
           141,
           158,
@@ -788,8 +785,7 @@
           294,
           311,
           328,
-          345,
-          362
+          345
         ],
         "fpsOptions": [
           24
@@ -857,7 +853,6 @@
         "defaultHeight": 480,
         "defaultFrames": 124,
         "frameOptions": [
-          107,
           124,
           141,
           158,
@@ -871,8 +866,7 @@
           294,
           311,
           328,
-          345,
-          362
+          345
         ],
         "fpsOptions": [
           24
@@ -939,7 +933,6 @@
         "defaultHeight": 480,
         "defaultFrames": 124,
         "frameOptions": [
-          107,
           124,
           141,
           158,
@@ -953,8 +946,7 @@
           294,
           311,
           328,
-          345,
-          362
+          345
         ],
         "fpsOptions": [
           24
