@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import {
   _getInternalSession,
   _resetHostedSessions,
@@ -12,6 +12,8 @@ import {
   revalidateLiveConversationGate,
   sanitizeHostedSession,
   startHostedListening,
+  startHostedSessionSweep,
+  stopHostedSessionSweep,
   updateHostedSession,
   verifyHostedToken,
 } from './hostedSession.js';
@@ -300,6 +302,91 @@ describe('fableLoom hostedSession', () => {
 
       endHostedSession(session.id, { reason: 'user_ended' });
       expect(getHostedSession(session.id)).toBeNull();
+    });
+  });
+
+  describe('expired-session sweep', () => {
+    // A stub Socket.IO surface that records every namespace emit.
+    const makeIo = () => {
+      const emits = [];
+      return {
+        emits,
+        of: () => ({
+          to: (room) => ({
+            emit: (event, payload) => emits.push({ room, event, payload }),
+          }),
+        }),
+      };
+    };
+
+    // Age a session past its TTL without waiting out 30 real minutes.
+    const expire = (sessionId) => {
+      const internal = _getInternalSession(sessionId);
+      internal.expiresAt = new Date(Date.now() - 1000).toISOString();
+      return internal;
+    };
+
+    afterEach(() => {
+      stopHostedSessionSweep();
+      vi.useRealTimers();
+    });
+
+    it('deletes an expired session on the next sweep tick, aborting its turn and notifying the room', async () => {
+      const io = makeIo();
+      const { session } = await createHostedSession('loom-1', 'ep-1');
+      await startHostedListening(session.id);
+      const internal = expire(session.id);
+      const { signal } = internal.activeTurn.abortController;
+      expect(signal.aborted).toBe(false);
+
+      vi.useFakeTimers();
+      startHostedSessionSweep({ intervalMs: 60_000, io });
+      // Arming alone tears nothing down; the first tick does.
+      expect(io.emits).toHaveLength(0);
+      vi.advanceTimersByTime(60_000);
+
+      expect(signal.aborted).toBe(true);
+      expect(getHostedSession(session.id)).toBeNull();
+      expect(io.emits).toContainEqual({
+        room: `session:${session.id}`,
+        event: 'hosted:session:ended',
+        payload: { sessionId: session.id, reason: 'expired' },
+      });
+    });
+
+    it('leaves an unexpired session untouched', async () => {
+      const io = makeIo();
+      const { session } = await createHostedSession('loom-1', 'ep-1');
+
+      vi.useFakeTimers();
+      startHostedSessionSweep({ intervalMs: 60_000, io });
+      vi.advanceTimersByTime(180_000);
+
+      expect(getHostedSession(session.id)?.status).toBe('active');
+      expect(io.emits).toHaveLength(0);
+    });
+
+    it('rejects a late reconnect: _getInternalSession returns null once the TTL has passed', async () => {
+      const { session, token } = await createHostedSession('loom-1', 'ep-1');
+      expect(_getInternalSession(session.id)).not.toBeNull();
+
+      expire(session.id);
+
+      // What the /fableloom-hosted handshake gates on, for host and audience alike.
+      expect(_getInternalSession(session.id)).toBeNull();
+      expect(verifyHostedToken(session.id, token)).toBe(false);
+    });
+
+    it('arms an unref\'d timer once and clears it on stop', () => {
+      vi.useFakeTimers();
+      const first = startHostedSessionSweep({ intervalMs: 60_000 });
+      expect(first.unref).toBeTypeOf('function');
+      // Re-arming is a no-op rather than a second leaked interval.
+      expect(startHostedSessionSweep({ intervalMs: 60_000 })).toBe(first);
+      expect(vi.getTimerCount()).toBe(1);
+
+      stopHostedSessionSweep();
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 });
