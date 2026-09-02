@@ -11938,7 +11938,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 534
+          "line": 540
         }
       ]
     },
@@ -11949,7 +11949,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 557
+          "line": 563
         }
       ]
     },
@@ -11960,7 +11960,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 605
+          "line": 611
         }
       ]
     },
@@ -11971,7 +11971,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 542
+          "line": 548
         }
       ]
     },
@@ -11982,7 +11982,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 592
+          "line": 598
         }
       ]
     },
@@ -11993,7 +11993,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 573
+          "line": 579
         }
       ]
     },
@@ -12004,7 +12004,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 598
+          "line": 604
         }
       ]
     },
@@ -12015,7 +12015,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 629
+          "line": 635
         }
       ]
     },
@@ -12026,7 +12026,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 665
+          "line": 671
         }
       ]
     },
@@ -12037,7 +12037,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 656
+          "line": 662
         }
       ]
     },
@@ -12048,7 +12048,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 636
+          "line": 642
         }
       ]
     },
@@ -12070,7 +12070,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 515
+          "line": 521
         }
       ]
     },
@@ -12081,7 +12081,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 360
+          "line": 366
         }
       ]
     },
@@ -12092,7 +12092,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 212
+          "line": 218
         }
       ]
     },
@@ -12103,7 +12103,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 310
+          "line": 316
         }
       ]
     },
@@ -12114,7 +12114,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 244
+          "line": 250
         }
       ]
     },
@@ -12125,7 +12125,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 698
+          "line": 704
         }
       ]
     },
@@ -12136,7 +12136,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 712
+          "line": 718
         }
       ]
     },
@@ -12147,7 +12147,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 739
+          "line": 745
         }
       ]
     },
@@ -12158,7 +12158,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 724
+          "line": 730
         }
       ]
     },
@@ -12169,7 +12169,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 679
+          "line": 685
         }
       ]
     },
@@ -12180,7 +12180,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 732
+          "line": 738
         }
       ]
     },
@@ -12191,7 +12191,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 690
+          "line": 696
         }
       ]
     },
@@ -12202,7 +12202,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 750
+          "line": 756
         }
       ]
     },
@@ -12213,7 +12213,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 292
+          "line": 298
         }
       ]
     },
@@ -12224,7 +12224,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 410
+          "line": 416
         }
       ]
     },
@@ -12235,7 +12235,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 384
+          "line": 390
         }
       ]
     },
@@ -12246,7 +12246,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 802
+          "line": 808
         }
       ]
     },
@@ -12257,7 +12257,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 830
+          "line": 836
         }
       ]
     },
@@ -12268,7 +12268,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 841
+          "line": 847
         }
       ]
     },
@@ -12279,7 +12279,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 821
+          "line": 827
         }
       ]
     },
@@ -12290,7 +12290,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 780
+          "line": 786
         }
       ]
     },
@@ -12301,7 +12301,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 775
+          "line": 781
         }
       ]
     },
@@ -12312,7 +12312,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 795
+          "line": 801
         }
       ]
     },
@@ -12323,7 +12323,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 261
+          "line": 267
         }
       ]
     },
@@ -12334,7 +12334,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 859
+          "line": 865
         }
       ]
     },
@@ -12356,7 +12356,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 203
+          "line": 209
         }
       ]
     },
@@ -12389,7 +12389,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 368
+          "line": 374
         }
       ]
     },
@@ -12400,7 +12400,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 454
+          "line": 460
         }
       ]
     },
@@ -12411,7 +12411,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 467
+          "line": 473
         }
       ]
     },
@@ -12433,7 +12433,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 433
+          "line": 439
         }
       ]
     },
@@ -12444,7 +12444,7 @@
       "sources": [
         {
           "source": "server/routes/localLlm.js",
-          "line": 343
+          "line": 349
         }
       ]
     },
