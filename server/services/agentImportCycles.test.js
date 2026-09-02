@@ -473,6 +473,25 @@ describe('agent lifecycle cluster — no static import cycles (#2837)', () => {
     expect(graph.get('agents.js')).toContain('agentOrchestrator.js');
   });
 
+  it('keeps cos.js out of every static import cycle (#5684)', () => {
+    // cos.js re-exports cosState/cosTaskStore for backward compat with
+    // `import * as cos`. Two leaf services used to reach THROUGH that barrel for
+    // one symbol each (memoryEmbeddings -> getConfig, character -> getAllTasks),
+    // and because cos.js transitively reaches the CoS tool registry -> voice
+    // tools -> askService -> both of those leaves, each one-symbol forward closed
+    // a 7-module ring. Both now import the DECLARING module, which is the same
+    // rule the transition-caller guard above enforces for the agent cluster.
+    const offending = findCycles(graph).filter(cycle => cycle.split(' -> ').includes('cos.js'));
+    expect(offending, `cos.js is back in a static import cycle:\n${offending.join('\n')}`).toEqual([]);
+
+    // Name the two back-edges directly, so a reintroduced one-symbol import of
+    // the barrel fails with the reason rather than as an opaque ring.
+    expect(graph.get('memoryEmbeddings.js'), 'memoryEmbeddings must import getConfig from cosState.js').not.toContain('cos.js');
+    expect(graph.get('memoryEmbeddings.js')).toContain('cosState.js');
+    expect(graph.get('character.js'), 'character must import getAllTasks from cosTaskStore.js').not.toContain('cos.js');
+    expect(graph.get('character.js')).toContain('cosTaskStore.js');
+  });
+
   it('no longer needs the dynamic-import workaround for handleOrphanedTask', () => {
     // The cycle-dodge this issue was filed for: agentLifecycle reached
     // agentManagement via `await import()` because agentManagement imported it back.
