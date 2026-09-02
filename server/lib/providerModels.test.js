@@ -14,6 +14,8 @@ import {
   hasBedrockRegionPrefix,
   toBedrockModelId,
   resolveBedrockCliModel,
+  normalizeClaudeModelId,
+  resolveClaudeCliModel,
   prefixOpencodeModel,
   getOpencodeLocalProviderNamespace,
   isOpencodeCommand,
@@ -895,6 +897,74 @@ describe('providerModels', () => {
       expect(resolveBedrockCliModel('claude-opus-4-8', { env: {} })).toBe('claude-opus-4-8');
       expect(resolveBedrockCliModel('us.anthropic.claude-opus-4-7-v1:0', { env: { CLAUDE_CODE_USE_BEDROCK: '1' } }))
         .toBe('us.anthropic.claude-opus-4-7-v1:0');
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+  });
+
+  // Real input matrix for a rewrite that silently changes the id handed to the
+  // CLI — a wrong match here mangles another vendor's model, and a missed one
+  // blocks a task with "model not found" — which is what a stored
+  // `claude-fable-5.1` did.
+  describe('normalizeClaudeModelId', () => {
+    it('rewrites a dotted first-party version to the dashed id Claude Code serves', () => {
+      expect(normalizeClaudeModelId('claude-fable-5.1')).toBe('claude-fable-5-1');
+      expect(normalizeClaudeModelId('claude-opus-4.8')).toBe('claude-opus-4-8');
+      expect(normalizeClaudeModelId('claude-haiku-4.5-20251001')).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('leaves an already-canonical or non-first-party id alone', () => {
+      for (const id of [
+        'claude-fable-5-1',
+        'claude-opus-5',
+        'claude-haiku-4-5-20251001',
+        // Cursor labels Anthropic models under its OWN dotted ids.
+        'claude-4.6-sonnet-medium',
+        'claude-opus-5-thinking-high',
+        // Other vendors' dotted ids never start with a Claude family prefix.
+        'gpt-5.3-codex',
+        'gemini-3.1-pro',
+        'hf.co/some/repo-fable5-v1-GGUF:Q4_K_M',
+      ]) {
+        expect(normalizeClaudeModelId(id), id).toBe(id);
+      }
+    });
+
+    it('leaves a Bedrock region-prefixed id alone — its dots are structural', () => {
+      expect(normalizeClaudeModelId('global.anthropic.claude-fable-5-v1:0'))
+        .toBe('global.anthropic.claude-fable-5-v1:0');
+    });
+
+    it('passes empty/non-string input through', () => {
+      expect(normalizeClaudeModelId('')).toBe('');
+      expect(normalizeClaudeModelId(null)).toBeNull();
+      expect(normalizeClaudeModelId(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('resolveClaudeCliModel', () => {
+    it('canonicalizes a dotted id and warns once per provider+model', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const opts = { env: {}, providerId: 'claude-code-dotted-test' };
+      expect(resolveClaudeCliModel('claude-fable-5.1', opts)).toBe('claude-fable-5-1');
+      expect(resolveClaudeCliModel('claude-fable-5.1', opts)).toBe('claude-fable-5-1');
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][0]).toMatch(/claude-fable-5\.1/);
+      spy.mockRestore();
+    });
+
+    it('canonicalizes BEFORE the Bedrock rewrite, so Bedrock gets the dashed id', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(resolveClaudeCliModel('claude-fable-5.1', {
+        env: { CLAUDE_CODE_USE_BEDROCK: '1' },
+        providerId: 'claude-code-dotted-bedrock-test',
+      })).toBe('global.anthropic.claude-fable-5-1');
+      spy.mockRestore();
+    });
+
+    it('stays silent for an id that needs no correction', () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(resolveClaudeCliModel('claude-fable-5-1', { env: {} })).toBe('claude-fable-5-1');
       expect(spy).not.toHaveBeenCalled();
       spy.mockRestore();
     });

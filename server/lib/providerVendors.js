@@ -62,7 +62,7 @@ import {
   isClaudeCommand,
   hasModelFlag,
   resolveInjectedTuiModel,
-  resolveBedrockCliModel,
+  resolveClaudeCliModel,
   buildCodexStartupArgs,
   buildCodexAgentThreadArgs,
   buildEffortArgs,
@@ -283,7 +283,7 @@ const GEMINI_LEGACY = {
 function claudeCliArgs(baseArgs, { model, effort, provider }) {
   const args = [...baseArgs, '-p', '-'];
   if (model && !hasModelFlag(baseArgs)) {
-    const resolvedModel = resolveBedrockCliModel(model, {
+    const resolvedModel = resolveClaudeCliModel(model, {
       env: { ...process.env, ...provider?.envVars },
       providerId: provider?.id || '',
     });
@@ -307,7 +307,7 @@ function claudeSpawnArgs(provider, { effectiveModel, effort, systemPromptFile, s
     args.push('--append-system-prompt-file', systemPromptFile);
   }
   if (effectiveModel) {
-    const injectedModel = resolveBedrockCliModel(effectiveModel, {
+    const injectedModel = resolveClaudeCliModel(effectiveModel, {
       env: { ...process.env, ...settingsEnv, ...provider?.envVars },
       providerId,
     });
