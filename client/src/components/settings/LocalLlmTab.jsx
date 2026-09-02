@@ -13,6 +13,7 @@ import {
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, getLlamaServerUpdateStatus, startLlamaServer, stopLlamaServer, installLlamaServer, upgradeLlamaServer,
   downloadSpecDecodeModel, cancelSpecDecodeModelDownload, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
   searchMtplxModels, pullMtplxModel, removeMtplxModel,
+  getSlotstreamServerStatus, startSlotstreamServer, stopSlotstreamServer, installSlotstream,
   saveRuntimeStartupList
 } from '../../services/api';
 import socket from '../../services/socket';
@@ -20,6 +21,7 @@ import CapabilityBadges from '../models/CapabilityBadges.jsx';
 import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 import RuntimeServersCard from './RuntimeServersCard.jsx';
 import MtplxServerCard from './MtplxServerCard.jsx';
+import SlotstreamServerCard from './SlotstreamServerCard.jsx';
 import LocalLlmBackendCard from './LocalLlmBackendCard.jsx';
 import LocalLlmInstalledModels from './LocalLlmInstalledModels.jsx';
 import ModelAbuseGuardPanel from '../models/ModelAbuseGuardPanel.jsx';
@@ -197,6 +199,7 @@ export function LocalLlmTab({ view }) {
 
   const [llamaStatus, setLlamaStatus] = useState(null);
   const [mtplxStatus, setMtplxStatus] = useState(null);
+  const [slotstreamStatus, setSlotstreamStatus] = useState(null);
   // Live byte progress for an in-flight `mtplx pull`, driven by the socket. One
   // at a time on purpose: a checkpoint is tens of gigabytes, so two concurrent
   // pulls just make both slower.
@@ -206,6 +209,7 @@ export function LocalLlmTab({ view }) {
   // a model path, so its Start lives in the launcher rather than in that row.
   const llamaSectionRef = useRef(null);
   const mtplxSectionRef = useRef(null);
+  const slotstreamSectionRef = useRef(null);
   const [llamaPresetId, setLlamaPresetId] = useState(DEFAULT_SPEC_PRESET_ID);
   const [llamaForm, setLlamaForm] = useState({
     model: '',
@@ -269,6 +273,15 @@ export function LocalLlmTab({ view }) {
       .catch(() => null)
   ), []);
 
+  const loadSlotstreamStatus = useCallback(() => (
+    getSlotstreamServerStatus({ silent: true })
+      .then((res) => {
+        if (res) setSlotstreamStatus(res);
+        return res;
+      })
+      .catch(() => null)
+  ), []);
+
   const loadStatus = useCallback(() => {
     const requestId = ++statusRequestId.current;
     if (activeView === 'abuse') {
@@ -279,6 +292,7 @@ export function LocalLlmTab({ view }) {
     if (activeView === 'runtimes') {
       loadLlamaStatus();
       loadMtplxStatus();
+      loadSlotstreamStatus();
     }
     return getLocalLlmStatus({ silent: true })
       .then((s) => {
@@ -296,7 +310,7 @@ export function LocalLlmTab({ view }) {
       .finally(() => {
         if (requestId === statusRequestId.current) setLoading(false);
       });
-  }, [activeView, loadLlamaStatus, loadMtplxStatus]);
+  }, [activeView, loadLlamaStatus, loadMtplxStatus, loadSlotstreamStatus]);
 
   // `source` and `category` are required rather than defaulted from state: a
   // state default would put them in the dep list, so `loadCatalog`'s identity
@@ -544,16 +558,37 @@ export function LocalLlmTab({ view }) {
     'Saved — MTPLX will start on these options when a request needs it'
   ).then(loadMtplxStatus);
 
-  // The idle window is a plain settings write for both daemons; only what
-  // happens when it elapses differs (llama.cpp unloads in place on its next
-  // start, MTPLX is stopped and lazily restarted).
+  // The idle window is a plain settings write for the PM2-managed daemons;
+  // only what happens when it elapses differs (llama.cpp unloads in place on
+  // its next start; MTPLX and Slotstream are stopped and lazily restarted).
+  const idleRuntimeLabel = { llama: 'llama.cpp', mtplx: 'MTPLX', slotstream: 'Slotstream' };
   const saveIdleWindow = (runtime, minutes) => runAction(
     `runtime-idle-${runtime}`,
     () => patchSettingsSlice(`localLlm.${runtime}`, { idleMinutes: minutes }),
     minutes === 0
-      ? `${runtime === 'llama' ? 'llama.cpp' : 'MTPLX'} will stay loaded while idle`
-      : `${runtime === 'llama' ? 'llama.cpp' : 'MTPLX'} releases its model after ${minutes} idle minute${minutes === 1 ? '' : 's'}`
-  ).then(runtime === 'llama' ? loadLlamaStatus : loadMtplxStatus);
+      ? `${idleRuntimeLabel[runtime] || runtime} will stay loaded while idle`
+      : `${idleRuntimeLabel[runtime] || runtime} releases its model after ${minutes} idle minute${minutes === 1 ? '' : 's'}`
+  ).then(runtime === 'llama' ? loadLlamaStatus : runtime === 'slotstream' ? loadSlotstreamStatus : loadMtplxStatus);
+  const runtimeInstallSlotstream = () => runAction(
+    'runtime-install-slotstream',
+    () => installSlotstream(),
+    'Slotstream installed'
+  ).then(loadSlotstreamStatus);
+  const runtimeStartSlotstream = (launch = {}) => runAction(
+    'runtime-start-slotstream',
+    () => startSlotstreamServer(launch),
+    (r) => r?.online ? 'Slotstream is running' : 'Slotstream is loading its checkpoint'
+  ).then(loadSlotstreamStatus);
+  const saveSlotstreamLaunch = (launch) => runAction(
+    'runtime-save-slotstream-launch',
+    () => patchSettingsSlice('localLlm.slotstream', { launch }),
+    'Saved — Slotstream will start on these options when a request needs it'
+  ).then(loadSlotstreamStatus);
+  const runtimeStopSlotstream = () => runAction(
+    'runtime-stop-slotstream',
+    () => stopSlotstreamServer(),
+    (r) => r?.message || 'Slotstream stopped'
+  ).then(loadSlotstreamStatus);
   const runtimeStopMtplx = () => runAction(
     'runtime-stop-mtplx',
     () => stopMtplxServer(),
@@ -596,7 +631,7 @@ export function LocalLlmTab({ view }) {
     'runtime-save-startup',
     () => saveRuntimeStartupList(),
     'Saved — the PM2 processes running now will come back after a reboot'
-  ).then(() => { loadLlamaStatus(); loadMtplxStatus(); });
+  ).then(() => { loadLlamaStatus(); loadMtplxStatus(); loadSlotstreamStatus(); });
   const scrollTo = (ref) => ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   const selectedData = status?.[selected];
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
@@ -983,6 +1018,7 @@ export function LocalLlmTab({ view }) {
         status={status}
         llamaStatus={llamaStatus}
         mtplxStatus={mtplxStatus}
+        slotstreamStatus={slotstreamStatus}
         loading={loading}
         busy={busy}
         actionInProgress={actionInProgress}
@@ -998,6 +1034,10 @@ export function LocalLlmTab({ view }) {
         onInstallMtplx={runtimeInstallMtplx}
         onStartMtplx={runtimeStartMtplx}
         onStopMtplx={runtimeStopMtplx}
+        onConfigureSlotstream={() => scrollTo(slotstreamSectionRef)}
+        onInstallSlotstream={runtimeInstallSlotstream}
+        onStartSlotstream={runtimeStartSlotstream}
+        onStopSlotstream={runtimeStopSlotstream}
         onSaveStartup={saveRuntimeStartup}
         onSaveIdleWindow={saveIdleWindow}
       />
@@ -1104,6 +1144,21 @@ export function LocalLlmTab({ view }) {
         ) : (
           <p className="text-sm text-gray-500">Unable to load local LLM status</p>
         )}
+      </div>
+
+      {/* Slotstream — PM2-managed SSD-streaming MoE runtime (Apple Silicon) */}
+      <div ref={slotstreamSectionRef}>
+        <SlotstreamServerCard
+          status={slotstreamStatus}
+          loading={loading}
+          busy={busy}
+          actionInProgress={actionInProgress}
+          onRefresh={loadSlotstreamStatus}
+          onSaveLaunch={saveSlotstreamLaunch}
+          onStart={runtimeStartSlotstream}
+          onStop={runtimeStopSlotstream}
+          onInstall={runtimeInstallSlotstream}
+        />
       </div>
 
       {/* MTPLX — PM2-managed native-MTP runtime (Apple Silicon) */}

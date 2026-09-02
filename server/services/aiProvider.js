@@ -7,6 +7,7 @@ import { getAllProviders } from './providers.js';
 import { startAIOp } from './aiStatusEvents.js';
 import { ensureProviderReady as ensureOllamaProviderReady, isOllamaProvider } from './ollamaManager.js';
 import { ensureMtplxProviderReady, isMtplxProvider } from './mtplxServerManager.js';
+import { ensureSlotstreamProviderReady, isSlotstreamProvider } from './slotstreamServerManager.js';
 // localModelHealing is lazy-imported at its (rare, error-recovery) call site
 // below — a static import here pulls its notifications/providers deps (which
 // eagerly import fileUtils `PATHS`) into every aiProvider consumer's module
@@ -510,6 +511,19 @@ export async function callProviderAISimple(provider, model, prompt, options = {}
     const ready = await ensureMtplxProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
     if (!ready.success) {
       const error = `MTPLX is not running and PortOS could not start it: ${ready.error || 'unknown error'}`;
+      statusOp.error(error);
+      return { error };
+    }
+  }
+
+  // Same bargain for Slotstream: this is the only place a simple call refreshes
+  // its idle clock, so without this branch the reaper would stop the daemon
+  // mid-session and the next call would get a bare connection refusal.
+  if (isSlotstreamProvider(provider)) {
+    statusOp.update('provider:starting', 'Starting Slotstream if needed…', { providerId: provider.id });
+    const ready = await ensureSlotstreamProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
+    if (!ready.success) {
+      const error = `Slotstream is not running and PortOS could not start it: ${ready.error || 'unknown error'}`;
       statusOp.error(error);
       return { error };
     }

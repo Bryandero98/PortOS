@@ -18,6 +18,10 @@ vi.mock('../../services/api', () => ({
   startMtplxServer: vi.fn(),
   stopMtplxServer: vi.fn(),
   installMtplx: vi.fn(),
+  getSlotstreamServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false, supported: true, cachedModels: [], memoryPlan: { targetGb: 22, expectedPeakGb: 22, expectedWarmDecodeToks: 8, auto: true } }),
+  startSlotstreamServer: vi.fn(),
+  stopSlotstreamServer: vi.fn(),
+  installSlotstream: vi.fn(),
   // The MTPLX card's checkpoint panel loads upstream's default listing on mount.
   searchMtplxModels: vi.fn().mockResolvedValue({ models: [], error: null }),
   pullMtplxModel: vi.fn(),
@@ -131,7 +135,7 @@ describe('LocalLlmTab information architecture', () => {
   });
 
   it('gives model installation its own panel without mounting runtime management', async () => {
-    const { getLlamaServerStatus, getMtplxServerStatus } = await import('../../services/api');
+    const { getLlamaServerStatus, getMtplxServerStatus, getSlotstreamServerStatus } = await import('../../services/api');
 
     await renderTab('library');
 
@@ -139,6 +143,7 @@ describe('LocalLlmTab information architecture', () => {
     expect(screen.queryByRole('heading', { name: 'Local Runtime Servers' })).not.toBeInTheDocument();
     expect(getLlamaServerStatus).not.toHaveBeenCalled();
     expect(getMtplxServerStatus).not.toHaveBeenCalled();
+    expect(getSlotstreamServerStatus).not.toHaveBeenCalled();
     await waitFor(() => expect(getLocalLlmCatalog).toHaveBeenCalled());
   });
 

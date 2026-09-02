@@ -89,6 +89,20 @@ export const stopMtplxServer = () =>
 export const installMtplx = () =>
   request('/local-llm/mtplx/install', { method: 'POST' });
 
+// Slotstream (SSD-streaming MoE on Apple Silicon) — a PM2-managed process,
+// same lifecycle shape as MTPLX. A start never downloads weights.
+export const getSlotstreamServerStatus = (options) =>
+  request('/local-llm/slotstream/status', options);
+
+export const startSlotstreamServer = (config = {}) =>
+  request('/local-llm/slotstream/start', { method: 'POST', body: JSON.stringify(config) });
+
+export const stopSlotstreamServer = () =>
+  request('/local-llm/slotstream/stop', { method: 'POST' });
+
+export const installSlotstream = () =>
+  request('/local-llm/slotstream/install', { method: 'POST' });
+
 // MTPLX model catalog — search, download, and remove MTP checkpoints in-app.
 // `mtplx forge discover` is upstream's index of MTPLX-branded models, which is
 // exactly the set `mtplx serve` can run; an empty query returns its default list.

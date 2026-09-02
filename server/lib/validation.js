@@ -1932,6 +1932,14 @@ export const localLlmSettingsSchema = z.object({
       port: z.number().int().min(1).max(65535).optional(),
     }).strict().optional(),
   }).strict().optional(),
+  slotstream: z.object({
+    idleMinutes: z.number().int().min(0).max(1440).optional(),
+    launch: z.object({
+      model: z.string().trim().max(300).nullable().optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      memoryGb: z.number().min(6).max(512).nullable().optional(),
+    }).strict().optional(),
+  }).strict().optional(),
 }).strict();
 
 // =============================================================================
