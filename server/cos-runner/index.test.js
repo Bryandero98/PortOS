@@ -89,6 +89,17 @@ describe('cos-runner termination', () => {
     expect(RUNNER_SRC).not.toContain(".process.kill('SIG");
   });
 
+  it('guards the child stdin pipe BEFORE writing the prompt to it', () => {
+    // A child that dies before reading stdin emits EPIPE, and an unlistened
+    // stream 'error' in this non-request context kills the runner process
+    // (#5655). Source-text because the route spawns a real child; the helper's
+    // behavior is covered in lib/bufferedSpawn.test.js.
+    const guardAt = RUNNER_SRC.indexOf('guardChildStdin(claudeProcess);');
+    const writeAt = RUNNER_SRC.indexOf('claudeProcess.stdin.write(prompt);');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(writeAt).toBeGreaterThan(guardAt);
+  });
+
   it('escalates through the shared armForceKill on every terminate path', () => {
     expect(RUNNER_SRC).toContain("import { armForceKill as armForceKillShared } from './forceKill.js';");
     // /terminate and /terminate-all, plus the post-finalize tui:kill relay.

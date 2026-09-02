@@ -608,7 +608,7 @@ describe('guardChildStdin', () => {
   // An 'error' on a stream with no listener is re-thrown by Node. Every CLI-agent
   // spawn site runs outside the Express request lifecycle, so that throw takes the
   // whole server process down — with every live agent run, PTY shell and socket on
-  // it. This is the contract those three call sites rely on.
+  // it. This is the contract every CLI spawn site that writes stdin relies on.
   it('swallows an EPIPE emitted on the child stdin pipe', () => {
     const child = { stdin: new EventEmitter() };
     guardChildStdin(child);

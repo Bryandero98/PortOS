@@ -113,7 +113,9 @@ function makeChild() {
   Object.setPrototypeOf(child, ChildProcess.prototype);
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { write: vi.fn(), end: vi.fn() };
+  // A real ChildProcess stdin is a stream — the fake is one too, or the
+  // production guardChildStdin listener has nothing to attach to (#5655).
+  child.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn(), destroy: vi.fn() });
   child.kill = vi.fn();
   child.killed = false;
   return child;

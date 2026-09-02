@@ -436,7 +436,9 @@ export function spawnFailureDetail(result, fallback) {
  * takes down the single server process that owns every live agent run, PTY
  * shell, media job and socket. Swallowing it is correct: the child's own
  * `'error'`/`'exit'`/`'close'` handler is the authoritative settle point and
- * reports the real cause.
+ * reports the real cause. It is logged rather than dropped, because a child
+ * that exits 0 after refusing its prompt would otherwise be recorded as a clean
+ * run with no trace of the prompt never having been delivered.
  *
  * A crash guard must never be the crash: a `spawn()` that failed command lookup
  * hands back a handle with no stdio at all, and a child configured with a
@@ -447,6 +449,10 @@ export function spawnFailureDetail(result, fallback) {
  * @returns {import('child_process').ChildProcess} the same child, for chaining
  */
 export function guardChildStdin(child) {
-  if (typeof child?.stdin?.on === 'function') child.stdin.on('error', () => {});
+  if (typeof child?.stdin?.on === 'function') {
+    child.stdin.on('error', (err) => {
+      console.warn(`⚠️ child stdin closed before the prompt was delivered: ${err?.code || err?.message || err}`);
+    });
+  }
   return child;
 }

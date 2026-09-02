@@ -454,8 +454,11 @@ export async function spawnDirectly({
       if (writePromptToStdin && claudeProcess.stdin) claudeProcess.stdin.write(prompt);
       claudeProcess.stdin?.end();
     } catch {
-      // Synchronous write failure (already-destroyed stdin) — the 'error'/'exit'
-      // handler settles the agent run with the real cause.
+      // Synchronous write failure (an already-destroyed pipe, or a prompt that
+      // is not a string). Close the pipe anyway so a child that IS still reading
+      // stdin sees EOF instead of hanging, and let the 'error'/'exit' handler
+      // settle the agent run with the real cause.
+      claudeProcess.stdin?.destroy();
     }
 
     activeAgents.set(agentId, {

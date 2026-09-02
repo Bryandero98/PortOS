@@ -420,8 +420,11 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, sc
     if (useStdin) childProcess.stdin.write(promptInput);
     childProcess.stdin.end();
   } catch {
-    // Synchronous write failure (already-destroyed stdin) — the 'error'/'close'
-    // handler settles the run with the real cause.
+    // Synchronous write failure (an already-destroyed pipe, or a prompt that is
+    // not a string). Close the pipe anyway so a child that IS still reading
+    // stdin sees EOF instead of hanging, and let the 'error'/'close' handler settle
+    // the run with the real cause.
+    childProcess.stdin?.destroy();
   }
 
   // Track active run via the toolkit's declared external-run registry so its

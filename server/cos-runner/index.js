@@ -517,8 +517,11 @@ app.post('/spawn', async (req, res) => {
     if (useStdin) claudeProcess.stdin.write(prompt);
     claudeProcess.stdin.end();
   } catch {
-    // Synchronous write failure (already-destroyed stdin) — the 'error'/'close'
-    // handler settles the run with the real cause.
+    // Synchronous write failure (an already-destroyed pipe, or a prompt that is
+    // not a string). Close the pipe anyway so a child that IS still reading
+    // stdin sees EOF instead of hanging, and let the 'error'/'close' handler settle
+    // the run with the real cause.
+    claudeProcess.stdin?.destroy();
   }
 
   // Handle stdout

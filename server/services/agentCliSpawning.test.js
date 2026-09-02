@@ -649,16 +649,27 @@ describe('stream error containment', () => {
       // Regression guard for the listener drifting back below the write.
       const epipe = () => Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
       fakeProcess = makeFakeProcess();
+      // Captured INSIDE write so the assertion is about ordering, not just
+      // eventual presence — a guard moved below the write would read 0 here.
+      let listenersAtWriteTime = null;
       fakeProcess.stdin = Object.assign(new EventEmitter(), {
-        write: vi.fn(() => { throw epipe(); }),
+        write: vi.fn(function () {
+          listenersAtWriteTime = fakeProcess.stdin.listenerCount('error');
+          throw epipe();
+        }),
         end: vi.fn(),
+        destroy: vi.fn(),
       });
 
       const spawnPromise = spawnDirectly(minimalArgs);
       await new Promise((r) => setTimeout(r, 10));
 
-      // A listener IS attached, so the late pipe error is swallowed instead of thrown.
+      // The guard was already in place when the write ran…
+      expect(listenersAtWriteTime).toBe(1);
+      // …so a late pipe error is swallowed instead of thrown.
       expect(() => fakeProcess.stdin.emit('error', epipe())).not.toThrow();
+      // …and the pipe was closed anyway, so a child still reading stdin sees EOF.
+      expect(fakeProcess.stdin.destroy).toHaveBeenCalled();
 
       fakeProcess.emit('close', 0);
       // The synchronous write throw did not escape as a rejected spawn either.
