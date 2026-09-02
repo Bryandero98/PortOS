@@ -20,6 +20,7 @@ import toast from '../components/ui/Toast';
 import FilePickerButton from '../components/ui/FilePickerButton';
 import { IMAGE_ACCEPT } from '../utils/fileUpload';
 import Modal from '../components/ui/Modal';
+import { useAutoRefetch } from '../hooks/useAutoRefetch.js';
 import { useSseProgress } from '../hooks/useSseProgress';
 import DatasetImageGrid from '../components/loraTraining/DatasetImageGrid';
 import GenerateBatchDialog from '../components/loraTraining/GenerateBatchDialog';
@@ -371,11 +372,7 @@ export default function LoraDatasetDetail({ recordId }) {
 
   // Poll while any image renders — the server heals stuck images on read.
   const renderingCount = readiness.rendering;
-  useEffect(() => {
-    if (!renderingCount) return undefined;
-    const timer = setInterval(refresh, 5000);
-    return () => clearInterval(timer);
-  }, [renderingCount, refresh]);
+  useAutoRefetch(refresh, 5000, { enabled: renderingCount > 0, immediate: false, pollOnly: true });
 
   // Caption-run SSE — refetch on terminal so captions land in the grid, and
   // surface failures the run reported. The server emits per-image `error`

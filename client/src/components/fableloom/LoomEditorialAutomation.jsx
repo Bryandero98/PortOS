@@ -6,6 +6,7 @@ import {
 import ProviderModelSelector from '../ProviderModelSelector';
 import toast from '../ui/Toast';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import { useAutoRefetch } from '../../hooks/useAutoRefetch.js';
 import useFableLoomAiRun from '../../hooks/useFableLoomAiRun';
 import useProviderModels from '../../hooks/useProviderModels';
 import {
@@ -109,18 +110,14 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
   }, [loom.id]);
 
   const autopilotActive = ACTIVE_STATUSES.has(autopilotRun?.status);
-  useEffect(() => {
-    if (!autopilotActive || !autopilotRun?.id) return undefined;
-    let ignore = false;
-    const refresh = () => getLoomEditorialAutopilotRun(loom.id, autopilotRun.id, { silent: true })
-      .then((run) => { if (!ignore) setAutopilotRun(run); })
-      .catch(() => {});
-    const interval = setInterval(refresh, 2000);
-    return () => {
-      ignore = true;
-      clearInterval(interval);
-    };
-  }, [autopilotActive, autopilotRun?.id, loom.id]);
+  const refreshAutopilotRun = () => getLoomEditorialAutopilotRun(loom.id, autopilotRun.id, { silent: true })
+    .then(setAutopilotRun)
+    .catch(() => {});
+  useAutoRefetch(refreshAutopilotRun, 2000, {
+    enabled: autopilotActive && Boolean(autopilotRun?.id),
+    immediate: false,
+    pollOnly: true,
+  });
 
   useEffect(() => {
     if (!TERMINAL_STATUSES.has(autopilotRun?.status)
