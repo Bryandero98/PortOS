@@ -66,8 +66,10 @@ describe('cos-runner spawn — per-provider prompt delivery (antigravity --print
 
   it('gates the stdin write on useStdin so an argv-delivered prompt is not also piped', () => {
     // For antigravity (--print value) / grok-on-Windows (temp file) useStdin is
-    // false — writing the prompt to stdin too would be redundant/incorrect.
-    expect(RUNNER_SRC).toMatch(/if\s*\(\s*useStdin\s*\)\s*claudeProcess\.stdin\.write\(prompt\)/);
+    // false — writing the prompt to stdin too would be redundant/incorrect. The
+    // delivery helper writes its payload only when it is non-null, so passing
+    // null there is what "don't pipe it" looks like now (#5655).
+    expect(RUNNER_SRC).toMatch(/deliverChildStdin\(claudeProcess,\s*useStdin \? prompt : null,/);
   });
 });
 
@@ -95,9 +97,9 @@ describe('cos-runner termination', () => {
     // (#5655). Source-text because the route spawns a real child; the helper's
     // behavior is covered in lib/bufferedSpawn.test.js.
     const guardAt = RUNNER_SRC.indexOf('guardChildStdin(claudeProcess);');
-    const writeAt = RUNNER_SRC.indexOf('claudeProcess.stdin.write(prompt);');
+    const deliverAt = RUNNER_SRC.indexOf('deliverChildStdin(claudeProcess,');
     expect(guardAt).toBeGreaterThan(-1);
-    expect(writeAt).toBeGreaterThan(guardAt);
+    expect(deliverAt).toBeGreaterThan(guardAt);
   });
 
   it('escalates through the shared armForceKill on every terminate path', () => {

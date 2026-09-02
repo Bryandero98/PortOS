@@ -36,7 +36,7 @@ import { buildVendorSpawnConfig } from '../lib/providerVendors.js';
 import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } from '../lib/providerModels.js';
 import { resolveForgeTokenEnv } from './git.js';
 import { resolveAgentCliCwd } from '../lib/spawnCwd.js';
-import { prepareCliSpawn, killProcessTree, guardChildStdin } from '../lib/bufferedSpawn.js';
+import { prepareCliSpawn, killProcessTree, guardChildStdin, deliverChildStdin } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
@@ -450,16 +450,7 @@ export async function spawnDirectly({
       prompt: (task.description || '').substring(0, 500)
     });
 
-    try {
-      if (writePromptToStdin && claudeProcess.stdin) claudeProcess.stdin.write(prompt);
-      claudeProcess.stdin?.end();
-    } catch {
-      // Synchronous write failure (an already-destroyed pipe, or a prompt that
-      // is not a string). Close the pipe anyway so a child that IS still reading
-      // stdin sees EOF instead of hanging, and let the 'error'/'exit' handler
-      // settle the agent run with the real cause.
-      claudeProcess.stdin?.destroy();
-    }
+    deliverChildStdin(claudeProcess, writePromptToStdin ? prompt : null, `agent ${agentId}`);
 
     activeAgents.set(agentId, {
       process: claudeProcess,

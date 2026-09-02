@@ -11,7 +11,7 @@ import { hasModelFlag, extractBakedModel } from '../lib/providerModels.js';
 import { buildCliArgs, prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { createImmediateFallbackSignalDetector, ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
-import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn, guardChildStdin } from '../lib/bufferedSpawn.js';
+import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn, guardChildStdin, deliverChildStdin } from '../lib/bufferedSpawn.js';
 import { isHostShuttingDown } from '../lib/hostShutdown.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
@@ -416,16 +416,7 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, sc
   // Pass prompt via stdin to avoid OS argv limits. When grok is delivered via a
   // Windows temp file (useStdin === false) the prompt is already on disk, so
   // just close stdin.
-  try {
-    if (useStdin) childProcess.stdin.write(promptInput);
-    childProcess.stdin.end();
-  } catch {
-    // Synchronous write failure (an already-destroyed pipe, or a prompt that is
-    // not a string). Close the pipe anyway so a child that IS still reading
-    // stdin sees EOF instead of hanging, and let the 'error'/'close' handler settle
-    // the run with the real cause.
-    childProcess.stdin?.destroy();
-  }
+  deliverChildStdin(childProcess, useStdin ? promptInput : null, `run ${runId}`);
 
   // Track active run via the toolkit's declared external-run registry so its
   // stopRun/isRunActive/deleteRun account for this host-spawned child process.

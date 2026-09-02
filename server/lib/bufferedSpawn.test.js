@@ -30,6 +30,7 @@ const {
   MAX_OUTPUT_BYTES,
   spawnFailureDetail,
   guardChildStdin,
+  deliverChildStdin,
 } = await import('./bufferedSpawn.js');
 
 /**
@@ -628,5 +629,45 @@ describe('guardChildStdin', () => {
   it('returns the child so it can be chained at a spawn site', () => {
     const child = { stdin: new EventEmitter() };
     expect(guardChildStdin(child)).toBe(child);
+  });
+});
+
+describe('deliverChildStdin', () => {
+  const streamStdin = (overrides = {}) => Object.assign(new EventEmitter(), {
+    write: vi.fn(), end: vi.fn(), destroy: vi.fn(), ...overrides,
+  });
+
+  it('writes the payload and closes the pipe', () => {
+    const child = { stdin: streamStdin() };
+    expect(deliverChildStdin(child, 'prompt', 'run r1')).toBe(true);
+    expect(child.stdin.write).toHaveBeenCalledWith('prompt');
+    expect(child.stdin.end).toHaveBeenCalled();
+  });
+
+  it('closes the pipe without writing when the prompt already went out by argv', () => {
+    const child = { stdin: streamStdin() };
+    expect(deliverChildStdin(child, null, 'run r1')).toBe(true);
+    expect(child.stdin.write).not.toHaveBeenCalled();
+    expect(child.stdin.end).toHaveBeenCalled();
+  });
+
+  it('destroys the pipe and logs when write throws, instead of letting it escape', () => {
+    // A bare swallow would leave a child that IS reading stdin waiting on a
+    // write that never lands, and file the resulting empty run as clean (#5655).
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = { stdin: streamStdin({ write: vi.fn(() => { throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }); }) }) };
+
+    expect(deliverChildStdin(child, 'prompt', 'run r1')).toBe(false);
+
+    expect(child.stdin.destroy).toHaveBeenCalled();
+    expect(consoleSpy.mock.calls[0][0]).toContain('❌ run r1 stdin write failed');
+    expect(consoleSpy.mock.calls[0][0]).toContain('EPIPE');
+    consoleSpy.mockRestore();
+  });
+
+  it('survives a spawn that failed command lookup and has no stdio at all', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(deliverChildStdin({}, 'prompt', 'run r1')).toBe(false);
+    consoleSpy.mockRestore();
   });
 });

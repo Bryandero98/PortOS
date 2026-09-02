@@ -17,7 +17,7 @@ import { existsSync } from 'fs';
 import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { ensureDir, PATHS, sleep, watchForFile } from '../lib/fileUtils.js';
-import { prepareCliSpawn, killProcessTree, guardChildStdin } from '../lib/bufferedSpawn.js';
+import { prepareCliSpawn, killProcessTree, guardChildStdin, deliverChildStdin } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { commandExists } from '../lib/commandExists.js';
@@ -513,16 +513,7 @@ app.post('/spawn', async (req, res) => {
 
   // Send prompt via stdin (skipped when the prompt was delivered via argv —
   // antigravity's --print value, or grok's Windows temp file).
-  try {
-    if (useStdin) claudeProcess.stdin.write(prompt);
-    claudeProcess.stdin.end();
-  } catch {
-    // Synchronous write failure (an already-destroyed pipe, or a prompt that is
-    // not a string). Close the pipe anyway so a child that IS still reading
-    // stdin sees EOF instead of hanging, and let the 'error'/'close' handler settle
-    // the run with the real cause.
-    claudeProcess.stdin?.destroy();
-  }
+  deliverChildStdin(claudeProcess, useStdin ? prompt : null, `agent ${agentId}`);
 
   // Handle stdout
   claudeProcess.stdout.on('data', (data) => {

@@ -149,7 +149,9 @@ function makeFakeChild() {
   Object.setPrototypeOf(child, ChildProcess.prototype);
   child.killed = false;
   child.kill = vi.fn(() => { child.killed = true; });
-  child.stdin = { write: vi.fn(), end: vi.fn() };
+  // A real ChildProcess stdin is a stream — the fake is one too, or the
+  // production guardChildStdin listener has nothing to attach to (#5655).
+  child.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn(), destroy: vi.fn() });
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   return child;
@@ -317,6 +319,37 @@ describe('describeImageViaCli', () => {
     // must SIGTERM it and reject on its own rather than awaiting `close`.
     await expect(promise).rejects.toThrow(/timed out after 20ms/);
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('contains an EPIPE on stdin from a vision CLI that died before reading the prompt (#5655)', async () => {
+    // describeImageViaCli runs outside the Express request lifecycle, so an
+    // unlistened 'error' on the stdin stream would kill the server process
+    // instead of rejecting this promise.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = makeFakeChild();
+    let listenersAtWriteTime = null;
+    child.stdin.write = vi.fn(() => {
+      listenersAtWriteTime = child.stdin.listenerCount('error');
+      throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    });
+    const spawnImpl = spawnEmitting(child, (c) => {
+      expect(() => c.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).not.toThrow();
+      c.emit('close', 1);
+    });
+
+    // claude-code is the stdin-delivering vision provider (codex puts the
+    // prompt in argv and never writes the pipe).
+    await expect(describeImageViaCli({
+      provider: { id: 'claude-code', command: 'claude', args: [] },
+      dataUrl: PNG_DATA_URL,
+      prompt: 'caption this',
+      spawnImpl,
+    })).rejects.toThrow(/exited 1/);
+
+    expect(listenersAtWriteTime).toBe(1);
+    // The pipe is closed anyway, so a child still reading stdin sees EOF.
+    expect(child.stdin.destroy).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   it('throws on a malformed data URL before spawning', async () => {

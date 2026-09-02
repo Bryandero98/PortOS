@@ -456,3 +456,42 @@ export function guardChildStdin(child) {
   }
   return child;
 }
+
+/**
+ * Deliver a prompt on a guarded child's `stdin` and close the pipe.
+ *
+ * Pair with `guardChildStdin`, which must already have run — this covers the
+ * OTHER half of the same hazard, a `write()` that throws *synchronously* (an
+ * already-destroyed pipe, or a payload that isn't a string/Buffer). That throw
+ * escapes the spawn site the same way an unlistened `'error'` does, so it is
+ * caught here.
+ *
+ * Two things then have to happen, and both were missed by the naive
+ * swallow-and-continue: the pipe is destroyed, so a child that IS still reading
+ * stdin sees EOF instead of waiting forever on a write that never lands; and
+ * the failure is logged, because a provider that gets an empty prompt and exits
+ * 0 would otherwise be filed as a clean run with nothing to explain the empty
+ * output. The child's own `'error'`/`'close'` handler stays the authoritative
+ * settle point, so this deliberately does not rethrow or settle anything.
+ *
+ * @param {import('child_process').ChildProcess} child
+ * @param {string|Buffer|null} payload - written when non-null; pass null when the
+ *   prompt was already delivered by argv or a temp file and stdin only needs closing
+ * @param {string} label - names the run/agent in the failure log
+ * @returns {boolean} true when the prompt was handed off cleanly
+ */
+export function deliverChildStdin(child, payload, label) {
+  if (!child?.stdin) {
+    console.error(`❌ ${label} has no stdin pipe — the prompt was not delivered`);
+    return false;
+  }
+  try {
+    if (payload != null) child.stdin.write(payload);
+    child.stdin.end();
+    return true;
+  } catch (err) {
+    console.error(`❌ ${label} stdin write failed, closing the pipe: ${err?.code || err?.message || err}`);
+    child.stdin?.destroy();
+    return false;
+  }
+}
