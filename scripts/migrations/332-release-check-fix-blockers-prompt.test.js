@@ -53,18 +53,36 @@ describe('migration 332 — make release-check fix release blockers', () => {
     expect(readJson(legacyPath).tasks['release-check'].prompt).toBe(DEFAULT_TASK_PROMPTS['release-check']);
   });
 
-  it('does not rewrite a current or customized prompt', async () => {
-    const path = join(rootDir, 'data', 'cos', 'task-schedule.json');
-    writeJson(path, {
+  // Both guards are keyed on the 'release-check' task itself, so the mocks must be
+  // stored under that key — a task keyed anything else is skipped before either
+  // guard runs, and `updated === 0` would then pass without exercising them.
+  it('does not rewrite a current or customized release-check prompt', async () => {
+    const cosPath = join(rootDir, 'data', 'cos', 'task-schedule.json');
+    const legacyPath = join(rootDir, 'data', 'task-schedule.json');
+    writeJson(cosPath, {
       tasks: {
-        current: { promptVersion: PROMPT_VERSIONS['release-check'], promptCustomized: false, prompt: DEFAULT_TASK_PROMPTS['release-check'] },
-        custom: { promptVersion: 12, promptCustomized: true, prompt: 'custom release policy' },
+        'release-check': {
+          promptVersion: PROMPT_VERSIONS['release-check'],
+          promptCustomized: false,
+          prompt: DEFAULT_TASK_PROMPTS['release-check'],
+        },
+      },
+    });
+    // Customized AND behind the current version: only promptCustomized can spare it.
+    writeJson(legacyPath, {
+      tasks: {
+        'release-check': { promptVersion: 12, promptCustomized: true, prompt: 'custom release policy' },
       },
     });
 
     const result = await migration.up({ rootDir });
 
     expect(result.updated).toBe(0);
-    expect(readJson(path).tasks.custom.prompt).toBe('custom release policy');
+    expect(readJson(cosPath).tasks['release-check'].prompt).toBe(DEFAULT_TASK_PROMPTS['release-check']);
+    expect(readJson(legacyPath).tasks['release-check']).toEqual({
+      promptVersion: 12,
+      promptCustomized: true,
+      prompt: 'custom release policy',
+    });
   });
 });
