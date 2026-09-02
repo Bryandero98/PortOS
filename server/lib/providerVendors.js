@@ -98,8 +98,8 @@ import {
   ensureCursorTuiArgs,
   ensureCursorHeadlessArgs,
 } from './cursor.js';
+import { PROVIDER_TYPES } from './aiToolkit/constants.js';
 import {
-  isPublicReviewNoToolProfile,
   publicReviewPostureForProfile,
   PUBLIC_REVIEW_EXECUTION_PROFILE,
   PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
@@ -135,6 +135,15 @@ function defaultSpawnArgs(cliArgsFn, fallbackCommand) {
     stdinMode: 'prompt',
   });
 }
+
+/**
+ * A provider record that names a local binary PortOS can spawn headless. A
+ * public-review stage never runs interactively: a TUI record of the same
+ * vendor (`codex-tui`, `grok-tui`, …) is spawned through the vendor's headless
+ * recipe exactly like its CLI sibling, so the user's enabled TUI providers are
+ * legal stage choices. API/custom providers have no binary and no recipe.
+ */
+const isDirectBinaryProvider = (provider) => provider?.type === PROVIDER_TYPES.CLI || provider?.type === PROVIDER_TYPES.TUI;
 
 // ─── codex ──────────────────────────────────────────────────────────────────
 
@@ -274,11 +283,11 @@ const CODEX = {
     // enforced recipe when a stage selects them.
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
       spawnArgs: codexPublicReviewSpawnArgs,
-      matchProvider: (provider) => isCodexCommand(provider?.command) || provider?.id === CODEX_CLI_ID || provider?.id === 'codex-tui',
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && (isCodexCommand(provider?.command) || provider?.id === CODEX_CLI_ID || provider?.id === 'codex-tui'),
     },
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: codexPublicReviewActionsSpawnArgs,
-      matchProvider: (provider) => provider?.type === 'cli' && isCodexCommand(provider?.command),
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isCodexCommand(provider?.command),
     },
   },
 };
@@ -304,11 +313,11 @@ const ANTIGRAVITY = {
   publicReview: {
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
       spawnArgs: antigravityPublicReviewSpawnArgs,
-      matchProvider: (provider) => provider?.type === 'cli' && isAntigravityCommand(provider?.command),
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isAntigravityCommand(provider?.command),
     },
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: antigravityPublicReviewActionsSpawnArgs,
-      matchProvider: (provider) => provider?.type === 'cli' && isAntigravityCommand(provider?.command),
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isAntigravityCommand(provider?.command),
     },
   },
 };
@@ -354,11 +363,11 @@ const GROK = {
   publicReview: {
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
       spawnArgs: grokPublicReviewSpawnArgs,
-      matchProvider: (provider) => provider?.type === 'cli' && isGrokCommand(provider?.command),
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isGrokCommand(provider?.command),
     },
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: grokPublicReviewActionsSpawnArgs,
-      matchProvider: (provider) => provider?.type === 'cli' && isGrokCommand(provider?.command),
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isGrokCommand(provider?.command),
     },
   },
 };
@@ -526,7 +535,7 @@ const CLAUDE = {
     // permission modes, so it fails closed for the actions stage.
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
       spawnArgs: claudePublicReviewArgs,
-      matchProvider: (provider) => provider?.type === 'cli' && isClaudeCommand(provider?.command),
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isClaudeCommand(provider?.command),
     },
   },
 };
@@ -592,21 +601,13 @@ export function inferTuiCommand(id) {
   return CLAUDE.inferredCommand;
 }
 
-/** `applyCommandDefaults` (tuiHandshake.js): TUI posture-flag dispatch. */
-export function applyCommandDefaults(command, args, { safetyProfile = null } = {}) {
-  if (publicReviewPostureForProfile(safetyProfile) === PUBLIC_REVIEW_ACTIONS_POSTURE) {
-    throw new Error('The public-review-actions profile requires a supported direct CLI sandbox');
-  }
-  const vendor = PROVIDER_VENDORS.find((v) => (
-    (isPublicReviewNoToolProfile(safetyProfile) ? v.publicReviewTuiArgs : v.tuiArgs)
-      && v.matchCommand(command)
-  ));
-  if (isPublicReviewNoToolProfile(safetyProfile)) {
-    if (!vendor || typeof vendor.publicReviewTuiArgs !== 'function') {
-      throw new Error(`Provider command '${command}' has no enforced public-review posture`);
-    }
-    return vendor.publicReviewTuiArgs(args, { safetyProfile });
-  }
+/**
+ * `applyCommandDefaults` (tuiHandshake.js): interactive-session flag dispatch.
+ * Public-review stages never reach this — they always spawn headless through
+ * `buildVendorSpawnConfig`, which is where a posture is enforced.
+ */
+export function applyCommandDefaults(command, args) {
+  const vendor = PROVIDER_VENDORS.find((v) => v.tuiArgs && v.matchCommand(command));
   if (!vendor) return args;
   return vendor.tuiArgs(args);
 }
@@ -660,11 +661,13 @@ export function buildVendorSpawnConfig(provider, ctx) {
  * offer a stage's eligible providers, so it must stay derived from the vendor
  * rows rather than from a hardcoded list of vendor names.
  *
- * Interactive (TUI) sessions and API/custom providers have no maintained
- * recipe: a generic read-only prompt is not enforcement, so they fail closed.
+ * API/custom providers have no maintained recipe: a generic read-only prompt
+ * is not enforcement, so they fail closed. A TUI record IS eligible — the
+ * stage spawns its binary headless through the vendor's enforced recipe, never
+ * as an interactive session (see `isDirectBinaryProvider`).
  */
-export function publicReviewPosturesForProvider(provider, { tui = false } = {}) {
-  if (tui || provider?.type !== 'cli') return [];
+export function publicReviewPosturesForProvider(provider) {
+  if (!isDirectBinaryProvider(provider)) return [];
   return PUBLIC_REVIEW_POSTURES.filter((posture) => Boolean(publicReviewRecipe(provider, posture)));
 }
 
@@ -678,8 +681,8 @@ export function publicReviewCapableVendorIds(posture) {
 }
 
 /** Whether `provider` has a maintained, enforced recipe for one posture. */
-export function supportsPublicReviewPosture(provider, posture, { tui = false } = {}) {
-  if (tui || provider?.type !== 'cli') return false;
+export function supportsPublicReviewPosture(provider, posture) {
+  if (!isDirectBinaryProvider(provider)) return false;
   return Boolean(publicReviewRecipe(provider, posture));
 }
 
@@ -696,9 +699,9 @@ export function supportsPublicReviewPosture(provider, posture, { tui = false } =
  *
  * @returns {{ reason: string, category: string }|null}
  */
-export function publicReviewProviderBlock(provider, posture, { tui = false } = {}) {
+export function publicReviewProviderBlock(provider, posture) {
   if (!posture) return null;
-  if (supportsPublicReviewPosture(provider, posture, { tui })) return null;
+  if (supportsPublicReviewPosture(provider, posture)) return null;
   return {
     reason: `Provider '${providerLabel(provider)}' has no enforced ${posture} public-content review mode`,
     category: posture === PUBLIC_REVIEW_ACTIONS_POSTURE
@@ -708,13 +711,13 @@ export function publicReviewProviderBlock(provider, posture, { tui = false } = {
 }
 
 /** Whether a provider can run a tool-free public-content stage. */
-export function supportsPublicReviewProvider(provider, options) {
-  return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_NO_TOOL_POSTURE, options);
+export function supportsPublicReviewProvider(provider) {
+  return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_NO_TOOL_POSTURE);
 }
 
 /** Whether a provider can run the sandboxed final public-review stage. */
-export function supportsPublicReviewActionsProvider(provider, options) {
-  return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_ACTIONS_POSTURE, options);
+export function supportsPublicReviewActionsProvider(provider) {
+  return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_ACTIONS_POSTURE);
 }
 
 /**

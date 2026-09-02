@@ -1568,7 +1568,7 @@ describe('pr-reviewer security preflight wiring', () => {
   it('narrows a targeted run before the fingerprint, the scan, and the stage-2 allowlist', () => {
     const start = GEN_SRC.indexOf('async function runPrReviewerSecurityPreflight');
     const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return { skipped: false, scan };', start));
-    const narrowAt = body.indexOf('target = { ...target, prs: scoped }');
+    const narrowAt = body.indexOf('prs: scoped.map((pr) => ({ ...pr, eligibilityFacts: { ...normalizeEligibilityFacts(pr.eligibilityFacts), maintainerTargeted: true } }))');
     const fingerprintAt = body.indexOf('securityScanFingerprint(target)');
     const scanAt = body.indexOf('runPrReviewerSecurityScan(');
 

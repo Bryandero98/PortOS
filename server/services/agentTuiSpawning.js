@@ -66,7 +66,6 @@ import {
   SUBMIT_KEY,
 } from '../lib/tuiHandshake.js';
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
-import { isPublicReviewNoToolProfile } from '../lib/agentExecutionProfiles.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
@@ -195,15 +194,10 @@ export function buildTuiSpawnConfig(provider, model, {
   systemPromptFile = null,
   effort = null,
   maxConcurrentThreads = null,
-  safetyProfile = null,
   shell = resolveInteractiveShell(),
 } = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
-  const baseArgs = applyCommandDefaults(
-    command,
-    isPublicReviewNoToolProfile(safetyProfile) ? [] : [...(provider?.args || [])],
-    { safetyProfile },
-  );
+  const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   // Model+effort injection (including the antigravity-validates-the-pair special
   // case) is shared with tuiHandshake.js#buildTuiInvocation via
   // providerVendors.js#injectTuiModelAndEffort, so the two spawn paths can't

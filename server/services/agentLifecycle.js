@@ -417,12 +417,18 @@ async function runAgentSpawn(task) {
       return null;
     }
     const { provider, selectedModel, modelSelection } = resolution;
-    const isTui = isTuiProvider(provider);
     const executionProfile = task.metadata?.executionProfile;
     const publicReviewPosture = publicReviewPostureForProfile(executionProfile);
     const publicReviewNoTools = publicReviewPosture === PUBLIC_REVIEW_NO_TOOL_POSTURE;
     const publicReviewActions = executionProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
     const publicReview = Boolean(publicReviewPosture);
+    const isTui = isTuiProvider(provider);
+    // A public-content stage never runs as an interactive session: a TUI
+    // provider record is spawned headless through its vendor's enforced
+    // recipe (the same binary as its CLI sibling) — the recipe that makes it
+    // eligible in `providerVendors.js` — so the user's enabled TUI providers
+    // are legal stage choices without opening a PTY.
+    const spawnHeadless = publicReview || !isTui;
     if (publicReview) {
       const scanBlock = publicReviewScanBlock(task);
       if (scanBlock) {
@@ -465,7 +471,7 @@ async function runAgentSpawn(task) {
     // payload can be edited without the browser: the picker is a convenience,
     // never the enforcement. The helper owns the "no posture requested" case,
     // so an ordinary task (posture `null`) passes straight through (#5830).
-    const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture, { tui: isTui });
+    const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture);
     if (postureBlock) {
       const { reason, category } = postureBlock;
       await updateTask(task.id, {
@@ -649,7 +655,7 @@ async function runAgentSpawn(task) {
       workspacePath,
       appName: resolvedAppName
     });
-    const executionMode = isTui ? (dispatchUseRunner ? 'runner-tui' : 'tui') : dispatchUseRunner ? 'runner' : 'direct';
+    const executionMode = !spawnHeadless ? (dispatchUseRunner ? 'runner-tui' : 'tui') : dispatchUseRunner ? 'runner' : 'direct';
 
     // Register the agent with model info.
     //
@@ -896,8 +902,8 @@ async function runAgentSpawn(task) {
     // their deliberately bounded GPU concurrency posture.
     const maxConcurrentThreads = cloudSwarmThreadCapacity(runProvider, task.metadata?.swarmCount);
     const safetyProfile = publicReview ? executionProfile : null;
-    const cliConfig = isTui
-      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile })
+    const cliConfig = !spawnHeadless
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads })
       : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
@@ -920,7 +926,7 @@ async function runAgentSpawn(task) {
     // must NOT run here on the success path; the lane is released by the
     // agent-completion handler when the work finishes.
     handedOff = true;
-    if (isTui) {
+    if (!spawnHeadless) {
       return await spawnTuiAgent({
         agentId,
         task,

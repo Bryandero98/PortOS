@@ -2,9 +2,11 @@
  * Local model-abuse screening service.
  *
  * This service is intentionally separate from the local chat completion path.
- * It runs deterministic checks and then a pinned Prompt Guard classifier in a
- * dedicated offline Python environment. The classifier receives no tools,
- * agent prompt, repository checkout, credentials, or network access.
+ * It runs deterministic hidden-content and model-abuse checks first, then —
+ * only when the operator installed it on Models → LLMs → Abuse Guard — the
+ * pinned Prompt Guard classifier in a dedicated offline Python environment. The
+ * classifier receives no tools, agent prompt, repository checkout,
+ * credentials, or network access.
  */
 
 import { chmod, existsSync } from 'node:fs';
@@ -33,6 +35,7 @@ import {
   detectDeterministicModelAbuseSignals,
   hasToolFreeTextCapability,
   modelAbuseGuardStageReadiness,
+  normalizeEligibilityFacts,
   normalizeModelAbuseGuardResult,
 } from '../lib/modelAbuseGuard.js';
 import { findCachedRepoFiles } from '../lib/hfCache.js';
@@ -70,6 +73,8 @@ let installInFlight = null;
 let installKill = null;
 
 const failure = (code, extra = {}) => ({ ok: false, passed: false, safe: false, code, ...extra });
+// What a report names as its guard model when only the deterministic layer ran.
+export const DETERMINISTIC_ONLY_GUARD_MODEL = 'Deterministic hidden-content checks (classifier not installed)';
 const publicReviewModelFailure = (code) => ({ ok: false, code });
 
 const isSha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
@@ -78,29 +83,7 @@ const publicReviewInputPath = (scanKey) => isScanKey(scanKey)
   ? join(PUBLIC_REVIEW_INPUT_DIR, `${scanKey}.json`)
   : null;
 
-const normalizeIssueNumbers = (value) => Array.isArray(value)
-  ? [...new Set(value.filter((number) => Number.isInteger(number) && number > 0 && number <= 1_000_000))]
-    .sort((a, b) => a - b)
-    .slice(0, 50)
-  : [];
-
-const emptyEligibilityFacts = () => ({
-  linkedIssueNumbers: [],
-  openLinkedIssueNumbers: [],
-  openerAssignedIssueNumbers: [],
-  // Unknown is deliberately false. A missing facts object is not approval.
-  issueLookupComplete: false,
-});
-
-export function normalizeEligibilityFacts(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyEligibilityFacts();
-  return {
-    linkedIssueNumbers: normalizeIssueNumbers(value.linkedIssueNumbers),
-    openLinkedIssueNumbers: normalizeIssueNumbers(value.openLinkedIssueNumbers),
-    openerAssignedIssueNumbers: normalizeIssueNumbers(value.openerAssignedIssueNumbers),
-    issueLookupComplete: value.issueLookupComplete === true,
-  };
-}
+export { normalizeEligibilityFacts };
 
 export function normalizePublicReviewInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
@@ -509,6 +492,24 @@ function runClassifier({ pythonPath, modelDir, content, timeoutMs }) {
 }
 
 /**
+ * A validated verdict from the deterministic layer alone — either it blocked
+ * (so the classifier was never asked) or the classifier is not installed.
+ */
+const deterministicVerdict = (findings, classifier) => ({
+  ok: true,
+  passed: findings.length === 0,
+  safe: findings.length === 0,
+  code: findings.length ? 'security-guard-deterministic-findings' : 'security-guard-passed',
+  guardId: MODEL_ABUSE_GUARD_ID,
+  model: DETERMINISTIC_ONLY_GUARD_MODEL,
+  revision: null,
+  findings,
+  chunkCount: null,
+  minBenignScore: null,
+  layers: { deterministic: findings.length ? 'blocked' : 'passed', classifier, verdict: 'validated' },
+});
+
+/**
  * Screen one untrusted external-content item. The return value is safe to
  * persist in a report or pass as metadata: it contains no source text and no
  * raw subprocess/model response.
@@ -519,27 +520,16 @@ export async function runModelAbuseScan({ content, timeoutMs = MODEL_ABUSE_GUARD
 
   const deterministicFindings = detectDeterministicModelAbuseSignals(content);
   if (deterministicFindings.length > 0) {
-    return {
-      ok: true,
-      passed: false,
-      safe: false,
-      code: 'security-guard-deterministic-findings',
-      guardId: MODEL_ABUSE_GUARD_ID,
-      model: MODEL_ABUSE_GUARD.name,
-      revision: MODEL_ABUSE_GUARD.revision,
-      findings: deterministicFindings,
-      chunkCount: null,
-      minBenignScore: null,
-      layers: { deterministic: 'blocked', classifier: 'not-run', verdict: 'validated' },
-    };
+    return deterministicVerdict(deterministicFindings, 'not-run');
   }
 
+  // The classifier is an OPTIONAL second layer, managed on Models → LLMs →
+  // Abuse Guard. The deterministic checks above are the boundary Stage 1
+  // exists for (content hidden from a human reader, obvious model-directed
+  // harm); an install that never provisioned the gated Prompt Guard weights
+  // still gets that boundary instead of a scan that can never complete.
   const status = await getModelAbuseGuardStatus();
-  if (!status.ready) return failure('security-guard-not-ready', {
-    guardId: MODEL_ABUSE_GUARD_ID,
-    model: MODEL_ABUSE_GUARD.name,
-    revision: MODEL_ABUSE_GUARD.revision,
-  });
+  if (!status.ready) return deterministicVerdict([], 'not-installed');
   const modelFiles = await findCachedRepoFiles(
     MODEL_ABUSE_GUARD.repository,
     MODEL_ABUSE_GUARD_REQUIRED_FILES,
