@@ -319,6 +319,76 @@ describe('streamResumableDownload', () => {
     expect(await readFile(destPath, 'utf8')).toBe('full');
   });
 
+  // A resume with no validation could splice a NEW object's bytes onto an
+  // OLD partial's prefix if the remote file changed between attempts (same
+  // length, different content) — a server honoring If-Range instead returns
+  // 200 for that case, which the Range-ignored branch already restarts
+  // cleanly on. Two attempts here: the first records the ETag; the second
+  // (simulating a fresh process, e.g. after a restart) reads it back and
+  // sends it as If-Range.
+  it('records the first response ETag and sends it as If-Range on a later resume', async () => {
+    const destPath = await makeDir();
+    let firstCallHeaders;
+    await streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      finalize: false,
+      fetchImpl: async (_url, opts) => {
+        firstCallHeaders = opts.headers;
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => ({ 'content-length': '6', etag: '"abc123"' }[name] || null) },
+          body: webBody('gg', 'ufgg'),
+        };
+      },
+    });
+    expect(firstCallHeaders.Range).toBeUndefined();
+    expect(await readFile(`${partialPathFor(destPath)}.etag`, 'utf8').catch(() => null)).toBe('"abc123"');
+
+    // Simulate a transport drop leaving the .partial short, then resume.
+    await writeFile(partialPathFor(destPath), 'gg');
+    let secondCallHeaders;
+    await streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      fetchImpl: async (_url, opts) => {
+        secondCallHeaders = opts.headers;
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => ({ 'content-length': '4', 'content-range': 'bytes 2-5/6' }[name] || null) },
+          body: webBody('ufgg'),
+        };
+      },
+    });
+    expect(secondCallHeaders.Range).toBe('bytes=2-');
+    expect(secondCallHeaders['If-Range']).toBe('"abc123"');
+  });
+
+  // The 416 restart path deletes the partial and recurses with resumeFrom
+  // reset to 0 — the recursive call's own "Range ignored" recheck never
+  // fires (resumeFrom is already 0 there), so without an explicit recheck
+  // here a preflight sized for the SHORTFALL only never gets rerun against
+  // the FULL payload the restart is about to fetch.
+  it('refuses a 416 restart the disk cannot hold, using the 416 response\'s own total', async () => {
+    const destPath = await makeDir();
+    await writeFile(partialPathFor(destPath), 'X'.repeat(9));
+    const fetchImpl = async (_url, opts) => {
+      if (opts.headers.Range) {
+        return {
+          ok: false,
+          status: 416,
+          headers: { get: (name) => (name === 'content-range' ? `bytes */${Number.MAX_SAFE_INTEGER}` : null) },
+        };
+      }
+      throw new Error('unreachable: recheck should reject before the clean-restart GET');
+    };
+    await expect(streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl,
+    })).rejects.toMatchObject({ code: 'DISK_INSUFFICIENT' });
+  });
+
   // The caller's own preflight only reserved space for the bytes still
   // missing (crediting the .partial already on disk) — once the server
   // ignores Range and the FULL payload is about to land instead, refuse

@@ -177,6 +177,9 @@ export default function Loras() {
     preview: () => previewLoraInstall({ url, source, ...extra, silent: true }).catch((err) => {
       if (source === 'civitai' && err?.code === 'CIVITAI_AUTH') {
         setAuthPrompt({ url, message: err.message || 'This LoRA needs an API key.' });
+        // No confirm modal opens for a `handled` rejection, so nothing else
+        // will clear a suggestion card's spinner for this attempt.
+        setInstallingSuggestion(null);
         const handled = new Error(err.message);
         handled.handled = true;
         throw handled;
@@ -185,6 +188,15 @@ export default function Loras() {
     }),
     run,
   }), [requestDownloadConfirm]);
+
+  // Dismissing the confirm modal without confirming ends a suggestion card's
+  // install attempt before startCivitaiInstall/startVideoSuggestionInstall
+  // ever run — clear its spinner here too, or it sticks until another card
+  // is clicked. A no-op for every other caller of the shared modal.
+  const handleCancelDownloadConfirm = useCallback(() => {
+    cancelDownloadConfirm();
+    setInstallingSuggestion(null);
+  }, [cancelDownloadConfirm]);
 
   const startCivitaiInstall = useCallback(async (url) => {
     if (!url || installing) return;
@@ -208,7 +220,9 @@ export default function Loras() {
           toast.error(err?.message || 'Install failed');
         }
       })
-      .finally(() => setInstalling(false));
+      // Clears whichever suggestion card (if any) triggered this install —
+      // a no-op for the manual-form submit, which never sets it.
+      .finally(() => { setInstalling(false); setInstallingSuggestion(null); });
   }, [installing, refresh]);
 
   const performInstall = useCallback((url) => {
@@ -484,14 +498,19 @@ export default function Loras() {
         videoInstallBusy={hfInstalling}
         onRefresh={() => refreshSuggestions({ force: true })}
         onInstallVideo={installVideoSuggestion}
-        onInstall={async (card, url, versionId) => {
+        onInstall={(card, url, versionId) => {
           // Curated cards pass a family-specific (url, versionId); non-curated
           // cards omit versionId and we fall back to the card's primary.
           const vid = versionId ?? card.versionId;
           const key = suggestionKey(card.modelId, vid);
           setInstallingSuggestion(key);
-          await performInstall(url || card.installUrl);
-          setInstallingSuggestion(null);
+          // performInstall() resolves once the PREVIEW is ready (the confirm
+          // modal is now showing) — the actual install can run far later, so
+          // clearing this card's spinner belongs to that install's own
+          // lifecycle (startCivitaiInstall's finally) and the cancel/auth-
+          // redirect paths that can end this attempt before it ever starts,
+          // not to this promise settling.
+          performInstall(url || card.installUrl);
         }}
       />
 
@@ -529,7 +548,7 @@ export default function Loras() {
         error={downloadConfirm?.error}
         assessment={downloadConfirm?.assessment}
         confirmLabel="Start download"
-        onCancel={cancelDownloadConfirm}
+        onCancel={handleCancelDownloadConfirm}
         onConfirm={runDownloadConfirm}
       />
     </div>

@@ -9,7 +9,7 @@ import { MemoryRouter } from 'react-router';
 import Loras from './Loras';
 import {
   listLorasFull, deleteLoraFull, installLoraFromHuggingfaceStream, probeLoraEffect,
-  previewLoraInstall, getCivitaiSuggestions,
+  previewLoraInstall, getCivitaiSuggestions, installLoraFromCivitai,
 } from '../services/api';
 
 vi.mock('../services/api', () => ({
@@ -164,6 +164,49 @@ describe('Loras Civitai auth recovery through preflight', () => {
 
     expect(await screen.findByText('Civitai API key')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start download' })).not.toBeInTheDocument();
+  });
+});
+
+// performInstall() now returns once the PREVIEW resolves (the confirm modal
+// is showing), not once the download finishes — the suggestion card's own
+// "Installing…" spinner must track the real install lifecycle instead of
+// that promise settling, or it flips back to "Quick install" the moment the
+// confirm dialog opens while a multi-GB transfer is still ahead of it.
+describe('Loras suggestion card busy state', () => {
+  const SUGGESTION_CARD = { modelId: 42, versionId: 7, name: 'Example LoRA', installUrl: 'https://civitai.com/models/42' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listLorasFull.mockResolvedValue([]);
+    getCivitaiSuggestions.mockResolvedValue({ runners: { mflux: [SUGGESTION_CARD] }, video: [], fetchedAt: null });
+  });
+
+  it('keeps the card "Installing…" through the confirm step and clears only once the install settles', async () => {
+    let resolveInstall;
+    installLoraFromCivitai.mockReturnValue(new Promise((resolve) => { resolveInstall = resolve; }));
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Quick install' }));
+    // Preview resolved (the confirm modal opened) — the card must still read
+    // "Installing…", not have reverted to "Quick install" already.
+    expect(await screen.findByRole('button', { name: 'Installing…' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start download' }));
+    expect(await screen.findByRole('button', { name: 'Installing…' })).toBeInTheDocument();
+
+    resolveInstall({ name: 'lora-example.safetensors' });
+    expect(await screen.findByRole('button', { name: 'Quick install' })).toBeInTheDocument();
+  });
+
+  it('clears the spinner when the confirm is cancelled instead of leaving it stuck', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Quick install' }));
+    await screen.findByRole('button', { name: 'Start download' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(await screen.findByRole('button', { name: 'Quick install' })).toBeInTheDocument();
+    expect(installLoraFromCivitai).not.toHaveBeenCalled();
   });
 });
 

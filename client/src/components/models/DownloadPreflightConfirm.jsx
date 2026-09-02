@@ -27,6 +27,14 @@ export default function DownloadPreflightConfirm({
   const warning = VERDICT_COPY[assessment?.verdict] || null;
   const sizeKnown = Number(assessment?.expectedBytes) > 0;
   const freeKnown = Number.isFinite(assessment?.freeBytes);
+  // A leftover .partial credits its own bytes toward the space this download
+  // still needs, so `requiredBytes` (+ headroom) can read well under the full
+  // `expectedBytes` size shown above — without calling that out, "Size 20 GB
+  // / Free disk 4 GB" with Confirm enabled reads as a broken check rather
+  // than a resume that only needs a few GB more.
+  const requiredBytes = Number(assessment?.requiredBytes) || 0;
+  const headroomBytes = Number(assessment?.headroomBytes) || 0;
+  const resuming = sizeKnown && requiredBytes > 0 && requiredBytes < (assessment.expectedBytes + headroomBytes);
 
   return (
     <Modal
@@ -75,7 +83,17 @@ export default function DownloadPreflightConfirm({
                 {freeKnown ? formatBytes(assessment.freeBytes) : 'Unavailable'}
               </dd>
             </div>
+            {resuming && (
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-gray-500">Still needed</dt>
+                <dd className="font-medium tabular-nums text-white">{formatBytes(requiredBytes)}</dd>
+              </div>
+            )}
           </dl>
+        )}
+
+        {resuming && (
+          <p className="text-xs text-gray-500">Resuming — part of this download is already on disk.</p>
         )}
 
         {warning && (

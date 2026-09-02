@@ -42,6 +42,24 @@ describe('DownloadPreflightConfirm', () => {
     expect(screen.getByText(/not enough free disk/i)).toBeInTheDocument();
   });
 
+  // A leftover .partial credits its own bytes toward requiredBytes, so it
+  // can read well under expectedBytes + headroom — without calling that out,
+  // "Size 2 GB / Free disk 20 GB" next to an enabled Confirm reads the same
+  // whether or not a resume is actually shrinking the real ask.
+  it('calls out a resumed download\'s smaller remaining requirement', () => {
+    render(
+      <DownloadPreflightConfirm
+        open
+        assessment={{ ...assessment, requiredBytes: 300 * 1024 * 1024 }}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByText(/resuming/i)).toBeInTheDocument();
+    expect(screen.getByText('Still needed')).toBeInTheDocument();
+    expect(screen.getByText('300 MB')).toBeInTheDocument();
+  });
+
   it('calls onConfirm from the Download button', () => {
     const onConfirm = vi.fn();
     render(

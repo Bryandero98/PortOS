@@ -21,11 +21,11 @@
  * so. What changed is that the button now exists.
  */
 
-import { homedir } from 'os';
 import { bufferedSpawn, spawnFailureDetail } from '../lib/bufferedSpawn.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { assessDownloadPreflight, assertDownloadFits } from '../lib/downloadPreflight.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
+import { getHfCacheRoot } from '../lib/hfCache.js';
 import { fetchHuggingfaceModel } from '../lib/huggingfaceLora.js';
 import { listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
@@ -61,7 +61,13 @@ const REPO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const isMtplxRepoId = (value) => typeof value === 'string' && REPO_ID_RE.test(value);
 
-const mtplxCachePath = () => homedir();
+// MTPLX's own Python venv pulls checkpoints via huggingface_hub (see
+// docs/features/mtplx.md), landing them in the standard HF hub cache — NOT
+// necessarily the boot disk. getHfCacheRoot() honors the same
+// HF_HUB_CACHE/HF_HOME overrides ollamaManager/lmStudioManager already do,
+// so a "weights on an external SSD" setup gets checked against the volume
+// the pull actually lands on.
+const mtplxCachePath = () => getHfCacheRoot();
 
 async function expectedMtplxBytes(repo) {
   if (!repo) return 0;

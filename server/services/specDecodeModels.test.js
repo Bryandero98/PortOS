@@ -193,7 +193,9 @@ describe('downloadSpecDecodeModel', () => {
     await expect(downloadSpecDecodeModel({ presetId: 'test-preset', role: 'model' }))
       .rejects.toThrow(/connection reset/);
     const { readdir } = await import('fs/promises');
-    expect(await readdir(dir)).toEqual(['base.gguf.partial']);
+    // The partial survives for a Range-resume, alongside the ETag sidecar
+    // recorded up front so that resume can send If-Range.
+    expect((await readdir(dir)).sort()).toEqual(['base.gguf.partial', 'base.gguf.partial.etag']);
   });
 
   it('cancels an active transfer, emits a terminal frame, and removes its partial file', async () => {

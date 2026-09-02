@@ -36,7 +36,7 @@ import { PATHS, atomicWrite, ensureDir, pathExists, sleep } from '../lib/fileUti
 import { ServerError } from '../lib/errorHandler.js'
 import { assessDownloadPreflight, assertDownloadFits } from '../lib/downloadPreflight.js'
 import { compareSemver } from '../lib/versionUtils.js'
-import { getCatalog, isBackend, mapModelToBackend, getOllamaImportSpec } from '../lib/localLlmCatalog.js'
+import { getCatalog, isBackend, mapModelToBackend, getOllamaImportSpec, catalogSizeBytes } from '../lib/localLlmCatalog.js'
 import { sanitizeOllamaName } from '../lib/localLlmDisk.js'
 import { recommendEditorialModel, isVisionModel, isVisionCapableCliProvider, isToolUseModel } from '../lib/localModelHeuristics.js'
 import { captureSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js'
@@ -918,7 +918,9 @@ export async function previewInstallModel(backend, modelId) {
     throw new ServerError(`Unknown backend: ${backend}`, { status: 400 })
   }
   const destPath = await localInstallDest(backend)
-  const preflight = await assessDownloadPreflight({ destPath, expectedBytes: 0 })
+  // 0 for a free-text/uncurated model id (e.g. a bare Ollama tag the user
+  // typed) — the preflight already treats that as "unknown, never refuse."
+  const preflight = await assessDownloadPreflight({ destPath, expectedBytes: catalogSizeBytes(backend, modelId) })
   return {
     kind: 'install',
     backend,
@@ -933,7 +935,7 @@ export async function installModel(backend, modelId, onProgress, { force = false
   if (!isBackend(backend)) return { success: false, error: `Unknown backend: ${backend}` }
   assertDownloadFits(await assessDownloadPreflight({
     destPath: await localInstallDest(backend),
-    expectedBytes: 0,
+    expectedBytes: catalogSizeBytes(backend, modelId),
   }))
   if (backend === 'ollama') {
     const importSpec = getOllamaImportSpec(modelId)

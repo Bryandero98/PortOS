@@ -14,7 +14,7 @@
  */
 
 import { createWriteStream } from 'fs';
-import { rm, stat, statfs, rename } from 'fs/promises';
+import { readFile, rm, stat, statfs, rename, writeFile } from 'fs/promises';
 import { dirname } from 'path';
 import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
@@ -36,6 +36,11 @@ const TIGHT_REMAINING_RATIO = 0.1;
 const PARTIAL_SUFFIX = '.partial';
 
 export const partialPathFor = (destPath) => `${destPath}${PARTIAL_SUFFIX}`;
+
+// Sidecar recording the ETag of the object that produced a `.partial`, so a
+// later resume can send `If-Range` and detect a same-length replacement
+// object instead of silently splicing its bytes onto our stale prefix.
+const etagPathFor = (destPath) => `${partialPathFor(destPath)}.etag`;
 
 export function normalizeSha256(value) {
   if (typeof value !== 'string') return null;
@@ -155,10 +160,16 @@ export function assertDownloadFits(assessment) {
  */
 export async function probeRemoteSize(url, { headers = {}, fetchImpl = fetch, signal } = {}) {
   const empty = { bytes: 0, sha256: null };
-  const readMeta = (res) => {
+  // `content-length` on a 206 describes the PARTIAL body (1 byte for our own
+  // `bytes=0-0` probe), not the resource — only trust it on a response that
+  // isn't itself a range (a HEAD, or a GET the origin answered with the
+  // whole body because it ignored our Range). A genuine partial's total
+  // comes from `Content-Range` alone; when that carries no total (`bytes
+  // 0-0/*`) the size is unknown, which correctly falls through to `empty`.
+  const readMeta = (res, { trustContentLength = true } = {}) => {
     if (!res || typeof res.headers?.get !== 'function') return empty;
-    const length = Number(res.headers.get('content-length')) || 0;
     const rangeTotal = parseContentRangeTotal(res.headers.get('content-range'));
+    const length = trustContentLength ? (Number(res.headers.get('content-length')) || 0) : 0;
     const sha256 = normalizeSha256(
       res.headers.get('x-linked-etag') || res.headers.get('etag') || '',
     );
@@ -180,7 +191,7 @@ export async function probeRemoteSize(url, { headers = {}, fetchImpl = fetch, si
   if (ranged?.ok || ranged?.status === 206) {
     // Drain a 1-byte body so the socket can close; ignore failure.
     await ranged.body?.cancel?.().catch(() => {});
-    return readMeta(ranged);
+    return readMeta(ranged, { trustContentLength: ranged.status !== 206 });
   }
   return empty;
 }
@@ -224,13 +235,26 @@ export async function streamResumableDownload({
   onHttpError = null,
 } = {}) {
   const tmpPath = partialPathFor(destPath);
+  const etagPath = etagPathFor(destPath);
   await ensureDir(dirname(destPath));
 
   const existing = await stat(tmpPath).catch(() => null);
   let resumeFrom = existing?.isFile() ? existing.size : 0;
 
   const reqHeaders = { ...headers };
-  if (resumeFrom > 0) reqHeaders.Range = `bytes=${resumeFrom}-`;
+  if (resumeFrom > 0) {
+    reqHeaders.Range = `bytes=${resumeFrom}-`;
+    // Makes the resume conditional on the remote object being UNCHANGED
+    // since the attempt that produced this partial: an origin honoring
+    // If-Range returns 200 (not 206) for a moved object, which the
+    // Range-ignored branch below already treats as "discard and restart" —
+    // without it, a same-length replacement silently splices its bytes onto
+    // our old prefix. No saved etag (server never sent one, or this is the
+    // first resume of a partial from before this guard existed) just means
+    // no conditional — same as today.
+    const savedEtag = await readFile(etagPath, 'utf8').catch(() => null);
+    if (savedEtag) reqHeaders['If-Range'] = savedEtag;
+  }
 
   let idleTimer = null;
   const clearIdleTimer = () => {
@@ -256,10 +280,21 @@ export async function streamResumableDownload({
     const res = await fetchImpl(url, { headers: reqHeaders, redirect: 'follow', signal });
     if (!res.ok && res.status !== 206) {
       if (res.status === 416 && resumeFrom > 0) {
-        // Partial is past what the server has — start clean.
+        // Partial is past what the server has (or the object changed) —
+        // start clean. A 416 conventionally reports the real size as
+        // `Content-Range: bytes */<total>`; recheck capacity against it
+        // before the restart, same as the Range-ignored (200) branch below —
+        // the original preflight only reserved the bytes this discarded
+        // partial was short by, not the full payload the restart now needs.
         await rm(tmpPath, { force: true }).catch(() => {});
+        await rm(etagPath, { force: true }).catch(() => {});
         resumeFrom = 0;
         delete reqHeaders.Range;
+        delete reqHeaders['If-Range'];
+        const totalFromRange = parseContentRangeTotal(res.headers?.get?.('content-range'));
+        if (totalFromRange > 0) {
+          assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes: totalFromRange }));
+        }
         return streamResumableDownload({
           url, destPath, headers, fetchImpl, onBytes, signal, onIdleStall,
           idleStallTimeoutMs, isCancelled, expectedSha256, finalize, onHttpError,
@@ -272,13 +307,15 @@ export async function streamResumableDownload({
       throw new ServerError('Download returned no body', { status: 502, code: 'DOWNLOAD_FAILED' });
     }
 
-    // Server ignored Range and sent the whole file — discard the leftover
-    // prefix. The preflight the caller ran before starting only reserved the
-    // REMAINING bytes (crediting the partial already on disk); now the FULL
-    // payload is about to land instead, so recheck capacity against this
-    // response's own Content-Length before writing over the freed space.
+    // Server ignored Range (or If-Range caught the object changing under us)
+    // and sent the whole file — discard the leftover prefix. The preflight
+    // the caller ran before starting only reserved the REMAINING bytes
+    // (crediting the partial already on disk); now the FULL payload is
+    // about to land instead, so recheck capacity against this response's
+    // own Content-Length before writing over the freed space.
     if (resumeFrom > 0 && res.status === 200) {
       await rm(tmpPath, { force: true }).catch(() => {});
+      await rm(etagPath, { force: true }).catch(() => {});
       resumeFrom = 0;
       const freshLength = Number(res.headers?.get?.('content-length')) || 0;
       if (freshLength > 0) {
@@ -292,6 +329,16 @@ export async function streamResumableDownload({
     let received = resumeFrom;
     const flags = resumeFrom > 0 ? 'a' : 'w';
 
+    // Starting a fresh write (first attempt, or just discarded above) —
+    // record this response's ETag so a LATER resume of it can send
+    // If-Range. Best-effort: no ETag, or a write failure, just means the
+    // next resume attempt has nothing to validate against (today's behavior).
+    if (flags === 'w') {
+      const etag = res.headers?.get?.('etag') || null;
+      if (etag) await writeFile(etagPath, etag).catch(() => {});
+      else await rm(etagPath, { force: true }).catch(() => {});
+    }
+
     const counter = new Transform({
       transform(chunk, _enc, cb) {
         received += chunk.length;
@@ -302,17 +349,24 @@ export async function streamResumableDownload({
     });
 
     await pipeline(Readable.fromWeb(res.body), counter, createWriteStream(tmpPath, { flags })).catch(async (err) => {
-      if (isCancelled()) await rm(tmpPath, { force: true }).catch(() => {});
+      if (isCancelled()) {
+        await rm(tmpPath, { force: true }).catch(() => {});
+        await rm(etagPath, { force: true }).catch(() => {});
+      }
       throw err;
     });
 
     const check = await verifyDownloadHash(tmpPath, expectedSha256);
     if (!check.ok) {
       await rm(tmpPath, { force: true }).catch(() => {});
+      await rm(etagPath, { force: true }).catch(() => {});
       throw hashMismatchError(destPath, check);
     }
 
-    if (finalize) await rename(tmpPath, destPath);
+    if (finalize) {
+      await rename(tmpPath, destPath);
+      await rm(etagPath, { force: true }).catch(() => {});
+    }
     return { bytes: received || total, tmpPath, resumed: resumeFrom > 0 };
   } finally {
     clearIdleTimer();

@@ -893,6 +893,32 @@ const entryIdsForBackend = (entry, backend) => [
 const entryMatchesBackendId = (entry, backend, normalizedId) =>
   entryIdsForBackend(entry, backend).some((id) => normalizeFor(backend, id) === normalizedId);
 
+const SIZE_UNIT_BYTES = { KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+
+/** Parse a catalog `size` string ('4.9 GB', '301 MB') to bytes; 0 if unparseable. */
+const parseCatalogSizeBytes = (size) => {
+  const match = /^([\d.]+)\s*(KB|MB|GB|TB)$/i.exec(String(size || '').trim());
+  if (!match) return 0;
+  return Math.round(Number(match[1]) * SIZE_UNIT_BYTES[match[2].toUpperCase()]);
+};
+
+/**
+ * Bytes for a curated catalog entry's advertised download size, resolved by
+ * the backend-specific install id (matched the same alias-aware way
+ * `getOllamaImportSpec`/`getCatalog` match ids). 0 for an unrecognized id or
+ * an entry whose `size` string doesn't parse — the disk preflight already
+ * treats 0 as "unknown, never refuse," so a miss here fails open rather than
+ * blocking an install PortOS just can't size.
+ */
+export function catalogSizeBytes(backend, modelId) {
+  if (!isBackend(backend)) return 0;
+  const normalizedId = normalizeFor(backend, modelId);
+  const entry = LOCAL_LLM_CATALOG.find((candidate) => (
+    candidate[backend] && entryMatchesBackendId(candidate, backend, normalizedId)
+  ));
+  return entry ? parseCatalogSizeBytes(entry.size) : 0;
+}
+
 /**
  * Return the trusted local-Safetensors import recipe for a curated Ollama id.
  * Unknown/free-text ids return null and continue through the normal pull path.
