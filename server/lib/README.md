@@ -295,7 +295,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 
 | Module | Purpose |
 |---|---|
-| `httpClient.js` | Fetch-based HTTP client factory (axios.create replacement). |
+| `httpClient.js` | Fetch-based HTTP client factory (axios.create replacement). `insecureFetch` size-cap rejections carry `code: RESPONSE_TOO_LARGE`. |
 | `abortTimeout.js` | `withAbortTimeout(timeoutMs, fn)` — runs `fn(signal)` under an `AbortController` that aborts after `timeoutMs` and always clears the timer on settle. Generic lifecycle helper for callers that need the insecure-agent `peerFetch` (so can't use `fetchWithTimeout`) or one signal across parallel fetches. |
 | `fetchWithTimeout.js` | `fetch` wrapper with AbortController timeout. |
 | `tailnetPeer.js` | `isTailnetPeer(peer)` — fail-closed security predicate for "is this peer reachable only over the tailnet". Deliberately separate from `instances.js`'s `peerRequiresTailscale()` probe-deferral heuristic so a polling-noise tweak can't widen a privacy boundary; required by the unattended-routing gate in ADR 2026-08-20-federated-visual-prompts. |
