@@ -72,6 +72,7 @@ import {
   streamVideoRuntimeInstall,
 } from '../services/videoGen/runtimeInstaller.js';
 import { detectSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js';
+import { isDisplaySleepEnabled } from '../services/displayPower.js';
 
 const router = Router();
 
@@ -437,6 +438,13 @@ router.get('/status', asyncHandler(async (_req, res) => {
     // with a catch as defense-in-depth so a runtime-block failure can never
     // reject the whole /status response.
     runtime: await resolveRuntimeFingerprint().catch(() => null),
+    // Will a render on this install actually sleep the display? macOS-only, and
+    // the user can opt out (settings.videoGen.displaySleep). Paired with each
+    // model's `sleepsDisplayDuringRender`, this is what lets the UI warn BEFORE
+    // the screen goes dark — a user who is not warned reads it as a crash and
+    // wakes the display, re-introducing the exact GPU-watchdog contention the
+    // sleep is there to avoid.
+    displaySleepOnRender: isDisplaySleepEnabled(s.videoGen),
   });
 }));
 
@@ -1048,13 +1056,10 @@ router.get('/active', (_req, res) => {
       generationId: job.id,
       status: job.status,
       position: job.position,
-      // Geometry the running render actually resolved to (#4588). `params`
-      // carries what the form ASKED for; videoGen/local.js snaps both edges
-      // down to the model's resolution grid, so a page that reloads mid-render
-      // has to size its preview stage by this, not by the request. `null` when
-      // the run hasn't reported it yet (still queued, or a runner that never
-      // does) — an explicit "unknown", never a guessed default.
-      render: job.render || null,
+      // When the worker dequeued this job. A page that reloads mid-render needs
+      // it to keep showing a truthful elapsed clock; without it the render
+      // status card would restart from zero and read as a fresh start (#5872).
+      startedAt: job.startedAt || null,
       params: pickJobParams(job),
     },
   });

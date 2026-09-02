@@ -1413,8 +1413,12 @@ describe('generateChainedVideo — continuation strategy (context window vs last
   });
 });
 
-describe('generateChainedVideo — resolved geometry on the outer frames (#4588)', () => {
-  it('carries the chunk geometry on the chain progress frames without a synthetic outer started', async () => {
+describe('generateChainedVideo — the chunk phase on the outer frames (#5872)', () => {
+  it('carries the chunk phase on the chain progress frames without a synthetic outer started', async () => {
+    // A chain emits `started` per CHUNK, under inner ids nothing outside the
+    // orchestrator knows, so the outer id's consumers only ever see `progress`.
+    // The runner's phase has to ride those frames or the page falls back to its
+    // load/render heuristic for the whole multi-chunk render.
     const { readJSONFile } = await import('../../lib/fileUtils.js');
     const outerJobId = randomUUID();
     const innerJobIds = [];
@@ -1424,13 +1428,12 @@ describe('generateChainedVideo — resolved geometry on the outer frames (#4588)
       startedIds.push(e.generationId);
       if (e.generationId === outerJobId) return;
       innerJobIds.push(e.generationId);
-      // Feed the live chunk a progress frame from a microtask: the chain's own
-      // `started` listener is registered AFTER this one, so it has to run (and
-      // record the geometry) before the progress frame goes out — and a
-      // microtask still lands before the chunk's first awaited I/O, while its
+      // A microtask lands before the chunk's first awaited I/O, while its
       // per-chunk listeners are attached.
       queueMicrotask(() => {
-        videoGenEvents.emit('progress', { generationId: e.generationId, progress: 0.5, step: 5, totalSteps: 10 });
+        videoGenEvents.emit('progress', {
+          generationId: e.generationId, progress: 0.5, step: 5, totalSteps: 10, phase: 'sampling',
+        });
       });
     };
     const onProgress = (e) => { if (e.generationId === outerJobId) outerProgress.push(e); };
@@ -1459,7 +1462,7 @@ describe('generateChainedVideo — resolved geometry on the outer frames (#4588)
     }
 
     expect(outerProgress[0]).toMatchObject({
-      generationId: outerJobId, width: 512, height: 512, step: 5, totalSteps: 10,
+      generationId: outerJobId, phase: 'sampling', step: 5, totalSteps: 10,
     });
     // No synthetic `started` under the outer id: consumers read that event as
     // "the run begins", and a chain fires one per chunk.
