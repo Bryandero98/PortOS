@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { join } from 'path';
 import {
   LLAMA_CPP_WINGET_ID,
   isWingetManagedPath,
@@ -91,6 +92,18 @@ describe('isWingetManagedPath', () => {
     expect(isWingetManagedPath('C:\\tools\\llama.cpp\\llama-server.exe', WIN_ENV)).toBe(false);
     expect(isWingetManagedPath('llama-server.exe', WIN_ENV)).toBe(false);
     expect(isWingetManagedPath(null, WIN_ENV)).toBe(false);
+  });
+
+  it('builds Links directories the LOCAL filesystem can stat', () => {
+    // Regression: these paths are handed to existsSync and spliced into
+    // process.env.PATH, so they are joined with the NATIVE separator. Joining
+    // with win32 unconditionally emitted backslash paths that no POSIX host
+    // could create or find, which broke the install path's PATH adoption test
+    // on Linux CI while passing on Windows.
+    const base = join('base', 'AppData', 'Local');
+    expect(wingetLinkDirs({ LOCALAPPDATA: base })).toEqual([
+      join(base, 'Microsoft', 'WinGet', 'Links'),
+    ]);
   });
 
   it('claims nothing when the environment names no WinGet root', () => {

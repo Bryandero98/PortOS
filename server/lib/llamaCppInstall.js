@@ -15,10 +15,13 @@
  * branches are coverable from either OS.
  */
 
-// The WinGet helpers below always reason about WINDOWS paths, whatever host is
-// running them — that is what keeps them coverable from a macOS/Linux checkout,
-// where `path.isAbsolute('C:\\…')` is false and would quietly answer "no".
-import { win32 as winPath } from 'path';
+// Two path flavours, deliberately: `isWingetManagedPath` CLASSIFIES a path
+// string that came off a Windows PATH, so it must reason in win32 whatever host
+// is running it (on POSIX, `path.isAbsolute('C:\\…')` is false and would quietly
+// answer "no", making the rule uncoverable from a macOS/Linux checkout).
+// `wingetLinkDirs` builds paths the LOCAL FILESYSTEM is then asked about, so it
+// must use the native flavour — see the note on that function.
+import nativePath, { win32 as winPath } from 'path';
 
 export const LLAMA_CPP_DOWNLOAD_URL = 'https://github.com/ggml-org/llama.cpp/releases';
 export const LLAMA_CPP_BREW_FORMULA = 'llama.cpp';
@@ -108,16 +111,26 @@ export function parseWingetPackageFields(stdout, packageId) {
  * The directories winget links a portable package's executables into. Both
  * scopes are returned because PortOS cannot know which one the user's install
  * chose, and neither is guaranteed to exist.
+ *
+ * Joined with the NATIVE separator, not win32: the caller stats these paths and
+ * splices them into `process.env.PATH`, so they have to be shaped for the
+ * filesystem actually running the code. On Windows — the only host that reaches
+ * this in production — native IS win32, so nothing changes there; joining with
+ * win32 unconditionally would instead emit backslash paths a POSIX test host can
+ * neither create nor stat.
  */
 export function wingetLinkDirs(env = process.env) {
-  return wingetRoots(env).map((root) => winPath.join(root, 'Links'));
+  return wingetRoots(env, nativePath).map((root) => nativePath.join(root, 'Links'));
 }
 
-/** The per-user and machine-wide directories winget installs packages under. */
-function wingetRoots(env) {
+/**
+ * The per-user and machine-wide directories winget installs packages under, in
+ * the caller's chosen path flavour (see the import note at the top).
+ */
+function wingetRoots(env, pathFlavour) {
   return [
-    env.LOCALAPPDATA ? winPath.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet') : null,
-    env.ProgramFiles ? winPath.join(env.ProgramFiles, 'WinGet') : null,
+    env.LOCALAPPDATA ? pathFlavour.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet') : null,
+    env.ProgramFiles ? pathFlavour.join(env.ProgramFiles, 'WinGet') : null,
   ].filter(Boolean);
 }
 
@@ -132,7 +145,7 @@ function wingetRoots(env) {
 export function isWingetManagedPath(binaryPath, env = process.env) {
   if (!binaryPath || !winPath.isAbsolute(binaryPath)) return false;
   const candidate = winPath.normalize(binaryPath).toLowerCase();
-  return wingetRoots(env).some((root) => (
+  return wingetRoots(env, winPath).some((root) => (
     candidate.startsWith(winPath.normalize(root).toLowerCase() + winPath.sep)
   ));
 }
