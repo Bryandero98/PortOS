@@ -119,6 +119,7 @@ import { initMortalLoomStore } from './mortalLoomStore.js';
 import { initUniverseBuilderCollectionHook } from './universeBuilderCollectionHook.js';
 import { initCatalogImageAttachHook } from './catalogImageAttachHook.js';
 import { initWritersRoomSceneImageHook } from './writersRoomSceneImageHook.js';
+import { startHostedSessionSweep, stopHostedSessionSweep } from './fableLoom/hostedSession.js';
 import { initFableLoomSceneImageHook } from './fableLoomSceneImageHook.js';
 import { initFableLoomSceneVideoHook } from './fableLoomSceneVideoHook.js';
 import { initMusicVideoSceneImageHook } from './musicVideoSceneImageHook.js';
@@ -359,6 +360,10 @@ const startBackgroundServices = ({ spawnerReady }) => {
   // under AGENTS.md's "No cold-bootstrap LLM calls". Off in practice until the
   // user sets an idle window (0 = never, the default).
   startIdleReaper();
+  // Arm the FableLoom hosted-session sweeper. Timer only — it walks in-memory
+  // QR play sessions and tears down the ones past their TTL, making no AI
+  // provider call, so it is safe under AGENTS.md's "No cold-bootstrap LLM calls".
+  startHostedSessionSweep({ io });
   // Initialize brain scheduler for daily digests and weekly reviews
   startBrainScheduler();
   // Initialize activity-digest scheduler — OFF by default; drafts daily-log
@@ -856,6 +861,9 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
     // -shutdown would `pm2 stop` a model server the user never asked to lose,
     // and PortOS is about to stop being the thing that could restart it.
     stopIdleReaper();
+    // Same reasoning for the hosted-session sweeper: a tick mid-shutdown would
+    // emit into a namespace we are about to close.
+    stopHostedSessionSweep();
     // Diagnostic context for the shutdown trigger. ppid tells us whether the
     // signal came from PM2 (parent is the PM2 god process), a TTY (parent is
     // the user's shell), or some external orchestrator. pm_* env vars are set
