@@ -38,8 +38,25 @@ const activeJobs = new Map();
 // together, rather than in a separate store that could outlive them.
 const JOB_RECORD_FILE = 'job.json';
 
+// Job ids are minted with randomUUID; anything else never named a real run and
+// must not reach `join`, where a separator or `..` would escape the profile's
+// directory. Enforced here as well as in the route schema because this path is
+// built from a caller-supplied id.
+const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const jobRecordPath = (profileId, jobId) =>
   join(profileArtifactDirectory(profileId), 'fine-tune', jobId, JOB_RECORD_FILE);
+
+// A record that parsed but is not shaped like a job (a truncated `{}`, a `null`,
+// a hand-edited file) is not a usable recovery — it must not masquerade as a
+// live job whose `checkpoints` a caller is about to `.find` over.
+const isJobRecord = (record) => Boolean(
+  record
+  && typeof record === 'object'
+  && typeof record.id === 'string'
+  && typeof record.status === 'string'
+  && Array.isArray(record.checkpoints)
+);
 
 // Drops the runtime-only handles (abort controller, child process, write chain,
 // finalize latch) that cannot — and must not — be serialized.
@@ -71,9 +88,9 @@ const persistJob = (jobState) => {
 async function loadJob(jobId, profileId) {
   const active = activeJobs.get(jobId);
   if (active) return active;
-  if (!profileId) return null;
+  if (!profileId || !JOB_ID_RE.test(jobId)) return null;
   const { ok, value } = await readJSONFileStrict(jobRecordPath(profileId, jobId), null);
-  if (!ok) {
+  if (!ok || (value !== null && !isJobRecord(value))) {
     throw new ServerError('Fine-tuning job record is unreadable', {
       status: 500,
       code: 'JOB_RECORD_UNREADABLE',

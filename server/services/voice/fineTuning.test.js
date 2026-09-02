@@ -205,6 +205,12 @@ describe('fineTuning', () => {
     const restarted = await import('./fineTuning.js');
     await expect(restarted.getFineTuningJobStatus(jobId, PROFILE.id))
       .rejects.toMatchObject({ code: 'JOB_RECORD_UNREADABLE' });
+
+    // Parsing cleanly is not enough — a record without the job shape would let
+    // promoteCheckpoint blow up on `job.checkpoints.find`.
+    await writeFile(jobRecordPath(jobId), '{}');
+    await expect(restarted.getFineTuningJobStatus(jobId, PROFILE.id))
+      .rejects.toMatchObject({ code: 'JOB_RECORD_UNREADABLE' });
   });
 
   it('evicts the in-memory job entry after the grace window and keeps serving from disk', async () => {

@@ -247,7 +247,10 @@ const fineTuneStartSchema = z.object({
 
 const fineTuneJobParamsSchema = z.object({
   id: z.string().trim().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
-  jobId: z.string().trim().min(1).max(80),
+  // Job ids are minted with randomUUID and are joined into a filesystem path
+  // when the run is resolved from its on-disk record, so anything that could
+  // carry a separator or `..` is rejected here.
+  jobId: z.string().trim().uuid(),
 }).strict();
 
 const fineTunePromoteSchema = z.object({
