@@ -38,16 +38,14 @@ log "==================================="
 log ""
 
 # Wipe a workspace's installed deps so the next `npm install` resolves the tree
-# from scratch. node_modules is always removed; the lockfile is removed ONLY
-# when it's gitignored (the per-install client/server locks) — a tracked root
-# or autofixer lock was just pulled and is already consistent with the new
-# package.json, so keep it for reproducible resolution.
+# from scratch. node_modules ONLY — every workspace lockfile this script touches
+# (root, client, server, autofixer) is tracked, so the pull just brought one that
+# is already consistent with the new package.json. Keep it: reinstalling from the
+# committed lock is reproducible, while deleting it would let transitive versions
+# float past the `overrides` pins.
 clean_workspace_deps() {
   local dir="$1"
   rm -rf "$dir/node_modules"
-  if git check-ignore -q "$dir/package-lock.json" 2>/dev/null; then
-    rm -f "$dir/package-lock.json"
-  fi
 }
 
 # Whether the pulled update changed this workspace's package.json. When it did,
@@ -99,7 +97,7 @@ safe_install() {
     return 0
   fi
 
-  log "⚠️  npm install failed for $label — cleaning node_modules + package-lock.json and retrying..."
+  log "⚠️  npm install failed for $label — cleaning node_modules and retrying..."
   clean_workspace_deps "$dir"
   if (cd "$dir" && run npm install --no-save); then
     return 0

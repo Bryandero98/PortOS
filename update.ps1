@@ -106,18 +106,15 @@ function Test-WorkspaceDepsChanged {
 }
 
 # Wipe a workspace's installed deps so the next `npm install` resolves the tree
-# from scratch. node_modules is always removed; the lockfile is removed ONLY
-# when it's gitignored (the per-install client/server locks) — a tracked root
-# or autofixer lock was just pulled and is already consistent with the new
-# package.json, so keep it for reproducible resolution.
+# from scratch. node_modules ONLY — every workspace lockfile this script touches
+# (root, client, server, autofixer) is tracked, so the pull just brought one that
+# is already consistent with the new package.json. Keep it: reinstalling from the
+# committed lock is reproducible, while deleting it would let transitive versions
+# float past the `overrides` pins.
 function Clear-WorkspaceDeps {
     param([string]$Dir)
     if (Test-Path "$Dir/node_modules") {
         Remove-Item -Recurse -Force "$Dir/node_modules" -ErrorAction SilentlyContinue
-    }
-    git check-ignore -q "$Dir/package-lock.json" 2>$null
-    if ($LASTEXITCODE -eq 0 -and (Test-Path "$Dir/package-lock.json")) {
-        Remove-Item -Force "$Dir/package-lock.json" -ErrorAction SilentlyContinue
     }
 }
 
@@ -140,7 +137,7 @@ function Safe-Install {
     Invoke-Logged npm install --no-save
     if ($LASTEXITCODE -eq 0) { Pop-Location; return }
 
-    Write-SafeHost "⚠️  npm install failed for $Label — cleaning node_modules + package-lock.json and retrying..." -ForegroundColor Yellow
+    Write-SafeHost "⚠️  npm install failed for $Label — cleaning node_modules and retrying..." -ForegroundColor Yellow
     Pop-Location
     Clear-WorkspaceDeps -Dir $Dir
     Push-Location $Dir

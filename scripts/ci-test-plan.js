@@ -135,6 +135,7 @@ export const WINDOWS_CONTRACT_TESTS = [
 export const ALWAYS_RUN_TESTS = [
   'scripts/agent-instructions-files.test.js',
   'scripts/direct-invocation-drift.test.js',
+  'scripts/ensure-deps.test.js',
   'scripts/node-version-drift.test.js',
   'scripts/repo-scan-guards.test.js',
   'scripts/tailnet-identity-leak.test.js',
