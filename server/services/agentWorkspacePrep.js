@@ -30,7 +30,7 @@ import { execGit } from '../lib/execGit.js';
 import { emitLog } from './cosEvents.js';
 import { updateTask, addTask } from './cos.js';
 import { getAppById } from './apps.js';
-import { isTruthyMeta, isFalsyMeta, getActiveAgentIds } from './agentState.js';
+import { isTruthyMeta, isFalsyMeta, protectedAgentIds } from './agentState.js';
 import { PATHS, ensureDir } from '../lib/fileUtils.js';
 import * as git from './git.js';
 import { detectConflicts } from './taskConflict.js';
@@ -81,25 +81,10 @@ const WORKTREE_BUSY_MAX_ATTEMPTS = 5;
 // service before the shared task-target-branch contract existed.
 export { resolveTaskTargetBranch as resolveTaskExistingBranch } from '../lib/taskTargetBranch.js';
 
-/**
- * Agent ids whose worktree must not be taken out from under them, using the same
- * definition the daily worktree reap protects on (`autonomousJobs/scriptHandlers.js`):
- *
- *   - the in-process maps, which are authoritative for THIS process;
- *   - every persisted `running` agent, which is how a run that survived a server
- *     restart (the maps are empty then) still counts;
- *   - every persisted `paused` agent — pausing deliberately preserves the tree as
- *     resume context, and a paused agent is absent from the maps.
- *
- * Under-counting here would move a directory another run is mid-edit in.
- */
+/** `protectedAgentIds` over a freshly-read agent list — see agentState.js. */
 async function getProtectedAgentIds() {
   const { getAgents } = await import('./cos.js');
-  const ids = new Set(getActiveAgentIds());
-  for (const agent of await getAgents()) {
-    if (agent?.status === 'running' || agent?.status === 'paused') ids.add(agent.id);
-  }
-  return ids;
+  return protectedAgentIds(await getAgents());
 }
 
 /**
