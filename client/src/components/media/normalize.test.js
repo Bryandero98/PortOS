@@ -319,7 +319,9 @@ describe('render duration normalization', () => {
   });
 
   it('reports null — not 0, not the raw value — when the record was never timed', () => {
-    for (const raw of [{}, { renderMs: null }, { renderMs: '42000' }]) {
+    // NaN is in this list deliberately: `typeof NaN === 'number'`, so a
+    // typeof-based guard admits it and formatDurationMs renders "NaNd NaNh".
+    for (const raw of [{}, { renderMs: null }, { renderMs: '42000' }, { renderMs: NaN }, { renderMs: Infinity }]) {
       expect(normalizeImage({ filename: 'a.png', ...raw }).renderMs).toBeNull();
       expect(normalizeVideo({ id: 'v1', filename: 'a.mp4', ...raw }).renderMs).toBeNull();
     }

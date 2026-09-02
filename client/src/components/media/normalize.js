@@ -64,7 +64,9 @@ export function normalizeImage(i) {
     // so it excludes queue wait. Absent on records from a path that never
     // observed a start instant (uploads, downloads, extracted frames, older
     // renders), which the cards render as "no render time" rather than 0.
-    renderMs: typeof i.renderMs === 'number' ? i.renderMs : null,
+    // `Number.isFinite`, not `typeof === 'number'` — the latter admits NaN, and
+    // `formatDurationMs(NaN)` renders the literal string "NaNd NaNh".
+    renderMs: Number.isFinite(i.renderMs) ? i.renderMs : null,
     hidden: !!i.hidden,
     extractedFromVideoId: i.extractedFromVideoId || null,
     extractedFromVideoFilename: i.extractedFromVideoFilename || null,
@@ -123,7 +125,7 @@ export function normalizeVideo(v) {
     loraNames,
     createdAt: v.createdAt,
     // Same contract as normalizeImage's renderMs above.
-    renderMs: typeof v.renderMs === 'number' ? v.renderMs : null,
+    renderMs: Number.isFinite(v.renderMs) ? v.renderMs : null,
     hidden: !!v.hidden,
     raw: v,
   };

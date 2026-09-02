@@ -460,6 +460,45 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// Render duration (#5878). The upscaled row is built by spreading the SOURCE
+// history row, so the source's `renderMs` is one careless spread away from being
+// displayed on a card whose only work was a 2x ffmpeg pass — and, before the
+// estimator learned to skip derived rows, from training the render-time cost
+// model at 4x the work units against seconds of duration.
+describe('upscaleHistoryItem — render duration', () => {
+  const SOURCE_ID = '11111111-1111-4111-8111-111111111111';
+
+  const upscaleFrom = async (sourceFields) => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValue([{
+      id: SOURCE_ID, filename: `${SOURCE_ID}.mp4`, prompt: 'a lighthouse',
+      modelId: 'ltx2_unified', width: 768, height: 512, numFrames: 49, fps: 24,
+      ...sourceFields,
+    }]);
+    const { upscaleHistoryItem } = await import('./local.js');
+    return upscaleHistoryItem(SOURCE_ID);
+  };
+
+  it('times its own ffmpeg pass instead of inheriting the source render', async () => {
+    const upscaled = await upscaleFrom({
+      renderMs: 900_000,
+      renderStartedAt: '2026-09-02T00:00:00.000Z',
+      renderCompletedAt: '2026-09-02T00:15:00.000Z',
+    });
+
+    expect(upscaled.renderMs).not.toBe(900_000);
+    expect(upscaled.renderMs).toBeLessThan(900_000);
+    expect(Date.parse(upscaled.renderStartedAt)).toBeGreaterThan(Date.parse('2026-09-02T00:15:00.000Z'));
+  });
+
+  it('still times the pass when the source carried no timing of its own', async () => {
+    const upscaled = await upscaleFrom({});
+
+    expect(upscaled.renderMs).toBeGreaterThanOrEqual(0);
+    expect(upscaled.upscaledFrom).toBe(SOURCE_ID);
+  });
+});
+
 describe('stitchVideos — history provenance', () => {
   const renderFields = [
     'steps',
@@ -474,7 +513,7 @@ describe('stitchVideos — history provenance', () => {
     'renderInputsVersion',
   ];
 
-  const stitchHistory = async (firstChunkFields = {}, secondChunkFields = {}) => {
+  const stitchHistory = async (firstChunkFields = {}, secondChunkFields = {}, historyKey = 'chainedFrom') => {
     const { readJSONFile } = await import('../../lib/fileUtils.js');
     const chunkIds = ['chunk-a', 'chunk-b'];
     vi.mocked(readJSONFile).mockResolvedValue([
@@ -492,7 +531,7 @@ describe('stitchVideos — history provenance', () => {
     return stitchVideos(chunkIds, {
       id: randomUUID(),
       filenamePrefix: 'chained',
-      historyKey: 'chainedFrom',
+      historyKey,
     });
   };
 
@@ -519,6 +558,44 @@ describe('stitchVideos — history provenance', () => {
     const stitched = await stitchHistory();
 
     for (const field of renderFields) expect(stitched).not.toHaveProperty(field);
+  });
+
+  // Render duration (#5878). A chain writes its chunk rows `hidden: true`, so the
+  // stitched row is the only one the user ever sees — without timing here a chained
+  // render would be the one kind that never reports how long it took.
+  describe('render duration', () => {
+    const timed = (startedAt) => ({ renderStartedAt: startedAt, renderMs: 60_000 });
+
+    it('spans from the earliest chunk start through the concat', async () => {
+      const first = '2026-09-02T00:00:00.000Z';
+      const stitched = await stitchHistory(timed('2026-09-02T00:05:00.000Z'), timed(first));
+
+      // The EARLIEST start, not chunk 0's: chunks render sequentially but the
+      // history rows are not ordered by start time.
+      expect(stitched.renderStartedAt).toBe(first);
+      expect(Date.parse(stitched.renderCompletedAt) - Date.parse(first)).toBe(stitched.renderMs);
+      // The whole span, not the sum of the chunks' own renderMs — the concat and
+      // the inter-chunk trimming are time the user waited too.
+      expect(stitched.renderMs).toBeGreaterThan(0);
+    });
+
+    it('reports nothing when a chunk never observed a start instant', async () => {
+      const stitched = await stitchHistory(timed('2026-09-02T00:00:00.000Z'), {});
+
+      // Absent, not a span measured from the one chunk that did report — that
+      // would read as a suspiciously fast render.
+      expect(stitched).not.toHaveProperty('renderMs');
+      expect(stitched).not.toHaveProperty('renderStartedAt');
+      expect(stitched).not.toHaveProperty('renderCompletedAt');
+    });
+
+    it('reports nothing for a hand-stitched clip, which ran no render of its own', async () => {
+      const t = timed('2026-09-02T00:00:00.000Z');
+      const stitched = await stitchHistory(t, t, 'stitchedFrom');
+
+      expect(stitched).not.toHaveProperty('renderMs');
+      expect(stitched).not.toHaveProperty('renderStartedAt');
+    });
   });
 
   // Draft decode (#5423). The REQUEST is chain-wide — every chunk is submitted
