@@ -835,6 +835,9 @@ async function triggerNow(id) {
   const event = scheduledEvents.get(id)
   if (!event) return false
 
+  // Disarm before running: a long manual run must not have its own pending
+  // deadline elapse underneath it and start a second, concurrent run.
+  clearPendingTimer(id)
   await runEvent(event)
   return true
 }

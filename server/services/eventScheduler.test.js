@@ -389,6 +389,22 @@ describe('schedule() lifecycle with fake timers', () => {
     expect(handler).toHaveBeenCalledTimes(2);
   });
 
+  it('triggerNow() does not let the original deadline fire during a long manual run', async () => {
+    let release;
+    const handler = vi.fn(() => new Promise(resolve => { release = resolve; }));
+    schedule({ id: 'trigger-slow', type: 'interval', intervalMs: 60000, handler });
+
+    const running = triggerNow('trigger-slow');
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    // Cross the original 60s deadline while the manual run is still in flight
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(handler).toHaveBeenCalledTimes(1); // no concurrent duplicate run
+
+    release();
+    expect(await running).toBe(true);
+  });
+
   it('triggerNow() returns false for an unknown id', async () => {
     expect(await triggerNow('does-not-exist')).toBe(false);
   });
