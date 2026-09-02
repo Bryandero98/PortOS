@@ -3308,11 +3308,15 @@ describe('a11y conventions', () => {
     // button is out of this rule's remit even though it declares no min either.
     expect(probe("p-2 text-port-success")).toEqual([]);
 
+    // The prefix is `trackedJsxFiles()`'s path shape (`git ls-files src` run
+    // from client/), not this file's location — assert the filter really
+    // selected the tree, so a change to the walker's path shape fails loudly
+    // here instead of turning the rule into a vacuous pass over zero files.
+    const scanned = trackedJsxFiles().filter((file) => file.startsWith("src/components/meatspace/"));
+    expect(scanned.length, "no MeatSpace sources matched — has trackedJsxFiles() changed its path shape?").toBeGreaterThan(20);
+
     const offenders = [];
-    for (const file of trackedJsxFiles()) {
-      if (!file.startsWith("src/components/meatspace/")) continue;
-      offenders.push(...offendersIn(file, rawSourceOf(file)));
-    }
+    for (const file of scanned) offenders.push(...offendersIn(file, rawSourceOf(file)));
     expect(offenders, `MeatSpace icon-only <button> under the 44px touch-target minimum — add min-h-[44px] min-w-[44px] inline-flex items-center justify-center and leave the icon size alone:\n${offenders.join("\n")}`).toEqual([]);
   });
 });
