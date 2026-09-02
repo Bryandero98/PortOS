@@ -183,6 +183,14 @@ export const resumeCosAgent = (id, overrides = {}, options = {}) => request(`/co
   body: JSON.stringify(overrides),
   ...options
 });
+// Relaunch a RUNNING agent: the server pauses it (process stopped, worktree kept)
+// and requeues its own task with the overrides. Omit a field to keep the stalled
+// run's value. Returns the same mode enum as resumeCosAgent.
+export const relaunchCosAgent = (id, overrides = {}, options = {}) => request(`/cos/agents/${id}/relaunch`, {
+  method: 'POST',
+  body: JSON.stringify(overrides),
+  ...options
+});
 export const killCosAgent = (id, options = {}) => request(`/cos/agents/${id}/kill`, { method: 'POST', ...options });
 export const getCosAgentStats = (id, options) => request(`/cos/agents/${id}/stats`, options);
 export const getCosAgentPrompt = (id) => request(`/cos/agents/${id}/prompt`);

@@ -18,7 +18,8 @@ import {
   Play,
   Scale,
   Unlock,
-  Server
+  Server,
+  RefreshCw
 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import AutoSizeTextarea from '../../ui/AutoSizeTextarea';
@@ -32,6 +33,7 @@ import CollapsibleText from '../../ui/CollapsibleText';
 import { extractCosTaskType } from '../../../lib/cosTaskType';
 import InstancePicker from '../InstancePicker';
 import EffortSelect from '../EffortSelect';
+import RelaunchAgentModal from './RelaunchAgentModal';
 
 const statusIcons = {
   pending: <Clock size={16} aria-hidden="true" className="text-yellow-500" />,
@@ -139,7 +141,7 @@ function getSuccessRateStyle(rate) {
   return { bg: 'bg-port-error/15', text: 'text-port-error', label: 'low' };
 }
 
-export default function TaskItem({ task, isSystem, spawning = false, selected = false, onRefresh, onTaskUnblocked, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
+export default function TaskItem({ task, agent = null, isSystem, spawning = false, selected = false, onRefresh, onTaskUnblocked, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
   // System tasks are persisted in COS-TASKS.md. Every task
   // mutation must name that source; otherwise the API's user-queue default
   // searches TASKS.md and reports the system task as missing.
@@ -192,6 +194,7 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
   const savedEditData = getTaskEditData(task, providers);
   const [editData, setEditData] = useState(() => savedEditData);
   const [showBlockedModal, setShowBlockedModal] = useState(false);
+  const [relaunching, setRelaunching] = useState(false);
   const [blockedReason, setBlockedReason] = useState('');
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
   // Independent armed-state from the delete confirm above — a second instance
@@ -762,6 +765,19 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
                     <Play size={14} aria-hidden="true" />
                   </button>
                 )}
+                {/* Only when a live agent holds this task — relaunching pauses that
+                    agent (see relaunchAgent in agentManagement.js). */}
+                {agent && (
+                  <button
+                    type="button"
+                    onClick={() => setRelaunching(true)}
+                    className="p-1 text-gray-500 hover:text-port-accent transition-colors"
+                    title="Relaunch on a different provider or model"
+                    aria-label={`Relaunch task ${task.id} on a different provider or model`}
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                  </button>
+                )}
                 {/* Labeled, not icon-only: this is the primary next action for a
                     blocked task, and the icon-only affordance (clicking the status
                     glyph) wasn't discoverable — the user had to go find the banner
@@ -810,6 +826,16 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
           )}
         </div>
       </div>
+
+      {relaunching && agent && (
+        <RelaunchAgentModal
+          agent={agent}
+          providers={providers}
+          apps={apps}
+          onDone={onRefresh}
+          onClose={() => setRelaunching(false)}
+        />
+      )}
 
       {/* Blocked Reason Modal */}
       <Modal

@@ -116,7 +116,7 @@ vi.mock('./creativeDirector/local.js', () => ({
 vi.mock('./creativeDirector/planAdvance.js', () => ({ advanceAfterPlanStepSettled: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettled: vi.fn().mockResolvedValue(undefined) }));
 
-import { handleOrphanedTask, pauseAgent, resumeAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents, terminateAgent, killAgent } from './agentManagement.js';
+import { handleOrphanedTask, pauseAgent, resumeAgent, relaunchAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents, terminateAgent, killAgent } from './agentManagement.js';
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
 import { getAgents, updateAgent, getAgentRecord, readAgentRecordOrUnreadable, AGENT_RECORD_UNREADABLE, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
@@ -128,7 +128,7 @@ import * as shellService from './shell.js';
 import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { committedDuringRun } from '../lib/gitCommitProbe.js';
-import { activeAgents, runnerAgents, pausedAgents } from './agentState.js';
+import { activeAgents, runnerAgents, pausedAgents, consumePausedAgentExit } from './agentState.js';
 
 /**
  * A direct-mode agent's spawned handle. Its prototype is ChildProcess so it
@@ -1128,6 +1128,134 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
   it('falls back to a fresh task when the task was deleted outright', async () => {
     getTaskById.mockResolvedValue(null);
     await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ mode: 'new-task' });
+  });
+});
+
+// ─── relaunchAgent ────────────────────────────────────────────────────────────
+//
+// The stall this exists for: a RUNNING agent whose CLI is parked on a provider
+// usage limit. Kill loses the worktree, Pause leaves the task parked — the
+// recovery is "same task, different provider", which is a pause and a resume
+// glued together. These lock the two things the gluing can get wrong: dropping
+// the overrides, and resuming before the stopped process is actually gone.
+
+describe('relaunchAgent — moves a running agent\'s task onto another provider', () => {
+  const LIVE_AGENT = {
+    id: 'agent-live-1',
+    taskId: 'task-abc',
+    metadata: { taskType: 'user', provider: 'claude', model: 'claude-opus-5' },
+  };
+  const PAUSED_TASK = {
+    id: 'task-abc',
+    taskType: 'user',
+    description: 'Do the thing',
+    status: 'blocked',
+    metadata: {
+      blockedCategory: 'agent-paused',
+      pausedAgentId: 'agent-live-1',
+      pausedAt: '2026-08-10T00:00:00.000Z',
+      context: 'original context',
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeAgents.clear();
+    runnerAgents.clear();
+    pausedAgents.clear();
+    // The record flips through the same write production makes: markAgentPaused's
+    // `updateAgent`. Hard-coding `paused` from the first read would let a relaunch
+    // that never actually paused still pass.
+    let paused = false;
+    updateAgent.mockImplementation(async (_id, patch) => { if (patch?.status === 'paused') paused = true; });
+    getAgentRecord.mockImplementation(async () => ({ ...LIVE_AGENT, status: paused ? 'paused' : 'running' }));
+    getTaskById.mockResolvedValue(PAUSED_TASK);
+    reviveBlockedTask.mockResolvedValue({ metadata: {} });
+  });
+
+  it('requeues the SAME task with the new provider/model/effort — no second task', async () => {
+    runnerAgents.set('agent-live-1', { taskId: 'task-abc', runId: 'run-1' });
+    pauseAgentViaRunner.mockResolvedValue({ success: true });
+
+    const result = await relaunchAgent('agent-live-1', {
+      provider: 'codex', model: 'gpt-5', effort: 'high',
+    });
+
+    expect(result).toMatchObject({ success: true, taskId: 'task-abc', mode: 'requeued', relaunched: true });
+    expect(addTask).not.toHaveBeenCalled();
+    expect(reviveBlockedTask.mock.calls[0][1].metadata).toMatchObject({
+      provider: 'codex', model: 'gpt-5', effort: 'high',
+    });
+  });
+
+  it('waits for the stopped process to leave activeAgents before requeueing', async () => {
+    // The close handler consumes the `pausedAgents` flag and drops the
+    // `activeAgents` entry together. resumeAgent deletes that flag, so requeueing
+    // before the exit lands leaves the close handler treating the exit as a
+    // completion — which cleans up the worktree the relaunched task points at.
+    activeAgents.set('agent-live-1', { process: fakeChildProcess(), taskId: 'task-abc' });
+    let stillLiveAtRequeue = null;
+    reviveBlockedTask.mockImplementation(async () => {
+      stillLiveAtRequeue = activeAgents.has('agent-live-1');
+      return { metadata: {} };
+    });
+    setTimeout(() => {
+      // Through the real close-handler door, not a hand-rolled map delete: that
+      // consumer is what releases the waiter, so a test that deleted the entries
+      // itself would pass against a relaunch that never waited at all.
+      consumePausedAgentExit('agent-live-1');
+      activeAgents.delete('agent-live-1');
+    }, 150);
+
+    await relaunchAgent('agent-live-1', { provider: 'codex' });
+
+    expect(stillLiveAtRequeue).toBe(false);
+  });
+
+  it('drops the model pinned to the provider it is moving off', async () => {
+    // The whole point of a relaunch is leaving a provider that stopped answering.
+    // `selectModelForTask` hands `metadata.model` to the CLI verbatim, so carrying
+    // the old provider's model across would make the requeued run die on its first
+    // spawn — the failure the relaunch was supposed to end.
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      metadata: { ...PAUSED_TASK.metadata, provider: 'claude', model: 'claude-opus-5', effort: 'high' },
+    });
+    runnerAgents.set('agent-live-1', { taskId: 'task-abc', runId: 'run-1' });
+    pauseAgentViaRunner.mockResolvedValue({ success: true });
+
+    await relaunchAgent('agent-live-1', { provider: 'codex' });
+
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    expect(metadata.provider).toBe('codex');
+    expect(metadata.model).toBe('');
+    expect(metadata.effort).toBe('');
+  });
+
+  it('leaves the model alone when the provider is unchanged — blank still means unchanged there', async () => {
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      metadata: { ...PAUSED_TASK.metadata, provider: 'claude', model: 'claude-opus-5' },
+    });
+    runnerAgents.set('agent-live-1', { taskId: 'task-abc', runId: 'run-1' });
+    pauseAgentViaRunner.mockResolvedValue({ success: true });
+
+    await relaunchAgent('agent-live-1', { provider: 'claude', effort: 'max' });
+
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    expect(metadata).not.toHaveProperty('model');
+    expect(metadata.effort).toBe('max');
+  });
+
+  it('refuses an agent that is not running, and one that does not exist', async () => {
+    getAgentRecord.mockResolvedValue({ ...LIVE_AGENT, status: 'completed' });
+    await expect(relaunchAgent('agent-live-1')).rejects.toMatchObject({
+      status: 409, code: 'AGENT_NOT_RUNNING',
+    });
+    expect(reviveBlockedTask).not.toHaveBeenCalled();
+
+    getAgentRecord.mockResolvedValue(null);
+    await expect(relaunchAgent('nope')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
   });
 });
 
