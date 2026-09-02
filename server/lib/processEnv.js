@@ -209,17 +209,6 @@ export function findCommandOnPath(name, { env = process.env, cwd = process.cwd()
   return null;
 }
 
-/**
- * The PATH entries of an environment, in order, minus the empty segments a
- * trailing or doubled delimiter leaves behind.
- *
- * @param {NodeJS.ProcessEnv|object} [env=process.env]
- * @returns {string[]}
- */
-export function pathEntries(env = process.env) {
-  return String(env?.PATH || env?.Path || '').split(delimiter).filter(Boolean);
-}
-
 // Windows paths are case-insensitive and PATH mixes casings freely
 // (`C:\ProgramData\npm` vs `c:\programdata\npm`), so a case-sensitive compare
 // would append a duplicate of an entry that is already there.
@@ -249,7 +238,10 @@ const samePathEntry = (a, b) => (IS_WIN ? a.toLowerCase() === b.toLowerCase() : 
  * @returns {string[]} the directories newly added
  */
 export function adoptPathDirs(dirs) {
-  const entries = pathEntries();
+  // `process.env` is case-insensitive on Windows, so `.PATH` reads a `Path`
+  // entry too — no second spelling to check. The empty segments a trailing or
+  // doubled delimiter leaves behind are dropped rather than carried along.
+  const entries = String(process.env.PATH || '').split(delimiter).filter(Boolean);
   const added = [];
   for (const dir of dirs) {
     if (!dir || entries.some((entry) => samePathEntry(entry, dir)) || !existsSync(dir)) continue;
