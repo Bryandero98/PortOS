@@ -158,6 +158,7 @@ export * from './videoModeProfiles.js';
 export * from './videoDurationProfiles.js';
 export * from './videoReferenceModes.js';
 export * from './videoTextEncoders.js';
+export * from './promptFencing.js';
 export * from './promptPartials.js';
 export * from './promptSystemStages.js';
 export * from './promptTemplate.js';
