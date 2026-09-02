@@ -27,7 +27,8 @@ vi.mock('./notifications.js', () => ({
 }));
 
 const runModelAbuseScanMock = vi.fn();
-vi.mock('./modelAbuseGuard.js', () => ({
+vi.mock('./modelAbuseGuard.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   MODEL_ABUSE_GUARD_ID: 'llama-prompt-guard-2-86m',
   MODEL_ABUSE_GUARD_MAX_INPUT_CHARS: 2_000_000,
   runModelAbuseScan: (...args) => runModelAbuseScanMock(...args),
@@ -89,7 +90,9 @@ function pullRequest(overrides = {}) {
   };
 }
 
-function installDefaultGhMock({ pr = pullRequest(), issueRows = [[]], commentRows = [[]], reviews = [[]] } = {}) {
+function installDefaultGhMock({
+  pr = pullRequest(), issueRows = [[]], commentRows = [[]], reviews = [[]], issueDetails = {},
+} = {}) {
   execGhMock.mockImplementation(async (args) => {
     if (args[0] === 'api' && args.includes('repos/o/r') && !args.some((arg) => String(arg).includes('/issues'))
       && !args.some((arg) => String(arg).includes('/pulls/')) && !args.some((arg) => String(arg).includes('/compare/'))) {
@@ -97,6 +100,11 @@ function installDefaultGhMock({ pr = pullRequest(), issueRows = [[]], commentRow
     }
     if (args[0] === 'api' && args.some((arg) => String(arg).endsWith('/issues'))) return JSON.stringify(issueRows);
     if (args[0] === 'api' && args.some((arg) => String(arg).includes('/comments'))) return JSON.stringify(commentRows);
+    const issueDetail = args
+      .map((arg) => String(arg))
+      .map((arg) => arg.match(/^repos\/o\/r\/issues\/(\d+)$/))
+      .find(Boolean);
+    if (args[0] === 'api' && issueDetail) return JSON.stringify(issueDetails[issueDetail[1]] || {});
     if (args[0] === 'pr' && args[1] === 'list') {
       return JSON.stringify([{ number: pr.number, title: pr.title, author: pr.author, url: pr.url, isDraft: false, headRefOid: pr.headRefOid, updatedAt: '2026-08-30T01:00:00Z' }]);
     }
@@ -283,6 +291,23 @@ describe('processTaskOutput', () => {
       }],
     },
   };
+  const eligibilityFacts = {
+    linkedIssueNumbers: [101],
+    openLinkedIssueNumbers: [101],
+    openerAssignedIssueNumbers: [101],
+    issueLookupComplete: true,
+  };
+  const eligibilityMetadata = {
+    issueWatcher: {
+      ...metadata.issueWatcher,
+      strictPullRequestCoverage: true,
+      pullRequests: [{
+        ...metadata.issueWatcher.pullRequests[0],
+        authorLogin: 'contributor',
+        eligibilityFacts,
+      }],
+    },
+  };
 
   it('posts validated findings as inline review comments and never merges', async () => {
     installDefaultGhMock();
@@ -394,6 +419,63 @@ describe('processTaskOutput', () => {
     const reviewCall = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/pulls/7/reviews') && args.includes('--input'));
     expect(JSON.parse(reviewCall[2].input)).toMatchObject({ event: 'APPROVE', comments: [] });
     expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it.each([
+    ['the linked issue closes', { number: 101, state: 'closed', assignees: [{ login: 'contributor' }] }],
+    ['the contributor is unassigned', { number: 101, state: 'open', assignees: [] }],
+  ])('does not review or merge when %s after the eligibility pass', async (_description, issue) => {
+    installDefaultGhMock({ issueDetails: { 101: issue } });
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'No material issues found.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload,
+      task: { metadata: eligibilityMetadata },
+      requireEligibilityFacts: true,
+    });
+
+    expect(result).toMatchObject({ reviewed: 0, merged: 0 });
+    expect(execGhMock.mock.calls.some(([args]) => args.includes('/reviews'))).toBe(false);
+    expect(mergePrMock).not.toHaveBeenCalled();
+  });
+
+  it('revalidates matching issue facts before approving and merging', async () => {
+    installDefaultGhMock({
+      issueDetails: {
+        101: { number: 101, state: 'open', assignees: [{ login: 'contributor' }] },
+      },
+    });
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'No material issues found.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload,
+      task: { metadata: eligibilityMetadata },
+      requireEligibilityFacts: true,
+    });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+    expect(execGhMock.mock.calls.some(([args]) => (
+      args[0] === 'api' && args.some((arg) => String(arg).endsWith('/issues/101'))
+    ))).toBe(true);
   });
 
   it('posts non-blocking findings on an approving review and still merges', async () => {

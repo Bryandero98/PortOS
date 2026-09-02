@@ -97,6 +97,52 @@ describe('pr-reviewer model-abuse preflight', () => {
     ])
   })
 
+  it('records only current open issues assigned to the PR opener as eligibility facts', async () => {
+    execGhMock
+      .mockResolvedValueOnce('main')
+      .mockResolvedValueOnce(JSON.stringify([
+        listedPr(12, 'Contributor-A', 'b'.repeat(40), {
+          title: 'Fixes #101 and unrelated/repo#202',
+          body: 'Refs #101',
+        }),
+      ]))
+      .mockResolvedValueOnce(JSON.stringify({
+        number: 101,
+        state: 'open',
+        assignees: [{ login: 'contributor-a' }],
+      }))
+
+    const result = await listExternalOpenPullRequests(app)
+
+    expect(result.prs[0].eligibilityFacts).toEqual({
+      linkedIssueNumbers: [101],
+      openLinkedIssueNumbers: [101],
+      openerAssignedIssueNumbers: [101],
+      issueLookupComplete: true,
+    })
+    expect(execGhMock).toHaveBeenLastCalledWith([
+      'api', '--hostname', 'github.com', 'repos/example/repo/issues/101',
+    ])
+  })
+
+  it('fails the programmatic issue lookup fact closed when a linked issue cannot be read', async () => {
+    execGhMock
+      .mockResolvedValueOnce('main')
+      .mockResolvedValueOnce(JSON.stringify([
+        listedPr(12, 'Contributor-A', 'b'.repeat(40), { title: 'Fixes #101' }),
+      ]))
+      .mockRejectedValueOnce(new Error('forge unavailable'))
+
+    const result = await listExternalOpenPullRequests(app)
+
+    expect(result.prs[0].eligibilityFacts).toEqual({
+      linkedIssueNumbers: [101],
+      openLinkedIssueNumbers: [],
+      openerAssignedIssueNumbers: [],
+      issueLookupComplete: false,
+    })
+  })
+
   it('keys a pending report to the exact external PR head set', () => {
     const base = {
       ok: true,

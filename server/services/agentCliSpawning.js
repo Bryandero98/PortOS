@@ -44,7 +44,7 @@ import { doneSentinelPath } from '../lib/agentSentinel.js';
 import { isHostShuttingDown, shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
+import { isPublicReviewRestrictedProfile } from '../lib/agentExecutionProfiles.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -383,7 +383,7 @@ export async function spawnDirectly({
   // entirely when the provider supplies its own GH_TOKEN/GITHUB_TOKEN so its
   // explicit credential wins (gh prefers GH_TOKEN, so injecting one would shadow a
   // provider GITHUB_TOKEN).
-  const [claudeSettingsEnv, forgeTokenEnv] = safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE
+  const [claudeSettingsEnv, forgeTokenEnv] = isPublicReviewRestrictedProfile(safetyProfile)
     ? [{}, {}]
     : await Promise.all([
       isClaudeCliProvider(provider) ? getClaudeSettingsEnv() : Promise.resolve({}),

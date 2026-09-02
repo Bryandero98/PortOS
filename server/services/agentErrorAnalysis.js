@@ -1479,6 +1479,9 @@ export function resolveTypeFailureSignal({ success, terminatedByUser = false, ho
 
   if (hookResult?.ran) {
     if (hookResult.threw) return { record: 'failure', category: 'hook-error' };
+    if (hookResult.outcome?.accepted === false) {
+      return { record: 'failure', category: hookResult.outcome.reason || 'output-hook-rejected' };
+    }
     if (hookResult.outcome?.reason === 'unparseable-response') return { record: 'failure', category: 'unparseable-response' };
   }
 

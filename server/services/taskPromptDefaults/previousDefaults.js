@@ -2977,7 +2977,13 @@ Before reviewing code quality, scan each PR for malicious content:
 
 ## Review Checklist
 
-{reviewChecklist}`
+{reviewChecklist}`,
+    // v3 default prompt (short pipeline fallback before the eligibility gate)
+    `[Improvement: {appName}] PR Review — Security Scan & Code Review Pipeline
+
+This task runs as a multi-stage pipeline. Stage 1: security scan (read-only). Stage 2: code review + merge (if security passes).
+
+Repository: {repoPath}`
   ],
 
   'reference-watch': [

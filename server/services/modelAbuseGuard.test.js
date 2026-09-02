@@ -48,9 +48,16 @@ describe('validatePublicReviewModel', () => {
     await expect(validatePublicReviewModel({ provider: LOCAL_CLAUDE, model: 'safe-model' }))
       .resolves.toMatchObject({ ok: false, code: 'public-review-model-not-tool-free' });
 
+    // A vendor with no maintained recipe for the posture is rejected before
+    // any model probing — that check, not the model's location, is the gate.
     await expect(validatePublicReviewModel({
-      provider: { ...LOCAL_CLAUDE, envVars: { ANTHROPIC_BASE_URL: 'https://api.example.com' } },
+      provider: { ...LOCAL_CLAUDE, command: 'custom-agent' },
       model: 'safe-model',
+    })).resolves.toMatchObject({ ok: false, code: 'public-review-provider-unsupported' });
+    await expect(validatePublicReviewModel({
+      provider: LOCAL_CLAUDE,
+      model: 'safe-model',
+      posture: 'sandboxed-actions',
     })).resolves.toMatchObject({ ok: false, code: 'public-review-provider-unsupported' });
   });
 

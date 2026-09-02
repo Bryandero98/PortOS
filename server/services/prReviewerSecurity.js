@@ -13,6 +13,7 @@ import { execGh, ensureForgeReachable } from './github.js';
 import { getSelfLogin } from './prWatcher.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubApiHost, githubRepoSpec } from '../lib/workTracker.js';
+import { mapWithConcurrency } from '../lib/mapWithConcurrency.js';
 import {
   MODEL_ABUSE_GUARD,
   MODEL_ABUSE_GUARD_MAX_INPUT_CHARS,
@@ -24,15 +25,79 @@ import { safeJSONParse } from '../lib/fileUtils.js';
 export const SECURITY_SCAN_MAX_OPEN_PRS = 200;
 export const SECURITY_SCAN_MAX_DIFF_CHARS = MODEL_ABUSE_GUARD_MAX_INPUT_CHARS;
 export const SECURITY_SCAN_MAX_REPORT_CHARS = 100_000;
+const MAX_LINKED_ISSUES = 50;
 
 const failure = (code, extra = {}) => ({ ok: false, passed: false, code, ...extra });
 const isHeadRefOid = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
 const safeText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+const ELIGIBILITY_LOOKUP_CONCURRENCY = 4;
 
-/**
- * Find every currently-open PR from an external human contributor. This is a
- * public-metadata operation only; it does not fetch a branch or run code.
- */
+function issueNumbersFromText(value, repoFullName) {
+  if (typeof value !== 'string' || !repoFullName) return [];
+  const repo = String(repoFullName).toLowerCase();
+  const numbers = new Set();
+  // GitHub's closing/reference syntax is the useful signal here. Limit
+  // repository-qualified references to this repository so a contributor's
+  // unrelated cross-repo issue cannot become an eligibility fact.
+  const referencePattern = /(?:\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|relate[sd]?\s+to|ref(?:s)?|part\s+of)\s+)?(?:(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*)?#(\d+)/gi;
+  let match;
+  while ((match = referencePattern.exec(value)) && numbers.size < MAX_LINKED_ISSUES) {
+    const qualified = match[0].match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*#\d+$/i)?.[1];
+    if (qualified && qualified.toLowerCase() !== repo) continue;
+    const number = Number(match[1]);
+    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  }
+  return [...numbers].sort((a, b) => a - b);
+}
+
+export function extractLinkedIssueNumbers(pr, repoFullName) {
+  return [...new Set([
+    ...issueNumbersFromText(pr?.title, repoFullName),
+    ...issueNumbersFromText(pr?.body, repoFullName),
+  ])].sort((a, b) => a - b).slice(0, MAX_LINKED_ISSUES);
+}
+
+async function resolveEligibilityFacts(pr, repoFullName, hostname) {
+  const linkedIssueNumbers = extractLinkedIssueNumbers(pr, repoFullName);
+  if (linkedIssueNumbers.length === 0) {
+    return {
+      linkedIssueNumbers: [],
+      openLinkedIssueNumbers: [],
+      openerAssignedIssueNumbers: [],
+      issueLookupComplete: true,
+    };
+  }
+  const openLinkedIssueNumbers = [];
+  const openerAssignedIssueNumbers = [];
+  let issueLookupComplete = true;
+  for (const issueNumber of linkedIssueNumbers) {
+    const raw = await execGh([
+      'api', '--hostname', hostname, `repos/${repoFullName}/issues/${issueNumber}`,
+    ]).catch(() => null);
+    const issue = safeJSONParse(raw, null);
+    if (!issue || issue.number !== issueNumber) {
+      issueLookupComplete = false;
+      continue;
+    }
+    const isIssue = !issue.pull_request;
+    if (isIssue && String(issue.state).toLowerCase() === 'open') {
+      openLinkedIssueNumbers.push(issueNumber);
+      const assignedLogins = Array.isArray(issue.assignees)
+        ? issue.assignees.map((assignee) => String(assignee?.login || '').toLowerCase()).filter(Boolean)
+        : [];
+      if (assignedLogins.includes(String(pr.authorLogin).toLowerCase())) {
+        openerAssignedIssueNumbers.push(issueNumber);
+      }
+    }
+  }
+  return {
+    linkedIssueNumbers,
+    openLinkedIssueNumbers,
+    openerAssignedIssueNumbers,
+    issueLookupComplete,
+  };
+}
+
 /**
  * The three facts that decide which of a repo's open PRs pr-reviewer may target:
  * the `gh` repo selector, the default branch it reviews against, and the login
@@ -64,6 +129,7 @@ export async function resolvePrReviewerTargetScope(app) {
     ok: true,
     repoSpec,
     repoFullName: origin.fullName,
+    hostname: githubApiHost(origin.host),
     defaultBranch: defaultBranch.trim(),
     selfLogin,
   };
@@ -87,7 +153,7 @@ export function isReviewablePullRequest(scope, pullRequest) {
 export async function listExternalOpenPullRequests(app) {
   const scope = await resolvePrReviewerTargetScope(app);
   if (!scope.ok) return scope;
-  const { repoSpec, repoFullName, defaultBranch, selfLogin } = scope;
+  const { repoSpec, repoFullName, hostname, defaultBranch, selfLogin } = scope;
 
   const raw = await execGh([
     'pr', 'list', '--repo', repoSpec,
@@ -101,7 +167,7 @@ export async function listExternalOpenPullRequests(app) {
   if (!Array.isArray(parsed)) return failure('security-scan-pr-list-unreadable');
   if (parsed.length >= SECURITY_SCAN_MAX_OPEN_PRS) return failure('security-scan-too-many-open-prs');
 
-  const prs = parsed.map((pr) => ({
+  const listedPrs = parsed.map((pr) => ({
     number: pr?.number,
     authorLogin: pr?.author?.login,
     headRefOid: isHeadRefOid(pr?.headRefOid) ? pr.headRefOid : null,
@@ -110,7 +176,7 @@ export async function listExternalOpenPullRequests(app) {
     title: typeof pr?.title === 'string' ? pr.title : null,
     body: typeof pr?.body === 'string' ? pr.body : '',
   }));
-  if (prs.some((pr) => (
+  if (listedPrs.some((pr) => (
     !Number.isInteger(pr.number)
     || pr.number < 1
     || typeof pr.authorLogin !== 'string'
@@ -120,12 +186,18 @@ export async function listExternalOpenPullRequests(app) {
     return failure('security-scan-pr-list-unreadable');
   }
 
+  const externalPrs = listedPrs.filter((pr) => String(pr.authorLogin).toLowerCase() !== String(selfLogin).toLowerCase());
+  const prs = await mapWithConcurrency(externalPrs, ELIGIBILITY_LOOKUP_CONCURRENCY, async (pr) => ({
+    ...pr,
+    eligibilityFacts: await resolveEligibilityFacts(pr, repoFullName, hostname),
+  }));
+
   return {
     ok: true,
     repoSpec,
     repoFullName,
-    defaultBranch,
-    prs: prs.filter((pr) => String(pr.authorLogin).toLowerCase() !== String(selfLogin).toLowerCase()),
+    defaultBranch: defaultBranch.trim(),
+    prs,
   };
 }
 
@@ -142,6 +214,9 @@ export function securityScanFingerprint(target) {
     defaultBranch: target.defaultBranch || null,
     prs: target.prs
       .map((pr) => ({ number: pr.number, headRefOid: pr.headRefOid }))
+      .sort((a, b) => a.number - b.number),
+    eligibilityFacts: target.prs
+      .map((pr) => ({ number: pr.number, facts: pr.eligibilityFacts || null }))
       .sort((a, b) => a.number - b.number),
   };
   return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
@@ -230,6 +305,7 @@ export async function runPrReviewerSecurityScan({ app, timeoutMs, target = null 
       url: pr.url,
       headSha: pr.headRefOid,
       baseRefName: resolvedTarget.defaultBranch,
+      eligibilityFacts: pr.eligibilityFacts,
       behindBy: null,
       files: [],
       additions: 0,

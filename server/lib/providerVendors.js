@@ -85,7 +85,12 @@ import {
   prepareAntigravityPrompt,
   resolveAntigravityModelAndEffort,
 } from './antigravity.js';
-import { isGrokCommand, ensureGrokTuiArgs, ensureGrokHeadlessArgs, prepareGrokPromptFile } from './grok.js';
+import {
+  isGrokCommand,
+  ensureGrokTuiArgs,
+  ensureGrokHeadlessArgs,
+  prepareGrokPromptFile,
+} from './grok.js';
 import { isKimiCommand, ensureKimiTuiArgs, ensureKimiHeadlessArgs, prepareKimiPrompt } from './kimi.js';
 import {
   CURSOR_COMMAND,
@@ -93,10 +98,27 @@ import {
   ensureCursorTuiArgs,
   ensureCursorHeadlessArgs,
 } from './cursor.js';
-import { isLocalInstanceEndpoint } from './localEndpoint.js';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
+import {
+  isPublicReviewNoToolProfile,
+  publicReviewPostureForProfile,
+  PUBLIC_REVIEW_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+  PUBLIC_REVIEW_POSTURES,
+} from './agentExecutionProfiles.js';
 
-export { PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
+export {
+  isPublicReviewNoToolProfile,
+  publicReviewPostureForProfile,
+  PUBLIC_REVIEW_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+  PUBLIC_REVIEW_POSTURES,
+} from './agentExecutionProfiles.js';
 
 /**
  * For every vendor EXCEPT codex/claude, `buildCliSpawnConfig`'s argv is just
@@ -148,6 +170,96 @@ function codexSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads
   return { command: provider?.command || CODEX_COMMAND, args, stdinMode: 'prompt' };
 }
 
+// Codex's own sandbox modes are the enforcement here, not the prompt. Both
+// public-review recipes build argv from scratch and never forward
+// `provider.args`: a saved `--dangerously-bypass-approvals-and-sandbox` in a
+// user's provider config would otherwise turn a screened review into an
+// unrestricted session.
+function codexPublicReviewSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
+  return codexPublicReviewArgs(provider, { effectiveModel, effort, maxConcurrentThreads }, ['--sandbox', 'read-only']);
+}
+
+function codexPublicReviewActionsSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
+  // `workspace-write` is intentionally the narrowest Codex sandbox that can
+  // apply a supplied patch and run local tests; `--approve-for-me` only
+  // suppresses interactive confirmations inside that sandbox. Never replace
+  // these with the unrestricted bypass used by the ordinary coding-agent path.
+  return codexPublicReviewArgs(provider, { effectiveModel, effort, maxConcurrentThreads }, [
+    '--sandbox', 'workspace-write',
+    '--approve-for-me',
+  ]);
+}
+
+function codexPublicReviewArgs(provider, { effectiveModel, effort, maxConcurrentThreads }, postureArgs) {
+  const args = [
+    'exec',
+    ...postureArgs,
+    '--ephemeral',
+    '--ignore-user-config',
+    ...buildCodexStartupArgs(),
+    ...buildCodexAgentThreadArgs(maxConcurrentThreads),
+  ];
+  if (effectiveModel) {
+    args.push('--model', effectiveModel);
+  }
+  args.push(...buildEffortArgs(effort, provider, args, effectiveModel));
+  return { command: provider?.command || CODEX_COMMAND, args, stdinMode: 'prompt' };
+}
+
+// Antigravity's `--sandbox` is its maintained terminal-restriction posture and
+// `--mode` picks what the session may do inside it: `plan` cannot edit at all,
+// `accept-edits` may apply the screened patch and run tests. Provider args are
+// intentionally not copied: saved args could turn a safe profile back into an
+// unrestricted session. `--print` carries the prompt as its VALUE (see
+// antigravity.js) — `prepareAntigravityPrompt` relocates it to the end of the
+// argv at spawn time, which is why it is safe to append flags after it here.
+function antigravityPublicReviewSpawnArgs(provider, ctx) {
+  return antigravityPublicReviewArgs(provider, ctx, 'plan');
+}
+
+function antigravityPublicReviewActionsSpawnArgs(provider, ctx) {
+  return antigravityPublicReviewArgs(provider, ctx, 'accept-edits');
+}
+
+function antigravityPublicReviewArgs(provider, { effectiveModel, effort } = {}, mode) {
+  const args = [
+    '--sandbox',
+    '--mode', mode,
+    '--disable-slash-commands',
+    '--print',
+  ];
+  if (effectiveModel) args.push('--model', effectiveModel);
+  args.push(...buildEffortArgs(effort, provider, args, effectiveModel));
+  return { command: provider?.command || ANTIGRAVITY_COMMAND, args, stdinMode: 'prompt' };
+}
+
+// Grok exposes both halves of the contract as first-class flags:
+// `--permission-mode plan` is its read-only mode, `--tools ''` empties the
+// built-in tool allowlist, and `--sandbox <profile>` applies its own
+// filesystem/network sandbox (`workspace` is grok's built-in profile). The
+// safety flags are seeded as the BASE args so `ensureGrokHeadlessArgs` sees a
+// permission posture already pinned and does not append its usual
+// `--permission-mode bypassPermissions`.
+function grokPublicReviewSpawnArgs(provider, ctx) {
+  return grokPublicReviewArgs(provider, ctx, ['--permission-mode', 'plan', '--tools', '']);
+}
+
+function grokPublicReviewActionsSpawnArgs(provider, ctx) {
+  return grokPublicReviewArgs(provider, ctx, ['--sandbox', 'workspace', '--permission-mode', 'acceptEdits']);
+}
+
+function grokPublicReviewArgs(provider, { effectiveModel, effort } = {}, postureArgs) {
+  const args = ensureGrokHeadlessArgs([
+    ...postureArgs,
+    '--no-subagents',
+    '--disable-web-search',
+  ], effectiveModel);
+  args.push(...buildEffortArgs(effort, provider, args, effectiveModel));
+  // `ensureGrokHeadlessArgs` appends the GROK_STDIN_PROMPT_PATH prompt-file
+  // sentinel that `prepareGrokPromptFile` rewrites on Windows; keep it present.
+  return { command: provider?.command || 'grok', args, stdinMode: 'prompt' };
+}
+
 const CODEX = {
   id: 'codex',
   idFragment: 'codex',
@@ -157,6 +269,18 @@ const CODEX = {
   tuiArgs: ensureCodexTuiArgs,
   cliArgs: codexCliArgs,
   spawnArgs: codexSpawnArgs,
+  publicReview: {
+    // The CLI id and the TUI id share one binary, so both reach the same
+    // enforced recipe when a stage selects them.
+    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
+      spawnArgs: codexPublicReviewSpawnArgs,
+      matchProvider: (provider) => isCodexCommand(provider?.command) || provider?.id === CODEX_CLI_ID || provider?.id === 'codex-tui',
+    },
+    [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
+      spawnArgs: codexPublicReviewActionsSpawnArgs,
+      matchProvider: (provider) => provider?.type === 'cli' && isCodexCommand(provider?.command),
+    },
+  },
 };
 
 // ─── antigravity ────────────────────────────────────────────────────────────
@@ -177,6 +301,16 @@ const ANTIGRAVITY = {
   cliArgs: antigravityCliArgs,
   preparePrompt: prepareAntigravityPrompt,
   spawnArgs: defaultSpawnArgs(antigravityCliArgs, ANTIGRAVITY_COMMAND),
+  publicReview: {
+    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
+      spawnArgs: antigravityPublicReviewSpawnArgs,
+      matchProvider: (provider) => provider?.type === 'cli' && isAntigravityCommand(provider?.command),
+    },
+    [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
+      spawnArgs: antigravityPublicReviewActionsSpawnArgs,
+      matchProvider: (provider) => provider?.type === 'cli' && isAntigravityCommand(provider?.command),
+    },
+  },
 };
 
 // ─── opencode ───────────────────────────────────────────────────────────────
@@ -217,6 +351,16 @@ const GROK = {
   tuiArgs: ensureGrokTuiArgs,
   cliArgs: grokCliArgs,
   spawnArgs: defaultSpawnArgs(grokCliArgs, 'grok'),
+  publicReview: {
+    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
+      spawnArgs: grokPublicReviewSpawnArgs,
+      matchProvider: (provider) => provider?.type === 'cli' && isGrokCommand(provider?.command),
+    },
+    [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
+      spawnArgs: grokPublicReviewActionsSpawnArgs,
+      matchProvider: (provider) => provider?.type === 'cli' && isGrokCommand(provider?.command),
+    },
+  },
 };
 
 // ─── kimi ───────────────────────────────────────────────────────────────────
@@ -334,12 +478,6 @@ const CLAUDE_PUBLIC_REVIEW_ARGS = [
   '--bare',
 ];
 
-function isLocalClaudePublicReviewProvider(provider) {
-  if (provider?.type !== 'cli' || provider?.ollamaBacked !== true || !isClaudeCommand(provider?.command)) return false;
-  const endpoint = provider?.envVars?.ANTHROPIC_BASE_URL || provider?.endpoint || 'http://localhost:11434';
-  return isLocalInstanceEndpoint(endpoint);
-}
-
 function claudePublicReviewArgs(provider, {
   effectiveModel,
   effort,
@@ -354,9 +492,10 @@ function claudePublicReviewArgs(provider, {
   ];
   if (systemPromptFile) args.push('--append-system-prompt-file', systemPromptFile);
   if (effectiveModel) {
-    // This profile is local-only. Do not consult the host's Bedrock settings or
-    // ambient environment while constructing its model id: a server started in
-    // Bedrock mode must not turn a local Ollama model into a cloud model name.
+    // Pass the stage's model id through VERBATIM. Do not consult the host's
+    // Bedrock settings or ambient environment while constructing it: this
+    // profile is reachable from an Ollama-backed Claude wrapper, and a server
+    // started in Bedrock mode must not turn a local model into a cloud one.
     args.push('--model', effectiveModel);
   }
   const safeArgs = applyLeanClaudeArgs(provider, args, provider?.command || 'claude');
@@ -379,8 +518,17 @@ const CLAUDE = {
   matchCommand: () => true,
   cliArgs: claudeCliArgs,
   spawnArgs: claudeSpawnArgs,
-  publicReviewSpawnArgs: claudePublicReviewArgs,
-  publicReviewProvider: isLocalClaudePublicReviewProvider,
+  publicReview: {
+    // Claude is the historical always-true fallback row, so its posture
+    // matcher must positively identify the binary — an unknown command must
+    // never inherit claude's flag set. There is deliberately no
+    // sandboxed-actions recipe: Claude Code has no OS-level sandbox flag, only
+    // permission modes, so it fails closed for the actions stage.
+    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
+      spawnArgs: claudePublicReviewArgs,
+      matchProvider: (provider) => provider?.type === 'cli' && isClaudeCommand(provider?.command),
+    },
+  },
 };
 
 /**
@@ -406,23 +554,25 @@ function matchesProvider(vendor, provider) {
   return vendor.matchCliProvider ? vendor.matchCliProvider(provider) : vendor.matchCommand(provider?.command);
 }
 
-function matchesPublicReviewProvider(vendor, provider) {
-  if (!matchesProvider(vendor, provider)) {
-    // The normal Codex provider matcher intentionally distinguishes the CLI
-    // id from the TUI id. The safety profile must recognize both because they
-    // share the same binary and receive the same read-only posture.
-    if (vendor.id === 'codex' && (provider?.id === 'codex-tui' || isCodexCommand(provider?.command))) return true;
-    return false;
+/**
+ * The vendor recipe enforcing `posture` for `provider`, or null when this
+ * install has no maintained recipe for that pairing.
+ *
+ * Eligibility is DECLARED by the vendor row, never named by the caller: a
+ * pipeline stage asks for a posture and every enabled provider whose vendor
+ * declares it is a legal choice. That is what lets an install with only grok
+ * (or only a local Claude wrapper) configure the same stages an install with
+ * codex configures. A row's matcher must positively identify the binary —
+ * claude's `matchCommand` is unconditionally true (it is the historical
+ * fallback row), so an unknown command must never inherit its argv.
+ */
+export function publicReviewRecipe(provider, posture) {
+  if (!PUBLIC_REVIEW_POSTURES.includes(posture)) return null;
+  for (const vendor of PROVIDER_VENDORS) {
+    const recipe = vendor.publicReview?.[posture];
+    if (recipe?.spawnArgs && recipe.matchProvider(provider)) return recipe;
   }
-  // Claude is the historical fallback row. It is safe only when the selected
-  // provider actually launches Claude; an unknown command must never inherit
-  // Claude's safe argv by accident.
-  if (vendor.id === 'claude') {
-    return typeof vendor.publicReviewProvider === 'function'
-      ? vendor.publicReviewProvider(provider)
-      : false;
-  }
-  return true;
+  return null;
 }
 
 /**
@@ -444,11 +594,14 @@ export function inferTuiCommand(id) {
 
 /** `applyCommandDefaults` (tuiHandshake.js): TUI posture-flag dispatch. */
 export function applyCommandDefaults(command, args, { safetyProfile = null } = {}) {
+  if (publicReviewPostureForProfile(safetyProfile) === PUBLIC_REVIEW_ACTIONS_POSTURE) {
+    throw new Error('The public-review-actions profile requires a supported direct CLI sandbox');
+  }
   const vendor = PROVIDER_VENDORS.find((v) => (
-    (safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE ? v.publicReviewTuiArgs : v.tuiArgs)
+    (isPublicReviewNoToolProfile(safetyProfile) ? v.publicReviewTuiArgs : v.tuiArgs)
       && v.matchCommand(command)
   ));
-  if (safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE) {
+  if (isPublicReviewNoToolProfile(safetyProfile)) {
     if (!vendor || typeof vendor.publicReviewTuiArgs !== 'function') {
       throw new Error(`Provider command '${command}' has no enforced public-review posture`);
     }
@@ -484,35 +637,55 @@ export function buildVendorCliArgs(provider, baseArgs, { model, effort }) {
  * before this registry existed (see file header).
  */
 export function buildVendorSpawnConfig(provider, ctx) {
-  const vendor = PROVIDER_VENDORS.find((v) => v.spawnArgs && (
-    ctx?.safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE
-      ? matchesPublicReviewProvider(v, provider)
-      : matchesProvider(v, provider)
-  ));
-  if (ctx?.safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE) {
-    if (!vendor?.publicReviewSpawnArgs) {
-      throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced public-review posture`);
+  const posture = publicReviewPostureForProfile(ctx?.safetyProfile);
+  if (posture) {
+    const recipe = publicReviewRecipe(provider, posture);
+    if (!recipe) {
+      throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${posture} public-review posture`);
     }
-    return vendor.publicReviewSpawnArgs(provider, ctx);
+    return recipe.spawnArgs(provider, ctx);
   }
+  const vendor = PROVIDER_VENDORS.find((v) => v.spawnArgs && matchesProvider(v, provider));
   return vendor.spawnArgs(provider, ctx);
 }
 
 /**
- * Whether a provider has a maintained, enforced read-only public-content
- * execution recipe for the requested transport. Unknown vendors fail closed.
+ * Every public-review posture this provider can actually be configured for,
+ * in `PUBLIC_REVIEW_POSTURES` order. This is the value the schedule UI reads to
+ * offer a stage's eligible providers, so it must stay derived from the vendor
+ * rows rather than from a hardcoded list of vendor names.
+ *
+ * Interactive (TUI) sessions and API/custom providers have no maintained
+ * recipe: a generic read-only prompt is not enforcement, so they fail closed.
  */
-export function supportsPublicReviewProvider(provider, { tui = false } = {}) {
-  // Interactive sessions and API/custom providers do not have a maintained
-  // no-tools recipe here. Public contributor content is intentionally routed
-  // only through the non-interactive Claude recipe below; callers must fail
-  // closed instead of treating a generic read-only prompt as enforcement.
+export function publicReviewPosturesForProvider(provider, { tui = false } = {}) {
+  if (tui || provider?.type !== 'cli') return [];
+  return PUBLIC_REVIEW_POSTURES.filter((posture) => Boolean(publicReviewRecipe(provider, posture)));
+}
+
+/**
+ * Vendor ids that declare a maintained recipe for `posture`, for naming what a
+ * user could install when nothing on their machine qualifies. Derived from the
+ * rows so the suggestion cannot go stale when a vendor gains or loses a recipe.
+ */
+export function publicReviewCapableVendorIds(posture) {
+  return PROVIDER_VENDORS.filter((vendor) => vendor.publicReview?.[posture]?.spawnArgs).map((vendor) => vendor.id);
+}
+
+/** Whether `provider` has a maintained, enforced recipe for one posture. */
+export function supportsPublicReviewPosture(provider, posture, { tui = false } = {}) {
   if (tui || provider?.type !== 'cli') return false;
-  const vendor = PROVIDER_VENDORS.find((v) => (
-    v.publicReviewSpawnArgs
-      && matchesPublicReviewProvider(v, provider)
-  ));
-  return Boolean(vendor);
+  return Boolean(publicReviewRecipe(provider, posture));
+}
+
+/** Whether a provider can run a tool-free public-content stage. */
+export function supportsPublicReviewProvider(provider, options) {
+  return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_NO_TOOL_POSTURE, options);
+}
+
+/** Whether a provider can run the sandboxed final public-review stage. */
+export function supportsPublicReviewActionsProvider(provider, options) {
+  return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_ACTIONS_POSTURE, options);
 }
 
 /**

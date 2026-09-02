@@ -61,14 +61,13 @@ const HOOK_MODULES = {
   'issue-watcher': {
     load: () => import('./issueWatcher.js')
   },
-  // pr-reviewer uses the same deterministic forge-action coordinator as
-  // issue-watcher, but its generator supplies a screened PR-only input set.
-  // Do not run issue-watcher's live gather hook here: the preflight's exact,
-  // fingerprinted snapshot is the only content allowed into Stage 2. Keeping
-  // the output hook shared prevents the two freshness/action contracts from
-  // drifting.
+  // pr-reviewer uses a role-aware wrapper: the eligibility stage accepts only
+  // a complete binary allowlist, while the optional actions stage delegates to
+  // issue-watcher's deterministic forge coordinator. Do not run a live gather
+  // hook here: the preflight's exact, fingerprinted snapshot is the only
+  // content allowed into the pipeline.
   'pr-reviewer': {
-    load: () => import('./issueWatcher.js'),
+    load: () => import('./prReviewerPipeline.js'),
     input: false,
   },
   'layered-intelligence': {

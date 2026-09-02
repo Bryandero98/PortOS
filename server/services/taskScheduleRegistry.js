@@ -8,6 +8,10 @@
 import { BRANCHES_PER_AGENT_MAX, BRANCHES_PER_AGENT_MIN, DEFAULT_REPO_SYNC_VERIFY_MODE } from '../lib/cosValidation.js';
 import { isAuditTaskType, defaultFileIssuesFor } from '../lib/auditCatalog.js';
 import { MODEL_ABUSE_GUARD_ID } from '../lib/modelAbuseGuard.js';
+import {
+  PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+} from '../lib/agentExecutionProfiles.js';
 import { INTERVAL_TYPES } from './taskScheduleConstants.js';
 
 export const SELF_IMPROVEMENT_TASK_TYPES = [
@@ -211,6 +215,50 @@ export function requiresManagedAppTarget(taskType) {
   return MANAGED_APP_TARGET_TASK_TYPES.has(taskType);
 }
 
+// The pr-reviewer pipeline is a trust boundary, not three interchangeable
+// prompt tabs. Keep the shipped role/profile pairing in one place so the
+// scheduler, migration, generator, and UI can all recognize the same stages.
+// Stage 3 is present by default for backwards compatibility with the former
+// security → review flow; the schedule UI can remove it for a gate-only run.
+export const createPrReviewerDefaultStages = () => ([
+  {
+    name: 'Security Scan',
+    role: 'security',
+    promptKey: 'pr-reviewer-security',
+    readOnly: true,
+    managed: true,
+    guardId: MODEL_ABUSE_GUARD_ID,
+  },
+  {
+    name: 'Eligibility Gate',
+    role: 'eligibility',
+    promptKey: 'pr-reviewer-eligibility',
+    readOnly: true,
+    useWorktree: true,
+    openPR: false,
+    simplify: false,
+    reviewLoop: false,
+    discardWorktree: true,
+    noCodeOutput: true,
+    managed: true,
+    executionProfile: PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+  },
+  {
+    name: 'Code Review & Actions',
+    role: 'actions',
+    promptKey: 'pr-reviewer-review',
+    readOnly: true,
+    useWorktree: true,
+    openPR: false,
+    simplify: false,
+    reviewLoop: false,
+    discardWorktree: true,
+    noCodeOutput: true,
+    managed: true,
+    executionProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+  },
+]);
+
 // Fresh installs expose every task as an enabled manual action. The on-demand
 // type keeps provider work silent until the user explicitly runs a task, while
 // retaining timing metadata such as custom intervals and recheck settings if
@@ -343,7 +391,7 @@ export const DEFAULT_TASK_INTERVALS = {
   // is ON except `reapRemotes`, which DELETES branches on origin and so stays
   // opt-in even though the reconciler only ever reaps already-merged ones.
   'repo-sync':           { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA, syncPush: true, syncPull: true, switchDefault: true, cleanupMerged: true, dropStashes: true, reapRemotes: false, verifyMode: DEFAULT_REPO_SYNC_VERIFY_MODE } },
-  'pr-reviewer':         { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 7200000, enabled: true, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: true, useWorktree: false, openPR: false, worktreeChangesExpected: false, pipeline: { stages: [{ name: 'Security Scan', promptKey: 'pr-reviewer-security', readOnly: true, managed: true, guardId: MODEL_ABUSE_GUARD_ID }, { name: 'Code Review & Actions', promptKey: 'pr-reviewer-review', readOnly: true, useWorktree: true, openPR: false, simplify: false, reviewLoop: false, discardWorktree: true, noCodeOutput: true, managed: true, executionProfile: 'public-review' }] } } },
+  'pr-reviewer':         { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 7200000, enabled: true, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: true, useWorktree: false, openPR: false, worktreeChangesExpected: false, pipeline: { stages: createPrReviewerDefaultStages() } } },
   'code-reviewer-a':     { ...CODE_REVIEWER_INTERVAL },
   'code-reviewer-b':     { ...CODE_REVIEWER_INTERVAL },
   'jira-sprint-manager': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, weekdaysOnly: true, feature: 'jira', providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
@@ -552,7 +600,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'release-check': 'Check for release readiness',
   'error-handling': 'Failure-path audit — file issues or implement fixes',
   'typing': 'TypeScript types — file issues or implement fixes',
-  'pr-reviewer': 'Review contributor PRs with a security scan before code review and merge',
+  'pr-reviewer': 'Screen contributor PRs, gate eligibility, then review and act on approved changes',
   'pr-watcher': 'Run a custom prompt on PRs newly opened against the default branch',
   'issue-watcher': 'Watch external issues and PRs: assign volunteers, review changes, and apply deterministic GitHub actions around one reasoning pass',
   'code-reviewer-a': 'Review the codebase and triage/implement findings (independent provider/model instance A)',
@@ -592,7 +640,7 @@ export function getTaskTypeDescription(taskType) {
 export const TASK_TYPE_PROMPT_INFO = Object.freeze({
   'pr-reviewer': Object.freeze({
     mode: 'runtime-generated',
-    description: 'Runs a complete external-content abuse screen, then passes only the exact cleared snapshot to a read-only local code reviewer.'
+    description: 'Runs a model-abuse screen, a tool-free eligibility gate, and an optional action-capable code review; only the final stage may drive the deterministic GitHub workflow.'
   }),
   'issue-watcher': Object.freeze({
     mode: 'runtime-generated',

@@ -62,10 +62,10 @@ import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
-import { supportsPublicReviewProvider } from '../lib/providerVendors.js';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
+import { supportsPublicReviewPosture, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
+import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { formatPublicReviewInputPrompt } from '../lib/modelAbuseGuard.js';
-import { materializePublicReviewInput, readPublicReviewInputSnapshot, validatePublicReviewModel } from './modelAbuseGuard.js';
+import { materializePublicReviewInput, materializePublicReviewPatches, readPublicReviewInputSnapshot, validatePublicReviewModel } from './modelAbuseGuard.js';
 import { releaseAppReviewMarker } from './appActivity.js';
 import { ensureInstanceId } from './instances.js';
 import { isClaimableBy, buildClaim, buildRelease, getClaimOwner, getTargetInstance, isTargetedElsewhere } from './cosTaskClaim.js';
@@ -110,6 +110,31 @@ function publicReviewScanBlock(task) {
   return {
     reason: `Public review withheld: the model-abuse scan is incomplete${scan?.code ? ` (${scan.code})` : ''}`,
     category: 'public-review-security-scan-incomplete',
+  };
+}
+
+function publicReviewEligibilityBlock(task) {
+  const eligibility = task?.metadata?.pipeline?.eligibility;
+  const eligibleNumbers = Array.isArray(eligibility?.eligibleNumbers)
+    ? eligibility.eligibleNumbers.filter((number) => Number.isInteger(number) && number > 0)
+    : [];
+  const expected = task?.metadata?.issueWatcher?.pullRequests;
+  const expectedNumbers = Array.isArray(expected)
+    ? expected.map((item) => item?.number).filter((number) => Number.isInteger(number) && number > 0)
+    : [];
+  const allowed = new Set(eligibleNumbers);
+  const coverageMatches = expectedNumbers.length === eligibleNumbers.length
+    && expectedNumbers.every((number) => allowed.has(number));
+  if (eligibility?.complete === true && eligibleNumbers.length > 0 && coverageMatches) return null;
+  if (eligibility?.complete === true && eligibleNumbers.length === 0) {
+    return {
+      reason: 'Public review withheld: the eligibility gate cleared no pull requests',
+      category: 'public-review-no-eligible-prs',
+    };
+  }
+  return {
+    reason: 'Public review withheld: a complete eligibility gate result is required before actions',
+    category: 'public-review-eligibility-incomplete',
   };
 }
 
@@ -393,7 +418,11 @@ async function runAgentSpawn(task) {
     }
     const { provider, selectedModel, modelSelection } = resolution;
     const isTui = isTuiProvider(provider);
-    const publicReview = task.metadata?.executionProfile === PUBLIC_REVIEW_EXECUTION_PROFILE;
+    const executionProfile = task.metadata?.executionProfile;
+    const publicReviewPosture = publicReviewPostureForProfile(executionProfile);
+    const publicReviewNoTools = publicReviewPosture === PUBLIC_REVIEW_NO_TOOL_POSTURE;
+    const publicReviewActions = executionProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
+    const publicReview = Boolean(publicReviewPosture);
     if (publicReview) {
       const scanBlock = publicReviewScanBlock(task);
       if (scanBlock) {
@@ -414,14 +443,35 @@ async function runAgentSpawn(task) {
         return null;
       }
     }
-    if (publicReview && !supportsPublicReviewProvider(provider, { tui: isTui })) {
-      const reason = `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced read-only public-content review mode`;
+    if (publicReviewActions) {
+      const eligibilityBlock = publicReviewEligibilityBlock(task);
+      if (eligibilityBlock) {
+        await updateTask(task.id, {
+          status: 'blocked',
+          metadata: {
+            ...task.metadata,
+            blockedReason: eligibilityBlock.reason,
+            blockedCategory: eligibilityBlock.category,
+            blockedAt: new Date().toISOString(),
+          },
+        }, task.taskType || 'user').catch(() => {});
+        await cleanupOnError(eligibilityBlock.reason);
+        emitLog('warn', `Public review withheld for task ${task.id}: ${eligibilityBlock.category}`, { taskId: task.id });
+        return null;
+      }
+    }
+    // One posture check for both stages. Eligibility is declared by the vendor
+    // row and re-asserted HERE, at spawn time, because a schedule or API
+    // payload can be edited without the browser: the picker is a convenience,
+    // never the enforcement.
+    if (!supportsPublicReviewPosture(provider, publicReviewPosture, { tui: isTui })) {
+      const reason = `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${publicReviewPosture} public-content review mode`;
       await updateTask(task.id, {
         status: 'blocked',
         metadata: {
           ...task.metadata,
           blockedReason: reason,
-          blockedCategory: 'public-review-provider-unsupported',
+          blockedCategory: publicReviewActions ? 'public-review-actions-provider-unsupported' : 'public-review-provider-unsupported',
           blockedAt: new Date().toISOString(),
         },
       }, task.taskType || 'user').catch(() => {});
@@ -429,8 +479,8 @@ async function runAgentSpawn(task) {
       cosEvents.emit('agent:error', { taskId: task.id, error: reason });
       return null;
     }
-    if (publicReview) {
-      const modelPolicy = await validatePublicReviewModel({ provider, model: selectedModel });
+    if (publicReviewNoTools) {
+      const modelPolicy = await validatePublicReviewModel({ provider, model: selectedModel, posture: PUBLIC_REVIEW_NO_TOOL_POSTURE });
       if (!modelPolicy.ok) {
         const reason = `Public review model is unavailable or not tool-free (${modelPolicy.code})`;
         await updateTask(task.id, {
@@ -447,9 +497,10 @@ async function runAgentSpawn(task) {
         return null;
       }
     }
-    // Public review is intentionally direct-only: the CoS runner is a shared
-    // process and may inherit a forge credential or ambient tool configuration.
-    // The direct child receives a reduced environment below.
+    // Every public-content stage is direct-only. The CoS runner is a shared
+    // process and may inherit ambient tool configuration; the final stage's
+    // provider-specific direct CLI recipe is what enforces its sandbox.
+    // GitHub mutations still belong to the deterministic output hook.
     const dispatchUseRunner = publicReview ? false : useRunner;
     let publicReviewPromptData = null;
 
@@ -471,11 +522,20 @@ async function runAgentSpawn(task) {
     const { workspacePath, resolvedAppName, worktreeInfo, jiraTicket, jiraBranchName, explicitWorktree } = prep;
 
     if (publicReview) {
+      const allowedPullRequestNumbers = publicReviewActions
+        ? task.metadata?.pipeline?.eligibility?.eligibleNumbers
+        : null;
       const materialized = await materializePublicReviewInput({
         scanKey: task.metadata?.pipeline?.reviewInputKey,
         workspacePath,
+        allowedPullRequestNumbers,
       });
-      if (!materialized) {
+      const patchesMaterialized = !publicReviewActions || await materializePublicReviewPatches({
+        scanKey: task.metadata?.pipeline?.reviewInputKey,
+        workspacePath,
+        allowedPullRequestNumbers,
+      });
+      if (!materialized || !patchesMaterialized) {
         const reason = 'The screened public-review input snapshot is unavailable or invalid';
         await updateTask(task.id, {
           status: 'blocked',
@@ -492,9 +552,12 @@ async function runAgentSpawn(task) {
       }
       publicReviewPromptData = await readPublicReviewInputSnapshot({
         scanKey: task.metadata?.pipeline?.reviewInputKey,
+        allowedPullRequestNumbers,
       });
       if (!publicReviewPromptData) {
-        const reason = 'The screened public-review input could not be loaded for the no-tools reviewer';
+        const reason = publicReviewNoTools
+          ? 'The screened public-review input could not be loaded for the no-tools reviewer'
+          : 'The screened public-review input could not be loaded for the final reviewer';
         await updateTask(task.id, {
           status: 'blocked',
           metadata: {
@@ -830,9 +893,10 @@ async function runAgentSpawn(task) {
     // provider whose inference lands on this machine: local runtimes retain
     // their deliberately bounded GPU concurrency posture.
     const maxConcurrentThreads = cloudSwarmThreadCapacity(runProvider, task.metadata?.swarmCount);
+    const safetyProfile = publicReview ? executionProfile : null;
     const cliConfig = isTui
-      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile: publicReview ? PUBLIC_REVIEW_EXECUTION_PROFILE : null })
-      : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile: publicReview ? PUBLIC_REVIEW_EXECUTION_PROFILE : null });
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile })
+      : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
       agentId,
@@ -891,7 +955,7 @@ async function runAgentSpawn(task) {
       laneName,
       cleanupWorktreeFn: cleanupAgentWorktree,
       isTruthyMetaFn: isTruthyMeta,
-      safetyProfile: publicReview ? PUBLIC_REVIEW_EXECUTION_PROFILE : null,
+      safetyProfile,
     });
   } catch (err) {
     if (handedOff) {
