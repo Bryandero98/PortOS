@@ -3616,6 +3616,14 @@
     },
     {
       "method": "POST",
+      "path": "/api/cos/agents/:id/relaunch",
+      "mountPath": "/api/cos",
+      "sources": [
+        "server/routes/cosAgentRoutes.js"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/cos/agents/:id/resume",
       "mountPath": "/api/cos",
       "sources": [
@@ -17425,8 +17433,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2158,
-    "declarations": 2162,
+    "operations": 2159,
+    "declarations": 2163,
     "sourceFiles": 229
   }
 }

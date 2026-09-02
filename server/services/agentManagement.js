@@ -21,7 +21,7 @@ import { terminateAgentViaRunner, killAgentViaRunner, pauseAgentViaRunner, getAg
 import { runnerEntryShieldsRunningRecord } from '../lib/runnerAgentLiveness.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
-import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, useRunner, unregisterSpawnedAgent } from './agentState.js';
+import { activeAgents, runnerAgents, userTerminatedAgents, pausedAgents, whenPausedAgentExits, useRunner, unregisterSpawnedAgent } from './agentState.js';
 // Both were extracted out of agentLifecycle.js (issue #2837) so this module no
 // longer depends on the lifecycle orchestrator — which depends on THIS module
 // for handleOrphanedTask. Importing them from their own leaf modules is what
@@ -434,6 +434,68 @@ export async function resumeAgent(agentId, overrides = {}) {
   // "created a resume task" for a future non-creating mode, which is the exact false
   // claim this change exists to delete.
   return { success: true, agentId, created: mode === 'new-task', ...resumed };
+}
+
+/**
+ * How long a relaunch waits for a LOCAL paused run's process to actually exit.
+ * The pause path escalates SIGTERM → SIGKILL after 5s, so the close handler has
+ * landed well inside this window in every observed case; the cap only exists so
+ * a wedged child can't hold the request open forever.
+ */
+const RELAUNCH_EXIT_TIMEOUT_MS = 15000;
+
+/**
+ * Relaunch a RUNNING agent's task on a different provider/model/effort.
+ *
+ * The motivating case is a run that is alive but going nowhere — a CLI sitting on
+ * a provider usage limit. Pausing and resuming already does exactly the right
+ * thing (stop the process, keep the worktree, requeue the same task with new
+ * provider/model/effort overrides), but as two clicks it is neither discoverable
+ * nor safe to do quickly. This composes the two so one click switches providers.
+ *
+ * Composition, not a third code path: `pauseAgent` owns stopping the process and
+ * preserving the worktree, `resumeAgent` owns the requeue and the four resume
+ * modes. The only thing between them is waiting for the stopped process to be
+ * gone — a human clicking Pause then Resume takes seconds, but collapsing the two
+ * into one request does not, and resuming first is what loses the worktree
+ * (`whenPausedAgentExits` in agentState.js has the mechanism).
+ *
+ * @param {string} agentId
+ * @param {{context?: string, provider?: string, model?: string, effort?: string, app?: string, reason?: string}} overrides
+ */
+export async function relaunchAgent(agentId, overrides = {}) {
+  const agent = await getAgentRecord(agentId);
+  if (!agent) {
+    throw new ServerError('Agent not found', { status: 404, code: 'NOT_FOUND' });
+  }
+  if (agent.status !== 'running') {
+    throw new ServerError(`Agent ${agentId} is ${agent.status}, not running`, {
+      status: 409, code: 'AGENT_NOT_RUNNING'
+    });
+  }
+
+  const { reason, ...resumeOverrides } = overrides;
+  const pauseReason = reason || relaunchReason(resumeOverrides);
+  const paused = await pauseAgent(agentId, pauseReason);
+
+  if (!await whenPausedAgentExits(agentId, RELAUNCH_EXIT_TIMEOUT_MS)) {
+    // Proceed anyway: the task is already parked as paused, so refusing here
+    // would leave the user with a stopped agent and no relaunch. Say so in the
+    // log, since this is the window where a late exit can clean the worktree.
+    emitLog('warn', `⚠️ Relaunch of ${agentId} proceeded before its process exited — its worktree may not survive`, { agentId });
+  }
+
+  const resumed = await resumeAgent(agentId, resumeOverrides);
+  emitLog('info', `🔁 Relaunched agent ${agentId} — ${pauseReason}`, {
+    agentId, taskId: resumed.taskId, mode: resumed.mode
+  });
+  return { ...resumed, relaunched: true, pausedAt: paused.pausedAt };
+}
+
+/** The pause reason a relaunch records, naming what the user actually changed. */
+function relaunchReason({ provider, model, effort }) {
+  const target = [provider, model, effort].filter(Boolean).join(' / ');
+  return `Relaunched by user${target ? ` on ${target}` : ''}`;
 }
 
 /** One line naming what the resume actually did — used for the log and the record. */

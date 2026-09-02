@@ -70,7 +70,7 @@ import { releaseAppReviewMarker } from './appActivity.js';
 import { ensureInstanceId } from './instances.js';
 import { isClaimableBy, buildClaim, buildRelease, getClaimOwner, getTargetInstance, isTargetedElsewhere } from './cosTaskClaim.js';
 import { resolveForgeTokenEnv } from './git.js';
-import { runnerAgents, pausedAgents, spawningTasks, useRunner, isTruthyMeta } from './agentState.js';
+import { runnerAgents, pausedAgents, consumePausedAgentExit, spawningTasks, useRunner, isTruthyMeta } from './agentState.js';
 import { withSpawnDedupGuard, withMapEntryCleanup, withUpdateInProgressGuard, SPAWN_DEDUP_SKIP, SPAWN_UPDATE_SKIP } from './agentGuards.js';
 import { isUpdateInProgress } from './updateChecker.js';
 import { v4 as uuidv4 } from '../lib/uuid.js';
@@ -1285,7 +1285,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
   // completion event can't clean the worktree / complete the task out from
   // under a later resume. Mirrors the CLI/TUI close-handler pause guards.
   if (pausedAgents.has(agentId)) {
-    pausedAgents.delete(agentId);
+    consumePausedAgentExit(agentId);
     runnerAgents.delete(agentId);
     return;
   }

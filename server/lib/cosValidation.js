@@ -1880,6 +1880,16 @@ export const resumeCosAgentSchema = createCosTaskSchema
   .pick({ description: true, context: true, model: true, provider: true, effort: true, app: true, screenshots: true })
   .partial();
 
+// A relaunch is a resume aimed at a RUNNING agent: the point is swapping the
+// provider/model/effort out from under a stalled run (a CLI parked on a usage
+// limit), so it takes no `description` — the task it requeues is the one the
+// agent is already working. `reason` is the pause note recorded against it.
+// Derived from the resume schema, not re-picked from the task schema, so a field
+// added to one resume door reaches the other instead of silently diverging.
+export const relaunchCosAgentSchema = resumeCosAgentSchema
+  .omit({ description: true, screenshots: true })
+  .extend({ reason: z.string().trim().max(500).optional() });
+
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags
  * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`claimFlow`/

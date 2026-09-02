@@ -79,12 +79,16 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, o
   // store's task events so the flip lands in ~400ms instead of a 30s poll. This
   // settles the render from whichever of the two signals arrived first, so the
   // split is right even when an event is delayed or dropped.
-  const spawningTaskIds = useMemo(() => new Set(
-    agents.filter(a => a.status === 'running' && a.taskId).map(a => a.taskId)
+  // Keyed by task rather than reduced to a Set of ids: an Active row also uses the
+  // agent itself, to offer a relaunch onto a different provider/model without
+  // fetching the agent list of its own.
+  const runningAgentByTaskId = useMemo(() => new Map(
+    agents.filter(a => a.status === 'running' && a.taskId).map(a => [a.taskId, a])
   ), [agents]);
+
   const isSpawning = useCallback(
-    (task) => task.status === 'pending' && spawningTaskIds.has(task.id),
-    [spawningTaskIds]
+    (task) => task.status === 'pending' && runningAgentByTaskId.has(task.id),
+    [runningAgentByTaskId]
   );
 
   // Split tasks by status for system tasks
@@ -279,7 +283,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, o
                 </div>
                 <div className="p-2 space-y-1.5">
                   {activeUserTasksLocal.map(task => (
-                    <TaskItem key={task.id} task={task} spawning={isSpawning(task)} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} agent={runningAgentByTaskId.get(task.id)} spawning={isSpawning(task)} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -369,7 +373,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, o
                 </div>
                 <div className="p-2 space-y-1.5">
                   {activeSystemTasks.map(task => (
-                    <TaskItem key={task.id} task={task} isSystem spawning={isSpawning(task)} selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} isSystem agent={runningAgentByTaskId.get(task.id)} spawning={isSpawning(task)} selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>

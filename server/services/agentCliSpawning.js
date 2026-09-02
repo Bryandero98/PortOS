@@ -21,7 +21,7 @@ import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { appendRunEvent } from './agentRunEventLog.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
-import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
+import { activeAgents, userTerminatedAgents, pausedAgents, consumePausedAgentExit, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
@@ -768,7 +768,7 @@ export async function spawnDirectly({
     // it on the same executionId logs a spurious "Invalid state transition".
     // Mirrors the TUI path's pause-check-before-releaseAgentLane ordering.
     if (pausedAgents.has(agentId)) {
-      pausedAgents.delete(agentId);
+      consumePausedAgentExit(agentId);
       if (agentData?.pid) unregisterSpawnedAgent(agentData.pid);
       activeAgents.delete(agentId);
       return;
@@ -919,7 +919,7 @@ export async function spawnDirectly({
       // (mirrors the normal pause path) — finalizing it as failed here would
       // overwrite the paused state and break later resume.
       if (pausedAgents.has(agentId)) {
-        pausedAgents.delete(agentId);
+        consumePausedAgentExit(agentId);
         unregisterSpawnedAgent(claudeProcess.pid);
         activeAgents.delete(agentId);
       } else {
