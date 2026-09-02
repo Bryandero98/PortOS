@@ -448,6 +448,57 @@ describe('processTaskOutput', () => {
     expect(mergePrMock).not.toHaveBeenCalled();
   });
 
+  // The gate waived the linked-issue prerequisite for a maintainer-targeted
+  // run; the pre-action recheck must honor the same waiver, or a "Review this
+  // PR" request on a PR with no linked issue is reviewed by the model and then
+  // silently never posted.
+  it('still acts on a maintainer-targeted PR that has no linked issue', async () => {
+    installDefaultGhMock();
+    mergePrMock.mockResolvedValue({ success: true });
+    const targetedMetadata = {
+      issueWatcher: {
+        ...eligibilityMetadata.issueWatcher,
+        pullRequests: [{
+          ...eligibilityMetadata.issueWatcher.pullRequests[0],
+          eligibilityFacts: {
+            linkedIssueNumbers: [], openLinkedIssueNumbers: [], openerAssignedIssueNumbers: [],
+            issueLookupComplete: true, maintainerTargeted: true,
+          },
+        }],
+      },
+    };
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'No material issues found.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload,
+      task: { metadata: targetedMetadata },
+      requireEligibilityFacts: true,
+    });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 1 });
+    // The author identity is still rechecked.
+    targetedMetadata.issueWatcher.pullRequests[0].authorLogin = 'someone-else';
+    execGhMock.mockClear();
+    mergePrMock.mockClear();
+    const swapped = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload,
+      task: { metadata: targetedMetadata },
+      requireEligibilityFacts: true,
+    });
+    expect(swapped).toMatchObject({ reviewed: 0, merged: 0 });
+    expect(mergePrMock).not.toHaveBeenCalled();
+  });
+
   it('revalidates matching issue facts before approving and merging', async () => {
     installDefaultGhMock({
       issueDetails: {

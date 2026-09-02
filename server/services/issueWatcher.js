@@ -293,7 +293,14 @@ function sameNumberList(left, right) {
 async function eligibilityFactsStillCurrent(ctx, pr, target) {
   const expected = normalizeEligibilityFacts(target?.eligibilityFacts);
   const authorLogin = typeof target?.authorLogin === 'string' ? target.authorLogin.trim() : '';
-  if (!expected.issueLookupComplete || !authorLogin || !sameLogin(pr?.author?.login, authorLogin)) return false;
+  if (!authorLogin || !sameLogin(pr?.author?.login, authorLogin)) return false;
+  // A maintainer-targeted run ("Review this PR") waived the linked-open-issue
+  // prerequisite at the gate (see prReviewerPipeline's eligibilityFactsAllow);
+  // the waiver is the maintainer's explicit request, which cannot go stale, so
+  // re-requiring an open linked issue here would silently skip every action
+  // on a PR with none. Only the author identity is rechecked.
+  if (expected.maintainerTargeted) return true;
+  if (!expected.issueLookupComplete) return false;
   if (expected.linkedIssueNumbers.length === 0) return false;
 
   const issues = await Promise.all(expected.linkedIssueNumbers.map((number) => (
