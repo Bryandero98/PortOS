@@ -603,9 +603,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // release-check READS the changelog rather than writing it, so its fix is the
   // mirror image: an unreleased set that lives in uncollected fragments must not
   // read as "not enough work accumulated for a release".
-  it('release-check v12 keeps code review advisory and CI as the release gate, preserving v11', () => {
+  it('release-check v13 fixes failing tests/CI instead of halting, preserving v12', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
-    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(12);
+    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(13);
     expect(current).toContain('Reconcile Missing Releases');
     expect(current).toContain('Unpublished release detected');
     expect(current).toContain('--latest=false');
@@ -624,6 +624,18 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('Code review is optional');
     expect(current).toContain('Only CI is the review/merge gate');
     expect(current).toContain('inconclusive review must never stop the release');
+    // v13: a red suite or red CI is work this run must FIX. A pre-existing
+    // failure on the source branch is what ended a v12 run with the release
+    // untouched, so the halt-on-test-failure sentence must be gone and the
+    // repair loop present — including the guard against forcing green by
+    // deleting/skipping/loosening a test.
+    expect(current).toContain('Fix what blocks the release');
+    expect(current).toContain('already existed on the source branch before this run started');
+    expect(current).toContain('are NOT fixes');
+    expect(current).toContain('--log-failed');
+    expect(current).toContain('Bound the loop');
+    expect(current).toContain('Environmental blocker');
+    expect(current).not.toContain('its required tests/build checks fail, or CI fails, stop and report');
     expect(current).not.toContain('If the reviewer list is empty or unavailable, stop');
     expect(current).not.toContain('If it cannot run or a configured reviewer is unavailable or inconclusive, stop');
     expect(current).not.toMatch(/copilot/i);
@@ -644,6 +656,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
     const v11 = previous.find((prompt) => prompt.includes('configured reviewer is unavailable or inconclusive, stop'));
     expect(v11).toBeDefined();
     expect(v11).not.toBe(current);
+    const v12 = previous.find((prompt) => prompt.includes('its required tests/build checks fail, or CI fails, stop and report'));
+    expect(v12).toBeDefined();
+    expect(v12).not.toBe(current);
   });
 
   // The PortOS custom catalog-refresh job still sources this versioned prompt:

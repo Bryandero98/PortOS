@@ -10897,7 +10897,23 @@ The PortOS Code Review Defaults rendered into \`{reviewers}\` are authoritative 
 Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, local review, PR creation, the configured reviewer loop, CI, merge, tagging, and the final report. If it cannot run or a configured reviewer is unavailable or inconclusive, stop and report instead of substituting another reviewer.
 
 The release workflow is attached to this task by metadata so every provider receives the same bundled body and reviewer pin. Do not reimplement any of its phases in this scheduled prompt.`;
-    return [...history, v10, v11];
+    // v12 made code review advisory and CI the only merge gate; it touched only
+    // the two Step 1 paragraphs, so derive it from v11 the way v10 is derived
+    // from v9 rather than duplicating Step 0's bulk a third time. v13 then added
+    // the fix-the-blockers mandate (repair failing local tests and red CI instead
+    // of halting the release), so this outgoing v12 body must stay byte-for-byte
+    // recognizable to auto-upgrade an existing uncustomized schedule.
+    const v12 = v11
+      .replace(
+        `The PortOS Code Review Defaults rendered into \`{reviewers}\` are authoritative for this run. Use exactly that reviewer list and no other. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. PortOS-only configured reviewers still run through the Local Reviewer Procedure appended to this prompt. If the reviewer list is empty or unavailable, stop before creating or updating a release PR.`,
+        `The PortOS Code Review Defaults rendered into \`{reviewers}\` are advisory for this run. Use exactly that reviewer list and no other when review is available. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. Code review is optional: run configured reviewers when available and address valid findings, but an empty, unavailable, timed-out, malformed, no-verdict, or otherwise inconclusive review must never stop the release.`,
+      )
+      .replace(
+        `It owns release readiness, version/changelog finalization, tests/build, local review, PR creation, the configured reviewer loop, CI, merge, tagging, and the final report. If it cannot run or a configured reviewer is unavailable or inconclusive, stop and report instead of substituting another reviewer.`,
+        `It owns release readiness, version/changelog finalization, tests/build, optional code review, PR creation, CI, merge, tagging, and the final report. Only CI is the review/merge gate; required release tests/build checks still must pass. If the workflow itself cannot run, its required tests/build checks fail, or CI fails, stop and report; do not stop or leave the release open because code review is unavailable or inconclusive.`,
+      );
+    if (v12 === v11 || v12.includes('are authoritative for this run')) throw new Error('release-check v12 historical prompt derivation did not match v11');
+    return [...history, v10, v11, v12];
   })(),
   'branch-reconcile': [
     // v1 default — superseded by v2, whose Rules make "merged" (not "PR opened")
