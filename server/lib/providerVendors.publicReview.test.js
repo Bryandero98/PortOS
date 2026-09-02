@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
+import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE, PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
 import {
   buildVendorSpawnConfig,
   supportsPublicReviewProvider,
+  supportsPublicReviewActionsProvider,
 } from './providerVendors.js';
 
 const localClaude = {
@@ -31,6 +32,47 @@ describe('public-review provider profile', () => {
       command: 'claude',
       type: 'api',
     })).toBe(false);
+  });
+
+  it('supports only a direct Codex CLI for the sandboxed actions stage', () => {
+    const codex = {
+      id: 'codex-cli',
+      type: 'cli',
+      command: 'codex',
+      models: ['gpt-5.6'],
+    };
+    expect(supportsPublicReviewActionsProvider(codex)).toBe(true);
+    expect(supportsPublicReviewActionsProvider({ ...codex, type: 'tui' })).toBe(false);
+    expect(supportsPublicReviewActionsProvider({ ...codex, type: 'api' })).toBe(false);
+    expect(supportsPublicReviewActionsProvider({ ...codex, command: 'other-agent' })).toBe(false);
+  });
+
+  it('builds the final reviewer with the bounded Codex sandbox and no provider args', () => {
+    const config = buildVendorSpawnConfig({
+      id: 'codex-cli',
+      type: 'cli',
+      command: '/opt/example/bin/codex',
+      args: ['--dangerously-bypass-approvals-and-sandbox', '--mcp-config', 'unsafe.json'],
+    }, {
+      effectiveModel: 'gpt-5.6',
+      effort: 'high',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    });
+
+    expect(config.args).toEqual(expect.arrayContaining([
+      'exec', '--sandbox', 'workspace-write', '--approve-for-me', '--ephemeral', '--ignore-user-config',
+      '--model', 'gpt-5.6',
+    ]));
+    expect(config.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(config.args).not.toContain('--mcp-config');
+    expect(config.args).not.toContain('unsafe.json');
+  });
+
+  it('rejects the action profile for every non-Codex provider', () => {
+    expect(() => buildVendorSpawnConfig(localClaude, {
+      effectiveModel: 'safe-model',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    })).toThrow(/public-review-actions posture/);
   });
 
   it('builds a fresh no-tool argv and ignores dangerous saved provider args', () => {

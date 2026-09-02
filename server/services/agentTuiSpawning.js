@@ -66,7 +66,7 @@ import {
   SUBMIT_KEY,
 } from '../lib/tuiHandshake.js';
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
+import { isPublicReviewNoToolProfile } from '../lib/agentExecutionProfiles.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
@@ -201,7 +201,7 @@ export function buildTuiSpawnConfig(provider, model, {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(
     command,
-    safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE ? [] : [...(provider?.args || [])],
+    isPublicReviewNoToolProfile(safetyProfile) ? [] : [...(provider?.args || [])],
     { safetyProfile },
   );
   // Model+effort injection (including the antigravity-validates-the-pair special

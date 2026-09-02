@@ -21,7 +21,7 @@ import { unlink, rm } from 'fs/promises';
 import { emitLog } from './cosEvents.js';
 import { updateAgent } from './cosAgentLifecycle.js';
 import { updateTask, addTask, reviveBlockedTask, checkStagePrecondition } from './cos.js';
-import { PIPELINE_BEHAVIOR_FLAGS, normalizeReviewers } from '../lib/validation.js';
+import { PIPELINE_STAGE_BEHAVIOR_FLAGS, normalizeReviewers } from '../lib/validation.js';
 import { PATHS, tryReadFile } from '../lib/fileUtils.js';
 import * as jiraService from './jira.js';
 import * as git from './git.js';
@@ -132,7 +132,7 @@ export async function handlePipelineProgression(task, agentId, success) {
   // Apply per-stage overrides for agent behavior flags
   const stageReadOnly = nextStage.readOnly ?? false;
   const taskDefaults = pipeline.taskDefaults || {};
-  for (const flag of PIPELINE_BEHAVIOR_FLAGS) {
+  for (const flag of PIPELINE_STAGE_BEHAVIOR_FLAGS) {
     if (flag in nextStage) {
       nextTask.metadata[flag] = nextStage[flag];
     } else if (stageReadOnly) {

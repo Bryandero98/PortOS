@@ -149,9 +149,16 @@ export const MODEL_ABUSE_GUARD_CHUNK_OVERLAP = 64;
  */
 export function formatPublicReviewInputPrompt(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  // Keep attacker-controlled strings inside the data envelope even when they
+  // contain the literal closing delimiter. JSON parsing still reconstructs the
+  // original values, while the model cannot mistake a value for framing.
+  const serialized = JSON.stringify(snapshot)
+    .replaceAll('<', '\\u003c')
+    .replaceAll('>', '\\u003e')
+    .replaceAll('&', '\\u0026');
   return [
     '<cleared-public-review-input>',
-    JSON.stringify(snapshot),
+    serialized,
     '</cleared-public-review-input>',
   ].join('\n');
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { posixPath } from './testHelper.js';
 
 import { buildCliChildEnv, buildPublicReviewCliEnv, composeProviderEnv } from './cliChildEnv.js';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
+import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE, PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
 import { cliProviderAuthDescriptor } from './processEnv.js';
 import { AGENT_GUARD_BIN } from './agentGuard/index.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
@@ -172,6 +172,46 @@ describe('buildCliChildEnv — public-review profile', () => {
     expect(env).not.toHaveProperty('AWS_PROFILE');
     expect(env).not.toHaveProperty('OPENAI_API_KEY');
     expect(env).not.toHaveProperty('CLAUDECODE');
+  });
+});
+
+describe('buildCliChildEnv — public-review-actions profile', () => {
+  it('keeps runtime essentials without inherited credentials or config-path overlays', () => {
+    const env = buildCliChildEnv({
+      baseEnv: {
+        PATH: '/usr/bin',
+        HOME: '/home/example',
+        CODEX_HOME: '/tmp/codex-home',
+        XDG_CONFIG_HOME: '/tmp/config',
+        SSL_CERT_FILE: '/tmp/cert.pem',
+        OPENAI_API_KEY: 'codex-secret',
+        GH_TOKEN: 'forge-secret',
+        GITHUB_TOKEN: 'forge-secret-2',
+        SSH_AUTH_SOCK: '/tmp/agent.sock',
+        ANTHROPIC_AUTH_TOKEN: 'wrong-provider-secret',
+        PRIVATE_APP_SETTING: 'must-not-forward',
+      },
+      before: { GH_TOKEN: 'before-forge', AWS_PROFILE: 'cloud-profile' },
+      provider: { envVars: { GH_TOKEN: 'provider-forge', OPENAI_API_KEY: 'provider-secret' } },
+      cwd: '/tmp/public-review-actions',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    });
+
+    expect(env).toMatchObject({
+      PATH: '/usr/bin',
+      HOME: '/home/example',
+      PWD: '/tmp/public-review-actions',
+    });
+    expect(env).not.toHaveProperty('CODEX_HOME');
+    expect(env).not.toHaveProperty('XDG_CONFIG_HOME');
+    expect(env).not.toHaveProperty('SSL_CERT_FILE');
+    expect(env).not.toHaveProperty('OPENAI_API_KEY');
+    expect(env).not.toHaveProperty('GH_TOKEN');
+    expect(env).not.toHaveProperty('GITHUB_TOKEN');
+    expect(env).not.toHaveProperty('SSH_AUTH_SOCK');
+    expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    expect(env).not.toHaveProperty('AWS_PROFILE');
+    expect(env).not.toHaveProperty('PRIVATE_APP_SETTING');
   });
 });
 

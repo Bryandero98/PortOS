@@ -62,6 +62,8 @@ const MAX_INSTALL_EVENT_CHARS = 300;
 const MAX_PUBLIC_REVIEW_SNAPSHOT_CHARS = MODEL_ABUSE_GUARD_MAX_INPUT_CHARS * 3;
 const PUBLIC_REVIEW_INPUT_DIR = join(PATHS.cos, 'public-review-inputs');
 export const PUBLIC_REVIEW_INPUT_FILENAME = 'PORTOS_PUBLIC_REVIEW_INPUT.json';
+export const PUBLIC_REVIEW_PATCH_DIRNAME = '.portos-public-review';
+export const PUBLIC_REVIEW_PATCH_MANIFEST_FILENAME = 'PORTOS_PUBLIC_REVIEW_PATCHES.json';
 
 let cachedRuntime = null;
 let installInFlight = null;
@@ -76,7 +78,31 @@ const publicReviewInputPath = (scanKey) => isScanKey(scanKey)
   ? join(PUBLIC_REVIEW_INPUT_DIR, `${scanKey}.json`)
   : null;
 
-function normalizePublicReviewInput(input) {
+const normalizeIssueNumbers = (value) => Array.isArray(value)
+  ? [...new Set(value.filter((number) => Number.isInteger(number) && number > 0 && number <= 1_000_000))]
+    .sort((a, b) => a - b)
+    .slice(0, 50)
+  : [];
+
+const emptyEligibilityFacts = () => ({
+  linkedIssueNumbers: [],
+  openLinkedIssueNumbers: [],
+  openerAssignedIssueNumbers: [],
+  // Unknown is deliberately false. A missing facts object is not approval.
+  issueLookupComplete: false,
+});
+
+export function normalizeEligibilityFacts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyEligibilityFacts();
+  return {
+    linkedIssueNumbers: normalizeIssueNumbers(value.linkedIssueNumbers),
+    openLinkedIssueNumbers: normalizeIssueNumbers(value.openLinkedIssueNumbers),
+    openerAssignedIssueNumbers: normalizeIssueNumbers(value.openerAssignedIssueNumbers),
+    issueLookupComplete: value.issueLookupComplete === true,
+  };
+}
+
+export function normalizePublicReviewInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   if (!Number.isInteger(input.number) || input.number < 1 || !isSha(input.headSha)) return null;
   if (typeof input.title !== 'string' || typeof input.body !== 'string' || typeof input.diff !== 'string') return null;
@@ -93,6 +119,7 @@ function normalizePublicReviewInput(input) {
     files: Array.isArray(input.files) ? input.files.filter((file) => typeof file === 'string').slice(0, 10_000) : [],
     additions: Number.isInteger(input.additions) ? input.additions : 0,
     deletions: Number.isInteger(input.deletions) ? input.deletions : 0,
+    eligibilityFacts: normalizeEligibilityFacts(input.eligibilityFacts),
     diff: input.diff,
   };
 }
@@ -166,11 +193,12 @@ export async function writePublicReviewInputSnapshot({ scanKey, pullRequests } =
 
 /**
  * Read and validate the server-owned cleared snapshot. This is intentionally
- * separate from `materializePublicReviewInput`: the no-tools reviewer receives
- * the validated JSON in its prompt, while the read-only file remains an audit
- * copy and defense-in-depth fallback.
+ * separate from `materializePublicReviewInput`: the reviewer receives the
+ * validated JSON in its prompt, while the read-only file remains an audit copy
+ * and defense-in-depth fallback. An optional allowlist is applied only after
+ * the complete snapshot has been validated, so Stage 3 cannot widen its input.
  */
-export async function readPublicReviewInputSnapshot({ scanKey } = {}) {
+export async function readPublicReviewInputSnapshot({ scanKey, allowedPullRequestNumbers = null } = {}) {
   const sourcePath = publicReviewInputPath(scanKey);
   if (!sourcePath) return null;
   const raw = await tryReadFile(sourcePath);
@@ -178,21 +206,68 @@ export async function readPublicReviewInputSnapshot({ scanKey } = {}) {
   if (!parsed || parsed.schemaVersion !== 1 || parsed.scanKey !== scanKey) return null;
   const pullRequests = normalizePublicReviewInputs(parsed.pullRequests);
   if (!pullRequests) return null;
-  return { schemaVersion: 1, scanKey, pullRequests };
+  const allowed = Array.isArray(allowedPullRequestNumbers)
+    ? new Set(allowedPullRequestNumbers.filter((number) => Number.isInteger(number) && number > 0))
+    : null;
+  return {
+    schemaVersion: 1,
+    scanKey,
+    pullRequests: allowed ? pullRequests.filter((pullRequest) => allowed.has(pullRequest.number)) : pullRequests,
+  };
 }
 
 /**
- * Materialize a screened snapshot inside the throwaway Stage 2 worktree. The
- * review CLI can read this file in its enforced read-only posture; it never
+ * Materialize a screened snapshot inside the throwaway review worktree. The
+ * review CLI can read this file in its enforced posture; it never
  * needs network access or a contributor checkout to inspect the diff.
  */
-export async function materializePublicReviewInput({ scanKey, workspacePath } = {}) {
+export async function materializePublicReviewInput({ scanKey, workspacePath, allowedPullRequestNumbers = null } = {}) {
   if (typeof workspacePath !== 'string' || !workspacePath) return false;
-  const parsed = await readPublicReviewInputSnapshot({ scanKey });
+  const parsed = await readPublicReviewInputSnapshot({ scanKey, allowedPullRequestNumbers });
   if (!parsed) return false;
   const destination = join(workspacePath, PUBLIC_REVIEW_INPUT_FILENAME);
   await atomicWrite(destination, parsed);
   return chmod(destination, 0o444).then(() => true).catch(() => false);
+}
+
+/**
+ * Materialize one screened unified diff per eligible PR for the final review
+ * stage. The files live only in that stage's disposable worktree and are
+ * read-only, so the sandboxed reviewer can apply them with `git apply` and run
+ * tests without fetching a contributor branch or contacting the forge. The
+ * manifest contains only safe identities and relative paths; source text stays
+ * in the patch files and the already-validated input envelope.
+ */
+export async function materializePublicReviewPatches({ scanKey, workspacePath, allowedPullRequestNumbers = null } = {}) {
+  if (typeof workspacePath !== 'string' || !workspacePath) return false;
+  const parsed = await readPublicReviewInputSnapshot({ scanKey, allowedPullRequestNumbers });
+  if (!parsed) return false;
+
+  const patchDir = join(workspacePath, PUBLIC_REVIEW_PATCH_DIRNAME);
+  await ensureDir(patchDir);
+  const patches = [];
+  for (const pullRequest of parsed.pullRequests) {
+    const filename = `PR-${pullRequest.number}.patch`;
+    const relativePath = `${PUBLIC_REVIEW_PATCH_DIRNAME}/${filename}`;
+    const destination = join(patchDir, filename);
+    await atomicWrite(destination, pullRequest.diff);
+    const restricted = await chmod(destination, 0o444).then(() => true).catch(() => false);
+    if (!restricted) return false;
+    patches.push({
+      number: pullRequest.number,
+      headSha: pullRequest.headSha,
+      contentFingerprint: pullRequest.contentFingerprint || null,
+      path: relativePath,
+    });
+  }
+
+  const manifest = join(patchDir, PUBLIC_REVIEW_PATCH_MANIFEST_FILENAME);
+  await atomicWrite(manifest, {
+    schemaVersion: 1,
+    scanKey,
+    patches,
+  });
+  return chmod(manifest, 0o444).then(() => true).catch(() => false);
 }
 
 /**

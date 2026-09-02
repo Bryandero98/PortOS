@@ -1,5 +1,37 @@
 import { describe, it, expect } from 'vitest';
-import { getTaskStatusGroup, taskSortKey, TASK_FILTERS, STATUS_GROUPS, describeNextRun, coverageTone, setMetadataOverride, toggleMetadataField, fileIssuesEffective, managedAgentOptionsFor, toggleFileIssuesMetadata } from './scheduleConstants';
+import { getTaskStatusGroup, taskSortKey, TASK_FILTERS, STATUS_GROUPS, describeNextRun, coverageTone, setMetadataOverride, toggleMetadataField, fileIssuesEffective, managedAgentOptionsFor, toggleFileIssuesMetadata, prReviewerStageRole, togglePrReviewerActions } from './scheduleConstants';
+
+describe('pr-reviewer pipeline helpers', () => {
+  it('recognizes semantic roles and legacy prompt-key stages', () => {
+    expect(prReviewerStageRole({ role: 'eligibility' })).toBe('eligibility');
+    expect(prReviewerStageRole({ promptKey: 'pr-reviewer-review' })).toBe('actions');
+    expect(prReviewerStageRole({ promptKey: 'other' })).toBeNull();
+  });
+
+  it('removes only the optional actions stage and restores its full safe posture', () => {
+    const stages = [
+      { name: 'Security Scan', role: 'security' },
+      { name: 'Eligibility Gate', role: 'eligibility' },
+      { name: 'Code Review & Actions', role: 'actions', providerId: 'codex-cli' },
+    ];
+    expect(togglePrReviewerActions(stages, false)).toEqual(stages.slice(0, 2));
+    expect(togglePrReviewerActions(stages.slice(0, 2), true)).toEqual([
+      ...stages.slice(0, 2),
+      expect.objectContaining({
+        role: 'actions',
+        promptKey: 'pr-reviewer-review',
+        executionProfile: 'public-review-actions',
+        discardWorktree: true,
+        noCodeOutput: true,
+      }),
+    ]);
+  });
+
+  it('is idempotent when the optional stage is already enabled', () => {
+    const stages = [{ role: 'security' }, { role: 'eligibility' }, { role: 'actions' }];
+    expect(togglePrReviewerActions(stages, true)).toBe(stages);
+  });
+});
 
 describe('setMetadataOverride', () => {
   it('sets a key without disturbing the app\'s other overrides', () => {

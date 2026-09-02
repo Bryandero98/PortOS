@@ -1,0 +1,134 @@
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
+
+vi.mock('../../../../hooks/useLocalModels', () => ({
+  default: () => ({
+    ollama: ['safe-model', 'tool-model'],
+    lmstudio: [],
+    capabilitiesByBackend: {
+      ollama: {
+        'safe-model': ['chat'],
+        'tool-model': ['chat', 'tools'],
+      },
+    },
+    loading: false,
+  }),
+}));
+
+import PipelineStageConfig from './PipelineStageConfig';
+
+const STAGES = [
+  {
+    name: 'Security Scan',
+    role: 'security',
+    promptKey: 'pr-reviewer-security',
+    readOnly: true,
+  },
+  {
+    name: 'Eligibility Gate',
+    role: 'eligibility',
+    promptKey: 'pr-reviewer-eligibility',
+    readOnly: true,
+    providerId: 'claude-ollama',
+    model: 'safe-model',
+  },
+  {
+    name: 'Code Review & Actions',
+    role: 'actions',
+    promptKey: 'pr-reviewer-review',
+    readOnly: true,
+    providerId: 'codex-cli',
+    model: 'gpt-5.6',
+  },
+];
+
+const providers = [
+  {
+    id: 'claude-ollama',
+    name: 'Local Claude',
+    type: 'cli',
+    command: 'claude',
+    endpoint: 'http://127.0.0.1:11434',
+    publicReviewSupported: true,
+    models: ['safe-model'],
+  },
+  {
+    id: 'codex-cli',
+    name: 'Codex CLI',
+    type: 'cli',
+    command: 'codex',
+    publicReviewActionsSupported: true,
+    models: ['gpt-5.6'],
+  },
+  {
+    id: 'other-cli',
+    name: 'Other CLI',
+    type: 'cli',
+    command: 'other-agent',
+    models: ['other-model'],
+  },
+];
+
+function renderStages(stages = STAGES, onUpdate = vi.fn().mockResolvedValue(undefined)) {
+  render(
+    <MemoryRouter>
+      <PipelineStageConfig
+        taskType="pr-reviewer"
+        config={{ taskMetadata: { pipeline: { stages } } }}
+        providers={providers}
+        onUpdate={onUpdate}
+        updating={false}
+        setUpdating={() => {}}
+      />
+    </MemoryRouter>,
+  );
+  return onUpdate;
+}
+
+describe('PipelineStageConfig — pr-reviewer', () => {
+  it('uses the shared no-tool policy for the gate and the Codex-only policy for actions', () => {
+    renderStages();
+
+    const providerSelects = screen.getAllByLabelText('Provider');
+    expect([...providerSelects[0].options].map((option) => option.value)).toEqual(['', 'claude-ollama']);
+    expect([...providerSelects[1].options].map((option) => option.value)).toEqual(['', 'codex-cli']);
+
+    const modelSelects = screen.getAllByLabelText('Model');
+    expect([...modelSelects[0].options].map((option) => option.value)).toEqual(['', 'safe-model']);
+    expect([...modelSelects[1].options].map((option) => option.value)).toEqual(['', 'gpt-5.6']);
+    expect(screen.getByText(/workspace-write sandbox/i)).toBeInTheDocument();
+  });
+
+  it('removes the optional actions stage without changing the mandatory gate', async () => {
+    const onUpdate = renderStages();
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable final code review and actions' }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('pr-reviewer', {
+      taskMetadata: {
+        pipeline: { stages: STAGES.slice(0, 2) },
+      },
+    }));
+  });
+
+  it('restores the complete restricted action-stage posture when enabled', async () => {
+    const onUpdate = renderStages(STAGES.slice(0, 2));
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable final code review and actions' }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('pr-reviewer', {
+      taskMetadata: expect.objectContaining({
+        pipeline: expect.objectContaining({
+          stages: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'actions',
+              promptKey: 'pr-reviewer-review',
+              executionProfile: 'public-review-actions',
+              discardWorktree: true,
+              noCodeOutput: true,
+            }),
+          ]),
+        }),
+      }),
+    }));
+  });
+});

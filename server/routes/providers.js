@@ -37,7 +37,7 @@ import {
 } from '../services/codexAppServer.js';
 import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
 import { localEndpointPort, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
-import { supportsPublicReviewProvider } from '../lib/providerVendors.js';
+import { supportsPublicReviewProvider, supportsPublicReviewActionsProvider } from '../lib/providerVendors.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 import {
   captureSystemCapabilities,
@@ -149,6 +149,7 @@ const presentProvider = (provider, capabilities = captureSystemCapabilities()) =
   return sanitizeProvider({
     ...decorated,
     publicReviewSupported: supportsPublicReviewProvider(provider, { tui: provider?.type === 'tui' }),
+    publicReviewActionsSupported: supportsPublicReviewActionsProvider(provider, { tui: provider?.type === 'tui' }),
   });
 };
 

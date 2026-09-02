@@ -94,9 +94,19 @@ import {
   ensureCursorHeadlessArgs,
 } from './cursor.js';
 import { isLocalInstanceEndpoint } from './localEndpoint.js';
-import { PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
+import {
+  isPublicReviewNoToolProfile,
+  PUBLIC_REVIEW_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+} from './agentExecutionProfiles.js';
 
-export { PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
+export {
+  isPublicReviewNoToolProfile,
+  PUBLIC_REVIEW_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+} from './agentExecutionProfiles.js';
 
 /**
  * For every vendor EXCEPT codex/claude, `buildCliSpawnConfig`'s argv is just
@@ -148,6 +158,28 @@ function codexSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads
   return { command: provider?.command || CODEX_COMMAND, args, stdinMode: 'prompt' };
 }
 
+function codexPublicReviewActionsSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
+  // This is the only action-stage recipe. `workspace-write` is intentionally
+  // the narrowest Codex sandbox that can apply a supplied patch and run local
+  // tests; `--approve-for-me` only suppresses interactive confirmations inside
+  // that sandbox. Never replace these with the unrestricted bypass used by the
+  // ordinary coding-agent path.
+  const args = [
+    'exec',
+    '--sandbox', 'workspace-write',
+    '--approve-for-me',
+    '--ephemeral',
+    '--ignore-user-config',
+    ...buildCodexStartupArgs(),
+    ...buildCodexAgentThreadArgs(maxConcurrentThreads),
+  ];
+  if (effectiveModel) {
+    args.push('--model', effectiveModel);
+  }
+  args.push(...buildEffortArgs(effort, provider, args, effectiveModel));
+  return { command: provider?.command || CODEX_COMMAND, args, stdinMode: 'prompt' };
+}
+
 const CODEX = {
   id: 'codex',
   idFragment: 'codex',
@@ -157,6 +189,7 @@ const CODEX = {
   tuiArgs: ensureCodexTuiArgs,
   cliArgs: codexCliArgs,
   spawnArgs: codexSpawnArgs,
+  publicReviewActionsSpawnArgs: codexPublicReviewActionsSpawnArgs,
 };
 
 // ─── antigravity ────────────────────────────────────────────────────────────
@@ -444,11 +477,14 @@ export function inferTuiCommand(id) {
 
 /** `applyCommandDefaults` (tuiHandshake.js): TUI posture-flag dispatch. */
 export function applyCommandDefaults(command, args, { safetyProfile = null } = {}) {
+  if (safetyProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE) {
+    throw new Error('The public-review-actions profile requires the direct Codex CLI sandbox');
+  }
   const vendor = PROVIDER_VENDORS.find((v) => (
-    (safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE ? v.publicReviewTuiArgs : v.tuiArgs)
+    (isPublicReviewNoToolProfile(safetyProfile) ? v.publicReviewTuiArgs : v.tuiArgs)
       && v.matchCommand(command)
   ));
-  if (safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE) {
+  if (isPublicReviewNoToolProfile(safetyProfile)) {
     if (!vendor || typeof vendor.publicReviewTuiArgs !== 'function') {
       throw new Error(`Provider command '${command}' has no enforced public-review posture`);
     }
@@ -484,18 +520,33 @@ export function buildVendorCliArgs(provider, baseArgs, { model, effort }) {
  * before this registry existed (see file header).
  */
 export function buildVendorSpawnConfig(provider, ctx) {
+  const publicReviewActions = ctx?.safetyProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
   const vendor = PROVIDER_VENDORS.find((v) => v.spawnArgs && (
-    ctx?.safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE
-      ? matchesPublicReviewProvider(v, provider)
-      : matchesProvider(v, provider)
+    publicReviewActions
+      ? v.publicReviewActionsSpawnArgs && matchesPublicReviewActionsProvider(v, provider)
+      : isPublicReviewNoToolProfile(ctx?.safetyProfile)
+        ? matchesPublicReviewProvider(v, provider)
+        : matchesProvider(v, provider)
   ));
-  if (ctx?.safetyProfile === PUBLIC_REVIEW_EXECUTION_PROFILE) {
+  if (publicReviewActions) {
+    if (!vendor?.publicReviewActionsSpawnArgs) {
+      throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced public-review-actions posture`);
+    }
+    return vendor.publicReviewActionsSpawnArgs(provider, ctx);
+  }
+  if (isPublicReviewNoToolProfile(ctx?.safetyProfile)) {
     if (!vendor?.publicReviewSpawnArgs) {
       throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced public-review posture`);
     }
     return vendor.publicReviewSpawnArgs(provider, ctx);
   }
   return vendor.spawnArgs(provider, ctx);
+}
+
+function matchesPublicReviewActionsProvider(vendor, provider) {
+  return vendor.id === 'codex'
+    && provider?.type === 'cli'
+    && isCodexCommand(provider?.command);
 }
 
 /**
@@ -513,6 +564,19 @@ export function supportsPublicReviewProvider(provider, { tui = false } = {}) {
       && matchesPublicReviewProvider(v, provider)
   ));
   return Boolean(vendor);
+}
+
+/**
+ * Whether a provider can run the final public-review stage. This is a direct
+ * Codex CLI only: the action stage needs a filesystem sandbox, while TUI/API
+ * transports do not expose the maintained non-interactive posture here.
+ */
+export function supportsPublicReviewActionsProvider(provider, { tui = false } = {}) {
+  if (tui || provider?.type !== 'cli') return false;
+  return PROVIDER_VENDORS.some((vendor) => (
+    vendor.publicReviewActionsSpawnArgs
+      && matchesPublicReviewActionsProvider(vendor, provider)
+  ));
 }
 
 /**

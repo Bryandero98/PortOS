@@ -24,7 +24,7 @@ import { getAppById, updateApp } from './apps.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { mergePR, resolveForgeForRepo } from './git.js';
 import { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifications.js';
-import { runModelAbuseScan } from './modelAbuseGuard.js';
+import { normalizeEligibilityFacts, runModelAbuseScan } from './modelAbuseGuard.js';
 
 const GH_TIMEOUT_MS = 60_000;
 const LIST_LIMIT = 100;
@@ -277,6 +277,49 @@ async function readPullRequest(ctx, number) {
     'pr', 'view', String(number), '--repo', ctx.repoSpec,
     '--json', 'number,title,body,url,state,isDraft,author,labels,files,additions,deletions,baseRefName,baseRefOid,headRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup',
   ], ctx);
+}
+
+function sameNumberList(left, right) {
+  const a = Array.isArray(left) ? left : [];
+  const b = Array.isArray(right) ? right : [];
+  return a.length === b.length && a.every((number, index) => number === b[index]);
+}
+
+/**
+ * Re-fetch the issue facts that admitted a public PR immediately before an
+ * action. Issue state and assignees can change while Stage 2/3 is running; an
+ * old allowlist must never remain sufficient for a later review or merge.
+ */
+async function eligibilityFactsStillCurrent(ctx, pr, target) {
+  const expected = normalizeEligibilityFacts(target?.eligibilityFacts);
+  const authorLogin = typeof target?.authorLogin === 'string' ? target.authorLogin.trim() : '';
+  if (!expected.issueLookupComplete || !authorLogin || !sameLogin(pr?.author?.login, authorLogin)) return false;
+  if (expected.linkedIssueNumbers.length === 0) return false;
+
+  const issues = await Promise.all(expected.linkedIssueNumbers.map((number) => (
+    runJson(apiArgs(ctx, `repos/${ctx.repoFullName}/issues/${number}`), ctx)
+  )));
+  if (issues.some((issue, index) => issue?.number !== expected.linkedIssueNumbers[index])) return false;
+
+  const openLinkedIssueNumbers = issues
+    .filter((issue) => !issue.pull_request && String(issue.state || '').toLowerCase() === 'open')
+    .map((issue) => issue.number);
+  const openerAssignedIssueNumbers = issues
+    .filter((issue) => !issue.pull_request && String(issue.state || '').toLowerCase() === 'open')
+    .filter((issue) => Array.isArray(issue.assignees) && issue.assignees.some((assignee) => (
+      sameLogin(assignee?.login, authorLogin)
+    )))
+    .map((issue) => issue.number);
+  const actual = normalizeEligibilityFacts({
+    linkedIssueNumbers: expected.linkedIssueNumbers,
+    openLinkedIssueNumbers,
+    openerAssignedIssueNumbers,
+    issueLookupComplete: true,
+  });
+  return sameNumberList(expected.linkedIssueNumbers, actual.linkedIssueNumbers)
+    && sameNumberList(expected.openLinkedIssueNumbers, actual.openLinkedIssueNumbers)
+    && sameNumberList(expected.openerAssignedIssueNumbers, actual.openerAssignedIssueNumbers)
+    && expected.issueLookupComplete === actual.issueLookupComplete;
 }
 
 async function readBehindBy(ctx, pr) {
@@ -612,6 +655,12 @@ async function processPendingApprovals(app, ctx) {
       changed = true;
       continue;
     }
+    if (approval.eligibilityFacts !== undefined
+      && !await eligibilityFactsStillCurrent(ctx, pr, approval)) {
+      await notifyPendingApproval(app, approval, 'The linked issue state or assignee changed, so the previous approval was discarded.');
+      changed = true;
+      continue;
+    }
     if (approval.rebaseRequired) {
       const behindBy = await readBehindBy(ctx, pr);
       if (behindBy === null) {
@@ -861,7 +910,7 @@ function mergeApproval(existing, approval) {
 }
 
 /** Validated reply/review/rebase/merge pass run after cognition. */
-export async function processTaskOutput({ appId, success, payload, task } = {}) {
+export async function processTaskOutput({ appId, success, payload, task, requireEligibilityFacts = false } = {}) {
   if (!appId || !success) return { action: 'no-op', reason: !success ? 'agent-failed' : 'missing-app' };
   if (!isTaskOutputPayload(payload)) return { action: 'no-op', reason: 'unparseable-response' };
   // A compromised reviewer must not be able to smuggle an instruction through
@@ -930,6 +979,14 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
     // exact content screened before cognition, not merely the same revision,
     // before any review, rebase, or merge action.
     if (!target.contentFingerprint || currentContentFingerprint !== target.contentFingerprint) continue;
+    const eligibilityRequired = requireEligibilityFacts
+      || Object.prototype.hasOwnProperty.call(target, 'eligibilityFacts');
+    const eligibilityStillCurrent = async () => {
+      if (!eligibilityRequired) return true;
+      const current = await eligibilityFactsStillCurrent(ctx, pr, target);
+      if (!current) approvals = approvals.filter((entry) => entry.number !== pr.number);
+      return current;
+    };
     const anchors = parseAddedDiffLines(diff);
     const normalizedFindings = decision.findings.map((finding) => normalizeFinding(finding, anchors)).filter(Boolean);
     const findings = normalizedFindings.map(({ comment }) => comment);
@@ -946,6 +1003,7 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
       && !diffInsufficient
       && blockingFindings.length === 0;
     if (!canApprove) {
+      if (!await eligibilityStillCurrent()) continue;
       const downgraded = hasInvalidFinding && decision.verdict !== 'request_changes';
       const summary = `${decision.summary || 'This change needs follow-up before it can merge.'}${
         downgraded ? '\n\nPortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.' : ''}`;
@@ -962,6 +1020,7 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
     }
 
     const approveBody = decision.summary || 'Reviewed: no material issues found.';
+    if (!await eligibilityStillCurrent()) continue;
     const approved = await submitReview(ctx, pr.number, {
       body: approveBody,
       event: 'APPROVE',
@@ -975,12 +1034,15 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
 
     const behindBy = await readBehindBy(ctx, pr);
     if (decision.rebaseRequired && (behindBy === null || behindBy > 0)) {
+      if (!await eligibilityStillCurrent()) continue;
       const updated = behindBy > 0 && await updatePullRequestBranch(ctx, pr.number, pr.headRefOid);
       if (updated) rebased += 1;
       else approvals = mergeApproval(approvals, {
         number: pr.number,
         headSha: pr.headRefOid,
         contentFingerprint: target.contentFingerprint,
+        authorLogin: target.authorLogin,
+        eligibilityFacts: target.eligibilityFacts,
         url: pr.url,
         ciPolicy: decision.ciPolicy,
         rebaseRequired: true,
@@ -994,6 +1056,7 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
     const checks = classifyChecks(checkRollup);
     const mayMerge = pr.mergeable === 'MERGEABLE' && checks === 'green';
     if (mayMerge) {
+      if (!await eligibilityStillCurrent()) continue;
       const result = await mergePR(app.repoPath, pr.number).catch(() => ({ success: false }));
       if (result.success) {
         approvals = approvals.filter((entry) => entry.number !== pr.number);
@@ -1013,6 +1076,8 @@ export async function processTaskOutput({ appId, success, payload, task } = {}) 
       number: pr.number,
       headSha: pr.headRefOid,
       contentFingerprint: target.contentFingerprint,
+      authorLogin: target.authorLogin,
+      eligibilityFacts: target.eligibilityFacts,
       url: pr.url,
       ciPolicy: decision.ciPolicy,
       rebaseRequired: false,

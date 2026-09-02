@@ -335,6 +335,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
     // and never persists them, so an edit reaches every install on the next
     // dispatch (their pipeline's SCHEDULE key carries the version instead).
     'pr-reviewer-security',
+    'pr-reviewer-eligibility',
     'pr-reviewer-review',
     'code-reviewer-review',
     'code-reviewer-implement',
@@ -982,6 +983,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // entry, that one catches a change in how a stage body is resolved.
   it.each([
     'pr-reviewer-security',
+    'pr-reviewer-eligibility',
     'pr-reviewer-review',
     'code-reviewer-review',
     'code-reviewer-implement',

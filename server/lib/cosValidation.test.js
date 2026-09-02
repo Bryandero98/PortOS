@@ -89,6 +89,63 @@ describe('branch-reconcile batch metadata', () => {
   });
 });
 
+describe('cosValidation pipeline stage metadata', () => {
+  const validStage = {
+    name: 'Eligibility Gate',
+    promptKey: 'pr-reviewer-eligibility',
+    role: 'eligibility',
+    executionProfile: 'public-review-gate',
+    providerId: 'local-claude-wrapper',
+    model: 'safe-local-model',
+    effort: 'high',
+    readOnly: true,
+    managed: true,
+    useWorktree: true,
+    openPR: false,
+    simplify: false,
+    reviewLoop: false,
+    discardWorktree: true,
+    noCodeOutput: true,
+    precondition: { fileExists: 'screened-input.json' },
+  };
+
+  it('keeps the validated stage contract and drops unknown fields', () => {
+    expect(sanitizeTaskMetadata({
+      pipeline: {
+        stages: [{ ...validStage, unknown: 'must not persist' }],
+      },
+    })).toEqual({ pipeline: { stages: [validStage] } });
+  });
+
+  it('rejects malformed role, profile, effort, posture, and precondition values', () => {
+    const invalidCases = [
+      ['role', 'review'],
+      ['executionProfile', 'unrestricted'],
+      ['effort', 'bogus'],
+      ['discardWorktree', 'yes'],
+      ['noCodeOutput', 1],
+      ['precondition', { fileExists: '../outside-worktree' }],
+      ['precondition', { fileExists: 'a', fileNotExists: 'b' }],
+    ];
+    for (const [field, value] of invalidCases) {
+      expect(sanitizeTaskMetadata({ pipeline: { stages: [{ ...validStage, [field]: value }] } }), field)
+        .toBeNull();
+    }
+  });
+
+  it('allows explicit clear values for provider and model pins', () => {
+    const expectedStage = { ...validStage };
+    delete expectedStage.providerId;
+    delete expectedStage.model;
+    delete expectedStage.effort;
+    expect(sanitizeTaskMetadata({
+      pipeline: { stages: [{ ...validStage, providerId: null, model: null, effort: null }] },
+    })).toEqual({
+      pipeline: { stages: [expectedStage] },
+    });
+  });
+});
+
 describe('cosValidation autonomous-job effort field', () => {
   it('accepts every EFFORT_LEVELS value on create and rejects unknown values', () => {
     for (const effort of EFFORT_LEVELS) {

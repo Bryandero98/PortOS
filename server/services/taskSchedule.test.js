@@ -411,12 +411,13 @@ describe('taskSchedule', () => {
   });
 
   describe('pr-reviewer (layered public-content review task)', () => {
-    it('describes the preflight-owned prompt and keeps both stages read-only', () => {
+    it('describes the preflight-owned prompt and ships the optional three-stage pipeline read-only', () => {
       expect(TASK_TYPE_PROMPT_INFO['pr-reviewer']).toMatchObject({ mode: 'runtime-generated' });
-      expect(TASK_TYPE_PROMPT_INFO['pr-reviewer'].description).toContain('exact cleared snapshot');
+      expect(TASK_TYPE_PROMPT_INFO['pr-reviewer'].description).toContain('tool-free eligibility gate');
       expect(DEFAULT_TASK_INTERVALS['pr-reviewer'].taskMetadata.pipeline.stages).toEqual([
-        expect.objectContaining({ name: 'Security Scan', readOnly: true, managed: true }),
-        expect.objectContaining({ name: 'Code Review & Actions', readOnly: true, executionProfile: 'public-review' }),
+        expect.objectContaining({ name: 'Security Scan', role: 'security', readOnly: true, managed: true }),
+        expect.objectContaining({ name: 'Eligibility Gate', role: 'eligibility', readOnly: true, executionProfile: 'public-review-gate' }),
+        expect.objectContaining({ name: 'Code Review & Actions', role: 'actions', readOnly: true, executionProfile: 'public-review-actions' }),
       ]);
       expect(MANAGED_AGENT_OPTIONS['pr-reviewer']).toEqual(['useWorktree', 'openPR', 'worktreeChangesExpected']);
     });
