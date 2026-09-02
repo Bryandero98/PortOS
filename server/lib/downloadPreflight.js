@@ -77,6 +77,11 @@ async function freeBytesForPath(destPath, statfsImpl) {
  * failed reading cannot block a download that would have fit. `expectedBytes`
  * of 0 means the size is unknown: we never refuse (cannot know it will fail)
  * and never mark tight.
+ * A leftover `${destPath}.partial` from a prior attempt already occupies its
+ * share of disk — resuming only needs the REMAINING bytes, not the full
+ * payload again. Refusing on the full size would make a nearly-full disk
+ * reject a resume it can actually complete, defeating the resumable-download
+ * path in exactly the low-space scenario it exists for.
  *
  * @param {{ destPath?: string, expectedBytes?: number, headroomBytes?: number, statfsImpl?: typeof statfs }} opts
  */
@@ -88,16 +93,20 @@ export async function assessDownloadPreflight({
 } = {}) {
   const expected = Math.max(0, Number(expectedBytes) || 0);
   const headroom = Math.max(0, Number(headroomBytes) || 0);
-  const requiredBytes = expected > 0 ? expected + headroom : 0;
+  const partialBytes = destPath
+    ? await stat(partialPathFor(destPath)).then((s) => s.size, () => 0)
+    : 0;
+  const remaining = Math.max(0, expected - partialBytes);
+  const requiredBytes = remaining > 0 ? remaining + headroom : 0;
   const freeBytes = await freeBytesForPath(destPath, statfsImpl);
 
   let verdict = DOWNLOAD_VERDICTS.OK;
-  if (freeBytes != null && expected > 0 && freeBytes < expected) {
+  if (freeBytes != null && remaining > 0 && freeBytes < remaining) {
     verdict = DOWNLOAD_VERDICTS.INSUFFICIENT;
   } else if (
     freeBytes != null
-    && expected > 0
-    && freeBytes - expected < Math.max(headroom, freeBytes * TIGHT_REMAINING_RATIO)
+    && remaining > 0
+    && freeBytes - remaining < Math.max(headroom, freeBytes * TIGHT_REMAINING_RATIO)
   ) {
     verdict = DOWNLOAD_VERDICTS.TIGHT;
   }

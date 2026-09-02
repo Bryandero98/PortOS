@@ -112,6 +112,58 @@ describe('assessDownloadPreflight', () => {
     expect(result.freeBytes).toBeNull();
     expect(result.verdict).toBe(DOWNLOAD_VERDICTS.OK);
   });
+
+  describe('with a leftover .partial from a prior attempt', () => {
+    const MiB = 1024 * 1024;
+    let dir;
+
+    afterEach(async () => {
+      if (dir) await rm(dir, { recursive: true, force: true });
+      dir = null;
+    });
+
+    // A resume only needs the REMAINING bytes — refusing on the full payload
+    // size would reject a retry the resumable-download path could actually
+    // complete, on a disk that is nearly full precisely because most of the
+    // payload is already sitting in the .partial. Sizes are MiB-scale (not
+    // the real GiB payloads a weight download moves) purely to keep the test
+    // fast — the comparison the fix makes is dimensionless.
+    it('subtracts the already-downloaded bytes from the space it requires', async () => {
+      dir = await mkdtemp(join(tmpdir(), 'portos-dl-preflight-partial-'));
+      const destPath = join(dir, 'weights.gguf');
+      await writeFile(partialPathFor(destPath), Buffer.alloc(9 * MiB));
+
+      const result = await assessDownloadPreflight({
+        destPath,
+        expectedBytes: 10 * MiB,
+        headroomBytes: 1 * MiB,
+        // 3 MiB free: not enough for the full 10 MiB payload + headroom, but
+        // comfortably covers the 1 MiB actually still missing (+ headroom).
+        statfsImpl: async () => ({ bavail: 3, bsize: MiB }),
+      });
+
+      expect(result.verdict).toBe(DOWNLOAD_VERDICTS.OK);
+      expect(result.requiredBytes).toBe(2 * MiB);
+      // The reported size still reflects the whole file — only the verdict
+      // math looks at what's left to fetch.
+      expect(result.expectedBytes).toBe(10 * MiB);
+    });
+
+    it('still refuses when even the remaining bytes will not fit', async () => {
+      dir = await mkdtemp(join(tmpdir(), 'portos-dl-preflight-partial-'));
+      const destPath = join(dir, 'weights.gguf');
+      await writeFile(partialPathFor(destPath), Buffer.alloc(1 * MiB));
+
+      const result = await assessDownloadPreflight({
+        destPath,
+        expectedBytes: 10 * MiB,
+        headroomBytes: 1 * MiB,
+        statfsImpl: async () => ({ bavail: 2, bsize: MiB }),
+      });
+
+      expect(result.verdict).toBe(DOWNLOAD_VERDICTS.INSUFFICIENT);
+    });
+  });
 });
 
 describe('probeRemoteSize', () => {
