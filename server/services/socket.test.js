@@ -779,9 +779,10 @@ describe('socket.js — initSocket', () => {
 
       // …and a fresh dispatch is accepted again.
       vi.mocked(runAppUpdate).mockResolvedValueOnce({ success: true, steps: [] });
-      await socket.handlers['app:update']({ appId: APP.id });
+      await socket.handlers['app:update']({ appId: APP.id, syncFork: true });
       await flush();
       expect(vi.mocked(runAppUpdate)).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(runAppUpdate).mock.calls.at(-1)[2]).toEqual({ syncFork: true });
     });
 
     it('blocks a second app record that points at the same checkout', async () => {
