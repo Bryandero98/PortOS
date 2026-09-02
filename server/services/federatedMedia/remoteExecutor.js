@@ -516,8 +516,16 @@ export function createRemoteMediaExecutor({
       requestController: null,
       wake: null,
       // The instant the media-job queue handed this job to us; `finalize` turns
-      // it into the record's render-timing fields.
-      renderStartedAtMs: Date.now(),
+      // it into the record's render-timing fields (#5878).
+      //
+      // NOT stamped on a reconcile. That path re-enters `run()` after a restart
+      // for a job that was already submitted — `Date.now()` here would measure
+      // only the post-restart download-and-verify tail, so a 20-minute render
+      // interrupted by a `pm2 restart` would land claiming it took 8 seconds.
+      // The pre-restart instant is not recoverable (it lived in this in-memory
+      // state, not on the persisted marker), so report the honest unknown:
+      // `renderTimingFields(null)` yields `{}` and the card shows no duration.
+      renderStartedAtMs: marker.data.reconcile === true ? null : Date.now(),
     };
     activeJobs.set(params.jobId, state);
     try {
