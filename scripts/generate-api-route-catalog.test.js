@@ -202,6 +202,18 @@ describe('generated API route catalog', () => {
       .toBe(serializeApiRouteCatalog(fresh));
   });
 
+  // Content keying trades a line number's uniqueness for a name's, so the one
+  // way it can lose a route is two declarations sharing a key. Left alone the
+  // Set would just swallow the second one and undercount; this makes it loud.
+  it('gives every declaration in a file a distinct key', () => {
+    expect(routeGraph().duplicateDeclarationKeys, [
+      'Two route declarations in one file produced the same catalog key, so the',
+      'second is invisible to the coverage guard and to stats.declarations. Either',
+      'it is a genuine duplicate registration (delete one), or two routers in that',
+      'file share a variable name through shadowing (rename one).',
+    ].join(' ')).toEqual([]);
+  });
+
   // Both sides of this comparison are fresh in-memory scans, which is what
   // lets the committed manifest stay free of line numbers: the manifest never
   // has to point back at the source it was derived from for the guard to work.

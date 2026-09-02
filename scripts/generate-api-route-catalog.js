@@ -102,10 +102,16 @@ export function parseImports(source, filePath) {
 /**
  * Position-independent identity for one `router.<method>('<path>')` call.
  *
- * Two declarations collide only when the same file registers the same method
- * and path on the same router variable — which is a duplicate registration,
- * not two distinct bindings. Unlike a line number, this key survives every
- * edit that does not change the declaration itself.
+ * Two declarations collide when the same file registers the same method and
+ * path on the same router *name* — normally a duplicate registration rather
+ * than two distinct bindings. The exception is shadowing: a module-level
+ * `const router = Router()` and a second one inside a factory share the id
+ * `router`, so distinct bindings could collide and silently undercount. That
+ * is why `scanRouteGraph` reports `duplicateDeclarationKeys` instead of just
+ * folding them into a Set — see the collision assertion in the test.
+ *
+ * Unlike a line number, this key survives every edit that does not change the
+ * declaration itself.
  */
 export const routeDeclarationKey = ({ source, routerId, method, path }) =>
   `${source}#${routerId} ${method.toUpperCase()} ${path || '/'}`;
@@ -275,10 +281,27 @@ export function scanRouteGraph({ repoRoot = REPO_ROOT, indexSource } = {}) {
     .map((operation) => ({ ...operation, sources: [...new Set(operation.sources)].sort() }))
     .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
 
+  // Collisions are counted PER MODULE, from the parsed declarations rather than
+  // from `record`: one router mounted at two prefixes reaches `record` twice
+  // with the same declaration, which is the same binding seen twice, not two
+  // bindings sharing a key. Within a single file, a repeated key is the real
+  // thing — a duplicate registration, or two shadowed routers sharing a name.
+  const duplicateDeclarationKeys = [...moduleCache.values()].flatMap((module) => {
+    const seen = new Set();
+    return module.routes
+      .map((declaration) => routeDeclarationKey(declaration))
+      .filter((key) => {
+        if (seen.has(key)) return true;
+        seen.add(key);
+        return false;
+      });
+  }).sort();
+
   return {
     mounts: [...new Set(topLevelMounts.map((mount) => mount.mountPath))].sort(),
     routes,
     declarationKeys,
+    duplicateDeclarationKeys,
     sourceFileCount: moduleCache.size,
   };
 }

@@ -47,14 +47,23 @@ const POSITIONAL_KEYS = new Set([
   'line', 'lineNumber', 'lineNo', 'startLine', 'endLine',
   'column', 'columnNumber', 'col', 'startColumn', 'endColumn',
   'offset', 'startOffset', 'endOffset', 'charIndex', 'byteOffset',
+  // Names for a position that carries its own pair or range. They only fire on
+  // a numeric value (or an all-numeric array), so a `span` counting items or a
+  // `loc` naming a place is left alone.
+  'loc', 'span', 'pos', 'position', 'range',
 ]);
 
 // A position is always a number. Several of these key names have perfectly
 // good non-positional uses with a non-numeric value — a `column` naming a
 // Postgres column — and rejecting those would make this guard block manifests
 // it has no quarrel with.
+// A range or coordinate pair is still a position — `loc: [412, 8]` and
+// `line: [412, 420]` are exactly the shapes a generator reaches for once a
+// scalar line number feels too coarse, and checking only scalars would recurse
+// into the array and find nothing but bare numbers with no key to judge them by.
 const isPositionalValue = (value) => typeof value === 'number'
-  || (typeof value === 'string' && /^\d+$/.test(value.trim()));
+  || (typeof value === 'string' && /^\d+$/.test(value.trim()))
+  || (Array.isArray(value) && value.length > 0 && value.every(isPositionalValue));
 
 // A `path/to/file.js:412` (optionally `:8` for a column) pointer smuggled into
 // a string, which is how a positional reference survives dropping the key.
@@ -126,6 +135,14 @@ describe('checked-in generated manifests', () => {
     // A numeric string is still a position — dropping the type doesn't help.
     expect(findPositionalReferences({ loc: { line: '412' } }))
       .toEqual(['$.loc.line — positional key "line"']);
+    // Nor does wrapping it in an array: a range and a coordinate pair are the
+    // shapes a generator reaches for when one number stops being enough.
+    expect(findPositionalReferences({ loc: [412, 8] }))
+      .toEqual(['$.loc — positional key "loc"']);
+    expect(findPositionalReferences({ line: [412, 420] }))
+      .toEqual(['$.line — positional key "line"']);
+    // An empty array names no position, and a list of paths is not one either.
+    expect(findPositionalReferences({ line: [] })).toEqual([]);
     // Plain file paths and ordinary counts are what a manifest SHOULD contain,
     // and a positional-sounding key holding a non-numeric value is not a
     // position at all — a Postgres column name.
@@ -141,21 +158,39 @@ describe('checked-in generated manifests', () => {
   // which is the same "someone has to remember" problem this whole change set
   // exists to delete. This makes adoption structural instead.
   it('requires every generator to carry the position-invariance property test', () => {
-    const listed = execFileSync('git', ['ls-files', 'scripts/generate-*.js'], {
+    const listed = execFileSync('git', ['ls-files', 'scripts/*.js'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
     }).split('\n').filter(Boolean);
     const tests = new Set(listed.filter((path) => path.endsWith('.test.js')));
-    const generators = listed.filter((path) => !path.endsWith('.test.js'));
 
-    // Guard the guard: if the glob stops matching, the assertion below passes
+    // Scope by what a script PRODUCES, not by what it is named. Keying off
+    // `generate-*.js` fails a future generate-types.js or generate-fixtures.js
+    // that writes no manifest and has nothing to hold invariant, while missing
+    // a manifest generator named build-*.js. Writing a checked-in
+    // `*.generated.json` is the property that actually incurs the obligation.
+    // `scripts/*.js` as a git pathspec also matches nested paths, and the
+    // helper library itself names `.generated.json` in its own docstring —
+    // so require a runnable script directly under scripts/, not a module it
+    // imports.
+    const generators = listed.filter((path) => !path.endsWith('.test.js')
+      && path.split('/').length === 2
+      && readFileSync(join(REPO_ROOT, path), 'utf8').includes('.generated.json'));
+
+    // Guard the guard: if the filter stops matching, the assertion below passes
     // vacuously over an empty list.
-    expect(generators.length).toBeGreaterThanOrEqual(2);
+    expect(generators).toEqual(expect.arrayContaining([
+      'scripts/generate-api-route-catalog.js',
+      'scripts/generate-prompt-stage-call-sites.js',
+    ]));
 
+    // Require a real import, not a passing mention: a comment naming the module
+    // would satisfy a bare substring check while asserting nothing.
+    const IMPORTS_HELPER = /^\s*import\s[^;]*from\s+['"][^'"]*positionInvariance\.js['"]/m;
     const missing = generators.filter((path) => {
       const testPath = path.replace(/\.js$/, '.test.js');
       if (!tests.has(testPath)) return true;
-      return !readFileSync(join(REPO_ROOT, testPath), 'utf8').includes('positionInvariance.js');
+      return !IMPORTS_HELPER.test(readFileSync(join(REPO_ROOT, testPath), 'utf8'));
     });
 
     expect(missing, [
