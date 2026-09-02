@@ -65,13 +65,14 @@ export default {
     const { ok, config, entries: mlxEntries, path } = await readMediaRegistry({ rootDir, bucket: VIDEO_BUCKET_MLX });
     if (!ok) return;
 
-    let changed = false;
+    let added = 0;
+    let repaired = false;
     const present = new Set(mlxEntries.map((entry) => entry?.id));
     for (const entry of NEW_ENTRIES) {
       if (present.has(entry.id)) continue;
       mlxEntries.push(structuredClone(entry));
       present.add(entry.id);
-      changed = true;
+      added += 1;
     }
     // Repair the row 333 shipped, but only while it still holds 333's exact
     // list — a user who edited their own frame options keeps them.
@@ -80,7 +81,7 @@ export default {
       && repack.frameOptions.length === MIGRATION_333_FRAME_OPTIONS.length
       && repack.frameOptions.every((frames, i) => frames === MIGRATION_333_FRAME_OPTIONS[i])) {
       repack.frameOptions = [...FRAME_OPTIONS];
-      changed = true;
+      repaired = true;
     }
 
     const shipped = readVideoBucket(config?._shippedDefaults?.video, VIDEO_BUCKET_MLX);
@@ -88,13 +89,19 @@ export default {
       for (const entry of NEW_ENTRIES) {
         if (!shipped.includes(entry.id)) {
           shipped.push(entry.id);
-          changed = true;
+          added = Math.max(added, 1);
         }
       }
     }
-    if (changed) {
+    if (added > 0 || repaired) {
       await writeMediaRegistry(path, config);
-      console.log('📝 data/media-models.json: added the upstream FastH3 Dense Data-Free MLX models');
+      // Say which of the two things actually happened — an upgrade that only
+      // repaired the frame grid did not add anything.
+      const what = [
+        added > 0 ? `added ${added} upstream FastH3 Dense Data-Free MLX model(s)` : null,
+        repaired ? 'repaired the FastH3 repack frame options' : null,
+      ].filter(Boolean).join('; ');
+      console.log(`📝 data/media-models.json: ${what}`);
     }
   },
 };

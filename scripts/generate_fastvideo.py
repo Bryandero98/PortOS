@@ -18,6 +18,8 @@ from the checkpoint, so a mis-tagged registry row fails on an argument the
 entry script rejects instead of silently rendering through the wrong pipeline.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import os
@@ -283,9 +285,11 @@ def resolve_prompt_cache_dir(args) -> Path:
 def run_child(cmd: list, env: dict, cwd: Path, transform) -> int:
     """Spawn a child, stream its merged output through `transform`, return its code.
 
-    Shared by the conversion child and the inference child so their stream
-    handling cannot drift: both fold stderr into stdout and re-emit line by
-    line on THIS process's stderr, which is the channel PortOS parses.
+    For the CONVERSION child only. The inference child in main() runs its own
+    loop because it also drives a heartbeat thread and a phase state machine,
+    and shares stderr with that thread — it needs one write per line, which
+    print() does not give. Conversion finishes before the heartbeat starts, so
+    there is no concurrent writer here.
     """
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
