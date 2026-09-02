@@ -34,7 +34,7 @@ describe('public-review provider profile', () => {
     })).toBe(false);
   });
 
-  it('supports only a direct Codex CLI for the sandboxed actions stage', () => {
+  it('supports direct CLI providers with maintained action sandboxes', () => {
     const codex = {
       id: 'codex-cli',
       type: 'cli',
@@ -45,6 +45,17 @@ describe('public-review provider profile', () => {
     expect(supportsPublicReviewActionsProvider({ ...codex, type: 'tui' })).toBe(false);
     expect(supportsPublicReviewActionsProvider({ ...codex, type: 'api' })).toBe(false);
     expect(supportsPublicReviewActionsProvider({ ...codex, command: 'other-agent' })).toBe(false);
+
+    const antigravity = {
+      id: 'antigravity-cli',
+      type: 'cli',
+      command: 'agy',
+      models: ['gemini-3.6-flash-high'],
+    };
+    expect(supportsPublicReviewActionsProvider(antigravity)).toBe(true);
+    expect(supportsPublicReviewActionsProvider({ ...antigravity, type: 'tui' })).toBe(false);
+    expect(supportsPublicReviewActionsProvider({ ...antigravity, type: 'api' })).toBe(false);
+    expect(supportsPublicReviewActionsProvider({ ...antigravity, command: 'other-agent' })).toBe(false);
   });
 
   it('builds the final reviewer with the bounded Codex sandbox and no provider args', () => {
@@ -68,7 +79,28 @@ describe('public-review provider profile', () => {
     expect(config.args).not.toContain('unsafe.json');
   });
 
-  it('rejects the action profile for every non-Codex provider', () => {
+  it('builds the final reviewer with the bounded Antigravity sandbox and selected effort', () => {
+    const config = buildVendorSpawnConfig({
+      id: 'antigravity-cli',
+      type: 'cli',
+      command: '/opt/example/bin/agy',
+      args: ['--dangerously-skip-permissions', '--model', 'unsafe-model'],
+      models: ['gemini-3.6-flash-low', 'gemini-3.6-flash-high'],
+    }, {
+      effectiveModel: 'gemini-3.6-flash',
+      effort: 'high',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    });
+
+    expect(config.args).toEqual(expect.arrayContaining([
+      '--sandbox', '--mode', 'accept-edits', '--disable-slash-commands',
+      '--model', 'gemini-3.6-flash', '--effort', 'high',
+    ]));
+    expect(config.args).not.toContain('--dangerously-skip-permissions');
+    expect(config.args).not.toContain('unsafe-model');
+  });
+
+  it('rejects the action profile for every provider without a maintained sandbox', () => {
     expect(() => buildVendorSpawnConfig(localClaude, {
       effectiveModel: 'safe-model',
       safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,

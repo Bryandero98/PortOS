@@ -62,6 +62,14 @@ const providers = [
     models: ['gpt-5.6'],
   },
   {
+    id: 'antigravity-cli',
+    name: 'Antigravity CLI',
+    type: 'cli',
+    command: 'agy',
+    publicReviewActionsSupported: true,
+    models: ['gemini-3.6-flash'],
+  },
+  {
     id: 'other-cli',
     name: 'Other CLI',
     type: 'cli',
@@ -87,17 +95,17 @@ function renderStages(stages = STAGES, onUpdate = vi.fn().mockResolvedValue(unde
 }
 
 describe('PipelineStageConfig — pr-reviewer', () => {
-  it('uses the shared no-tool policy for the gate and the Codex-only policy for actions', () => {
+  it('uses shared capability policies for the gate and sandbox-capable action providers', () => {
     renderStages();
 
     const providerSelects = screen.getAllByLabelText('Provider');
     expect([...providerSelects[0].options].map((option) => option.value)).toEqual(['', 'claude-ollama']);
-    expect([...providerSelects[1].options].map((option) => option.value)).toEqual(['', 'codex-cli']);
+    expect([...providerSelects[1].options].map((option) => option.value)).toEqual(['', 'codex-cli', 'antigravity-cli']);
 
     const modelSelects = screen.getAllByLabelText('Model');
     expect([...modelSelects[0].options].map((option) => option.value)).toEqual(['', 'safe-model']);
     expect([...modelSelects[1].options].map((option) => option.value)).toEqual(['', 'gpt-5.6']);
-    expect(screen.getByText(/workspace-write sandbox/i)).toBeInTheDocument();
+    expect(screen.getByText(/maintained sandbox/i)).toBeInTheDocument();
   });
 
   it('removes the optional actions stage without changing the mandatory gate', async () => {

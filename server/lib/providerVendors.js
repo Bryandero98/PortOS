@@ -159,11 +159,10 @@ function codexSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads
 }
 
 function codexPublicReviewActionsSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
-  // This is the only action-stage recipe. `workspace-write` is intentionally
-  // the narrowest Codex sandbox that can apply a supplied patch and run local
-  // tests; `--approve-for-me` only suppresses interactive confirmations inside
-  // that sandbox. Never replace these with the unrestricted bypass used by the
-  // ordinary coding-agent path.
+  // `workspace-write` is intentionally the narrowest Codex sandbox that can
+  // apply a supplied patch and run local tests; `--approve-for-me` only
+  // suppresses interactive confirmations inside that sandbox. Never replace
+  // these with the unrestricted bypass used by the ordinary coding-agent path.
   const args = [
     'exec',
     '--sandbox', 'workspace-write',
@@ -180,6 +179,23 @@ function codexPublicReviewActionsSpawnArgs(provider, { effectiveModel, effort, m
   return { command: provider?.command || CODEX_COMMAND, args, stdinMode: 'prompt' };
 }
 
+function antigravityPublicReviewActionsSpawnArgs(provider, { effectiveModel, effort }) {
+  // Antigravity's explicit terminal sandbox is the maintained action posture for
+  // this vendor. `accept-edits` permits the reviewer to apply the screened patch
+  // and run tests without granting the unrestricted permission bypass used by
+  // ordinary coding tasks. Provider args are intentionally not copied here:
+  // saved args could turn a safe profile back into an unrestricted session.
+  const args = [
+    '--sandbox',
+    '--mode', 'accept-edits',
+    '--disable-slash-commands',
+    '--print',
+  ];
+  if (effectiveModel) args.push('--model', effectiveModel);
+  args.push(...buildEffortArgs(effort, provider, args, effectiveModel));
+  return { command: provider?.command || ANTIGRAVITY_COMMAND, args, stdinMode: 'prompt' };
+}
+
 const CODEX = {
   id: 'codex',
   idFragment: 'codex',
@@ -190,6 +206,7 @@ const CODEX = {
   cliArgs: codexCliArgs,
   spawnArgs: codexSpawnArgs,
   publicReviewActionsSpawnArgs: codexPublicReviewActionsSpawnArgs,
+  publicReviewActionsProvider: (provider) => provider?.type === 'cli' && isCodexCommand(provider?.command),
 };
 
 // ─── antigravity ────────────────────────────────────────────────────────────
@@ -210,6 +227,8 @@ const ANTIGRAVITY = {
   cliArgs: antigravityCliArgs,
   preparePrompt: prepareAntigravityPrompt,
   spawnArgs: defaultSpawnArgs(antigravityCliArgs, ANTIGRAVITY_COMMAND),
+  publicReviewActionsSpawnArgs: antigravityPublicReviewActionsSpawnArgs,
+  publicReviewActionsProvider: (provider) => provider?.type === 'cli' && isAntigravityCommand(provider?.command),
 };
 
 // ─── opencode ───────────────────────────────────────────────────────────────
@@ -478,7 +497,7 @@ export function inferTuiCommand(id) {
 /** `applyCommandDefaults` (tuiHandshake.js): TUI posture-flag dispatch. */
 export function applyCommandDefaults(command, args, { safetyProfile = null } = {}) {
   if (safetyProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE) {
-    throw new Error('The public-review-actions profile requires the direct Codex CLI sandbox');
+    throw new Error('The public-review-actions profile requires a supported direct CLI sandbox');
   }
   const vendor = PROVIDER_VENDORS.find((v) => (
     (isPublicReviewNoToolProfile(safetyProfile) ? v.publicReviewTuiArgs : v.tuiArgs)
@@ -544,9 +563,8 @@ export function buildVendorSpawnConfig(provider, ctx) {
 }
 
 function matchesPublicReviewActionsProvider(vendor, provider) {
-  return vendor.id === 'codex'
-    && provider?.type === 'cli'
-    && isCodexCommand(provider?.command);
+  return typeof vendor.publicReviewActionsProvider === 'function'
+    && vendor.publicReviewActionsProvider(provider);
 }
 
 /**
@@ -567,9 +585,9 @@ export function supportsPublicReviewProvider(provider, { tui = false } = {}) {
 }
 
 /**
- * Whether a provider can run the final public-review stage. This is a direct
- * Codex CLI only: the action stage needs a filesystem sandbox, while TUI/API
- * transports do not expose the maintained non-interactive posture here.
+ * Whether a provider can run the final public-review stage. This is restricted
+ * to direct CLI vendors with an explicit maintained filesystem/terminal sandbox
+ * recipe; TUI/API transports and arbitrary custom commands fail closed.
  */
 export function supportsPublicReviewActionsProvider(provider, { tui = false } = {}) {
   if (tui || provider?.type !== 'cli') return false;

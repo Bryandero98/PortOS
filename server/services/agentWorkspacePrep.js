@@ -467,9 +467,9 @@ export async function prepareAgentWorkspace({ agentId, task }) {
   } // end !isReadOnly
 
   // A read-only public-review stage still needs a disposable checkout: it may
-  // run repository commands and the action stage uses workspace-write for
-  // tests/patch inspection. Never let `readOnly` turn an explicit isolation
-  // request into the live application checkout.
+  // run repository commands and the action stage's provider-specific sandbox
+  // needs it for tests/patch inspection. Never let `readOnly` turn an explicit
+  // isolation request into the live application checkout.
   if (wantsWorktree && !jiraBranchName) {
     const worktreeOutcome = await prepareRequestedWorktree({
       agentId,

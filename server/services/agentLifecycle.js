@@ -512,8 +512,8 @@ async function runAgentSpawn(task) {
     }
     // Every public-content stage is direct-only. The CoS runner is a shared
     // process and may inherit ambient tool configuration; the final stage's
-    // direct Codex recipe is what enforces its workspace sandbox. GitHub
-    // mutations still belong to the deterministic output hook.
+    // provider-specific direct CLI recipe is what enforces its sandbox.
+    // GitHub mutations still belong to the deterministic output hook.
     const dispatchUseRunner = publicReview ? false : useRunner;
     let publicReviewPromptData = null;
 

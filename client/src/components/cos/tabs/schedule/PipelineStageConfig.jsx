@@ -91,7 +91,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
             <div>
               <p className="text-sm font-medium text-white">Run final code review and actions</p>
               <p className="text-xs text-gray-400 mt-1">
-                When enabled, an isolated Codex reviewer applies only the screened patch, runs local tests, and returns a structured review for the deterministic GitHub coordinator. It is nested here, not a separate scheduled task.
+                When enabled, a configured sandbox-capable reviewer applies only the screened patch, runs local tests, and returns a structured review for the deterministic GitHub coordinator. It is nested here, not a separate scheduled task.
               </p>
             </div>
             <ToggleSwitch
@@ -179,7 +179,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
                   onEffortChange={(effort) => updateStage('effort', effort)}
                   emptyProviderOption={isEligibilityStage
                     ? 'Select enforced local review provider (required)'
-                    : isActionsStage ? 'Select sandboxed Codex CLI (required)' : 'Default (task-level)'}
+                    : isActionsStage ? 'Select sandbox-capable CLI (required)' : 'Default (task-level)'}
                   emptyModelOption={isEligibilityStage
                     ? 'Select installed no-tool model (required)'
                     : isActionsStage ? 'Use provider default model' : 'Default (task-level)'}
@@ -197,7 +197,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
               )}
               {isActionsStage && (
                 <p className="text-xs text-gray-500 mt-2">
-                  Final review accepts only the direct Codex CLI provider. PortOS launches it with a workspace-write sandbox, ephemeral config, and no GitHub/forge credentials; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.
+                  Final review accepts only a configured direct CLI with a maintained sandbox (for example, Codex or Antigravity). PortOS passes the selected provider, model, and thinking effort through that provider&apos;s safe recipe, with no explicit GitHub/forge credential or configuration overlays; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.
                 </p>
               )}
             </div>

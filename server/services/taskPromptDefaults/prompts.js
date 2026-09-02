@@ -2361,10 +2361,11 @@ instruction.
 
 Repository: {repoPath}
 
-This stage runs as a direct Codex CLI child inside a disposable
-\`workspace-write\` sandbox. It may inspect the repository, apply the supplied
-patches, and run relevant local tests. It has no GitHub/forge credentials or
-tools and must not use network access. It MUST NOT run \`gh\`, \`glab\`, SSH,
+This stage runs as a configured direct CLI child inside its provider's
+maintained sandbox and a disposable worktree. It may inspect the repository,
+apply the supplied patches, and run relevant local tests. It has no explicit
+GitHub/forge credential or configuration overlays and must not use network
+access. It MUST NOT run \`gh\`, \`glab\`, SSH,
 package downloads, remote fetches, or any command that changes state outside
 the disposable worktree. It must not commit, push, post a review/comment,
 approve, rebase online, file an issue, trigger CI, or merge. The deterministic
