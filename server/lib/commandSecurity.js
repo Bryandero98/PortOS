@@ -23,6 +23,13 @@ export const ALLOWED_COMMANDS_SORTED = Array.from(ALLOWED_COMMANDS).sort();
 // `python`, `pip`, `curl`, `wget`, `go`, `cargo`, `make`, `brew`, `pm2`, …).
 // `npx <pkg>` / `pip install <pkg>` / `curl -o <path> <url>` contain no shell
 // metacharacter, so the metacharacter filter alone does NOT stop them.
+//
+// Scope: this gate is binary-level, not subcommand-level. Every admitted binary
+// is one whose *documented* use here is inspection, but a few are multi-purpose
+// (`git commit`, `find -delete`, `gh api -X POST`) and are NOT rejected. That is
+// a deliberately smaller step than subcommand gating: it removes remote-code
+// fetch/exec from the unattended lane, which is the class that turns hostile
+// config into arbitrary RCE. Subcommand gating is tracked separately.
 export const UNATTENDED_READONLY_COMMANDS = new Set([
   'git', 'gh', 'glab',
   'ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc',

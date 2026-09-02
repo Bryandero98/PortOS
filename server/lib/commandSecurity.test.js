@@ -326,10 +326,10 @@ describe('commandSecurity', () => {
     })
 
     it('parses args the same way as validateCommand', () => {
-      const result = validateUnattendedCommand('git commit -m "msg with spaces"')
+      const result = validateUnattendedCommand('git log --grep "two words"')
       expect(result.valid).toBe(true)
       expect(result.baseCommand).toBe('git')
-      expect(result.args).toEqual(['commit', '-m', 'msg with spaces'])
+      expect(result.args).toEqual(['log', '--grep', 'two words'])
     })
 
     it.each([
