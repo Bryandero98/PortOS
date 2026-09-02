@@ -195,6 +195,43 @@ describe('detectAppWithAi', () => {
       expect(result.detected.pm2ProcessNames).toEqual(['test-app']);
     });
 
+    it("rejects pm2's reserved 'all' target as a process name", async () => {
+      // Stored as this app's process name, `all` turns a scoped `pm2 stop <name>`
+      // into `pm2 stop all` and takes down every app on the shared daemon.
+      const hostile = JSON.stringify({
+        ...JSON.parse(VALID_DETECTION_JSON),
+        pm2ProcessNames: ['all'],
+      });
+      const { result } = await runDetect({}, hostile);
+
+      expect(result.detected.pm2ProcessNames).not.toContain('all');
+    });
+
+    it('fences the scanned directory name, which a crafted checkout path controls', async () => {
+      const { prompt } = await runDetect({});
+      // The dir name is no longer a bare `Directory: <value>` prompt line an
+      // embedded newline could break out of.
+      expect(prompt).not.toMatch(/^Directory: /m);
+      expect(prompt).toContain('Directory:\n```text');
+    });
+
+    it('still finds the detection JSON when a provider echoes the now-fenced prompt', async () => {
+      // The prompt itself now carries ```text fences; a prompt-echoing TUI
+      // replays them ahead of the real answer, so extraction must skip a fenced
+      // block whose content is not detection-shaped.
+      const pkg = JSON.stringify({ name: 'echoed-from-prompt', scripts: { dev: 'vite' } });
+      const echo = [
+        'Files:', FENCE + 'text', 'package.json, README.md', FENCE,
+        'package.json:', FENCE + 'text', pkg, FENCE,
+        'My answer:', VALID_DETECTION_JSON,
+      ].join('\n');
+      const { result } = await runDetect({ 'package.json': pkg }, echo);
+
+      expect(result.success).toBe(true);
+      expect(result.detected.name).toBe('Test App');
+      expect(result.detected.uiPort).toBe(3000);
+    });
+
     it('drops a malformed pm2ProcessNames entry and falls back to the directory name', async () => {
       const hostile = JSON.stringify({
         ...JSON.parse(VALID_DETECTION_JSON),

@@ -21,10 +21,23 @@ const MAX_CONFIG_FILE_CHARS = 2000;
 const MAX_ENV_LINES_CHARS = 500;
 const MAX_README_CHARS = 1000;
 const MAX_FILE_LIST_CHARS = 1000;
+const MAX_DIR_NAME_CHARS = 200;
 
 // PM2 process names become the identity of a spawned process; keep them to the
 // same conservative shape PortOS itself uses for app process names.
 const PM2_PROCESS_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+// `all` is pm2's reserved every-process target, not a name. Stored as this app's
+// process name it would turn a scoped `pm2 stop <name>` into `pm2 stop all` and
+// take down every app on the shared daemon — the exact target
+// `PM2_ALL_TARGET_VERBS` blocks in commandSecurity.js.
+const PM2_RESERVED_TARGETS = new Set(['all']);
+
+const isUsablePm2ProcessName = (n) => (
+  typeof n === 'string'
+  && PM2_PROCESS_NAME_PATTERN.test(n)
+  && !PM2_RESERVED_TARGETS.has(n.toLowerCase())
+);
 
 const DEFAULT_START_COMMAND = 'npm run dev';
 
@@ -123,6 +136,7 @@ function buildAnalysisPrompt(context) {
   // instruction that fenced content is data — because the answer's
   // `startCommands` is later handed to pm2 as a process command line.
   const sections = [
+    fenceBlock('Directory', context.dirName, MAX_DIR_NAME_CHARS),
     fenceBlock('Files', context.files.slice(0, 50).join(', '), MAX_FILE_LIST_CHARS),
     fenceBlock('package.json', context.packageJson, MAX_PACKAGE_JSON_CHARS),
     ...context.configFiles.map(f => fenceBlock(f.name, f.content, MAX_CONFIG_FILE_CHARS)),
@@ -133,8 +147,6 @@ function buildAnalysisPrompt(context) {
   return `Analyze this project and return JSON with the detected configuration.
 
 ${UNTRUSTED_CONTENT_NOTICE}
-
-Directory: ${context.dirName}
 
 ${sections.join('\n\n')}
 
@@ -174,9 +186,9 @@ function sanitizeStartCommands(value) {
 function sanitizePm2ProcessNames(value, fallbackName) {
   const fallback = [fallbackName];
   if (!Array.isArray(value)) return fallback;
-  const kept = value.filter(n => typeof n === 'string' && PM2_PROCESS_NAME_PATTERN.test(n));
+  const kept = value.filter(isUsablePm2ProcessName);
   if (kept.length !== value.length) {
-    console.warn(`🛡️ ai-detect dropped ${value.length - kept.length} of ${value.length} pm2ProcessNames (malformed process name)`);
+    console.warn(`🛡️ ai-detect dropped ${value.length - kept.length} of ${value.length} pm2ProcessNames (malformed or reserved process name)`);
   }
   return kept.length ? kept : fallback;
 }
@@ -191,7 +203,13 @@ const isDetectionShape = (v) => (
 );
 
 function parseAiResponse(response) {
-  const { value } = extractJson(response, { shapePredicate: isDetectionShape });
+  // skipInnerFence: the prompt now wraps every repository section in a ```text
+  // fence, so a prompt-echoing provider replays fences AHEAD of its answer.
+  // extractJson's "first inner fence is the wrapper" heuristic would lock onto
+  // the echoed Files/package.json block and never reach the real response — the
+  // exact case its docblock says this option exists for. Balanced-block walking
+  // plus the shape gate below still finds the answer.
+  const { value } = extractJson(response, { shapePredicate: isDetectionShape, skipInnerFence: true });
   if (!isDetectionShape(value)) throw new Error('Failed to parse AI detection response');
   return value;
 }
