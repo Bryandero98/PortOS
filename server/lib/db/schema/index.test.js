@@ -33,12 +33,13 @@ const MODULE_FILES = readdirSync(HERE)
   .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js') && f !== 'index.js')
   .sort();
 
-// Membership is checked on the FIRST statement of each `*Ddl` array rather
-// than on array identity, because a module legitimately contributes more than
-// one separately-positioned array (catalog.js → `catalogDdl` +
-// `catalogUserTypesDdl`) and audit.js contributes `auditDdl` plus the
-// generated `buildAuditTriggers()`. A first-statement check covers both
-// without encoding any ordering — order stays schema.test.js's job.
+// Membership is checked statement-by-statement rather than by array identity,
+// because a module legitimately contributes more than one separately-positioned
+// array (catalog.js → `catalogDdl` + `catalogUserTypesDdl`) and audit.js
+// contributes `auditDdl` plus the generated `buildAuditTriggers()`. Checking
+// EVERY statement — not just the array's first — also catches a composer that
+// spreads only part of an array. Membership encodes no ordering: statement
+// order stays schema.test.js's job.
 const COMPOSED_STATEMENTS = new Set([...buildUpgradeDdl(), ...buildCatalogDdl()]);
 
 describe('db/schema composer covers every module in the directory (#5682)', () => {
@@ -52,7 +53,7 @@ describe('db/schema composer covers every module in the directory (#5682)', () =
     }
   });
 
-  it.each(MODULE_FILES)('%s exports at least one *Ddl array and every one is composed', async (f) => {
+  it.each(MODULE_FILES)('%s exports at least one *Ddl array and every statement is composed', async (f) => {
     const mod = await import(`./${f}`);
     const ddlExports = Object.entries(mod).filter(([name]) => name.endsWith('Ddl'));
 
@@ -64,10 +65,12 @@ describe('db/schema composer covers every module in the directory (#5682)', () =
     for (const [name, statements] of ddlExports) {
       expect(Array.isArray(statements), `${f} export '${name}' is not an array`).toBe(true);
       expect(statements.length, `${f} export '${name}' is empty`).toBeGreaterThan(0);
+      const uncomposed = statements.filter((sql) => !COMPOSED_STATEMENTS.has(sql));
       expect(
-        COMPOSED_STATEMENTS.has(statements[0]),
-        `${f} export '${name}' is never run: add it to buildUpgradeDdl() or buildCatalogDdl() in index.js`,
-      ).toBe(true);
+        uncomposed.length,
+        `${f} export '${name}' has ${uncomposed.length} statement(s) that never run — spread it into `
+          + `buildUpgradeDdl() or buildCatalogDdl() in index.js. First: ${uncomposed[0]?.slice(0, 120)}`,
+      ).toBe(0);
     }
   });
 

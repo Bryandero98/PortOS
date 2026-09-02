@@ -13,7 +13,7 @@ grep -i "what you want to do" server/lib/README.md
 ```
 
 The barrel `server/lib/index.js` is a machine-checkable enumeration of every public surface;
-`server/lib/index.test.js` verifies that every non-test `.js` file is re-exported AND appears in this README, AND that no two flat-exported modules share an identifier name.
+`server/lib/index.test.js` verifies that every non-test `.js`/`.jsx` file is re-exported AND appears in this README, AND that no two flat-exported modules share an identifier name.
 
 **Namespace exports.** The validation modules (`brainValidation`, `digitalTwinValidation`, etc.), `runners`, and `storyBible` are surfaced through the barrel as namespace exports — `barrel.brainValidation.settingsUpdateInputSchema`, not bare `settingsUpdateInputSchema` — because their generic names collide with peers. Direct deep imports (`import { settingsUpdateInputSchema } from './brainValidation.js'`) are unaffected.
 
