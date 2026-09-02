@@ -36,7 +36,7 @@
  * covers shipping an identity record to a host we cannot name.
  */
 import { ServerError } from '../../lib/errorHandler.js';
-import { findPeerById, peerAllowsOutbound, peerHasCategory } from './peerSyncShared.js';
+import { findPeerById, peerAllowsOutbound, peerAllowsCategoryPull, peerHasCategory } from './peerSyncShared.js';
 import { getSettings } from '../settings.js';
 import { UNKNOWN_INSTANCE_ID } from '../instances.js';
 
@@ -84,16 +84,28 @@ export function readCallerInstanceId(req) {
  * setting or logging — the pure-ish decision half, so tests can assert it
  * agrees with the push path for a given peer/kind pair.
  *
- * `recordKind` is optional: the manifest routes (`/library-manifest`,
- * `/cos-history-manifest`, `/cos-tasks`) aren't scoped to one record kind, so
- * they gate on `peerAllowsOutbound` alone.
+ * Scope, at most one of:
+ *  - `recordKind` — a per-record `/api/peer-sync/*` read. Gated on
+ *    `peerAllowsOutbound` + `peerHasCategory`, the predicates the push path uses.
+ *  - `syncCategory` — a whole-category `/api/sync/*` snapshot read. Gated on
+ *    `peerAllowsCategoryPull`, which folds the master switch into the resolved
+ *    category map instead of checking it separately, so a default-ON category
+ *    still flows for a peer whose other sync the user turned off.
+ *  - neither — the manifest routes (`/library-manifest`, `/cos-history-manifest`,
+ *    `/cos-tasks`) aren't scoped to one kind, so they gate on
+ *    `peerAllowsOutbound` alone.
  *
  * Returns `{ allowed, reason, peer, callerId }`.
  */
-export async function decidePeerPull({ callerId, recordKind = null }) {
+export async function decidePeerPull({ callerId, recordKind = null, syncCategory = null }) {
   if (!callerId) return { allowed: false, reason: PULL_DENY_UNIDENTIFIED, peer: null, callerId: null };
   const peer = await findPeerById(callerId);
   if (!peer) return { allowed: false, reason: PULL_DENY_UNKNOWN_PEER, peer: null, callerId };
+  if (syncCategory) {
+    return peerAllowsCategoryPull(peer, syncCategory)
+      ? { allowed: true, reason: null, peer, callerId }
+      : { allowed: false, reason: PULL_DENY_CATEGORY, peer, callerId };
+  }
   if (!peerAllowsOutbound(peer)) return { allowed: false, reason: PULL_DENY_OUTBOUND, peer, callerId };
   if (recordKind && !peerHasCategory(peer, recordKind)) {
     return { allowed: false, reason: PULL_DENY_CATEGORY, peer, callerId };
@@ -144,8 +156,8 @@ const pullForbidden = (decision) => new ServerError('peer not authorized for thi
  *
  * Returns the decision so a caller can branch further if it ever needs to.
  */
-export async function authorizePeerPull(req, { recordKind = null, route, alwaysEnforce = false } = {}) {
-  const decision = await decidePeerPull({ callerId: readCallerInstanceId(req), recordKind });
+export async function authorizePeerPull(req, { recordKind = null, syncCategory = null, route, alwaysEnforce = false } = {}) {
+  const decision = await decidePeerPull({ callerId: readCallerInstanceId(req), recordKind, syncCategory });
   if (decision.allowed) return decision;
   const label = route || 'pull';
   // `alwaysEnforce` short-circuits the settings read: the answer cannot change.

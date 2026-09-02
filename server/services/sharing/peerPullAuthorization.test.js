@@ -6,9 +6,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // `peerAllowsOutbound` / `peerHasCategory` run — which is the point: the test
 // asserts pull agrees with push because both use those same predicates.
 const peers = [];
-vi.mock('../instances.js', () => ({
+vi.mock('../instances.js', async () => ({
+  // Real `resolveEffectiveCategories` + shipped defaults, for the same reason:
+  // the category-scoped pull decision must agree with what the sync loop and
+  // the settings UI resolve for that peer.
+  ...(await vi.importActual('../instances.js')),
   getPeers: async () => peers,
-  UNKNOWN_INSTANCE_ID: 'unknown',
 }));
 
 let settings = {};
@@ -181,6 +184,40 @@ describe('peerPullAuthorization', () => {
     it('treats an unreadable settings file as strict-off (warn, do not break sync)', async () => {
       settings = null;
       await expect(authorizePeerPull(req(null), { recordKind: 'universe' })).resolves.toBeDefined();
+    });
+  });
+
+  // #5663 — the snapshot transport's unit of consent is a whole sync CATEGORY,
+  // not a record kind, so it resolves the peer's category map directly.
+  describe('syncCategory scope', () => {
+    it('allows a category the user ticked for this peer', async () => {
+      setPeers(universePeer());
+      const decision = await decidePeerPull({ callerId: PEER_A, syncCategory: 'universe' });
+      expect(decision.allowed).toBe(true);
+    });
+
+    it('denies a category the user did NOT tick, even for an outbound-allowed peer', async () => {
+      setPeers(universePeer());
+      const decision = await decidePeerPull({ callerId: PEER_A, syncCategory: 'digitalTwin' });
+      expect(decision).toMatchObject({ allowed: false, reason: PULL_DENY_CATEGORY });
+    });
+
+    it('allows anything for a full-sync ("mirror everything") peer', async () => {
+      setPeers(universePeer({ fullSync: true, syncCategories: {} }));
+      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'digitalTwin' })).allowed).toBe(true);
+    });
+
+    it('keeps a default-ON category flowing when the master sync switch is off', async () => {
+      // `usage` is retained by resolveEffectiveCategories' master-switch mask;
+      // gating on peerAllowsOutbound instead would refuse it outright.
+      setPeers(universePeer({ syncEnabled: false }));
+      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'usage' })).allowed).toBe(true);
+      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'universe' })).allowed).toBe(false);
+    });
+
+    it('denies a peer that only announced itself (inbound-only, never approved here)', async () => {
+      setPeers(universePeer({ directions: ['inbound'] }));
+      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'universe' })).allowed).toBe(false);
     });
   });
 

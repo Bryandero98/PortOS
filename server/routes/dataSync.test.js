@@ -23,9 +23,12 @@ vi.mock('../services/dataSync.js', () => ({
 // warn-first ramp all run for real here. Mocking `authorizePeerPull` itself
 // would let the route and the gate drift, which is the whole bug (#5663).
 const peers = [];
-vi.mock('../services/instances.js', () => ({
+vi.mock('../services/instances.js', async () => ({
+  // Keep the REAL resolveEffectiveCategories + shipped category defaults: a
+  // hand-written stand-in would let the gate's idea of "enabled for this peer"
+  // drift from the sync loop's and the settings UI's.
+  ...(await vi.importActual('../services/instances.js')),
   getPeers: async () => peers,
-  UNKNOWN_INSTANCE_ID: 'unknown',
 }));
 let settings = {};
 vi.mock('../services/settings.js', () => ({
@@ -38,13 +41,16 @@ import { PEER_INSTANCE_ID_HEADER, __resetPullWarnThrottleForTests } from '../ser
 import dataSyncRoutes from './dataSync.js';
 
 const PEER_ID = 'peer-a-instance-id';
-// Obviously-fake peer record — outbound-allowed, which is all the snapshot
-// gate checks (the transport is per-category, not per-record-kind).
+// Obviously-fake peer record. `fullSync` stands in for "the user ticked every
+// category for this peer" — the snapshot gate's unit of consent is the sync
+// CATEGORY, so a fixture without one would be denied on category grounds and
+// the identity assertions below would pass for the wrong reason.
 const allowedPeer = (overrides = {}) => ({
   instanceId: PEER_ID,
   name: 'Example Peer',
   enabled: true,
   syncEnabled: true,
+  fullSync: true,
   directions: ['outbound', 'inbound'],
   ...overrides,
 });
@@ -195,12 +201,43 @@ describe('GET /api/sync/:category — peer-pull authorization', () => {
   });
 
   it('403s the digitalTwin snapshot for a peer the user disabled sync for', async () => {
-    setPeers(allowedPeer({ syncEnabled: false }));
+    setPeers(allowedPeer({ fullSync: false, syncEnabled: false, syncCategories: { digitalTwin: true } }));
     const res = await request(buildApp())
       .get('/api/sync/digitalTwin/snapshot')
       .set(PEER_INSTANCE_ID_HEADER, PEER_ID);
     expect(res.status).toBe(403);
     expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('403s the digitalTwin snapshot for a peer the user only enabled for universe', async () => {
+    // Per-category consent, not just per-peer: this is the record-side hole
+    // #3659 closed, applied to the snapshot transport's unit of sharing.
+    setPeers(allowedPeer({ fullSync: false, syncCategories: { universe: true } }));
+    const res = await request(buildApp())
+      .get('/api/sync/digitalTwin/snapshot')
+      .set(PEER_INSTANCE_ID_HEADER, PEER_ID);
+    expect(res.status).toBe(403);
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('403s a peer that only ANNOUNCED itself (inbound-only, never approved here)', async () => {
+    setPeers(allowedPeer({ directions: ['inbound'] }));
+    const res = await request(buildApp())
+      .get('/api/sync/digitalTwin/snapshot')
+      .set(PEER_INSTANCE_ID_HEADER, PEER_ID);
+    expect(res.status).toBe(403);
+  });
+
+  it('keeps serving the default-ON usage category to a peer whose other sync is off', async () => {
+    // `usage` survives the master switch by design; folding the switch into the
+    // resolved category map (rather than checking it separately) is what keeps
+    // that true here. Non-PII, so this is the warn-first tier.
+    settings = { federation: { strictPullAuthorization: true } };
+    setPeers(allowedPeer({ fullSync: false, syncEnabled: false }));
+    const res = await request(buildApp())
+      .get('/api/sync/usage/snapshot')
+      .set(PEER_INSTANCE_ID_HEADER, PEER_ID);
+    expect(res.status).toBe(200);
   });
 
   it.each(['digitalTwin', 'meatspace', 'character'])(

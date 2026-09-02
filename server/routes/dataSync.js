@@ -22,9 +22,17 @@
  *    refusing to federate these records was precisely that "the pull path
  *    carries no peer identity": docs/decisions/2026-08-08-privacy-records-machine-local.md.
  *
- * Scope: what a category CONTAINS, and whether a configured, identified peer
- * may sync it, are unchanged — a user federating their own two machines keeps
- * working. Only an unidentified/unknown/outbound-disallowed caller is refused.
+ * Consent is per-category, not just per-peer: the gate resolves the caller's
+ * `syncCategories` map (`peerAllowsCategoryPull`) rather than only asking
+ * whether the peer may receive anything at all. A peer the user enabled for
+ * `universe` must not be able to ask for `digitalTwin` — that is the same
+ * shape of hole #3659 closed for records. Resolving through
+ * `resolveEffectiveCategories` also keeps a default-ON category (`usage`)
+ * flowing for a peer whose other sync the user switched off.
+ *
+ * Scope: what a category CONTAINS is unchanged, and a user federating their own
+ * two machines keeps working as long as the SOURCE machine has that category
+ * ticked for the peer asking — which is exactly what its sharing config means.
  */
 
 import { Router } from 'express';
@@ -50,6 +58,7 @@ const PII_CATEGORIES = new Set(['digitalTwin', 'meatspace', 'character']);
 // The one gate both reads share, so the checksum can never become the weaker
 // door: a checksum is a fingerprint of the same payload.
 const authorizeSyncPull = (req, category) => authorizePeerPull(req, {
+  syncCategory: category,
   route: `sync ${category}`,
   alwaysEnforce: PII_CATEGORIES.has(category),
 });
