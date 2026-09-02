@@ -983,6 +983,11 @@ export default function ImageGen() {
     // fires onSubmit — gate here too so an edit-only model without a source image
     // (or codex text-to-image with no prompt) hits the inline hint, not a 400 toast.
     if (editImageMissing || cloudNeedsPrompt) return;
+    // Same reason, for the backend probe: the form stays typable while the status
+    // pill is still checking, so an implicit submit must not dispatch against a
+    // backend we haven't confirmed. A remote target runs on the peer, so the
+    // LOCAL probe result doesn't gate it — mirror the submit button exactly.
+    if (statusLoading || (!remoteTargetActive && notConnected)) return;
     // The button reading is as old as the last render and a capacity window
     // expires on the clock, so an enabled button can already be pointing at a
     // lapsed peer. Re-derive here and say so, rather than letting the server

@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 const MODEL = { id: 'dev', name: 'FLUX.1 Dev', runner: 'mflux', steps: 20, guidance: 3.5 };
 
 // The backend probe is held open on purpose: an unconfigured `external` SD API
 // URL times out, and that window used to grey out the whole form.
-const state = vi.hoisted(() => ({ resolveStatus: null, statusPromise: null }));
+const state = vi.hoisted(() => ({ resolveStatus: null, statusPromise: null, generateImage: vi.fn() }));
 
 vi.mock('../services/api', () => ({
   getInstances: vi.fn(async () => ({ peers: [] })),
   getImageGenStatus: vi.fn(() => state.statusPromise),
-  generateImage: vi.fn(async () => ({ jobId: 'job-1' })),
+  generateImage: (...args) => state.generateImage(...args),
   generateImageMultipart: vi.fn(async () => ({})),
   listImageModels: vi.fn(async () => [MODEL]),
   listLorasFull: vi.fn(async () => []),
@@ -82,6 +82,7 @@ const mount = async () => {
 
 describe('ImageGen backend-probe gating', () => {
   beforeEach(() => {
+    state.generateImage.mockReset().mockResolvedValue({ jobId: 'job-1' });
     state.statusPromise = new Promise((resolve) => { state.resolveStatus = resolve; });
   });
 
@@ -107,5 +108,18 @@ describe('ImageGen backend-probe gating', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /^Generate$/ })).toBeDisabled());
     expect(screen.getByLabelText('Prompt')).not.toBeDisabled();
     expect(screen.getByLabelText('Negative Prompt')).not.toBeDisabled();
+  });
+
+  // A live form has a live implicit submit: Enter inside a number input fires
+  // onSubmit even when the default button is disabled, so the handler carries
+  // the same probe gate the button does.
+  it('refuses an implicit submit fired while the probe is still in flight', async () => {
+    await mount();
+
+    const prompt = await screen.findByLabelText('Prompt');
+    fireEvent.change(prompt, { target: { value: 'a lighthouse at dusk' } });
+    await act(async () => { fireEvent.submit(prompt.closest('form')); });
+
+    expect(state.generateImage).not.toHaveBeenCalled();
   });
 });
