@@ -179,6 +179,9 @@ export const ALWAYS_RUN_TESTS = [
   'scripts/repo-scan-guards.test.js',
   'scripts/tailnet-identity-leak.test.js',
   'server/dependency-overrides.test.js',
+  // Whole-tree scanner: any server file can add a `process.env` read, and
+  // `.env.example` itself is not a scope the selector routes to a runner.
+  'server/envExampleDrift.test.js',
   'server/lib/generatedManifests.test.js',
   'server/lib/qwenAgentParsers.test.js',
   'server/lib/testDataIsolation.guards.test.js',
