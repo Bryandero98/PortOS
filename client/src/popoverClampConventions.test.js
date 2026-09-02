@@ -10,11 +10,22 @@
  *
  * The rule: a class string that positions an element `absolute` AND fixes its
  * width with a bare `w-<n>` of 64 (16rem / 256px) or more must also carry a
- * `max-w-*` clamp. The tree's canonical form is `max-w-[calc(100vw-1rem)]`
+ * clamp that is *relative to the available width* and applies at the BASE
+ * viewport. The tree's canonical form is `max-w-[calc(100vw-1rem)]`
  * (`components/pipeline/arcCanvas/VerifyScopeTooltip.jsx`), which keeps a fixed
  * 8px gutter at every width rather than a proportional one that collapses on
- * small screens — but any `max-w-*` satisfies the guard, because a panel that
- * declares one has demonstrably been through the narrow case.
+ * small screens; `max-w-[90vw]`, `max-w-full`, and `max-w-screen` also qualify.
+ *
+ * Both halves of that matter, and a looser "any `max-w-*` token" test would miss
+ * a real bug on each: `max-w-96` / `max-w-none` / `max-w-lg` are *absolute*
+ * ceilings that let the panel overflow a phone exactly as before, and a
+ * variant-prefixed `sm:max-w-[calc(100vw-1rem)]` leaves the narrow viewport —
+ * the only one that clips — entirely unclamped.
+ *
+ * Every token is read UNPREFIXED for the same reason: the base variant is the
+ * phone. A responsive sidebar that reads `absolute w-[80vw] max-w-xs md:static
+ * md:w-64` is correct as written — its fixed width belongs to the desktop
+ * variant, where it is no longer absolute (`brain/tabs/DailyLogTab.jsx`).
  *
  * Deliberately NOT flagged:
  *  - `min-w-*` / `max-w-*` tokens, which are not a fixed width (`sm:min-w-80` on
@@ -38,12 +49,14 @@ const CLIENT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Tailwind's numeric width scale is in 0.25rem steps: 64 → 16rem → 256px. */
 const MIN_CLAMPED_WIDTH = 64;
-const VARIANT = String.raw`(?:[\w@[\]().\-/]+:)*`;
-// `w-64`, `sm:w-96` — but never `min-w-80` / `max-w-96`, whose token doesn't
-// start at `w-` once the variant prefixes are consumed.
-const FIXED_WIDTH = new RegExp(String.raw`^${VARIANT}w-(\d+)$`);
-const ABSOLUTE = new RegExp(String.raw`^${VARIANT}absolute$`);
-const MAX_WIDTH = new RegExp(String.raw`^${VARIANT}max-w-`);
+// Every token below is matched UNPREFIXED, because the base variant is the phone
+// and the phone is the viewport that clips. `w-64` is a fixed width; `min-w-80`
+// and `max-w-96` are not (the token doesn't start at `w-`).
+const FIXED_WIDTH = /^w-(\d+)$/;
+const ABSOLUTE = /^absolute$/;
+// The clamp's value has to track the available width: an arbitrary value in
+// viewport or percentage units, or the two keywords that mean exactly that.
+const VIEWPORT_CLAMP = /^max-w-(?:full|screen|\[[^\]]*(?:[dsl]?vw|%)[^\]]*\])$/;
 
 function widestFixedWidth(tokens) {
   return tokens.reduce((widest, token) => {
@@ -59,7 +72,7 @@ function violationsIn(rawSource, file) {
       const tokens = value.split(/\s+/).filter(Boolean);
       if (!tokens.some((token) => ABSOLUTE.test(token))) return false;
       if (widestFixedWidth(tokens) < MIN_CLAMPED_WIDTH) return false;
-      return !tokens.some((token) => MAX_WIDTH.test(token));
+      return !tokens.some((token) => VIEWPORT_CLAMP.test(token));
     })
     .map(({ value, index }) => `${file}:${lineOf(source, index)} — "${value.trim()}"`);
 }
@@ -83,12 +96,24 @@ describe('popover viewport-clamp conventions', () => {
     expect(flagged('absolute right-0 top-full w-64 max-h-80 overflow-y-auto')).toBe(1);
     // A max-height is not a width clamp.
     expect(flagged('absolute w-96 max-h-dvh-cap [--dvh-cap:80dvh]')).toBe(1);
-    // The clamp, in either of the tree's two forms.
+    // The clamp, in either of the tree's two forms, plus the keyword equivalents.
     expect(flagged('absolute right-3 w-96 max-w-[calc(100vw-1rem)] p-4')).toBe(0);
     expect(flagged('absolute w-80 max-w-[90vw] p-3')).toBe(0);
+    expect(flagged('absolute w-96 max-w-full')).toBe(0);
+    expect(flagged('absolute w-96 max-w-[calc(100%-1rem)]')).toBe(0);
+    // An absolute ceiling is not a clamp — it still overflows a 360px phone.
+    expect(flagged('absolute w-96 max-w-none')).toBe(1);
+    expect(flagged('absolute w-96 max-w-96')).toBe(1);
+    expect(flagged('absolute w-96 max-w-lg')).toBe(1);
+    expect(flagged('absolute w-96 max-w-screen-sm')).toBe(1);
+    // A variant-gated clamp leaves the narrow viewport — the one that clips — bare.
+    expect(flagged('absolute w-96 sm:max-w-[calc(100vw-1rem)]')).toBe(1);
     // `min-w-*` is not a fixed width, at any variant prefix.
     expect(flagged('absolute bottom-3 left-3 right-3 sm:right-auto sm:min-w-80')).toBe(0);
     expect(flagged('absolute min-w-96 w-full')).toBe(0);
+    // A fixed width that belongs to a variant where the element is no longer
+    // absolute is not the bug; the base viewport already clamps.
+    expect(flagged('absolute md:static inset-y-0 left-0 w-[80vw] max-w-xs md:w-64')).toBe(0);
     // Narrow panels fit a 360px phone unclamped.
     expect(flagged('absolute right-0 w-56 rounded-lg')).toBe(0);
     // `fixed` escapes the shell's overflow box; it is positioned to the viewport.
