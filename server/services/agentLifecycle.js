@@ -467,13 +467,13 @@ async function runAgentSpawn(task) {
     // so an ordinary task (posture `null`) passes straight through (#5830).
     const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture, { tui: isTui });
     if (postureBlock) {
-      const { reason } = postureBlock;
+      const { reason, category } = postureBlock;
       await updateTask(task.id, {
         status: 'blocked',
         metadata: {
           ...task.metadata,
           blockedReason: reason,
-          blockedCategory: postureBlock.category,
+          blockedCategory: category,
           blockedAt: new Date().toISOString(),
         },
       }, task.taskType || 'user').catch(() => {});

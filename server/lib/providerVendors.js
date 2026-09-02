@@ -629,6 +629,11 @@ export function buildVendorCliArgs(provider, baseArgs, { model, effort }) {
   return vendor.cliArgs(baseArgs, { model, effort, provider });
 }
 
+/** How a provider names itself in an error a user has to act on. */
+function providerLabel(provider) {
+  return provider?.id || provider?.command || 'unknown';
+}
+
 /**
  * `buildCliSpawnConfig` (agentCliSpawning.js): full `{ command, args,
  * stdinMode, streamFormat? }` shape per vendor. Requires `spawnArgs` to be
@@ -641,7 +646,7 @@ export function buildVendorSpawnConfig(provider, ctx) {
   if (posture) {
     const recipe = publicReviewRecipe(provider, posture);
     if (!recipe) {
-      throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${posture} public-review posture`);
+      throw new Error(`Provider '${providerLabel(provider)}' has no enforced ${posture} public-review posture`);
     }
     return recipe.spawnArgs(provider, ctx);
   }
@@ -695,7 +700,7 @@ export function publicReviewProviderBlock(provider, posture, { tui = false } = {
   if (!posture) return null;
   if (supportsPublicReviewPosture(provider, posture, { tui })) return null;
   return {
-    reason: `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${posture} public-content review mode`,
+    reason: `Provider '${providerLabel(provider)}' has no enforced ${posture} public-content review mode`,
     category: posture === PUBLIC_REVIEW_ACTIONS_POSTURE
       ? 'public-review-actions-provider-unsupported'
       : 'public-review-provider-unsupported',

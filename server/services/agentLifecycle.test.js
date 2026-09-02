@@ -330,7 +330,8 @@ describe('agentLifecycle — guard wiring', () => {
   it('asks the posture helper for the provider gate rather than re-deriving it', () => {
     expect(AGENT_LIFECYCLE_SRC).toContain('const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture, { tui: isTui })');
     expect(AGENT_LIFECYCLE_SRC).toMatch(/if \(postureBlock\) \{[\s\S]*?status: 'blocked'/);
-    expect(AGENT_LIFECYCLE_SRC).toContain('blockedCategory: postureBlock.category');
+    // The helper owns the blocked category too, so the gate cannot pick its own.
+    expect(AGENT_LIFECYCLE_SRC).toContain('const { reason, category } = postureBlock;');
     // The reason text belongs to the helper — building it here means the gate
     // decided for itself whether the posture was supported.
     expect(AGENT_LIFECYCLE_SRC).not.toContain('public-content review mode');
