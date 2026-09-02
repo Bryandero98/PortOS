@@ -47,6 +47,17 @@ const WINDOWS_RISK_RULES = [
   // — green everywhere CI looked. These modules decide containment and worktree
   // identity, so they need a real Windows run.
   /^server\/lib\/(?:pathSafety|worktreeOwnership)(?:\.test)?\.js$/,
+  // Same class, different mechanism: staticImportGraph keys its module map by
+  // string-concatenating entry names with "/" but resolves edge targets with
+  // path.relative, which answers with "\\" on Windows. Every edge into a
+  // subdirectory module then missed the lookup and vanished — reddening the
+  // cluster guards' positive assertions while their acyclicity assertions
+  // passed VACUOUSLY. Nothing here was Windows-risk-tagged, so the Windows job
+  // skipped the PR that introduced it and main went red for every later PR
+  // (#5909). The graph's consumers ride along: their expectations are spelled
+  // in "/" and only a real Windows run can tell.
+  /^server\/lib\/staticImportGraph(?:\.test)?\.js$/,
+  /^server\/services\/(?:agent|twin)ImportCycles\.test\.js$/,
   /^server\/services\/worktree(?:Manager|Reap)\b/,
   /^server\/lib\/shell(?:Cd|Exit|LivenessProbe|ReadinessProbe)(?:\.test)?\.js$/,
   /^server\/lib\/agentGuard\//,
@@ -85,6 +96,7 @@ export const WINDOWS_CONTRACT_TESTS = [
   'server/lib/processEnv.spawnOptions.test.js',
   'server/lib/processEnv.test.js',
   'server/lib/spawnCwd.test.js',
+  'server/lib/staticImportGraph.test.js',
   'server/lib/shellCd.test.js',
   'server/routes/apps/crud.test.js',
   'server/routes/apps/icons.test.js',
@@ -102,6 +114,8 @@ export const WINDOWS_CONTRACT_TESTS = [
   'server/services/shell.test.js',
   'server/services/shellImageDrop.test.js',
   'server/services/agentTuiSpawning.test.js',
+  'server/services/agentImportCycles.test.js',
+  'server/services/twinImportCycles.test.js',
 ];
 
 // Contract guards that run on EVERY plan, whatever the impact scope selects.

@@ -87,6 +87,23 @@ export function specifierMatchesPackage(specifier, pkg) {
 }
 
 /**
+ * A relative path as a graph key: always `/`-separated, whatever the platform.
+ *
+ * The keys are minted by two different mechanisms — `listModuleFiles` builds
+ * them by concatenating directory entry names, while `buildStaticImportGraph`
+ * derives them from a resolved absolute path via `path.relative`. On POSIX both
+ * yield `identity/goals.js`; on Windows `path.relative` yields
+ * `identity\\goals.js`, so every edge into a subdirectory module missed the
+ * `known` lookup and was silently dropped. That does not fail loudly — it makes
+ * an acyclicity guard pass VACUOUSLY on Windows while a "leaf must import the
+ * declaring module" assertion fails. Both mints go through here so they cannot
+ * drift again.
+ */
+export function toModuleKey(relPath) {
+  return relPath.split(sep).join('/');
+}
+
+/**
  * Every non-test `.js` file under `rootDir`, keyed by its path relative to that
  * directory (`identity.js`, `identity/goals.js`). The walk recurses: scanning
  * only top-level files leaves a hole big enough to drive a cycle back through,
@@ -95,7 +112,7 @@ export function specifierMatchesPackage(specifier, pkg) {
 function listModuleFiles(rootDir, dir = rootDir, prefix = '') {
   const out = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const rel = toModuleKey(prefix ? `${prefix}/${entry.name}` : entry.name);
     if (entry.isDirectory()) out.push(...listModuleFiles(rootDir, join(dir, entry.name), rel));
     else if (entry.name.endsWith('.js') && !entry.name.includes('.test.')) out.push(rel);
   }
@@ -119,7 +136,7 @@ export function buildStaticImportGraph(rootDir) {
     const deps = new Set();
     for (const spec of staticImportSpecifiers(abs)) {
       if (!spec.startsWith('.')) continue;
-      const rel = relative(rootDir, resolve(dirname(abs), spec)).split(sep).join('/');
+      const rel = toModuleKey(relative(rootDir, resolve(dirname(abs), spec)));
       if (known.has(rel)) deps.add(rel);
     }
     graph.set(file, [...deps]);
