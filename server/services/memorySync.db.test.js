@@ -120,6 +120,19 @@ describe.skipIf(!runDb)('memorySync.applyRemoteChanges', () => {
     expect(await contentOf(ID_A)).toBe('content @ 2026-06-09T00:00:00.000Z');
   });
 
+  it('keeps the parseable copy when a duplicate carries a malformed clock', async () => {
+    // A malformed `updatedAt` must not win the collapse: it would be handed to a
+    // timestamptz column and fail the statement, losing a row we could have
+    // applied intact. NaN compares false against everything, so the comparator
+    // has to sort it below a real clock explicitly rather than by accident.
+    const result = await memorySync.applyRemoteChanges([
+      remoteMemory(ID_A, '2026-09-01T00:00:00.000Z'),
+      remoteMemory(ID_A, 'not-a-timestamp'),
+    ]);
+    expect(await contentOf(ID_A)).toBe('content @ 2026-09-01T00:00:00.000Z');
+    expect(result).toMatchObject({ inserted: 1, skipped: 1 });
+  });
+
   it('still refuses a remote row older than the local one (last-writer-wins)', async () => {
     await memorySync.applyRemoteChanges([remoteMemory(ID_A, '2026-07-10T00:00:00.000Z')]);
 

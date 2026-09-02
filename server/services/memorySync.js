@@ -102,12 +102,21 @@ export async function applyRemoteChanges(incomingMemories) {
   // The survivor is the newest copy by `updated_at`, not simply the last one:
   // that is the winner the ON CONFLICT clause's last-writer-wins rule picks when
   // the same duplicates arrive in separate batches, so how a peer happened to
-  // order its payload can't change the outcome. An unparseable clock compares
-  // false and yields to the later occurrence.
+  // order its payload can't change the outcome. Ties keep the first copy, matching
+  // the SQL's strict `>` (an equal clock is not a newer write).
+  //
+  // An unparseable clock sorts BELOW every real one rather than NaN-comparing
+  // false and thereby winning: a peer that sends one good and one malformed copy
+  // of a row must keep the good one, or the batch carries a timestamp Postgres
+  // rejects and the apply fails on a row we already had intact.
+  const lwwClock = (mem) => {
+    const at = Date.parse(mem?.updatedAt);
+    return Number.isNaN(at) ? -Infinity : at;
+  };
   const deduped = dedupeByKey(
     incomingMemories,
     (mem) => mem.id,
-    (held, next) => (Date.parse(held.updatedAt) > Date.parse(next.updatedAt) ? held : next),
+    (held, next) => (lwwClock(held) >= lwwClock(next) ? held : next),
   );
   // A collapsed duplicate lost last-writer-wins, which is exactly what `skipped`
   // counts — so the three tallies still sum to what the peer sent.
