@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'fs';
 import { basename, join, resolve as resolvePath, sep as PATH_SEP } from 'path';
 import { ServerError } from './errorHandler.js';
 import { PATHS } from './paths.js';
+import { escapeRegExp } from './textUtils.js';
 
 /**
  * Validate a user-supplied filename is a safe basename with one of the
@@ -182,7 +183,7 @@ export function makePathResolver(getRoot, { extensions, cache = false } = {}) {
   // passes an extension containing `.`/`+`/etc.
   const extRegex = Array.isArray(extensions) && extensions.length > 0
     ? new RegExp(`\\.(${extensions
-      .map((e) => String(e).replace(/^\./, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .map((e) => escapeRegExp(String(e).replace(/^\./, '')))
       .join('|')})$`, 'i')
     : null;
   const memo = cache ? new Map() : null;
