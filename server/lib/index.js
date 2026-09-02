@@ -29,6 +29,7 @@ export * from './cosToolContracts.js';
 export * as creativeCommissionValidation from './creativeCommissionValidation.js';
 export * as creativeDirectorValidation from './creativeDirectorValidation.js';
 export * as digitalTwinValidation from './digitalTwinValidation.js';
+export * as eidoverseValidation from './eidoverseValidation.js';
 export * as fableLoomValidation from './fableLoomValidation.js';
 export * as genomeValidation from './genomeValidation.js';
 export * as identityValidation from './identityValidation.js';

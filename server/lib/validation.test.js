@@ -38,6 +38,7 @@ import {
   storyboardSceneSchema,
   restoreRequestSchema,
   subdirFilterSchema,
+  eidoverseWorldConfigPatchSchema,
   isPaginationRequested,
   paginateArray,
   parseIndexParam,
@@ -2275,6 +2276,17 @@ describe('ad-hoc route schemas (#2521)', () => {
       expect(telegramForwardTypesSchema.safeParse({ forwardTypes: 'digest' }).success).toBe(false);
       expect(telegramForwardTypesSchema.safeParse({ forwardTypes: [1, 2] }).success).toBe(false);
       expect(telegramForwardTypesSchema.safeParse({}).success).toBe(false);
+    });
+  });
+
+  // Pins the transitional re-export added by the #5698 Eidoverse split: the
+  // schemas live in eidoverseValidation.js but must keep resolving through
+  // validation.js so no consumer has to change its import specifier.
+  describe('transitional eidoverse re-export', () => {
+    it('resolves eidoverseWorldConfigPatchSchema through validation.js', () => {
+      expect(typeof eidoverseWorldConfigPatchSchema?.safeParse).toBe('function');
+      expect(eidoverseWorldConfigPatchSchema.safeParse({ cosEnabled: true }).success).toBe(true);
+      expect(eidoverseWorldConfigPatchSchema.safeParse({ notAField: 1 }).success).toBe(false);
     });
   });
 });
