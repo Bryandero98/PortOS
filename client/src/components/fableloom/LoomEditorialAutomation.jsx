@@ -110,9 +110,19 @@ export default function LoomEditorialAutomation({ loom, dirty, onLoomUpdate }) {
   }, [loom.id]);
 
   const autopilotActive = ACTIVE_STATUSES.has(autopilotRun?.status);
-  const refreshAutopilotRun = () => getLoomEditorialAutopilotRun(loom.id, autopilotRun.id, { silent: true })
-    .then(setAutopilotRun)
-    .catch(() => {});
+  // useAutoRefetch clears its interval when `enabled` drops, but it cannot cancel
+  // a request already in flight. Stamp what each poll asked about so a reply that
+  // lands after the loom or the run changed can't overwrite newer state — this is
+  // the `ignore` flag the old per-effect cleanup owned, and the same identity-ref
+  // pattern LoomProductionPanel uses for its batch poll.
+  const autopilotIdentityRef = useRef(null);
+  autopilotIdentityRef.current = `${loom.id}:${autopilotRun?.id ?? ''}`;
+  const refreshAutopilotRun = () => {
+    const identity = autopilotIdentityRef.current;
+    return getLoomEditorialAutopilotRun(loom.id, autopilotRun.id, { silent: true })
+      .then((run) => { if (identity === autopilotIdentityRef.current) setAutopilotRun(run); })
+      .catch(() => {});
+  };
   useAutoRefetch(refreshAutopilotRun, 2000, {
     enabled: autopilotActive && Boolean(autopilotRun?.id),
     immediate: false,
