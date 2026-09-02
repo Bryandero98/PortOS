@@ -794,6 +794,13 @@ export async function runCodexTextTurn({
   // silently send this turn's frames to a child that has never heard of its
   // thread id.
   const owner = await connect();
+  // `connect()` can spawn and handshake a whole app-server child, which is the
+  // longest await in this function. Re-read the signal before paying for a
+  // thread the caller has already abandoned — the up-front check above ran
+  // several awaits ago, and no listener is registered yet.
+  if (signal?.aborted) {
+    throw codexError(CODEX_TURN_ERROR_CODES.turnInterrupted, 'The Codex turn was cancelled.', { status: 499 });
+  }
   const started = await sendRequest(owner, CODEX_TURN_RPC.threadStart, {
     ...CODEX_TEXT_THREAD_CONFIG,
     cwd,
@@ -829,7 +836,12 @@ export async function runCodexTextTurn({
   timer.unref?.();
 
   const onAbort = () => fail(codexError(CODEX_TURN_ERROR_CODES.turnInterrupted, 'The Codex turn was cancelled.', { status: 499 }));
-  signal?.addEventListener('abort', onAbort, { once: true });
+  // An AbortSignal fires its 'abort' event exactly once; a listener added after
+  // the fact never runs. An abort raised during `connect()`/`thread/start` has
+  // to be honoured by re-reading the flag, or the turn streams for the whole
+  // deadline and bills for an answer nobody is waiting for.
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     const response = await sendRequest(owner, CODEX_TURN_RPC.turnStart, {
