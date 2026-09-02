@@ -689,10 +689,10 @@ router.get('/llama-server/status', asyncHandler(async (_req, res) => {
   res.json({ ...status, presets, specTypes: SPEC_TYPE_SUGGESTIONS })
 }))
 
-// GET /api/local-llm/llama-server/update-status — optional Homebrew/version
-// metadata for the Local LLMs page. Keep it out of the lifecycle status request:
-// a slow Homebrew installation or a backend-initializing `--version` probe must
-// not delay ordinary runtime status and preset rendering.
+// GET /api/local-llm/llama-server/update-status — optional package-manager and
+// version metadata for the Local LLMs page. Keep it out of the lifecycle status
+// request: a slow `brew info` / `winget list` or a backend-initializing
+// `--version` probe must not delay ordinary runtime status and preset rendering.
 router.get('/llama-server/update-status', asyncHandler(async (_req, res) => {
   res.json(await getLlamaServerUpdateStatus())
 }))
@@ -741,7 +741,8 @@ router.post('/llama-server/stop', asyncHandler(async (_req, res) => {
   res.json(result)
 }))
 
-// POST /api/local-llm/llama-server/install — install llama.cpp via Homebrew
+// POST /api/local-llm/llama-server/install — install llama.cpp through this
+// platform package manager (Homebrew on macOS/Linux, winget on Windows)
 router.post('/llama-server/install', asyncHandler(async (req, res) => {
   const io = req.app.get('io')
   const onProgress = (data) => io?.emit('localLlm:progress', data)
@@ -750,7 +751,7 @@ router.post('/llama-server/install', asyncHandler(async (req, res) => {
   res.json(result)
 }))
 
-// POST /api/local-llm/llama-server/upgrade — update a Homebrew-installed
+// POST /api/local-llm/llama-server/upgrade — update a package-manager-installed
 // llama.cpp binary, restarting a llama-server process PortOS owns with the same
 // launch configuration. An externally-started process is left alone.
 router.post('/llama-server/upgrade', asyncHandler(async (req, res) => {

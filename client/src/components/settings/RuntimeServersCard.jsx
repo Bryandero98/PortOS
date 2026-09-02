@@ -90,6 +90,8 @@ function pm2Row({ id, label, icon, status, platformReason, onStart, onStop, onIn
     version: status?.version || null,
     latestVersion: status?.latestVersion || null,
     updateAvailable,
+    // Named in the tooltip so the button never promises the wrong tool.
+    updateVia: status?.packageManagerLabel || null,
     onUpgrade: updateAvailable && status?.canUpgrade ? onUpgrade : null,
     updateUrl: updateAvailable && !status?.canUpgrade ? status?.downloadUrl : null,
   };
@@ -245,7 +247,7 @@ function ServerRow({ row, busy, actionInProgress, children }) {
             onClick={() => row.onUpgrade()}
             disabled={busy}
             className={`${accentBtn} bg-port-success/20 hover:bg-port-success/30 text-port-success`}
-            title={row.latestVersion ? `Update ${row.label} to v${row.latestVersion} through Homebrew` : `Update ${row.label} through Homebrew`}
+            title={`Update ${row.label}${row.latestVersion ? ` to v${row.latestVersion}` : ''}${row.updateVia ? ` through ${row.updateVia}` : ''}`}
           >
             {actionInProgress === `runtime-upgrade-${row.id}` ? <BrailleSpinner /> : <ArrowUpCircle size={12} />}
             {row.latestVersion ? `Update to v${row.latestVersion}` : 'Update'}

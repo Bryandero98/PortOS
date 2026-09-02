@@ -819,6 +819,9 @@ export function LocalLlmTab({ view }) {
     : drafterConfigured && !drafterInUse
       ? 'The Drafter Model will be ignored — none of these spec types use one.'
       : '';
+  // Resolved server-side, because the browser has no idea what OS it is talking
+  // to; absent until the first status lands, and the copy below says so.
+  const llamaInstallCommand = llamaStatus?.installCommand;
   const llamaStartBlockedReason = llamaModelMissing
     ? 'Enter a Target Base Model path to enable Start'
     : baseWeightMissing
@@ -1158,7 +1161,7 @@ export function LocalLlmTab({ view }) {
         </div>
 
         <p className="text-xs text-gray-400 leading-relaxed">
-          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch. No drafter GGUF to hand? The <code className="text-gray-300">ngram-*</code> spec types under Advanced options draft from the context window alone.
+          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock llama.cpp{llamaInstallCommand ? <> (<code className="text-gray-300">{llamaInstallCommand}</code>)</> : null}; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch. No drafter GGUF to hand? The <code className="text-gray-300">ngram-*</code> spec types under Advanced options draft from the context window alone.
         </p>
 
         {llamaStatus?.running ? (
@@ -1479,7 +1482,9 @@ export function LocalLlmTab({ view }) {
             <div className="space-y-1">
               <p className="font-semibold">llama-server was not detected on system PATH.</p>
               <p className="text-gray-300">
-                Install via Homebrew or compile the DFlash 2-enabled branch from source.
+                {llamaInstallCommand
+                  ? <>Install it with <code className="text-gray-300">{llamaInstallCommand}</code>, or compile the DFlash 2-enabled branch from source.</>
+                  : <>Install it from your platform&apos;s package manager, or compile the DFlash 2-enabled branch from source.</>}
               </p>
             </div>
             <button

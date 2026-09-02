@@ -118,9 +118,9 @@ export const saveRuntimeStartupList = () =>
 export const getLlamaServerStatus = (options) =>
   request('/local-llm/llama-server/status', options);
 
-// Optional version/Homebrew metadata for the Local LLMs runtime card. Kept
-// separate from lifecycle status because the provider version probe and Homebrew
-// query can be slow on a cold machine.
+// Optional version/package-manager metadata for the Local LLMs runtime card.
+// Kept separate from lifecycle status because the provider version probe and the
+// `brew info` / `winget list` query can be slow on a cold machine.
 export const getLlamaServerUpdateStatus = (options) =>
   request('/local-llm/llama-server/update-status', options);
 
@@ -133,8 +133,9 @@ export const stopLlamaServer = () =>
 export const installLlamaServer = () =>
   request('/local-llm/llama-server/install', { method: 'POST' });
 
-// Upgrade a Homebrew-installed llama.cpp binary. A managed llama-server is
-// restarted by the server with its existing launch configuration.
+// Upgrade a package-manager-installed llama.cpp binary (Homebrew on macOS/Linux,
+// winget on Windows). A managed llama-server is restarted by the server with its
+// existing launch configuration.
 export const upgradeLlamaServer = () =>
   request('/local-llm/llama-server/upgrade', { method: 'POST' });
 
