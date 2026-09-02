@@ -272,10 +272,18 @@ export async function streamResumableDownload({
       throw new ServerError('Download returned no body', { status: 502, code: 'DOWNLOAD_FAILED' });
     }
 
-    // Server ignored Range and sent the whole file — discard the leftover prefix.
+    // Server ignored Range and sent the whole file — discard the leftover
+    // prefix. The preflight the caller ran before starting only reserved the
+    // REMAINING bytes (crediting the partial already on disk); now the FULL
+    // payload is about to land instead, so recheck capacity against this
+    // response's own Content-Length before writing over the freed space.
     if (resumeFrom > 0 && res.status === 200) {
       await rm(tmpPath, { force: true }).catch(() => {});
       resumeFrom = 0;
+      const freshLength = Number(res.headers?.get?.('content-length')) || 0;
+      if (freshLength > 0) {
+        assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes: freshLength }));
+      }
     }
 
     const rangeTotal = parseContentRangeTotal(res.headers?.get?.('content-range'));

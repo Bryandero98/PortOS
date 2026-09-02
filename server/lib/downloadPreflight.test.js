@@ -319,6 +319,31 @@ describe('streamResumableDownload', () => {
     expect(await readFile(destPath, 'utf8')).toBe('full');
   });
 
+  // The caller's own preflight only reserved space for the bytes still
+  // missing (crediting the .partial already on disk) — once the server
+  // ignores Range and the FULL payload is about to land instead, refuse
+  // rather than write past what the volume can hold.
+  it('refuses a Range-ignored restart the disk cannot actually hold', async () => {
+    const destPath = await makeDir();
+    await writeFile(partialPathFor(destPath), 'XX');
+    const fetchImpl = async (_url, opts) => {
+      expect(opts.headers.Range).toBe('bytes=2-');
+      return {
+        ok: true,
+        status: 200,
+        // No real disk holds this many bytes, so the recheck must reject
+        // regardless of the test machine's actual free space.
+        headers: { get: (name) => (name === 'content-length' ? String(Number.MAX_SAFE_INTEGER) : null) },
+        body: webBody('full'),
+      };
+    };
+    await expect(streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl,
+    })).rejects.toMatchObject({ code: 'DISK_INSUFFICIENT' });
+    // Aborted before writing anything — the doomed transfer never started.
+    await expect(readFile(destPath, 'utf8')).rejects.toThrow();
+  });
+
   it('deletes a completed download that does not match the published hash', async () => {
     const destPath = await makeDir();
     const payload = Buffer.from('ggufgg');

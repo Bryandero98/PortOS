@@ -23,6 +23,7 @@ import { ServerError } from '../lib/errorHandler.js';
 import {
   assessDownloadPreflight,
   assertDownloadFits,
+  probeRemoteSize,
   siblingDownloadMeta,
   streamResumableDownload,
 } from '../lib/downloadPreflight.js';
@@ -696,8 +697,21 @@ const resolveHfLoraInstallPlan = async (input, { fetchImpl = fetch } = {}) => {
   const filename = `lora-${slug}${explicitVariant ? `-${explicitVariant}` : ''}-hf.safetensors`;
   const destPath = join(PATHS.loras, filename);
   const hfSibling = (Array.isArray(model?.siblings) ? model.siblings : []).find((row) => row?.rfilename === file);
+  // The model-metadata response never carries per-sibling sizes without the
+  // `blobs=true` expand we deliberately skip (see fetchHuggingfaceModel) —
+  // siblingDownloadMeta is ~always 0 here. Without a real number the preflight
+  // can never refuse an oversized LoRA, so probe the resolved file directly
+  // (same fallback specDecodeModels.js already uses for GGUF weights).
+  let expectedBytes = siblingDownloadMeta(hfSibling).bytes;
+  if (!expectedBytes) {
+    const probed = await probeRemoteSize(buildHfResolveUrl(repo, revision, file), {
+      headers: buildHfAuthHeaders(token),
+      fetchImpl,
+    });
+    expectedBytes = probed.bytes;
+  }
 
-  return { repo, revision, token, model, family, fluxVariant, file, filename, destPath, expectedBytes: siblingDownloadMeta(hfSibling).bytes };
+  return { repo, revision, token, model, family, fluxVariant, file, filename, destPath, expectedBytes };
 };
 
 // Install a LoRA from a HuggingFace repo (Flux.2 Klein image adapters, fal /

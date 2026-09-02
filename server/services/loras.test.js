@@ -852,6 +852,27 @@ describe('installFromHuggingface', () => {
     expect(calls.some((u) => u.includes('/resolve/main/pytorch_lora_weights.safetensors'))).toBe(true);
   });
 
+  // HF's model-metadata response never carries per-sibling sizes (the
+  // `blobs=true` expand is deliberately not requested), so the preflight
+  // must probe the resolved file's own Content-Length via a HEAD request —
+  // otherwise expectedBytes stays 0 and disk-insufficient can never fire.
+  it('previews the probed Content-Length when the metadata response has no sibling size', async () => {
+    const fetchImpl = async (url, opts = {}) => {
+      if (url.startsWith('https://huggingface.co/api/models/fal/ltx2.3-audio-reactive-lora')) {
+        return mockJsonResponse(HF_MODEL);
+      }
+      if (url.includes('/resolve/main/pytorch_lora_weights.safetensors') && opts.method === 'HEAD') {
+        return { ok: true, status: 200, headers: { get: (name) => (name === 'content-length' ? '123456789' : null) } };
+      }
+      throw new Error(`unexpected fetch: ${url} ${opts.method || 'GET'}`);
+    };
+    const preview = await lorasService.previewHuggingfaceInstall(
+      { url: 'https://huggingface.co/fal/ltx2.3-audio-reactive-lora', token: 'hf_test' },
+      { fetchImpl },
+    );
+    expect(preview.expectedBytes).toBe(123456789);
+  });
+
   it('installs an exact versioned file beside the repo default', async () => {
     const versionedModel = {
       ...HF_MODEL,
