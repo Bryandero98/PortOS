@@ -118,37 +118,99 @@ export function compareDeclaration(serverSrc, clientSrc, name) {
   };
 }
 
-// A single-quoted JS string literal, escapes included, as written in source.
-const STRING_LITERAL_RE = /'((?:[^'\\]|\\.)*)'/g;
-// `new RegExp([ 'a', 'b' ].join('|'), 'i')` — the multi-line, per-alternative
-// array form the server files use so each alternative can carry its own comment.
-const ARRAY_FORM_RE = /new RegExp\(\s*\[(.*)\]\.join\('\|'\)\s*,\s*'i'\s*\)/;
-// A `/…/i` regex literal, terminated by the statement's `;` or a `.test(` call.
-// Greedy on purpose: `[-_/:]` puts an unescaped `/` mid-pattern, so a lazy walk
-// would stop inside a character class.
-const REGEX_LITERAL_RE = /\/(.*)\/i(?=\.test\(|;)/;
+// One single-quoted JS string literal at the head of the remaining array body,
+// plus its trailing separator.
+const NEXT_STRING_LITERAL_RE = /^'((?:[^'\\]|\\.)*)'\s*(?:,\s*)?/;
+// Each accepted spelling of a mirrored capability regex, anchored to the WHOLE
+// normalized declaration. Anchoring is what makes an unrecognized shape fail
+// closed: a search-anywhere pattern would happily read a decoy array out of a
+// declaration that assigns something else entirely, and report the mirror as
+// intact. Group 1 is the alternation body in every one of them.
+//
+//   1. `const NAME = new RegExp([ 'a', 'b' ].join('|'), 'i');` — the server's
+//      array form, so each alternative can carry its own comment;
+//   2. `const NAME = /…/i;` — a plain literal;
+//   3. `export const isX = (id) => <guards> && /…/i.test(id);` — the browser's
+//      predicate form, where the literal is inlined at the end of a guard chain.
+const DECLARATION_FORMS = [
+  /^(?:export\s+)?const\s+\w+\s*=\s*new RegExp\(\s*\[(.*)\]\s*\.join\('\|'\)\s*,\s*'i'\s*\)\s*;$/,
+  // Greedy on purpose: `[-_/:]` puts an unescaped `/` mid-pattern, so a lazy
+  // walk would end the literal inside a character class.
+  /^(?:export\s+)?const\s+\w+\s*=\s*\/(.*)\/i\s*;$/,
+  /^(?:export\s+)?const\s+\w+\s*=\s*\(\w+\)\s*=>\s*(?:[^/]*&&\s*)?\/(.*)\/i\.test\(\w+\)\s*;$/,
+];
+// Only the first form's body is a list of alternatives; the other two capture
+// the finished pattern.
+const [ARRAY_FORM_RE] = DECLARATION_FORMS;
 
 /**
- * The alternation source of a capability regex, whichever of the two forms the
- * declaration is typeset in — the array form above, or a plain `/…/i` literal.
+ * The regex fragment a single-quoted source literal denotes, or null when it
+ * uses an escape this reader cannot decode by inspection.
+ *
+ * Only `\\` (a backslash the regex engine will actually see, which is how every
+ * alternative spells `\d` / `\.`) and `\'` are decodable here. `\x2e`, `\u002e`
+ * and `\n` all denote something OTHER than their own text — `'\x2e'` is `.`,
+ * which matches ANY character — so copying them through verbatim would let a
+ * client literal that means something different compare equal. These guards
+ * exist to catch drift, so an unreadable literal fails CLOSED rather than
+ * being guessed at.
+ */
+function decodeRegexFragmentLiteral(body) {
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const escaped = body[i + 1];
+    if (escaped !== '\\' && escaped !== "'") return null;
+    out += escaped;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Every alternative in an array body, or null when the body holds anything
+ * other than a comma-separated run of decodable string literals.
+ *
+ * Failing closed on the leftovers is the point: a `[...SHARED, 'extra']` or a
+ * `[NAMED_FRAGMENT]` element read by a scan-for-literals pass would silently
+ * vanish from the comparison, and the mirror it is supposed to pin would drift
+ * green.
+ */
+function parseAlternativeList(body) {
+  const alternatives = [];
+  let rest = body.trim();
+  while (rest.length > 0) {
+    const match = NEXT_STRING_LITERAL_RE.exec(rest);
+    if (!match) return null;
+    const decoded = decodeRegexFragmentLiteral(match[1]);
+    if (decoded === null) return null;
+    alternatives.push(decoded);
+    rest = rest.slice(match[0].length);
+  }
+  return alternatives;
+}
+
+/**
+ * The alternation source of a capability regex, whichever of the accepted
+ * spellings above the declaration is typeset in.
  *
  * `/` is normalized (an escaped `\/` and a bare `/` mean the same thing to the
  * engine, and only one of them is legal inside a literal outside a character
  * class), so the two sides may differ in slash escaping but not in what they
- * accept. Returns null when the declaration is neither form.
+ * accept. Returns null for any shape not in `DECLARATION_FORMS` — a mirror the
+ * reader cannot fully account for must fail its guard, not skip past it.
  */
 export function regexAlternationSource(declText) {
   if (declText == null) return null;
   const norm = stripCommentsAndNormalize(declText);
-  const array = ARRAY_FORM_RE.exec(norm);
-  const source = array
-    ? [...array[1].matchAll(STRING_LITERAL_RE)]
-      // Source text → string VALUE: `'llama-?3\\.[1-9]'` is the regex fragment
-      // `llama-?3\.[1-9]`. Comparing the raw literals instead would report a
-      // divergence on every escaped metacharacter.
-      .map(([, body]) => body.replace(/\\(.)/g, '$1'))
-      .join('|')
-    : REGEX_LITERAL_RE.exec(norm)?.[1] ?? null;
+  const form = DECLARATION_FORMS.find((re) => re.test(norm));
+  if (!form) return null;
+  const [, body] = form.exec(norm);
+  const source = form === ARRAY_FORM_RE ? parseAlternativeList(body)?.join('|') ?? null : body;
   return source == null ? null : source.replace(/\\\//g, '/');
 }
 

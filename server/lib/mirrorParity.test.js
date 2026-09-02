@@ -4,6 +4,7 @@ import {
   extractDeclaration,
   compareDeclaration,
   compareRegexDeclaration,
+  regexAlternationSource,
 } from './mirrorParity.js';
 
 describe('stripCommentsAndNormalize', () => {
@@ -128,5 +129,39 @@ describe('compareRegexDeclaration', () => {
   it('does not report a match when a side is missing or is not a regex', () => {
     expect(compareRegexDeclaration(server, 'const other = 1;', 'TOOL_USE_RE').match).toBe(false);
     expect(compareRegexDeclaration(server, 'const TOOL_USE_RE = 42;', 'TOOL_USE_RE').match).toBe(false);
+  });
+});
+
+describe('regexAlternationSource fails closed', () => {
+  // A scan-for-literals pass would silently DROP the non-literal element and
+  // report the surviving alternatives as the whole pattern — a mirror that has
+  // genuinely diverged then compares equal. Refuse the array instead.
+  it('refuses an array holding anything but string literals', () => {
+    expect(regexAlternationSource("const RE = new RegExp(['a', 'b'].join('|'), 'i');")).toBe('a|b');
+    expect(regexAlternationSource("const RE = new RegExp(['a', SHARED].join('|'), 'i');")).toBeNull();
+    expect(regexAlternationSource("const RE = new RegExp([...SHARED, 'b'].join('|'), 'i');")).toBeNull();
+  });
+
+  // `'\\x2e'` is the single character `.`, which matches ANYTHING — copying the
+  // escape through as the text `x2e` would compare equal to a client `/x2e/i`
+  // that means something entirely different.
+  it('refuses an escape it cannot decode by inspection', () => {
+    expect(regexAlternationSource("const RE = new RegExp(['a\\\\.b'].join('|'), 'i');")).toBe('a\\.b');
+    expect(regexAlternationSource("const RE = new RegExp(['\\x2e'].join('|'), 'i');")).toBeNull();
+    expect(regexAlternationSource("const RE = new RegExp(['\\n'].join('|'), 'i');")).toBeNull();
+  });
+
+  // A search-anywhere read would find the array and report the mirror intact
+  // while the declaration assigns something else entirely.
+  it('refuses a declaration that merely CONTAINS a recognizable form', () => {
+    const array = "new RegExp(['a', 'b'].join('|'), 'i')";
+    expect(regexAlternationSource(`const RE = ${array};`)).toBe('a|b');
+    expect(regexAlternationSource(`const RE = FLAG ? ${array} : OTHER_RE;`)).toBeNull();
+    expect(regexAlternationSource(`const RE = widen(${array});`)).toBeNull();
+  });
+
+  it('returns null for a declaration that is neither supported form', () => {
+    expect(regexAlternationSource(null)).toBeNull();
+    expect(regexAlternationSource('const RE = buildPattern();')).toBeNull();
   });
 });
