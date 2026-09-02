@@ -148,6 +148,7 @@ describe('managed app repository sources', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Sync fork & update app' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('Pull 1 independent companion checkout');
+    expect(dialog).toHaveTextContent('Rebuild the production UI when a build script is configured');
     expect(dialog).toHaveTextContent('Restart the app\'s managed processes');
 
     fireEvent.click(screen.getByRole('button', { name: 'Sync fork and update' }));
