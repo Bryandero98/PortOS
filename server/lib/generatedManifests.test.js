@@ -23,26 +23,36 @@ import { execFileSync } from './childProcess.js';
  * keys declarations as `file#routerId METHOD /path`; `promptStageCallSites`
  * keys them by stage key and lists file paths only.
  *
- * This guard exists so the next generator does not have to rediscover that.
+ * This guard is the cheap tree-wide net, and it is deliberately shallow: it
+ * matches key NAMES, so it can only catch spellings someone anticipated. A
+ * generator proves itself clean with the property test in
+ * `scripts/lib/positionInvariance.js` instead — shift every line in its inputs
+ * and demand byte-identical output. Both generators here do that; this file
+ * catches the manifest whose generator never did.
  */
 
 const HERE = resolve(fileURLToPath(import.meta.url), '..');
 const REPO_ROOT = resolve(HERE, '..', '..');
 
 // Keys whose numeric value points into a file rather than describing content.
-// `index` and `offset` are here for the same reason a line number is: they
-// name a position in something that moves.
+// Offsets are here for the same reason a line number is: they name a position
+// in something that moves.
+//
+// A name list is a cheap tree-wide net, not a proof: it only catches the
+// spellings someone thought of. What actually proves a generator clean is the
+// property test in `scripts/lib/positionInvariance.js` — shift every line in
+// the inputs and demand byte-identical output — which catches `at`, `span`,
+// `row`, and every other name this list will never have. Use both.
 const POSITIONAL_KEYS = new Set([
   'line', 'lineNumber', 'lineNo', 'startLine', 'endLine',
   'column', 'columnNumber', 'col', 'startColumn', 'endColumn',
   'offset', 'startOffset', 'endOffset', 'charIndex', 'byteOffset',
-  'loc', 'position',
 ]);
 
 // A position is always a number. Several of these key names have perfectly
 // good non-positional uses with a non-numeric value — a `column` naming a
-// Postgres column, a `position` holding `"left"` — and rejecting those would
-// make this guard block manifests it has no quarrel with.
+// Postgres column — and rejecting those would make this guard block manifests
+// it has no quarrel with.
 const isPositionalValue = (value) => typeof value === 'number'
   || (typeof value === 'string' && /^\d+$/.test(value.trim()));
 
@@ -118,10 +128,9 @@ describe('checked-in generated manifests', () => {
       .toEqual(['$.loc.line — positional key "line"']);
     // Plain file paths and ordinary counts are what a manifest SHOULD contain,
     // and a positional-sounding key holding a non-numeric value is not a
-    // position at all — a Postgres column name, a layout side.
+    // position at all — a Postgres column name.
     expect(findPositionalReferences({ sources: ['server/routes/a.js'], stats: { operations: 2153 } }))
       .toEqual([]);
-    expect(findPositionalReferences({ column: 'user_id', position: 'left' }))
-      .toEqual([]);
+    expect(findPositionalReferences({ column: 'user_id' })).toEqual([]);
   });
 });

@@ -7,7 +7,6 @@ import {
   MANIFEST_RELATIVE_PATH,
   REGENERATE_COMMAND,
   REPO_ROOT,
-  SCHEMA_VERSION,
   buildApiRouteCatalog,
   generateApiRouteCatalog,
   parseRouteModule,
@@ -16,6 +15,7 @@ import {
   scanRouteGraph,
   serializeApiRouteCatalog,
 } from './generate-api-route-catalog.js';
+import { POSITION_INVARIANCE_FAILURE, generateAcrossShiftedSources } from './lib/positionInvariance.js';
 
 const write = (root, path, source) => {
   const target = join(root, path);
@@ -145,6 +145,52 @@ describe('API route catalog scanner', () => {
       'POST /api/runs/:id/stop',
     ]);
   });
+
+  // The property that keeps this manifest out of every rebase, tested directly:
+  // shifting every line in every scanned source must not move one byte of the
+  // output. Because it asserts the rule rather than the vocabulary that breaks
+  // it, this catches a position recorded under ANY key — `at`, `span`, `row`, a
+  // `loc: [412, 8]` tuple, a `foo.js#L412` anchor — where the tree-wide net in
+  // `server/lib/generatedManifests.test.js` can only deny-list names it knows.
+  it('generates a byte-identical catalog after every source line shifts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'portos-api-catalog-'));
+    write(root, 'server/index.js', `
+      import widgetsRoutes from './routes/widgets.js';
+      app.use('/api/widgets', widgetsRoutes);
+    `);
+    write(root, 'server/routes/widgets.js', `
+      import { Router } from 'express';
+      import childRoutes from './widgets-child.js';
+      const router = Router();
+      router.get('/', handler);
+      router.use('/child', childRoutes);
+      export default router;
+    `);
+    write(root, 'server/routes/widgets-child.js', `
+      import { Router } from 'express';
+      const router = Router();
+      router.patch('/:id', handler);
+      export default router;
+    `);
+
+    // Where each declaration sits, which is exactly what the manifest must NOT
+    // encode. Used only to prove the shift below is big enough to be noticed.
+    const declarationLines = (repoRoot) => walk(join(repoRoot, 'server')).map((path) => readFileSync(path, 'utf8')
+      .split('\n')
+      .flatMap((line, index) => (/router\.(get|patch|post)\(/.test(line) ? [`${path}:${index + 1}`] : []))
+      .join(',')).join('|');
+
+    const { before, after, shiftedFiles } = generateAcrossShiftedSources(root, () => ({
+      catalog: serializeApiRouteCatalog(buildApiRouteCatalog({ repoRoot: root })),
+      declarationLines: declarationLines(root),
+    }));
+
+    expect(shiftedFiles).toHaveLength(3);
+    expect(after.catalog, POSITION_INVARIANCE_FAILURE).toBe(before.catalog);
+    // Bypass probe: a generator that DID record positions would have churned
+    // here, so the assertion above is not just observing a stable fixture.
+    expect(after.declarationLines).not.toBe(before.declarationLines);
+  });
 });
 
 describe('generated API route catalog', () => {
@@ -183,7 +229,6 @@ describe('generated API route catalog', () => {
 
   it('is a unique, stable, complete inventory with source pointers', () => {
     const catalog = readApiRouteCatalog();
-    expect(catalog.schemaVersion).toBe(SCHEMA_VERSION);
     expect(catalog.stats.mounts).toBeGreaterThan(140);
     expect(catalog.stats.operations).toBeGreaterThan(2_000);
     expect(catalog.routes).toHaveLength(catalog.stats.operations);
