@@ -317,7 +317,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `httpsState.js` | Captures whether PortOS booted with HTTPS active. |
 | `bareUrl.js` | `parseBareUrl(text)` — returns the normalized URL when a captured string is nothing *but* a URL (bare host gets `https://`), else null. Drives the brain-capture short-circuit that files a pasted URL straight to Links instead of running the classifier. Stricter than the client's `urlNormalize.js` `isUrl` (needs a plausible TLD; http/https/`git@` only) because it picks a storage destination rather than a hint. |
 | `isSafeHref.js` | Pure http(s)-only scheme check (`isSafeHref`) for user-supplied URL fields that get rendered as a clickable `<a href>` — rejects `javascript:`/`data:`/etc. stored-XSS payloads. Mirrors client `urlNormalize.js`'s `isHttpUrl`. |
-| `networkExposure.js` | Runtime scheme/bind/cert snapshot plus the shared ordered Tailscale, MagicDNS, certificate, and trusted-launch setup guide used by CLI and UI. |
+| `networkExposure.js` | Runtime scheme/bind/cert snapshot plus the shared ordered Tailscale, MagicDNS, certificate, and trusted-launch setup guide used by CLI and UI; `localApiBaseUrl()` resolves the plain-HTTP loopback origin (mirror port under HTTPS, API port otherwise) for local scripts and agent-facing curl snippets. |
 
 ## Search & indexing
 

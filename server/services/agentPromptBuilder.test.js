@@ -2112,7 +2112,7 @@ describe('buildLightContextPrompt', () => {
       // loopback API — without it the lmstudio/ollama reviewer kinds have no
       // way to actually run a review.
       expect(prompt).toMatch(/POST the diff to PortOS's local reviewer endpoint/);
-      expect(prompt).toMatch(/http:\/\/localhost:5555\/api\/code-review\/local/);
+      expect(prompt).toMatch(/http:\/\/127\.0\.0\.1:5555\/api\/code-review\/local/);
       expect(prompt).toMatch(/gh pr diff 9 \| jq/);
       expect(prompt).toMatch(/jq -er '\.findings \| select\(type == "string" and length > 0\)'/);
       expect(prompt).toMatch(/Never treat an absent or malformed response as clean/);
