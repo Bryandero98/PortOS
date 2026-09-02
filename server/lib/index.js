@@ -390,6 +390,8 @@ export * from './spriteAnimationTracks.js';
 export * from './spriteAnimationTrackStore.js';
 export * from './postDrillTypes.js';
 export * from './telegramClient.js';
+export * from './telegramMessage.js';
+export * from './telegramRateLimit.js';
 export * from './tempPathGuard.js';
 export * from './textUtils.js';
 export * from './vaultCrypto.js';
