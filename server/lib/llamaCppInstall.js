@@ -10,8 +10,9 @@
  * is what lets the LLMs page name the command that actually works instead of
  * telling a Windows user to run Homebrew.
  *
- * Pure: every entry point takes the platform (and, for the WinGet paths, the
- * environment) as an argument, so both branches are coverable from either OS.
+ * Pure, and free of ambient platform detection: the plan takes the platform as
+ * an argument and the WinGet path helpers take the environment, so both
+ * branches are coverable from either OS.
  */
 
 // The WinGet helpers below always reason about WINDOWS paths, whatever host is

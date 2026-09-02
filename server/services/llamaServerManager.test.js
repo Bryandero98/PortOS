@@ -803,12 +803,20 @@ describe('llamaServerManager', () => {
         };
       });
 
+    // Set by the PATH-adoption test below, which needs a real directory on disk
+    // for its existsSync probe; torn down here so a failed assertion can't leak it.
+    let wingetTmpDir = null;
+
     beforeEach(() => {
       resetForTest({ platform: 'win32' });
       vi.stubEnv('LOCALAPPDATA', 'C:\\Users\\example\\AppData\\Local');
     });
 
-    afterEach(() => vi.unstubAllEnvs());
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      if (wingetTmpDir) await rm(wingetTmpDir, { recursive: true, force: true });
+      wingetTmpDir = null;
+    });
 
     it('names the winget command on a host with no llama-server', async () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
@@ -872,6 +880,7 @@ describe('llamaServerManager', () => {
       // running PortOS never inherits — so a perfectly successful install would
       // otherwise report "llama-server was not found on PATH" until a restart.
       const localAppData = await mkdtemp(join(tmpdir(), 'portos-winget-'));
+      wingetTmpDir = localAppData;
       const links = join(localAppData, 'Microsoft', 'WinGet', 'Links');
       await mkdir(links, { recursive: true });
       vi.stubEnv('LOCALAPPDATA', localAppData);
@@ -888,8 +897,8 @@ describe('llamaServerManager', () => {
 
       await expect(installLlamaServer()).resolves.toMatchObject({ success: true });
       expect((process.env.PATH || '').split(delimiter)).toContain(links);
-      await rm(localAppData, { recursive: true, force: true });
     });
+
     it('rejects install with a winget hint rather than a Homebrew one', async () => {
       vi.spyOn(commandExistsModule, 'commandExists').mockResolvedValue(false);
 
