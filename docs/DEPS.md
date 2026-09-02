@@ -59,7 +59,7 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | `recharts` | 1 | KEEP | charts | |
 | `socket.io-client` | 1 | KEEP | realtime client | |
 | `three` | 1 | KEEP | 3D | |
-| `three-stdlib` | 1 | KEEP | CyberCity 3D | Community-maintained Three.js utilities used by the client renderer |
+| `three-stdlib` | — | REMOVED (direct) | 3D avatars | 2026-09-02 → `three/examples/jsm/utils/SkeletonUtils.js` (issue #5683). The sole direct import was `SkeletonUtils.clone`, which `three` itself ships. Still in the tree transitively via `@react-three/drei`, so this is a manifest cleanup, not a supply-chain reduction — the win is one fewer pin to Dependabot-bump and the removal of a pinned-vs-`^` drift surface against drei's own request |
 | **Client devDeps** | | | | |
 | `@biomejs/biome` | 1 | KEEP | linting | Replaced the whole eslint stack 2026-08-04; native binary, 0 regular deps + 8 platform optionals (1 installed) |
 | `eslint` | — | REMOVED | linting | 2026-08-04 → `@biomejs/biome`. 53 packages were reachable only via `eslint` itself (incl. the `file-entry-cache → flat-cache → keyv` chain); 110 net once the plugin subtrees and orphaned `typescript` go too. `minimatch` and `brace-expansion` left the tree with it (both now 0 occurrences in every lockfile), so neither needs an override pin — do not re-add one |
