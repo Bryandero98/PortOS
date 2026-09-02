@@ -963,7 +963,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
 
       {/* Expanded output view */}
       {expanded && (
-        <div className="border-t border-port-border bg-port-bg/50 p-3 min-w-0 overflow-y-auto max-h-[60vh]">
+        <div className="border-t border-port-border bg-port-bg/50 p-3 min-w-0 overflow-y-auto max-h-dvh-cap [--dvh-cap:60dvh]">
           {/* Pipeline stage tabs */}
           {pipelineStages && (
             <div className="flex items-center gap-1 mb-2 overflow-x-auto">
@@ -1054,7 +1054,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
         onClose={() => setPromptOpen(false)}
         size="2xl"
         usePortal
-        panelClassName="bg-port-card border border-port-border rounded-lg max-h-[80vh] flex flex-col"
+        panelClassName="bg-port-card border border-port-border rounded-lg flex flex-col"
         ariaLabel="Agent prompt"
       >
         <div className="flex items-center justify-between px-4 py-2 border-b border-port-border shrink-0">
