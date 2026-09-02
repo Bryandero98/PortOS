@@ -14,6 +14,7 @@ import Modal from '../components/ui/Modal.jsx';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair.jsx';
 import UnsavedChangesConfirm from '../components/ui/UnsavedChangesConfirm.jsx';
 import AutoSizeTextarea from '../components/ui/AutoSizeTextarea';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import {
   getCatalogIngredientDetails,
   updateCatalogIngredient,
@@ -420,9 +421,14 @@ export default function CatalogIngredient() {
 
   if (loading || !record) {
     return (
-      <section className="h-full overflow-y-auto p-4 md:p-6">
-        <div className="max-w-4xl mx-auto text-sm text-gray-400">Loading ingredient…</div>
-      </section>
+      <PageSkeleton
+        header="none"
+        label="Loading ingredient"
+        padded
+        fullHeight
+        cards={3}
+        sidebar={false}
+      />
     );
   }
 

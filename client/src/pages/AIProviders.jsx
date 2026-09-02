@@ -21,6 +21,7 @@ import {
 } from '../utils/formatters';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import OverflowMenu from '../components/ui/OverflowMenu';
 import EffortSelect from '../components/cos/EffortSelect';
 import Drawer from '../components/Drawer';
@@ -692,8 +693,8 @@ export default function AIProviders() {
       <div className="flex flex-col h-full">
         <PageHeader icon={Bot} title="AI Providers" />
         <SettingsTabsHeader activeTab="providers" />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-gray-400">Loading providers...</div>
+        <div className="flex-1 overflow-auto p-4">
+          <PageSkeleton header="none" label="Loading providers" layout="grid" cards={4} />
         </div>
       </div>
     );

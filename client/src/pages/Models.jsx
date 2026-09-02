@@ -96,7 +96,7 @@ export default function Models() {
       <div className="flex-1 min-w-0 overflow-auto p-4">
         {/* Local boundary rather than the App-level one: a lazy tab must not blank
             out the section header and tab bar while its chunk loads. */}
-        <Suspense fallback={<PageSkeleton />}>
+        <Suspense fallback={<PageSkeleton header="none" label="Loading models section" cards={3} sidebar={false} />}>
           {DetailContent ? <DetailContent recordId={recordId} /> : <TabContent view={recordId} />}
         </Suspense>
       </div>
