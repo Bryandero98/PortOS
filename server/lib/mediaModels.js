@@ -134,13 +134,19 @@ const h3FrameGrid = (min, max) => {
 
 // FastH3 Preview v1's output contract (#5860). It is a distilled MiniMax H3, so
 // it inherits H3's 17n+5 VAE frame grid and 32px edge rounding — but NOT H3's
+// full frame range: the MLX pipeline hard-refuses anything outside 5-15 s at its
+// fixed 24 fps ("H3 generates 5-15 s at 24 fps", resolve_geometry in
+// fastvideo/mlx_runtime/minimax_h3_pipeline.py), so the grid is clamped to
+// 120..360 frames. The unclamped 107..362 this shipped with put a too-short AND
+// a too-long value at the two ends of the picker, each of which reached the
+// runtime and raised instead of rendering.
 // canvas: the MLX FastH3 entry point is validated at 832x480 (its own default,
 // and the resolution upstream's conversion manifest records a passing 124-frame
 // generation at), and its docstring documents 1280x720 as the other supported
 // request. `resolutionOptions` are presets rather than a whitelist, so a custom
 // size still resolves through `resolutionStep`.
 export const FASTH3_OUTPUT_PROFILE = Object.freeze({
-  frameOptions: h3FrameGrid(107, 362),
+  frameOptions: h3FrameGrid(124, 345),
   fpsOptions: Object.freeze([24]),
   resolutionStep: 32,
   resolutionOptions: Object.freeze([
@@ -148,6 +154,50 @@ export const FASTH3_OUTPUT_PROFILE = Object.freeze({
     Object.freeze({ label: '1280x720 (16:9 HD)', w: 1280, h: 720 }),
   ]),
 });
+
+// The upstream FastH3 source snapshot (#5860 follow-up). FastVideo's own MLX
+// repos publish a model card and a conversion manifest but still no weights, so
+// the checkpoint PortOS points at is the bf16 diffusers snapshot the converter
+// documents as its input: one repo, whose `transformer/` becomes an MLX DiT on
+// this machine. That is a per-format local step, not a per-format download —
+// the three rows below share ONE snapshot and differ only in the format the
+// helper converts it to, which is the knob that maps to the user's RAM.
+export const FASTH3_SOURCE_REPO = 'FastVideo/FastVideo-FastH3-4-step-Preview-v1-Dense-DataFree';
+export const FASTH3_SOURCE_REVISION = 'f624f08c6c279ab43534c003e556fc5b295b6558';
+const FASTH3_SOURCE_FORMATS = Object.freeze([
+  Object.freeze({ format: 'int8', memoryGb: 48, label: 'INT8 (highest fidelity)' }),
+  Object.freeze({ format: 'int6', memoryGb: 42, label: 'INT6 (upstream default)' }),
+  Object.freeze({ format: 'int4', memoryGb: 36, label: 'INT4 (smallest)' }),
+]);
+
+const FASTH3_SOURCE_ENTRIES = FASTH3_SOURCE_FORMATS.map(({ format, memoryGb, label }) => ({
+  id: `fasth3_dense_datafree_${format}`,
+  name: `FastH3 Preview v1 Dense Data-Free — MLX ${label} (video + audio, ~144 GB download, ${memoryGb}+ GB RAM, 4-step)`,
+  repo: FASTH3_SOURCE_REPO,
+  revision: FASTH3_SOURCE_REVISION,
+  runtime: 'fastvideo',
+  fastvideoFamily: 'fasth3',
+  fastvideoMlxFormat: format,
+  supportedModes: ['text'],
+  defaultWidth: 832,
+  defaultHeight: 480,
+  defaultFrames: 124,
+  frameOptions: [...FASTH3_OUTPUT_PROFILE.frameOptions],
+  fpsOptions: [...FASTH3_OUTPUT_PROFILE.fpsOptions],
+  resolutionStep: FASTH3_OUTPUT_PROFILE.resolutionStep,
+  resolutionOptions: FASTH3_OUTPUT_PROFILE.resolutionOptions.map((preset) => ({ ...preset })),
+  memoryGb,
+  steps: 4,
+  guidance: 1.0,
+  samplerLocked: true,
+  samplerNote: `FastH3 Preview v1 is a 4-step DMD2 model. This is FastVideo's own dense-attention checkpoint — it does not support VSA, whose routing weights the MLX runtime drops. The first render converts its transformer to an MLX ${format.toUpperCase()} DiT (a few minutes, once), after which the 66 GB bf16 transformer can be deleted. Renders video with audio at a fixed 24 fps.`,
+  // Same argv boundary as the repack row below: mlx_fasth3.py has no
+  // --negative-prompt, no way to mute the joint audio track, and PortOS never
+  // hands it a tiling flag.
+  supportsNegativePrompt: false,
+  supportsTiling: false,
+  supportsDisableAudio: false,
+}));
 
 // The MLX entry's output profile: the shared canvas above PLUS the upgrade
 // machinery migration 267 and `upgradeMiniMaxH3OutputControls` key off (the id,
@@ -631,6 +681,10 @@ const DEFAULT_REGISTRY = {
         samplerLocked: true,
         samplerNote: 'FastMetal models are DMD2-distilled 3-step models with affine INT8 quantization.',
       },
+      // FastVideo's own FastH3 Dense / Data-Free snapshot, converted to MLX on
+      // this machine. Listed before the third-party repack below because it is
+      // the upstream checkpoint the repack is derived from.
+      ...FASTH3_SOURCE_ENTRIES,
       // FastH3 Preview v1 Dense / Data-Free, packed for MLX (#5860). Same
       // `fastvideo` venv and checkout as FastMetal above, but a different entry
       // script and argv shape — `fastvideoFamily` is what routes it, see
