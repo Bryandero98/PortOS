@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rm } from 'fs/promises';
 import { atomicWrite } from './internal/atomicWrite.js';
-import { evaluateSecretEndpoint } from './internal/endpointGuard.js';
+import { evaluateSecretEndpoint } from './endpointGuard.js';
 import { existsSync } from 'fs';
 import { join, extname, basename, isAbsolute, delimiter } from 'path';
 import { spawn, ChildProcess } from 'child_process';

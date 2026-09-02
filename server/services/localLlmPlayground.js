@@ -8,7 +8,7 @@ import { anyAbortSignal } from '../lib/requestAbort.js';
 // The SSE read loop lives in `lib/openAiChatStream.js` so the assessments
 // service can measure a bare loopback daemon that has no provider record.
 import { buildMessages, streamOllamaChat, streamOpenAiChat } from '../lib/openAiChatStream.js';
-import { assertSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
+import { assertSecretEndpoint } from '../lib/aiToolkit/endpointGuard.js';
 
 const PROVIDER_BY_BACKEND = { ollama: 'ollama', lmstudio: 'lmstudio' };
 

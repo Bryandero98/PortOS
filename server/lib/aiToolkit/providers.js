@@ -2,7 +2,7 @@ import { readFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, delimiter, isAbsolute } from 'path';
 import { atomicWrite } from './internal/atomicWrite.js';
-import { assertSecretEndpoint, evaluateSecretEndpoint } from './internal/endpointGuard.js';
+import { assertSecretEndpoint, evaluateSecretEndpoint } from './endpointGuard.js';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -663,7 +663,7 @@ export function createProviderService(config = {}) {
           ? { gatewayBacked: providerData.gatewayBacked } : {}),
         ...(providerData.orcarouterBacked === true ? { orcarouterBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
-        // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
+        // non-allowlisted) endpoint — see endpointGuard.js. Only
         // persisted when true so existing keyless/local providers stay clean.
         ...(providerData.allowCustomEndpoint === true ? { allowCustomEndpoint: true } : {}),
         envVars: providerData.envVars || {},
