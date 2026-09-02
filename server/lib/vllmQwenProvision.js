@@ -173,6 +173,7 @@ export function upsertEnvLine(contents, key, value) {
     ? text.replace(pattern, () => `${key}=${value}`)
     : appendEnvLines(text, [`${key}=${value}`]);
 }
+
 /**
  * Append the missing defaults to an existing `.env`, changing nothing else.
  *
