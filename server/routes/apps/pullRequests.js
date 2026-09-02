@@ -22,7 +22,11 @@ import { resolveReviewLoopOptions } from '../../services/codeReview.js';
 import { getAllTasks } from '../../services/cos.js';
 import { spawnReviewLoopFollowUp } from '../../services/agentWorktreeCleanup.js';
 import { listAppPullRequests } from '../../services/appPullRequests.js';
-import { listExternalOpenPullRequests } from '../../services/prReviewerSecurity.js';
+import {
+  isReviewablePullRequest,
+  listExternalOpenPullRequests,
+  resolvePrReviewerTargetScope,
+} from '../../services/prReviewerSecurity.js';
 import { getOnDemandRequests, triggerOnDemandTask } from '../../services/taskSchedule.js';
 import { loadApp } from './shared.js';
 
@@ -82,12 +86,31 @@ async function readActiveTasks() {
 // is queued through the on-demand lane, so without these a row would show no
 // action at all between the click and the generator's next cycle — and a page
 // refresh in that window would offer the button again.
+//
+// `null` means UNREADABLE, which is not the same as "nothing queued": collapsing
+// the two would let the review route miss an existing request and queue a
+// duplicate scan of the same public PR. The POST fails closed on it; the GET,
+// which only paints a button, degrades to showing no queued action.
 async function readPendingOnDemandRequests() {
   const requests = await getOnDemandRequests().catch(err => {
     console.error(`❌ app-pull-requests: could not read on-demand requests: ${err.message}`);
-    return [];
+    return null;
   });
-  return Array.isArray(requests) ? requests : [];
+  return Array.isArray(requests) ? requests : null;
+}
+
+// Per-row pr-reviewer eligibility, resolved from the SAME facts the security
+// preflight filters on. Without it the tab would paint a Review button on every
+// GitHub row, including the ones the route answers with 409 — an action that is
+// guaranteed to fail. Only worth the extra `gh repo view` when the forge is
+// GitHub; every other forge is ineligible by construction.
+async function resolveReviewEligibility(app, result) {
+  if (result.forge !== 'github') return () => false;
+  const scope = await resolvePrReviewerTargetScope(app).catch(err => {
+    console.error(`❌ app-pull-requests: could not resolve pr-reviewer scope: ${err.message}`);
+    return null;
+  });
+  return pullRequest => isReviewablePullRequest(scope, pullRequest);
 }
 
 function actionFor(pullRequest, tasks, appId) {
@@ -99,7 +122,7 @@ function actionFor(pullRequest, tasks, appId) {
 function reviewActionFor(pullRequest, tasks, requests, appId) {
   const task = tasks?.find(candidate => isReviewTaskFor(candidate, appId, pullRequest));
   if (task) return { taskId: task.id, status: task.status };
-  const queued = requests.find(request => isReviewRequestFor(request, appId, pullRequest));
+  const queued = requests?.find(request => isReviewRequestFor(request, appId, pullRequest));
   return queued ? { taskId: null, status: 'pending' } : null;
 }
 
@@ -114,7 +137,11 @@ async function listWithActionState(app) {
   const pullRequests = Array.isArray(result?.pullRequests) ? result.pullRequests : [];
   if (!pullRequests.length || result.transient) return { result, tasks: null };
 
-  const [tasks, requests] = await Promise.all([readActiveTasks(), readPendingOnDemandRequests()]);
+  const [tasks, requests, reviewEligible] = await Promise.all([
+    readActiveTasks(),
+    readPendingOnDemandRequests(),
+    resolveReviewEligibility(app, result),
+  ]);
   return {
     result: {
       ...result,
@@ -122,6 +149,7 @@ async function listWithActionState(app) {
         ...pullRequest,
         agentAction: actionFor(pullRequest, tasks, app.id),
         reviewAction: reviewActionFor(pullRequest, tasks, requests, app.id),
+        reviewEligible: reviewEligible(pullRequest),
       })),
     },
     tasks,
@@ -270,18 +298,30 @@ router.post('/:id/pull-requests/:number/review', loadApp, asyncHandler(async (re
       context: { reason: target.code || 'security-scan-target-unavailable' },
     });
   }
-  if (!target.prs.some(candidate => candidate.number === number)) {
+  const pullRequest = target.prs.find(candidate => candidate.number === number);
+  if (!pullRequest) {
     throw new ServerError(
       `Pull request #${number} is not reviewable — PR review covers open GitHub pull requests against the default branch that were opened by someone else`,
       { status: 409, code: 'PULL_REQUEST_NOT_REVIEWABLE' },
     );
   }
+  // The security scan fingerprints the PR set by head commit, and the reader
+  // normalizes an unusable `headRefOid` to null. Accepting one anyway would
+  // return 202 for a run the preflight then drops on a null fingerprint — the UI
+  // would show a queued review that can never start.
+  if (!pullRequest.headRefOid) {
+    throw new ServerError(
+      `Pull request #${number} has no resolvable head commit, so its content cannot be safety-screened`,
+      { status: 502, code: 'PULL_REQUEST_CONTEXT_UNAVAILABLE' },
+    );
+  }
 
   const [tasks, requests] = await Promise.all([readActiveTasks(), readPendingOnDemandRequests()]);
-  // Fail CLOSED on an unreadable task store, matching /resolve: `reviewActionFor`
-  // reads a null task list as "no run in flight", so queueing anyway would spend a
-  // second model-abuse scan and code review on a public PR already being reviewed.
-  if (tasks === null) {
+  // Fail CLOSED on unreadable task or on-demand state, matching /resolve:
+  // `reviewActionFor` reads either as "no run in flight", so queueing anyway would
+  // spend a second model-abuse scan and code review on a public PR already being
+  // reviewed.
+  if (tasks === null || requests === null) {
     throw new ServerError('Could not inspect existing CoS actions before queueing this review', {
       status: 503,
       code: 'AGENT_ACTION_UNAVAILABLE',

@@ -287,12 +287,13 @@ export default function PullRequestsTab({ appId, appName }) {
     already: `pr-reviewer is already queued for ${forgeLabel} #${pullRequest.number}`,
   });
 
-  // pr-reviewer's model-abuse preflight reads the forge through `gh`, so the
-  // targeted review button is meaningless on a GitLab remote. The server refuses
-  // it there anyway; hiding it keeps the row from offering a guaranteed failure.
-  const rowActions = [
+  // pr-reviewer covers only GitHub PRs opened by someone else against the default
+  // branch, and the server answers every other row with 409. `reviewEligible` is
+  // the server's own verdict per row, so the button appears exactly where it can
+  // work rather than offering a guaranteed failure.
+  const rowActionsFor = pullRequest => [
     { kind: 'resolve', onQueue: handleResolve },
-    ...(data?.forge === 'github' ? [{ kind: 'review', onQueue: handleReview }] : []),
+    ...(pullRequest.reviewEligible ? [{ kind: 'review', onQueue: handleReview }] : []),
   ];
 
   if (loading && !data) return <BrailleSpinner text="Loading pull requests" />;
@@ -335,9 +336,9 @@ export default function PullRequestsTab({ appId, appName }) {
         <p>
           Resolve and merge queues a PortOS agent to inspect feedback, fix the branch, wait for checks, and merge when the forge allows it. It uses the configured Code Review Defaults.
         </p>
-        {data?.forge === 'github' && (
+        {(data?.pullRequests || []).some(pullRequest => pullRequest.reviewEligible) && (
           <p>
-            PR review points the <span className="font-mono">pr-reviewer</span> scheduled task at this one request instead of letting it sweep every open contributor PR. It covers requests opened by someone else against the default branch, and its security scan still holds the review behind approval.
+            PR review points the <span className="font-mono">pr-reviewer</span> scheduled task at this one request instead of letting it sweep every open contributor PR. It appears only on requests it can review — opened by someone else against the default branch — and its security scan still holds the review behind approval.
           </p>
         )}
       </div>
@@ -428,7 +429,7 @@ export default function PullRequestsTab({ appId, appName }) {
                   </div>
 
                   <div className="shrink-0 lg:pt-0.5 flex flex-wrap items-start gap-2">
-                    {rowActions.map(({ kind, onQueue }) => {
+                    {rowActionsFor(pullRequest).map(({ kind, onQueue }) => {
                       const { label, Icon, title } = ACTION_KINDS[kind];
                       const actionStatus = actions[kind][pullRequest.number]?.status;
                       if (actionStatus && actionStatus !== 'queuing') {

@@ -40,6 +40,7 @@ const PULL_REQUEST = {
   mergeStateStatus: 'DIRTY',
   mergeable: 'CONFLICTING',
   labels: ['bug'],
+  reviewEligible: true,
   checks: [
     { name: 'unit', status: 'SUCCESS', url: null },
     { name: 'lint', status: 'SUCCESS', url: null },
@@ -232,8 +233,8 @@ describe('PullRequestsTab', () => {
     expect(screen.queryByRole('button', { name: /PR review/ })).not.toBeInTheDocument();
   });
 
-  it('omits the pr-reviewer action on a GitLab remote', async () => {
-    api.getAppPullRequests.mockResolvedValue({ ...okPayload([PULL_REQUEST]), forge: 'gitlab' });
+  it('omits the pr-reviewer action on a row the server marked ineligible', async () => {
+    api.getAppPullRequests.mockResolvedValue(okPayload([{ ...PULL_REQUEST, reviewEligible: false }]));
 
     await renderTab();
 

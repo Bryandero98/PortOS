@@ -327,7 +327,10 @@ describe('both on-demand engines apply consent before addTask', () => {
   it('idle-review steal path consents when it drains an on-demand request', () => {
     const start = GEN_SRC.indexOf('async function generateManagedAppImprovementTask(app, state');
     expect(start).toBeGreaterThan(-1);
-    const body = GEN_SRC.slice(start, start + 3500);
+    // Slice to the end of the function, not a fixed byte window: the consent line
+    // sits at the bottom of a body that grows, so a magic number makes an
+    // unrelated comment above it read as a missing consent call.
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return task;', start));
     expect(body).toMatch(/selectionReason === 'on-demand'\) applyOnDemandConsent\(task\)/);
   });
 });
@@ -1868,6 +1871,15 @@ describe('pr-reviewer security preflight wiring', () => {
     // widening the run back out to every open PR.
     expect(body).toContain('target-pull-request-not-reviewable');
     expect(body).toContain('metadata.targetPullRequest = targetPullRequest');
+  });
+
+  it('carries a stolen on-demand request\'s PR target through the idle-review path', () => {
+    const start = GEN_SRC.indexOf('const appRequests = onDemandRequests.filter(');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return task;', start));
+    // The idle tier can consume a queued on-demand request instead of Priority 0.
+    // Dropping the target there re-widens a one-row click into a full sweep.
+    expect(body).toContain('targetPullRequest = request.targetPullRequest ?? null');
+    expect(body).toMatch(/generateManagedAppImprovementTaskForType\([\s\S]*?targetPullRequest\n/);
   });
 
   it('keeps a targeted run distinguishable from the sweep in the duplicate guard', () => {

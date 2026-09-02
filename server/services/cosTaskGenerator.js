@@ -2441,9 +2441,16 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
 
   let nextType;
   let selectionReason;
+  // A stolen on-demand request may be SCOPED to one PR (the PRs/MRs tab's
+  // per-row pr-reviewer trigger). Carrying it is not optional: the generator
+  // reads no target as "sweep every external PR", so dropping it here would
+  // silently promote the user's one-row click into a full-repo review — the
+  // same widening the perpetual-refill skip guards against on the other side.
+  let targetPullRequest = null;
 
   if (appRequests.length > 0) {
     const request = appRequests[0];
+    targetPullRequest = request.targetPullRequest ?? null;
     await taskSchedule.clearOnDemandRequest(request.id);
     // Only a human "Run" may clear the drain's brakes (park state, dispatch
     // count); the policy lives in applyOnDemandRunResets so this idle-review
@@ -2491,7 +2498,8 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // spawn; the per-type generator does not record execution itself.
   const task = await generateManagedAppImprovementTaskForType(nextType, app, state, {
     ignoreTaskId,
-    deferPerpetualDispatch: true
+    deferPerpetualDispatch: true,
+    targetPullRequest
   });
   // Idle-review can steal a queued on-demand request for this app. That
   // request is still a user Run — apply the same consent as Priority 0.

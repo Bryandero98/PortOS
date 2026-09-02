@@ -18,8 +18,10 @@ vi.mock('../../services/codeReview.js', () => ({
 vi.mock('../../services/agentWorktreeCleanup.js', () => ({
   spawnReviewLoopFollowUp: vi.fn(),
 }));
-vi.mock('../../services/prReviewerSecurity.js', () => ({
+vi.mock('../../services/prReviewerSecurity.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   listExternalOpenPullRequests: vi.fn(),
+  resolvePrReviewerTargetScope: vi.fn(),
 }));
 vi.mock('../../services/taskSchedule.js', () => ({
   getOnDemandRequests: vi.fn(),
@@ -31,7 +33,7 @@ import { listAppPullRequests } from '../../services/appPullRequests.js';
 import { getAllTasks } from '../../services/cos.js';
 import { resolveReviewLoopOptions } from '../../services/codeReview.js';
 import { spawnReviewLoopFollowUp } from '../../services/agentWorktreeCleanup.js';
-import { listExternalOpenPullRequests } from '../../services/prReviewerSecurity.js';
+import { listExternalOpenPullRequests, resolvePrReviewerTargetScope } from '../../services/prReviewerSecurity.js';
 import { getOnDemandRequests, triggerOnDemandTask } from '../../services/taskSchedule.js';
 
 const APP = { id: 'app-001', name: 'Widget', repoPath: '/repo', workTracker: 'auto' };
@@ -39,7 +41,9 @@ const PULL_REQUEST = {
   number: 17,
   title: 'Fix the save path',
   url: 'https://github.com/acme/widget/pull/17',
+  author: 'alice',
   headBranch: 'fix/save-path',
+  baseBranch: 'main',
 };
 
 const listResult = () => ({
@@ -85,6 +89,13 @@ describe('app pull-request routes', () => {
       repoFullName: 'acme/widget',
       defaultBranch: 'main',
       prs: [{ number: 17, authorLogin: 'alice', headRefOid: 'a'.repeat(40) }],
+    });
+    resolvePrReviewerTargetScope.mockResolvedValue({
+      ok: true,
+      repoSpec: 'acme/widget',
+      repoFullName: 'acme/widget',
+      defaultBranch: 'main',
+      selfLogin: 'bob',
     });
     getOnDemandRequests.mockResolvedValue([]);
     triggerOnDemandTask.mockResolvedValue({ id: 'demand-abc', taskType: 'pr-reviewer', appId: 'app-001', targetPullRequest: 17 });
@@ -242,6 +253,68 @@ describe('app pull-request routes', () => {
     const response = await request(app).get('/api/apps/app-001/pull-requests');
 
     expect(response.body.pullRequests[0].reviewAction).toEqual({ taskId: null, status: 'pending' });
+  });
+
+  it('marks a contributor PR against the default branch as pr-reviewer eligible', async () => {
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.body.pullRequests[0].reviewEligible).toBe(true);
+  });
+
+  it('marks the operator\'s own PR as ineligible so the row offers no failing action', async () => {
+    listAppPullRequests.mockResolvedValue({
+      ...listResult(),
+      pullRequests: [{ ...PULL_REQUEST, author: 'bob' }],
+    });
+
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.body.pullRequests[0].reviewEligible).toBe(false);
+  });
+
+  it('marks a PR against a non-default base as ineligible', async () => {
+    listAppPullRequests.mockResolvedValue({
+      ...listResult(),
+      pullRequests: [{ ...PULL_REQUEST, baseBranch: 'release' }],
+    });
+
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.body.pullRequests[0].reviewEligible).toBe(false);
+  });
+
+  it('marks every row ineligible when the pr-reviewer scope cannot be resolved', async () => {
+    resolvePrReviewerTargetScope.mockResolvedValue({ ok: false, code: 'security-scan-forge-unreachable' });
+
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.body.pullRequests[0].reviewEligible).toBe(false);
+  });
+
+  it('refuses a target whose head commit cannot be fingerprinted', async () => {
+    listExternalOpenPullRequests.mockResolvedValue({
+      ok: true,
+      repoSpec: 'acme/widget',
+      repoFullName: 'acme/widget',
+      defaultBranch: 'main',
+      prs: [{ number: 17, authorLogin: 'alice', headRefOid: null }],
+    });
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe('PULL_REQUEST_CONTEXT_UNAVAILABLE');
+    expect(triggerOnDemandTask).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the on-demand queue cannot be read before queueing a review', async () => {
+    getOnDemandRequests.mockRejectedValue(new Error('schedule unreadable'));
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe('AGENT_ACTION_UNAVAILABLE');
+    expect(triggerOnDemandTask).not.toHaveBeenCalled();
   });
 
   it('queues a pr-reviewer run scoped to one request', async () => {
