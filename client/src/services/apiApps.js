@@ -202,9 +202,10 @@ export const getAppDocuments = (id, options) => request(`/apps/${id}/documents`,
 // separators the wildcard route splits on.
 const documentPath = (id, filename) =>
   `/apps/${id}/documents/${String(filename).split('/').map(encodeURIComponent).join('/')}`;
-export const getAppDocument = (id, filename) => request(documentPath(id, filename));
-export const saveAppDocument = (id, filename, content, commitMessage) =>
+export const getAppDocument = (id, filename, options) => request(documentPath(id, filename), options);
+export const saveAppDocument = (id, filename, content, commitMessage, options) =>
   request(documentPath(id, filename), {
+    ...options,
     method: 'PUT',
     body: JSON.stringify({ content, ...(commitMessage && { commitMessage }) })
   });

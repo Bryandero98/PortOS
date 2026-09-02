@@ -31,14 +31,15 @@ export default function DocumentsTab({ appId, repoPath }) {
     setSelectedDoc(filename);
     setEditing(false);
     setLoadingDoc(true);
-    const data = await api.getAppDocument(appId, filename).catch(() => null);
+    const data = await api.getAppDocument(appId, filename, { silent: true }).catch(() => null);
     setDocContent(data?.content || null);
     setLoadingDoc(false);
   }, [appId]);
 
   const fetchDocuments = useCallback(async () => {
     setLoading(true);
-    const data = await api.getAppDocuments(appId).catch(() => ({ documents: [], docs: [], hasPlanning: false }));
+    const data = await api.getAppDocuments(appId, { silent: true })
+      .catch(() => ({ documents: [], docs: [], hasPlanning: false }));
     setDocuments(data.documents || []);
     setDocs(data.docs || []);
     setHasPlanning(data.hasPlanning || false);
@@ -70,7 +71,8 @@ export default function DocumentsTab({ appId, repoPath }) {
 
   const handleSave = async () => {
     setSaving(true);
-    const result = await api.saveAppDocument(appId, selectedDoc, editContent).catch(() => null);
+    const result = await api.saveAppDocument(appId, selectedDoc, editContent, undefined, { silent: true })
+      .catch(() => null);
     setSaving(false);
 
     if (!result) {
