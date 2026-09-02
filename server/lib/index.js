@@ -270,6 +270,7 @@ export * from './glabArgs.js';
 export * from './goalFeatureMap.js';
 export * from './interactiveShellResolver.js';
 export * from './killWithEscalation.js';
+export * from './npmGlobalBin.js';
 export * from './openFolder.js';
 export * from './processEnv.js';
 export * from './primaryCheckoutGuard.js';

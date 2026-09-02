@@ -442,7 +442,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
         if (installed) {
           emit({ type: 'complete', message: `${runtime.label} is installed and available to PortOS.` });
         } else if (code === 0) {
-          emit({ type: 'error', message: `The installer finished, but PortOS still cannot run \`${runtime.command}\`. Its bin directory may be missing from PortOS's PATH — restart PortOS, then try again.` });
+          emit({ type: 'error', message: `The installer finished, but PortOS still cannot run \`${runtime.command}\`. npm wrote it to a bin directory that is not on this machine's PATH — run \`npm prefix -g\` in a terminal, add that directory (plus \`/bin\` off Windows) to your PATH, then restart PortOS.` });
         } else {
           emit({ type: 'error', message: `${runtime.label} installer exited with code ${code}.` });
         }

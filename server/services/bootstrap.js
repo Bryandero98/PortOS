@@ -32,6 +32,7 @@ import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { createAIToolkit } from '../lib/aiToolkit/index.js';
 import { verifyCollectionVersions } from '../lib/collectionStore.js';
 import { startIdleReaper, stopIdleReaper } from '../lib/managedDaemon.js';
+import { adoptNpmGlobalBinDir } from '../lib/npmGlobalBin.js';
 import { conflictJournalStore } from '../lib/conflictJournal.js';
 import { markHostShuttingDown, writeHostShutdownMarker } from '../lib/hostShutdown.js';
 import { setUserCatalogTypes } from '../lib/catalogTypes.js';
@@ -316,6 +317,15 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
  * server from listening; each logs its own failure and the boot continues.
  */
 const startBackgroundServices = ({ spawnerReady, io }) => {
+  // Put npm's global bin directory on PATH before anything spawns a provider
+  // CLI. npm's prefix need not be the directory the host's Node installer put
+  // on PATH, and a CLI installed there is invisible to the bare-name spawn a
+  // TUI provider uses until it is adopted. One `npm prefix -g` child, never an
+  // AI provider call — safe under AGENTS.md's no-cold-bootstrap rule, on the
+  // same footing as the `--version` probes providerPrerequisites.js already
+  // runs. The CoS runner is a separate process and adopts it separately.
+  adoptNpmGlobalBinDir().catch((err) => console.error(`❌ npm global bin adoption failed: ${err.message}`));
+
   // Explicit call (not a module-level side effect) so test imports of cos.js
   // don't spin up its event listeners and timers. The spawner gate itself lives
   // in bootstrapSequence.js.

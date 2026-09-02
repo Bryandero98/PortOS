@@ -21,6 +21,7 @@ import { prepareCliSpawn, killProcessTree, guardChildStdin, deliverChildStdin } 
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { commandExists } from '../lib/commandExists.js';
+import { adoptNpmGlobalBinDir } from '../lib/npmGlobalBin.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
 import { createStreamJsonParser } from './streamJsonParser.js';
@@ -927,6 +928,13 @@ async function cleanupOrphanedAgents() {
  */
 server.listen(PORT, HOST, async () => {
   console.log(`🤖 CoS Agent Runner started on http://${HOST}:${PORT}`);
+
+  // The runner is its own PM2 app with its own environment, and it spawns
+  // provider CLIs by bare name — so it must adopt npm's global bin directory
+  // itself. Without this a CLI the AI Providers page reports as installed
+  // (the main server adopted it there) still 422s here as "not on the CoS
+  // Runner PATH". Fire-and-forget: never blocks accepting work.
+  adoptNpmGlobalBinDir().catch((err) => console.error(`❌ npm global bin adoption failed: ${err.message}`));
 
   // Ensure agents directory exists. try/catch is mandatory: this listener runs
   // outside the request lifecycle, so a rejected await here escapes as an
