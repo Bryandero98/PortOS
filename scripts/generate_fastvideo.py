@@ -139,8 +139,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mlx-checkpoint", default=None, help="MLX checkpoint path (defaults to model-root)")
     p.add_argument("--mlx-format", choices=MLX_DIT_FORMATS, default=None,
                    help="convert this snapshot's transformer/ to an MLX DiT of this format on first use")
+    p.add_argument("--mlx-checkpoint-cache-dir", default=None,
+                   help="root for converted MLX DiTs (default: a shared dir under ~/.portos/fastvideo)")
     p.add_argument("--prompt-cache-dir", default=None,
-                   help="reusable FastH3 prompt-embedding cache (default: a shared dir under the repo)")
+                   help="reusable FastH3 prompt-embedding cache (default: a shared dir under ~/.portos/fastvideo)")
     p.add_argument("--prompt", required=True)
     p.add_argument("--negative-prompt", default="")
     p.add_argument("--width", type=int, required=True)
@@ -198,11 +200,16 @@ def find_entry_script(repo_dir: Path, family: str = "fastmetal") -> Path:
 # running FastVideo's own converter once, so a row can point at the upstream
 # checkpoint instead of depending on a third party having published a repack.
 MLX_DIT_FORMATS = ("int8", "int6", "int4")
+# PortOS declares both of these roots in server/services/videoGen/runtimes.js and
+# passes them as flags. These defaults exist only so the script runs standalone,
+# the same role --repo-dir's fallback plays.
+MLX_CHECKPOINT_CACHE = Path.home() / ".portos" / "fastvideo" / "mlx-checkpoints"
+PROMPT_CACHE = Path.home() / ".portos" / "fastvideo" / "prompt-cache"
 _CONVERTER_SCRIPT = ("scripts", "checkpoint_conversion", "convert_minimax_h3_mlx.py")
 _MLX_CHECKPOINT_FILES = ("mlx_h3_dit.safetensors", "mlx_h3_dit.json")
 
 
-def mlx_checkpoint_root(model_root: Path) -> Path:
+def mlx_checkpoint_root(model_root: Path, base: Path | None = None) -> Path:
     """Where DiTs converted from `model_root` are cached.
 
     Keyed by the SNAPSHOT, not by the repo id -- an HF cache path ends in the
@@ -218,16 +225,17 @@ def mlx_checkpoint_root(model_root: Path) -> Path:
     # snapshots resolving to ONE converted DiT would render the wrong weights
     # without any error to notice.
     digest = hashlib.sha256(str(model_root).encode("utf-8")).hexdigest()[:12]
-    return Path.home() / ".portos" / "fastvideo" / "mlx-checkpoints" / f"{label}-{digest}"
+    return (base or MLX_CHECKPOINT_CACHE) / f"{label}-{digest}"
 
 
 def is_converted(checkpoint_dir: Path) -> bool:
     return all((checkpoint_dir / name).is_file() for name in _MLX_CHECKPOINT_FILES)
 
 
-def ensure_mlx_checkpoint(repo_dir: Path, model_root: Path, fmt: str, env: dict) -> Path:
+def ensure_mlx_checkpoint(repo_dir: Path, model_root: Path, fmt: str, env: dict,
+                          base: Path | None = None) -> Path:
     """Return the converted MLX DiT for `fmt`, converting it if it is missing."""
-    out_base = mlx_checkpoint_root(model_root)
+    out_base = mlx_checkpoint_root(model_root, base)
     out_dir = out_base / fmt
     if is_converted(out_dir):
         return out_dir
@@ -242,20 +250,13 @@ def ensure_mlx_checkpoint(repo_dir: Path, model_root: Path, fmt: str, env: dict)
     print(f"STATUS:converting the FastH3 DiT to MLX {fmt} — one time, into {out_dir}",
           file=sys.stderr, flush=True)
     out_base.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen(
+    code = run_child(
         [sys.executable, str(converter),
          "--model-root", str(transformer),
          "--out", str(out_base),
          "--formats", fmt],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        env=env, cwd=str(repo_dir),
+        env, repo_dir, lambda line: f"STATUS:{line}",
     )
-    assert proc.stdout is not None
-    for raw in proc.stdout:
-        line = raw.rstrip()
-        if line:
-            print(f"STATUS:{line}", file=sys.stderr, flush=True)
-    code = proc.wait()
     if code != 0:
         raise RuntimeError(f"FastH3 MLX conversion exited with code {code}")
     if not is_converted(out_dir):
@@ -276,9 +277,26 @@ def resolve_prompt_cache_dir(args) -> Path:
     version, the model root AND the prompt, so one shared directory cannot serve
     a stale entry across models or across a conditioner change.
     """
-    if args.prompt_cache_dir:
-        return Path(args.prompt_cache_dir)
-    return Path.home() / ".portos" / "fastvideo" / "prompt-cache"
+    return Path(args.prompt_cache_dir) if args.prompt_cache_dir else PROMPT_CACHE
+
+
+def run_child(cmd: list, env: dict, cwd: Path, transform) -> int:
+    """Spawn a child, stream its merged output through `transform`, return its code.
+
+    Shared by the conversion child and the inference child so their stream
+    handling cannot drift: both fold stderr into stdout and re-emit line by
+    line on THIS process's stderr, which is the channel PortOS parses.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env=env, cwd=str(cwd),
+    )
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.rstrip()
+        if line:
+            print(transform(line), file=sys.stderr, flush=True)
+    return proc.wait()
 
 
 def build_child_env(repo_dir: Path) -> dict:
@@ -387,7 +405,9 @@ def main() -> int:
         mlx_checkpoint = Path(args.mlx_checkpoint).resolve()
     elif args.mlx_format:
         try:
-            mlx_checkpoint = ensure_mlx_checkpoint(repo_dir, model_root, args.mlx_format, env)
+            mlx_checkpoint = ensure_mlx_checkpoint(
+                repo_dir, model_root, args.mlx_format, env,
+                Path(args.mlx_checkpoint_cache_dir) if args.mlx_checkpoint_cache_dir else None)
         except (FileNotFoundError, RuntimeError) as err:
             print(f"❌ {err}", file=sys.stderr)
             return 1
@@ -395,8 +415,11 @@ def main() -> int:
         mlx_checkpoint = model_root
 
     cmd = build_command(args, entry_script, model_root, mlx_checkpoint)
-    if args.family == "fasth3":
-        resolve_prompt_cache_dir(args).mkdir(parents=True, exist_ok=True)
+    # The child writes into this directory but will not create it. Keyed off the
+    # argv rather than a second family test, so it cannot disagree with the one
+    # branch in build_command that decides the flag is passed at all.
+    if "--prompt-cache-dir" in cmd:
+        Path(cmd[cmd.index("--prompt-cache-dir") + 1]).mkdir(parents=True, exist_ok=True)
 
     print(f"🎬 fastvideo {args.family} generate {args.width}x{args.height} frames={args.num_frames} steps={args.steps} seed={args.seed}", file=sys.stderr, flush=True)
 

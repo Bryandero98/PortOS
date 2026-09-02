@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib.util
 import io
-import shutil
 import sys
 import tempfile
 import unittest
@@ -50,6 +49,7 @@ def make_args(**overrides):
         enhance_prompt=False,
         refine=False,
         prompt_cache_dir="/fixture/prompt-cache",
+        mlx_checkpoint_cache_dir=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -227,24 +227,22 @@ class MlxCheckpointTest(unittest.TestCase):
         # The steady state after the user deletes the 66 GB bf16 transformer:
         # rendering must keep working off the converted DiT alone.
         with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "mlx-checkpoints"
             model_root = Path(tmp) / "models--Org--Repo" / "snapshots" / "abc123"
             model_root.mkdir(parents=True)
-            out = self.helper.mlx_checkpoint_root(model_root) / "int6"
+            out = self.helper.mlx_checkpoint_root(model_root, base) / "int6"
             out.mkdir(parents=True)
             for name in ("mlx_h3_dit.safetensors", "mlx_h3_dit.json"):
                 (out / name).write_text("")
-            try:
-                resolved = self.helper.ensure_mlx_checkpoint(Path(tmp), model_root, "int6", {})
-                self.assertEqual(resolved, out)
-            finally:
-                shutil.rmtree(self.helper.mlx_checkpoint_root(model_root), ignore_errors=True)
+            resolved = self.helper.ensure_mlx_checkpoint(Path(tmp), model_root, "int6", {}, base)
+            self.assertEqual(resolved, out)
 
     def test_a_snapshot_without_a_transformer_fails_loudly(self):
         with tempfile.TemporaryDirectory() as tmp:
             model_root = Path(tmp) / "models--Org--Repo" / "snapshots" / "def456"
             model_root.mkdir(parents=True)
             with self.assertRaises(FileNotFoundError) as ctx:
-                self.helper.ensure_mlx_checkpoint(Path(tmp), model_root, "int4", {})
+                self.helper.ensure_mlx_checkpoint(Path(tmp), model_root, "int4", {}, Path(tmp) / "cache")
             self.assertIn("transformer", str(ctx.exception))
 
 

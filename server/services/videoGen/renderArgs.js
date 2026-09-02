@@ -50,6 +50,8 @@ import {
   FASTVIDEO_VENV_PYTHON,
   FASTVIDEO_HELPER_SCRIPT,
   FASTVIDEO_REPO_DIR,
+  FASTVIDEO_MLX_CHECKPOINT_DIR,
+  FASTVIDEO_PROMPT_CACHE_DIR,
   LTX25_CUDA_VENV_PYTHON,
   LTX25_CUDA_HELPER_SCRIPT,
   WAN22_CUDA_VENV_PYTHON,
@@ -574,6 +576,10 @@ export const fastvideoFamily = (model) =>
 // directory instead. A row that names one of these formats is pointing at that
 // upstream snapshot and wants the helper to run FastVideo's own converter once;
 // a row that omits it already ships the quantized DiT beside its model root.
+// Mirrors MLX_DIT_FORMATS in scripts/generate_fastvideo.py, itself the
+// converter's own format list. Kept in sync by hand — the helper's argparse
+// `choices=` is the enforcement; this list is what lets the server reject a
+// bad value before queueing a render.
 export const FASTVIDEO_MLX_FORMATS = Object.freeze(['int8', 'int6', 'int4']);
 export const fastvideoMlxFormat = (model) =>
   (FASTVIDEO_MLX_FORMATS.includes(model?.fastvideoMlxFormat) ? model.fastvideoMlxFormat : null);
@@ -610,8 +616,11 @@ export const buildFastVideoArgs = ({
   // vae/audio_vae/text_encoder/tokenizer IS its own checkpoint, and says so
   // explicitly rather than leaning on the helper's default-to-model-root.
   if (family === 'fasth3') {
+    // Conditioning is half the wall clock of a render and recomputes identical
+    // embeddings every time, so every FastH3 row reuses one cache.
+    args.push('--prompt-cache-dir', FASTVIDEO_PROMPT_CACHE_DIR);
     const mlxFormat = fastvideoMlxFormat(model);
-    if (mlxFormat) args.push('--mlx-format', mlxFormat);
+    if (mlxFormat) args.push('--mlx-format', mlxFormat, '--mlx-checkpoint-cache-dir', FASTVIDEO_MLX_CHECKPOINT_DIR);
     else args.push('--mlx-checkpoint', modelRoot);
   }
   if (negativePrompt) args.push('--negative-prompt', negativePrompt);

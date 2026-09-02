@@ -9,6 +9,8 @@ vi.mock('./runtimes.js', async (importOriginal) => ({
   FASTVIDEO_VENV_PYTHON: '/fixture/fastvideo/.venv/bin/python3',
   FASTVIDEO_HELPER_SCRIPT: '/fixture/scripts/generate_fastvideo.py',
   FASTVIDEO_REPO_DIR: '/fixture/fastvideo',
+  FASTVIDEO_MLX_CHECKPOINT_DIR: '/fixture/fastvideo/mlx-checkpoints',
+  FASTVIDEO_PROMPT_CACHE_DIR: '/fixture/fastvideo/prompt-cache',
 }));
 
 const { buildFastVideoArgs, fastvideoFamily, fastvideoMlxFormat } = await import('./renderArgs.js');
@@ -98,6 +100,9 @@ describe('buildFastVideoArgs', () => {
     expect(flagValue(args, '--family')).toBe('fasth3');
     expect(flagValue(args, '--model-root')).toBe('/fixture/cache/fasth3');
     expect(flagValue(args, '--mlx-checkpoint')).toBe('/fixture/cache/fasth3');
+    // It already holds a quantized DiT, so it must never trigger a conversion.
+    expect(args).not.toContain('--mlx-format');
+    expect(args).not.toContain('--mlx-checkpoint-cache-dir');
   });
 
   it('passes the pinned render controls through for FastH3', () => {
@@ -151,19 +156,24 @@ describe('buildFastVideoArgs — upstream FastH3 snapshot', () => {
       ...base, model: fasth3Source, fastvideoModelPath: '/fixture/models/fasth3-source',
     });
     expect(flagValue(args, '--mlx-format')).toBe('int6');
-    // The converted DiT lands in a helper-owned cache, NOT beside the snapshot,
-    // so pinning --mlx-checkpoint here would point the pipeline at the bf16
-    // diffusers layout it cannot load.
+    // The converted DiT lands under a SERVER-declared cache root, not beside the
+    // snapshot, so pinning --mlx-checkpoint here would point the pipeline at the
+    // bf16 diffusers layout it cannot load.
     expect(args).not.toContain('--mlx-checkpoint');
+    expect(flagValue(args, '--mlx-checkpoint-cache-dir')).toBe('/fixture/fastvideo/mlx-checkpoints');
     expect(flagValue(args, '--model-root')).toBe('/fixture/models/fasth3-source');
   });
 
-  it('still pins the checkpoint for a pre-converted row, and never asks to convert', () => {
-    const { args } = buildFastVideoArgs({
-      ...base, model: fasth3, fastvideoModelPath: '/fixture/models/fasth3-packed',
-    });
-    expect(flagValue(args, '--mlx-checkpoint')).toBe('/fixture/models/fasth3-packed');
-    expect(args).not.toContain('--mlx-format');
+  it('reuses one server-declared prompt cache for every FastH3 row', () => {
+    // Conditioning is half a render's wall clock and recomputes identical
+    // embeddings, so both layouts must get the flag — and FastMetal must not,
+    // since mlx_wan_prompt_to_video.py would reject it.
+    for (const model of [fasth3, fasth3Source]) {
+      const { args } = buildFastVideoArgs({ ...base, model, fastvideoModelPath: '/fixture/cache/fasth3' });
+      expect(flagValue(args, '--prompt-cache-dir')).toBe('/fixture/fastvideo/prompt-cache');
+    }
+    const { args } = buildFastVideoArgs({ ...base, model: fastmetal, fastvideoModelPath: '/fixture/cache/fastmetal' });
+    expect(args).not.toContain('--prompt-cache-dir');
   });
 
   it('never asks FastMetal to convert, even if a row mislabels a format', () => {
