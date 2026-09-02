@@ -4,7 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 const mock = vi.hoisted(() => ({
-  pull: vi.fn(),
+  updateDefaultBranch: vi.fn(),
   spawn: vi.fn(),
   dashboardOpen: vi.fn(),
   dashboardRunning: vi.fn(),
@@ -13,7 +13,7 @@ const mock = vi.hoisted(() => ({
   syncFork: vi.fn(),
 }));
 
-vi.mock('./git.js', () => ({ pull: mock.pull }));
+vi.mock('./git.js', () => ({ updateDefaultBranch: mock.updateDefaultBranch }));
 vi.mock('./pm2.js', () => ({ restartApp: mock.restart }));
 vi.mock('../lib/bufferedSpawn.js', async (importOriginal) => {
   const actual = await importOriginal();
@@ -36,7 +36,7 @@ describe('managed app updates', () => {
     await mkdir(join(repo, 'client'));
     await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { setup: 'example-setup' } }));
     await writeFile(join(repo, 'client', 'package.json'), JSON.stringify({}));
-    mock.pull.mockResolvedValue({ output: 'Already up to date' });
+    mock.updateDefaultBranch.mockResolvedValue({ branch: 'main', output: 'Already up to date' });
     mock.spawn.mockResolvedValue({ stdout: '', stderr: '' });
     mock.dashboardRunning.mockResolvedValue(false);
     mock.dashboardOpen.mockResolvedValue(mock.dashboardHandle);
@@ -56,8 +56,8 @@ describe('managed app updates', () => {
     await rm(repo, { recursive: true, force: true });
   });
 
-  it('uses Bun and its frozen lockfile for Bun-managed apps', async () => {
-    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { setup: 'example-setup', build: 'vite build' } }));
+  it('uses the Bun portos:update script without inheriting PortOS install or build steps', async () => {
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { 'portos:update': 'example-update', setup: 'example-setup', build: 'vite build' } }));
     const emit = vi.fn();
     const companionRepo = join(repo, '..', 'eidoverse-video');
     const bunCommand = join(repo, 'tools with spaces', 'bun');
@@ -71,15 +71,12 @@ describe('managed app updates', () => {
     }, emit);
 
     expect(result.success).toBe(true);
-    expect(mock.pull).toHaveBeenNthCalledWith(1, repo);
-    expect(mock.pull).toHaveBeenNthCalledWith(2, companionRepo);
-    expect(mock.spawn).toHaveBeenCalledWith(bunCommand, ['install', '--frozen-lockfile'], expect.objectContaining({ cwd: repo }));
-    expect(mock.spawn).toHaveBeenCalledWith(bunCommand, ['install', '--frozen-lockfile'], expect.objectContaining({ cwd: join(repo, 'client') }));
-    expect(mock.spawn).toHaveBeenCalledWith(bunCommand, ['run', 'setup'], expect.objectContaining({ cwd: repo }));
-    expect(mock.spawn).toHaveBeenCalledWith(bunCommand, ['run', 'build'], expect.objectContaining({ cwd: repo }));
+    expect(mock.updateDefaultBranch).toHaveBeenNthCalledWith(1, repo);
+    expect(mock.updateDefaultBranch).toHaveBeenNthCalledWith(2, companionRepo);
+    expect(mock.spawn).toHaveBeenCalledWith(bunCommand, ['run', 'portos:update'], expect.objectContaining({ cwd: repo }));
     expect(mock.spawn).not.toHaveBeenCalledWith('npm', expect.anything(), expect.anything());
     expect(emit).toHaveBeenCalledWith('git-pull:companion-1', 'done', 'Already up to date');
-    expect(emit).toHaveBeenCalledWith('bun-install:root', 'done', 'root dependencies installed');
+    expect(emit).toHaveBeenCalledWith('app-update', 'done', 'App update routine complete');
   });
 
   it('syncs a detected fork before pulling when the managed update requests it', async () => {
@@ -89,7 +86,7 @@ describe('managed app updates', () => {
     await updateApp(managed, emit, { syncFork: true });
 
     expect(mock.syncFork).toHaveBeenCalledWith(managed);
-    expect(mock.syncFork.mock.invocationCallOrder[0]).toBeLessThan(mock.pull.mock.invocationCallOrder[0]);
+    expect(mock.syncFork.mock.invocationCallOrder[0]).toBeLessThan(mock.updateDefaultBranch.mock.invocationCallOrder[0]);
     expect(emit).toHaveBeenCalledWith(
       'git-sync-fork',
       'done',
@@ -145,66 +142,80 @@ describe('managed app updates', () => {
     expect(mock.restart).toHaveBeenCalledWith('portos-server', undefined);
   });
 
-  it('rebuilds the production UI before restarting so a managed update does not leave a stale client bundle', async () => {
+  it('runs an explicit update command before restarting', async () => {
     const emit = vi.fn();
     const managed = {
       id: 'portos-default',
       name: 'PortOS',
       type: 'express',
       repoPath: repo,
-      buildCommand: 'npm run build',
+      updateCommand: 'npm run update',
       pm2ProcessNames: ['portos-server'],
     };
 
     const result = await updateApp(managed, emit);
 
     expect(result.success).toBe(true);
-    expect(result.steps.some((step) => step.step === 'build' && step.success)).toBe(true);
+    expect(result.steps.some((step) => step.step === 'app-update' && step.success)).toBe(true);
     expect(mock.spawn).toHaveBeenCalledWith(
       'npm',
-      ['run', 'build'],
+      ['run', 'update'],
       expect.objectContaining({ cwd: repo }),
     );
-    const buildCall = mock.spawn.mock.invocationCallOrder[
-      mock.spawn.mock.calls.findIndex((call) => call[0] === 'npm' && call[1]?.[1] === 'build')
+    const updateCall = mock.spawn.mock.invocationCallOrder[
+      mock.spawn.mock.calls.findIndex((call) => call[0] === 'npm' && call[1]?.[1] === 'update')
     ];
-    expect(buildCall).toBeLessThan(mock.restart.mock.invocationCallOrder[0]);
-    expect(emit).toHaveBeenCalledWith('build', 'done', 'Production UI built');
+    expect(updateCall).toBeLessThan(mock.restart.mock.invocationCallOrder[0]);
+    expect(emit).toHaveBeenCalledWith('app-update', 'done', 'App update routine complete');
   });
 
-  it('rebuilds from package.json when no explicit build command is configured', async () => {
-    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { build: 'vite build' } }));
+  it('runs the dedicated package script when no explicit update command is configured', async () => {
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { 'portos:update': 'vite build' } }));
     const emit = vi.fn();
 
     await updateApp({ name: 'Example App', type: 'express', repoPath: repo, pm2ProcessNames: [] }, emit);
 
     expect(mock.spawn).toHaveBeenCalledWith(
       'npm',
-      ['run', 'build'],
+      ['run', 'portos:update'],
       expect.objectContaining({ cwd: repo }),
     );
-    expect(emit).toHaveBeenCalledWith('build', 'done', 'Production UI built');
+    expect(emit).toHaveBeenCalledWith('app-update', 'done', 'App update routine complete');
   });
 
-  it('does not invent a production build when the app has none', async () => {
+  it('recognizes a conventional repository update script', async () => {
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
     const emit = vi.fn();
 
     await updateApp({ name: 'Example App', type: 'express', repoPath: repo, pm2ProcessNames: [] }, emit);
 
-    expect(mock.spawn).not.toHaveBeenCalledWith('npm', ['run', 'build'], expect.anything());
-    expect(emit).not.toHaveBeenCalledWith('build', expect.anything(), expect.anything());
+    expect(mock.spawn).toHaveBeenCalledWith(
+      join(repo, 'update.sh'),
+      [],
+      expect.objectContaining({ cwd: repo }),
+    );
   });
 
-  it('refuses a disallowed build command before restarting', async () => {
+  it('defaults to checkout update and restart without guessing package lifecycle steps', async () => {
+    const emit = vi.fn();
+
+    await updateApp({ name: 'Example App', type: 'express', repoPath: repo, pm2ProcessNames: [] }, emit);
+
+    expect(mock.spawn).not.toHaveBeenCalled();
+    expect(mock.updateDefaultBranch).toHaveBeenCalledWith(repo);
+    expect(emit).not.toHaveBeenCalledWith('app-update', expect.anything(), expect.anything());
+  });
+
+  it('refuses a disallowed update command before restarting', async () => {
     const emit = vi.fn();
 
     await expect(updateApp({
       name: 'Example App',
       type: 'express',
       repoPath: repo,
-      buildCommand: 'rm -rf /',
+      updateCommand: 'rm -rf /',
       pm2ProcessNames: ['example-app'],
-    }, emit)).rejects.toThrow(/not allowed/);
+    }, emit)).rejects.toThrow(/Update command is not allowed/);
 
     expect(mock.restart).not.toHaveBeenCalled();
   });
