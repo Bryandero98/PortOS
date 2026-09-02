@@ -30,6 +30,11 @@ const DOC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'DEPS.md'
  * (`discoverWorkspaces()` is the repo's existing single source for "what is a
  * workspace"), so a fifth workspace is covered without editing a list here.
  *
+ * `optionalDependencies` counts too — an optional package is still installed
+ * third-party code with a supply-chain surface. `peerDependencies` does not: a
+ * peer is declared for a consumer to install, and no PortOS workspace is a
+ * published library.
+ *
  * Manifests are read and JSON-parsed as files rather than resolved as modules:
  * CI never installs root `node_modules`, so anything reached through an
  * installed package would be green locally and red in CI.
@@ -38,7 +43,8 @@ const WORKSPACES = discoverWorkspaces();
 const DECLARED = new Map();
 for (const label of WORKSPACES) {
   const pkg = JSON.parse(readFileSync(join(workspaceDir(label), 'package.json'), 'utf8'));
-  for (const name of [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})]) {
+  const declared = [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies];
+  for (const name of declared.flatMap((group) => Object.keys(group ?? {}))) {
     DECLARED.set(name, [...(DECLARED.get(name) ?? []), label]);
   }
 }
@@ -46,7 +52,8 @@ for (const label of WORKSPACES) {
 /**
  * Rows of the Quick Reference table, as `{ name, verdict }`. Scoped to that one
  * section so a table added to the prose below can't be mistaken for the roster.
- * Cells are split rather than pattern-matched so padding changes are invisible;
+ * Cells are split rather than pattern-matched so padding and any decoration
+ * around the name (a link, a footnote marker) leave the row readable;
  * section headings (`**Server deps**`) and the browser workspace's `_(none)_`
  * placeholder carry no backticked package and drop out.
  */
@@ -57,7 +64,7 @@ function quickReferenceRows() {
   return section
     .split('\n')
     .map((line) => line.split('|').map((cell) => cell.trim()))
-    .map(([, name, , verdict]) => ({ name: /^`([^`]+)`$/.exec(name ?? '')?.[1], verdict: verdict ?? '' }))
+    .map(([, name, , verdict]) => ({ name: /`([^`]+)`/.exec(name ?? '')?.[1], verdict: verdict ?? '' }))
     .filter(({ name }) => name);
 }
 
