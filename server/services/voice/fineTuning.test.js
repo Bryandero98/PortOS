@@ -231,9 +231,15 @@ describe('fineTuning', () => {
       }, { timeout: 5_000, interval: 20 });
       await waitForTerminalJobRecord(jobId);
 
-      await vi.advanceTimersByTimeAsync(SSE_CLEANUP_DELAY_MS + 100);
-
-      await expect(getFineTuningJobStatus(jobId)).rejects.toThrow(/not found/i);
+      // The eviction timer is only scheduled once the child process closes, and
+      // the sidecar can already read terminal before that (a checkpoint write
+      // queued earlier serializes after the "completed" frame set the status).
+      // Advancing once would then fire nothing, so keep advancing until the
+      // in-memory entry is actually gone.
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(SSE_CLEANUP_DELAY_MS + 100);
+        await expect(getFineTuningJobStatus(jobId)).rejects.toThrow(/not found/i);
+      }, { timeout: 5_000, interval: 20 });
       expect((await getFineTuningJobStatus(jobId, PROFILE.id)).status).toBe('completed');
     } finally {
       vi.useRealTimers();
