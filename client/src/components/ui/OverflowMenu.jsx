@@ -137,11 +137,13 @@ export default function OverflowMenu({ label, items = [], className = '', trigge
                 <span>{item.label}</span>
               </>
             );
-            // A navigating item is an anchor, not a button — the route change
-            // moves focus on its own, so don't hand it back to the trigger.
+            // A navigating item is an anchor, not a button. Hand focus back to
+            // the trigger the same way an action item does: the anchor unmounts
+            // with the menu, so without this a keyboard activation would strand
+            // focus on <body> whenever the route renders in place.
             if (item.to) {
               return (
-                <Link key={item.id} to={item.to} role="menuitem" className={itemClass} onClick={() => close(false)}>
+                <Link key={item.id} to={item.to} role="menuitem" className={itemClass} onClick={() => close(true)}>
                   {content}
                 </Link>
               );

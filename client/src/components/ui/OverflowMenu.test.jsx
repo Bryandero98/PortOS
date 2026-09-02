@@ -163,7 +163,11 @@ describe('OverflowMenu', () => {
     expect(item.tagName).toBe('A');
     expect(item).toHaveAttribute('href', '/models/performance');
 
+    const trigger = screen.getByRole('button', { name: 'More actions' });
     await user.click(item);
     expect(screen.queryByRole('menu')).toBeNull();
+    // The activated anchor unmounts with the menu, so focus has to be handed
+    // back or a keyboard user is stranded on <body>.
+    expect(document.activeElement).toBe(trigger);
   });
 });
