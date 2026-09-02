@@ -40,7 +40,7 @@ export const partialPathFor = (destPath) => `${destPath}${PARTIAL_SUFFIX}`;
 // Sidecar recording the ETag of the object that produced a `.partial`, so a
 // later resume can send `If-Range` and detect a same-length replacement
 // object instead of silently splicing its bytes onto our stale prefix.
-const etagPathFor = (destPath) => `${partialPathFor(destPath)}.etag`;
+export const etagPathFor = (destPath) => `${partialPathFor(destPath)}.etag`;
 
 export function normalizeSha256(value) {
   if (typeof value !== 'string') return null;
@@ -58,6 +58,11 @@ export function siblingDownloadMeta(sibling) {
 const parseContentRangeTotal = (header) => {
   const match = String(header || '').match(/\/(\d+)\s*$/);
   return match ? Number(match[1]) : 0;
+};
+
+const parseContentRangeStart = (header) => {
+  const match = String(header || '').match(/bytes\s+(\d+)-/i);
+  return match ? Number(match[1]) : null;
 };
 
 async function freeBytesForPath(destPath, statfsImpl) {
@@ -275,31 +280,41 @@ export async function streamResumableDownload({
     idleTimer.unref?.();
   };
 
+  // Evict a partial this attempt can no longer trust (the resume point moved
+  // or the object changed) and recheck capacity against whatever real total
+  // the triggering response reports — the original preflight only reserved
+  // the bytes THIS discarded partial was short by, not the full payload a
+  // clean restart now needs.
+  const evictPartialForRestart = async (expectedBytes) => {
+    await rm(tmpPath, { force: true }).catch(() => {});
+    await rm(etagPath, { force: true }).catch(() => {});
+    resumeFrom = 0;
+    delete reqHeaders.Range;
+    delete reqHeaders['If-Range'];
+    if (expectedBytes > 0) {
+      assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes }));
+    }
+  };
+
+  // For a response this attempt can't use AT ALL (416, or a 206 that resumed
+  // from the wrong offset) — drop its body and recurse into a fresh request.
+  const discardAndRefetch = async (res) => {
+    await res.body?.cancel?.().catch(() => {});
+    await evictPartialForRestart(parseContentRangeTotal(res.headers?.get?.('content-range')));
+    return streamResumableDownload({
+      url, destPath, headers, fetchImpl, onBytes, signal, onIdleStall,
+      idleStallTimeoutMs, isCancelled, expectedSha256, finalize, onHttpError,
+    });
+  };
+
   resetIdleTimer();
   try {
     const res = await fetchImpl(url, { headers: reqHeaders, redirect: 'follow', signal });
     if (!res.ok && res.status !== 206) {
-      if (res.status === 416 && resumeFrom > 0) {
-        // Partial is past what the server has (or the object changed) —
-        // start clean. A 416 conventionally reports the real size as
-        // `Content-Range: bytes */<total>`; recheck capacity against it
-        // before the restart, same as the Range-ignored (200) branch below —
-        // the original preflight only reserved the bytes this discarded
-        // partial was short by, not the full payload the restart now needs.
-        await rm(tmpPath, { force: true }).catch(() => {});
-        await rm(etagPath, { force: true }).catch(() => {});
-        resumeFrom = 0;
-        delete reqHeaders.Range;
-        delete reqHeaders['If-Range'];
-        const totalFromRange = parseContentRangeTotal(res.headers?.get?.('content-range'));
-        if (totalFromRange > 0) {
-          assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes: totalFromRange }));
-        }
-        return streamResumableDownload({
-          url, destPath, headers, fetchImpl, onBytes, signal, onIdleStall,
-          idleStallTimeoutMs, isCancelled, expectedSha256, finalize, onHttpError,
-        });
-      }
+      // Partial is past what the server has (or the object changed) — 416
+      // conventionally reports the real size as `Content-Range: bytes
+      // */<total>`, which discardAndRefetch uses for its capacity recheck.
+      if (res.status === 416 && resumeFrom > 0) return discardAndRefetch(res);
       if (onHttpError) onHttpError(res);
       return rejectDownloadStatus(res);
     }
@@ -308,19 +323,19 @@ export async function streamResumableDownload({
     }
 
     // Server ignored Range (or If-Range caught the object changing under us)
-    // and sent the whole file — discard the leftover prefix. The preflight
-    // the caller ran before starting only reserved the REMAINING bytes
-    // (crediting the partial already on disk); now the FULL payload is
-    // about to land instead, so recheck capacity against this response's
-    // own Content-Length before writing over the freed space.
+    // and sent the whole file in THIS response — no need to re-fetch, just
+    // stop treating it as a resume and consume the body already in hand.
     if (resumeFrom > 0 && res.status === 200) {
-      await rm(tmpPath, { force: true }).catch(() => {});
-      await rm(etagPath, { force: true }).catch(() => {});
-      resumeFrom = 0;
-      const freshLength = Number(res.headers?.get?.('content-length')) || 0;
-      if (freshLength > 0) {
-        assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes: freshLength }));
-      }
+      await evictPartialForRestart(Number(res.headers?.get?.('content-length')) || 0);
+    }
+
+    // A 206 that resumed from somewhere OTHER than we asked (a proxy that
+    // normalizes/ignores the exact offset) would otherwise get appended onto
+    // our existing prefix at the wrong point, corrupting the file — this
+    // response's body starts at the wrong offset, so it can't be reused.
+    if (resumeFrom > 0 && res.status === 206) {
+      const rangeStart = parseContentRangeStart(res.headers?.get?.('content-range'));
+      if (rangeStart != null && rangeStart !== resumeFrom) return discardAndRefetch(res);
     }
 
     const rangeTotal = parseContentRangeTotal(res.headers?.get?.('content-range'));
@@ -333,8 +348,13 @@ export async function streamResumableDownload({
     // record this response's ETag so a LATER resume of it can send
     // If-Range. Best-effort: no ETag, or a write failure, just means the
     // next resume attempt has nothing to validate against (today's behavior).
+    // A WEAK etag (`W/"…"`) is explicitly excluded from If-Range use by RFC
+    // 9110 §13.1.5 — a conforming origin always treats it as non-matching
+    // and answers 200, so saving/sending one would silently turn every
+    // resume of this object into a full restart.
     if (flags === 'w') {
-      const etag = res.headers?.get?.('etag') || null;
+      const rawEtag = res.headers?.get?.('etag') || null;
+      const etag = rawEtag && !/^\s*W\//i.test(rawEtag) ? rawEtag : null;
       if (etag) await writeFile(etagPath, etag).catch(() => {});
       else await rm(etagPath, { force: true }).catch(() => {});
     }
@@ -355,6 +375,18 @@ export async function streamResumableDownload({
       }
       throw err;
     });
+
+    // A body that ends cleanly (no stream error) short of the advertised
+    // total is a truncation, not a success — without a published digest to
+    // catch it (the HF LoRA path has none), a short file would otherwise be
+    // renamed into place and treated as a complete, selectable model. Keep
+    // the partial (and its etag) so the next attempt can still resume it.
+    if (total > 0 && received !== total) {
+      throw new ServerError(
+        `Download ended early: got ${received} of ${total} expected bytes for ${destPath}`,
+        { status: 502, code: 'DOWNLOAD_TRUNCATED', context: { destPath, received, total } },
+      );
+    }
 
     const check = await verifyDownloadHash(tmpPath, expectedSha256);
     if (!check.ok) {

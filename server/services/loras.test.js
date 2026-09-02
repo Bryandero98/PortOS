@@ -835,7 +835,7 @@ describe('installFromHuggingface', () => {
         const stream = new ReadableStream({
           start(c) { c.enqueue(new Uint8Array(validSafetensors())); c.close(); },
         });
-        return { ok: true, status: 200, body: stream };
+        return { ok: true, status: 200, headers: { get: (name) => (name === 'etag' ? '"lora-etag"' : null) }, body: stream };
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
@@ -850,6 +850,10 @@ describe('installFromHuggingface', () => {
     expect(sidecar.triggerWords).toEqual(['audio reactive']);
     // The picked file is the canonical diffusers weights, not the README.
     expect(calls.some((u) => u.includes('/resolve/main/pytorch_lora_weights.safetensors'))).toBe(true);
+    // downloadToFile's `finalize: false` means streamResumableDownload never
+    // runs its own etag-sidecar cleanup — a successful install must still
+    // remove it (nothing left it there for a future resume to use).
+    expect(existsSync(join(tmpLoras, `${sidecar.filename}.partial.etag`))).toBe(false);
   });
 
   // HF's model-metadata response never carries per-sibling sizes (the

@@ -34,7 +34,7 @@ import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { PATHS, atomicWrite, ensureDir, pathExists, sleep } from '../lib/fileUtils.js'
 import { ServerError } from '../lib/errorHandler.js'
-import { assessDownloadPreflight, assertDownloadFits } from '../lib/downloadPreflight.js'
+import { assessDownloadPreflight, diskInsufficientError, DOWNLOAD_VERDICTS } from '../lib/downloadPreflight.js'
 import { compareSemver } from '../lib/versionUtils.js'
 import { getCatalog, isBackend, mapModelToBackend, getOllamaImportSpec, catalogSizeBytes } from '../lib/localLlmCatalog.js'
 import { sanitizeOllamaName } from '../lib/localLlmDisk.js'
@@ -933,10 +933,18 @@ export async function previewInstallModel(backend, modelId) {
 
 export async function installModel(backend, modelId, onProgress, { force = false } = {}) {
   if (!isBackend(backend)) return { success: false, error: `Unknown backend: ${backend}` }
-  assertDownloadFits(await assessDownloadPreflight({
+  // Resolve-not-throw: every other failure this function can hit (unknown
+  // backend, OLLAMA_OUTDATED, ...) resolves `{ success: false, error }` —
+  // migrateBackend's per-model loop is written against that contract with no
+  // try/catch of its own, so a throw here would abort the whole migration on
+  // model N instead of recording one more `status: 'failed'` row and moving on.
+  const preflight = await assessDownloadPreflight({
     destPath: await localInstallDest(backend),
     expectedBytes: catalogSizeBytes(backend, modelId),
-  }))
+  })
+  if (preflight.verdict === DOWNLOAD_VERDICTS.INSUFFICIENT) {
+    return { success: false, error: diskInsufficientError(preflight).message, code: 'DISK_INSUFFICIENT' }
+  }
   if (backend === 'ollama') {
     const importSpec = getOllamaImportSpec(modelId)
     const result = importSpec

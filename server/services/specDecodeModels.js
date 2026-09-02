@@ -192,14 +192,21 @@ const siblingFor = (model, filename) => {
   return siblings.find((row) => row?.rfilename === filename) || null;
 };
 
+// The preview path (previewSpecDecodeDownload) calls this with no signal —
+// a real download's own abort chain covers the actual transfer, but a
+// metadata/size lookup that just blocks the confirm modal needs its own
+// bound, or a stalled-but-reachable HF hangs the preview indefinitely.
+const METADATA_FETCH_TIMEOUT_MS = 10_000;
+
 const resolveSpecDownloadPlan = async ({ source, destPath, token, signal }) => {
+  const boundedSignal = signal || AbortSignal.timeout(METADATA_FETCH_TIMEOUT_MS);
   const headers = buildHfAuthHeaders(token);
-  const model = await fetchHuggingfaceModel(source.repo, { token, signal });
+  const model = await fetchHuggingfaceModel(source.repo, { token, signal: boundedSignal });
   const file = pickGgufSibling(model, { file: source.file, quant: source.quant, repo: source.repo });
   const url = buildHfResolveUrl(source.repo, 'main', file);
   let meta = siblingDownloadMeta(siblingFor(model, file));
   if (!meta.bytes) {
-    const probed = await probeRemoteSize(url, { headers, signal });
+    const probed = await probeRemoteSize(url, { headers, signal: boundedSignal });
     meta = { bytes: probed.bytes || meta.bytes, sha256: meta.sha256 || probed.sha256 };
   }
   const preflight = await assessDownloadPreflight({ destPath, expectedBytes: meta.bytes });

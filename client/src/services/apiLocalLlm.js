@@ -153,10 +153,9 @@ export const installLlamaServer = () =>
 export const upgradeLlamaServer = () =>
   request('/local-llm/llama-server/upgrade', { method: 'POST' });
 
-// Fetch one speculative-decoding preset's GGUF (role: 'model' | 'draftModel')
-// from Hugging Face into the path the launcher passes llama.cpp. Byte progress
-// arrives on the `llamaServer:download` socket event, not in this response —
-// a multi-GB transfer resolves only when the file is on disk.
+// Size/destination/free-disk numbers for the confirm step, before any
+// transfer starts. `body.kind` picks which download this previews
+// ('spec-decode' | 'mtplx' | 'install') — see localLlmDownloadPreflightSchema.
 export const previewLocalLlmDownload = (body, options) =>
   request('/local-llm/download-preflight', {
     method: 'POST',
@@ -164,6 +163,10 @@ export const previewLocalLlmDownload = (body, options) =>
     ...options,
   });
 
+// Fetch one speculative-decoding preset's GGUF (role: 'model' | 'draftModel')
+// from Hugging Face into the path the launcher passes llama.cpp. Byte progress
+// arrives on the `llamaServer:download` socket event, not in this response —
+// a multi-GB transfer resolves only when the file is on disk.
 export const downloadSpecDecodeModel = (presetId, role, options) =>
   request('/local-llm/llama-server/download-model', {
     method: 'POST',

@@ -23,6 +23,7 @@ import { ServerError } from '../lib/errorHandler.js';
 import {
   assessDownloadPreflight,
   assertDownloadFits,
+  etagPathFor,
   probeRemoteSize,
   siblingDownloadMeta,
   streamResumableDownload,
@@ -465,6 +466,12 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
       }
       : undefined,
   });
+  // `finalize: false` means streamResumableDownload never had a chance to
+  // clean up its own etag sidecar (that only happens on ITS finalize path).
+  // Reaching here means the stream completed successfully — every branch
+  // below either moves or deletes tmpPath outright, never leaves it for a
+  // future resume, so the sidecar describing it is equally done.
+  await rm(etagPathFor(destPath), { force: true }).catch(() => {});
   if (onProgress) onProgress(lastTick);
   // Atomic no-clobber finalize: `link` is POSIX-atomic and fails with EEXIST
   // when destPath already exists (concurrent install that snuck past our
@@ -658,12 +665,20 @@ const HF_LORA_FAMILY_VALUES = new Set(HF_LORA_FAMILIES);
 // generated filename depends only on `repo` + the picked `file`. Preview
 // therefore never throws HF_UNKNOWN_FAMILY: that check belongs to the actual
 // install, which needs a concrete family for the sidecar metadata.
+// Neither caller threads a cancellation signal into this metadata lookup
+// (only the actual byte-stream download gets one) — a stalled-but-reachable
+// HF would otherwise hang a preview, or an install, indefinitely on this
+// call alone.
+const METADATA_FETCH_TIMEOUT_MS = 10_000;
+
 const resolveHfLoraInstallPlan = async (input, { fetchImpl = fetch } = {}) => {
   const { repo, revision, file: parsedFile } = parseHuggingfaceLoraRef(input?.url);
   // Stored/env/CLI HF token — only needed for gated repos, but harmless to
   // send on public ones (HF ignores a bearer it doesn't require).
   const token = (typeof input?.token === 'string' && input.token.trim()) || (await getHfToken()) || '';
-  const model = await fetchHuggingfaceModel(repo, { token, revision, fetchImpl });
+  const model = await fetchHuggingfaceModel(repo, {
+    token, revision, fetchImpl, signal: AbortSignal.timeout(METADATA_FETCH_TIMEOUT_MS),
+  });
   const preferredFile = input?.file || parsedFile || null;
   const detected = detectHfLoraFamily({ repo, model, file: preferredFile });
 
@@ -707,6 +722,7 @@ const resolveHfLoraInstallPlan = async (input, { fetchImpl = fetch } = {}) => {
     const probed = await probeRemoteSize(buildHfResolveUrl(repo, revision, file), {
       headers: buildHfAuthHeaders(token),
       fetchImpl,
+      signal: AbortSignal.timeout(METADATA_FETCH_TIMEOUT_MS),
     });
     expectedBytes = probed.bytes;
   }

@@ -72,7 +72,17 @@ const mtplxCachePath = () => getHfCacheRoot();
 async function expectedMtplxBytes(repo) {
   if (!repo) return 0;
   const token = await getHfToken();
-  const model = await fetchHuggingfaceModel(repo, { token }).catch(() => null);
+  // `usedStorage` (total repo size) is an EXPANDED field — the default model
+  // response omits it, same as siblings omitting per-file sizes — and an MTPLX
+  // pull grabs the whole repo, so there's no single resolve URL to HEAD/probe
+  // the way the other download paths do. A stalled-but-reachable HF gets a
+  // real timeout rather than blocking the preflight (and the pull behind it)
+  // indefinitely — this call sits in front of the actual download now.
+  const model = await fetchHuggingfaceModel(repo, {
+    token,
+    expand: 'usedStorage',
+    signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+  }).catch(() => null);
   return Number(model?.usedStorage) || 0;
 }
 

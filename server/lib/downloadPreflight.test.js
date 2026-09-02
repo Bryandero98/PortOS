@@ -366,6 +366,97 @@ describe('streamResumableDownload', () => {
     expect(secondCallHeaders['If-Range']).toBe('"abc123"');
   });
 
+  // RFC 9110 §13.1.5 excludes WEAK etags (`W/"…"`) from If-Range use — a
+  // conforming origin always evaluates a weak If-Range as non-matching and
+  // answers 200, so saving/sending one would turn every resume into a full
+  // restart instead of the intended change-detection guard.
+  it('never records or sends a weak ETag as If-Range', async () => {
+    const destPath = await makeDir();
+    await streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      finalize: false,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (name) => ({ 'content-length': '6', etag: 'W/"abc123"' }[name] || null) },
+        body: webBody('gg', 'ufgg'),
+      }),
+    });
+    expect(await readFile(`${partialPathFor(destPath)}.etag`, 'utf8').catch(() => null)).toBeNull();
+
+    await writeFile(partialPathFor(destPath), 'gg');
+    let secondCallHeaders;
+    await streamResumableDownload({
+      url: 'https://example.com/w.gguf',
+      destPath,
+      fetchImpl: async (_url, opts) => {
+        secondCallHeaders = opts.headers;
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => ({ 'content-length': '4', 'content-range': 'bytes 2-5/6' }[name] || null) },
+          body: webBody('ufgg'),
+        };
+      },
+    });
+    expect(secondCallHeaders['If-Range']).toBeUndefined();
+  });
+
+  // A proxy that normalizes/ignores the exact byte offset can answer 206
+  // starting somewhere OTHER than requested — appending that onto our
+  // existing prefix at `flags: 'a'` would corrupt the file, so this must be
+  // treated the same as a Range-ignored 200: discard and restart clean.
+  it('discards and restarts when a 206 resumes from the wrong offset', async () => {
+    const destPath = await makeDir();
+    await writeFile(partialPathFor(destPath), 'gg');
+    let callCount = 0;
+    const fetchImpl = async (_url, opts) => {
+      callCount += 1;
+      if (callCount === 1) {
+        expect(opts.headers.Range).toBe('bytes=2-');
+        return {
+          ok: true,
+          status: 206,
+          // Resumed from byte 0, not the byte 2 we asked for.
+          headers: { get: (name) => ({ 'content-length': '6', 'content-range': 'bytes 0-5/6' }[name] || null) },
+          body: webBody('ggufgg'),
+        };
+      }
+      expect(opts.headers.Range).toBeUndefined();
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-length' ? '6' : null) },
+        body: webBody('ggufgg'),
+      };
+    };
+    const result = await streamResumableDownload({ url: 'https://example.com/w.gguf', destPath, fetchImpl });
+    expect(callCount).toBe(2);
+    expect(result.resumed).toBe(false);
+    expect(await readFile(destPath, 'utf8')).toBe('ggufgg');
+  });
+
+  // A body that ends cleanly (no stream error) short of the advertised total
+  // is a truncation — without a published digest to catch it (the HF LoRA
+  // path has none), a short file would otherwise be renamed into place and
+  // treated as a complete, selectable model.
+  it('refuses a cleanly-closed response that fell short of Content-Length', async () => {
+    const destPath = await makeDir();
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-length' ? '10' : null) },
+      body: webBody('short'), // 5 bytes, advertised 10
+    });
+    await expect(streamResumableDownload({
+      url: 'https://example.com/w.gguf', destPath, fetchImpl,
+    })).rejects.toMatchObject({ code: 'DOWNLOAD_TRUNCATED' });
+    // Kept for a future resume, exactly like a transport-error partial.
+    expect(await readFile(partialPathFor(destPath), 'utf8')).toBe('short');
+    expect(await readFile(destPath).catch(() => null)).toBeNull();
+  });
+
   // The 416 restart path deletes the partial and recurses with resumeFrom
   // reset to 0 — the recursive call's own "Range ignored" recheck never
   // fires (resumeFrom is already 0 there), so without an explicit recheck
