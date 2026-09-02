@@ -30,6 +30,7 @@ import BrainParitySchedule from '../components/instances/BrainParitySchedule';
 import TailnetHelpBanner from '../components/instances/TailnetHelpBanner';
 import { timeAgo, timeUntil } from '../utils/formatters';
 import { directionalCounts, describeDirectional } from '../lib/syncCounts';
+import PageSkeleton from '../components/ui/PageSkeleton';
 
 const STATUS_COLORS = {
   online: 'text-port-success',
@@ -1295,9 +1296,15 @@ export default function Instances() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading instances...</div>
-      </div>
+      <PageSkeleton
+        label="Loading instances"
+        headerRowClass="flex items-center gap-3"
+        titleWidthClass="w-40"
+        showAction={false}
+        layout="grid"
+        gridColsClass="md:grid-cols-2"
+        cards={4}
+      />
     );
   }
 

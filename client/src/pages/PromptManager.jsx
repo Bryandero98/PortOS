@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import { FileText, Variable, RefreshCw, Save, Plus, Trash2, Eye, Briefcase, Search, X, ChevronRight, ChevronDown } from 'lucide-react';
 import toast from '../components/ui/Toast';
-import BrailleSpinner from '../components/BrailleSpinner';
 import ProviderModelSelector from '../components/ProviderModelSelector';
 import { filterSelectableModels, getProviderTimeout } from '../utils/providers';
 import {
@@ -14,6 +13,7 @@ import {
 } from '../utils/formatters';
 import useFieldDraft from '../hooks/useFieldDraft';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import PageHeader from '../components/PageHeader';
 import { FormField } from '../components/ui/FormField';
 import Modal from '../components/ui/Modal';
@@ -462,8 +462,8 @@ export default function PromptManager() {
       <div className="flex flex-col h-full">
         <PageHeader icon={FileText} title="Prompt Manager" subtitle={PAGE_SUBTITLE} />
         <SettingsTabsHeader activeTab="prompts" />
-        <div className="flex-1 flex items-center justify-center">
-          <BrailleSpinner text="Loading prompts" />
+        <div className="flex-1 overflow-auto p-4">
+          <PageSkeleton header="none" label="Loading prompts" cards={3} sidebar={false} />
         </div>
       </div>
     );
