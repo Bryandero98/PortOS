@@ -1014,7 +1014,7 @@ export default function GitTab({ appId, appName, repoPath }) {
         size="none"
         align="none"
         backdropClassName="bg-black/50"
-        panelClassName="bg-port-card border border-port-border rounded-xl w-3/4 max-h-[80vh] overflow-hidden"
+        panelClassName="bg-port-card border border-port-border rounded-xl w-3/4 overflow-hidden"
         ariaLabelledBy="git-diff-modal-title"
       >
         <div className="flex items-center justify-between p-4 border-b border-port-border">

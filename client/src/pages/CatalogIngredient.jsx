@@ -1390,9 +1390,9 @@ function GalleryPickerModal({ onClose, onPick }) {
 
   return (
     <Modal open onClose={onClose} size="lg" ariaLabelledBy="gallery-picker-title"
-      panelClassName="bg-port-card border border-port-border rounded-lg max-h-[80vh] overflow-hidden flex flex-col">
+      panelClassName="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">
       {/* Header + scroll area must be DIRECT flex children of the panel (a
-          fragment, not a wrapping <div>) so the panel's max-h-[80vh] flex
+          fragment, not a wrapping <div>) so the panel's clamped flex
           column constrains the scroll region's height — an intervening
           content-sized <div> would leave `overflow-y-auto` unbounded and clip
           long galleries. */}
