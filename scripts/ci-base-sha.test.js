@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 
 import { resolveBaseSha } from './ci-base-sha.js';
+import { workflowJobs } from './lib/workflowJobs.js';
 
 const WORKFLOW = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', '.github', 'workflows', 'ci.yml'),
@@ -16,23 +17,6 @@ const HEAD = 'b'.repeat(40);
 
 /** A merge-ref checkout: both parents resolve. */
 const mergeRefRevParse = (rev) => ({ 'HEAD^1': BASE, 'HEAD^2': HEAD }[rev] ?? null);
-
-/** Split the workflow into `jobs:` entries keyed by job id. */
-function workflowJobs(yaml) {
-  const body = yaml.slice(yaml.indexOf('\njobs:\n'));
-  const jobs = {};
-  let current = null;
-  for (const line of body.split('\n')) {
-    const header = line.match(/^ {2}([a-z][a-z0-9-]*):\s*$/);
-    if (header) {
-      current = header[1];
-      jobs[current] = [];
-      continue;
-    }
-    if (current) jobs[current].push(line);
-  }
-  return Object.fromEntries(Object.entries(jobs).map(([id, lines]) => [id, lines.join('\n')]));
-}
 
 describe('resolveBaseSha', () => {
   it('reads the base branch off the pull-request merge ref', () => {
