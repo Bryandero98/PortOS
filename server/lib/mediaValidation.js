@@ -247,6 +247,27 @@ export const localLlmSpecModelDownloadSchema = z.object({
   presetId: z.string().trim().min(1).max(100),
   role: z.enum(['model', 'draftModel']),
 });
+// Confirm-step disk preflight for a weight download. Discriminated on `kind`
+// so the server resolves dest + expected size — the client never supplies a
+// path. `insufficient` is returned as a verdict, not thrown, so the confirm
+// UI can disable the button instead of toasting a failure the user hasn't
+// committed to yet. The download endpoints still throw DISK_INSUFFICIENT.
+export const localLlmDownloadPreflightSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('spec-decode'),
+    presetId: z.string().trim().min(1).max(100),
+    role: z.enum(['model', 'draftModel']),
+  }),
+  z.object({
+    kind: z.literal('mtplx'),
+    model: mtplxRepoIdSchema.optional().nullable(),
+  }),
+  z.object({
+    kind: z.literal('install'),
+    backend: localLlmBackendSchema,
+    modelId: localLlmModelIdSchema,
+  }),
+]);
 export const localLlmHuggingFaceSearchSchema = z.object({
   backend: localLlmBackendSchema,
   q: z.string().max(160).optional().default(''),

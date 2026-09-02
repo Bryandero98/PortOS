@@ -8839,6 +8839,14 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/local-llm/download-preflight",
+      "mountPath": "/api/local-llm",
+      "sources": [
+        "server/routes/localLlm.js"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/local-llm/huggingface-search",
       "mountPath": "/api/local-llm",
@@ -9545,6 +9553,14 @@
     {
       "method": "POST",
       "path": "/api/loras/install/huggingface/stream",
+      "mountPath": "/api/loras",
+      "sources": [
+        "server/routes/loras.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/loras/install/preflight",
       "mountPath": "/api/loras",
       "sources": [
         "server/routes/loras.js"
@@ -17457,8 +17473,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2162,
-    "declarations": 2166,
+    "operations": 2164,
+    "declarations": 2168,
     "sourceFiles": 229
   }
 }

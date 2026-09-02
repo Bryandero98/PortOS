@@ -153,6 +153,16 @@ export const installLlamaServer = () =>
 export const upgradeLlamaServer = () =>
   request('/local-llm/llama-server/upgrade', { method: 'POST' });
 
+// Size/destination/free-disk numbers for the confirm step, before any
+// transfer starts. `body.kind` picks which download this previews
+// ('spec-decode' | 'mtplx' | 'install') — see localLlmDownloadPreflightSchema.
+export const previewLocalLlmDownload = (body, options) =>
+  request('/local-llm/download-preflight', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    ...options,
+  });
+
 // Fetch one speculative-decoding preset's GGUF (role: 'model' | 'draftModel')
 // from Hugging Face into the path the launcher passes llama.cpp. Byte progress
 // arrives on the `llamaServer:download` socket event, not in this response —

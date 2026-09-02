@@ -210,6 +210,7 @@ export * from './projectStoreKit.js';
 export * from './createKeyCachedQueue.js';
 export * from './createNewestWinsGuard.js';
 export * from './dataRoot.js';
+export * from './downloadPreflight.js';
 export * from './agentInstructionsFile.js';
 export * from './fileCore.js';
 export * as fileUtils from './fileUtils.js';

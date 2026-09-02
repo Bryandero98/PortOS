@@ -430,6 +430,18 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
   silent,
 });
 
+// `family`/`file` are optional overrides — pass them when the caller already
+// knows the exact target (a curated video suggestion card) so the previewed
+// file matches what the HF install will actually pick. A curated card
+// without one (buildCard's `file: entry.file || null`) must not serialize a
+// literal `null` — the route schema's `.optional()` accepts an ABSENT key,
+// not `null`.
+export const previewLoraInstall = ({ url, source = 'civitai', family, file, silent = false } = {}) => request('/loras/install/preflight', {
+  method: 'POST',
+  body: JSON.stringify({ url, source, ...(family ? { family } : {}), ...(file ? { file } : {}) }),
+  silent,
+});
+
 // Streaming HF LoRA install — reads a byte-level progress stream. Resolves
 // with the new sidecar on the `complete` frame; rejects with an Error carrying
 // `.code` (e.g. 'HF_UNKNOWN_FAMILY', 'HF_ALREADY_INSTALLED') on an `error`

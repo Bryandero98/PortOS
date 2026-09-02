@@ -67,6 +67,8 @@ import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { installLlamaServer } from './llamaServerManager.js';
 import { installMtplx, startMtplxServer, MTPLX_UNSUPPORTED_REASON } from './mtplxServerManager.js';
 import { installSlotstream, startSlotstreamServer, SLOTSTREAM_UNSUPPORTED_REASON } from './slotstreamServerManager.js';
+import { previewMtplxPull } from './mtplxModelManager.js';
+import { assertDownloadFits } from '../lib/downloadPreflight.js';
 import { controlOllamaServer, installBackend } from './localLlm.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
 import { provisionVllmQwenProject, readVllmQwenSetupState, startVllmQwenProject } from './vllmQwenManager.js';
@@ -232,6 +234,13 @@ const rowProvisionAction = (row) => row?.provision?.action || null;
 async function pullMtplxDefaultCheckpoint({ emit, isCancelled }) {
   const binary = findCommandOnPath('mtplx');
   if (!binary) return { success: false, error: '`mtplx` was not found on PortOS\'s PATH. Restart PortOS so it picks up the new bin directory, then try again.' };
+  // Same disk-space guard the Models → LLMs MTPLX card runs before its own
+  // pull — this readiness-checklist button reaches the same `mtplx pull`
+  // with no repo id, so it shares previewMtplxPull's cache path and its
+  // (unknown-size, so effectively best-effort) preflight. A refusal throws;
+  // the SSE route above already treats an unexpected throw from this step as
+  // a clean `{success:false}` termination, not a 500.
+  assertDownloadFits(await previewMtplxPull({}));
   emit('Downloading MTPLX\'s default verified checkpoint. This is a multi-gigabyte download and can take a long while — leave this window open to watch it.');
   // `mtplx pull` redraws one progress line with a bare `\r`; splitting on
   // newlines alone would leave the stream silent for the whole download.
