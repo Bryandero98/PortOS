@@ -121,6 +121,32 @@ export const setUseRunner = (val) => { useRunner = val; };
 // `subAgentSpawner` re-exports it for backward compatibility.
 export const getActiveAgentIds = () => [...activeAgents.keys(), ...runnerAgents.keys()];
 
+/**
+ * Agent ids whose worktree must not be taken out from under them, from an
+ * already-read agent list:
+ *
+ *   - the in-process maps, which are authoritative for THIS process;
+ *   - every persisted `running` agent, which is how a run that survived a server
+ *     restart (the maps are empty then) still counts;
+ *   - every persisted `paused` agent — pausing deliberately preserves the tree as
+ *     resume context, and a paused agent is absent from the maps.
+ *
+ * Under-counting here removes a directory another run is mid-edit in, so the one
+ * definition lives here rather than being restated by each reaper. Takes the
+ * list instead of fetching it, both to stay off `cos.js`'s import path and so a
+ * caller that already read the agents does not read them twice.
+ *
+ * @param {Array<{id?: string, status?: string}>} [agents]
+ * @returns {Set<string>}
+ */
+export const protectedAgentIds = (agents = []) => {
+  const ids = new Set(getActiveAgentIds());
+  for (const agent of agents) {
+    if (agent?.status === 'running' || agent?.status === 'paused') ids.add(agent.id);
+  }
+  return ids;
+};
+
 // Does THIS process already own the agent's lifecycle?
 //
 // Ownership is split across the two maps by spawn mode, and which map an agent

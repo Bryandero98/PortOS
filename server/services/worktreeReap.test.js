@@ -115,12 +115,30 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('isBranchMergedInto', () => {
 
 describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
   let dir;
-  beforeEach(async () => { dir = await initRepo(); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  // One root OUTSIDE the repo for the includeUnmanagedTrees cases, torn down
+  // alongside the repo so a held tree can't leak out of the run.
+  let externalRoot;
+
+  beforeEach(async () => {
+    dir = await initRepo();
+    externalRoot = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-ext-')));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+    await rm(externalRoot, { recursive: true, force: true });
+  });
 
   // The reaper only considers trees under WORKTREES_DIR (the real CoS data dir)
   // or <repo>/.claude/worktrees — so the test trees live under .claude/worktrees.
   const claudeRoot = (d) => join(d, '.claude', 'worktrees');
+
+  /** A worktree in a directory PortOS never created — the unmanaged case. */
+  async function addExternalWorktree(d, name, branch) {
+    const path = join(externalRoot, name);
+    await execGit(['worktree', 'add', '-b', branch, path, 'main'], d);
+    await commitFile(path, `${name}.txt`, `${name}\n`, `${name} work`);
+    return path;
+  }
 
   async function addWorktree(d, name, branch, { commit = true, base = 'main' } = {}) {
     const path = join(claudeRoot(d), name);
@@ -252,6 +270,73 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
     expect(skipReason(result, claimPath)).toBe('worktree-human-claim');
     expect(existsSync(claimPath)).toBe(true);
     expect(existsSync(agentPath)).toBe(false);
+  });
+
+  // The user-initiated "clean merged branches" action reaps whatever worktree
+  // pins a merged branch, wherever it lives — otherwise the button re-offers the
+  // same branch forever. Widening WHERE we look must not widen WHAT we accept,
+  // which is why the claim tree below is still held.
+  it('reaps an unmanaged-location worktree only when includeUnmanagedTrees is set', async () => {
+    const path = await addExternalWorktree(dir, 'loose', 'loose-br');
+    await execGit(['merge', '--no-ff', 'loose-br', '--no-edit'], dir);
+
+    const withoutOptIn = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
+    expect(withoutOptIn.reaped.map(r => r.branch)).not.toContain('loose-br');
+    expect(skipReason(withoutOptIn, path)).toBe('worktree-unmanaged-location');
+    expect(existsSync(path)).toBe(true);
+
+    const withOptIn = await reapMergedWorktrees(dir, { includeUnmanagedTrees: true });
+    expect(
+      withOptIn.reaped.map(r => r.branch),
+      `nothing reaped; skipped = ${JSON.stringify(withOptIn.skipped)}`,
+    ).toContain('loose-br');
+    expect(existsSync(path)).toBe(false);
+  });
+
+  // Dropping the location check must not drop the claim hold with it.
+  it('still refuses a human /claim tree under includeUnmanagedTrees', async () => {
+    const claimPath = await addExternalWorktree(dir, 'claim-issue-7', 'claim/issue-7');
+    await execGit(['merge', '--no-ff', 'claim/issue-7', '--no-edit'], dir);
+
+    const result = await reapMergedWorktrees(dir, { includeUnmanagedTrees: true });
+
+    expect(result.reaped.map(r => r.branch)).toEqual([]);
+    expect(skipReason(result, claimPath)).toBe('worktree-human-claim');
+    expect(existsSync(claimPath)).toBe(true);
+  });
+
+  // A registration git already considers prunable used to fail `git status` in a
+  // missing cwd and be skipped, pinning its branch behind a directory that no
+  // longer exists — the "clean merged" action could then never clear it.
+  it('reaps a merged branch whose worktree directory is already gone', async () => {
+    const path = await addWorktree(dir, 'vanished', 'vanished-br');
+    await execGit(['merge', '--no-ff', 'vanished-br', '--no-edit'], dir);
+    await rm(path, { recursive: true, force: true });
+
+    const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
+
+    expect(
+      result.reaped.map(r => r.branch),
+      `nothing reaped; skipped = ${JSON.stringify(result.skipped)}`,
+    ).toContain('vanished-br');
+    const branches = (await execGit(['branch', '--format=%(refname:short)'], dir)).stdout.trim().split('\n');
+    expect(branches).not.toContain('vanished-br');
+    const listed = (await execGit(['worktree', 'list', '--porcelain'], dir)).stdout;
+    expect(listed).not.toContain('vanished');
+  });
+
+  it('holds a merged + clean tree whose branch is in excludeBranches', async () => {
+    const path = await addWorktree(dir, 'spoken-for', 'spoken-for-br');
+    await execGit(['merge', '--no-ff', 'spoken-for-br', '--no-edit'], dir);
+
+    const result = await reapMergedWorktrees(dir, {
+      includeClaudeTrees: true,
+      excludeBranches: new Set(['spoken-for-br'])
+    });
+
+    expect(result.reaped.map(r => r.branch)).not.toContain('spoken-for-br');
+    expect(skipReason(result, path)).toBe('protected');
+    expect(existsSync(path)).toBe(true);
   });
 
   it('excludes .claude trees when includeClaudeTrees is false', async () => {
