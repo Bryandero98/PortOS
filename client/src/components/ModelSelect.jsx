@@ -10,11 +10,9 @@
 // ProviderModelSelector's `emptyModelOption`). `ariaLabel` / `title` let an
 // inline picker with no visible <label> stay accessible.
 //
-// `loading` renders the picker as a disabled placeholder ("Loading models…")
-// instead of an empty select. Model lists come from a probe that can take a
-// second or two, and a caller that hides the whole field until it lands makes
-// the form jump when it does — so hold the field's place and say why it's
-// empty. `loadingLabel` customizes the placeholder text.
+// `loading` swaps the options for a disabled "Loading models…" placeholder, so
+// a caller whose list arrives from a slow probe can keep the field (and its
+// label) in the form instead of letting it pop in late.
 const defaultGetLabel = (m) => m.name;
 export default function ModelSelect({
   models,
@@ -28,42 +26,30 @@ export default function ModelSelect({
   ariaLabel,
   title,
   loading = false,
-  loadingLabel = 'Loading models…',
 }) {
-  if (loading) {
-    return (
-      <select
-        id={id}
-        value=""
-        disabled
-        aria-busy="true"
-        aria-label={ariaLabel}
-        title={title}
-        className={className}
-        onChange={onChange}
-      >
-        <option value="">{loadingLabel}</option>
-      </select>
-    );
-  }
   const active = models.filter((m) => !m.deprecated);
   const legacy = models.filter((m) => m.deprecated);
   return (
     <select
       id={id}
-      value={value}
+      value={loading ? '' : value}
       onChange={onChange}
-      disabled={disabled}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
       aria-label={ariaLabel}
       title={title}
       className={className}
     >
-      {emptyOption != null && <option value="">{emptyOption}</option>}
-      {active.map((m) => <option key={m.id} value={m.id}>{getLabel(m)}</option>)}
-      {legacy.length > 0 && (
-        <optgroup label="Legacy">
-          {legacy.map((m) => <option key={m.id} value={m.id}>{getLabel(m)}</option>)}
-        </optgroup>
+      {loading ? <option value="">Loading models…</option> : (
+        <>
+          {emptyOption != null && <option value="">{emptyOption}</option>}
+          {active.map((m) => <option key={m.id} value={m.id}>{getLabel(m)}</option>)}
+          {legacy.length > 0 && (
+            <optgroup label="Legacy">
+              {legacy.map((m) => <option key={m.id} value={m.id}>{getLabel(m)}</option>)}
+            </optgroup>
+          )}
+        </>
       )}
     </select>
   );

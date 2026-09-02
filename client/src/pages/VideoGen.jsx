@@ -122,11 +122,10 @@ export default function VideoGen() {
     refreshGrokEnabled();
   };
 
-  // Paint from the previous /status answer while the live probe runs (it shells
-  // out to python and rebuilds the hardware-aware model list on every call).
-  // The cached copy carries `stale: true` and feeds ONLY the model list and the
-  // model-shaping numbers — every connectivity claim below gates on
-  // `statusFresh`, so a stale payload can never report python health.
+  // Paint the model picker from the previous /status answer while the live
+  // probe runs. The cached entry carries `stale: true` and holds nothing but
+  // the model-shaping fields (see lib/videoGenStatusCache.js); connectivity UI
+  // below gates on `statusFresh`.
   const [status, setStatus] = useState(readCachedVideoGenStatus);
   const [statusLoading, setStatusLoading] = useState(true);
   // Grok Build CLI video backend (#2859 phase 2) — surfaced only when the
@@ -807,10 +806,15 @@ export default function VideoGen() {
   // `byovRuntimeMissing` for those models. Without this, a user who installed
   // ONLY a BYOV runtime via the modal would stay stuck behind a "not
   // configured" error from the unrelated legacy probe.
-  // A cached payload says nothing trustworthy about python health, so every
-  // connectivity read below waits for the live probe rather than reporting the
-  // interpreter state of whenever the last visit happened.
+  // A cached entry says nothing about python health, so the connectivity UI
+  // waits for the live probe rather than reporting the interpreter state of
+  // whenever the last visit happened.
   const statusFresh = !!status && !status.stale;
+  // The Model field renders as soon as there is anything to say — the list, or
+  // the fact that it is still being probed. Only a finished probe that named no
+  // model at all takes the field away.
+  const modelsLoading = models.length === 0;
+  const modelFieldVisible = !modelsLoading || statusLoading;
   const notConnected = statusFresh && status.connected === false && !needsByovProbe;
 
   // A federated render answers to the PEER’s readiness, not to this machine’s
@@ -1250,17 +1254,15 @@ export default function VideoGen() {
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {/* The peer advertises its own models; the local list would name
                 none of them, and a stale selection here must not read as the
-                model that rendered the clip. */}
-            {/* The list arrives with /status, which probes python — keep the
-                field (and its label) in place with a loading placeholder rather
-                than letting it pop into the form a second or two later. */}
-            {(models.length > 0 || statusLoading) && !remoteTarget.isRemote && (
+                model that rendered the clip. Locally the field holds its place
+                through the probe rather than popping into the form late. */}
+            {modelFieldVisible && !remoteTarget.isRemote && (
               <FormField className="col-span-2 sm:col-span-3" label="Model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
                 <ModelSelect
                   models={visibleModels}
                   value={modelId}
                   onChange={(e) => handleModelChange(e.target.value)}
-                  loading={models.length === 0}
+                  loading={modelsLoading}
                 />
                 {remixModelFallback && (
                   <p className="mt-1 text-[11px] text-port-accent leading-snug" role="status">

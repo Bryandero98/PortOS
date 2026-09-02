@@ -165,9 +165,6 @@ describe('VideoGen model picker while /status is in flight', () => {
     localStorage.clear();
     sessionStorage.clear();
     state.modelStatuses = {};
-    state.generateVideo.mockReset().mockResolvedValue({ jobId: 'job-1' });
-    state.startDownload.mockReset();
-    state.repairModel.mockReset().mockResolvedValue({ ok: true });
     state.getVideoGenStatus.mockReset().mockResolvedValue(statusPayload());
     state.eventSourceRef.current = null;
     state.attach.mockReset().mockResolvedValue({ filename: 'example.mp4' });
@@ -190,22 +187,24 @@ describe('VideoGen model picker while /status is in flight', () => {
   it('paints the cached model list on the next load instead of waiting for the probe', async () => {
     const first = await renderPage();
     await waitFor(() => expect(screen.getByLabelText('Model')).toHaveValue(MODEL_ONE.id));
-    expect(JSON.parse(sessionStorage.getItem(VIDEO_GEN_STATUS_CACHE_KEY)).models).toHaveLength(2);
+    // Only the model-shaping slice is persisted — python health never is.
+    expect(Object.keys(JSON.parse(sessionStorage.getItem(VIDEO_GEN_STATUS_CACHE_KEY))).sort())
+      .toEqual(['defaultModel', 'models', 'systemMemoryGb']);
     first.unmount();
 
     const resolveStatus = deferredStatus();
     await renderPage();
 
-    // Second visit, probe still in flight: the picker is already populated.
     const field = screen.getByLabelText('Model');
     expect(field).toBeEnabled();
     expect(field).toHaveValue(MODEL_ONE.id);
     await resolveStatus(statusPayload());
   });
 
-  it('never reports python health from the cached payload', async () => {
-    // A stored payload whose probe FAILED. The model list may come from it; the
-    // diagnosis may not — the interpreter can have been fixed since.
+  it('never reports python health from a cached entry', async () => {
+    // A hand-written entry carrying a FAILED probe — the belt to the
+    // projection's braces. The model list may come from storage; the diagnosis
+    // may not, because the interpreter can have been fixed since.
     sessionStorage.setItem(VIDEO_GEN_STATUS_CACHE_KEY, JSON.stringify(statusPayload({
       connected: false,
       reason: 'Python probe failed',
