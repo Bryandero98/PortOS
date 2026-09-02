@@ -146,7 +146,6 @@ export const fixAppViteHosts = (id, body) => request(`/apps/${id}/fix-vite-hosts
 export const archiveApp = (id) => request(`/apps/${id}/archive`, { method: 'POST' });
 export const unarchiveApp = (id) => request(`/apps/${id}/unarchive`, { method: 'POST' });
 export const openAppInEditor = (id) => request(`/apps/${id}/open-editor`, { method: 'POST' });
-export const openAppInClaude = (id) => request(`/apps/${id}/open-claude`, { method: 'POST' });
 export const openAppFolder = (id) => request(`/apps/${id}/open-folder`, { method: 'POST' });
 // The server resolves the real .xcworkspace/.xcodeproj name and opens it on the
 // machine Xcode runs on — so this works from a phone, and a missing project
@@ -172,7 +171,6 @@ export const pullAndUpdateApp = (id, body = {}, options = {}) => request(`/apps/
 // `options` lets a caller suppress request()'s auto-toast with `{ silent: true }`
 // when it already renders its own error UI.
 export const buildApp = (id, options = {}) => request(`/apps/${id}/build`, { method: 'POST', ...options });
-export const getAppStatus = (id) => request(`/apps/${id}/status`);
 export const getAppTaskTypes = (id) => request(`/apps/${id}/task-types`);
 export const toggleAllAppTaskTypes = (id, enabled, options = {}) => request(`/apps/${id}/task-types/all`, {
   method: 'PUT',
@@ -192,13 +190,7 @@ export const bulkUpdateAppTaskTypeOverride = (taskType, { enabled }, options = {
   body: JSON.stringify({ enabled }),
   ...options
 });
-export const detectAppIcons = () => request('/apps/detect-icons', { method: 'POST' });
 export const detectAppIcon = (id) => request(`/apps/${id}/detect-icon`, { method: 'POST' });
-export const getAppLogs = (id, lines = 100, processName) => {
-  const params = new URLSearchParams({ lines: String(lines) });
-  if (processName) params.set('process', processName);
-  return request(`/apps/${id}/logs?${params}`);
-};
 
 export const installXcodeScripts = (id, scripts) => request(`/apps/${id}/xcode-scripts/install`, {
   method: 'POST',

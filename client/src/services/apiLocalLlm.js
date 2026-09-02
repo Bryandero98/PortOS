@@ -172,22 +172,18 @@ export const unloadLmStudioModel = (modelId, options) =>
     ...options,
   });
 
-export const testLocalLlmModel = (payload, options) =>
-  request('/local-llm/test', { method: 'POST', body: JSON.stringify(payload), ...options });
-
 export const compareLocalLlmModels = (payload, options) =>
   request('/local-llm/compare', { method: 'POST', body: JSON.stringify(payload), ...options });
 
-// Streaming variant of testLocalLlmModel. POSTs the same payload but reads the
-// NDJSON response body so `onToken(delta, kind)` fires per chunk for live
-// rendering — kind is 'content' or 'reasoning' so the caller can render a
-// reasoning model's chain-of-thought on its own channel. Resolves with the
-// terminal result object (same shape as
-// testLocalLlmModel, including `error`/`text` for a timed-out partial). The
-// caller passes `signal` to cancel — aborting rejects the read with AbortError,
-// which the caller should swallow when `signal.aborted` (intentional cancel).
-// Can't use the EventSource-based useSseProgress hook here: that's GET-only and
-// this request carries a prompt body.
+// Streaming playground test. POSTs the prompt payload and reads the NDJSON
+// response body so `onToken(delta, kind)` fires per chunk for live rendering —
+// kind is 'content' or 'reasoning' so the caller can render a reasoning model's
+// chain-of-thought on its own channel. Resolves with the terminal result object
+// (including `error`/`text` for a timed-out partial). The caller passes
+// `signal` to cancel — aborting rejects the read with AbortError, which the
+// caller should swallow when `signal.aborted` (intentional cancel). Can't use
+// the EventSource-based useSseProgress hook here: that's GET-only and this
+// request carries a prompt body.
 export async function streamLocalLlmTest(payload, { signal, onToken } = {}) {
   const response = await fetch(`${API_BASE}/local-llm/test/stream`, {
     method: 'POST',
