@@ -9,6 +9,12 @@
 // it for "optional model / fall back to the server default" pickers (mirrors
 // ProviderModelSelector's `emptyModelOption`). `ariaLabel` / `title` let an
 // inline picker with no visible <label> stay accessible.
+//
+// `loading` renders the picker as a disabled placeholder ("Loading models…")
+// instead of an empty select. Model lists come from a probe that can take a
+// second or two, and a caller that hides the whole field until it lands makes
+// the form jump when it does — so hold the field's place and say why it's
+// empty. `loadingLabel` customizes the placeholder text.
 const defaultGetLabel = (m) => m.name;
 export default function ModelSelect({
   models,
@@ -21,7 +27,25 @@ export default function ModelSelect({
   emptyOption,
   ariaLabel,
   title,
+  loading = false,
+  loadingLabel = 'Loading models…',
 }) {
+  if (loading) {
+    return (
+      <select
+        id={id}
+        value=""
+        disabled
+        aria-busy="true"
+        aria-label={ariaLabel}
+        title={title}
+        className={className}
+        onChange={onChange}
+      >
+        <option value="">{loadingLabel}</option>
+      </select>
+    );
+  }
   const active = models.filter((m) => !m.deprecated);
   const legacy = models.filter((m) => m.deprecated);
   return (
