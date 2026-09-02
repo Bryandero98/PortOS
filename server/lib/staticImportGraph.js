@@ -232,5 +232,12 @@ export function findImportCycleComponents(graph) {
   };
 
   for (const node of graph.keys()) if (!index.has(node)) visit(node);
-  return components.sort((a, b) => (a.join() < b.join() ? -1 : 1));
+  // Components partition the nodes, so the first member of each is unique and
+  // orders them totally. Compared by code point rather than `localeCompare`:
+  // locale-dependent order is exactly the machine-to-machine variation this
+  // function exists to keep out of a baseline.
+  return components.sort((a, b) => {
+    if (a[0] === b[0]) return 0;
+    return a[0] < b[0] ? -1 : 1;
+  });
 }
