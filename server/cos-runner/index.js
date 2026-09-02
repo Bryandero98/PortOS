@@ -928,17 +928,33 @@ async function cleanupOrphanedAgents() {
 server.listen(PORT, HOST, async () => {
   console.log(`🤖 CoS Agent Runner started on http://${HOST}:${PORT}`);
 
-  // Ensure agents directory exists
-  if (!existsSync(AGENTS_DIR)) {
-    await ensureDir(AGENTS_DIR);
+  // Ensure agents directory exists. try/catch is mandatory: this listener runs
+  // outside the request lifecycle, so a rejected await here escapes as an
+  // unhandled rejection and takes the runner down at boot (fatal on Node >= 15).
+  try {
+    if (!existsSync(AGENTS_DIR)) {
+      await ensureDir(AGENTS_DIR);
+    }
+  } catch (err) {
+    console.error(`❌ Agents dir setup failed: ${err.message}`);
   }
 
   // Delay orphan cleanup to allow socket connections to establish
   // This ensures completion events reach the main server for task retry
   setTimeout(async () => {
-    const orphaned = await cleanupOrphanedAgents();
-    if (orphaned.length > 0) {
-      console.log(`🧹 Cleaned ${orphaned.length} orphaned agent(s)`);
+    // Same rule, and this body is the one that reads and rewrites the agent
+    // state file: a truncated/corrupt `agents.json` or an EACCES rejects out of
+    // an async timer callback with no owner, killing the runner seconds after
+    // boot and leaving PM2 to restart-loop it against the same bad file.
+    // Log and continue — a corrupt state file must not stop the runner from
+    // accepting new work, and the sweep re-runs on the next restart.
+    try {
+      const orphaned = await cleanupOrphanedAgents();
+      if (orphaned.length > 0) {
+        console.log(`🧹 Cleaned ${orphaned.length} orphaned agent(s)`);
+      }
+    } catch (err) {
+      console.error(`❌ Orphan cleanup failed: ${err.message}`);
     }
   }, ORPHAN_CLEANUP_DELAY_MS);
 });
