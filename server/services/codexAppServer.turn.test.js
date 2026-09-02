@@ -197,11 +197,11 @@ describe('running a text turn', () => {
       controller.abort();
       child.reply(frame, { thread: { id: 'thread-1' } });
     });
-    await awaitRequest(child, 'turn/start', { turn: { id: 'turn-1', items: [], status: 'inProgress' } });
 
     await expect(promise).rejects.toMatchObject({ code: CODEX_TURN_ERROR_CODES.turnInterrupted });
-    await vi.waitFor(() => expect(child.lastRequest('turn/interrupt')).toBeTruthy());
-    expect(child.lastRequest('turn/interrupt').params).toEqual({ threadId: 'thread-1', turnId: 'turn-1' });
+    // Cancellation is surfaced without dispatching the turn at all, so Stop
+    // neither spends quota nor waits out a `turn/start` round trip.
+    expect(child.lastRequest('turn/start')).toBeUndefined();
   });
 
   it('carries a quota failure out as a usage-limit category', async () => {

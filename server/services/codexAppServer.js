@@ -848,6 +848,11 @@ export async function runCodexTextTurn({
   else signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
+    // Already aborted: `onAbort` has rejected `finished`, so awaiting it here
+    // surfaces the cancellation WITHOUT dispatching a turn — no quota is spent,
+    // and Stop does not have to wait out a `turn/start` response that would
+    // only be thrown away. The `finally` below still runs the shared cleanup.
+    if (signal?.aborted) await finished;
     const response = await sendRequest(owner, CODEX_TURN_RPC.turnStart, {
       threadId,
       input: [{ type: 'text', text: prompt }],
