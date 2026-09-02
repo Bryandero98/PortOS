@@ -87,7 +87,13 @@ vi.mock('../services/api', () => ({
 import { __resetInstanceFeatureCache } from '../hooks/useInstanceFeatures.js';
 
 import { NAV_COMMANDS } from '../../../server/lib/navManifest.js';
-import Layout, { isFullWidthRoute, NAV_PRESENTATION } from './Layout';
+import Layout, {
+  isFullWidthRoute,
+  NAV_PRESENTATION,
+  SECTIONS_BEFORE_GOALS,
+  SECTIONS_AFTER_GOALS,
+  SECTIONS_BELOW_MORE,
+} from './Layout';
 
 const LocationProbe = () => {
   const location = useLocation();
@@ -484,5 +490,40 @@ describe('Layout — isFullWidthRoute classification', () => {
     ['/songbook', true], ['/', false],
   ])('%s -> %s', (pathname, expected) => {
     expect(isFullWidthRoute(pathname)).toBe(expected);
+  });
+});
+
+// The sidebar's section grouping used to be three numeric slices into a single
+// flat SECTION_ORDER array, so inserting a section at its alphabetical position
+// silently pushed a real section (e.g. Settings) past the "More" divider with
+// nothing to catch it. The groups are named lists now; this locks the two
+// invariants that made the slices fragile.
+describe('Layout — sidebar section grouping', () => {
+  const alphabetical = (list) => [...list].sort((a, b) => a.localeCompare(b));
+
+  it.each([
+    ['SECTIONS_BEFORE_GOALS', SECTIONS_BEFORE_GOALS],
+    ['SECTIONS_AFTER_GOALS', SECTIONS_AFTER_GOALS],
+  ])('%s stays alphabetical', (_name, list) => {
+    expect(list).toEqual(alphabetical(list));
+  });
+
+  // SECTIONS_BELOW_MORE is deliberately NOT alphabetical relative to the other
+  // two — it is the below-the-fold bucket — so it is exempt from the sort check
+  // but still has to be disjoint and complete.
+  it('groups every presented section exactly once', () => {
+    const grouped = [...SECTIONS_BEFORE_GOALS, ...SECTIONS_AFTER_GOALS, ...SECTIONS_BELOW_MORE];
+    expect(new Set(grouped).size).toBe(grouped.length);
+
+    // `Main` (Dashboard/Review/Eidoverse plus the dynamic Apps row) and `Goals`
+    // render as standalone top-level rows, not as collapsible section groups.
+    const UNGROUPED_SECTIONS = new Set(['Main', 'Goals']);
+    const sectionByPath = new Map(NAV_COMMANDS.map((command) => [command.path, command.section]));
+    const presented = new Set(
+      Object.keys(NAV_PRESENTATION)
+        .map((path) => sectionByPath.get(path))
+        .filter((section) => section && !UNGROUPED_SECTIONS.has(section)),
+    );
+    expect(alphabetical([...presented])).toEqual(alphabetical(grouped));
   });
 });
