@@ -6,10 +6,6 @@ vi.mock('../../services/api', () => ({
   getLocalLlmStatus: vi.fn(),
   getLocalLlmCatalog: vi.fn(),
   getLocalLlmHuggingFaceSearch: vi.fn(),
-  getModelAbuseGuardStatus: vi.fn(),
-  getHfTokenStatus: vi.fn(),
-  installModelAbuseGuard: vi.fn(),
-  cancelModelAbuseGuardInstall: vi.fn(),
   installLocalLlmModel: vi.fn(),
   deleteLocalLlmModel: vi.fn(),
   switchLocalLlmBackend: vi.fn(),
@@ -44,15 +40,14 @@ vi.mock('../../services/socket', () => ({
 vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
+vi.mock('../models/ModelAbuseGuardPanel.jsx', () => ({
+  default: () => <section id="llm-management-panel-abuse" role="tabpanel" aria-labelledby="tab-abuse" data-testid="model-abuse-guard-card">abuse panel</section>,
+}));
 
 import {
   deleteLocalLlmModel,
   getLocalLlmStatus,
   getLocalLlmCatalog,
-  getModelAbuseGuardStatus,
-  getHfTokenStatus,
-  installModelAbuseGuard,
-  cancelModelAbuseGuardInstall,
   installLocalLlmBackend,
   patchSettingsSlice,
   installLocalLlmModel,
@@ -79,6 +74,8 @@ const renderTab = async (view = 'runtimes') => {
   await waitFor(() => expect(screen.getByRole('tabpanel')).toHaveAttribute('id', `llm-management-panel-${view}`));
   if (view === 'library') {
     await waitFor(() => expect(screen.getByText(/Installed on (Ollama|LM Studio)/)).toBeTruthy());
+  } else if (view === 'abuse') {
+    await waitFor(() => expect(screen.getByTestId('model-abuse-guard-card')).toBeInTheDocument());
   } else {
     await waitFor(() => expect(screen.getByTitle(/PortOS routes local-LLM runs here by default/)).toBeInTheDocument());
   }
@@ -110,18 +107,6 @@ beforeEach(() => {
     lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
   });
   getLocalLlmCatalog.mockResolvedValue({ models: [] });
-  getModelAbuseGuardStatus.mockResolvedValue({
-    id: 'llama-prompt-guard-2-86m',
-    name: 'Llama Prompt Guard 2 86M',
-    repository: 'meta-llama/Llama-Prompt-Guard-2-86M',
-    sourceUrl: 'https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M',
-    ready: false,
-    modelCached: false,
-    runtimeReady: false,
-  });
-  getHfTokenStatus.mockResolvedValue({ hfTokenPresent: true, source: 'stored' });
-  installModelAbuseGuard.mockResolvedValue({ ok: true, ready: true });
-  cancelModelAbuseGuardInstall.mockResolvedValue({ cancelled: true });
   installLocalLlmBackend.mockResolvedValue({ success: true });
   patchSettingsSlice.mockResolvedValue({});
   deleteLocalLlmModel.mockResolvedValue({ success: true });
@@ -133,6 +118,15 @@ describe('LocalLlmTab information architecture', () => {
 
     expect(screen.getByRole('heading', { name: 'Local Runtime Servers' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Models' })).not.toBeInTheDocument();
+    expect(getLocalLlmCatalog).not.toHaveBeenCalled();
+  });
+
+  it('gives the model-abuse guard its own panel without mounting the catalog', async () => {
+    await renderTab('abuse');
+
+    expect(screen.getByTestId('model-abuse-guard-card')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Models' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Local Runtime Servers' })).not.toBeInTheDocument();
     expect(getLocalLlmCatalog).not.toHaveBeenCalled();
   });
 
@@ -153,6 +147,15 @@ describe('LocalLlmTab information architecture', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Model Library' }));
     expect(screen.getByTestId('location')).toHaveTextContent('/models/llms/library');
+    fireEvent.click(screen.getByRole('tab', { name: 'Abuse Guard' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/models/llms/abuse');
+  });
+
+  it('keeps the model-abuse guard off the catalog panel', async () => {
+    await renderTab('library');
+
+    expect(screen.queryByRole('heading', { name: 'Model-abuse guard' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Models' })).toBeInTheDocument();
   });
 });
 
@@ -487,21 +490,6 @@ describe('LocalLlmTab recommendations', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Coding & agents (1)' }));
     await waitFor(() => expect(screen.getByText('Qwen3.8 27B')).toBeTruthy());
-  });
-
-  it('highlights the managed model-abuse guard separately from the chat catalog', async () => {
-    getLocalLlmCatalog.mockResolvedValue({
-      models: [],
-      securityGuards: [{ id: 'llama-prompt-guard-2-86m' }],
-    });
-
-    await renderTab('library');
-
-    expect(await screen.findByRole('heading', { name: 'Model-abuse guard' })).toBeInTheDocument();
-    expect(screen.getByText('Recommended safety layer · managed classifier')).toBeInTheDocument();
-    expect(screen.getByText('Llama Prompt Guard 2 86M')).toBeInTheDocument();
-    expect(screen.queryByText('Recommended for Security Scan')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Install model-abuse guard' })).toBeInTheDocument();
   });
 
   it('offers redownload on an already-installed catalog card', async () => {

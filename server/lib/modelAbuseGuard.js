@@ -67,6 +67,68 @@ export const MODEL_ABUSE_GUARD_PYTHON_IMPORTS = Object.freeze([
   'huggingface_hub'
 ]);
 
+// Operator-facing install stages, in the order `installModelAbuseGuard` runs
+// them. Status maps host facts onto this list; the UI must not invent a
+// parallel checklist. Token presence is a boolean on the stage — never a token
+// value, path, or exception string.
+export const MODEL_ABUSE_GUARD_STAGES = Object.freeze([
+  {
+    id: 'huggingface-token',
+    label: 'Hugging Face access token',
+    description: 'A read token plus gated-model approval on the Prompt Guard model card.',
+  },
+  {
+    id: 'python',
+    label: 'Host Python',
+    description: 'A Python interpreter PortOS can use as the base for the dedicated runtime.',
+  },
+  {
+    id: 'venv',
+    label: 'Dedicated Prompt Guard runtime',
+    description: 'A private virtualenv that never shares packages with image or video generation.',
+  },
+  {
+    id: 'packages',
+    label: 'Classifier packages',
+    description: 'Pinned torch, transformers, safetensors, and huggingface_hub imports.',
+  },
+  {
+    id: 'model',
+    label: 'Pinned model snapshot',
+    description: 'The five required Prompt Guard files from the pinned revision.',
+  },
+]);
+
+/**
+ * Map host facts onto the fixed install-stage list.
+ *
+ * `ready` on the envelope is the scan-time gate (cached weights + importable
+ * runtime). Token/Python/venv are prerequisites the installer still has to
+ * clear; they do not by themselves make the classifier usable.
+ */
+export function modelAbuseGuardStageReadiness({
+  huggingfaceTokenPresent = false,
+  pythonAvailable = false,
+  venvReady = false,
+  runtimeReady = false,
+  modelCached = false,
+} = {}) {
+  const readyById = {
+    'huggingface-token': huggingfaceTokenPresent === true,
+    python: pythonAvailable === true,
+    venv: venvReady === true,
+    packages: runtimeReady === true,
+    model: modelCached === true,
+  };
+  return {
+    stages: MODEL_ABUSE_GUARD_STAGES.map((stage) => ({
+      ...stage,
+      ready: readyById[stage.id] === true,
+    })),
+    ready: runtimeReady === true && modelCached === true,
+  };
+}
+
 // Read the complete supplied item up to this bound. Never truncate and then
 // treat the prefix as a trustworthy verdict.
 export const MODEL_ABUSE_GUARD_MAX_INPUT_CHARS = 2_000_000;

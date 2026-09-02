@@ -94,7 +94,7 @@ const router = Router()
 
 const emitter = (req) => {
   const io = req.app.get('io')
-  return (event, message) => io?.emit('localLlm:progress', { event, message })
+  return (event, message, extra) => io?.emit('localLlm:progress', { event, message, ...extra })
 }
 
 // GET /api/local-llm/status — both backends + active marker
@@ -191,7 +191,7 @@ router.get('/security-guard/status', asyncHandler(async (_req, res) => {
 router.post('/security-guard/install', asyncHandler(async (req, res) => {
   const emit = emitter(req)
   const result = await installModelAbuseGuard({
-    onEvent: ({ event, message }) => emit(event, message),
+    onEvent: ({ event, message, stage }) => emit(event, message, { scope: 'security-guard', stage }),
   })
   if (!result?.ok) {
     const code = result?.code || 'security-guard-install-failed'
@@ -200,7 +200,7 @@ router.post('/security-guard/install', asyncHandler(async (req, res) => {
       : code === 'security-guard-huggingface-access-required'
         ? 'Hugging Face has not granted Prompt Guard access yet. Submit the usage request on its model card, then retry.'
         : code
-    emit('error', message)
+    emit('error', message, { scope: 'security-guard' })
     throw new ServerError(message, { status: 502, code })
   }
   res.json(result)
