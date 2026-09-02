@@ -11,7 +11,7 @@ import { join } from 'path';
 import { readJSONFile, ensureDir, PATHS, dataPath, atomicWrite } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { instanceEvents } from './instanceEvents.js';
-import { getPeers, DEFAULT_SYNC_CATEGORIES, allSyncCategoriesOn, updatePeer, getInstanceId, UNKNOWN_INSTANCE_ID } from './instances.js';
+import { getPeers, resolveEffectiveCategories, updatePeer, getInstanceId, UNKNOWN_INSTANCE_ID } from './instances.js';
 import { peerBaseUrl } from '../lib/peerUrl.js';
 import { peerAuthHeaders } from '../lib/peerHttpClient.js';
 import * as brainSync from './brainSync.js';
@@ -444,25 +444,10 @@ function detectCursorReset(cursor, peer) {
   return corrected;
 }
 
-/**
- * Resolve effective sync categories for a peer.
- * Returns object with boolean flags for each category.
- * Falls back to legacy behavior: if syncCategories is absent but syncEnabled is true,
- * enable brain + memory for backward compatibility with older peers.
- */
-function getEffectiveCategories(peer) {
-  // A full-sync ("mirror everything") peer pulls EVERY snapshot category from
-  // its mirror, regardless of the stored per-category map — including a category
-  // added in a later version (allSyncCategoriesOn derives off
-  // DEFAULT_SYNC_CATEGORIES, so it stays current automatically).
-  if (peer.fullSync === true) return allSyncCategoriesOn();
-  if (peer.syncCategories) return peer.syncCategories;
-  // Legacy fallback: peers without syncCategories but with syncEnabled get brain+memory
-  if (peer.syncEnabled !== false) {
-    return { ...DEFAULT_SYNC_CATEGORIES, brain: true, memory: true };
-  }
-  return { ...DEFAULT_SYNC_CATEGORIES };
-}
+// The effective category map lives in instances.js, next to the defaults it
+// resolves against, so the sync loop and the client-facing peer payload
+// (sanitizePeerForClient) can't drift apart on what "on" means for a peer.
+const getEffectiveCategories = resolveEffectiveCategories;
 
 /**
  * Sync a snapshot-based data category from a peer.
@@ -818,7 +803,13 @@ export async function syncWithPeer(peer) {
  * Check if a peer has any sync category enabled
  */
 function hasAnySyncEnabled(peer) {
-  if (peer.syncEnabled === false) return false;
+  // `enabled: false` is the switch that stops everything, and it is checked HERE
+  // rather than only in syncAllPeers: the `peer:online` handler gates solely on
+  // this function, and a default-ON category makes it truthy for almost every
+  // peer — so without this a disabled peer would still sync the moment a manual
+  // Connect flipped its status. No `syncEnabled === false` short-circuit though:
+  // getEffectiveCategories already masks that peer down to its default-ON set.
+  if (peer.enabled === false) return false;
   const cats = getEffectiveCategories(peer);
   return Object.values(cats).some(Boolean);
 }
