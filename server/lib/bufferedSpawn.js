@@ -424,3 +424,29 @@ export function spawnFailureDetail(result, fallback) {
   if (stdoutTail && !/^[}\]]+,?$/.test(stdoutTail)) return stdoutTail;
   return fallback;
 }
+
+/**
+ * Attach the no-op `'error'` listener every spawned child's `stdin` needs before
+ * anything writes to it.
+ *
+ * A child that dies before reading its stdin (a CLI that isn't on PATH, or one
+ * that exits on a bad flag) makes the pipe emit `EPIPE`. A stream `'error'` with
+ * no listener is re-thrown by Node, and every spawn site here runs OUTSIDE the
+ * Express request lifecycle — there is no `next(err)` to bubble to, so the throw
+ * takes down the single server process that owns every live agent run, PTY
+ * shell, media job and socket. Swallowing it is correct: the child's own
+ * `'error'`/`'exit'`/`'close'` handler is the authoritative settle point and
+ * reports the real cause.
+ *
+ * A crash guard must never be the crash: a `spawn()` that failed command lookup
+ * hands back a handle with no stdio at all, and a child configured with a
+ * non-pipe stdin has no emitter to listen on either. Both are a no-op here
+ * rather than a `TypeError` thrown from the very line meant to prevent one.
+ *
+ * @param {import('child_process').ChildProcess} child
+ * @returns {import('child_process').ChildProcess} the same child, for chaining
+ */
+export function guardChildStdin(child) {
+  if (typeof child?.stdin?.on === 'function') child.stdin.on('error', () => {});
+  return child;
+}

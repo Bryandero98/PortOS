@@ -82,7 +82,11 @@ vi.mock('fs', () => ({ existsSync: vi.fn().mockReturnValue(false) }));
 // Default passthrough for the Windows resolve+wrap helper (#2243) — POSIX
 // behavior. A specific test overrides it with mockReturnValueOnce to assert the
 // spawn wiring uses whatever prepareCliSpawn returns.
-vi.mock('../lib/bufferedSpawn.js', () => ({
+// Only the two spawn-shaping helpers are stubbed. `guardChildStdin` stays REAL
+// so the stdin-EPIPE containment test below pins the production listener rather
+// than a test double of it.
+vi.mock('../lib/bufferedSpawn.js', async (importActual) => ({
+  ...(await importActual()),
   prepareCliSpawn: vi.fn((command, args) => ({ command, args })),
   killProcessTree: vi.fn(),
 }));
@@ -525,7 +529,10 @@ describe('stream error containment', () => {
     const proc = new EventEmitter();
     if (!noStdin) {
       proc.pid = 12345;
-      proc.stdin = { write: vi.fn(), end: vi.fn() };
+      // A real ChildProcess stdin is a stream, so the fake is one too — otherwise
+      // the production `guardChildStdin` listener has nothing to attach to and the
+      // stdin-EPIPE path below would be tested against a shape that can't occur.
+      proc.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn() });
     }
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
@@ -632,6 +639,30 @@ describe('stream error containment', () => {
 
       const lines = agentStateMocks.appendAgentOutputLines.mock.calls.flatMap(([, batch]) => batch);
       expect(lines.some((line) => line.includes('ENOENT'))).toBe(true);
+    });
+
+    it('contains an EPIPE on stdin from a child that died before reading the prompt', async () => {
+      // Two hazards in one shape, both fatal to the WHOLE server process because
+      // this runs outside the Express request lifecycle (no next(err) to bubble to):
+      //   1. a synchronous throw from stdin.write on an already-destroyed pipe, and
+      //   2. an 'error' emitted on the stdin stream with no listener, which Node re-throws.
+      // Regression guard for the listener drifting back below the write.
+      const epipe = () => Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+      fakeProcess = makeFakeProcess();
+      fakeProcess.stdin = Object.assign(new EventEmitter(), {
+        write: vi.fn(() => { throw epipe(); }),
+        end: vi.fn(),
+      });
+
+      const spawnPromise = spawnDirectly(minimalArgs);
+      await new Promise((r) => setTimeout(r, 10));
+
+      // A listener IS attached, so the late pipe error is swallowed instead of thrown.
+      expect(() => fakeProcess.stdin.emit('error', epipe())).not.toThrow();
+
+      fakeProcess.emit('close', 0);
+      // The synchronous write throw did not escape as a rejected spawn either.
+      await expect(spawnPromise).resolves.toBe('agent-test');
     });
   });
 

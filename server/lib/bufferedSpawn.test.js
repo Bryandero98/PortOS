@@ -29,6 +29,7 @@ const {
   WIN_CMD_SHIMS,
   MAX_OUTPUT_BYTES,
   spawnFailureDetail,
+  guardChildStdin,
 } = await import('./bufferedSpawn.js');
 
 /**
@@ -600,5 +601,32 @@ describe('spawnFailureDetail', () => {
   it('returns the fallback when the command failed without saying anything', () => {
     expect(spawnFailureDetail({}, fallback)).toBe(fallback);
     expect(spawnFailureDetail(null, fallback)).toBe(fallback);
+  });
+});
+
+describe('guardChildStdin', () => {
+  // An 'error' on a stream with no listener is re-thrown by Node. Every CLI-agent
+  // spawn site runs outside the Express request lifecycle, so that throw takes the
+  // whole server process down — with every live agent run, PTY shell and socket on
+  // it. This is the contract those three call sites rely on.
+  it('swallows an EPIPE emitted on the child stdin pipe', () => {
+    const child = { stdin: new EventEmitter() };
+    guardChildStdin(child);
+    expect(() => child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).not.toThrow();
+  });
+
+  it('proves the fake really is unguarded without it (bypass probe)', () => {
+    const child = { stdin: new EventEmitter() };
+    expect(() => child.stdin.emit('error', new Error('write EPIPE'))).toThrow('write EPIPE');
+  });
+
+  it('is a no-op for a spawn that failed command lookup and has no stdio at all', () => {
+    expect(() => guardChildStdin({})).not.toThrow();
+    expect(() => guardChildStdin(null)).not.toThrow();
+  });
+
+  it('returns the child so it can be chained at a spawn site', () => {
+    const child = { stdin: new EventEmitter() };
+    expect(guardChildStdin(child)).toBe(child);
   });
 });

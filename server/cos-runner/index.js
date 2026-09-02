@@ -17,7 +17,7 @@ import { existsSync } from 'fs';
 import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { ensureDir, PATHS, sleep, watchForFile } from '../lib/fileUtils.js';
-import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
+import { prepareCliSpawn, killProcessTree, guardChildStdin } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { commandExists } from '../lib/commandExists.js';
@@ -506,10 +506,20 @@ app.post('/spawn', async (req, res) => {
     workspacePath: cwd
   });
 
+  // Guard the stdin pipe BEFORE writing: a child that exits before reading it
+  // (bad flag, missing CLI) emits EPIPE, and an unlistened stream 'error' out
+  // here crashes the runner process. The 'error'/'close' handlers settle the run.
+  guardChildStdin(claudeProcess);
+
   // Send prompt via stdin (skipped when the prompt was delivered via argv —
   // antigravity's --print value, or grok's Windows temp file).
-  if (useStdin) claudeProcess.stdin.write(prompt);
-  claudeProcess.stdin.end();
+  try {
+    if (useStdin) claudeProcess.stdin.write(prompt);
+    claudeProcess.stdin.end();
+  } catch {
+    // Synchronous write failure (already-destroyed stdin) — the 'error'/'close'
+    // handler settles the run with the real cause.
+  }
 
   // Handle stdout
   claudeProcess.stdout.on('data', (data) => {

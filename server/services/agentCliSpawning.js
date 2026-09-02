@@ -36,7 +36,7 @@ import { buildVendorSpawnConfig } from '../lib/providerVendors.js';
 import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } from '../lib/providerModels.js';
 import { resolveForgeTokenEnv } from './git.js';
 import { resolveAgentCliCwd } from '../lib/spawnCwd.js';
-import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
+import { prepareCliSpawn, killProcessTree, guardChildStdin } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../lib/slashdoInvocation.js';
@@ -434,6 +434,10 @@ export async function spawnDirectly({
     if (handleSpawnError) void handleSpawnError(err);
     else pendingSpawnError = err;
   });
+  // Same reasoning for the stdin pipe: a child that exits before reading it
+  // emits EPIPE, and an unlistened stream 'error' out here would crash the
+  // server. The 'error'/'exit' handlers below settle the run with the real cause.
+  guardChildStdin(claudeProcess);
 
   const spawnedPid = claudeProcess.pid;
   if (spawnedPid != null) {
@@ -446,8 +450,13 @@ export async function spawnDirectly({
       prompt: (task.description || '').substring(0, 500)
     });
 
-    if (writePromptToStdin && claudeProcess.stdin) claudeProcess.stdin.write(prompt);
-    claudeProcess.stdin?.end();
+    try {
+      if (writePromptToStdin && claudeProcess.stdin) claudeProcess.stdin.write(prompt);
+      claudeProcess.stdin?.end();
+    } catch {
+      // Synchronous write failure (already-destroyed stdin) — the 'error'/'exit'
+      // handler settles the agent run with the real cause.
+    }
 
     activeAgents.set(agentId, {
       process: claudeProcess,

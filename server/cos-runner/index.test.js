@@ -79,7 +79,10 @@ describe('cos-runner termination', () => {
   // those for real; all this file pins is that index.js delegates to both
   // rather than hand-rolling either.
   it('kills only through the shared killProcessTree helper', () => {
-    expect(RUNNER_SRC).toContain("import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';");
+    // Matched as "killProcessTree is on the bufferedSpawn import line" rather than
+    // as the exact line text — pinning the whole specifier list made an unrelated
+    // helper import (guardChildStdin, #5655) fail a kill-path assertion.
+    expect(RUNNER_SRC).toMatch(/^import \{[^}]*\bkillProcessTree\b[^}]*\} from '\.\.\/lib\/bufferedSpawn\.js';$/m);
     // A BARE `.kill()` is still fine — the sentinel watcher closes a finished
     // TUI session that way, and a bare kill is the one form node-pty accepts
     // on every platform. What must not reappear is a hand-rolled signal kill.
