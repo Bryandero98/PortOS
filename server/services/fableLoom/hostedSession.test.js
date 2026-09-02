@@ -67,9 +67,27 @@ describe('fableLoom hostedSession', () => {
     }],
   };
 
+  // Hosted-session preflight gates on the live network posture. Every test
+  // that isn't specifically exercising the HTTPS gate runs against this
+  // TLS-provisioned snapshot so the rest of the readiness checks are what
+  // the assertion is about.
+  const httpsExposure = () => ({
+    scheme: 'https',
+    httpsEnabled: true,
+    bind: { host: '0.0.0.0', port: 5555, audience: 'all-interfaces' },
+    cert: { mode: 'tailscale', tailscaleHost: 'host-example.example-tailnet.ts.net' },
+  });
+
+  const httpExposure = () => ({
+    ...httpsExposure(),
+    scheme: 'http',
+    httpsEnabled: false,
+  });
+
   beforeEach(() => {
     _resetHostedSessions();
     vi.restoreAllMocks();
+    vi.spyOn(networkExposure, 'getNetworkExposureStatus').mockImplementation(httpsExposure);
     vi.spyOn(records, 'getLoom').mockResolvedValue(mockLoom);
     vi.spyOn(tts, 'synthesize').mockResolvedValue({
       wav: Buffer.from('RIFFmockwavdata'),
@@ -97,11 +115,25 @@ describe('fableLoom hostedSession', () => {
   });
 
   describe('checkHostedSessionReadiness', () => {
-    it('passes readiness when loom, episode, and start scene are configured', async () => {
+    it('passes readiness when loom, episode, and start scene are configured over HTTPS', async () => {
       const result = await checkHostedSessionReadiness({ loomId: 'loom-1', episodeId: 'ep-1' });
       expect(result.ready).toBe(true);
-      expect(result.https.url).toMatch(/^https?:\/\//);
+      expect(result.https.enabled).toBe(true);
+      expect(result.https.url).toMatch(/^https:\/\//);
+      expect(result.checks.https.ok).toBe(true);
       expect(result.checks.host.ok).toBe(true);
+    });
+
+    it('flags error when the install is serving plain HTTP', async () => {
+      vi.spyOn(networkExposure, 'getNetworkExposureStatus').mockImplementation(httpExposure);
+      const result = await checkHostedSessionReadiness({ loomId: 'loom-1', episodeId: 'ep-1' });
+      expect(result.ready).toBe(false);
+      expect(result.https.enabled).toBe(false);
+      expect(result.checks.https.ok).toBe(false);
+      expect(result.https.url).toMatch(/^http:\/\//);
+      expect(result.errors).toContain(
+        'HTTPS is required for mobile device QR microphone join (run npm run setup:cert to enable TLS).',
+      );
     });
 
     it('flags error if start scene is missing', async () => {
@@ -141,6 +173,14 @@ describe('fableLoom hostedSession', () => {
       expect(verifyHostedToken(result.session.id, result.token)).toBe(true);
       expect(verifyHostedToken(result.session.id, 'wrong-token')).toBe(false);
       expect(verifyHostedToken('missing-session', result.token)).toBe(false);
+    });
+
+    it('refuses to start a session on an HTTP-only install with a 412 preflight failure', async () => {
+      vi.spyOn(networkExposure, 'getNetworkExposureStatus').mockImplementation(httpExposure);
+      await expect(createHostedSession('loom-1', 'ep-1', { audioTarget: 'host' })).rejects.toMatchObject({
+        status: 412,
+        code: 'HOSTED_SESSION_PREFLIGHT_FAILED',
+      });
     });
   });
 

@@ -113,12 +113,11 @@ export async function checkHostedSessionReadiness({ loomId, episodeId, loom: cus
 
   // 1. HTTPS & Network Exposure check
   const netStatus = getNetworkExposureStatus();
-  const httpsEnabled = netStatus.httpsEnabled === true || process.env.NODE_ENV === 'test';
   const joinHost = netStatus.cert?.tailscaleHost
     || (netStatus.bind?.host && !isLoopbackHost(netStatus.bind.host) && netStatus.bind.host !== '0.0.0.0' ? netStatus.bind.host : null)
     || 'localhost';
   const joinPort = netStatus.bind?.port || PORTS.API;
-  const isHttps = netStatus.scheme === 'https' || process.env.NODE_ENV === 'test';
+  const isHttps = netStatus.scheme === 'https';
   const httpsUrl = isHttps
     ? `https://${joinHost}${joinPort === 443 ? '' : `:${joinPort}`}`
     : `http://${joinHost}${joinPort === 80 ? '' : `:${joinPort}`}`;
