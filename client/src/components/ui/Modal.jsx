@@ -306,11 +306,16 @@ export default function Modal({
   const sizeClass = SIZE_CLASSES[size] ?? SIZE_CLASSES.md;
   const widthClass = size === 'none' ? '' : `w-full ${sizeClass}`;
   const insetClass = ALIGN_DVH_INSET[align] || ALIGN_DVH_INSET.center;
-  // Only supply the scroll behaviour when the caller hasn't declared its own
-  // overflow. Tailwind precedence follows CSS source order, not class-string
-  // order (see the overlay note below), so emitting `overflow-auto` alongside
-  // a caller's `overflow-hidden` would be a coin flip rather than an override.
-  const overflowClass = /(^|\s|:)overflow-/.test(panelClassName) ? '' : 'overflow-auto';
+  // Only supply the scroll behaviour when the caller declares an UNPREFIXED
+  // overflow of its own. Tailwind precedence follows CSS source order, not
+  // class-string order (see the overlay note below), so emitting
+  // `overflow-auto` alongside a caller's base `overflow-hidden` would be a
+  // coin flip rather than an override. A variant-prefixed utility
+  // (`sm:overflow-hidden`) is deliberately NOT a match: it only applies inside
+  // its media query — which does outrank the base utility — so suppressing the
+  // default would leave the panel clamped but unscrollable below that
+  // breakpoint.
+  const overflowClass = /(^|\s)!?overflow-/.test(panelClassName) ? '' : 'overflow-auto';
   const heightClass = `max-h-dvh-cap ${insetClass} ${overflowClass}`;
 
   const overlay = (

@@ -136,4 +136,17 @@ describe('Modal viewport height clamp', () => {
     // a coin flip rather than an override.
     expect(dialog).not.toHaveClass('overflow-auto');
   });
+
+  it('still scrolls below a breakpoint when the caller only sets a variant overflow', () => {
+    render(
+      <Modal open onClose={() => {}} ariaLabel="x" panelClassName="lg:overflow-hidden">
+        <p>body</p>
+      </Modal>
+    );
+    const dialog = screen.getByRole('dialog');
+    // `lg:overflow-hidden` applies only inside its media query — where it
+    // outranks the base utility anyway — so suppressing the default would
+    // leave the panel clamped but unscrollable on a phone.
+    expect(dialog).toHaveClass('overflow-auto');
+  });
 });
