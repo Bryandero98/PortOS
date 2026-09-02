@@ -89,4 +89,15 @@ is**: the bf16 snapshot is 144 GB and the converted DiT another 11–22 GB.
 Conditioning was half the wall clock and recomputes identical embeddings every
 run, so PortOS now passes `--prompt-cache-dir`; upstream digests each entry over
 its cache version, the model root and the prompt, so one shared directory is
-safe across models.
+safe across models. Re-running the same prompt on a warm cache took conditioning
+from **307.0s to 0.003s** (621s to 336s end to end) and produced a **byte-identical
+MP4** — so the saving costs nothing in output.
+
+The conversion path was verified against the upstream snapshot directly: its
+bf16 `transformer/` converted to an MLX INT6 DiT in **21.9s**, peak 19.4 GiB,
+1464 arrays — the tensor count the repack's own conversion manifest records —
+and rendered from that checkpoint. Denoise peaks at 19.6 GiB on INT6 against
+14.9 GiB on INT4.
+
+Renders are deterministic at a fixed seed: two runs at seed 2026 produced
+byte-identical files.
