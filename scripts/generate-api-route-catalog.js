@@ -168,38 +168,26 @@ const joinRoutePath = (...parts) => {
   return `/${joined}`.replace(/\/{2,}/g, '/');
 };
 
-const uniqueSortedSources = (sources) => [...new Set(sources)].sort((a, b) => a.localeCompare(b));
-
-export function parseTopLevelMounts({ source, filePath, repoRoot = REPO_ROOT }) {
+export function parseTopLevelMounts({ source, filePath }) {
   const imports = parseImports(source, filePath);
   const mounts = [];
   for (const match of source.matchAll(APP_MOUNT_RE)) {
     const imported = imports.get(match[3]);
     if (!imported) continue;
-    mounts.push({
-      mountPath: match[2],
-      routerName: match[3],
-      filePath: imported.file,
-      imported: imported.imported,
-      source: toPosix(relative(repoRoot, filePath)),
-    });
+    mounts.push({ mountPath: match[2], filePath: imported.file });
   }
   return mounts;
 }
 
 /**
  * Walk the mounted route graph and return everything the scan learned,
- * including the declaration keys that never reach the manifest.
- *
- * `buildApiRouteCatalog` narrows this to the serializable subset. Tests that
- * need to prove every declaration in `server/routes/**` was reached compare
- * two fresh in-memory scans, so the manifest does not have to carry pointers
- * back into the source it was derived from.
+ * including the `declarationKeys` that never reach the manifest —
+ * `buildApiRouteCatalog` narrows this to the serializable subset.
  */
 export function scanRouteGraph({ repoRoot = REPO_ROOT, indexSource } = {}) {
   const indexPath = join(repoRoot, INDEX_RELATIVE_PATH);
   const source = indexSource ?? readFileSync(indexPath, 'utf8');
-  const topLevelMounts = parseTopLevelMounts({ source, filePath: indexPath, repoRoot });
+  const topLevelMounts = parseTopLevelMounts({ source, filePath: indexPath });
   const moduleCache = new Map();
   const operations = new Map();
   const declarationKeys = new Set();
@@ -284,7 +272,7 @@ export function scanRouteGraph({ repoRoot = REPO_ROOT, indexSource } = {}) {
   }
 
   const routes = [...operations.values()]
-    .map((operation) => ({ ...operation, sources: uniqueSortedSources(operation.sources) }))
+    .map((operation) => ({ ...operation, sources: [...new Set(operation.sources)].sort() }))
     .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
 
   return {
