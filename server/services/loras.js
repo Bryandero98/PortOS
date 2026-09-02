@@ -650,13 +650,14 @@ export const previewCivitaiInstall = async (input, { fetchImpl = fetch } = {}) =
 // video families). Used to validate a user-supplied `family` override.
 const HF_LORA_FAMILY_VALUES = new Set(HF_LORA_FAMILIES);
 
-// Install a LoRA from a HuggingFace repo (Flux.2 Klein image adapters, fal /
-// Lightricks LTX video LoRAs, MiniMax H3). Mirrors installFromCivitai: parse
-// the ref → fetch repo metadata → pick the .safetensors → stream-download →
-// write the sidecar. The family is auto-detected from the repo id / tags /
-// base_model / filenames, or taken from an explicit `input.family` override
-// (validated against the known image + video families). Returns the new sidecar.
-export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgress = null, signal = null } = {}) => {
+// Shared by installFromHuggingface and previewHuggingfaceInstall so a preview
+// can never show a different file/filename than the install it precedes.
+// `family` is resolved (override → autodetection → null) but NOT required —
+// it only narrows `pickHfLoraFile`'s pick among flux2 variant files; the
+// generated filename depends only on `repo` + the picked `file`. Preview
+// therefore never throws HF_UNKNOWN_FAMILY: that check belongs to the actual
+// install, which needs a concrete family for the sidecar metadata.
+const resolveHfLoraInstallPlan = async (input, { fetchImpl = fetch } = {}) => {
   const { repo, revision, file: parsedFile } = parseHuggingfaceLoraRef(input?.url);
   // Stored/env/CLI HF token — only needed for gated repos, but harmless to
   // send on public ones (HF ignores a bearer it doesn't require).
@@ -665,28 +666,8 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
   const preferredFile = input?.file || parsedFile || null;
   const detected = detectHfLoraFamily({ repo, model, file: preferredFile });
 
-  // Family: explicit override (validated) wins over autodetection so a user
-  // can correct a mis-detected repo from the UI. An unrecognized repo with no
-  // override is refused rather than silently tagged — a wrongly-tagged LoRA
-  // would surface under a model it can't actually load against.
-  let family = null;
-  if (input?.family) {
-    if (!HF_LORA_FAMILY_VALUES.has(input.family)) {
-      throw new ServerError(
-        `Unknown LoRA family "${input.family}" — expected one of ${[...HF_LORA_FAMILY_VALUES].join(', ')}`,
-        { status: 400, code: 'HF_BAD_FAMILY' },
-      );
-    }
-    family = input.family;
-  } else {
-    family = detected?.family || null;
-  }
-  if (!family) {
-    throw new ServerError(
-      `Couldn't determine a supported model for HuggingFace repo "${repo}". PortOS can install Flux 2, Flux 1, Z-Image, ERNIE, HiDream, Qwen, LTX-Video, and MiniMax H3 LoRAs — pass an explicit family if you know which one this targets.`,
-      { status: 422, code: 'HF_UNKNOWN_FAMILY' },
-    );
-  }
+  // Family: explicit override (validated by the caller) wins over autodetection.
+  const family = input?.family || detected?.family || null;
 
   const file = pickHfLoraFile(
     model,
@@ -714,22 +695,47 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
       : (fileStemSlug === repoNameSlug ? '' : fileStemSlug));
   const filename = `lora-${slug}${explicitVariant ? `-${explicitVariant}` : ''}-hf.safetensors`;
   const destPath = join(PATHS.loras, filename);
-  if (existsSync(destPath)) {
+  const hfSibling = (Array.isArray(model?.siblings) ? model.siblings : []).find((row) => row?.rfilename === file);
+
+  return { repo, revision, token, model, family, fluxVariant, file, filename, destPath, expectedBytes: siblingDownloadMeta(hfSibling).bytes };
+};
+
+// Install a LoRA from a HuggingFace repo (Flux.2 Klein image adapters, fal /
+// Lightricks LTX video LoRAs, MiniMax H3). Mirrors installFromCivitai: parse
+// the ref → fetch repo metadata → pick the .safetensors → stream-download →
+// write the sidecar. The family is auto-detected from the repo id / tags /
+// base_model / filenames, or taken from an explicit `input.family` override
+// (validated against the known image + video families). Returns the new sidecar.
+export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgress = null, signal = null } = {}) => {
+  // An unrecognized override is refused before the network round trip — a
+  // wrongly-tagged LoRA would surface under a model it can't actually load.
+  if (input?.family && !HF_LORA_FAMILY_VALUES.has(input.family)) {
     throw new ServerError(
-      `Already installed: ${filename}. Delete it first to reinstall.`,
+      `Unknown LoRA family "${input.family}" — expected one of ${[...HF_LORA_FAMILY_VALUES].join(', ')}`,
+      { status: 400, code: 'HF_BAD_FAMILY' },
+    );
+  }
+  const plan = await resolveHfLoraInstallPlan(input, { fetchImpl });
+  if (!plan.family) {
+    throw new ServerError(
+      `Couldn't determine a supported model for HuggingFace repo "${plan.repo}". PortOS can install Flux 2, Flux 1, Z-Image, ERNIE, HiDream, Qwen, LTX-Video, and MiniMax H3 LoRAs — pass an explicit family if you know which one this targets.`,
+      { status: 422, code: 'HF_UNKNOWN_FAMILY' },
+    );
+  }
+  if (existsSync(plan.destPath)) {
+    throw new ServerError(
+      `Already installed: ${plan.filename}. Delete it first to reinstall.`,
       { status: 409, code: 'HF_ALREADY_INSTALLED' },
     );
   }
 
   await ensureDir(PATHS.loras);
-  const hfSibling = (Array.isArray(model?.siblings) ? model.siblings : []).find((row) => row?.rfilename === file);
-  const expectedBytes = siblingDownloadMeta(hfSibling).bytes;
-  assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes }));
-  console.log(`📥 Installing HuggingFace LoRA: ${repo} (${file}) → ${filename} [family=${family}]`);
-  await downloadToFile(buildHfResolveUrl(repo, revision, file), destPath, {
+  assertDownloadFits(await assessDownloadPreflight({ destPath: plan.destPath, expectedBytes: plan.expectedBytes }));
+  console.log(`📥 Installing HuggingFace LoRA: ${plan.repo} (${plan.file}) → ${plan.filename} [family=${plan.family}]`);
+  await downloadToFile(buildHfResolveUrl(plan.repo, plan.revision, plan.file), plan.destPath, {
     fetchImpl,
-    headers: { 'User-Agent': 'PortOS/hf-lora-installer', ...buildHfAuthHeaders(token) },
-    hasApiKey: !!token,
+    headers: { 'User-Agent': 'PortOS/hf-lora-installer', ...buildHfAuthHeaders(plan.token) },
+    hasApiKey: !!plan.token,
     source: 'huggingface',
     onProgress,
     signal,
@@ -737,31 +743,27 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
   // HF's model metadata doesn't expose a per-file digest through pickHfLoraFile,
   // so the structural header/size check is the integrity guard here (no deep
   // sha256 compare available for this path).
-  await verifyDownloadedLora(destPath, { source: 'huggingface' });
+  await verifyDownloadedLora(plan.destPath, { source: 'huggingface' });
 
   const sidecar = await withKeyLayout(
-    buildHfLoraSidecar({ repo, revision, file, model, family, filename, fluxVariant }),
-    destPath,
+    buildHfLoraSidecar({ repo: plan.repo, revision: plan.revision, file: plan.file, model: plan.model, family: plan.family, filename: plan.filename, fluxVariant: plan.fluxVariant }),
+    plan.destPath,
   );
-  await writeLoraSidecar(filename, sidecar);
-  console.log(`✅ Installed HuggingFace LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
+  await writeLoraSidecar(plan.filename, sidecar);
+  console.log(`✅ Installed HuggingFace LoRA: ${plan.filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };
 
+/** Size / dest / free-disk numbers for the HF LoRA confirm step — mirrors the
+ * exact file/filename installFromHuggingface will write, so the number shown
+ * never disagrees with what installs. No transfer starts. */
 export const previewHuggingfaceInstall = async (input, { fetchImpl = fetch } = {}) => {
-  const { repo, revision, file: parsedFile } = parseHuggingfaceLoraRef(input?.url);
-  const token = (typeof input?.token === 'string' && input.token.trim()) || (await getHfToken()) || '';
-  const model = await fetchHuggingfaceModel(repo, { token, revision, fetchImpl });
-  const file = pickHfLoraFile(model, parsedFile || input?.file || null);
-  const sibling = (Array.isArray(model?.siblings) ? model.siblings : []).find((row) => row?.rfilename === file);
-  const preflight = await assessDownloadPreflight({
-    destPath: PATHS.loras,
-    expectedBytes: siblingDownloadMeta(sibling).bytes,
-  });
+  const plan = await resolveHfLoraInstallPlan(input, { fetchImpl });
+  const preflight = await assessDownloadPreflight({ destPath: plan.destPath, expectedBytes: plan.expectedBytes });
   return {
     kind: 'huggingface',
     ...preflight,
-    destPath: file,
-    alreadyDownloaded: false,
+    destPath: plan.filename,
+    alreadyDownloaded: existsSync(plan.destPath),
   };
 };

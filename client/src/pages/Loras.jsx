@@ -165,9 +165,24 @@ export default function Loras() {
   // silent:true so the auth-error path goes through the modal instead of a
   // one-shot toast the user can't act on. Shared by the initial install
   // submit and the post-key-save retry so both behave identically.
-  const requestLoraDownload = useCallback((title, url, source, run) => requestDownloadConfirm({
+  //
+  // A gated Civitai model can already fail with CIVITAI_AUTH at the PREVIEW
+  // step (previewCivitaiInstall fetches the model metadata, which needs the
+  // same key the download does) — before startCivitaiInstall ever runs. Catch
+  // it here and route it into the existing key-entry prompt instead of
+  // letting the hook's generic error land inside the preflight modal, which
+  // has no path back to that prompt.
+  const requestLoraDownload = useCallback((title, url, source, run, extra = {}) => requestDownloadConfirm({
     title,
-    preview: () => previewLoraInstall({ url, source, silent: true }),
+    preview: () => previewLoraInstall({ url, source, ...extra, silent: true }).catch((err) => {
+      if (source === 'civitai' && err?.code === 'CIVITAI_AUTH') {
+        setAuthPrompt({ url, message: err.message || 'This LoRA needs an API key.' });
+        const handled = new Error(err.message);
+        handled.handled = true;
+        throw handled;
+      }
+      throw err;
+    }),
     run,
   }), [requestDownloadConfirm]);
 
@@ -251,7 +266,7 @@ export default function Loras() {
   // installer (not the Civitai one) with the card's known family. Tracks the
   // in-flight repo in its own state because the Civitai `installingSuggestion`
   // key is modelId/versionId-based — video installs have neither.
-  const installVideoSuggestion = useCallback(async (card) => {
+  const startVideoSuggestionInstall = useCallback(async (card) => {
     // Cross-guard against the form install (see runHfInstall) — one HF install
     // at a time so they don't clobber the shared hfProgress.
     if (!card?.installUrl || installingVideoKey || hfInstalling) return;
@@ -270,6 +285,19 @@ export default function Loras() {
       .catch((err) => toast.error(err?.message || 'HuggingFace install failed'))
       .finally(() => { setInstallingVideoKey(null); setHfProgress(null); });
   }, [installingVideoKey, hfInstalling, refresh]);
+
+  // Card carries its own family/file, so the preview forwards them and shows
+  // the exact file "Quick install" is about to fetch — not a re-guess.
+  const installVideoSuggestion = useCallback((card) => {
+    if (!card?.installUrl || installingVideoKey || hfInstalling) return undefined;
+    return requestLoraDownload(
+      'Install video LoRA',
+      card.installUrl,
+      'huggingface',
+      () => startVideoSuggestionInstall(card),
+      { family: card.runnerFamily, file: card.file },
+    );
+  }, [installingVideoKey, hfInstalling, requestLoraDownload, startVideoSuggestionInstall]);
 
   // The measurement lives in the LIST, not in the card. The Installed section
   // swaps between LoraGrid and InstalledGroups when the media filter changes,
@@ -398,7 +426,13 @@ export default function Loras() {
                 <button
                   key={family}
                   type="button"
-                  onClick={() => runHfInstall(hfFamilyPrompt, family)}
+                  onClick={() => requestLoraDownload(
+                    'Install HuggingFace LoRA',
+                    hfFamilyPrompt,
+                    'huggingface',
+                    () => runHfInstall(hfFamilyPrompt, family),
+                    { family },
+                  )}
                   disabled={hfInstalling}
                   className="bg-port-accent text-white px-3 py-1 rounded text-xs font-medium hover:bg-port-accent/90 disabled:opacity-50"
                 >

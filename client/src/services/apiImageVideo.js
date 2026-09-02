@@ -430,9 +430,12 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
   silent,
 });
 
-export const previewLoraInstall = ({ url, source = 'civitai', silent = false } = {}) => request('/loras/install/preflight', {
+// `family`/`file` are optional overrides — pass them when the caller already
+// knows the exact target (a curated video suggestion card) so the previewed
+// file matches what the HF install will actually pick.
+export const previewLoraInstall = ({ url, source = 'civitai', family, file, silent = false } = {}) => request('/loras/install/preflight', {
   method: 'POST',
-  body: JSON.stringify({ url, source }),
+  body: JSON.stringify({ url, source, family, file }),
   silent,
 });
 
