@@ -10,8 +10,8 @@
  * `exec` drain loop, which is exactly how a guard rots: a fix to one parser
  * (multi-line import lists, `export * from`, a new specifier shape) lands in
  * one copy while the other keeps silently under-reporting. `buildStaticImportGraph`
- * and `findImportCycles` live here for the same reason — `agentImportCycles` and
- * `twinImportCycles` both walk `server/services` for rings.
+ * and the cycle walks live here for the same reason — `serviceImportCycles`,
+ * `agentImportCycles` and `twinImportCycles` all walk `server/services` for rings.
  *
  * **Static imports only.** `await import('./x.js')` is deferred to call time,
  * so it can neither produce a load-time cycle nor drag a native dependency into
@@ -169,4 +169,68 @@ export function findImportCycles(graph) {
   };
   for (const node of graph.keys()) if (!state.has(node)) visit(node);
   return [...cycles];
+}
+
+/**
+ * Every cyclic strongly-connected component of `graph`, as sorted member lists,
+ * themselves sorted — the traversal-order-INVARIANT form of "what is mutually
+ * import-dependent here". A component is returned when it holds more than one
+ * module, or when a single module imports itself.
+ *
+ * `findImportCycles` answers a different question and cannot be baselined. Its
+ * depth-first walk reports the rings it happens to close from whichever node it
+ * enters a component through, so the SAME graph yields a different set of rings
+ * depending on where the walk starts — and the walk starts wherever
+ * `readdirSync` put the first file, which is OS/filesystem order, not
+ * alphabetical. That is fine for an "is this empty?" assertion (emptiness is
+ * order-independent) and wrong for a baseline list, which would go red on
+ * another machine over a graph nobody touched.
+ *
+ * Tarjan's algorithm instead partitions the graph: the components are a
+ * property of the edges alone, so a baseline keyed on them means the same thing
+ * on every machine. Closing a NEW ring either mints a component or pulls
+ * modules into an existing one — both change this output. Removing one shrinks
+ * or deletes a component, which changes it too, so a stale baseline entry
+ * cannot survive the fix it was waiting for.
+ */
+export function findImportCycleComponents(graph) {
+  const index = new Map();
+  const lowlink = new Map();
+  const onStack = new Set();
+  const stack = [];
+  const components = [];
+  let counter = 0;
+
+  const visit = (node) => {
+    index.set(node, counter);
+    lowlink.set(node, counter);
+    counter += 1;
+    stack.push(node);
+    onStack.add(node);
+
+    for (const dep of graph.get(node) || []) {
+      if (!index.has(dep)) {
+        visit(dep);
+        lowlink.set(node, Math.min(lowlink.get(node), lowlink.get(dep)));
+      } else if (onStack.has(dep)) {
+        lowlink.set(node, Math.min(lowlink.get(node), index.get(dep)));
+      }
+    }
+
+    if (lowlink.get(node) !== index.get(node)) return;
+    const members = [];
+    let member;
+    do {
+      member = stack.pop();
+      onStack.delete(member);
+      members.push(member);
+    } while (member !== node);
+    // A one-module component is cyclic only when it imports itself; every
+    // acyclic module is also a one-module component, and those are not findings.
+    const selfImporting = members.length === 1 && (graph.get(node) || []).includes(node);
+    if (members.length > 1 || selfImporting) components.push(members.sort());
+  };
+
+  for (const node of graph.keys()) if (!index.has(node)) visit(node);
+  return components.sort((a, b) => (a.join() < b.join() ? -1 : 1));
 }
