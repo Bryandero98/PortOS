@@ -130,15 +130,15 @@ export function composeProviderEnv({ before = null, provider = null, model = nul
 
 // Public contributor content is run through a no-tools local Claude wrapper.
 // Keep only runtime essentials plus the local Anthropic-compatible endpoint;
-// in particular, never pass forge, cloud, SSH, or arbitrary provider env vars
-// into the child. This is a second boundary in addition to the CLI argv.
+// in particular, never pass forge, cloud, SSH, auth, or arbitrary provider env
+// vars into the child. This is a second boundary in addition to the CLI argv.
 const PUBLIC_REVIEW_ENV_KEYS = new Set([
   'PATH', 'Path', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'PWD', 'TMPDIR', 'TMP', 'TEMP',
   'LANG', 'LANGUAGE', 'TERM', 'COLORTERM', 'TZ', 'NODE', 'NODE_ENV', 'NODE_PATH',
   'NVM_DIR', 'NVM_BIN', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
   'SystemRoot', 'SystemDrive', 'ComSpec', 'PATHEXT', 'USERPROFILE', 'APPDATA',
   'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'HOMEDRIVE', 'HOMEPATH',
-  'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_BASE_URL', 'ANTHROPIC_SMALL_FAST_MODEL',
   'CLAUDE_CODE_MAX_OUTPUT_TOKENS', 'MAX_THINKING_TOKENS',
 ]);
 
