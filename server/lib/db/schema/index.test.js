@@ -42,6 +42,8 @@ const MODULE_FILES = readdirSync(HERE)
 // order stays schema.test.js's job.
 const COMPOSED_STATEMENTS = new Set([...buildUpgradeDdl(), ...buildCatalogDdl()]);
 
+const isBuilderName = (name) => /^build.*(Ddl|Triggers)$/.test(name);
+
 describe('db/schema composer covers every module in the directory (#5682)', () => {
   it('found the domain modules', () => {
     expect(MODULE_FILES.length).toBeGreaterThan(0);
@@ -53,17 +55,31 @@ describe('db/schema composer covers every module in the directory (#5682)', () =
     }
   });
 
-  it.each(MODULE_FILES)('%s exports at least one *Ddl array and every statement is composed', async (f) => {
-    const mod = await import(`./${f}`);
-    const ddlExports = Object.entries(mod).filter(([name]) => name.endsWith('Ddl'));
+  it.each(MODULE_FILES)('%s contributes DDL and every statement of it is composed', async (f) => {
+    const mod = await import(/* @vite-ignore */ `./${f}`);
 
-    // Naming convention is the hook this guard hangs on: a module exporting no
-    // `*Ddl` array would silently opt out of the composition check below.
-    expect(ddlExports.length, `${f} exports no *Ddl array (see README.md for the convention)`)
-      .toBeGreaterThan(0);
+    // Two shapes contribute DDL here, and both must be checked: a plain
+    // statement array (`<domain>Ddl`) and a zero-arg generator that derives
+    // statements from a table list (audit.js's `buildAuditTriggers()`).
+    // Checking only the arrays would let a module's generated statements be
+    // dropped from the composer unnoticed.
+    const contributions = Object.entries(mod).flatMap(([name, value]) => {
+      if (name.endsWith('Ddl') && !isBuilderName(name)) return [[name, value]];
+      if (isBuilderName(name) && typeof value === 'function' && value.length === 0) {
+        return [[`${name}()`, value()]];
+      }
+      return [];
+    });
 
-    for (const [name, statements] of ddlExports) {
-      expect(Array.isArray(statements), `${f} export '${name}' is not an array`).toBe(true);
+    // Naming convention is the hook this guard hangs on: a module whose DDL
+    // export matches neither shape would silently opt out of the check below.
+    expect(
+      contributions.length,
+      `${f} exports no *Ddl array and no build*Ddl/build*Triggers() generator (see README.md)`,
+    ).toBeGreaterThan(0);
+
+    for (const [name, statements] of contributions) {
+      expect(Array.isArray(statements), `${f} export '${name}' is not a statement array`).toBe(true);
       expect(statements.length, `${f} export '${name}' is empty`).toBeGreaterThan(0);
       const uncomposed = statements.filter((sql) => !COMPOSED_STATEMENTS.has(sql));
       expect(
