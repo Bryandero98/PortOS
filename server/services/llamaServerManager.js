@@ -7,11 +7,9 @@
  */
 
 import { realpath, stat } from 'fs/promises';
-import { existsSync } from 'fs';
-import { delimiter } from 'path';
 import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
-import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
+import { adoptPathDirs, findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
 import { createDaemonWatcher, pm2ArgValue, LLAMA_APP } from '../lib/managedDaemon.js';
 import { execFile } from '../lib/childProcess.js';
@@ -1434,19 +1432,13 @@ function linkLlamaCpp(env) {
  * winget links a portable package's executables into a Links directory and adds
  * that directory to the USER environment — a change an already-running PortOS
  * does not inherit, so a perfectly successful install would otherwise report
- * "llama-server was not found on PATH" until the server was restarted. Extending
- * `process.env.PATH` fixes both this process's own lookups and every child it
- * spawns, since `safeChildProcessEnv` derives from `process.env`.
+ * "llama-server was not found on PATH" until the server was restarted. See
+ * `adoptPathDirs` for why extending `process.env.PATH` is the fix.
  *
  * @returns {string|null} the newly-visible binary path, or null if it is not there
  */
 function adoptWingetLinkDirs() {
-  const existing = (process.env.PATH || process.env.Path || '').split(delimiter).filter(Boolean);
-  // Only directories that are actually there: `findCommandOnPath` walks every
-  // PATH entry against every PATHEXT extension with a synchronous stat, so a
-  // dead entry taxes every later lookup for the life of the process.
-  const missing = wingetLinkDirs().filter((dir) => !existing.includes(dir) && existsSync(dir));
-  if (missing.length > 0) process.env.PATH = [...existing, ...missing].join(delimiter);
+  adoptPathDirs(wingetLinkDirs());
   return resolveLlamaServerBinary();
 }
 
