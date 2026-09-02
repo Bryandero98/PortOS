@@ -2,8 +2,8 @@
 
 Living reference of every third-party dependency in PortOS, why it's kept, and what the current verdict is. Updated by `/do:depfree` runs.
 
-**Last audited:** 2026-08-04 (scoped audit of the `keyv`/`cacheable` supply-chain compromise); prior follow-up 2026-07-14 (issue #2547), prior full audit 2026-04-28 (default mode), tables corrected 2026-07-01 during a docs audit.
-**Verdict:** All dependencies justified. The 2026-08-04 audit replaced the entire `eslint` stack with `@biomejs/biome`, dropping 110 net client packages including the `file-entry-cache → flat-cache → keyv` chain named in the August 2026 Shai-Hulud npm compromise (PortOS held safe versions throughout — see the detailed finding below). The same pass closed a latent hole where `ignore-scripts=true` was only active for repo-root installs, not for any workspace install or CI. Since the last full audit: `sax` was removed (replaced with an owned parser, issue #1824), `portos-ai-toolkit` was vendored in-tree (`server/lib/aiToolkit/`), and monolithic `googleapis` was replaced with scoped `@googleapis/*` packages. The 2026-07-14 follow-up bumped `kokoro-js` to its latest patch `1.2.1` (still on maintenance watch — no publish since 2025-05) and aligned the dual `pm2` pins (root + server both `7.0.4`).
+**Last audited:** 2026-09-02 (scoped: `pdf-lib` → `@cantoo/pdf-lib`, issue #5672); prior 2026-08-04 (scoped audit of the `keyv`/`cacheable` supply-chain compromise); prior follow-up 2026-07-14 (issue #2547), prior full audit 2026-04-28 (default mode), tables corrected 2026-07-01 during a docs audit.
+**Verdict:** All dependencies justified. The 2026-08-04 audit replaced the entire `eslint` stack with `@biomejs/biome`, dropping 110 net client packages including the `file-entry-cache → flat-cache → keyv` chain named in the August 2026 Shai-Hulud npm compromise (PortOS held safe versions throughout — see the detailed finding below). The same pass closed a latent hole where `ignore-scripts=true` was only active for repo-root installs, not for any workspace install or CI. Since the last full audit: `sax` was removed (replaced with an owned parser, issue #1824), `portos-ai-toolkit` was vendored in-tree (`server/lib/aiToolkit/`), and monolithic `googleapis` was replaced with scoped `@googleapis/*` packages. The 2026-07-14 follow-up bumped `kokoro-js` to its latest patch `1.2.1` (still on maintenance watch — no publish since 2025-05) and aligned the dual `pm2` pins (root + server both `7.0.4`). The 2026-09-02 follow-up replaced abandoned `pdf-lib` (no publish since 2022-05) with the maintained MIT fork `@cantoo/pdf-lib@2.9.1` — a same-public-API swap across the four export paths, done while `npm audit` was still clean rather than under advisory pressure.
 
 ## Audit Methodology
 
@@ -22,6 +22,8 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | **Root deps** | | | | |
 | `pm2` | 1 | KEEP | top-level scripts | Process manager, foundational. Declared in root `dependencies` (the root manifest has no devDependencies). Pinned `7.0.4` (aligned with server pin) |
 | **Server deps** | | | | |
+| `@cantoo/pdf-lib` | 2 | KEEP | PDF generation for the volume / comic / prose / legacy-archive exports | Maintained MIT fork of `pdf-lib`, which has had no publish since 2022-05. Same public API (`PDFDocument`/`rgb`/`StandardFonts`); the swap was 4 import lines. On maintenance watch — see the detailed finding |
+| `pdf-lib` | — | REPLACED | PDF generation | 2026-09-02 → `@cantoo/pdf-lib` (issue #5672). Abandoned upstream: `1.17.1` is simultaneously the pinned and the latest published version, unchanged since 2022-05-12. Not deprecated and never flagged by `npm audit` — replaced ahead of an advisory, not in response to one |
 | `@novnc/novnc` | 1 | KEEP | PortDeck remote desktop viewer | Mature RFB/VNC protocol implementation; replacing it would require owning multiple security types and framebuffer encodings |
 | `@googleapis/calendar` | 1 | KEEP | Calendar integration | Scoped official Google SDK (replaced monolithic `googleapis`) |
 | `@googleapis/gmail` | 1 | KEEP | Messages/Gmail integration | Scoped official Google SDK |
@@ -30,7 +32,6 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | `google-auth-library` | 1 | KEEP | Google OAuth | Pairs with `@googleapis/*` |
 | `kokoro-js` | 2 | KEEP | `server/services/voice/tts-kokoro.js` | Only pure-JS in-process TTS; replacement = Python subprocess + pooling |
 | `node-pty` | 1 | KEEP | shell/terminal services | Native PTY binding (N-API) |
-| `pdf-lib` | 1 | KEEP | PDF generation/manipulation | |
 | `pg` | 1 | KEEP | Postgres access | Official `pg` driver |
 | `pm2` | 1 | KEEP | app lifecycle | Process manager. Pinned `7.0.4` (aligned with root pin) |
 | `sharp` | 1 | KEEP | image processing | Native, widely-audited |
@@ -83,6 +84,17 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | _(none)_ | — | — | `browser/server.js` | Zero dependencies — Node built-ins only, plus one in-repo import from `server/lib/`. No Dependabot entry, and its lockfile is gitignored |
 
 ## Detailed Findings — Tier 2/3 Audits
+
+### `@cantoo/pdf-lib` — KEEP (Tier 2), replaced `pdf-lib` 2026-09-02 (issue #5672)
+
+- **Usage**: 4 import sites, all the same named import — `server/services/pipeline/volumePdf.js`, `comicPdf.js`, `proseExport.js`, and `server/services/legacyExport.js` (`import { PDFDocument, rgb, StandardFonts }`). ~40 call sites across them, all in the narrow high-level core: `PDFDocument.create`, `addPage`, `embedFont`, `drawText`, `drawImage`, `widthOfTextAtSize`, `save`, plus `rgb()` and 9 `StandardFonts` constants. No low-level `PDFDict`/`PDFRef` work, no form filling, no encryption, no incremental update.
+- **Why the swap**: `pdf-lib@1.17.1` has had **no npm publish since 2022-05-12** — the pinned version and the latest published version are the same release. It is not deprecated and `npm audit` was clean, but it is a parser/serializer for a hostile binary format sitting on the export path for four user-facing pipelines. When a PDF advisory lands there is no upstream release to take. Migrating while audit is green is a planned change; migrating after an advisory is an emergency.
+- **The fork**: `@cantoo/pdf-lib` (`github.com/cantoo-scribe/pdf-lib`), same MIT license, pinned `2.9.1`, published 2026-08. It preserves the `PDFDocument` / `rgb` / `StandardFonts` public API, so the migration was 4 import lines + 1 manifest line + the lockfile — no output, layout, font, or page-geometry change.
+- **Transitive cost**: +6 packages net (`color`, `color-string`, `is-arrayish`, `html-entities`, `node-html-better-parser`, `pako`) in exchange for `@pdf-lib/standard-fonts`, `@pdf-lib/upng` and `tslib` leaving with the old package. `npm audit` stays at 0 vulnerabilities.
+- **Replacement complexity if owned in-tree instead**: Infeasible (300+ lines of font metrics, xref tables, and content-stream encoding) — which is why a maintained fork, not a rewrite, was the decision.
+- **Regression cover**: two boundary tests assert real output bytes rather than helper behaviour, because a same-API fork can only regress below the helper layer — `proseExport.test.js` (`buildProsePdf` returns a `Uint8Array` starting `%PDF-` and ending `%%EOF`) and `comicPdf.test.js` (image XObject count scales with the number of embedded pages, catching a silently-dropped `drawImage` payload).
+- **Grep caveat for the next audit**: `server/services/legacyExport.js` contains a byte sequence that makes `file(1)` classify it as `data`, so plain `grep -r` **silently skips it** — a repo-wide dependency sweep must use `grep -ra`. That is exactly how the fourth import site was missed when this migration was first scoped; it surfaced only as an `ERR_MODULE_NOT_FOUND` in the suite.
+- **Re-audit trigger**: revisit if `@cantoo/pdf-lib` itself goes >12 months without a publish, or on any CVE against it. The fallback is the same shape as the swap in: another maintained fork, or upstream `pdf-lib` if it ever resumes releases.
 
 ### `kokoro-js` — KEEP (Tier 2)
 
