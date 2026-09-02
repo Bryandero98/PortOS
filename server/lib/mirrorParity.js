@@ -117,3 +117,64 @@ export function compareDeclaration(serverSrc, clientSrc, name) {
     match: serverNorm != null && serverNorm === clientNorm,
   };
 }
+
+// A single-quoted JS string literal, escapes included, as written in source.
+const STRING_LITERAL_RE = /'((?:[^'\\]|\\.)*)'/g;
+// `new RegExp([ 'a', 'b' ].join('|'), 'i')` — the multi-line, per-alternative
+// array form the server files use so each alternative can carry its own comment.
+const ARRAY_FORM_RE = /new RegExp\(\s*\[(.*)\]\.join\('\|'\)\s*,\s*'i'\s*\)/;
+// A `/…/i` regex literal, terminated by the statement's `;` or a `.test(` call.
+// Greedy on purpose: `[-_/:]` puts an unescaped `/` mid-pattern, so a lazy walk
+// would stop inside a character class.
+const REGEX_LITERAL_RE = /\/(.*)\/i(?=\.test\(|;)/;
+
+/**
+ * The alternation source of a capability regex, whichever of the two forms the
+ * declaration is typeset in — the array form above, or a plain `/…/i` literal.
+ *
+ * `/` is normalized (an escaped `\/` and a bare `/` mean the same thing to the
+ * engine, and only one of them is legal inside a literal outside a character
+ * class), so the two sides may differ in slash escaping but not in what they
+ * accept. Returns null when the declaration is neither form.
+ */
+export function regexAlternationSource(declText) {
+  if (declText == null) return null;
+  const norm = stripCommentsAndNormalize(declText);
+  const array = ARRAY_FORM_RE.exec(norm);
+  const source = array
+    ? [...array[1].matchAll(STRING_LITERAL_RE)]
+      // Source text → string VALUE: `'llama-?3\\.[1-9]'` is the regex fragment
+      // `llama-?3\.[1-9]`. Comparing the raw literals instead would report a
+      // divergence on every escaped metacharacter.
+      .map(([, body]) => body.replace(/\\(.)/g, '$1'))
+      .join('|')
+    : REGEX_LITERAL_RE.exec(norm)?.[1] ?? null;
+  return source == null ? null : source.replace(/\\\//g, '/');
+}
+
+/**
+ * Compare a case-insensitive regex mirrored across two files that spell it
+ * differently — an array of per-alternative strings on one side, a single
+ * inline literal on the other — by what it MATCHES rather than by its text.
+ *
+ * `compareDeclaration` can't be used there: the two typesettings never compare
+ * equal even when they accept exactly the same ids, and forcing one side to
+ * adopt the other's form is churn for no behavioural gain.
+ *
+ * `clientName` defaults to `serverName`; pass it when the client inlines the
+ * pattern inside a differently-named predicate (`isToolUseModel` wrapping what
+ * the server declares as `TOOL_USE_RE`).
+ */
+export function compareRegexDeclaration(serverSrc, clientSrc, serverName, clientName = serverName) {
+  const serverDecl = extractDeclaration(serverSrc, serverName);
+  const clientDecl = extractDeclaration(clientSrc, clientName);
+  const serverSource = regexAlternationSource(serverDecl);
+  const clientSource = regexAlternationSource(clientDecl);
+  return {
+    serverDecl,
+    clientDecl,
+    serverSource,
+    clientSource,
+    match: serverSource != null && serverSource === clientSource,
+  };
+}

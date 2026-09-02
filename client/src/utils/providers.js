@@ -44,7 +44,7 @@ export const GEMINI_CONTEXT_WINDOW = 1_048_576;
 export const GROK_CONTEXT_WINDOW = 256_000;
 export const KIMI_CONTEXT_WINDOW = 256_000;
 
-// Keep in sync with server/lib/stageRunner.js.
+// Keep in sync with server/services/stageRunner.js.
 const KNOWN_MODEL_CONTEXT_WINDOWS = Object.freeze([
   [/gpt[-_.:/]?5\.5(?:[-_.:/]|\b)/i, CODEX_CONTEXT_WINDOW],
   [/gpt[-_.:/]?5\.4[-_.:/]?mini(?:[-_.:/]|\b)/i, 400_000],
@@ -648,7 +648,8 @@ export const isVisionCapableCliProvider = (provider) =>
  * Tool-use (function-calling) capable model detector — mirror of `isToolUseModel`
  * in server/lib/localModelHeuristics.js (and the TOOL_USE_RE inlined in
  * server/lib/aiToolkit/providers.js). Keep all three in lockstep (the server libs
- * can't be imported here). Ollama's /api/show `tools` capability is authoritative
+ * can't be imported here) — server/lib/localModelHeuristics.mirror.test.js reads
+ * this file as text and fails when the patterns stop matching the same ids. Ollama's /api/show `tools` capability is authoritative
  * when known; this id regex is the fallback for bare model-id strings. The CoS
  * agent harness depends on reliable tool-calling, so only these families should
  * be selectable for a local-model-backed coding provider.
@@ -964,7 +965,7 @@ export const CONTEXT_WINDOW_SOURCE = Object.freeze({
  * The window this provider's own `/models` catalog reported for this model, or
  * `null` when it never mentioned it. Recorded by model refresh — the serving
  * side's own declaration, so it outranks the hand-maintained regex table.
- * Mirror of `catalogModelContextWindow` in server/lib/stageRunner.js.
+ * Mirror of `catalogModelContextWindow` in server/services/stageRunner.js.
  */
 export function catalogModelContextWindow(provider, model) {
   const windows = provider?.modelContextWindows;
@@ -976,7 +977,7 @@ export function catalogModelContextWindow(provider, model) {
 
 /**
  * The planning context window for a provider/model AND where it came from.
- * Mirror of `effectiveContextWindow` in server/lib/stageRunner.js — the two
+ * Mirror of `effectiveContextWindow` in server/services/stageRunner.js — the two
  * must resolve identically, or the card promises a budget the budgeter won't use.
  *
  * `{ tokens: null, source: null }` means nothing is known (an unrecognized model
@@ -1276,7 +1277,8 @@ export const modelCapabilityInfo = (provider, model, {
  * front-end. MIRROR of `PROVIDER_GATEWAYS` in `server/lib/providerGateways.js`
  * (and its vendored twin `server/lib/aiToolkit/internal/gateways.js`) — the
  * browser cannot import server code, so the table is duplicated; keep the three
- * in lockstep. `id` is simultaneously the OpenCode namespace, the
+ * in lockstep (server/lib/providerGateways.parity.test.js pins this copy's
+ * `id`/`label`/`apiKeyEnv`/`legacyMarker` rows against the server registry). `id` is simultaneously the OpenCode namespace, the
  * `gatewayBacked` marker value, and the id of the sibling `api` record that
  * owns the key.
  */

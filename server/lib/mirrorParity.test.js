@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { stripCommentsAndNormalize, extractDeclaration, compareDeclaration } from './mirrorParity.js';
+import {
+  stripCommentsAndNormalize,
+  extractDeclaration,
+  compareDeclaration,
+  compareRegexDeclaration,
+} from './mirrorParity.js';
 
 describe('stripCommentsAndNormalize', () => {
   it('drops block and line comments and collapses whitespace', () => {
@@ -91,5 +96,37 @@ describe('compareDeclaration', () => {
     const { clientDecl, match } = compareDeclaration(server, 'const other = 1;', 'f');
     expect(clientDecl).toBeNull();
     expect(match).toBe(false);
+  });
+});
+
+describe('compareRegexDeclaration', () => {
+  // The shape this exists for: the server spells a capability regex as an array
+  // of per-alternative strings (so each alternative can carry its own comment)
+  // while the browser copy inlines the same pattern as one literal.
+  const server = "const TOOL_USE_RE = new RegExp([\n  'qwen',\n  'llama-?3\\\\.[1-9]',\n].join('|'), 'i');\n";
+  const client = "export const isToolUseModel = (id) =>\n  /qwen|llama-?3\\.[1-9]/i.test(id);\n";
+
+  it('matches the array form against the inline literal it compiles to', () => {
+    const { serverSource, match } = compareRegexDeclaration(server, client, 'TOOL_USE_RE', 'isToolUseModel');
+    expect(serverSource).toBe('qwen|llama-?3\\.[1-9]');
+    expect(match).toBe(true);
+  });
+
+  it('reports a mismatch when one side gains an alternative', () => {
+    const drifted = "export const isToolUseModel = (id) =>\n  /qwen|llama-?3\\.[1-9]|newfamily/i.test(id);\n";
+    expect(compareRegexDeclaration(server, drifted, 'TOOL_USE_RE', 'isToolUseModel').match).toBe(false);
+  });
+
+  it('treats an escaped and a bare slash as the same pattern', () => {
+    // `[-_/:]` is legal bare inside a character class and must be escaped
+    // outside one; that typesetting difference is not a divergence.
+    const bare = 'const RE = /a[-_/:]b/i;\n';
+    const escaped = 'const RE = /a[-_\\/:]b/i;\n';
+    expect(compareRegexDeclaration(bare, escaped, 'RE').match).toBe(true);
+  });
+
+  it('does not report a match when a side is missing or is not a regex', () => {
+    expect(compareRegexDeclaration(server, 'const other = 1;', 'TOOL_USE_RE').match).toBe(false);
+    expect(compareRegexDeclaration(server, 'const TOOL_USE_RE = 42;', 'TOOL_USE_RE').match).toBe(false);
   });
 });

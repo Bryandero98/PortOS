@@ -77,7 +77,8 @@ export const resolveCliModel = (model) => isConfiguredDefaultModel(model) ? null
 // values (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, plus
 // model-gated `ultra`) and agy
 // (`--help`: "Reasoning effort for the current CLI session (low|medium|high)"). Mirrored in
-// client/src/utils/providers.js — keep in sync.
+// client/src/utils/providers.js — keep in sync
+// (`providerModels.mirror.test.js` fails when the two copies drift).
 //
 // Codex Ultra adds automatic task delegation on the models that advertise it.
 // Keep it model-gated: older Codex models and Luna top out at `max`.
