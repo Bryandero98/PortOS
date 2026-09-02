@@ -501,16 +501,20 @@ describe('Layout — isFullWidthRoute classification', () => {
 describe('Layout — sidebar section grouping', () => {
   const alphabetical = (list) => [...list].sort((a, b) => a.localeCompare(b));
 
-  it.each([
-    ['SECTIONS_BEFORE_GOALS', SECTIONS_BEFORE_GOALS],
-    ['SECTIONS_AFTER_GOALS', SECTIONS_AFTER_GOALS],
-  ])('%s stays alphabetical', (_name, list) => {
-    expect(list).toEqual(alphabetical(list));
+  // The two lists are one alphabetical run split by the standalone Goals row, so
+  // splicing that row's label back in at the split point must re-form a sorted
+  // list. That pins BOTH the ordering within each list and where the split sits:
+  // moving a section across the Goals boundary lands it out of order here, which
+  // per-list sort checks would happily accept.
+  it('reads as one alphabetical run through the standalone Goals row', () => {
+    const goalsLabel = NAV_COMMANDS.find((command) => command.path === '/goals/list').label;
+    const run = [...SECTIONS_BEFORE_GOALS, goalsLabel, ...SECTIONS_AFTER_GOALS];
+    expect(run).toEqual(alphabetical(run));
   });
 
-  // SECTIONS_BELOW_MORE is deliberately NOT alphabetical relative to the other
-  // two — it is the below-the-fold bucket — so it is exempt from the sort check
-  // but still has to be disjoint and complete.
+  // SECTIONS_BELOW_MORE is deliberately NOT part of that run — it is the
+  // below-the-fold bucket — so it is exempt from the sort check but still has to
+  // be disjoint and complete.
   it('groups every presented section exactly once', () => {
     const grouped = [...SECTIONS_BEFORE_GOALS, ...SECTIONS_AFTER_GOALS, ...SECTIONS_BELOW_MORE];
     expect(new Set(grouped).size).toBe(grouped.length);
