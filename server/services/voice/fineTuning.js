@@ -14,7 +14,7 @@ import { mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from '../../lib/childProcess.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
+import { atomicWrite, readJSONFileStrict } from '../../lib/fileUtils.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
 import { closeJobAfterDelay } from '../../lib/sseUtils.js';
 import {
@@ -64,13 +64,22 @@ const persistJob = (jobState) => {
 
 /**
  * Resolve a job from memory, falling back to its on-disk record. Returns null
- * when neither exists.
+ * only when the record is genuinely absent — a present-but-unreadable record
+ * throws instead, because reporting 404 would tell the operator their run is
+ * gone while its checkpoints are still sitting on disk.
  */
 async function loadJob(jobId, profileId) {
   const active = activeJobs.get(jobId);
   if (active) return active;
   if (!profileId) return null;
-  return readJSONFile(jobRecordPath(profileId, jobId), null);
+  const { ok, value } = await readJSONFileStrict(jobRecordPath(profileId, jobId), null);
+  if (!ok) {
+    throw new ServerError('Fine-tuning job record is unreadable', {
+      status: 500,
+      code: 'JOB_RECORD_UNREADABLE',
+    });
+  }
+  return value;
 }
 
 /**
@@ -225,6 +234,11 @@ export async function startFineTuningJob({
             loss: event.loss,
             createdAt: new Date().toISOString(),
           });
+          // Checkpoints are the promotable artifact, so index each one as it
+          // lands — a restart mid-training must not orphan the ones already
+          // written. Step/loss progress deliberately is not persisted: it
+          // arrives every step and is worthless once the process is gone.
+          persistJob(jobState);
         } else if (event.stage === 'completed') {
           jobState.status = 'completed';
           jobState.progress = 100;

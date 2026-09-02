@@ -187,6 +187,26 @@ describe('fineTuning', () => {
     expect(promoted).toMatchObject({ kind: 'fine-tuned', approval: { status: 'approved' } });
   });
 
+  it('reports an unreadable job record as an error rather than a missing job', async () => {
+    queryMock.mockResolvedValue({ rows: [{ data: PROFILE }] });
+    await seedSourceAudio();
+
+    const { jobId } = await startFineTuningJob({
+      profileId: PROFILE.id,
+      epochs: 2,
+      checkpointInterval: 20,
+    });
+    await waitForTerminalJobRecord(jobId);
+    await writeFile(jobRecordPath(jobId), '{ truncated');
+
+    // A corrupt record must not read as "no such job" — the checkpoints it
+    // indexes are still on disk.
+    vi.resetModules();
+    const restarted = await import('./fineTuning.js');
+    await expect(restarted.getFineTuningJobStatus(jobId, PROFILE.id))
+      .rejects.toMatchObject({ code: 'JOB_RECORD_UNREADABLE' });
+  });
+
   it('evicts the in-memory job entry after the grace window and keeps serving from disk', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
