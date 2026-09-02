@@ -1,12 +1,19 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { RefreshCw, FileText, Pencil, Save, X, Plus } from 'lucide-react';
 import toast from '../../ui/Toast';
 import BrailleSpinner from '../../BrailleSpinner';
 import MarkdownOutput from '../../cos/MarkdownOutput';
 import * as api from '../../../services/api';
 
+const DOCS_ROOT = 'docs';
+
+/** `docs/decisions/x.md` → `docs/decisions`, `docs/API.md` → `docs` (the group header). */
+const dirOf = (path) => path.slice(0, path.lastIndexOf('/')) || path;
+const baseOf = (path) => path.slice(path.lastIndexOf('/') + 1);
+
 export default function DocumentsTab({ appId, repoPath }) {
   const [documents, setDocuments] = useState([]);
+  const [docs, setDocs] = useState([]);
   const [hasPlanning, setHasPlanning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -17,6 +24,8 @@ export default function DocumentsTab({ appId, repoPath }) {
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
+  // dir → explicit open/closed, overriding the default-open rule below
+  const [groupOverrides, setGroupOverrides] = useState({});
 
   const loadDocument = useCallback(async (filename) => {
     setSelectedDoc(filename);
@@ -29,15 +38,16 @@ export default function DocumentsTab({ appId, repoPath }) {
 
   const fetchDocuments = useCallback(async () => {
     setLoading(true);
-    const data = await api.getAppDocuments(appId).catch(() => ({ documents: [], hasPlanning: false }));
+    const data = await api.getAppDocuments(appId).catch(() => ({ documents: [], docs: [], hasPlanning: false }));
     setDocuments(data.documents || []);
+    setDocs(data.docs || []);
     setHasPlanning(data.hasPlanning || false);
     setLoading(false);
 
-    // Auto-select first existing document
-    const firstExisting = (data.documents || []).find(d => d.exists);
+    // Auto-select the first root document, falling back to the docs/ tree
+    const firstExisting = (data.documents || []).find(d => d.exists)?.filename || (data.docs || [])[0];
     if (firstExisting && !selectedDocRef.current) {
-      loadDocument(firstExisting.filename);
+      loadDocument(firstExisting);
     }
   }, [appId, loadDocument]);
 
@@ -84,6 +94,18 @@ export default function DocumentsTab({ appId, repoPath }) {
     fetchDocuments();
   }, [fetchDocuments]);
 
+  // docs/ entries grouped by their containing directory, preserving the sorted
+  // order the server returned so the tree reads top-down.
+  const docGroups = useMemo(() => {
+    const groups = new Map();
+    for (const path of docs) {
+      const dir = dirOf(path);
+      if (!groups.has(dir)) groups.set(dir, []);
+      groups.get(dir).push(path);
+    }
+    return [...groups.entries()];
+  }, [docs]);
+
   if (loading) {
     return <BrailleSpinner text="Loading documents" />;
   }
@@ -91,13 +113,20 @@ export default function DocumentsTab({ appId, repoPath }) {
   const existingDocs = documents.filter(d => d.exists);
   const missingDocs = documents.filter(d => !d.exists);
 
+  const docButtonClass = (filename) => `px-3 py-2 rounded-lg text-sm text-left transition-colors ${
+    selectedDoc === filename
+      ? 'bg-port-accent/20 text-port-accent border border-port-accent/30'
+      : 'bg-port-card border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50'
+  }`;
+
   return (
     <div className="max-w-5xl space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-white">Documents</h3>
           <p className="text-sm text-gray-500">
-            Key project documents from {repoPath ? repoPath.split('/').pop() : 'repo'}
+            Markdown from {repoPath ? repoPath.split('/').pop() : 'repo'}
+            {docs.length > 0 && <span className="ml-2">· {docs.length} in docs/</span>}
             {hasPlanning && <span className="text-port-accent ml-2">.planning/ exists</span>}
           </p>
         </div>
@@ -109,15 +138,15 @@ export default function DocumentsTab({ appId, repoPath }) {
         </button>
       </div>
 
-      {existingDocs.length === 0 && !editing ? (
+      {existingDocs.length === 0 && docs.length === 0 && !editing ? (
         <div className="bg-port-card border border-port-border rounded-lg p-8 text-center">
           <FileText size={32} className="text-gray-600 mx-auto mb-3" />
           <p className="text-gray-400 mb-2">No documents found</p>
           <p className="text-xs text-gray-500 mb-4">
-            Looking for: {documents.map(d => d.filename).join(', ')}
+            No markdown in the repo root or a docs/ directory
           </p>
           {missingDocs.length > 0 && (
-            <div className="flex gap-2 justify-center">
+            <div className="flex gap-2 justify-center flex-wrap">
               {missingDocs.map(doc => (
                 <button
                   key={doc.filename}
@@ -133,23 +162,50 @@ export default function DocumentsTab({ appId, repoPath }) {
       ) : (
         <div className="flex flex-col sm:flex-row gap-4">
           {/* Document selector */}
-          <div className="sm:w-48 flex sm:flex-col gap-2">
+          <div className="sm:w-56 max-h-64 sm:max-h-[600px] overflow-y-auto flex flex-col gap-2 shrink-0">
             {existingDocs.map(doc => (
               <button
                 key={doc.filename}
                 onClick={() => loadDocument(doc.filename)}
-                className={`px-3 py-2 rounded-lg text-sm text-left transition-colors ${
-                  selectedDoc === doc.filename
-                    ? 'bg-port-accent/20 text-port-accent border border-port-accent/30'
-                    : 'bg-port-card border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50'
-                }`}
+                className={docButtonClass(doc.filename)}
               >
                 <FileText size={14} className="inline mr-2" />
                 {doc.filename}
               </button>
             ))}
+
+            {docGroups.map(([dir, paths]) => (
+              <details
+                key={dir}
+                open={groupOverrides[dir] ?? (dir === DOCS_ROOT || paths.includes(selectedDoc))}
+                onToggle={e => {
+                  // Read `open` now — the state updater runs after React has
+                  // released the synthetic event's currentTarget.
+                  const open = e.target.open;
+                  setGroupOverrides(prev => ({ ...prev, [dir]: open }));
+                }}
+              >
+                <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-300 py-1">
+                  {dir}/ <span className="text-gray-600">({paths.length})</span>
+                </summary>
+                <div className="mt-1 space-y-1">
+                  {paths.map(path => (
+                    <button
+                      key={path}
+                      onClick={() => loadDocument(path)}
+                      title={path}
+                      className={`w-full truncate ${docButtonClass(path)}`}
+                    >
+                      <FileText size={12} className="inline mr-2" />
+                      {baseOf(path)}
+                    </button>
+                  ))}
+                </div>
+              </details>
+            ))}
+
             {missingDocs.length > 0 && (
-              <div className="hidden sm:block mt-2 space-y-1">
+              <div className="mt-2 space-y-1">
                 <div className="text-xs text-gray-600">Create:</div>
                 {missingDocs.map(doc => (
                   <button
@@ -165,7 +221,7 @@ export default function DocumentsTab({ appId, repoPath }) {
           </div>
 
           {/* Document content */}
-          <div className="flex-1 bg-port-card border border-port-border rounded-lg p-4 min-h-[300px] overflow-auto">
+          <div className="flex-1 min-w-0 bg-port-card border border-port-border rounded-lg p-4 min-h-[300px] overflow-auto">
             {loadingDoc ? (
               <BrailleSpinner text="Loading document" />
             ) : editing ? (
@@ -200,10 +256,11 @@ export default function DocumentsTab({ appId, repoPath }) {
               </div>
             ) : docContent ? (
               <div>
-                <div className="flex justify-end mb-2">
+                <div className="flex items-center justify-between mb-2 gap-2">
+                  <span className="text-xs text-gray-500 truncate">{selectedDoc}</span>
                   <button
                     onClick={enterEditMode}
-                    className="px-3 py-1.5 bg-port-border hover:bg-port-border/80 text-white rounded-lg text-xs flex items-center gap-1"
+                    className="px-3 py-1.5 bg-port-border hover:bg-port-border/80 text-white rounded-lg text-xs flex items-center gap-1 shrink-0"
                   >
                     <Pencil size={14} /> Edit
                   </button>
