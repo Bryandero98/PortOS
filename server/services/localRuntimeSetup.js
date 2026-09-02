@@ -57,6 +57,7 @@
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { describeMtplxRuntime } from '../lib/mtplxRuntime.js';
+import { listSlotstreamCachedModels } from '../lib/slotstreamModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { inspectSglangQwenProject, sglangStartBlockedReason } from '../lib/sglangQwenProject.js';
 import { sglangUnsupportedReason } from '../lib/sglangQwenRecipe.js';
@@ -65,6 +66,7 @@ import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { installLlamaServer } from './llamaServerManager.js';
 import { installMtplx, startMtplxServer, MTPLX_UNSUPPORTED_REASON } from './mtplxServerManager.js';
+import { installSlotstream, startSlotstreamServer, SLOTSTREAM_UNSUPPORTED_REASON } from './slotstreamServerManager.js';
 import { controlOllamaServer, installBackend } from './localLlm.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
 import { provisionVllmQwenProject, readVllmQwenSetupState, startVllmQwenProject } from './vllmQwenManager.js';
@@ -314,6 +316,38 @@ const SETUP_ROWS = Object.freeze({
       // so it buys the full cold-model-load budget rather than the launcher's
       // short beat — MTPLX loads a multi-gigabyte MLX checkpoint before it binds.
       return startMtplxServer({ port, model: cache.model, waitMs: START_TIMEOUT_MS, onProgress: emit })
+        .then(() => ({ success: true }))
+        .catch((err) => ({ success: false, error: err.message }));
+    },
+  }),
+
+  slotstream: Object.freeze({
+    platforms: ['darwin'],
+    unsupportedReason: SLOTSTREAM_UNSUPPORTED_REASON,
+    async install({ emit }) {
+      return installSlotstream({ onProgress: (p) => { if (p?.message) emit(p.message); } })
+        .catch((err) => ({ success: false, error: err.message }));
+    },
+    /**
+     * What Slotstream's cache holds, WITHOUT starting it — a local directory
+     * walk. There is deliberately no `provision` row beside it: PortOS does not
+     * fetch weights for this runtime, so the checklist reports an empty cache
+     * rather than offering a download button.
+     *
+     * This row is what keeps `standbyWhenStopped` honest. Without it
+     * `readRuntimeWeights('slotstream')` answers `'unknown'`, and a stopped
+     * Slotstream with an empty cache reads as "a valid idle state" — pointing
+     * the user at a start that cannot succeed.
+     */
+    async weights() {
+      const cache = await listSlotstreamCachedModels();
+      if (cache.models === null) return 'unknown';
+      return cache.models.length > 0 ? 'ready' : 'empty';
+    },
+    async start({ emit, endpoint, isCancelled }) {
+      if (isCancelled()) return { success: false, error: 'Cancelled before the server was started.' };
+      const port = Number(localEndpointPort(endpoint)) || undefined;
+      return startSlotstreamServer({ port, waitMs: START_TIMEOUT_MS, onProgress: emit })
         .then(() => ({ success: true }))
         .catch((err) => ({ success: false, error: err.message }));
     },

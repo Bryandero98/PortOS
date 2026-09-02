@@ -181,6 +181,14 @@ export const localLlmMtplxStartSchema = z.object({
     'model must be a Hugging Face repo id',
   ).optional().nullable(),
 });
+// Slotstream launch. Every field is optional: with none of them PortOS serves
+// the first cached checkpoint on the dedicated loopback port. `memoryGb` is the
+// explicit cache-size cap persisted on the saved launch line; absent = auto.
+export const localLlmSlotstreamStartSchema = z.object({
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  model: z.string().trim().max(300).optional().nullable(),
+  memoryGb: z.coerce.number().min(6).max(512).optional().nullable(),
+});
 // MTPLX model catalog. `mtplx forge discover` is upstream's own index of
 // MTPLX-branded MTP checkpoints; an empty query means its default listing.
 export const localLlmMtplxSearchSchema = z.object({

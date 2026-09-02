@@ -9055,6 +9055,38 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/local-llm/slotstream/install",
+      "mountPath": "/api/local-llm",
+      "sources": [
+        "server/routes/localLlm.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-llm/slotstream/start",
+      "mountPath": "/api/local-llm",
+      "sources": [
+        "server/routes/localLlm.js"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-llm/slotstream/status",
+      "mountPath": "/api/local-llm",
+      "sources": [
+        "server/routes/localLlm.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-llm/slotstream/stop",
+      "mountPath": "/api/local-llm",
+      "sources": [
+        "server/routes/localLlm.js"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/local-llm/status",
       "mountPath": "/api/local-llm",
@@ -17433,8 +17465,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2159,
-    "declarations": 2163,
+    "operations": 2163,
+    "declarations": 2167,
     "sourceFiles": 229
   }
 }

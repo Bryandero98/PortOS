@@ -12,7 +12,7 @@
  *
  * This module is the pure half of the answer: given a provider record, which
  * local runtime backs it (`llama` / `ollama` / `lmstudio` / `mtplx` / `vllm` /
- * `sglang`) and what
+ * `sglang` / `slotstream`) and what
  * base URL should be probed. `services/providerReadiness.js` does the probing.
  * Kept side-effect-free so both the readiness service and its tests can reason
  * about the mapping without a daemon on the host.
@@ -31,6 +31,7 @@
 import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
 import { opencodeLocalBaseUrl } from './opencodeConfig.js';
 import { isGatewayNamespace } from './providerGateways.js';
+import { PORTS } from './ports.js';
 import { isLocalInstanceHost, isLocalInstanceEndpoint, localEndpointPort } from './localEndpoint.js';
 
 export { isLocalInstanceHost, isLocalInstanceEndpoint, localEndpointPort } from './localEndpoint.js';
@@ -180,6 +181,19 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // the card class, so there is no per-model rename for PortOS to offer.
     servesOneModel: true,
   }),
+  slotstream: Object.freeze({
+    id: 'slotstream',
+    label: 'Slotstream',
+    command: 'slotstream',
+    // Dedicated loopback port — never 11434, which is a PortOS-managed Ollama.
+    defaultBaseUrl: `http://127.0.0.1:${PORTS.SLOTSTREAM}/v1`,
+    manageUrl: '/models/llms',
+    docsUrl: 'https://github.com/carloslfu/slotstream',
+    modelsHint: 'A start never fetches weights — add a checkpoint on Models → LLMs, then start Slotstream there.',
+    servesOneModel: true,
+    standbyWhenStopped: true,
+    standbyDetail: 'No streaming runtime is running, which is a valid idle state. Start it from Models → LLMs when you want a model larger than this machine\'s RAM; with idle release configured, PortOS stops it and starts it again on the next request.',
+  }),
   mtplx: Object.freeze({
     id: 'mtplx',
     label: 'MTPLX',
@@ -215,7 +229,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
  *     launcher) started. Its "installed models" are whatever `GET /v1/models`
  *     reports right now, and a measurement talks to the endpoint directly.
  */
-export const ASSESSABLE_RUNTIMES = Object.freeze(['ollama', 'lmstudio', 'llama', 'mtplx', 'vllm', 'sglang']);
+export const ASSESSABLE_RUNTIMES = Object.freeze(['ollama', 'lmstudio', 'llama', 'mtplx', 'vllm', 'sglang', 'slotstream']);
 
 /** Assessable runtimes PortOS holds a provider record and model catalog for. */
 export const MANAGED_ASSESSMENT_BACKENDS = Object.freeze(['ollama', 'lmstudio']);
@@ -276,7 +290,7 @@ function opencodeConfiguredBaseUrl(provider, namespace) {
  * local daemon to check.
  *
  * @param {object|null|undefined} provider
- * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|'vllm'|'sglang'|null}
+ * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|'vllm'|'sglang'|'slotstream'|null}
  */
 export function localRuntimeKind(provider) {
   if (!provider || typeof provider !== 'object') return null;
@@ -284,6 +298,8 @@ export function localRuntimeKind(provider) {
   // carries `ollamaBacked` without being an OpenCode provider.
   const namespace = getOpencodeLocalProviderNamespace(provider);
   if (namespace && !isGatewayNamespace(namespace)) return namespace;
+  if (provider?.id === 'slotstream' || /slotstream/i.test(provider?.name || '')) return 'slotstream';
+  if (Number(localEndpointPort(provider?.endpoint)) === PORTS.SLOTSTREAM) return 'slotstream';
   return localBackendForProvider(provider);
 }
 

@@ -34,6 +34,7 @@ import {
   localLlmLlamaServerStartSchema,
   localLlmLmStudioServiceSchema,
   localLlmMtplxStartSchema,
+  localLlmSlotstreamStartSchema,
   localLlmMtplxSearchSchema,
   localLlmMtplxPullSchema,
   localLlmMtplxRemoveSchema,
@@ -48,6 +49,7 @@ import {
   upgradeLlamaServer,
 } from '../services/llamaServerManager.js'
 import { MTPLX_APP, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
+import { SLOTSTREAM_APP, getSlotstreamServerStatus, startSlotstreamServer, stopSlotstreamServer, installSlotstream } from '../services/slotstreamServerManager.js'
 import { searchMtplxCatalog, pullMtplxModel, removeMtplxModel } from '../services/mtplxModelManager.js'
 import { saveProcessList } from '../services/pm2.js'
 import { getSpecDecodePresetStatus, downloadSpecDecodeModel, cancelSpecDecodeModelDownload } from '../services/specDecodeModels.js'
@@ -852,19 +854,58 @@ router.post('/mtplx/models/remove', asyncHandler(async (req, res) => {
   res.json(result)
 }))
 
+// GET /api/local-llm/slotstream/status — binary, process, memory plan, cache, logs.
+router.get('/slotstream/status', asyncHandler(async (_req, res) => {
+  res.json(await getSlotstreamServerStatus())
+}))
+
+// POST /api/local-llm/slotstream/start — launch `slotstream serve` under PM2.
+// Never downloads weights; an empty cache is a 400, not a silent fetch.
+router.post('/slotstream/start', asyncHandler(async (req, res) => {
+  const options = validateRequest(localLlmSlotstreamStartSchema, req.body)
+  const emit = emitter(req)
+  emit('start', 'Starting Slotstream…')
+  const result = await startSlotstreamServer({ ...options, onProgress: (line) => emit('start', line) })
+    .catch((err) => {
+      emit('error', err.message)
+      throw err
+    })
+  resetProviderReadinessCache()
+  emit('complete', `Slotstream is running at ${result.endpoint}`)
+  res.json(result)
+}))
+
+router.post('/slotstream/stop', asyncHandler(async (_req, res) => {
+  const result = await stopSlotstreamServer()
+  resetProviderReadinessCache()
+  res.json(result)
+}))
+
+router.post('/slotstream/install', asyncHandler(async (req, res) => {
+  const emit = emitter(req)
+  const result = await installSlotstream({ onProgress: ({ event, message }) => emit(event, message) })
+    .catch((err) => {
+      emit('error', `Install failed: ${err.message}`)
+      throw err
+    })
+  resetProviderReadinessCache()
+  emit('complete', 'Slotstream installed')
+  res.json(result)
+}))
+
 // POST /api/local-llm/save-startup — `pm2 save`, so the PM2-managed local
 // runtime servers currently running (llama-server, PortOS itself) are in the
 // dump a boot-time `pm2 resurrect` replays. The privileged half — `pm2
 // startup`, which writes the launchd/systemd unit — is deliberately blocked and
 // stays a one-time operator command.
 //
-// MTPLX is deliberately EXCLUDED. It is started on demand by the first request
-// that needs it and stopped again when idle, so resurrecting it at boot would
-// pin its multi-gigabyte checkpoint on a machine nobody has asked anything of
-// yet — the exact waste the idle stop exists to end. The running process is
-// left alone; only the boot list drops it.
+// MTPLX and Slotstream are deliberately EXCLUDED. Both are started on demand
+// by the first request that needs them and stopped again when idle, so
+// resurrecting them at boot would pin a multi-gigabyte checkpoint on a machine
+// nobody has asked anything of yet — the exact waste the idle stop exists to
+// end. The running process is left alone; only the boot list drops it.
 router.post('/save-startup', asyncHandler(async (_req, res) => {
-  res.json(await saveProcessList(null, { exclude: [MTPLX_APP] }))
+  res.json(await saveProcessList(null, { exclude: [MTPLX_APP, SLOTSTREAM_APP] }))
 }))
 
 export default router
