@@ -184,14 +184,20 @@ describe('managed app updates', () => {
   });
 
   it('recognizes a conventional repository update script', async () => {
-    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    // The convention is platform-specific: a POSIX host looks for update.sh and
+    // executes it directly, while Windows looks for update.ps1 and hands it to
+    // powershell. Assert the shape for the host actually running the suite.
+    const isWindows = process.platform === 'win32';
+    const scriptName = isWindows ? 'update.ps1' : 'update.sh';
+    const scriptPath = join(repo, scriptName);
+    await writeFile(scriptPath, isWindows ? 'exit 0\n' : '#!/bin/sh\nexit 0\n');
     const emit = vi.fn();
 
     await updateApp({ name: 'Example App', type: 'express', repoPath: repo, pm2ProcessNames: [] }, emit);
 
     expect(mock.spawn).toHaveBeenCalledWith(
-      join(repo, 'update.sh'),
-      [],
+      isWindows ? 'powershell' : scriptPath,
+      isWindows ? ['-ExecutionPolicy', 'Bypass', '-File', scriptPath] : [],
       expect.objectContaining({ cwd: repo }),
     );
   });
