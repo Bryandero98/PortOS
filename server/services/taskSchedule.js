@@ -1149,7 +1149,12 @@ export async function getNextTaskType(appId = null, lastType = '', { perpetualOn
  * perpetual drain re-issued ITSELF through the same lane after a completed run —
  * automated, and therefore NOT allowed to clear its own brakes.
  */
-export async function triggerOnDemandTask(taskType, appId = null, { emit = true, origin = ON_DEMAND_ORIGINS.USER } = {}) {
+export async function triggerOnDemandTask(taskType, appId = null, { emit = true, origin = ON_DEMAND_ORIGINS.USER, targetPullRequest = null } = {}) {
+  // A targeted run names ONE open PR/MR instead of letting the task pick from
+  // the app's whole open set (the PR/MR row's "Review this PR" button). Coerced
+  // and validated here so a bad value can't reach the generator's forge filter.
+  const requested = Number(targetPullRequest);
+  const scopedPullRequest = Number.isInteger(requested) && requested > 0 ? requested : null;
   const request = await updateSchedule(async (schedule) => {
     // Cheap per-task-type check first; the master-flag check pays a state.json read.
     const tasks = schedule.tasks || {};
@@ -1185,7 +1190,8 @@ export async function triggerOnDemandTask(taskType, appId = null, { emit = true,
       taskType,
       appId,
       origin,
-      requestedAt: new Date().toISOString()
+      requestedAt: new Date().toISOString(),
+      ...(scopedPullRequest ? { targetPullRequest: scopedPullRequest } : {})
     };
 
     schedule.onDemandRequests.push(request);
@@ -1203,8 +1209,8 @@ export async function triggerOnDemandTask(taskType, appId = null, { emit = true,
       type: 'cos.schedule.trigger',
       target: taskType,
       targetName: appId,
-      summary: `Ran scheduled task '${taskType}' on demand${appId ? ` for ${appId}` : ''}`,
-      payload: { taskType, appId: appId ?? null, requestId: request.id },
+      summary: `Ran scheduled task '${taskType}' on demand${appId ? ` for ${appId}` : ''}${scopedPullRequest ? ` (#${scopedPullRequest})` : ''}`,
+      payload: { taskType, appId: appId ?? null, requestId: request.id, ...(scopedPullRequest ? { targetPullRequest: scopedPullRequest } : {}) },
       source: { service: 'taskSchedule', fn: 'triggerOnDemandTask' },
       happenedAt: request.requestedAt,
       dedupeKey: `cos.schedule.trigger:${request.id}`,

@@ -1971,6 +1971,30 @@ describe('taskSchedule', () => {
       expect((await getOnDemandRequests()).filter(r => r.taskType === 'pr-reviewer')).toHaveLength(0)
     })
 
+    it('carries a targeted PR number onto the queued request', async () => {
+      mockSchedule({
+        tasks: { 'pr-reviewer': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } }
+      })
+
+      const result = await triggerOnDemandTask('pr-reviewer', 'app-1', { targetPullRequest: 17 })
+
+      expect(result.error).toBeUndefined()
+      expect(result.targetPullRequest).toBe(17)
+      const queued = (await getOnDemandRequests()).find(r => r.id === result.id)
+      expect(queued.targetPullRequest).toBe(17)
+    })
+
+    it('drops a non-positive-integer PR target rather than queueing an unusable filter', async () => {
+      mockSchedule({
+        tasks: { 'pr-reviewer': { type: INTERVAL_TYPES.ON_DEMAND, enabled: true } }
+      })
+
+      const result = await triggerOnDemandTask('pr-reviewer', 'app-1', { targetPullRequest: 'all' })
+
+      expect(result.error).toBeUndefined()
+      expect('targetPullRequest' in result).toBe(false)
+    })
+
     it('should reject unknown task types instead of silently queuing them', async () => {
       mockSchedule({
         tasks: { 'feature-ideas': { type: 'weekly', enabled: true } }

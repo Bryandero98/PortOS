@@ -33,7 +33,16 @@ const safeText = (value, max) => typeof value === 'string' ? value.slice(0, max)
  * Find every currently-open PR from an external human contributor. This is a
  * public-metadata operation only; it does not fetch a branch or run code.
  */
-export async function listExternalOpenPullRequests(app) {
+/**
+ * The three facts that decide which of a repo's open PRs pr-reviewer may target:
+ * the `gh` repo selector, the default branch it reviews against, and the login
+ * whose own PRs are excluded. Split out of `listExternalOpenPullRequests` so a
+ * caller that already HAS the PR rows — the PRs/MRs tab, deciding whether to
+ * offer its per-row Review action — can answer "is this row reviewable?" from
+ * the same source of truth instead of re-listing every PR or re-deriving the
+ * rule and drifting from it.
+ */
+export async function resolvePrReviewerTargetScope(app) {
   const origin = await getOriginInfo(app?.repoPath).catch(() => null);
   const repoSpec = githubRepoSpec(origin);
   if (!repoSpec) return failure('security-scan-not-a-github-repo');
@@ -51,9 +60,38 @@ export async function listExternalOpenPullRequests(app) {
   const selfLogin = await getSelfLogin(githubApiHost(origin.host));
   if (!selfLogin) return failure('security-scan-self-login-unavailable');
 
+  return {
+    ok: true,
+    repoSpec,
+    repoFullName: origin.fullName,
+    defaultBranch: defaultBranch.trim(),
+    selfLogin,
+  };
+}
+
+/**
+ * Whether one already-listed PR row is a pr-reviewer target, per a resolved
+ * scope. Mirrors exactly what `listExternalOpenPullRequests` keeps — open
+ * against the default branch, opened by someone other than the signed-in
+ * account — so a UI gated on this and the route's authoritative check agree.
+ */
+export function isReviewablePullRequest(scope, pullRequest) {
+  const author = pullRequest?.author;
+  return scope?.ok === true
+    && pullRequest?.baseBranch === scope.defaultBranch
+    && typeof author === 'string'
+    && author.length > 0
+    && author.toLowerCase() !== String(scope.selfLogin).toLowerCase();
+}
+
+export async function listExternalOpenPullRequests(app) {
+  const scope = await resolvePrReviewerTargetScope(app);
+  if (!scope.ok) return scope;
+  const { repoSpec, repoFullName, defaultBranch, selfLogin } = scope;
+
   const raw = await execGh([
     'pr', 'list', '--repo', repoSpec,
-    '--base', defaultBranch.trim(), '--state', 'open',
+    '--base', defaultBranch, '--state', 'open',
     '--limit', String(SECURITY_SCAN_MAX_OPEN_PRS),
     '--json', 'number,author,url,headRefOid,updatedAt,title,body',
   ]).catch(() => null);
@@ -85,8 +123,8 @@ export async function listExternalOpenPullRequests(app) {
   return {
     ok: true,
     repoSpec,
-    repoFullName: origin.fullName,
-    defaultBranch: defaultBranch.trim(),
+    repoFullName,
+    defaultBranch,
     prs: prs.filter((pr) => String(pr.authorLogin).toLowerCase() !== String(selfLogin).toLowerCase()),
   };
 }

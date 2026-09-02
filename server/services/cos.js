@@ -1016,7 +1016,8 @@ async function spawnDequeuePriority0OnDemand(ctx) {
       await taskScheduleMod.recordExecution(`task:${request.taskType}`, targetApp.id);
       task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, {
         skipPreconditions: true,
-        deferPerpetualDispatch: true
+        deferPerpetualDispatch: true,
+        targetPullRequest: request.targetPullRequest ?? null
       });
       if (task) {
         await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
@@ -1503,6 +1504,10 @@ export function isPerpetualRefillCandidate(agent, schedule) {
  */
 export function perpetualRefillPlan(agent, schedule) {
   if (!isPerpetualRefillCandidate(agent, schedule)) return { lane: 'skip' };
+  // A run narrowed to ONE pull request is a one-shot the user asked for on a
+  // specific row. A refill carries no target, so continuing the drain here would
+  // silently promote that click into a sweep of every open contributor PR.
+  if (agent?.metadata?.taskTargetPullRequest) return { lane: 'skip' };
   if (agent?.metadata?.taskOnDemand) {
     return { lane: 'onDemand', taskType: agentScheduledType(agent), appId: agent?.metadata?.taskApp || null };
   }

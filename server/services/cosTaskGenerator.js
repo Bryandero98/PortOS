@@ -954,7 +954,8 @@ async function spawnPriority0OnDemand(ctx) {
         await taskSchedule.recordExecution(`task:${request.taskType}`, targetApp.id);
         task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, {
           skipPreconditions: true,
-          deferPerpetualDispatch: true
+          deferPerpetualDispatch: true,
+          targetPullRequest: request.targetPullRequest ?? null
         });
         if (task) {
           await bindAppReviewAgent(targetApp.id, `on-demand-${Date.now()}`);
@@ -2159,6 +2160,26 @@ export function buildSecurityScanPipelineOutput(scan, reports, status) {
   return JSON.stringify({ ...base, complete: true, reviewedPrs: included })
 }
 
+/**
+ * Name the single PR a targeted pr-reviewer run covers. The number goes in the
+ * FIRST line specifically: `addTask`'s duplicate guard keys on (first line +
+ * app), so without it, targeting a second PR while the first run is still in
+ * flight would be rejected as a duplicate of it. The trailing sentence repeats
+ * the scope for the agent; the header keeps its `[Improvement: <app>] …` shape
+ * so the CoS queue still reads the same way.
+ */
+function scopeDescriptionToPullRequest(description, metadata) {
+  const number = metadata?.targetPullRequest;
+  if (!number) return description;
+  const [firstLine, ...rest] = description.split('\n');
+  return [
+    `${firstLine} — pull request #${number} only`,
+    ...rest,
+    '',
+    `This run is scoped to pull request #${number}: it is the only request the server cleared, and the only one this run may act on.`,
+  ].join('\n');
+}
+
 function formatSecurityScanContext(scan, reports, status) {
   const findingCount = reports.filter((report) => !reportIsSafe(report)).length
   return [
@@ -2195,8 +2216,15 @@ async function findActiveSecurityScanTask(appId, scanKey) {
  * External contributor PRs are held for human approval before the stage that
  * can review, comment, or merge. The preflight itself remains read-only and
  * does not checkout or execute any contributor branch.
+ *
+ * `targetPullRequest` narrows the run to ONE open PR — the per-row "Review this
+ * PR" trigger on an app's PRs / MRs tab. The narrowing happens BEFORE the
+ * fingerprint and the security scan, so every downstream contract (scan key,
+ * public-review snapshot, `issueWatcher.pullRequests` coverage, and the output
+ * hook's strict envelope check) is scoped to that one PR by construction rather
+ * than by a prompt asking the agent to ignore the rest.
  */
-async function runPrReviewerSecurityPreflight(taskType, app, metadata) {
+async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest = null) {
   if (taskType !== 'pr-reviewer') return { skipped: false };
 
   const stages = metadata.pipeline?.stages;
@@ -2209,7 +2237,7 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata) {
 
   const { listExternalOpenPullRequests, runPrReviewerSecurityScan, securityScanFingerprint } = await import('./prReviewerSecurity.js');
   const { writePublicReviewInputSnapshot } = await import('./modelAbuseGuard.js');
-  const target = await listExternalOpenPullRequests(app);
+  let target = await listExternalOpenPullRequests(app);
   if (!target.ok) {
     emitLog('warn', `Skipping pr-reviewer for ${app.name}: ${target.code || 'security-scan-target-unavailable'}`, { appId: app.id, analysisType: taskType });
     return { skipped: true };
@@ -2217,6 +2245,15 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata) {
   if (target.prs.length === 0) {
     emitLog('info', `Skipping pr-reviewer for ${app.name}: no-external-open-prs`, { appId: app.id, analysisType: taskType });
     return { skipped: true, reason: 'no-external-open-prs' };
+  }
+  if (targetPullRequest) {
+    const scoped = target.prs.filter((pr) => pr.number === targetPullRequest);
+    if (scoped.length === 0) {
+      emitLog('warn', `Skipping pr-reviewer for ${app.name}: target-pull-request-not-reviewable (#${targetPullRequest})`, { appId: app.id, analysisType: taskType });
+      return { skipped: true, reason: 'target-pull-request-not-reviewable' };
+    }
+    target = { ...target, prs: scoped };
+    metadata.targetPullRequest = targetPullRequest;
   }
   const scanKey = securityScanFingerprint(target);
   const active = await findActiveSecurityScanTask(app.id, scanKey);
@@ -2404,9 +2441,16 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
 
   let nextType;
   let selectionReason;
+  // A stolen on-demand request may be SCOPED to one PR (the PRs/MRs tab's
+  // per-row pr-reviewer trigger). Carrying it is not optional: the generator
+  // reads no target as "sweep every external PR", so dropping it here would
+  // silently promote the user's one-row click into a full-repo review — the
+  // same widening the perpetual-refill skip guards against on the other side.
+  let targetPullRequest = null;
 
   if (appRequests.length > 0) {
     const request = appRequests[0];
+    targetPullRequest = request.targetPullRequest ?? null;
     await taskSchedule.clearOnDemandRequest(request.id);
     // Only a human "Run" may clear the drain's brakes (park state, dispatch
     // count); the policy lives in applyOnDemandRunResets so this idle-review
@@ -2454,7 +2498,8 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // spawn; the per-type generator does not record execution itself.
   const task = await generateManagedAppImprovementTaskForType(nextType, app, state, {
     ignoreTaskId,
-    deferPerpetualDispatch: true
+    deferPerpetualDispatch: true,
+    targetPullRequest
   });
   // Idle-review can steal a queued on-demand request for this app. That
   // request is still a user Run — apply the same consent as Priority 0.
@@ -3421,7 +3466,8 @@ function applyProviderModelPins(metadata, interval, appPin, hookOverride) {
 export async function generateManagedAppImprovementTaskForType(taskType, app, state, {
   skipPreconditions = false,
   ignoreTaskId = null,
-  deferPerpetualDispatch = false
+  deferPerpetualDispatch = false,
+  targetPullRequest = null
 } = {}) {
   const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
@@ -3453,7 +3499,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   const metadata = buildImprovementTaskMetadata(taskType, app, interval, taskSchedule, appOverride);
 
   initializePipelineMetadata(metadata);
-  const securityPreflight = await runPrReviewerSecurityPreflight(taskType, app, metadata);
+  const securityPreflight = await runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest);
   if (securityPreflight.skipped) return null;
   if (!skipPreconditions && shouldSkipForPrecondition(metadata, app, taskType)) return null;
 
@@ -3587,7 +3633,10 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     }
   });
   const taskDataInputs = await resolveTaskDataInputs(interval.dataInputs, { app });
-  const description = appendTaskDataInputs(baseDescription, taskDataInputs);
+  const description = scopeDescriptionToPullRequest(
+    appendTaskDataInputs(baseDescription, taskDataInputs),
+    metadata
+  );
 
   applyAppWorktreeDefault(metadata, app);
   // File-issues posture wins over app worktree/PR defaults — the deliverable

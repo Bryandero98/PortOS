@@ -2268,6 +2268,13 @@ describe('perpetualRefillPlan — manual vs scheduled drain lane', () => {
     )).toEqual({ lane: 'onDemand', taskType: 'claim-issue', appId: null });
   });
 
+  it('does not refill a run that was narrowed to one pull request', () => {
+    expect(perpetualRefillPlan(
+      agent({ taskAnalysisType: 'claim-issue', taskOnDemand: true, taskApp: 'app-42', taskTargetPullRequest: 17 }),
+      schedule,
+    )).toEqual({ lane: 'skip' });
+  });
+
   it('skips a non-candidate even when it is marked on-demand (disabled / non-perpetual / unknown)', () => {
     expect(perpetualRefillPlan(agent({ taskAnalysisType: 'claim-issue-disabled', taskOnDemand: true }), schedule))
       .toEqual({ lane: 'skip' });

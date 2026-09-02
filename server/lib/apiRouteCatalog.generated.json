@@ -1112,6 +1112,14 @@
     },
     {
       "method": "POST",
+      "path": "/api/apps/:id/pull-requests/:number/review",
+      "mountPath": "/api/apps",
+      "sources": [
+        "server/routes/apps/pullRequests.js"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/apps/:id/refresh-config",
       "mountPath": "/api/apps",
       "sources": [
@@ -17409,8 +17417,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2156,
-    "declarations": 2160,
+    "operations": 2157,
+    "declarations": 2161,
     "sourceFiles": 229
   }
 }

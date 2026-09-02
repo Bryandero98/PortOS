@@ -685,6 +685,11 @@ async function runAgentSpawn(task) {
       // the auto-run-gated queue lane. `isTruthyMeta` accepts the boolean set at
       // spawn AND the string `"true"` a COS-TASKS.md round-trip yields.
       taskOnDemand: isTruthyMeta(task.metadata?.onDemand),
+      // The single PR a pr-reviewer run was narrowed to. Same hand-picked-projection
+      // reason as the keys around it: perpetualRefillPlan must see from the AGENT
+      // record that this run was scoped, or its untargeted re-issue silently widens
+      // a per-row click back into a sweep of every open PR.
+      taskTargetPullRequest: task.metadata?.targetPullRequest || null,
       // LI hand-off provenance (#2765): projected onto the agent so the completion
       // hook (recordTaskCompletion) can attribute the run's success/failure back to
       // the proposal's domain. agent.metadata is a hand-picked projection of

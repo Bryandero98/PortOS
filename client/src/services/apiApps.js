@@ -55,6 +55,17 @@ export const resolveAppPullRequest = (id, number, options = {}) =>
     silent: true,
     ...options,
   });
+// Queue the `pr-reviewer` scheduled task narrowed to ONE open PR/MR instead of
+// letting it pick from the app's whole external open set. The server owns the
+// eligibility check (open, GitHub, opened by someone else) and the duplicate
+// guard, so a refusal comes back as an explained error rather than a run that
+// silently reviews nothing.
+export const reviewAppPullRequest = (id, number, options = {}) =>
+  request(`/apps/${id}/pull-requests/${encodeURIComponent(number)}/review`, {
+    method: 'POST',
+    silent: true,
+    ...options,
+  });
 // Effective Layered Intelligence config (self-improvement loop) for an app —
 // stored partial merged over the shipped defaults. Read-only; saved through
 // updateApp (the `layeredIntelligence` key routes to the merge helper server-
