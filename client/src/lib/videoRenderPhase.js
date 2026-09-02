@@ -38,7 +38,13 @@ const STEP_INDEX = Object.fromEntries(VIDEO_RENDER_STEPS.map((step, index) => [s
 // `STAGE:` there); anything unmatched falls through to `null`, which the caller
 // must treat as "unknown phase", never as step 0 — reporting "Queued" for an
 // unrecognized marker would read as the render having gone backwards.
-const PHASE_STEP = Object.freeze({
+const PHASE_STEP = Object.freeze(Object.assign(Object.create(null), {
+  // The bare marker, which is what a `DOWNLOAD:` line sets and what
+  // hf_download_repo.py emits as `STAGE:download:<n>/<total>:<file>`. It does
+  // NOT match the `download-` prefix below, so without this entry the step
+  // this list exists for never activates and a multi-GB first-run download
+  // reads as "Rendering".
+  download: 'download',
   // The download helper's own preamble, not separate user-visible work.
   'resolve-cache': 'download',
   verify: 'download',
@@ -54,7 +60,16 @@ const PHASE_STEP = Object.freeze({
 
   // Conditioning.
   'encode-prompt': 'encode',
+  conditioning: 'encode',
   'precompute-latents': 'encode',
+  // …and its END marker, which means the OPPOSITE of the one above. It is the
+  // last STAGE line generate_ltx2.py emits before denoising, and the server
+  // pins it as the phase on every progress frame that follows, so mapping it
+  // back to `encode` (as its `encode-prompt` prefix otherwise would) leaves
+  // LTX-2 — the primary local runtime — reading "Encoding prompt" for the
+  // whole sampler run. Exact entries win over prefixes, which is what makes
+  // this correction possible.
+  'encode-prompt-done': 'render',
 
   // The sampler itself.
   inference: 'render',
@@ -72,7 +87,7 @@ const PHASE_STEP = Object.freeze({
   // The queue's own state, so a caller has one vocabulary rather than a
   // separate "is it queued" flag alongside the phase.
   queued: 'queued',
-});
+}));
 
 // Prefix families, longest-prefix-first. The runners name their markers by
 // family (`download-text-encoder`, `load-transformer`, `swap-video-decoder`,
@@ -95,6 +110,9 @@ const PHASE_PREFIX_STEP = Object.freeze([
  */
 export function videoRenderStepFor(phase) {
   if (typeof phase !== 'string' || !phase) return null;
+  // Null-prototype lookup (see PHASE_STEP): a runner is free to emit
+  // `STAGE:constructor`, and on a plain object literal that would resolve to
+  // `Object` and hand the caller a step id no list contains.
   const id = phase.toLowerCase();
   if (PHASE_STEP[id]) return PHASE_STEP[id];
   return PHASE_PREFIX_STEP.find(([prefix]) => id.startsWith(prefix))?.[1] || null;
@@ -136,5 +154,7 @@ export function resolveVideoRenderSteps({ generating = false, phase = null, prog
   const activeId = !generating ? null
     : videoRenderStepFor(phase)
       || (Number.isFinite(progressPct) && progressPct > 0 ? 'render' : 'load');
-  return { activeId, steps: STEPS_BY_ACTIVE_ID[String(activeId)] };
+  // `?? STEPS_BY_ACTIVE_ID.null` so an id outside the step list can never hand
+  // the caller `undefined` to map over.
+  return { activeId, steps: STEPS_BY_ACTIVE_ID[String(activeId)] ?? STEPS_BY_ACTIVE_ID.null };
 }

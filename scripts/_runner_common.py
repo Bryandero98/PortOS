@@ -84,7 +84,12 @@ def heartbeat(stage: "str | Callable[[], str]", interval: float = 20.0):
         elapsed = 0
         while not stop.wait(interval):
             elapsed += int(interval)
-            print(f"STAGE:{resolve_stage()}:heartbeat:{elapsed}s", file=sys.stderr, flush=True)
+            # One write, not print()'s two — a caller that also writes to stderr
+            # from the main thread (generate_fastvideo.py streams its child's
+            # output there) would otherwise see the beat land between a line's
+            # text and its newline, gluing two protocol lines together.
+            sys.stderr.write(f"STAGE:{resolve_stage()}:heartbeat:{elapsed}s\n")
+            sys.stderr.flush()
 
     t = threading.Thread(target=beat, daemon=True)
     t.start()

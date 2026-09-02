@@ -18,10 +18,34 @@ describe('videoRenderStepFor', () => {
     expect(videoRenderStepFor('download-some-new-shard')).toBe('download');
     expect(videoRenderStepFor('load-audio-vae')).toBe('load');
     expect(videoRenderStepFor('swap-video-decoder')).toBe('load');
-    expect(videoRenderStepFor('encode-prompt-done')).toBe('encode');
     // generate_wan22.py emits STAGE:wan-i2v / STAGE:wan-t2v, never bare "wan".
     expect(videoRenderStepFor('wan-i2v')).toBe('render');
     expect(videoRenderStepFor('ref2va-mux')).toBe('render');
+  });
+
+  // Each of these was wrong before the exact/bare entries were added, and each
+  // mislabels the LONGEST phase of a real render.
+  it('maps the phases the shipped runners actually pin during their slowest work', () => {
+    // `DOWNLOAD:` lines and hf_download_repo.py both pin the BARE marker, which
+    // does not match the `download-` prefix.
+    expect(videoRenderStepFor('download')).toBe('download');
+    // generate_ltx2.py's LAST stage marker before denoising. It means the
+    // encode FINISHED, so the `encode-prompt` prefix would read it backwards
+    // and leave LTX-2 showing "Encoding prompt" for its entire sampler run.
+    expect(videoRenderStepFor('encode-prompt-done')).toBe('render');
+    // generate_fastvideo.py's conditioning phase is named 'conditioning'
+    // precisely so it can't collide with ltx2's prompt-encode sentinel.
+    expect(videoRenderStepFor('conditioning')).toBe('encode');
+  });
+
+  // A runner is free to emit any STAGE id; one that collides with an
+  // Object.prototype key must not resolve to a function the caller then treats
+  // as a step id (and whose step list comes back undefined to .map over).
+  it('is not fooled by a phase named after an Object.prototype key', () => {
+    expect(videoRenderStepFor('constructor')).toBeNull();
+    expect(videoRenderStepFor('toString')).toBeNull();
+    expect(resolveVideoRenderSteps({ generating: true, phase: 'constructor' }).steps)
+      .toHaveLength(6);
   });
 
   it('normalizes case, because BYOV helpers are not required to agree on it', () => {

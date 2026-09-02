@@ -432,6 +432,9 @@ export default function VideoGen() {
         // Out of the queue, but the runner hasn't named a phase yet — clear it
         // rather than guessing, and let the card default to "Loading model".
         setPhase(null);
+        // The clock starts HERE, not at submit: time spent waiting in the queue
+        // is not render time, and counting it would make the elapsed figure
+        // jump backwards on a reload (which reads the worker's own startedAt).
         setRenderStartedAt((at) => at ?? Date.now());
         setStatusMsg('Starting render…');
       },
@@ -496,8 +499,10 @@ export default function VideoGen() {
       setGenerating(true);
       setPhase(job.status === 'queued' ? 'queued' : null);
       // The worker's own start time, so a reload keeps a truthful elapsed clock
-      // instead of restarting it and reading as a fresh render.
-      setRenderStartedAt(job.startedAt ? new Date(job.startedAt).getTime() : Date.now());
+      // instead of restarting it and reading as a fresh render. A job still in
+      // the queue has no start time yet and gets no clock — the same rule the
+      // live path follows.
+      setRenderStartedAt(job.startedAt ? new Date(job.startedAt).getTime() : null);
       // Skip a forced setProgress(0) here — attachJobEvents will replay the
       // server's last SSE payload synchronously after EventSource open, and
       // a job mid-render would otherwise visibly flash 0% before jumping
@@ -692,9 +697,10 @@ export default function VideoGen() {
     setStatusMsg('Starting...');
     setError(null);
     // Stale-job isolation: the previous run's phase and clock must not be shown
-    // as if they belonged to this one.
+    // as if they belonged to this one. The clock stays null until `started`
+    // lands, so it measures the render rather than the queue wait.
     setPhase(null);
-    setRenderStartedAt(Date.now());
+    setRenderStartedAt(null);
 
     const myToken = ++runTokenRef.current;
     const isCurrent = () => myToken === runTokenRef.current;

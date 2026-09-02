@@ -428,8 +428,8 @@ async function persistImpl() {
     ...archive,
   ];
   // Strip non-serializable bits.
-  const serializable = live.map(({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs, render }) =>
-    ({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs, render }),
+  const serializable = live.map(({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs }) =>
+    ({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs }),
   );
   await atomicWrite(JOBS_FILE, { jobs: serializable });
 }

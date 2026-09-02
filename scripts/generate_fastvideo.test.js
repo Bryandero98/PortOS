@@ -63,7 +63,10 @@ describe.skipIf(!pyBin)('generate_fastvideo.py phase reporting', () => {
       '    print(phase)',
     ].join('\n')}`);
 
-    expect(lines(output)).toEqual(['encode-prompt', 'sampling', 'sampling', 'mux']);
+    // 'conditioning', deliberately NOT 'encode-prompt' — that exact marker is
+    // generate_ltx2.py's prompt-encode BEGIN sentinel, and emitting it here
+    // would arm an ltx2-only relaunch against a FastVideo render.
+    expect(lines(output)).toEqual(['conditioning', 'sampling', 'sampling', 'mux']);
   });
 
   it('never moves the phase backwards when a milestone line repeats', () => {

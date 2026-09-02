@@ -54,7 +54,14 @@ _PERCENT_PATTERN = re.compile(r'\d+%')
 # The phase progression, earliest first. Ordering is load-bearing — it is what
 # keeps `advance_phase` monotonic — so it is declared here rather than inferred
 # from the key order of the label table below.
-_PHASE_ORDER = ("load-pipeline", "encode-prompt", "sampling", "mux")
+# NOT "encode-prompt": that exact marker is generate_ltx2.py's Gemma
+# prompt-encode BEGIN sentinel (PROMPT_ENCODE_BEGIN_MARKER in
+# generateVideoHelpers.js), and the server arms an ltx2-specific relaunch on it.
+# Emitting it here would open a phase this runner never closes, so a FastVideo
+# render killed by the Metal watchdog would be "retried" with ltx2's
+# --gemma-max-length flag, which this script's argparse rejects — replacing the
+# real watchdog error with an exit-2 after a wasted full model re-spawn.
+_PHASE_ORDER = ("load-pipeline", "conditioning", "sampling", "mux")
 
 # Phase id -> the sentence the user reads, emitted once per transition. Ids are
 # drawn from the STAGE: vocabulary the server already parses
@@ -62,7 +69,7 @@ _PHASE_ORDER = ("load-pipeline", "encode-prompt", "sampling", "mux")
 # FastVideo-specific entries.
 PHASE_LABELS = {
     "load-pipeline": "Loading the FastVideo pipeline",
-    "encode-prompt": "Encoding the prompt and streaming model weights",
+    "conditioning": "Encoding the prompt and streaming model weights",
     "sampling": "Rendering (denoising)",
     "mux": "Decoding and muxing video + audio",
 }
@@ -76,7 +83,7 @@ INITIAL_PHASE = _PHASE_ORDER[0]
 _PHASE_MARKERS = (
     # `Geometry: output=...` is the first line generate() logs, i.e. the
     # pipeline object is constructed and the long conditioning leg starts here.
-    ("geometry:", "encode-prompt"),
+    ("geometry:", "conditioning"),
     # Text conditioning is done — either freshly encoded or read from cache.
     ("loaded prompt embeddings", "sampling"),
     # The DiT finished streaming in; denoising is the only thing left before
@@ -293,8 +300,12 @@ def main() -> int:
         cwd=str(repo_dir),
     )
 
+    # One write per line, not print()'s two (text, then newline): the heartbeat
+    # thread writes to this same stream, and an interleave between the two halves
+    # would glue two protocol lines together and lose a marker.
     def emit(text: str) -> None:
-        print(text, file=sys.stderr, flush=True)
+        sys.stderr.write(f"{text}\n")
+        sys.stderr.flush()
 
     phase = INITIAL_PHASE
     emit(f"STAGE:{phase}")
