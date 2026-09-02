@@ -250,6 +250,10 @@ export default function ImageGen() {
   // apply to it. Keep the target state intact so switching back to another
   // backend restores the user's previous target selection.
   const remoteTargetActive = effectiveMode !== IMAGE_GEN_MODE.GROK && remoteTarget.isRemote;
+  // The status probe describes THIS machine's backend, and it can hang for a long
+  // time against an unconfigured external SD API URL. A federated target renders
+  // on the peer, so only a LOCAL dispatch waits on the probe.
+  const localBackendPending = statusLoading && !remoteTargetActive;
   const isAsyncMode = isLocalMode || isCloudMode || remoteTargetActive;
   // Only probe `agy models` while Agy is the active backend — it spawns a
   // child process server-side, so an unselected backend must not pay for it.
@@ -987,7 +991,7 @@ export default function ImageGen() {
     // pill is still checking, so an implicit submit must not dispatch against a
     // backend we haven't confirmed. A remote target runs on the peer, so the
     // LOCAL probe result doesn't gate it — mirror the submit button exactly.
-    if (statusLoading || (!remoteTargetActive && notConnected)) return;
+    if (localBackendPending || (!remoteTargetActive && notConnected)) return;
     // The button reading is as old as the last render and a capacity window
     // expires on the clock, so an enabled button can already be pointing at a
     // lapsed peer. Re-derive here and say so, rather than letting the server
@@ -1473,15 +1477,15 @@ export default function ImageGen() {
               // The probe decides WHICH backend can run, not what the user may
               // type — so it gates submit and backend selection only. Every form
               // control above stays live while the status pill is still checking.
-              disabled={statusLoading || (remoteTargetActive
+              disabled={remoteTargetActive
                 ? remoteBlocked !== null
-                : (notConnected || editImageMissing || cloudNeedsPrompt))}
-              title={statusLoading
+                : (localBackendPending || notConnected || editImageMissing || cloudNeedsPrompt)}
+              title={localBackendPending
                 ? 'Checking the image backend…'
                 : remoteBlocked || (editImageMissing ? 'This image-edit model needs a source image — upload one below first' : cloudNeedsPrompt ? cloudPromptHint : undefined)}
               className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
             >
-              <Sparkles className="w-4 h-4" /> {statusLoading ? 'Checking…' : generating ? 'Queue' : 'Generate'}
+              <Sparkles className="w-4 h-4" /> {localBackendPending ? 'Checking…' : generating ? 'Queue' : 'Generate'}
               {isAsyncMode && batchCount > 1 && <span className="text-xs opacity-80">× {batchCount}</span>}
             </button>
             {editImageMissing && (

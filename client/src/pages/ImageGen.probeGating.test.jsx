@@ -4,6 +4,29 @@ import { MemoryRouter } from 'react-router';
 
 const MODEL = { id: 'dev', name: 'FLUX.1 Dev', runner: 'mflux', steps: 20, guidance: 3.5 };
 
+// A peer opted in as an image provider with a live capacity window — the shape
+// `GET /api/instances` returns.
+const PEER = {
+  id: 'peer-example',
+  name: 'Example GPU',
+  status: 'online',
+  enabled: true,
+  mediaProvider: { enabled: true, imageModels: [{ engine: 'local', modelId: 'peer-flux' }] },
+  mediaProviderStatus: {
+    state: 'ready',
+    checkedAt: new Date().toISOString(),
+    freshUntil: new Date(Date.now() + 60_000).toISOString(),
+    snapshot: {
+      queue: { accepting: true, running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4 },
+      capabilities: [{
+        kind: 'image', engine: 'local', engineName: 'Local image', modelId: 'peer-flux',
+        modelName: 'FLUX.2 Klein', ready: true, unavailableReason: null,
+        runtimeReady: true, platformSupported: true, cudaRequired: false, cudaState: 'available',
+      }],
+    },
+  },
+};
+
 // The backend probe is held open on purpose: an unconfigured `external` SD API
 // URL times out, and that window used to grey out the whole form.
 const state = vi.hoisted(() => ({ resolveStatus: null, statusPromise: null, generateImage: vi.fn() }));
@@ -121,5 +144,23 @@ describe('ImageGen backend-probe gating', () => {
     await act(async () => { fireEvent.submit(prompt.closest('form')); });
 
     expect(state.generateImage).not.toHaveBeenCalled();
+  });
+
+  // A federated render runs on the peer, so THIS machine's probe — hung against
+  // an unconfigured SD API URL — must not hold the submit hostage.
+  it('still submits to a ready peer while the local probe hangs', async () => {
+    const { getInstances } = await import('../services/api');
+    getInstances.mockResolvedValueOnce({ peers: [PEER] });
+    await mount();
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'a lighthouse at dusk' } });
+
+    const generate = screen.getByRole('button', { name: /^Generate$/ });
+    expect(generate).not.toBeDisabled();
+    await act(async () => { fireEvent.click(generate); });
+
+    await waitFor(() => expect(state.generateImage).toHaveBeenCalled());
+    expect(state.generateImage.mock.calls[0][0]).toMatchObject({ mediaProviderPeerId: 'peer-example' });
   });
 });
