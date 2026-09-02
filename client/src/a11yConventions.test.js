@@ -32,6 +32,9 @@
  *   6. An `<img>` with no `alt`, which is announced by its `src` — a hashed
  *      filename or a blob URL. `alt=""` is the correct spelling for a
  *      decorative image and passes; only the omission is the bug.
+ *   7. An icon-only `<button>` in the MeatSpace health-logging tree sized to
+ *      its bare icon (`p-1` around a 12-14px glyph = a 22px target) instead of
+ *      the 44px floor the rest of the app enforces.
  *
  * Scoped to git-tracked `.jsx` under `client/src` so an untracked scratch file
  * can't fail the suite.
@@ -742,17 +745,24 @@ function findButtonBody(src, openEnd) {
   return closeIdx === -1 ? null : src.slice(openEnd, closeIdx);
 }
 
-// Is this <button> node an icon-only button with nothing to name it? Named
-// rather than inlined in the rule so the `selfClosing` it reads is testable:
-// this rule scans UNMASKED source, where a comment survives to the end of the
-// tag — `<button /* pause */>` ends in `*/>`, which the old `endsWith('/>')`
-// re-derivation called self-closing, skipping a button that has a body and
-// needs a name.
-function isUnnamedIconOnlyButton(src, { tag, contentStart, selfClosing }) {
+// Is this <button> node one whose entire body is an icon? Named rather than
+// inlined in the rule so the `selfClosing` it reads is testable: these rules
+// scan UNMASKED source, where a comment survives to the end of the tag —
+// `<button /* pause */>` ends in `*/>`, which the old `endsWith('/>')`
+// re-derivation called self-closing, skipping a button that has a body.
+//
+// Two rules ask about the same shape for different reasons: the naming rule
+// wants the ones with nothing to announce, the touch-target rule wants all of
+// them (an aria-label makes a 22px button announceable, not tappable).
+function isIconOnlyButton(src, { contentStart, selfClosing }) {
   if (selfClosing) return false; // no body to judge
-  if (/\baria-label\s*=/.test(tag) || /\baria-labelledby\s*=/.test(tag)) return false;
   const body = findButtonBody(src, contentStart);
   return body !== null && isIconOnlyBody(body);
+}
+
+function isUnnamedIconOnlyButton(src, node) {
+  if (/\baria-label\s*=/.test(node.tag) || /\baria-labelledby\s*=/.test(node.tag)) return false;
+  return isIconOnlyButton(src, node);
 }
 
 // Tailwind `h-`/`w-`/`min-h-`/`min-w-` token → px, for both an arbitrary
@@ -3254,5 +3264,55 @@ describe('a11y conventions', () => {
       }
     }
     expect(offenders, `Close button under the 44px touch-target minimum — add min-h-[44px] min-w-[44px] + flex items-center justify-center (see Drawer.jsx:106):\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it("meets the 44px touch-target minimum on the MeatSpace log-row icon buttons (#5703)", () => {
+    // The MeatSpace tabs are the app's most phone-centric surface — a drink or
+    // a nicotine entry is logged one-handed — and their inline row controls
+    // kept shipping as a bare `p-1`/`p-1.5` around a 12-14px icon: a 22-26px
+    // target, half the floor everywhere else. Save and Cancel sit adjacent in
+    // the edit rows, so a mis-tap commits or discards the wrong edit.
+    //
+    // The fix grows the invisible box (`min-h-[44px] min-w-[44px]` +
+    // `inline-flex items-center justify-center`), never the icon: icon size is
+    // what sets the log row's density, and growing it would reflow the tables.
+    //
+    // Two scopings, both deliberate. `components/meatspace/` rather than the
+    // whole tree: the same shape survives in a handful of desktop-first views,
+    // and widening here would turn one regression guard into a tree-wide sweep.
+    // And only the `p-0.5`/`p-1`/`p-1.5` shape, rather than every icon button
+    // missing an explicit min: one that reaches 44px through generous padding
+    // (`p-3` around a 20px glyph), or that carries no padding class at all, is a
+    // different question, and folding it in would make the guard report dozens
+    // of controls this change never looked at.
+    const TIGHT_PADDING = /(?:^|\s)p-(?:0\.5|1|1\.5)(?:\s|$)/;
+    const offendersIn = (file, src) => {
+      const out = [];
+      for (const node of forEachOpeningTag(src, "button")) {
+        if (!isIconOnlyButton(src, node)) continue;
+        const cls = node.tag.match(/className\s*=\s*"([^"]*)"/);
+        if (!cls) continue; // dynamic className — reviewed by hand, not scanned here
+        if (!TIGHT_PADDING.test(cls[1])) continue;
+        if (hasFortyFourMinTouchTarget(cls[1])) continue;
+        out.push(`${file}:${lineOf(src, node.index)}`);
+      }
+      return out;
+    };
+
+    // Probe first: a green run has to mean "no offenders", not "the matcher
+    // stopped recognizing the shape it was written for".
+    const probe = (cls) => offendersIn("probe.jsx", `<button aria-label="Save" className="${cls}"><Check size={14} /></button>`);
+    expect(probe("p-1 text-port-success")).toEqual(["probe.jsx:1"]);
+    expect(probe("min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1")).toEqual([]);
+    // …and that the padding scoping is a scoping, not an accident: a roomier
+    // button is out of this rule's remit even though it declares no min either.
+    expect(probe("p-2 text-port-success")).toEqual([]);
+
+    const offenders = [];
+    for (const file of trackedJsxFiles()) {
+      if (!file.startsWith("src/components/meatspace/")) continue;
+      offenders.push(...offendersIn(file, rawSourceOf(file)));
+    }
+    expect(offenders, `MeatSpace icon-only <button> under the 44px touch-target minimum — add min-h-[44px] min-w-[44px] inline-flex items-center justify-center and leave the icon size alone:\n${offenders.join("\n")}`).toEqual([]);
   });
 });

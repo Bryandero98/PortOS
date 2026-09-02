@@ -1070,7 +1070,7 @@ export function LocalLlmTab({ view }) {
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-gray-300">Local LLM Backends</h2>
-          <button onClick={loadStatus} disabled={loading} className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Refresh" aria-label="Refresh local LLM status">
+          <button onClick={loadStatus} disabled={loading} className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1.5 text-gray-400 hover:text-white transition-colors" title="Refresh" aria-label="Refresh local LLM status">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
