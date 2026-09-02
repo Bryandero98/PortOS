@@ -10912,7 +10912,11 @@ The release workflow is attached to this task by metadata so every provider rece
         `It owns release readiness, version/changelog finalization, tests/build, local review, PR creation, the configured reviewer loop, CI, merge, tagging, and the final report. If it cannot run or a configured reviewer is unavailable or inconclusive, stop and report instead of substituting another reviewer.`,
         `It owns release readiness, version/changelog finalization, tests/build, optional code review, PR creation, CI, merge, tagging, and the final report. Only CI is the review/merge gate; required release tests/build checks still must pass. If the workflow itself cannot run, its required tests/build checks fail, or CI fails, stop and report; do not stop or leave the release open because code review is unavailable or inconclusive.`,
       );
-    if (v12 === v11 || v12.includes('are authoritative for this run')) throw new Error('release-check v12 historical prompt derivation did not match v11');
+    // Assert BOTH replaces landed: checking only that the body changed would let a
+    // silently-unmatched second replace ship a v12 no stored prompt can ever equal.
+    if (v12.includes('are authoritative for this run') || !v12.includes('Only CI is the review/merge gate')) {
+      throw new Error('release-check v12 historical prompt derivation did not match v11');
+    }
     return [...history, v10, v11, v12];
   })(),
   'branch-reconcile': [
