@@ -176,7 +176,7 @@ export const providerSchema = z.object({
   // Explicit opt-in to attach the provider's API key to an arbitrary
   // (non-local, non-allowlisted) endpoint. Guards against SSRF / key
   // exfiltration to a hostile or mistyped host — see
-  // internal/endpointGuard.js. Metadata endpoints stay blocked even when true.
+  // endpointGuard.js. Metadata endpoints stay blocked even when true.
   allowCustomEndpoint: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
   secretEnvVars: z.array(z.string()).optional(),

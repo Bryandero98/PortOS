@@ -38,7 +38,7 @@ import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { prepareCliSpawn } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
-import { evaluateSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
+import { evaluateSecretEndpoint } from '../lib/aiToolkit/endpointGuard.js';
 import { iterateOpenAiChat } from '../lib/openAiChatStream.js';
 
 // Re-export so the route can keep importing modes via askService — but

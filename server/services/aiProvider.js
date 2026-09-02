@@ -19,7 +19,7 @@ import { readResponseJson } from '../lib/readResponseJson.js';
 import { classifyCodexTransportError, isCodexTextTransportEnabled } from '../lib/codexTurn.js';
 import { resolveBenchWaitMs, resolveProviderBench } from '../lib/providerCooldown.js';
 import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
-import { evaluateSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
+import { evaluateSecretEndpoint } from '../lib/aiToolkit/endpointGuard.js';
 import { withCreativeLatitude } from '../lib/creativeLatitude.js';
 
 const isAPI = (p) => p && p.type === 'api' && p.enabled !== false;

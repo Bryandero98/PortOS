@@ -536,7 +536,7 @@ export const providerSchema = z.object({
   orcarouterBacked: z.boolean().optional(),
   // Explicit opt-in to attach the API key to an arbitrary (non-local,
   // non-allowlisted) endpoint — mirrors the aiToolkit providerSchema. Guards
-  // SSRF / key exfiltration (server/lib/aiToolkit/internal/endpointGuard.js).
+  // SSRF / key exfiltration (server/lib/aiToolkit/endpointGuard.js).
   allowCustomEndpoint: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
   headlessArgs: z.array(z.string()).optional(),
