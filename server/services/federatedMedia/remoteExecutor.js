@@ -88,6 +88,8 @@ const isRetryableTransportError = (error) =>
  *   Where the verified result lands. Called per job so a PATHS proxy stays live.
  * @param {(ctx: object) => Promise<object>} config.finalize - Register the downloaded
  *   result locally; its return value is merged into the `completed` event payload.
+ *   Its ctx carries `renderStartedAtMs` (this install's ingestion instant) for
+ *   `renderTimingFields` — see the call site for what that span covers.
  */
 export function createRemoteMediaExecutor({
   kind,
@@ -472,6 +474,13 @@ export function createRemoteMediaExecutor({
       peerId: state.peerId,
       request,
       remoteJob: completed,
+      // Wall-clock render timing (#5878). Measured from THIS install's
+      // ingestion of the job — submission, the peer's own queue wait and
+      // render, download, verification — because that whole span is what the
+      // user waited through here. The peer's internal render time is not on
+      // the wire, and asking for it would be a status payload crossing the
+      // federation boundary.
+      renderStartedAtMs: state.renderStartedAtMs,
       ...downloaded,
     });
     return {
@@ -506,6 +515,9 @@ export function createRemoteMediaExecutor({
       standingRoute: marker.data.standingRoute === true,
       requestController: null,
       wake: null,
+      // The instant the media-job queue handed this job to us; `finalize` turns
+      // it into the record's render-timing fields.
+      renderStartedAtMs: Date.now(),
     };
     activeJobs.set(params.jobId, state);
     try {

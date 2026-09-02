@@ -8,6 +8,7 @@ import { PATHS, UUID_RE } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { safeUnder, generateThumbnail, upscaleVideo2x } from '../../lib/ffmpeg.js';
 import { loadHistory, mutateVideoHistory } from './history.js';
+import { renderTimingFields } from '../../lib/renderTiming.js';
 
 const UPLOADED_HISTORY_ID_RE = /^upload-[a-f0-9]{8}$/i;
 
@@ -45,6 +46,12 @@ export async function upscaleHistoryItem(historyId) {
   // Copy first, then upscale-in-place — keeps the upscaler's atomic-rename
   // contract intact and means a mid-process kill leaves the source clip
   // untouched.
+  // Wall-clock timing (#5878) for the pass the user actually waits through.
+  // The entry below is built by spreading the SOURCE row, so without this it
+  // would inherit — and display — the original render's duration for work it
+  // never did. Overriding is the fix rather than stripping: an upscale produces
+  // its own gallery card, and the ffmpeg pass is a real cost worth reporting.
+  const renderStartedAtMs = Date.now();
   await copyFile(sourcePath, newPath);
   console.log(`🔍 Upscaling video [${historyId.slice(0, 8)} → ${newId.slice(0, 8)}]: 2×`);
   const result = await upscaleVideo2x(newPath);
@@ -69,6 +76,9 @@ export async function upscaleHistoryItem(historyId) {
     // Drop hidden so the upscaled version surfaces in the visible gallery
     // even when the source clip was hidden.
     hidden: false,
+    // AFTER the `...item` spread above so this pass's own timing replaces the
+    // source render's inherited fields.
+    ...renderTimingFields(renderStartedAtMs),
   };
   // Serialized append (re-reads inside the mutator) so a concurrent
   // download/render write can't drop the upscaled entry.

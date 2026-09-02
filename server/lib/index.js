@@ -382,6 +382,7 @@ export * from './planIds.js';
 export * from './markdownText.js';
 export * from './renderSlot.js';
 export * from './renderTargets.js';
+export * from './renderTiming.js';
 export * from './generationModes.js';
 export * from './spriteVocabulary.js';
 export * from './spriteChromaKey.js';

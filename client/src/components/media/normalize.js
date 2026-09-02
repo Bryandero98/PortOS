@@ -59,6 +59,12 @@ export function normalizeImage(i) {
     entryName: i.entryName || null,
     entryLabel: i.entryLabel || null,
     createdAt: i.createdAt,
+    // How long the render itself took, in ms — stamped server-side by
+    // lib/renderTiming.js from the moment the media-job queue ingested the job,
+    // so it excludes queue wait. Absent on records from a path that never
+    // observed a start instant (uploads, downloads, extracted frames, older
+    // renders), which the cards render as "no render time" rather than 0.
+    renderMs: typeof i.renderMs === 'number' ? i.renderMs : null,
     hidden: !!i.hidden,
     extractedFromVideoId: i.extractedFromVideoId || null,
     extractedFromVideoFilename: i.extractedFromVideoFilename || null,
@@ -116,6 +122,8 @@ export function normalizeVideo(v) {
     upscaledFrom: v.upscaledFrom,
     loraNames,
     createdAt: v.createdAt,
+    // Same contract as normalizeImage's renderMs above.
+    renderMs: typeof v.renderMs === 'number' ? v.renderMs : null,
     hidden: !!v.hidden,
     raw: v,
   };

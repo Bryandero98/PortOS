@@ -12,6 +12,7 @@ import { existsSync, statSync } from 'fs';
 import { broadcastSse } from '../../lib/sseUtils.js';
 import { generateThumbnail, optimizeForStreaming } from '../../lib/ffmpeg.js';
 import { formatBytes } from '../../lib/fileUtils.js';
+import { renderTimingFields } from '../../lib/renderTiming.js';
 import { videoGenEvents } from './events.js';
 
 /**
@@ -568,14 +569,7 @@ export async function finalizeGeneratedVideo({ job, jobId, outputPath, filename,
   // (a zero-duration sample would drag every estimate toward "instant").
   // The window measured is spawn → output finalized, i.e. what the user waits
   // through, including the thumbnail/faststart tail above.
-  const startMs = Number(startedAtMs);
-  const timing = Number.isFinite(startMs) && startMs > 0
-    ? {
-      renderMs: Date.now() - startMs,
-      renderStartedAt: new Date(startMs).toISOString(),
-      renderCompletedAt: new Date().toISOString(),
-    }
-    : {};
+  const timing = renderTimingFields(startedAtMs);
   await mutateHistory((history) => {
     history.unshift({
       ...meta,
