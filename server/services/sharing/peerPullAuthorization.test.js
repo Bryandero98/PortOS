@@ -167,12 +167,20 @@ describe('peerPullAuthorization', () => {
     it('403s a denied pull once strictPullAuthorization is on', async () => {
       settings = { federation: { strictPullAuthorization: true } };
       setPeers(universePeer());
+      // `severity: 'warning'` is what keeps asyncHandler from re-logging its
+      // generic `❌ Route error` on every poll of a peer that will be refused
+      // forever; the throttled 🔒 line below is this path's log of record.
       await expect(authorizePeerPull(req(PEER_A), { recordKind: 'series' }))
-        .rejects.toMatchObject({ status: 403, code: 'PEER_PULL_FORBIDDEN' });
+        .rejects.toMatchObject({ status: 403, code: 'PEER_PULL_FORBIDDEN', severity: 'warning' });
       await expect(authorizePeerPull(req(null), { recordKind: 'universe' }))
         .rejects.toMatchObject({ status: 403 });
-      // Strict mode rejects instead of logging the compatibility warning.
-      expect(console.warn).not.toHaveBeenCalled();
+      // Strict mode rejects instead of logging the compatibility ⚠️ — but it is
+      // not silent: it logs the same throttled 🔒 refusal `alwaysEnforce` does,
+      // once per caller. Since the 403 no longer self-logs, this is the only
+      // record of a peer being cut off.
+      const lines = console.warn.mock.calls.map((c) => c[0]);
+      expect(lines).toHaveLength(2);
+      for (const line of lines) expect(line).toContain('🔒');
     });
 
     it('still allows an authorized pull under strict mode', async () => {

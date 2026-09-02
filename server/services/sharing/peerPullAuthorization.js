@@ -147,9 +147,18 @@ function refuseOnce(decision, route) {
   logOnce(`deny:${key}`, `🔒 Refused peer-sync ${route} for ${describeCaller(decision)} (${decision.reason}) — this data only federates to a configured, outbound-allowed peer`);
 }
 
+// `severity: 'warning'` suppresses `asyncHandler`'s generic `❌ Route error`
+// line for this code. A refusal here is a POLICY outcome, not a fault, and it
+// repeats forever: a peer that can't be identified re-polls its sync categories
+// every few seconds, so the error line arrived every ~10s per category for the
+// life of the process and buried genuine errors in the log. The throttled `🔒`
+// line from `refuseOnce` is this path's log of record — once per caller per
+// boot, which is exactly what the throttle exists to guarantee. The 403 the
+// caller receives is unchanged.
 const pullForbidden = (decision) => new ServerError('peer not authorized for this record', {
   status: 403,
   code: 'PEER_PULL_FORBIDDEN',
+  severity: 'warning',
   context: { reason: decision.reason },
 });
 
@@ -165,12 +174,16 @@ export async function authorizePeerPull(req, { recordKind = null, syncCategory =
   const decision = await decidePeerPull({ callerId: readCallerInstanceId(req), recordKind, syncCategory });
   if (decision.allowed) return decision;
   const label = route || 'pull';
-  // `alwaysEnforce` short-circuits the settings read: the answer cannot change.
-  if (alwaysEnforce) {
+  // Both ways of reaching a 403 refuse for the same reason, so both log the same
+  // throttled line — strict mode used to throw silently, and now that the 403 no
+  // longer self-logs through the route handler, that would leave a user who
+  // turned strict mode on with no indication of why a peer stopped syncing.
+  // `alwaysEnforce` still short-circuits the settings read: it cannot change the
+  // answer.
+  if (alwaysEnforce || await strictPullAuthorizationEnabled()) {
     refuseOnce(decision, label);
     throw pullForbidden(decision);
   }
-  if (await strictPullAuthorizationEnabled()) throw pullForbidden(decision);
   warnOnce(decision, label);
   return decision;
 }
