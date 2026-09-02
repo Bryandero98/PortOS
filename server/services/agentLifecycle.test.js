@@ -705,7 +705,10 @@ describe('runAgentSpawn source — instance provenance + claim ordering (#1563)'
 
   it('records claimFlow separately from CoS-managed PR/worktree flags', () => {
     const registerIdx = AGENT_LIFECYCLE_SRC.indexOf('registerAgent(agentId, task.id, {');
-    const metaSlice = AGENT_LIFECYCLE_SRC.slice(registerIdx, registerIdx + 8_000);
+    // Slice to the END of the call, not a fixed byte window: the projected keys
+    // sit near the bottom of a growing metadata object, so a magic-number window
+    // makes an unrelated comment above them read as a missing key.
+    const metaSlice = AGENT_LIFECYCLE_SRC.slice(registerIdx, AGENT_LIFECYCLE_SRC.indexOf('\n  });', registerIdx));
     expect(metaSlice).toContain('configOpenPR: isTruthyMeta(task.metadata?.openPR)');
     expect(metaSlice).toContain('configClaimFlow: isClaimFlowTask(task, isTruthyMeta)');
     expect(metaSlice.indexOf('configClaimFlow')).toBeGreaterThan(metaSlice.indexOf('configOpenPR'));

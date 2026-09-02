@@ -18,12 +18,21 @@ vi.mock('../../services/codeReview.js', () => ({
 vi.mock('../../services/agentWorktreeCleanup.js', () => ({
   spawnReviewLoopFollowUp: vi.fn(),
 }));
+vi.mock('../../services/prReviewerSecurity.js', () => ({
+  listExternalOpenPullRequests: vi.fn(),
+}));
+vi.mock('../../services/taskSchedule.js', () => ({
+  getOnDemandRequests: vi.fn(),
+  triggerOnDemandTask: vi.fn(),
+}));
 
 import * as appsService from '../../services/apps.js';
 import { listAppPullRequests } from '../../services/appPullRequests.js';
 import { getAllTasks } from '../../services/cos.js';
 import { resolveReviewLoopOptions } from '../../services/codeReview.js';
 import { spawnReviewLoopFollowUp } from '../../services/agentWorktreeCleanup.js';
+import { listExternalOpenPullRequests } from '../../services/prReviewerSecurity.js';
+import { getOnDemandRequests, triggerOnDemandTask } from '../../services/taskSchedule.js';
 
 const APP = { id: 'app-001', name: 'Widget', repoPath: '/repo', workTracker: 'auto' };
 const PULL_REQUEST = {
@@ -70,6 +79,15 @@ describe('app pull-request routes', () => {
       status: 'pending',
       description: '[Review Loop] Resolve and merge PR #17 for Widget (https://github.com/acme/widget/pull/17)',
     });
+    listExternalOpenPullRequests.mockResolvedValue({
+      ok: true,
+      repoSpec: 'acme/widget',
+      repoFullName: 'acme/widget',
+      defaultBranch: 'main',
+      prs: [{ number: 17, authorLogin: 'alice', headRefOid: 'a'.repeat(40) }],
+    });
+    getOnDemandRequests.mockResolvedValue([]);
+    triggerOnDemandTask.mockResolvedValue({ id: 'demand-abc', taskType: 'pr-reviewer', appId: 'app-001', targetPullRequest: 17 });
   });
 
   it('lists open requests and annotates an active resolve task', async () => {
@@ -181,6 +199,115 @@ describe('app pull-request routes', () => {
 
     expect(response.status).toBe(400);
     expect(listAppPullRequests).not.toHaveBeenCalled();
+  });
+
+  it('annotates a pr-reviewer run that is scoped to this request', async () => {
+    getAllTasks.mockResolvedValue({
+      user: { tasks: [] },
+      cos: { tasks: [{
+        id: 'app-improve-17',
+        status: 'in_progress',
+        description: 'review',
+        metadata: { app: 'app-001', analysisType: 'pr-reviewer', targetPullRequest: 17 },
+      }] },
+    });
+
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.status).toBe(200);
+    expect(response.body.pullRequests[0].reviewAction).toEqual({ taskId: 'app-improve-17', status: 'in_progress' });
+  });
+
+  it('does not attribute an unscoped pr-reviewer sweep to a row', async () => {
+    getAllTasks.mockResolvedValue({
+      user: { tasks: [] },
+      cos: { tasks: [{
+        id: 'app-improve-sweep',
+        status: 'in_progress',
+        description: 'review',
+        metadata: { app: 'app-001', analysisType: 'pr-reviewer' },
+      }] },
+    });
+
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.body.pullRequests[0].reviewAction).toBeNull();
+  });
+
+  it('shows a queued on-demand request before its task exists', async () => {
+    getOnDemandRequests.mockResolvedValue([
+      { id: 'demand-abc', taskType: 'pr-reviewer', appId: 'app-001', targetPullRequest: 17 },
+    ]);
+
+    const response = await request(app).get('/api/apps/app-001/pull-requests');
+
+    expect(response.body.pullRequests[0].reviewAction).toEqual({ taskId: null, status: 'pending' });
+  });
+
+  it('queues a pr-reviewer run scoped to one request', async () => {
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(202);
+    expect(triggerOnDemandTask).toHaveBeenCalledWith('pr-reviewer', 'app-001', { targetPullRequest: 17 });
+    expect(response.body).toMatchObject({
+      appId: 'app-001',
+      number: 17,
+      requestId: 'demand-abc',
+      duplicate: false,
+      reviewAction: { taskId: null, status: 'pending' },
+    });
+  });
+
+  it('refuses a request the pr-reviewer preflight would not review', async () => {
+    listExternalOpenPullRequests.mockResolvedValue({
+      ok: true,
+      repoSpec: 'acme/widget',
+      repoFullName: 'acme/widget',
+      defaultBranch: 'main',
+      prs: [],
+    });
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('PULL_REQUEST_NOT_REVIEWABLE');
+    expect(triggerOnDemandTask).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an unreadable forge instead of queueing a run that reviews nothing', async () => {
+    listExternalOpenPullRequests.mockResolvedValue({ ok: false, code: 'security-scan-forge-unreachable', prs: [] });
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(503);
+    expect(triggerOnDemandTask).not.toHaveBeenCalled();
+  });
+
+  it('returns the in-flight pr-reviewer run instead of queuing a second one', async () => {
+    getAllTasks.mockResolvedValue({
+      user: { tasks: [] },
+      cos: { tasks: [{
+        id: 'app-improve-17',
+        status: 'pending',
+        description: 'review',
+        metadata: { app: 'app-001', analysisType: 'pr-reviewer', targetPullRequest: 17 },
+      }] },
+    });
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ duplicate: true, reviewAction: { taskId: 'app-improve-17', status: 'pending' } });
+    expect(triggerOnDemandTask).not.toHaveBeenCalled();
+  });
+
+  it('reports why the schedule refused the on-demand run', async () => {
+    triggerOnDemandTask.mockResolvedValue({ error: "Task type 'pr-reviewer' is disabled" });
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('disabled');
   });
 
   it('returns 404 for an unknown app', async () => {

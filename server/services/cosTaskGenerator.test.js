@@ -1838,7 +1838,7 @@ describe('pr-reviewer security preflight wiring', () => {
   it('runs the direct preflight before stage gates and resolves the next-stage prompt', () => {
     const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
     const body = GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
-    const preflightAt = body.indexOf('runPrReviewerSecurityPreflight(taskType, app, metadata)');
+    const preflightAt = body.indexOf('runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest)');
     const preconditionAt = body.indexOf('shouldSkipForPrecondition(metadata, app, taskType)');
     const promptAt = body.indexOf('getStagePrompt(taskType, currentStageIndex)');
 
@@ -1852,6 +1852,29 @@ describe('pr-reviewer security preflight wiring', () => {
     expect(GEN_SRC).toContain('no-external-open-prs');
     expect(GEN_SRC).toContain('findActiveSecurityScanTask');
     expect(GEN_SRC).toContain('securityScanFingerprint');
+  });
+
+  it('narrows a targeted run before the fingerprint, the scan, and the stage-2 allowlist', () => {
+    const start = GEN_SRC.indexOf('async function runPrReviewerSecurityPreflight');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return { skipped: false, scan };', start));
+    const narrowAt = body.indexOf('target = { ...target, prs: scoped }');
+    const fingerprintAt = body.indexOf('securityScanFingerprint(target)');
+    const scanAt = body.indexOf('runPrReviewerSecurityScan(');
+
+    expect(narrowAt, 'a targeted run must filter the external PR set itself').toBeGreaterThan(-1);
+    expect(narrowAt).toBeLessThan(fingerprintAt);
+    expect(narrowAt).toBeLessThan(scanAt);
+    // Refusing an unmatched target is what keeps a stale row from silently
+    // widening the run back out to every open PR.
+    expect(body).toContain('target-pull-request-not-reviewable');
+    expect(body).toContain('metadata.targetPullRequest = targetPullRequest');
+  });
+
+  it('keeps a targeted run distinguishable from the sweep in the duplicate guard', () => {
+    expect(GEN_SRC).toContain('function scopeDescriptionToPullRequest(description, metadata)');
+    const genStart = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    const body = GEN_SRC.slice(genStart, GEN_SRC.indexOf('return task;', genStart));
+    expect(body).toContain('scopeDescriptionToPullRequest(');
   });
 
   it('passes only safe PR metadata to Stage 2, never report prose or model output', () => {
