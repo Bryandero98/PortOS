@@ -23,7 +23,9 @@ import RuntimeServersCard from './RuntimeServersCard.jsx';
 import MtplxServerCard from './MtplxServerCard.jsx';
 import LocalLlmBackendCard from './LocalLlmBackendCard.jsx';
 import LocalLlmInstalledModels from './LocalLlmInstalledModels.jsx';
+import PromptGuardHfAccessNotice from '../imageGen/PromptGuardHfAccessNotice.jsx';
 import TabPills from '../ui/TabPills.jsx';
+import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
@@ -166,6 +168,9 @@ export function LocalLlmTab({ view }) {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState('');
   const [guardStatus, setGuardStatus] = useState(null);
+  const { present: guardHfTokenPresent, source: guardHfTokenSource, refresh: refreshGuardHfToken } = useHfTokenStatus({
+    enabled: activeView === 'library',
+  });
   // Total unified/system memory (GB) reported by the HF search, used to caption
   // the RAM-aware quant defaults. null until the first Hugging Face search.
   const [systemMemoryGb, setSystemMemoryGb] = useState(null);
@@ -1535,6 +1540,12 @@ export function LocalLlmTab({ view }) {
         <p className="text-xs text-gray-300 max-w-3xl">
           Llama Prompt Guard 2 86M screens complete external issues, comments, and pull-request diffs before they reach a reasoning agent. It is a pinned local classifier with no chat, tools, MCP, or repository access; flagged or inconclusive content is withheld.
         </p>
+        <PromptGuardHfAccessNotice
+          tokenPresent={guardHfTokenPresent}
+          tokenSource={guardHfTokenSource}
+          model={guardStatus}
+          onSaved={refreshGuardHfToken}
+        />
         <div className="flex items-center gap-2 flex-wrap text-[11px] text-gray-500">
           <span>Llama Prompt Guard 2 86M</span>
           <span>·</span>
@@ -1566,7 +1577,7 @@ export function LocalLlmTab({ view }) {
             <button
               type="button"
               onClick={installGuard}
-              disabled={busy || !guardStatus}
+              disabled={busy || !guardStatus || guardHfTokenPresent !== true}
               className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
             >
               <Download size={12} /> Install model-abuse guard
