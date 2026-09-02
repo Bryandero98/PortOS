@@ -171,11 +171,34 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     expect(sqlIdx.size).toBeGreaterThan(0);
   });
 
-  // The operator-action ledger (#5594) is a machine-local db-primary table that
-  // ships in BOTH sources. `human_activity_events` has no dedicated assertion here
-  // and that is a gap, not a precedent — a column or index added to one file only
-  // would leave every EXISTING install without it (init-db.sql runs on fresh
-  // provisioning alone), so pin columns and index names for this one explicitly.
+  // The operator-action ledger (#5594) and the human-activity timeline (#2150)
+  // are machine-local db-primary tables that ship in BOTH sources. A column or
+  // index added to one file only would leave every EXISTING install without it
+  // (init-db.sql runs on fresh provisioning alone), so pin columns and index
+  // names for both explicitly.
+  it('human_activity_events has the same columns and indexes in both files', () => {
+    const sqlBody = extractCreateTable(INIT_SQL, 'human_activity_events');
+    const jsBody = extractCreateTable(DB_JS, 'human_activity_events');
+    expect(sqlBody, 'init-db.sql missing CREATE TABLE human_activity_events').toBeTruthy();
+    expect(jsBody, 'db/schema/humanActivity.js missing CREATE TABLE human_activity_events').toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+
+    const sqlIdx = extractIndexNames(INIT_SQL, 'idx_human_activity_');
+    const jsIdx = extractIndexNames(DB_JS, 'idx_human_activity_');
+    expect([...sqlIdx].sort()).toEqual([...jsIdx].sort());
+    // Name them: the dedupe index is the idempotency contract (ON CONFLICT
+    // (source, dedupe_key) DO NOTHING) and the two composites (#5715) are what
+    // keep a source-scoped timeline read off a full happened_at walk — dropping
+    // either from both files would otherwise read as a passing set match.
+    expect([...sqlIdx].sort()).toEqual([
+      'idx_human_activity_dedupe',
+      'idx_human_activity_happened',
+      'idx_human_activity_source_happened',
+      'idx_human_activity_source_kind_happened',
+    ]);
+  });
+
   it('user_action_events has the same columns and indexes in both files', () => {
     const sqlBody = extractCreateTable(INIT_SQL, 'user_action_events');
     const jsBody = extractCreateTable(DB_JS, 'user_action_events');
