@@ -843,7 +843,7 @@ function InternalUsageMetrics() {
 
       {/* Same window, split by machine — renders only once a peer's usage has
           synced, so a single-machine install sees no change. */}
-      <FleetUsageCard fleet={usage.fleet} />
+      <FleetUsageCard fleet={usage.fleet} onSaved={fetchUsage} />
 
       {/* Directly under the API estimate it is derived from: the estimate is the
           opportunity cost, this is what the quota plans actually cost to avoid it. */}

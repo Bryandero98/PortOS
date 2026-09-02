@@ -1522,6 +1522,22 @@ export const subscriptionCostsMapSchema = z.partialRecord(
 /** Body for PUT /api/usage/subscriptions. */
 export const subscriptionCostsSchema = z.object({ costs: subscriptionCostsMapSchema });
 
+/**
+ * Instances that pay API rates rather than the viewer's subscriptions, so the
+ * Across Instances combined total can leave them out. Used by BOTH write
+ * paths — `PUT /api/usage/fleet-billing` (the per-row toggle) and the
+ * `usageApiBilledInstanceIds` slice of `PUT /api/settings` — so a restore
+ * dump can't write an unbounded or non-string list through the generic
+ * settings endpoint. Cap matches the stored peer-digest cap (64).
+ */
+export const usageApiBilledInstanceIdsSchema = z.array(z.string().min(1).max(200)).max(64);
+
+/** Body for PUT /api/usage/fleet-billing. */
+export const usageFleetBillingSchema = z.object({
+  instanceId: z.string().min(1).max(200),
+  usesSubscriptions: z.boolean(),
+});
+
 
 // =============================================================================
 // PORTS

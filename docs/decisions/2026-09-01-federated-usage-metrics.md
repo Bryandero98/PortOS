@@ -143,6 +143,13 @@ excluded on both privacy and payload grounds.
   peer (`enabled: false`), which stops every direction — checked in
   `hasAnySyncEnabled`, so it holds on the `peer:online` path too, not only in
   the polling loop.
+- An instance that pays API rates rather than the viewer's subscriptions can be
+  dropped from the Across Instances **combined total** via a per-row
+  Subscriptions toggle. The row stays listed (the spend is still real). The
+  choice is machine-local (`settings.usageApiBilledInstanceIds`) — it is this
+  install's view of which fleet members ride the plans, not a property of the
+  instance itself — and never rides the digest. Setting it on one machine does
+  not change the total another machine shows.
 - **Removing a peer retires its digest via a tombstone**, not a plain delete.
   Our snapshot forwards every digest we hold, so a surviving peer would hand a
   deleted row straight back on the next cycle and a decommissioned machine's

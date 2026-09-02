@@ -170,6 +170,15 @@ export const getUsageBackfillStatus = (options = {}) => request('/usage/backfill
 // the report (`getUsage().subscriptionSavings`), so there is no getter here.
 export const updateSubscriptionCosts = (costs, options = {}) =>
   request('/usage/subscriptions', { method: 'PUT', body: JSON.stringify({ costs }), ...options });
+// Mark one federated instance as paying API rates (`usesSubscriptions: false`)
+// or riding this install's subscriptions (`true`). The Across Instances
+// combined total skips API-billed rows; the row itself stays listed.
+export const updateUsageFleetBilling = ({ instanceId, usesSubscriptions }, options = {}) =>
+  request('/usage/fleet-billing', {
+    method: 'PUT',
+    body: JSON.stringify({ instanceId, usesSubscriptions }),
+    ...options,
+  });
 export const startUsageBackfill = (options = {}) => request('/usage/backfill', { method: 'POST', ...options });
 
 // Subscription-quota status for every enabled provider family (claude, codex,

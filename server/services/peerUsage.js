@@ -312,6 +312,10 @@ export async function applyUsageRemote(remoteData) {
  *
  * Peer rows are as fresh as the last sync, so `capturedAt` is surfaced for the
  * UI to age them rather than implying they are live.
+ *
+ * `apiBilledInstanceIds` are instances the viewer marked as paying API rates
+ * rather than subscriptions. They stay in `instances` (the spend is real) with
+ * `usesSubscriptions: false`, but they do not feed the combined `totals`.
  */
 /**
  * Keep only month buckets the window covers END TO END. `buildUsageReport`
@@ -337,9 +341,27 @@ function dropPartiallyCoveredMonths(monthlyActivity, from, to) {
   return out;
 }
 
-export async function getFleetUsage({ from = null, to = null, providers = [] } = {}) {
+function sumFleetTotals(rows) {
+  // Derived from the report's own totals rather than a second hardcoded field
+  // list, so a field added to `buildUsageReport` can't silently sum to zero here.
+  const totals = rows.reduce((acc, r) => {
+    for (const [field, value] of Object.entries(r.totals || {})) {
+      if (typeof value === 'number') acc[field] = (acc[field] || 0) + value;
+    }
+    return acc;
+  }, {});
+  totals.estimatedCost = roundCents(totals.estimatedCost || 0);
+  return totals;
+}
+
+export async function getFleetUsage({ from = null, to = null, providers = [], apiBilledInstanceIds = [] } = {}) {
   const { self, peers } = await entriesWithSelf();
   if (peers.length === 0) return { instances: [], totals: null };
+
+  // Instances the viewer marked as paying API rates (not subscriptions). They
+  // stay in `instances` so the spend is still visible, but they do not feed
+  // the combined total. Default ON (not in the set) — a missing id counts.
+  const apiBilled = new Set(Array.isArray(apiBilledInstanceIds) ? apiBilledInstanceIds : []);
 
   const row = ({ instanceId, name, capturedAt, activity, isSelf }) => {
     const report = buildUsageReport(activity.dailyActivity || {}, {
@@ -359,7 +381,14 @@ export async function getFleetUsage({ from = null, to = null, providers = [] } =
       // must not, or it attributes all-time residue to the range.
       totalTokens: from || to ? null : activity.totalTokens,
     });
-    return { instanceId, name: name || instanceId, self: isSelf, capturedAt, totals: report.totals };
+    return {
+      instanceId,
+      name: name || instanceId,
+      self: isSelf,
+      capturedAt,
+      totals: report.totals,
+      usesSubscriptions: !apiBilled.has(instanceId),
+    };
   };
 
   const rows = peers.map((e) => row({ ...e, activity: e.usage, isSelf: false }));
@@ -367,17 +396,8 @@ export async function getFleetUsage({ from = null, to = null, providers = [] } =
 
   rows.sort((a, b) => (b.self ? 1 : 0) - (a.self ? 1 : 0) || b.totals.estimatedCost - a.totals.estimatedCost);
 
-  // Derived from the report's own totals rather than a second hardcoded field
-  // list, so a field added to `buildUsageReport` can't silently sum to zero here.
-  const totals = rows.reduce((acc, r) => {
-    for (const [field, value] of Object.entries(r.totals)) {
-      if (typeof value === 'number') acc[field] = (acc[field] || 0) + value;
-    }
-    return acc;
-  }, {});
-  totals.estimatedCost = roundCents(totals.estimatedCost || 0);
-
-  return { instances: rows, totals };
+  const included = rows.filter((r) => r.usesSubscriptions);
+  return { instances: rows, totals: sumFleetTotals(included) };
 }
 
 /**
