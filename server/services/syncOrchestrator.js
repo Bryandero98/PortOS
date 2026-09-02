@@ -13,7 +13,7 @@ import { createMutex } from '../lib/asyncMutex.js';
 import { instanceEvents } from './instanceEvents.js';
 import { getPeers, resolveEffectiveCategories, updatePeer, getInstanceId, UNKNOWN_INSTANCE_ID } from './instances.js';
 import { peerBaseUrl } from '../lib/peerUrl.js';
-import { peerAuthHeaders } from '../lib/peerHttpClient.js';
+import { peerFetch } from '../lib/peerHttpClient.js';
 import * as brainSync from './brainSync.js';
 import { BRAIN_ENTITY_TYPES } from './brainStorage.js';
 import * as brainSyncLog from './brainSyncLog.js';
@@ -22,7 +22,7 @@ import * as memorySync from './memorySync.js';
 import * as catalogSync from './catalogSync.js';
 import * as dataSync from './dataSync.js';
 import { getBackendName } from './memoryBackend.js';
-import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
+import { withAbortTimeout } from '../lib/abortTimeout.js';
 
 const CURSORS_FILE = dataPath('instances_sync_cursors.json');
 const SYNC_INTERVAL_MS = 60000;
@@ -76,15 +76,25 @@ async function withCursors(fn) {
 
 // --- Peer fetch helper ---
 
+// Every outbound hop goes through `peerFetch` so it carries
+// `X-PortOS-Instance-Id` (and the peer's stored Basic credential). The receiver
+// keys its per-peer sharing config on that header — without it the snapshot
+// transport reads as an unidentified caller and the PII categories now refuse
+// it outright (#5663). `peerFetch` also carries the peer HTTPS agent, so a
+// self-signed tailnet peer no longer fails TLS validation on these pulls.
+//
+// The timeout bounds the peerFetch call and nothing after it, so the JSON
+// decode of an already-received body can't be aborted — the same shape
+// `fetchWithTimeout` had here. (Over HTTPS the budget does still cover the
+// download itself, because the insecure-agent shim buffers the whole body
+// before it resolves; that is a property of that transport, not of this call.)
+// Contract is unchanged: null on transport failure, non-2xx, or bad JSON.
 async function fetchPeer(peer, path) {
   const url = `${peerBaseUrl(peer)}${path}`;
-  try {
-    const res = await fetchWithTimeout(url, { headers: peerAuthHeaders(peer) }, FETCH_TIMEOUT_MS);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  const res = await withAbortTimeout(FETCH_TIMEOUT_MS, (signal) => peerFetch(url, { signal }, peer))
+    .catch(() => null);
+  if (!res?.ok) return null;
+  return res.json().catch(() => null);
 }
 
 /**
@@ -103,16 +113,18 @@ async function syncImageFromPeer(peer, avatarPath) {
   if (exists) return;
 
   const url = `${peerBaseUrl(peer)}${avatarPath}`;
-  try {
-    const res = await fetchWithTimeout(url, { headers: peerAuthHeaders(peer) }, FETCH_TIMEOUT_MS);
-    if (!res.ok) return;
-    const buffer = Buffer.from(await res.arrayBuffer());
-    await ensureDir(PATHS.images);
-    await writeFile(localPath, buffer);
-    console.log(`🔄 Synced avatar image: ${filename}`);
-  } catch {
-    // Non-critical — avatar will sync on next cycle
-  }
+  // Same `peerFetch` hop and the same timeout scope as fetchPeer. Non-critical
+  // either way: a failure just retries next cycle.
+  const res = await withAbortTimeout(FETCH_TIMEOUT_MS, (signal) => peerFetch(url, { signal }, peer))
+    .catch(() => null);
+  if (!res?.ok) return;
+  await res.arrayBuffer()
+    .then(async (bytes) => {
+      await ensureDir(PATHS.images);
+      await writeFile(localPath, Buffer.from(bytes));
+      console.log(`🔄 Synced avatar image: ${filename}`);
+    })
+    .catch(() => {});
 }
 
 // --- Status ---
