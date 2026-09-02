@@ -39,10 +39,6 @@ function assertAllowedWorkspace(path) {
 }
 
 /**
- * Collect branch names actively used by running CoS agents.
- * Includes worktree branches and workspace branches from agent metadata.
- */
-/**
  * What a branch/worktree cleanup must leave alone, from ONE read of the agent
  * list so the two sets can't be built from different snapshots:
  *   - `excludeBranches` — the branch each running agent is working on.
