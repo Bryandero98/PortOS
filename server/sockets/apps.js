@@ -119,7 +119,7 @@ export const registerAppHandlers = (socket, io) => {
         io.emit('app:update:step', frame);
       };
 
-      const result = await appUpdater.updateApp(app, emit).catch(err => {
+      const result = await appUpdater.updateApp(app, emit, { syncFork: data.syncFork === true }).catch(err => {
         io.emit('app:update:error', { appId: app.id, message: err.message });
         return null;
       });

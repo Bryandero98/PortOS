@@ -9,8 +9,12 @@ vi.mock('../../../services/api', () => ({
   getPreferredSelfRestartOrigin: vi.fn(),
   handleSelfRestart: vi.fn(),
 }));
+vi.mock('../../../hooks/useAppOperation', () => ({
+  useAppOperation: vi.fn(),
+}));
 
 import * as api from '../../../services/api';
+import { useAppOperation } from '../../../hooks/useAppOperation';
 import RepositorySourcePanel from './RepositorySourcePanel';
 
 const source = ({
@@ -80,6 +84,10 @@ const canonicalStatus = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useAppOperation.mockReturnValue({
+    steps: [], isOperating: false, operationType: null, error: null, completed: false,
+    startUpdate: vi.fn(),
+  });
   api.getAppRepositorySources.mockResolvedValue(canonicalStatus());
   api.syncAppRepositoryFork.mockResolvedValue({ synced: true, alreadyUpToDate: false });
   api.pullAndUpdateApp.mockResolvedValue({ success: true });
@@ -98,6 +106,21 @@ describe('managed app repository sources', () => {
     expect(screen.getByTestId('repository-source-companion-1')).toHaveTextContent('prod-serving @ 2222222');
     expect(screen.getByTestId('repository-source-companion-1')).toHaveTextContent('Current');
     expect(screen.getByRole('button', { name: 'Update app' })).toBeInTheDocument();
+  });
+
+  it('keeps the current update step visible while the operation is running', async () => {
+    useAppOperation.mockReturnValue({
+      steps: [{ step: 'npm-install:root', status: 'running', message: 'Installing root dependencies...' }],
+      isOperating: true,
+      operationType: 'update',
+      error: null,
+      completed: false,
+      startUpdate: vi.fn(),
+    });
+    render(<RepositorySourcePanel appId="app-example" appName="Example App" />);
+
+    expect(await screen.findByRole('status', { name: 'App operation status' })).toHaveTextContent('Installing root dependencies...');
+    expect(screen.getByRole('button', { name: 'Updating...' })).toBeDisabled();
   });
 
   it('shows local, fork, and upstream as separate version hops and can sync only the fork', async () => {
@@ -152,13 +175,11 @@ describe('managed app repository sources', () => {
     expect(dialog).toHaveTextContent('Restart the app\'s managed processes');
 
     fireEvent.click(screen.getByRole('button', { name: 'Sync fork and update' }));
-    await waitFor(() => expect(api.pullAndUpdateApp).toHaveBeenCalledWith(
-      'app-example',
-      { syncFork: true },
-      { silent: true },
+    await waitFor(() => expect(useAppOperation.mock.results[0].value.startUpdate).toHaveBeenCalledWith(
+      'app-example', 'Example App', { syncFork: true },
     ));
     expect(api.syncAppRepositoryFork).not.toHaveBeenCalled();
-    await waitFor(() => expect(onUpdated).toHaveBeenCalledOnce());
+    expect(onUpdated).not.toHaveBeenCalled();
   });
 
   it('refreshes source status when the parent Git tab reports a branch update', async () => {
@@ -190,17 +211,17 @@ describe('managed app repository sources', () => {
     await waitFor(() => expect(screen.getByTestId('repository-source-primary')).toHaveTextContent('Current'));
   });
 
-  it('treats a PortOS update disconnect as the expected self-restart', async () => {
-    api.getPreferredSelfRestartOrigin.mockResolvedValueOnce('https://host-alpha.example-tailnet.ts.net:5555');
-    api.pullAndUpdateApp.mockRejectedValueOnce(new Error('Server unreachable — check your connection and try again'));
+  it('locks the update action after dispatch until the page reloads', async () => {
     render(<RepositorySourcePanel appId="portos-default" appName="PortOS" />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Update app' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Update app' }));
 
-    await waitFor(() => expect(api.handleSelfRestart).toHaveBeenCalledWith({
-      targetOrigin: 'https://host-alpha.example-tailnet.ts.net:5555',
-    }));
+    const updateButton = screen.getByRole('button', { name: 'Reload to update again' });
+    expect(updateButton).toBeDisabled();
+    expect(useAppOperation.mock.results[0].value.startUpdate).toHaveBeenCalledWith(
+      'portos-default', 'PortOS', { syncFork: false },
+    );
   });
 
   it('refuses automatic fork sync after divergence but still permits updating from the fork as-is', async () => {
@@ -224,7 +245,7 @@ describe('managed app repository sources', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Update app from fork' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Update app' }));
 
-    await waitFor(() => expect(api.pullAndUpdateApp).toHaveBeenCalledOnce());
+    await waitFor(() => expect(useAppOperation.mock.results[0].value.startUpdate).toHaveBeenCalledOnce());
     expect(api.syncAppRepositoryFork).not.toHaveBeenCalled();
   });
 
