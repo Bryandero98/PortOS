@@ -434,6 +434,27 @@ describe('CI test impact planner', () => {
     expect(mixed.smoke).toBe(true);
   });
 
+  it('runs the generated-manifest drift tests whenever a server source changes', () => {
+    const tracked = [
+      ...TRACKED,
+      'server/routes/settings.js',
+      'scripts/generate-api-route-catalog.test.js',
+      'scripts/generate-prompt-stage-call-sites.test.js',
+    ];
+    const drift = ['scripts/generate-api-route-catalog.test.js', 'scripts/generate-prompt-stage-call-sites.test.js'];
+
+    // A new route on a scoped plan is exactly the case that shipped a stale catalog.
+    const route = buildCiTestPlan(['server/routes/settings.js'], { trackedFiles: tracked });
+    expect(route.full).toBe(false);
+    expect(route.server.files).toEqual(expect.arrayContaining(drift));
+    // Any server module can add a literal stage-key call site.
+    const service = buildCiTestPlan(['server/services/auth.js'], { trackedFiles: tracked });
+    expect(service.server.files).toEqual(expect.arrayContaining(drift));
+    // A client-only change has nothing to regenerate.
+    const client = buildCiTestPlan(['client/src/lib/catalogLinks.js'], { trackedFiles: tracked });
+    expect(client.server.files).not.toEqual(expect.arrayContaining(drift));
+  });
+
   it('fails closed to the full suite for a python script nothing pins', () => {
     // Per script: a pinned sibling in the same diff does not vouch for the orphan.
     const plan = buildCiTestPlan(['scripts/generate_ltx2.py', 'scripts/orphan.py'], {
