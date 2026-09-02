@@ -1929,7 +1929,26 @@ If the release docs identify a separate database-backed test suite, the canonica
 
 The PortOS Code Review Defaults rendered into \`{reviewers}\` are advisory for this run. Use exactly that reviewer list and no other when review is available. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. Code review is optional: run configured reviewers when available and address valid findings, but an empty, unavailable, timed-out, malformed, no-verdict, or otherwise inconclusive review must never stop the release.
 
-Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, optional code review, PR creation, CI, merge, tagging, and the final report. Only CI is the review/merge gate; required release tests/build checks still must pass. If the workflow itself cannot run, its required tests/build checks fail, or CI fails, stop and report; do not stop or leave the release open because code review is unavailable or inconclusive.
+Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, optional code review, PR creation, CI, merge, tagging, and the final report. Only CI is the review/merge gate; required release tests/build checks still must pass — but a failing test or a red CI run is work for you to do in Step 2, not a reason to end the run. Stop and report only if the workflow itself cannot run at all; never stop or leave the release open because code review is unavailable or inconclusive.
+
+## Step 2: Fix what blocks the release — do not just report it
+
+A failing test suite or a red CI run does NOT end this run. Unblocking the release is part of the task, including when the failure already existed on the source branch before this run started and nothing you did caused it. "The release was halted because tests failed" is not an acceptable outcome while the failure is fixable.
+
+Work each blocking failure through this loop until the required suite and CI are green, or until you hit the bound below:
+
+1. **Reproduce and localize.** Re-run only the failing file or test to confirm it fails on its own, repeating it a few times when the failure looks timing-dependent. Read the failing assertion and the code it exercises before changing anything.
+2. **Classify it.**
+   - **Real regression** — the test is right and the product code is wrong. Fix the product code.
+   - **Bad test** — it races the code under test, depends on wall-clock time or ordering, leaks state between cases, asserts an implementation detail that legitimately changed, or carries a stale fixture. Fix the test.
+   - **Environmental blocker** — a service the suite needs is unreachable, a credential is missing, or a required tool is absent. That is not fixable from here: report exactly what failed (the command and its error) and stop.
+3. **Fix the root cause.** Deleting a test, skipping or narrowing it, loosening an assertion until it passes, or inflating a timeout to paper over a race are NOT fixes — never do them to force a green. If the correct fix is genuinely out of reach for this run, say precisely why and stop instead of disabling coverage.
+4. **Verify.** Re-run the failing test, then the full suite the release requires, and confirm nothing else broke.
+5. **Commit and push** each fix as its own commit on the source branch, with a subject stating what was broken and why the change fixes it (release notes are derived from commit subjects). Then resume the release workflow.
+
+Apply the same loop to a red CI run on the release PR, driving it from the failing job's logs (for example \`gh pr checks <PR_NUM>\` to find the run, then \`gh run view <RUN_ID> --log-failed\`). Push the fix to the PR's branch, wait for the re-run, and merge once CI is green. A CI failure that does not reproduce locally is still yours to diagnose — look for platform differences (OS, runtime version, installed dependencies) and for state the local run has that CI does not.
+
+**Bound the loop.** Stop and report if the same failure survives three distinct fix attempts, or once you have made ten fix commits in this run without reaching green. A failure that resists that much needs a human, not more grinding.
 
 The release workflow is attached to this task by metadata so every provider receives the same bundled body and reviewer pin. Do not reimplement any of its phases in this scheduled prompt.`,
 
