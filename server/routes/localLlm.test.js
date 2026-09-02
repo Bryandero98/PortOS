@@ -190,6 +190,30 @@ describe('local LLM playground routes', () => {
     expect(cancelModelAbuseGuardInstall).toHaveBeenCalled();
   });
 
+  it('returns actionable Prompt Guard access prerequisites from the install route', async () => {
+    installModelAbuseGuard.mockResolvedValueOnce({
+      ok: false,
+      code: 'security-guard-huggingface-token-required',
+    });
+    const missingToken = await request(makeApp()).post('/api/local-llm/security-guard/install').send({});
+    expect(missingToken.status).toBe(502);
+    expect(missingToken.body).toMatchObject({
+      code: 'security-guard-huggingface-token-required',
+      error: 'Add a Hugging Face read token before installing Prompt Guard.',
+    });
+
+    installModelAbuseGuard.mockResolvedValueOnce({
+      ok: false,
+      code: 'security-guard-huggingface-access-required',
+    });
+    const missingAccess = await request(makeApp()).post('/api/local-llm/security-guard/install').send({});
+    expect(missingAccess.status).toBe(502);
+    expect(missingAccess.body).toMatchObject({
+      code: 'security-guard-huggingface-access-required',
+      error: 'Hugging Face has not granted Prompt Guard access yet. Submit the usage request on its model card, then retry.',
+    });
+  });
+
   it('POST /install forwards force so a redownload can replace on-disk weights', async () => {
     installModel.mockResolvedValue({ success: true, modelId: 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M' });
 

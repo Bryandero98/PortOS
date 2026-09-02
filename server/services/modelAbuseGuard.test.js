@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listModels = vi.fn();
 const getModelCapabilities = vi.fn();
+const getHfToken = vi.fn();
 
 vi.mock('./localLlm.js', () => ({ listModels }));
 vi.mock('./ollamaManager.js', () => ({ getModelCapabilities }));
+vi.mock('./hfToken.js', () => ({ getHfToken }));
 
-const { validatePublicReviewModel } = await import('./modelAbuseGuard.js');
+const { installModelAbuseGuard, validatePublicReviewModel } = await import('./modelAbuseGuard.js');
 
 const LOCAL_CLAUDE = {
   id: 'claude-ollama',
@@ -19,6 +21,7 @@ const LOCAL_CLAUDE = {
 describe('validatePublicReviewModel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getHfToken.mockResolvedValue('hf_test_token');
     listModels.mockResolvedValue([{ id: 'safe-model' }]);
     getModelCapabilities.mockResolvedValue(['completion']);
   });
@@ -59,5 +62,14 @@ describe('validatePublicReviewModel', () => {
     listModels.mockResolvedValue(null);
     await expect(validatePublicReviewModel({ provider: LOCAL_CLAUDE, model: 'safe-model' }))
       .resolves.toMatchObject({ ok: false, code: 'public-review-model-catalog-unavailable' });
+  });
+
+  it('requires the Hugging Face token before preparing the guard runtime', async () => {
+    getHfToken.mockResolvedValue(null);
+
+    await expect(installModelAbuseGuard()).resolves.toMatchObject({
+      ok: false,
+      code: 'security-guard-huggingface-token-required',
+    });
   });
 });

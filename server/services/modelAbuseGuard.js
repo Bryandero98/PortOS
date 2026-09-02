@@ -41,6 +41,7 @@ import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { detectVenvBasePythonSync, createVenv, installPackages } from '../lib/pythonSetup.js';
 import { safeChildProcessOptions } from '../lib/processEnv.js';
 import { downloadHfRepo } from './hfDownload.js';
+import { getHfToken } from './hfToken.js';
 import { listModels } from './localLlm.js';
 import * as ollamaManager from './ollamaManager.js';
 
@@ -279,6 +280,11 @@ export async function getModelAbuseGuardStatus() {
 export function installModelAbuseGuard({ onEvent } = {}) {
   if (installInFlight) return installInFlight;
   installInFlight = (async () => {
+    // Do this before creating a venv or installing packages. The model is gated
+    // on Hugging Face, so a missing token is an operator prerequisite—not a
+    // reason to leave a half-useful runtime behind and discover the problem
+    // only after setup has changed the install.
+    if (!(await getHfToken())) return failure('security-guard-huggingface-token-required');
     const basePython = detectVenvBasePythonSync();
     if (!basePython) return failure('security-guard-python-unavailable');
     await ensureDir(dirname(GUARD_VENV_DIR));

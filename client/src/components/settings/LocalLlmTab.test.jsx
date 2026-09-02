@@ -7,6 +7,7 @@ vi.mock('../../services/api', () => ({
   getLocalLlmCatalog: vi.fn(),
   getLocalLlmHuggingFaceSearch: vi.fn(),
   getModelAbuseGuardStatus: vi.fn(),
+  getHfTokenStatus: vi.fn(),
   installModelAbuseGuard: vi.fn(),
   cancelModelAbuseGuardInstall: vi.fn(),
   installLocalLlmModel: vi.fn(),
@@ -49,6 +50,7 @@ import {
   getLocalLlmStatus,
   getLocalLlmCatalog,
   getModelAbuseGuardStatus,
+  getHfTokenStatus,
   installModelAbuseGuard,
   cancelModelAbuseGuardInstall,
   installLocalLlmBackend,
@@ -117,6 +119,7 @@ beforeEach(() => {
     modelCached: false,
     runtimeReady: false,
   });
+  getHfTokenStatus.mockResolvedValue({ hfTokenPresent: true, source: 'stored' });
   installModelAbuseGuard.mockResolvedValue({ ok: true, ready: true });
   cancelModelAbuseGuardInstall.mockResolvedValue({ cancelled: true });
   installLocalLlmBackend.mockResolvedValue({ success: true });

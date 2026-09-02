@@ -194,8 +194,14 @@ router.post('/security-guard/install', asyncHandler(async (req, res) => {
     onEvent: ({ event, message }) => emit(event, message),
   })
   if (!result?.ok) {
-    emit('error', result?.code || 'Prompt Guard installation failed')
-    throw new ServerError(result?.code || 'Prompt Guard installation failed', { status: 502 })
+    const code = result?.code || 'security-guard-install-failed'
+    const message = code === 'security-guard-huggingface-token-required'
+      ? 'Add a Hugging Face read token before installing Prompt Guard.'
+      : code === 'security-guard-huggingface-access-required'
+        ? 'Hugging Face has not granted Prompt Guard access yet. Submit the usage request on its model card, then retry.'
+        : code
+    emit('error', message)
+    throw new ServerError(message, { status: 502, code })
   }
   res.json(result)
 }))
