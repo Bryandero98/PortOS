@@ -167,6 +167,12 @@ These exist purely to force-bump transitive deps; revisit if `npm audit` flags n
 
 **Not every compromised package warrants a pin.** A pin only helps when the installed version is *below* the top of its permitted range — otherwise there is nothing to force. The August 2026 `keyv` / `flat-cache` / `file-entry-cache` compromise deliberately got **no** pin: each range was already at its ceiling (highest published `keyv@4.x` *is* `4.5.4`, etc.), so a pin would have been a no-op, and the packages were removed outright instead. Check headroom (`npm view <pkg>@<major> version`) before adding an entry here.
 
+## Direct Dependency Pinning
+
+**Every direct dependency and devDependency, in every manifest, is an exact version — no `^`, `~`, `>=`, or `*`.** A caret range lets a fresh `npm install` (or any tree re-resolution: a Dependabot bump to a sibling package, `npm run setup`'s `npm install --no-save --prefix server`, `scripts/ensure-deps.js`'s clean-reinstall path) float past a version nobody reviewed — the same argument that already makes an override pin exact, applied to the packages this repo depends on directly. Upgrades arrive as reviewable Dependabot PRs instead.
+
+`server/dependency-overrides.test.js` enforces this across all four manifests, so a dependency added with a caret fails the suite rather than shipping.
+
 ## Install-Script Policy
 
 `ignore-scripts=true` is pinned in **every** workspace's own `.npmrc` (root, `client/`, `server/`, `autofixer/`, `browser/`) — not just the repo root. The list is not maintained by hand: `discoverWorkspaces()` in `scripts/trusted-rebuilds.js` globs every top-level directory carrying a `package.json`, and the test asserts each discovered one has the setting — so a workspace added later is caught rather than silently unguarded. npm resolves the project `.npmrc` from the *local prefix* and never walks up the directory tree, so a root-only setting does not cover `cd client && npm install` or `npm ci --prefix server` (what CI runs). Deleting any workspace `.npmrc` silently re-grants every dependency in that workspace an install-time code-execution slot — the vector the Shai-Hulud worm used.
