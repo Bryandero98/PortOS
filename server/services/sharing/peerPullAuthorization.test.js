@@ -217,7 +217,26 @@ describe('peerPullAuthorization', () => {
 
     it('denies a peer that only announced itself (inbound-only, never approved here)', async () => {
       setPeers(universePeer({ directions: ['inbound'] }));
-      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'universe' })).allowed).toBe(false);
+      // Reason parity with the record routes: "we don't share with you at all"
+      // must not read as "we don't share THIS with you".
+      expect(await decidePeerPull({ callerId: PEER_A, syncCategory: 'universe' }))
+        .toMatchObject({ allowed: false, reason: PULL_DENY_OUTBOUND });
+    });
+
+    it('denies a disabled peer as outbound-disallowed, not category-disabled', async () => {
+      setPeers(universePeer({ enabled: false }));
+      expect(await decidePeerPull({ callerId: PEER_A, syncCategory: 'universe' }))
+        .toMatchObject({ allowed: false, reason: PULL_DENY_OUTBOUND });
+    });
+
+    it('lets the master switch beat a stale fullSync flag', async () => {
+      // `{ fullSync: true, syncEnabled: false }` is reachable (set full mirror,
+      // then flip the switch off) and contradictory — every push is already
+      // refused for it, so a pull must not hand it the whole install.
+      setPeers(universePeer({ fullSync: true, syncEnabled: false }));
+      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'digitalTwin' })).allowed).toBe(false);
+      // The default-ON category still survives the switch, as everywhere else.
+      expect((await decidePeerPull({ callerId: PEER_A, syncCategory: 'usage' })).allowed).toBe(true);
     });
   });
 

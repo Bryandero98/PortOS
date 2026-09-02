@@ -36,7 +36,7 @@
  * covers shipping an identity record to a host we cannot name.
  */
 import { ServerError } from '../../lib/errorHandler.js';
-import { findPeerById, peerAllowsOutbound, peerAllowsCategoryPull, peerHasCategory } from './peerSyncShared.js';
+import { findPeerById, peerAllowsOutbound, peerOutboundEligible, peerAllowsCategoryPull, peerHasCategory } from './peerSyncShared.js';
 import { getSettings } from '../settings.js';
 import { UNKNOWN_INSTANCE_ID } from '../instances.js';
 
@@ -102,9 +102,14 @@ export async function decidePeerPull({ callerId, recordKind = null, syncCategory
   const peer = await findPeerById(callerId);
   if (!peer) return { allowed: false, reason: PULL_DENY_UNKNOWN_PEER, peer: null, callerId };
   if (syncCategory) {
-    return peerAllowsCategoryPull(peer, syncCategory)
-      ? { allowed: true, reason: null, peer, callerId }
-      : { allowed: false, reason: PULL_DENY_CATEGORY, peer, callerId };
+    // Split the two denials so the reason a caller/log sees means the same
+    // thing it does on the record routes: "we don't share with you at all" vs
+    // "we don't share THIS with you".
+    if (!peerOutboundEligible(peer)) return { allowed: false, reason: PULL_DENY_OUTBOUND, peer, callerId };
+    if (!peerAllowsCategoryPull(peer, syncCategory)) {
+      return { allowed: false, reason: PULL_DENY_CATEGORY, peer, callerId };
+    }
+    return { allowed: true, reason: null, peer, callerId };
   }
   if (!peerAllowsOutbound(peer)) return { allowed: false, reason: PULL_DENY_OUTBOUND, peer, callerId };
   if (recordKind && !peerHasCategory(peer, recordKind)) {

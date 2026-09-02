@@ -83,10 +83,11 @@ async function withCursors(fn) {
 // it outright (#5663). `peerFetch` also carries the peer HTTPS agent, so a
 // self-signed tailnet peer no longer fails TLS validation on these pulls.
 //
-// The timeout bounds the REQUEST only, not the body read — `withAbortTimeout`
-// clears its timer as soon as the callback settles, which reproduces what
-// `fetchWithTimeout` did here. Bounding the body too would abort a large
-// snapshot mid-download on a slow link, every cycle, forever.
+// The timeout bounds the peerFetch call and nothing after it, so the JSON
+// decode of an already-received body can't be aborted — the same shape
+// `fetchWithTimeout` had here. (Over HTTPS the budget does still cover the
+// download itself, because the insecure-agent shim buffers the whole body
+// before it resolves; that is a property of that transport, not of this call.)
 // Contract is unchanged: null on transport failure, non-2xx, or bad JSON.
 async function fetchPeer(peer, path) {
   const url = `${peerBaseUrl(peer)}${path}`;
@@ -112,9 +113,8 @@ async function syncImageFromPeer(peer, avatarPath) {
   if (exists) return;
 
   const url = `${peerBaseUrl(peer)}${avatarPath}`;
-  // Same `peerFetch` hop as fetchPeer, and the same request-only timeout — an
-  // avatar download must not be aborted mid-body. Non-critical either way: a
-  // failure just retries next cycle.
+  // Same `peerFetch` hop and the same timeout scope as fetchPeer. Non-critical
+  // either way: a failure just retries next cycle.
   const res = await withAbortTimeout(FETCH_TIMEOUT_MS, (signal) => peerFetch(url, { signal }, peer))
     .catch(() => null);
   if (!res?.ok) return;

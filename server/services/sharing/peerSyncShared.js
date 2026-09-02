@@ -111,7 +111,7 @@ export const KIND_TO_CATEGORY = Object.freeze({
 // `directions` is a legacy record (permissive); `['inbound']` is a peer that
 // merely announced itself to us and was auto-created with no approval step, so
 // nothing may flow back out to it.
-function peerOutboundEligible(peer) {
+export function peerOutboundEligible(peer) {
   if (!peer || peer.enabled === false) return false;
   const directions = Array.isArray(peer.directions) ? peer.directions : [];
   return directions.length === 0 || directions.includes('outbound');
@@ -143,7 +143,15 @@ export function peerAllowsOutbound(peer) {
  */
 export function peerAllowsCategoryPull(peer, category) {
   if (!peerOutboundEligible(peer)) return false;
-  return resolveEffectiveCategories(peer)[category] === true;
+  // `resolveEffectiveCategories` short-circuits `fullSync` BEFORE applying the
+  // master-switch mask. That is the right reading for a loop deciding what to
+  // ASK a peer for, and the wrong one for a gate deciding what to HAND OUT: the
+  // reachable-but-contradictory `{ fullSync: true, syncEnabled: false }` state
+  // (set full mirror, then flip the switch off) would otherwise be handed every
+  // category here while `peerAllowsOutbound` refuses it every push. Resolve
+  // with fullSync dropped so the mask wins and only default-ON survives.
+  const masked = peer.syncEnabled === false ? { ...peer, fullSync: false } : peer;
+  return resolveEffectiveCategories(masked)[category] === true;
 }
 
 export function peerHasCategory(peer, recordKind) {
