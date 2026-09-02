@@ -290,6 +290,18 @@ export const supportsPublicReviewPosture = (provider, posture) => {
 };
 
 /**
+ * Whether the SERVER runs `posture` on this provider through a vendor-enforced
+ * recipe (an OS sandbox for the actions stage), as opposed to merely allowing
+ * it. `publicReviewEnforcedPostures` is the server's subset; an older server
+ * that does not publish it only ever offered enforced providers, so its
+ * eligible set is taken as enforced.
+ */
+export const enforcesPublicReviewPosture = (provider, posture) => {
+  if (Array.isArray(provider?.publicReviewEnforcedPostures)) return provider.publicReviewEnforcedPostures.includes(posture);
+  return supportsPublicReviewPosture(provider, posture);
+};
+
+/**
  * Selection policy for a pr-reviewer stage.
  *
  * Provider eligibility is entirely server-derived. Model eligibility adds the

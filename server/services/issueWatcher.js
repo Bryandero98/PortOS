@@ -25,6 +25,7 @@ import { execGh, ensureForgeReachable } from './github.js';
 import { mergePR, resolveForgeForRepo } from './git.js';
 import { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifications.js';
 import { normalizeEligibilityFacts, runModelAbuseScan } from './modelAbuseGuard.js';
+import { issuePrerequisiteWaived } from '../lib/modelAbuseGuard.js';
 
 const GH_TIMEOUT_MS = 60_000;
 const LIST_LIMIT = 100;
@@ -293,7 +294,12 @@ function sameNumberList(left, right) {
 async function eligibilityFactsStillCurrent(ctx, pr, target) {
   const expected = normalizeEligibilityFacts(target?.eligibilityFacts);
   const authorLogin = typeof target?.authorLogin === 'string' ? target.authorLogin.trim() : '';
-  if (!expected.issueLookupComplete || !authorLogin || !sameLogin(pr?.author?.login, authorLogin)) return false;
+  if (!authorLogin || !sameLogin(pr?.author?.login, authorLogin)) return false;
+  // A waived prerequisite (the maintainer's explicit request) cannot go stale,
+  // so only the author identity is rechecked for it; re-requiring an open
+  // linked issue here would silently skip every action on a PR with none.
+  if (issuePrerequisiteWaived(expected)) return true;
+  if (!expected.issueLookupComplete) return false;
   if (expected.linkedIssueNumbers.length === 0) return false;
 
   const issues = await Promise.all(expected.linkedIssueNumbers.map((number) => (

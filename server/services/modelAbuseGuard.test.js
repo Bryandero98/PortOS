@@ -99,7 +99,7 @@ describe('validatePublicReviewModel', () => {
       model: 'safe-model',
     })).resolves.toMatchObject({ ok: false, code: 'public-review-provider-unsupported' });
     await expect(validatePublicReviewModel({
-      provider: LOCAL_CLAUDE,
+      provider: { ...LOCAL_CLAUDE, type: 'api' },
       model: 'safe-model',
       posture: 'sandboxed-actions',
     })).resolves.toMatchObject({ ok: false, code: 'public-review-actions-provider-unsupported' });

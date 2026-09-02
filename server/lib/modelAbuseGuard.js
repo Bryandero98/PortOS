@@ -205,6 +205,17 @@ export function normalizeEligibilityFacts(value) {
   };
 }
 
+/**
+ * Whether the linked-open-issue prerequisite is waived for this PR. The
+ * server sets `maintainerTargeted` only for an explicit "Review this PR"
+ * request: that prerequisite bounds UNATTENDED spend on unsolicited PRs, and
+ * the request is the maintainer spending it. Both the eligibility gate and the
+ * pre-action recheck read the waiver from here so they cannot disagree.
+ */
+export function issuePrerequisiteWaived(facts) {
+  return normalizeEligibilityFacts(facts).maintainerTargeted;
+}
+
 const blockingFinding = (category, reason) => ({
   severity: 'blocking',
   category,
