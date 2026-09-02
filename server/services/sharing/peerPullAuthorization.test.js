@@ -183,4 +183,38 @@ describe('peerPullAuthorization', () => {
       await expect(authorizePeerPull(req(null), { recordKind: 'universe' })).resolves.toBeDefined();
     });
   });
+
+  // #5663 — the PII snapshot categories opt out of the warn-first ramp: root
+  // AGENTS.md forbids those records on the federation layer at all, so an
+  // unidentified caller must never be served one regardless of the setting.
+  describe('alwaysEnforce', () => {
+    it('403s a denied pull with strictPullAuthorization off', async () => {
+      settings = { federation: { strictPullAuthorization: false } };
+      await expect(authorizePeerPull(req(null), { route: 'sync digitalTwin', alwaysEnforce: true }))
+        .rejects.toMatchObject({ status: 403, code: 'PEER_PULL_FORBIDDEN' });
+    });
+
+    it('still allows a configured, outbound-allowed peer', async () => {
+      setPeers(universePeer());
+      const decision = await authorizePeerPull(req(PEER_A), { route: 'sync digitalTwin', alwaysEnforce: true });
+      expect(decision.allowed).toBe(true);
+      expect(console.warn).not.toHaveBeenCalled();
+    });
+
+    it('logs the refusal once per caller per boot', async () => {
+      const opts = { route: 'sync digitalTwin', alwaysEnforce: true };
+      await expect(authorizePeerPull(req(null), opts)).rejects.toThrow();
+      await expect(authorizePeerPull(req(null), opts)).rejects.toThrow();
+      expect(console.warn).toHaveBeenCalledTimes(1);
+      expect(console.warn.mock.calls[0][0]).toContain('🔒');
+    });
+
+    it('does not consume the served-anyway throttle slot for the same caller', async () => {
+      // Distinct throttle keys: a caller refused a PII pull must still produce
+      // the one compatibility ⚠️ when it pulls a creative-work category.
+      await expect(authorizePeerPull(req(null), { route: 'sync digitalTwin', alwaysEnforce: true })).rejects.toThrow();
+      await authorizePeerPull(req(null), { route: 'sync universe' });
+      expect(console.warn).toHaveBeenCalledTimes(2);
+    });
+  });
 });

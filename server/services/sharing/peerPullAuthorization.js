@@ -1,5 +1,9 @@
 /**
- * Receiver-side authorization for peer-sync PULL requests (#3659).
+ * Receiver-side authorization for peer PULL requests (#3659, #5663).
+ *
+ * Covers BOTH pull transports: the per-record `/api/peer-sync/*` routes
+ * (`server/routes/peerSync.js`) and the older snapshot transport
+ * `/api/sync/:category/*` (`server/routes/dataSync.js`).
  *
  * The push direction has always been gated on the user's per-peer sharing
  * config (`peerAllowsOutbound` + `peerHasCategory`, see peerSyncPush.js). The
@@ -24,6 +28,12 @@
  * single throttled `⚠️` per caller per boot. Only when the user opts in via
  * `settings.federation.strictPullAuthorization === true` does a denied pull
  * get a 403. The default flips in a later release once peers have upgraded.
+ *
+ * `alwaysEnforce` opts a route OUT of that ramp: a denial is a 403 whatever the
+ * setting says. It exists for the PII snapshot categories, which root
+ * `AGENTS.md` forbids on the federation layer at all — the ramp protects
+ * creative-work sync from breaking mid-upgrade, and no compatibility argument
+ * covers shipping an identity record to a host we cannot name.
  */
 import { ServerError } from '../../lib/errorHandler.js';
 import { findPeerById, peerAllowsOutbound, peerHasCategory } from './peerSyncShared.js';
@@ -96,37 +106,58 @@ async function strictPullAuthorizationEnabled() {
   return settings?.federation?.strictPullAuthorization === true;
 }
 
-function warnOnce(decision, route) {
-  const key = decision.callerId || PULL_DENY_UNIDENTIFIED;
+// Throttle key space is shared by the "served anyway" and "refused" lines, so
+// a caller that trips both still gets one of each (distinct prefixes).
+function logOnce(key, message) {
   if (warnedCallers.has(key)) return;
   if (warnedCallers.size >= WARNED_CALLERS_MAX) warnedCallers.clear();
   warnedCallers.add(key);
-  const who = decision.peer?.name
-    ? `peer "${decision.peer.name}"`
-    : (decision.callerId ? `instance ${decision.callerId.slice(0, 8)}…` : 'an unidentified caller');
-  console.warn(`⚠️ Serving peer-sync ${route} to ${who} that sharing config would deny (${decision.reason}) — enable federation.strictPullAuthorization to enforce`);
+  console.warn(message);
 }
 
+function describeCaller(decision) {
+  if (decision.peer?.name) return `peer "${decision.peer.name}"`;
+  return decision.callerId ? `instance ${decision.callerId.slice(0, 8)}…` : 'an unidentified caller';
+}
+
+function warnOnce(decision, route) {
+  const key = decision.callerId || PULL_DENY_UNIDENTIFIED;
+  logOnce(`serve:${key}`, `⚠️ Serving peer-sync ${route} to ${describeCaller(decision)} that sharing config would deny (${decision.reason}) — enable federation.strictPullAuthorization to enforce`);
+}
+
+function refuseOnce(decision, route) {
+  const key = decision.callerId || PULL_DENY_UNIDENTIFIED;
+  logOnce(`deny:${key}`, `🔒 Refused peer-sync ${route} for ${describeCaller(decision)} (${decision.reason}) — this data only federates to a configured, outbound-allowed peer`);
+}
+
+const pullForbidden = (decision) => new ServerError('peer not authorized for this record', {
+  status: 403,
+  code: 'PEER_PULL_FORBIDDEN',
+  context: { reason: decision.reason },
+});
+
 /**
- * Gate a pull route. Throws a 403 ServerError only when the request is denied
- * AND `federation.strictPullAuthorization` is on; otherwise serves the request
- * and warns at most once per caller per boot.
+ * Gate a pull route. Throws a 403 ServerError when the request is denied AND
+ * either `alwaysEnforce` is set for this route or
+ * `federation.strictPullAuthorization` is on; otherwise serves the request and
+ * warns at most once per caller per boot.
  *
  * Returns the decision so a caller can branch further if it ever needs to.
  */
-export async function authorizePeerPull(req, { recordKind = null, route } = {}) {
+export async function authorizePeerPull(req, { recordKind = null, route, alwaysEnforce = false } = {}) {
   const decision = await decidePeerPull({ callerId: readCallerInstanceId(req), recordKind });
   if (decision.allowed) return decision;
-  if (await strictPullAuthorizationEnabled()) {
-    throw new ServerError('peer not authorized for this record', {
-      status: 403,
-      code: 'PEER_PULL_FORBIDDEN',
-      context: { reason: decision.reason },
-    });
+  const label = route || 'pull';
+  // `alwaysEnforce` short-circuits the settings read: the answer cannot change.
+  if (alwaysEnforce) {
+    refuseOnce(decision, label);
+    throw pullForbidden(decision);
   }
-  warnOnce(decision, route || 'pull');
+  if (await strictPullAuthorizationEnabled()) throw pullForbidden(decision);
+  warnOnce(decision, label);
   return decision;
 }
+
 
 /** Test-support: clear the per-boot warn throttle. */
 export function __resetPullWarnThrottleForTests() {

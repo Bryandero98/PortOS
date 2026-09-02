@@ -88,6 +88,12 @@ tryReadFile: vi.fn().mockResolvedValue(null),
 vi.mock('../lib/asyncMutex.js', () => ({
   createMutex: () => async (fn) => fn()
 }));
+// Spy on the REAL peerFetch (not a stand-in) so the orchestrator's hops still
+// go through the production client — the assertion is only that they do.
+vi.mock('../lib/peerHttpClient.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, peerFetch: vi.fn(actual.peerFetch) };
+});
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(),
   rename: vi.fn().mockResolvedValue()
@@ -103,6 +109,7 @@ import { instanceEvents } from './instanceEvents.js';
 import { getCurrentSeq, compactLog } from './brainSyncLog.js';
 import { getBrainChecksum, applyBrainSnapshot } from './brainReconcile.js';
 import { getMaxSequence } from './memorySync.js';
+import { peerFetch } from '../lib/peerHttpClient.js';
 import { syncWithPeer, syncAllPeers, getSyncStatus, initSyncOrchestrator, stopSyncOrchestrator } from './syncOrchestrator.js';
 
 const mockFetch = vi.fn();
@@ -323,6 +330,28 @@ describe('syncOrchestrator', () => {
       // Categories still pulled, but WITHOUT the forPeer param (full snapshot).
       expect(urls.some((u) => u.includes('/api/sync/universe/'))).toBe(true);
       expect(urls.some((u) => u.includes('forPeer='))).toBe(false);
+    });
+
+    it('pulls snapshots through peerFetch, with the peer record, so the hop is identified (#5663)', async () => {
+      // The receiver's peer-pull gate keys on `X-PortOS-Instance-Id`; without
+      // it the PII categories now refuse us outright. Passing the peer record
+      // as peerFetch's third arg is what attaches that header AND the stored
+      // Basic credential (header contents themselves: peerHttpClient.test.js).
+      // `forPeer` is a payload-scoping hint, NOT identity — don't confuse them.
+      const dataSync = await import('./dataSync.js');
+      dataSync.getSupportedCategories.mockReturnValue(['digitalTwin']);
+      const peerWithCats = {
+        ...mockPeer,
+        syncCategories: { digitalTwin: true },
+        auth: { username: 'alice', password: 'pw' },
+      };
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ checksum: 'x', data: null }) });
+      await syncWithPeer(peerWithCats);
+      const call = peerFetch.mock.calls.find((c) => c[0].includes('/api/sync/digitalTwin/'));
+      expect(call).toBeDefined();
+      expect(call[2]).toBe(peerWithCats);
+      // The 15s budget survived the move off fetchWithTimeout.
+      expect(call[1].signal).toBeInstanceOf(AbortSignal);
     });
   });
 
