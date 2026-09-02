@@ -751,19 +751,6 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                     row's only recovery affordance away with it. forceSpawnTask
                     refuses a task a live agent already holds, so a click during a
                     real spawn gets an honest error rather than a duplicate run. */}
-                {/* Only when a live agent holds this task — relaunching pauses that
-                    agent (see relaunchAgent in agentManagement.js). */}
-                {agent && (
-                  <button
-                    type="button"
-                    onClick={() => setRelaunching(true)}
-                    className="p-1 text-gray-500 hover:text-port-accent transition-colors"
-                    title="Relaunch on a different provider or model"
-                    aria-label={`Relaunch task ${task.id} on a different provider or model`}
-                  >
-                    <RefreshCw size={14} aria-hidden="true" />
-                  </button>
-                )}
                 {task.status === 'pending' && !task.approvalRequired && (
                   <button
                     onClick={async () => {
@@ -776,6 +763,19 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                     aria-label="Process task now"
                   >
                     <Play size={14} aria-hidden="true" />
+                  </button>
+                )}
+                {/* Only when a live agent holds this task — relaunching pauses that
+                    agent (see relaunchAgent in agentManagement.js). */}
+                {agent && (
+                  <button
+                    type="button"
+                    onClick={() => setRelaunching(true)}
+                    className="p-1 text-gray-500 hover:text-port-accent transition-colors"
+                    title="Relaunch on a different provider or model"
+                    aria-label={`Relaunch task ${task.id} on a different provider or model`}
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
                   </button>
                 )}
                 {/* Labeled, not icon-only: this is the primary next action for a

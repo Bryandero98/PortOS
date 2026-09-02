@@ -71,7 +71,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, o
     task.id === selectedTaskId && source === selectedTaskSource
   );
 
-  // Task ids a live agent is already working. spawnAgentForTask registers its
+  // The live agent working each task, keyed by task id. spawnAgentForTask registers its
   // agent as running BEFORE flipping the task off 'pending', so between those
   // two writes a task reads 'pending' on the task list and 'running' on the
   // agent list — and the row showed up under Pending AND as an active agent.
@@ -79,9 +79,8 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, o
   // store's task events so the flip lands in ~400ms instead of a 30s poll. This
   // settles the render from whichever of the two signals arrived first, so the
   // split is right even when an event is delayed or dropped.
-  // Keyed by task rather than reduced to a Set of ids: an Active row also uses the
-  // agent itself, to offer a relaunch onto a different provider/model without
-  // fetching the agent list of its own.
+  // The map (rather than a Set of ids) is what lets an Active row offer a relaunch
+  // onto a different provider/model without fetching the agent list of its own.
   const runningAgentByTaskId = useMemo(() => new Map(
     agents.filter(a => a.status === 'running' && a.taskId).map(a => [a.taskId, a])
   ), [agents]);
