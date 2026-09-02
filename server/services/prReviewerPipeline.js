@@ -9,7 +9,7 @@
  * response, and eligibility reasons can never cross into the action stage.
  */
 
-import { MODEL_ABUSE_GUARD_ID, normalizeEligibilityFacts } from '../lib/modelAbuseGuard.js';
+import { MODEL_ABUSE_GUARD_ID, issuePrerequisiteWaived, normalizeEligibilityFacts } from '../lib/modelAbuseGuard.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE, PUBLIC_REVIEW_GATE_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { createPrReviewerDefaultStages } from './taskScheduleRegistry.js';
 import {
@@ -103,11 +103,8 @@ function normalizedExpectedPullRequests(task) {
 
 // `facts` is already normalized by normalizedExpectedPullRequests.
 function eligibilityFactsAllow(facts) {
-  // A maintainer-targeted run ("Review this PR") waives the linked-open-issue
-  // prerequisite: that rule bounds unattended spend on unsolicited PRs, and an
-  // explicit request is the maintainer spending it. The model's own quality
-  // verdict still applies.
-  if (facts.maintainerTargeted) return true;
+  // The model's own quality verdict still applies to a waived PR.
+  if (issuePrerequisiteWaived(facts)) return true;
   if (!facts.issueLookupComplete) return false;
   const linked = new Set(facts.linkedIssueNumbers);
   const open = new Set(facts.openLinkedIssueNumbers);
