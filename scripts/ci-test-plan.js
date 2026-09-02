@@ -136,6 +136,7 @@ export const ALWAYS_RUN_TESTS = [
   'server/lib/testHelper.test.js',
   'server/services/imageGen/renderTargets.guard.test.js',
   'server/services/taskPromptDefaults.test.js',
+  'server/timerCallbackConventions.test.js',
 ];
 
 const DB_RISK_RULES = [
