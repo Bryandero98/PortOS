@@ -40,15 +40,14 @@
  * fire-and-forget layer.
  */
 
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createPgFileFacade, resolvePgBackend } from '../lib/pgFileFacade.js';
 import { isTestRunner } from '../lib/db.js';
-import { resolveInstallRoot } from '../lib/dataRoot.js';
+import { resolveCodeRootForModule, resolveInstallRoot } from '../lib/dataRoot.js';
 import { isUserActionActor, isUserActionType } from '../lib/userActionTypes.js';
 import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } from './userActionsDb.js';
 
@@ -58,14 +57,12 @@ import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } fr
 const eventsFile = () => join(PATHS.data, 'user-action-events.json');
 
 // The REAL repo data/ dir, computed independently of the (possibly test-mocked)
-// `PATHS` import above via the same fileURLToPath/resolveInstallRoot technique
-// lib/paths.js itself uses — so a suite that redirects PATHS.data to a temp
-// root can't accidentally spoof this comparison too. `dataRoot.js` reads its
-// own env var directly rather than through anything a PATHS mock would touch.
-const REAL_REPO_DATA_DIR = join(
-  resolveInstallRoot(join(dirname(fileURLToPath(import.meta.url)), '../..')),
-  'data',
-);
+// `PATHS` import above via the same resolveCodeRootForModule/resolveInstallRoot
+// technique lib/paths.js itself uses (both go through the shared helper, so
+// they can't silently drift apart) — so a suite that redirects PATHS.data to a
+// temp root can't accidentally spoof this comparison too. `dataRoot.js` reads
+// its own env var directly rather than through anything a PATHS mock would touch.
+const REAL_REPO_DATA_DIR = join(resolveInstallRoot(resolveCodeRootForModule(import.meta.url)), 'data');
 
 /**
  * Structural guard against the bug class in #3683/#3687/#5605: a suite that
@@ -317,9 +314,15 @@ function makeFileBackend() {
   return {
     name: 'file',
     record: (event) => queueWrite(async () => {
+      // Hoisted above loadFileEvents()/the dedupe check on purpose (#5627
+      // review): an un-redirected suite replaying an existing
+      // (type, dedupeKey) used to hit the dedupe short-circuit's `return null`
+      // BEFORE this guard ever ran, silently no-op'ing past it with no throw —
+      // and by then loadFileEvents() had already read the real ledger into the
+      // test process regardless. Running the guard first closes both holes.
+      assertTestDataRootRedirected();
       const events = await loadFileEvents();
       if (events.some((row) => row.type === event.type && row.dedupeKey === event.dedupeKey)) return null;
-      assertTestDataRootRedirected();
       await ensureDir(PATHS.data);
       await atomicWrite(eventsFile(), { events: pruneEvents([...events, event]) });
       return event;
