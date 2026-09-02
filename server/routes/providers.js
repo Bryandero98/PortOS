@@ -37,7 +37,7 @@ import {
 } from '../services/codexAppServer.js';
 import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
 import { localEndpointPort, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
-import { supportsPublicReviewProvider, supportsPublicReviewActionsProvider } from '../lib/providerVendors.js';
+import { publicReviewPosturesForProvider, PUBLIC_REVIEW_NO_TOOL_POSTURE, PUBLIC_REVIEW_ACTIONS_POSTURE } from '../lib/providerVendors.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 import {
   captureSystemCapabilities,
@@ -146,10 +146,15 @@ const presentProvider = (provider, capabilities = captureSystemCapabilities()) =
   // Derived on read from the raw provider. This is an explicit capability of
   // the maintained public-review recipe, not a client-side guess based on a
   // provider name or a user-writable `args` list.
+  // `publicReviewPostures` is the value the schedule UI filters on, so a stage
+  // offers exactly the providers this install can actually enforce. The two
+  // booleans are derived from it and kept for existing consumers.
+  const publicReviewPostures = publicReviewPosturesForProvider(provider, { tui: provider?.type === 'tui' });
   return sanitizeProvider({
     ...decorated,
-    publicReviewSupported: supportsPublicReviewProvider(provider, { tui: provider?.type === 'tui' }),
-    publicReviewActionsSupported: supportsPublicReviewActionsProvider(provider, { tui: provider?.type === 'tui' }),
+    publicReviewPostures,
+    publicReviewSupported: publicReviewPostures.includes(PUBLIC_REVIEW_NO_TOOL_POSTURE),
+    publicReviewActionsSupported: publicReviewPostures.includes(PUBLIC_REVIEW_ACTIONS_POSTURE),
   });
 };
 

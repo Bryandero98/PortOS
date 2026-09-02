@@ -62,11 +62,8 @@ import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
-import { supportsPublicReviewProvider, supportsPublicReviewActionsProvider } from '../lib/providerVendors.js';
-import {
-  isPublicReviewNoToolProfile,
-  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
-} from '../lib/agentExecutionProfiles.js';
+import { supportsPublicReviewPosture, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
+import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { formatPublicReviewInputPrompt } from '../lib/modelAbuseGuard.js';
 import { materializePublicReviewInput, materializePublicReviewPatches, readPublicReviewInputSnapshot, validatePublicReviewModel } from './modelAbuseGuard.js';
 import { releaseAppReviewMarker } from './appActivity.js';
@@ -422,9 +419,10 @@ async function runAgentSpawn(task) {
     const { provider, selectedModel, modelSelection } = resolution;
     const isTui = isTuiProvider(provider);
     const executionProfile = task.metadata?.executionProfile;
-    const publicReviewNoTools = isPublicReviewNoToolProfile(executionProfile);
+    const publicReviewPosture = publicReviewPostureForProfile(executionProfile);
+    const publicReviewNoTools = publicReviewPosture === PUBLIC_REVIEW_NO_TOOL_POSTURE;
     const publicReviewActions = executionProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
-    const publicReview = publicReviewNoTools || publicReviewActions;
+    const publicReview = Boolean(publicReviewPosture);
     if (publicReview) {
       const scanBlock = publicReviewScanBlock(task);
       if (scanBlock) {
@@ -462,29 +460,18 @@ async function runAgentSpawn(task) {
         return null;
       }
     }
-    if (publicReviewActions && !supportsPublicReviewActionsProvider(provider, { tui: isTui })) {
-      const reason = `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced sandboxed public-review actions mode`;
+    // One posture check for both stages. Eligibility is declared by the vendor
+    // row and re-asserted HERE, at spawn time, because a schedule or API
+    // payload can be edited without the browser: the picker is a convenience,
+    // never the enforcement.
+    if (!supportsPublicReviewPosture(provider, publicReviewPosture, { tui: isTui })) {
+      const reason = `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${publicReviewPosture} public-content review mode`;
       await updateTask(task.id, {
         status: 'blocked',
         metadata: {
           ...task.metadata,
           blockedReason: reason,
-          blockedCategory: 'public-review-actions-provider-unsupported',
-          blockedAt: new Date().toISOString(),
-        },
-      }, task.taskType || 'user').catch(() => {});
-      await cleanupOnError(reason);
-      cosEvents.emit('agent:error', { taskId: task.id, error: reason });
-      return null;
-    }
-    if (publicReviewNoTools && !supportsPublicReviewProvider(provider, { tui: isTui })) {
-      const reason = `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced read-only public-content review mode`;
-      await updateTask(task.id, {
-        status: 'blocked',
-        metadata: {
-          ...task.metadata,
-          blockedReason: reason,
-          blockedCategory: 'public-review-provider-unsupported',
+          blockedCategory: publicReviewActions ? 'public-review-actions-provider-unsupported' : 'public-review-provider-unsupported',
           blockedAt: new Date().toISOString(),
         },
       }, task.taskType || 'user').catch(() => {});
@@ -493,7 +480,7 @@ async function runAgentSpawn(task) {
       return null;
     }
     if (publicReviewNoTools) {
-      const modelPolicy = await validatePublicReviewModel({ provider, model: selectedModel });
+      const modelPolicy = await validatePublicReviewModel({ provider, model: selectedModel, posture: PUBLIC_REVIEW_NO_TOOL_POSTURE });
       if (!modelPolicy.ok) {
         const reason = `Public review model is unavailable or not tool-free (${modelPolicy.code})`;
         await updateTask(task.id, {

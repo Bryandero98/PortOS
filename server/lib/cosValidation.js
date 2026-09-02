@@ -16,6 +16,7 @@ import { ANTIGRAVITY_COMMAND } from './antigravity.js';
 import { CURSOR_COMMAND } from './cursor.js';
 import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
+import { PUBLIC_REVIEW_EXECUTION_PROFILES } from './agentExecutionProfiles.js';
 import { AGENT_RUN_EVENT_KINDS, RUN_EVENT_READ_LIMITS } from './agentRunEvents.js';
 import { recurrenceRuleSchema } from './recurrenceValidation.js';
 import { TASK_DATA_INPUT_DEFINITIONS, TASK_DATA_INPUT_IDS } from './taskDataInputCatalog.js';
@@ -1704,7 +1705,9 @@ export const PIPELINE_STAGE_BEHAVIOR_FLAGS = [
 // boundary and which provider posture is safe; generic pipelines may omit the
 // role and continue to use their existing promptKey-only behavior.
 export const PIPELINE_STAGE_ROLES = ['security', 'eligibility', 'actions'];
-export const PIPELINE_EXECUTION_PROFILES = ['public-review', 'public-review-gate', 'public-review-actions'];
+// Re-exported, not restated: a new profile must be legal to persist the moment
+// it is declared, or the sanitizer silently rejects the stage that uses it.
+export const PIPELINE_EXECUTION_PROFILES = PUBLIC_REVIEW_EXECUTION_PROFILES;
 
 const PIPELINE_STAGE_BOOLEAN_FIELDS = [
   'readOnly', 'managed', 'useWorktree', 'openPR', 'simplify', 'reviewLoop',

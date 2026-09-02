@@ -37,7 +37,7 @@ import {
 } from '../lib/modelAbuseGuard.js';
 import { findCachedRepoFiles } from '../lib/hfCache.js';
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
-import { supportsPublicReviewProvider } from '../lib/providerVendors.js';
+import { supportsPublicReviewPosture, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { detectVenvBasePythonSync, createVenv, installPackages } from '../lib/pythonSetup.js';
 import { safeChildProcessOptions } from '../lib/processEnv.js';
@@ -135,24 +135,39 @@ function normalizePublicReviewInputs(pullRequests) {
 }
 
 /**
- * Revalidate the Stage 2 model at spawn time.
+ * Revalidate a public-review stage's provider + model at spawn time.
  *
  * The picker is only a convenience boundary: schedules and API payloads can
- * be edited without the browser. A public-content review therefore cannot
- * rely on a provider/model choice that was previously accepted by the UI.
- * Require the maintained local Claude wrapper, an actually installed Ollama
- * model, and an authoritative text capability report with no `tools` entry.
- * Unknown, stale, or unprobeable capability state is rejected.
+ * be edited without the browser. A public-content stage therefore cannot rely
+ * on a provider/model choice that was previously accepted by the UI.
+ *
+ * Two independent controls apply, and which one is authoritative depends on
+ * where the model runs:
+ *
+ *  - Every provider must carry a maintained vendor recipe for the requested
+ *    posture. That argv (codex `--sandbox read-only`, grok
+ *    `--permission-mode plan --tools ''`, claude `--restricted --tools ''`, …)
+ *    is what actually denies tools to a CLOUD model, which PortOS cannot probe.
+ *  - A LOCAL runtime can be probed, so it gets the stricter check it always
+ *    had: the model must be installed and its authoritative capability report
+ *    must contain no `tools` entry. Unknown or unprobeable state fails closed.
+ *
+ * A model id is required only where PortOS picks one. Vendors that select
+ * their own model (grok, antigravity) legitimately run with no `--model` pin.
  */
-export async function validatePublicReviewModel({ provider, model } = {}) {
-  if (!supportsPublicReviewProvider(provider)) {
+export async function validatePublicReviewModel({ provider, model, posture = PUBLIC_REVIEW_NO_TOOL_POSTURE } = {}) {
+  if (!supportsPublicReviewPosture(provider, posture)) {
     return publicReviewModelFailure('public-review-provider-unsupported');
   }
   const modelId = typeof model === 'string' ? model.trim() : '';
-  if (!modelId) return publicReviewModelFailure('public-review-model-required');
-
   const runtime = localRuntimeForProvider(provider);
-  if (!runtime || runtime.kind !== 'ollama') {
+  if (!runtime) return { ok: true, model: modelId || null, runtime: null };
+
+  // Local runtimes are probeable, so the capability report is authoritative
+  // and a model id is mandatory — there is no server-side default to fall back
+  // to for an Ollama/LM Studio wrapper.
+  if (!modelId) return publicReviewModelFailure('public-review-model-required');
+  if (runtime.kind !== 'ollama') {
     return publicReviewModelFailure('public-review-runtime-unsupported');
   }
 

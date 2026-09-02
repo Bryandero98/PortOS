@@ -312,7 +312,7 @@ describe('agentLifecycle — guard wiring', () => {
     expect(AGENT_LIFECYCLE_SRC).toMatch(/if \(scanBlock\) \{[\s\S]*?status: 'blocked'/);
     expect(AGENT_LIFECYCLE_SRC).toMatch(/expected fail-closed safety outcome/);
     const gateStart = AGENT_LIFECYCLE_SRC.indexOf('const scanBlock = publicReviewScanBlock(task)');
-    const gateEnd = AGENT_LIFECYCLE_SRC.indexOf('if (publicReviewActions && !supportsPublicReviewActionsProvider', gateStart);
+    const gateEnd = AGENT_LIFECYCLE_SRC.indexOf('if (!supportsPublicReviewPosture(provider, publicReviewPosture', gateStart);
     expect(gateEnd).toBeGreaterThan(gateStart);
     expect(AGENT_LIFECYCLE_SRC.slice(gateStart, gateEnd)).not.toContain("cosEvents.emit('agent:error'");
   });

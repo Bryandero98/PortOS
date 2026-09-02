@@ -19,6 +19,10 @@ import {
   isToolFreeLocalProvider,
   isToolFreeLocalModel,
   toolFreeLocalSelectionPolicy,
+  publicReviewSelectionPolicy,
+  supportsPublicReviewPosture,
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
   localToolUseHint,
   withToolUseOptionLabel,
   localBackendForProvider,
@@ -1905,3 +1909,45 @@ describe('isPrivateNetworkEndpoint', () => {
 });
 
 // @vitest-environment node
+
+describe('publicReviewSelectionPolicy', () => {
+  const LOCAL_CLAUDE = {
+    id: 'claude-ollama',
+    type: 'cli',
+    command: 'claude',
+    endpoint: 'http://127.0.0.1:11434',
+    publicReviewPostures: ['no-tool'],
+  };
+  const GROK = { id: 'grok-cli', type: 'cli', command: 'grok', publicReviewPostures: ['no-tool', 'sandboxed-actions'] };
+  const CAPS = { ollama: { 'safe-model': ['chat'], 'tool-model': ['chat', 'tools'] } };
+
+  it('reads eligibility from the server-published postures, not a vendor list', () => {
+    expect(supportsPublicReviewPosture(GROK, PUBLIC_REVIEW_ACTIONS_POSTURE)).toBe(true);
+    expect(supportsPublicReviewPosture(LOCAL_CLAUDE, PUBLIC_REVIEW_ACTIONS_POSTURE)).toBe(false);
+    expect(supportsPublicReviewPosture({ id: 'x', type: 'cli', publicReviewPostures: [] }, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(false);
+  });
+
+  it('falls back to the legacy booleans so an older server still renders a picker', () => {
+    expect(supportsPublicReviewPosture({ id: 'legacy', publicReviewSupported: true }, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(true);
+    expect(supportsPublicReviewPosture({ id: 'legacy', publicReviewActionsSupported: true }, PUBLIC_REVIEW_ACTIONS_POSTURE)).toBe(true);
+    expect(supportsPublicReviewPosture({ id: 'legacy' }, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(false);
+  });
+
+  // The probe only exists for a local runtime; a cloud model is held tool-free
+  // by the provider's own enforced argv, so filtering it out would leave the
+  // picker empty on an install with no local backend.
+  it('applies the no-tool capability probe to a local model only', () => {
+    const policy = publicReviewSelectionPolicy(PUBLIC_REVIEW_NO_TOOL_POSTURE, CAPS);
+    expect(policy.model('safe-model', LOCAL_CLAUDE)).toBe(true);
+    expect(policy.model('tool-model', LOCAL_CLAUDE)).toBe(false);
+    expect(policy.model('unprobed-model', LOCAL_CLAUDE)).toBe(false);
+    expect(policy.model('grok-4', GROK)).toBe(true);
+  });
+
+  it('never accepts a model on a provider that cannot enforce the posture', () => {
+    const policy = publicReviewSelectionPolicy(PUBLIC_REVIEW_ACTIONS_POSTURE, CAPS);
+    expect(policy.provider(LOCAL_CLAUDE)).toBe(false);
+    expect(policy.model('safe-model', LOCAL_CLAUDE)).toBe(false);
+    expect(policy.model('grok-4', GROK)).toBe(true);
+  });
+});

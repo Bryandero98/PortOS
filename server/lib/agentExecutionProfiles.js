@@ -15,12 +15,44 @@ export const PUBLIC_REVIEW_EXECUTION_PROFILE = 'public-review';
 export const PUBLIC_REVIEW_GATE_EXECUTION_PROFILE = 'public-review-gate';
 export const PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE = 'public-review-actions';
 
+/**
+ * The two enforceable postures behind those profiles. A posture is what a
+ * VENDOR declares a maintained recipe for; a profile is what a STAGE declares
+ * it needs. Keeping them separate is what lets a stage be configured onto any
+ * enabled provider whose vendor row declares the posture, instead of the
+ * pipeline naming specific vendors.
+ *
+ * - `no-tool`           — reasoning only. No filesystem writes, no command
+ *                         execution, no network/MCP tools, no forge credentials.
+ * - `sandboxed-actions` — may apply the already-screened patch and run local
+ *                         tests inside the vendor's own maintained sandbox.
+ *                         Still no forge credentials: the deterministic
+ *                         coordinator owns every GitHub mutation.
+ */
+export const PUBLIC_REVIEW_NO_TOOL_POSTURE = 'no-tool';
+export const PUBLIC_REVIEW_ACTIONS_POSTURE = 'sandboxed-actions';
+export const PUBLIC_REVIEW_POSTURES = Object.freeze([
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+]);
+
+const PROFILE_POSTURES = Object.freeze({
+  [PUBLIC_REVIEW_EXECUTION_PROFILE]: PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  [PUBLIC_REVIEW_GATE_EXECUTION_PROFILE]: PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  [PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE]: PUBLIC_REVIEW_ACTIONS_POSTURE,
+});
+
+export const PUBLIC_REVIEW_EXECUTION_PROFILES = Object.freeze(Object.keys(PROFILE_POSTURES));
+
+/** The posture a stage's execution profile requires, or null for an ordinary task. */
+export function publicReviewPostureForProfile(profile) {
+  return PROFILE_POSTURES[profile] || null;
+}
+
 export function isPublicReviewNoToolProfile(profile) {
-  return profile === PUBLIC_REVIEW_EXECUTION_PROFILE
-    || profile === PUBLIC_REVIEW_GATE_EXECUTION_PROFILE;
+  return publicReviewPostureForProfile(profile) === PUBLIC_REVIEW_NO_TOOL_POSTURE;
 }
 
 export function isPublicReviewRestrictedProfile(profile) {
-  return isPublicReviewNoToolProfile(profile)
-    || profile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
+  return publicReviewPostureForProfile(profile) !== null;
 }

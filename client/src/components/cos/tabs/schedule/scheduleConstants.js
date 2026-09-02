@@ -1,4 +1,8 @@
 // Shared constants and pure helpers for the CoS Schedule tab subcomponents.
+import {
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
+} from '../../../../utils/providers';
 import { timeUntil } from '../../../../utils/formatters';
 import { describeCron } from '../../../../utils/cronHelpers';
 
@@ -62,6 +66,32 @@ export function prReviewerStageRole(stage) {
     'pr-reviewer-eligibility': 'eligibility',
     'pr-reviewer-review': 'actions',
   }[stage?.promptKey] || null;
+}
+
+// A stage declares an execution PROFILE; the profile maps to the enforceable
+// POSTURE a provider must have a maintained recipe for. Mirrors
+// `server/lib/agentExecutionProfiles.js` so the picker offers exactly the
+// providers the server would accept at spawn time — and so neither side names
+// a vendor. The Security Scan is a managed server-side classifier and has no
+// posture, so it has no provider picker at all.
+export const STAGE_EXECUTION_PROFILE_POSTURES = Object.freeze({
+  'public-review': PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  'public-review-gate': PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  'public-review-actions': PUBLIC_REVIEW_ACTIONS_POSTURE,
+});
+
+// Role fallback for a stage persisted before profiles were stored: the server
+// reasserts the profile on the next dispatch, but the picker has to gate
+// correctly on what is on disk right now.
+const PR_REVIEWER_ROLE_POSTURES = Object.freeze({
+  eligibility: PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  actions: PUBLIC_REVIEW_ACTIONS_POSTURE,
+});
+
+export function stagePublicReviewPosture(stage) {
+  return STAGE_EXECUTION_PROFILE_POSTURES[stage?.executionProfile]
+    || PR_REVIEWER_ROLE_POSTURES[prReviewerStageRole(stage)]
+    || null;
 }
 
 // The optional final stage is deliberately defined as a complete posture, not

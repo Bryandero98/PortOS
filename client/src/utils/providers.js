@@ -257,6 +257,49 @@ export const toolFreeLocalSelectionPolicy = (
   ),
 });
 
+// The two enforceable public-review postures. MIRROR of
+// `server/lib/agentExecutionProfiles.js`; a pr-reviewer stage names a posture
+// and the server publishes each provider's `publicReviewPostures` on
+// `GET /api/providers`, so no vendor is ever named on either side.
+export const PUBLIC_REVIEW_NO_TOOL_POSTURE = 'no-tool';
+export const PUBLIC_REVIEW_ACTIONS_POSTURE = 'sandboxed-actions';
+
+/**
+ * Whether the SERVER says this provider can enforce `posture`. Falls back to
+ * the older per-posture booleans so a browser talking to a peer/older server
+ * still renders a correct picker instead of an empty one.
+ */
+export const supportsPublicReviewPosture = (provider, posture) => {
+  if (Array.isArray(provider?.publicReviewPostures)) return provider.publicReviewPostures.includes(posture);
+  return posture === PUBLIC_REVIEW_ACTIONS_POSTURE
+    ? provider?.publicReviewActionsSupported === true
+    : provider?.publicReviewSupported === true;
+};
+
+/**
+ * Selection policy for a pr-reviewer stage.
+ *
+ * Provider eligibility is entirely server-derived. Model eligibility adds the
+ * authoritative no-tool capability check only where PortOS can actually probe
+ * it — a LOCAL runtime behind the provider. A cloud model is not probeable, so
+ * the vendor's enforced argv (`--restricted --tools ''`, `--sandbox read-only`,
+ * `--permission-mode plan`) is what denies it tools, and every model the
+ * provider lists stays selectable.
+ */
+export const publicReviewSelectionPolicy = (posture, capabilitiesByBackend = {}) => ({
+  provider: (provider) => supportsPublicReviewPosture(provider, posture),
+  model: (model, provider) => {
+    if (!supportsPublicReviewPosture(provider, posture)) return false;
+    if (posture !== PUBLIC_REVIEW_NO_TOOL_POSTURE || !localBackendForProvider(provider)) return true;
+    return isToolFreeLocalModelForProvider(
+      model,
+      provider,
+      capabilitiesByBackend,
+      () => true,
+    );
+  },
+});
+
 /**
  * Retain an existing non-runnable pin so a saved job can still be edited and
  * cleared, while limiting new agent-job selections to runnable providers.

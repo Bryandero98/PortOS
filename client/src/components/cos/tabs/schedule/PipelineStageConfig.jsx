@@ -4,7 +4,10 @@ import {
   effortAwareModelOptions,
   effortSurvivingModel,
   localBackendForProvider,
-  toolFreeLocalSelectionPolicy,
+  publicReviewSelectionPolicy,
+  supportsPublicReviewPosture,
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
 } from '../../../../utils/providers';
 import useLocalModels from '../../../../hooks/useLocalModels';
 import ProviderModelSelector from '../../../ProviderModelSelector';
@@ -12,8 +15,16 @@ import ToggleSwitch from '../../../ToggleSwitch';
 import {
   pipelineStages,
   prReviewerStageRole,
+  stagePublicReviewPosture,
   togglePrReviewerActions,
 } from './scheduleConstants';
+
+// Which providers on THIS install can enforce a posture. The server publishes
+// `publicReviewPostures` per provider, derived from the vendor rows, so the
+// picker never carries its own list of vendor names — an install with only
+// grok, only codex, or only a local Claude wrapper each get a correct list.
+const eligibleProvidersFor = (providers, posture) =>
+  (providers || []).filter((provider) => supportsPublicReviewPosture(provider, posture));
 
 export default function PipelineStageConfig({ taskType, config, providers, onUpdate, updating, setUpdating }) {
   const stages = pipelineStages(config);
@@ -21,20 +32,15 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
   const { ollama, lmstudio, capabilitiesByBackend, loading: localModelsLoading } = useLocalModels({
     enabled: needsSecurityModelPolicy,
   });
-  // Stage 2 uses the same authoritative no-tool model predicate, but its
-  // provider is a maintained local Claude wrapper rather than a direct HTTP
-  // backend. The server-derived marker is the provider-side capability gate;
-  // the shared policy still requires a local installed model with text
-  // capability and no `tools` capability.
-  const publicReviewSelectionPolicy = useMemo(
-    () => toolFreeLocalSelectionPolicy(capabilitiesByBackend, {
-      providerPredicate: (provider) => provider?.publicReviewSupported === true,
-    }),
-    [capabilitiesByBackend],
-  );
-  const publicReviewActionsSelectionPolicy = useMemo(() => ({
-    provider: (provider) => provider?.publicReviewActionsSupported === true,
-  }), []);
+  // One policy per posture. The provider half is server-derived; the model half
+  // adds the authoritative no-tool capability check only for a local runtime,
+  // which is the only place PortOS can probe it.
+  const selectionPolicies = useMemo(() => ({
+    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: publicReviewSelectionPolicy(PUBLIC_REVIEW_NO_TOOL_POSTURE, capabilitiesByBackend),
+    [PUBLIC_REVIEW_ACTIONS_POSTURE]: publicReviewSelectionPolicy(PUBLIC_REVIEW_ACTIONS_POSTURE, capabilitiesByBackend),
+  }), [capabilitiesByBackend]);
+
+  const hasActionsStage = stages.some((stage) => prReviewerStageRole(stage) === 'actions');
 
   const handlePrReviewerActionsToggle = async (enabled) => {
     setUpdating(true);
@@ -91,18 +97,18 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
             <div>
               <p className="text-sm font-medium text-white">Run final code review and actions</p>
               <p className="text-xs text-gray-400 mt-1">
-                When enabled, a configured sandbox-capable reviewer applies only the screened patch, runs local tests, and returns a structured review for the deterministic GitHub coordinator. It is nested here, not a separate scheduled task.
+                When enabled, a sandbox-capable reviewer applies only the screened patch, runs local tests, and returns a structured review for the deterministic GitHub coordinator. It is nested here, not a separate scheduled task.
               </p>
             </div>
             <ToggleSwitch
-              enabled={stages.some((stage) => prReviewerStageRole(stage) === 'actions')}
-              onChange={() => handlePrReviewerActionsToggle(!stages.some((stage) => prReviewerStageRole(stage) === 'actions'))}
+              enabled={hasActionsStage}
+              onChange={() => handlePrReviewerActionsToggle(!hasActionsStage)}
               disabled={updating}
               ariaLabel="Enable final code review and actions"
               size="sm"
             />
           </div>
-          {!stages.some((stage) => prReviewerStageRole(stage) === 'actions') && (
+          {!hasActionsStage && (
             <p className="text-xs text-port-warning mt-2">
               Disabled runs stop after the tool-free eligibility gate; no PR comments, issue filing, CI triggers, or merge actions occur.
             </p>
@@ -116,24 +122,27 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
             ? (prReviewerStageRole(stage) || (i === 0 ? 'security' : i === 1 ? 'eligibility' : 'actions'))
             : null;
           const isSecurityStage = role === 'security';
-          const isEligibilityStage = role === 'eligibility';
-          const isActionsStage = role === 'actions';
+          // The posture is read off the stage's own execution profile, so a
+          // custom pipeline that reuses one of these profiles gets the same
+          // gating without being a pr-reviewer stage.
+          const posture = isSecurityStage ? null : stagePublicReviewPosture(stage);
+          const isNoToolStage = posture === PUBLIC_REVIEW_NO_TOOL_POSTURE;
+          const isActionsStage = Boolean(posture) && !isNoToolStage;
+          const eligibleProviders = posture ? eligibleProvidersFor(providers, posture) : null;
           const localBackend = localBackendForProvider(stageProvider);
           const localModelIds = localBackend === 'ollama' ? ollama : localBackend === 'lmstudio' ? lmstudio : [];
-          // Keep the richer capability object on each local option so the shared
-          // policy does not need a second lookup. The status hook's ids are the
-          // installed-model source of truth; a provider's stale catalog is never
-          // enough to make a model eligible for a security scan.
-          const stageModels = isEligibilityStage
+          // A LOCAL provider's installed-model list is the source of truth (its
+          // stored catalog is stale, and only an installed model has a probeable
+          // capability report). Every other provider uses its own catalog, so a
+          // cloud CLI stage can pick any model that provider offers.
+          const stageModels = isNoToolStage && localBackend
             ? localModelIds.map(id => ({
               id,
               name: id,
               capabilities: capabilitiesByBackend?.[localBackend]?.[id],
             }))
             : effortAwareModelOptions(stageProvider, stage.model);
-          const selectionPolicy = isEligibilityStage
-            ? publicReviewSelectionPolicy
-            : isActionsStage ? publicReviewActionsSelectionPolicy : undefined;
+          const selectionPolicy = posture ? selectionPolicies[posture] : undefined;
           const stageProviderId = stage.providerId || '';
           const stageModel = stage.model || '';
           const stageEffort = stage.effort || '';
@@ -146,7 +155,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
                 {stage.readOnly && (
                   <span className="text-[10px] px-1 py-0.5 bg-gray-600/30 text-gray-400 rounded">read-only</span>
                 )}
-                {isEligibilityStage && (
+                {isNoToolStage && (
                   <span className="text-[10px] px-1 py-0.5 bg-port-accent/15 text-port-accent rounded">tool-free gate</span>
                 )}
                 {isActionsStage && (
@@ -177,27 +186,33 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
                   onModelChange={(model) => updateStage('model', model)}
                   effort={stageEffort}
                   onEffortChange={(effort) => updateStage('effort', effort)}
-                  emptyProviderOption={isEligibilityStage
-                    ? 'Select enforced local review provider (required)'
-                    : isActionsStage ? 'Select sandbox-capable CLI (required)' : 'Default (task-level)'}
-                  emptyModelOption={isEligibilityStage
-                    ? 'Select installed no-tool model (required)'
-                    : isActionsStage ? 'Use provider default model' : 'Default (task-level)'}
+                  emptyProviderOption={posture
+                    ? 'First eligible provider on this install'
+                    : 'Default (task-level)'}
+                  emptyModelOption={posture ? 'Use provider default model' : 'Default (task-level)'}
                   alwaysShowModel
                   selectionPolicy={selectionPolicy}
                   disabled={updating}
                 />
               )}
-              {isEligibilityStage && (
+              {posture && eligibleProviders?.length === 0 && (
+                <p className="text-xs text-port-warning mt-2">
+                  No enabled AI provider on this install can enforce the{' '}
+                  {isActionsStage ? 'sandboxed-actions' : 'tool-free'} posture, so this stage will not run.
+                  Enable a supported CLI provider in{' '}
+                  <Link to="/ai" className="underline hover:text-port-accent">Settings → Providers</Link>.
+                </p>
+              )}
+              {isNoToolStage && eligibleProviders?.length > 0 && (
                 <p className="text-xs text-gray-500 mt-2">
                   {localModelsLoading
                     ? 'Loading installed local model capability reports…'
-                    : 'The Eligibility Gate accepts only the maintained local Claude wrapper and an installed text model whose runtime reports no tool-calling capability. It returns only a binary allowlist; the final stage never receives rejected content.'}
+                    : `Tool-free stage. Eligible on this install: ${eligibleProviders.map((p) => p.name || p.id).join(', ')}. A local model must additionally report no tool-calling capability; a cloud model is held tool-free by the provider's own enforced flags. Leave the provider unset to use the first eligible one. It returns only a binary allowlist; the final stage never receives rejected content.`}
                 </p>
               )}
-              {isActionsStage && (
+              {isActionsStage && eligibleProviders?.length > 0 && (
                 <p className="text-xs text-gray-500 mt-2">
-                  Final review accepts only a configured direct CLI with a maintained sandbox (for example, Codex or Antigravity). PortOS passes the selected provider, model, and thinking effort through that provider&apos;s safe recipe, with no explicit GitHub/forge credential or configuration overlays; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.
+                  {`Sandboxed stage. Eligible on this install: ${eligibleProviders.map((p) => p.name || p.id).join(', ')}. PortOS passes the selected provider, model, and thinking effort through that provider's maintained sandbox recipe, with no forge credential or configuration overlays; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.`}
                 </p>
               )}
             </div>
@@ -208,7 +223,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
         {needsSecurityModelPolicy
           ? 'Stage 1 screens complete public content with a managed classifier; only cleared content reaches the tool-free Eligibility Gate, and only eligible PRs reach the optional sandboxed final review. Stages are nested, not independently scheduled.'
           : 'Each stage runs as a separate agent inside this pipeline; stages are not scheduled independently.'}
-        {' Configure different providers per stage (e.g., Codex for review, Claude for implementation).'}
+        {' Configure a different provider, model, and thinking effort per stage.'}
       </p>
     </div>
   );

@@ -140,3 +140,47 @@ describe('PipelineStageConfig — pr-reviewer', () => {
     }));
   });
 });
+
+// The refactor's core promise: the picker's eligible set comes from the
+// server-published `publicReviewPostures` on each provider, so an install with
+// none of the vendors the old copy named still configures both stages.
+describe('PipelineStageConfig — posture-driven eligibility', () => {
+  const profiledStages = [
+    STAGES[0],
+    { ...STAGES[1], executionProfile: 'public-review-gate', providerId: '', model: '' },
+    { ...STAGES[2], executionProfile: 'public-review-actions', providerId: '', model: '' },
+  ];
+
+  const renderWith = (installProviders) => render(
+    <MemoryRouter>
+      <PipelineStageConfig
+        taskType="pr-reviewer"
+        config={{ taskMetadata: { pipeline: { stages: profiledStages } } }}
+        providers={installProviders}
+        onUpdate={vi.fn().mockResolvedValue(undefined)}
+        updating={false}
+        setUpdating={() => {}}
+      />
+    </MemoryRouter>,
+  );
+
+  it('offers a grok-only install its own provider for BOTH stages', () => {
+    renderWith([
+      { id: 'grok-cli', name: 'Grok', type: 'cli', command: 'grok', models: ['grok-4'], publicReviewPostures: ['no-tool', 'sandboxed-actions'] },
+      { id: 'opencode', name: 'OpenCode', type: 'cli', command: 'opencode', models: ['x'], publicReviewPostures: [] },
+    ]);
+    const providerSelects = screen.getAllByLabelText('Provider');
+    expect([...providerSelects[0].options].map((o) => o.value)).toEqual(['', 'grok-cli']);
+    expect([...providerSelects[1].options].map((o) => o.value)).toEqual(['', 'grok-cli']);
+    // A non-local provider's own catalog is selectable — the installed-local
+    // model list only applies where PortOS can probe capabilities.
+    expect(screen.getAllByText(/Eligible on this install: Grok/).length).toBe(2);
+  });
+
+  it('warns instead of silently offering nothing when a stage has no eligible provider', () => {
+    renderWith([
+      { id: 'claude-ollama', name: 'Local Claude', type: 'cli', command: 'claude', endpoint: 'http://127.0.0.1:11434', models: ['safe-model'], publicReviewPostures: ['no-tool'] },
+    ]);
+    expect(screen.getByText(/No enabled AI provider on this install can enforce the sandboxed-actions posture/)).toBeInTheDocument();
+  });
+});

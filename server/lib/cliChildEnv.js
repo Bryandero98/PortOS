@@ -148,8 +148,8 @@ export function buildPublicReviewCliEnv(env = {}) {
   )));
 }
 
-// Stage 3 is allowed to use the Codex CLI's workspace sandbox for repository
-// inspection and tests, but it must never inherit forge credentials, SSH
+// The actions stage is allowed to use its vendor's own workspace sandbox for
+// repository inspection and tests, but it must never inherit forge credentials, SSH
 // configuration, cloud-provider keys, or arbitrary provider env vars. This is
 // deliberately a second strict allowlist rather than a blocklist: a new secret
 // added to the server or provider environment must not silently become visible
