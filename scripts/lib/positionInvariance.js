@@ -22,7 +22,7 @@
  * generator proves it directly. Use both.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -33,9 +33,10 @@ import { join } from 'node:path';
 const SHIFT_HEADER = '// position-invariance probe: shifts every line and offset below it.\n'
   + '// Nothing a generated manifest describes lives in these two lines.\n';
 
-const walkFiles = (dir) => readdirSync(dir).flatMap((name) => {
-  const path = join(dir, name);
-  return statSync(path).isDirectory() ? walkFiles(path) : [path];
+/** Every file under `dir`, recursively. One `readdir` per directory, no `stat` per entry. */
+export const walkFiles = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  const path = join(dir, entry.name);
+  return entry.isDirectory() ? walkFiles(path) : [path];
 });
 
 /** Shift the positions in one in-memory source string. */

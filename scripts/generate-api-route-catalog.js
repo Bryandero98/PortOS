@@ -41,7 +41,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, '..');
 export const MANIFEST_RELATIVE_PATH = 'server/lib/apiRouteCatalog.generated.json';
 export const REGENERATE_COMMAND = 'node scripts/generate-api-route-catalog.js';
-export const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 2;
 
 const INDEX_RELATIVE_PATH = 'server/index.js';
 const ROUTE_METHODS = Object.freeze(['delete', 'get', 'head', 'options', 'patch', 'post', 'put']);

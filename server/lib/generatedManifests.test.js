@@ -61,7 +61,7 @@ const isPositionalValue = (value) => typeof value === 'number'
 const SOURCE_POINTER_RE = /[\w./-]+\.(?:js|jsx|mjs|cjs|ts|tsx|json|md):\d+(?::\d+)?/;
 
 /** Every positional reference in one parsed manifest, as `jsonPath — why`. */
-export const findPositionalReferences = (value, path = '$') => {
+const findPositionalReferences = (value, path = '$') => {
   if (Array.isArray(value)) {
     return value.flatMap((entry, index) => findPositionalReferences(entry, `${path}[${index}]`));
   }
@@ -132,5 +132,39 @@ describe('checked-in generated manifests', () => {
     expect(findPositionalReferences({ sources: ['server/routes/a.js'], stats: { operations: 2153 } }))
       .toEqual([]);
     expect(findPositionalReferences({ column: 'user_id' })).toEqual([]);
+  });
+
+  // The two guards above only reach a generator that followed the naming
+  // convention and got its property test written. Neither is structural: a
+  // third generator can be added tomorrow with no position-invariance test at
+  // all, and nothing fails — the rule would live only in AGENTS.md prose,
+  // which is the same "someone has to remember" problem this whole change set
+  // exists to delete. This makes adoption structural instead.
+  it('requires every generator to carry the position-invariance property test', () => {
+    const listed = execFileSync('git', ['ls-files', 'scripts/generate-*.js'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    }).split('\n').filter(Boolean);
+    const tests = new Set(listed.filter((path) => path.endsWith('.test.js')));
+    const generators = listed.filter((path) => !path.endsWith('.test.js'));
+
+    // Guard the guard: if the glob stops matching, the assertion below passes
+    // vacuously over an empty list.
+    expect(generators.length).toBeGreaterThanOrEqual(2);
+
+    const missing = generators.filter((path) => {
+      const testPath = path.replace(/\.js$/, '.test.js');
+      if (!tests.has(testPath)) return true;
+      return !readFileSync(join(REPO_ROOT, testPath), 'utf8').includes('positionInvariance.js');
+    });
+
+    expect(missing, [
+      'A generator under scripts/ has no position-invariance property test.',
+      'Import generateAcrossShiftedSources (or shiftSourceText, for a generator that',
+      'takes in-memory sources) from scripts/lib/positionInvariance.js in its sibling',
+      '.test.js, regenerate across shifted sources, and assert byte-identical output.',
+      'Without it, this generator can start recording line numbers and only the',
+      'shallow key-name net above would notice — and only if it guessed the name.',
+    ].join(' ')).toEqual([]);
   });
 });

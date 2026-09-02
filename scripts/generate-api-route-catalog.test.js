@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -15,18 +15,13 @@ import {
   scanRouteGraph,
   serializeApiRouteCatalog,
 } from './generate-api-route-catalog.js';
-import { POSITION_INVARIANCE_FAILURE, generateAcrossShiftedSources } from './lib/positionInvariance.js';
+import { POSITION_INVARIANCE_FAILURE, generateAcrossShiftedSources, walkFiles } from './lib/positionInvariance.js';
 
 const write = (root, path, source) => {
   const target = join(root, path);
   mkdirSync(join(target, '..'), { recursive: true });
   writeFileSync(target, source, 'utf8');
 };
-
-const walk = (dir) => readdirSync(dir).flatMap((name) => {
-  const path = join(dir, name);
-  return statSync(path).isDirectory() ? walk(path) : [path];
-});
 
 describe('API route catalog scanner', () => {
   it('resolves top-level mounts, imported child routers, local subrouters, and aliases', () => {
@@ -175,7 +170,7 @@ describe('API route catalog scanner', () => {
 
     // Where each declaration sits, which is exactly what the manifest must NOT
     // encode. Used only to prove the shift below is big enough to be noticed.
-    const declarationLines = (repoRoot) => walk(join(repoRoot, 'server')).map((path) => readFileSync(path, 'utf8')
+    const declarationLines = (repoRoot) => walkFiles(join(repoRoot, 'server')).map((path) => readFileSync(path, 'utf8')
       .split('\n')
       .flatMap((line, index) => (/router\.(get|patch|post)\(/.test(line) ? [`${path}:${index + 1}`] : []))
       .join(',')).join('|');
@@ -212,7 +207,7 @@ describe('generated API route catalog', () => {
   // has to point back at the source it was derived from for the guard to work.
   it('covers every HTTP declaration mounted below /api or /sdapi', () => {
     const { declarationKeys } = routeGraph();
-    const routeFiles = walk(join(REPO_ROOT, 'server', 'routes'))
+    const routeFiles = walkFiles(join(REPO_ROOT, 'server', 'routes'))
       .filter((path) => path.endsWith('.js') && !path.endsWith('.test.js'));
     const omitted = [];
     for (const file of routeFiles) {
