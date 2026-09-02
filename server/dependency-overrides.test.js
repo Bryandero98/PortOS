@@ -32,12 +32,25 @@ const readLockPackages = (lockRel) =>
 // scope included.
 const packageNameFromLockPath = (path) => path.slice(path.lastIndexOf(NESTED) + NESTED.length);
 
-// The package an override entry governs. A flat key is the package itself; a
-// nested key names its CONSUMER with an optional version selector (`minimatch@3`).
-// A scoped name keeps its leading `@` (`@protobufjs/utf8` has no selector).
+// The package an override key names. A flat key is the package itself; a nested key
+// names its CONSUMER, optionally with a version selector (`minimatch@3`). A scoped
+// name keeps its leading `@` (`@protobufjs/utf8` carries no selector).
 const overrideTargetName = (key) => {
   const at = key.lastIndexOf('@');
   return at > 0 ? key.slice(0, at) : key;
+};
+
+// Every package name an `overrides` block governs, flat and nested alike. npm allows
+// arbitrary nesting (`"a@3": { "b": { "c": "1.0.0" } }`), and a dead pin can hide at
+// any depth — a live consumer says nothing about whether the package pinned *under*
+// it still exists. The reserved `"."` key re-pins the consumer itself, which the
+// parent key already covers.
+const overrideTargetNames = (overrides, into = []) => {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key !== '.') into.push(overrideTargetName(key));
+    if (value && typeof value === 'object') overrideTargetNames(value, into);
+  }
+  return into;
 };
 
 // Tracked, not on-disk. `browser/package-lock.json` is deliberately gitignored
@@ -180,10 +193,16 @@ describe('dependency override parity across manifests (#2848)', () => {
   // version, and conclude PortOS was covered. Assert instead that every pin governs a
   // package the workspace actually resolves, so a dead pin fails the build the moment
   // its consumer leaves.
+  //
+  // Granularity is the package NAME, not the version selector: a `minimatch@3` key
+  // passes while any `minimatch` is installed, even if nothing resolves to 3.x.
+  // Matching selectors would need a semver range matcher for a case no manifest has
+  // today — the name check already catches the whole-package death that actually
+  // happens.
   it('pins nothing that is absent from the workspace lockfile', () => {
     const tracked = trackedLockfiles();
     const missing = [];
-    const checkedByManifest = new Map();
+    const scanned = [];
 
     for (const rel of MANIFESTS) {
       const lockRel = lockfileFor(rel);
@@ -194,18 +213,24 @@ describe('dependency override parity across manifests (#2848)', () => {
           .map(packageNameFromLockPath)
       );
 
-      const checked = Object.keys(readOverrides(rel)).map(overrideTargetName);
-      checkedByManifest.set(rel, checked);
-      for (const name of checked) {
+      const governed = overrideTargetNames(readOverrides(rel));
+      scanned.push({ rel, lockRel, installed: installed.size, governed: governed.length });
+      for (const name of governed) {
         if (!installed.has(name)) missing.push(`${rel}: pins ${name}, absent from ${lockRel}`);
       }
     }
 
     expect(missing).toEqual([]);
-    // Non-vacuity: a scan that found no manifests, or parsed a lockfile into an empty
-    // package map, would otherwise report clean.
-    expect([...checkedByManifest.keys()].sort()).toEqual([...MANIFESTS].sort());
-    expect(checkedByManifest.get('client/package.json').length).toBeGreaterThanOrEqual(4);
+
+    // Non-vacuity — a scan that skipped every manifest, or parsed a lockfile into an
+    // empty package map, would otherwise report clean. Deliberately not a per-manifest
+    // pin count: removing a genuinely dead pin (what this issue did) must not fail the
+    // very guard that asks for it.
+    expect(scanned.map((s) => s.rel).sort()).toEqual([...MANIFESTS].sort());
+    for (const { lockRel, installed } of scanned) {
+      expect(installed, `${lockRel} parsed to zero packages`).toBeGreaterThan(0);
+    }
+    expect(scanned.reduce((total, s) => total + s.governed, 0)).toBeGreaterThan(0);
   });
 
   // The source-level assertions above compare manifest against manifest and so
