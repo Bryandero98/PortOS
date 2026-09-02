@@ -23,8 +23,9 @@
  * manifest carrying them is rewritten by refactors that change no route at
  * all — which turns the drift guard into a rebase/merge conflict generator on
  * every parallel branch. Declarations are therefore identified semantically
- * (`file#routerId METHOD /path`, see `routeDeclarationKey`), and the positional
- * information stays in memory for the scanner's own verification. Same rule as
+ * (`file#routerId METHOD /path`, see `routeDeclarationKey`), and coverage is
+ * verified by comparing two fresh in-memory scans instead of pointing the
+ * committed file back at the source it was derived from. Same rule as
  * `promptStageCallSites.generated.json`, enforced for every checked-in manifest
  * by `server/lib/generatedManifests.test.js`.
  *
