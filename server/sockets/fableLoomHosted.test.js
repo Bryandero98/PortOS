@@ -9,6 +9,7 @@ import {
   getHostedSession,
 } from '../services/fableLoom/hostedSession.js';
 import * as records from '../services/fableLoom/records.js';
+import * as networkExposure from '../lib/networkExposure.js';
 import * as tts from '../services/voice/tts.js';
 import * as stt from '../services/voice/stt.js';
 
@@ -45,6 +46,14 @@ describe('fableLoomHosted Socket.IO namespace', () => {
   beforeEach(() => {
     _resetHostedSessions();
     vi.restoreAllMocks();
+    // createHostedSession runs the readiness preflight, which refuses to start
+    // a session unless the install is serving HTTPS.
+    vi.spyOn(networkExposure, 'getNetworkExposureStatus').mockReturnValue({
+      scheme: 'https',
+      httpsEnabled: true,
+      bind: { host: '0.0.0.0', port: 5555, audience: 'all-interfaces' },
+      cert: { mode: 'tailscale', tailscaleHost: 'host-example.example-tailnet.ts.net' },
+    });
     vi.spyOn(records, 'getLoom').mockResolvedValue(mockLoom);
     vi.spyOn(tts, 'synthesize').mockResolvedValue({ wav: Buffer.from('mockwav'), latencyMs: 20 });
     vi.spyOn(stt, 'transcribe').mockResolvedValue({ text: 'go next', latencyMs: 50 });
