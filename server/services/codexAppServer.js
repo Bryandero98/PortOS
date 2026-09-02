@@ -36,6 +36,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { spawn } from '../lib/childProcess.js';
+import { killProcessTree, prepareWindowsSafeSpawn } from '../lib/bufferedSpawn.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { createLineReader } from '../lib/streamLines.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
@@ -180,7 +181,10 @@ const stopTarget = (target, error) => {
   teardown(target, error);
   if (target.child.killed) return;
   try {
-    target.child.kill('SIGTERM');
+    // Not `child.kill()`: on Windows the child is the `cmd.exe /c` shim wrapper
+    // (see `openConnection`), and signalling it leaves the real codex process
+    // orphaned — still holding the JSON-RPC pipes PortOS just gave up on.
+    killProcessTree(target.child, 'SIGTERM');
   } catch (err) {
     console.error(`❌ Failed to stop Codex app-server: ${err.message}`);
   }
@@ -365,11 +369,18 @@ const openConnection = async () => {
     );
   }
 
+  // `codex` installs as a `codex.cmd` npm shim on Windows, which `spawn()`
+  // refuses under `shell: false` — "spawn EINVAL", so every account read and
+  // ChatGPT sign-in failed there (#5838). The canonical wrap (see
+  // `prepareWindowsSafeSpawn` for why, and #1865) is a no-op off Windows and
+  // for a native `codex.exe`; this spawner was the last site bypassing it.
+  const { command, args } = prepareWindowsSafeSpawn(binary, [...CODEX_APP_SERVER_ARGS]);
+
   let child = null;
   try {
     // Fixed argv, inherited env, no shell — nothing from a request or a stored
     // provider record reaches this command line.
-    child = spawn(binary, [...CODEX_APP_SERVER_ARGS], { stdio: ['pipe', 'pipe', 'pipe'] });
+    child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (err) {
     throw codexError(CODEX_ERROR_CODES.startFailed, `Codex app-server failed to start: ${err.message}`);
   }
