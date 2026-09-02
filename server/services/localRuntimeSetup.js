@@ -134,6 +134,7 @@ const PROVISION_STEPS = Object.freeze({
   'pull-start': Object.freeze({
     // Names the download so the click IS the consent.
     label: (label) => `Download the default model & start ${label}`,
+    begun: (label) => `${label} is already installed — downloading its default checkpoint before starting it.`,
     refused: (label) => `PortOS cannot download model weights for ${label}.`,
     failed: (label, error) => `${label} model download failed: ${error}`,
     done: (label) => `${label}'s default checkpoint is cached.`,
@@ -145,6 +146,7 @@ const PROVISION_STEPS = Object.freeze({
     // PROJECT on a host whose docker / NVIDIA / WSL2 setup is already the
     // operator's own decision.
     label: (label) => `Clone, build & prepare ${label} (~30 GB), then start`,
+    begun: (label) => `Docker is installed — preparing ${label}'s compose project before starting it.`,
     refused: (label) => `PortOS cannot provision a compose project for ${label}.`,
     failed: (label, error) => `${label} provisioning failed: ${error}`,
     done: (label) => `${label}'s compose project is built and prepared.`,
@@ -566,7 +568,13 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
     emit(`${runtime.label} is installed.`);
     if (result.note) emit(result.note);
   } else {
-    emit(`${runtime.label} is already installed — starting it.`);
+    // "already installed — starting it" was a lie whenever the click was a
+    // provisioning one: the next thing to happen is a clone or a multi-gigabyte
+    // download, and reporting a start makes every line after it read as a
+    // failure of the start. Each provisioning step says what it is about to do.
+    emit(resolved === provision
+      ? PROVISION_STEPS[provision].begun(runtime.label)
+      : `${runtime.label} is already installed — starting it.`);
   }
 
   if (!row.start) {
