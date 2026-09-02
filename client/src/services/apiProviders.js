@@ -9,7 +9,6 @@ export const setActiveProvider = (id) => request('/providers/active', {
   method: 'PUT',
   body: JSON.stringify({ id })
 });
-export const getProvider = (id) => request(`/providers/${id}`);
 export const createProvider = (data) => request('/providers', {
   method: 'POST',
   body: JSON.stringify(data)
@@ -45,7 +44,6 @@ export const serveProviderModel = (id, options) => request(
 
 // Provider status (usage limits, availability)
 export const getProviderStatuses = () => request('/providers/status');
-export const getProviderStatus = (id) => request(`/providers/${id}/status`);
 export const recoverProvider = (id, options) => request(`/providers/${id}/status/recover`, { method: 'POST', ...options });
 
 // Codex / ChatGPT subscription account (#5589). The Codex app-server owns the
