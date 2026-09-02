@@ -69,7 +69,12 @@ import {
 } from '../../services/api';
 import socket from '../../services/socket';
 import { LocalLlmTab } from './LocalLlmTab';
-import { hardwareLlmRecommendation } from './HardwareLlmRecommendation.jsx';
+import {
+  appleGpuBudgetGib,
+  hardwareLlmRecommendation,
+  qwen38ResidentGib,
+  QWEN38_MAX_CONTEXT_TOKENS,
+} from './HardwareLlmRecommendation.jsx';
 
 // A realistically long HF model id — the shape that got ellipsised to
 // "hf.co/sja…" on a phone before the row was allowed to wrap.
@@ -187,11 +192,32 @@ describe('LocalLlmTab information architecture', () => {
 describe('hardware coding-agent profiles', () => {
   it('selects the benchmarked Apple profile by unified-memory tier', () => {
     expect(hardwareLlmRecommendation({ platform: 'darwin', appleSilicon: true, totalMemoryGb: 48 })).toMatchObject({
-      id: 'apple-48', runtime: 'MTPLX', harness: 'OpenCode MTPLX TUI', context: '64K context',
+      id: 'apple-48', runtime: 'MTPLX', harness: 'OpenCode MTPLX TUI', contextTokens: 131_072,
     });
     expect(hardwareLlmRecommendation({ platform: 'darwin', appleSilicon: true, totalMemoryGb: 128 })).toMatchObject({
       id: 'apple-128', model: expect.stringMatching(/Quality/),
     });
+  });
+
+  // The launch context is a memory reservation MTPLX makes up front, so each
+  // tier's weights + KV cache have to fit the GPU's default share of unified
+  // memory with room left for PortOS, the harness and macOS. Pinning the
+  // arithmetic rather than the strings is what stops the next edit from
+  // promising a window the machine cannot load — a 1M-token window alone needs
+  // 65.5 GiB of KV cache, past every tier here.
+  it.each([
+    [48, 131_072],
+    [64, 262_144],
+    [128, 262_144],
+  ])('offers %i GB a launch context its GPU budget can actually reserve', (totalMemoryGb, expected) => {
+    const profile = hardwareLlmRecommendation({ platform: 'darwin', appleSilicon: true, totalMemoryGb });
+
+    expect(profile.contextTokens).toBe(expected);
+    expect(profile.contextTokens).toBeLessThanOrEqual(QWEN38_MAX_CONTEXT_TOKENS);
+    // 8 GiB of the GPU budget stays free for prefill buffers and the local
+    // image/video runtimes sharing it. That reserve is what rules 256K out at
+    // 48 GB (it would leave 4.6 GiB) while leaving it available at 64 GB.
+    expect(appleGpuBudgetGib(totalMemoryGb) - qwen38ResidentGib(profile.contextTokens)).toBeGreaterThanOrEqual(8);
   });
 
   it('selects the llama.cpp path only for the configured RTX 3090 machine', () => {
