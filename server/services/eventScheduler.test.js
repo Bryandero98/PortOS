@@ -16,6 +16,7 @@ import {
   parseRecurrenceToNextRun,
   isValidRecurrence,
 } from './eventScheduler.js';
+import { cosEvents } from './cosEvents.js';
 
 // eventScheduler.js's "UTC" branch (the default, and what every consumer below
 // uses unless it passes an explicit IANA timezone) reads local Date methods
@@ -403,6 +404,79 @@ describe('schedule() lifecycle with fake timers', () => {
     expect(entry.success).toBe(true);
     expect(entry.error).toBeNull();
     expect(entry.duration).toBeGreaterThanOrEqual(0);
+  });
+
+  it('re-arms a recurring event even when a scheduler:ran listener throws', async () => {
+    // The re-arm used to sit after the emit, outside any try — one throwing
+    // listener permanently stopped the schedule while the UI still showed it active.
+    const handler = vi.fn();
+    const listener = vi.fn(() => { throw new Error('listener boom'); });
+    cosEvents.on('scheduler:ran', listener);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      schedule({ id: 'listener-throw', type: 'interval', intervalMs: 5000, handler });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(getEvent('listener-throw').active).toBe(true);
+      expect(getStats().activeTimers).toBe(1); // re-armed with a fresh handle
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(handler).toHaveBeenCalledTimes(2); // schedule survived the throw
+    } finally {
+      cosEvents.off('scheduler:ran', listener);
+      consoleError.mockRestore();
+    }
+  });
+
+  it('stops a cron event whose expression became unparseable, with one error log', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      // The handler receives the live event object — corrupt the cron mid-run the
+      // same way a bad persisted value would surface on the next recompute.
+      schedule({
+        id: 'bad-cron',
+        type: 'cron',
+        cron: '* * * * *',
+        handler: event => { event.cron = '* * *'; },
+      });
+
+      await vi.advanceTimersByTimeAsync(60 * 1000);
+
+      expect(getEvent('bad-cron').active).toBe(false);
+      expect(getStats().activeTimers).toBe(0);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Event bad-cron could not compute its next run')
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('stops a recurrence event that yields no next occurrence, with one error log', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      schedule({
+        id: 'no-next',
+        type: 'recurrence',
+        recurrence: { frequency: 'weekly', interval: 1, weekdays: [1], time: '00:05', anchorDate: '2024-01-01' },
+        handler: event => { event.recurrence = { frequency: 'weekly', interval: 0 }; },
+      });
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+      expect(getEvent('no-next').active).toBe(false);
+      expect(getStats().activeTimers).toBe(0);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Event no-next has no next run time')
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('cancelAll() removes every scheduled event and reports the count removed', () => {
