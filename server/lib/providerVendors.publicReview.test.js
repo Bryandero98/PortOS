@@ -50,7 +50,7 @@ describe('public-review provider postures', () => {
     expect(publicReviewProviderBlock(codex, undefined)).toBeNull();
     // The transport is irrelevant when nothing is being enforced: a TUI session
     // and an api provider run ordinary tasks all day.
-    expect(publicReviewProviderBlock({ ...codex, type: 'tui' }, null, { tui: true })).toBeNull();
+    expect(publicReviewProviderBlock({ ...codex, type: 'tui' }, null)).toBeNull();
     expect(publicReviewProviderBlock({ ...codex, type: 'api' }, null)).toBeNull();
   });
 
@@ -65,17 +65,37 @@ describe('public-review provider postures', () => {
       category: 'public-review-actions-provider-unsupported',
     });
 
-    // A TUI session has no enforced argv, whatever its vendor row declares.
-    expect(publicReviewProviderBlock({ ...codex, type: 'tui' }, PUBLIC_REVIEW_NO_TOOL_POSTURE, { tui: true })).toEqual({
-      reason: "Provider 'codex-cli' has no enforced no-tool public-content review mode",
-      category: 'public-review-provider-unsupported',
+    // A TUI record of a recipe-bearing vendor is spawned headless through
+    // that recipe, so it is as eligible as its CLI sibling. An api provider
+    // has no binary to spawn and no recipe.
+    expect(publicReviewProviderBlock({ ...codex, id: 'codex-tui', type: 'tui' }, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBeNull();
+    expect(publicReviewProviderBlock({ ...codex, id: 'codex-tui', type: 'tui' }, PUBLIC_REVIEW_ACTIONS_POSTURE)).toBeNull();
+    expect(publicReviewProviderBlock({ id: 'grok', type: 'api', command: undefined }, PUBLIC_REVIEW_ACTIONS_POSTURE)).toEqual({
+      reason: "Provider 'grok' has no enforced sandboxed-actions public-content review mode",
+      category: 'public-review-actions-provider-unsupported',
     });
   });
 
+  // The user's enabled providers are commonly the TUI records (the CLI
+  // siblings switched off), and a stage runs the same binary headless either
+  // way — so a TUI record carries its vendor's postures.
+  it('derives the same postures for a TUI record of a recipe-bearing vendor', () => {
+    expect(publicReviewPosturesForProvider({ ...codex, id: 'codex-tui', type: 'tui' })).toEqual([PUBLIC_REVIEW_NO_TOOL_POSTURE, PUBLIC_REVIEW_ACTIONS_POSTURE]);
+    expect(publicReviewPosturesForProvider({ ...grok, id: 'grok-tui', type: 'tui' })).toEqual([PUBLIC_REVIEW_NO_TOOL_POSTURE, PUBLIC_REVIEW_ACTIONS_POSTURE]);
+    expect(publicReviewPosturesForProvider({ ...localClaude, id: 'claude-ollama-tui', type: 'tui' })).toEqual([PUBLIC_REVIEW_NO_TOOL_POSTURE]);
+    // The headless recipe, not the TUI argv, is what the stage spawns.
+    const config = buildVendorSpawnConfig({ ...codex, id: 'codex-tui', type: 'tui', args: ['--full-auto'] }, {
+      effectiveModel: 'gpt-5.6',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    });
+    expect(config.args).toEqual(expect.arrayContaining(['exec', '--sandbox', 'workspace-write']));
+    expect(config.args).not.toContain('--full-auto');
+  });
+
   it('fails closed for transports and vendors with no maintained recipe', () => {
-    // A TUI session and an HTTP api provider have no enforced argv at all.
-    expect(publicReviewPosturesForProvider({ ...codex, type: 'tui' }, { tui: true })).toEqual([]);
+    // An HTTP api provider has no binary to spawn and no enforced argv.
     expect(publicReviewPosturesForProvider({ ...codex, type: 'api' })).toEqual([]);
+    expect(publicReviewPosturesForProvider({ id: 'opencode-tui', type: 'tui', command: 'opencode' })).toEqual([]);
     // An unknown command must never inherit claude's always-true fallback row.
     expect(publicReviewPosturesForProvider({ id: 'custom', type: 'cli', command: 'custom-agent' })).toEqual([]);
     // opencode/kimi/cursor have no maintained no-tool or sandbox recipe yet.

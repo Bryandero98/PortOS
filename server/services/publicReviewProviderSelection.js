@@ -48,7 +48,7 @@ export async function eligiblePublicReviewProviders(posture, { providers = null 
   const list = providers || (await getAllProviders()).providers || [];
   return list.filter((provider) => (
     isEnabled(provider)
-    && supportsPublicReviewPosture(provider, posture, { tui: provider?.type === 'tui' })
+    && supportsPublicReviewPosture(provider, posture)
   ));
 }
 

@@ -343,6 +343,20 @@ export const filterSelectableModels = (models) =>
 export const isProviderHardwareCompatible = (provider) =>
   isHardwareCompatible(provider?.hardwareCompatibility);
 
+/**
+ * The providers a picker may offer: enabled, runnable on this hardware, and
+ * allowed by the caller's policy — plus the currently-selected id whatever its
+ * state, so a saved pin still renders instead of silently blanking. This is
+ * the single rule `ProviderModelSelector` renders from; a caller that lists
+ * "eligible" providers beside such a picker must derive the list from here so
+ * the note and the dropdown cannot disagree.
+ */
+export const selectableProviders = (providers, { selectedId = '', allowed = null } = {}) =>
+  (Array.isArray(providers) ? providers : []).filter((provider) => (
+    provider?.id === selectedId
+    || (provider?.enabled !== false && isProviderHardwareCompatible(provider) && (!allowed || allowed(provider)))
+  ));
+
 export const isProviderModelHardwareCompatible = (provider, model) =>
   isProviderHardwareCompatible(provider)
   && isHardwareCompatible(provider?.modelHardwareCompatibility?.[model]);

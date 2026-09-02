@@ -149,7 +149,7 @@ const presentProvider = (provider, capabilities = captureSystemCapabilities()) =
   // `publicReviewPostures` is the value the schedule UI filters on, so a stage
   // offers exactly the providers this install can actually enforce. The two
   // booleans are derived from it and kept for existing consumers.
-  const publicReviewPostures = publicReviewPosturesForProvider(provider, { tui: provider?.type === 'tui' });
+  const publicReviewPostures = publicReviewPosturesForProvider(provider);
   return sanitizeProvider({
     ...decorated,
     publicReviewPostures,
