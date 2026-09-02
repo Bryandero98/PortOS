@@ -283,6 +283,16 @@ describe('app pull-request routes', () => {
     expect(triggerOnDemandTask).not.toHaveBeenCalled();
   });
 
+  it('fails closed when CoS task state cannot be read before queueing a review', async () => {
+    getAllTasks.mockRejectedValue(new Error('task store unavailable'));
+
+    const response = await request(app).post('/api/apps/app-001/pull-requests/17/review');
+
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe('AGENT_ACTION_UNAVAILABLE');
+    expect(triggerOnDemandTask).not.toHaveBeenCalled();
+  });
+
   it('returns the in-flight pr-reviewer run instead of queuing a second one', async () => {
     getAllTasks.mockResolvedValue({
       user: { tasks: [] },

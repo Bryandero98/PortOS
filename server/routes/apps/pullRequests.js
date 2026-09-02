@@ -278,6 +278,15 @@ router.post('/:id/pull-requests/:number/review', loadApp, asyncHandler(async (re
   }
 
   const [tasks, requests] = await Promise.all([readActiveTasks(), readPendingOnDemandRequests()]);
+  // Fail CLOSED on an unreadable task store, matching /resolve: `reviewActionFor`
+  // reads a null task list as "no run in flight", so queueing anyway would spend a
+  // second model-abuse scan and code review on a public PR already being reviewed.
+  if (tasks === null) {
+    throw new ServerError('Could not inspect existing CoS actions before queueing this review', {
+      status: 503,
+      code: 'AGENT_ACTION_UNAVAILABLE',
+    });
+  }
   const existing = reviewActionFor({ number }, tasks, requests, app.id);
   if (existing) {
     res.json({ appId: app.id, appName: app.name, number, reviewAction: existing, duplicate: true });
