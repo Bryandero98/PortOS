@@ -38,7 +38,7 @@ function SectionGlyph({ status }) {
   return <MicroGlyph variant={spec.variant} state={spec.state} animated={spec.animated} size={13} />;
 }
 
-export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, providers, apps }) {
+export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, onTaskUnblocked, providers, apps }) {
   const [searchParams] = useSearchParams();
   const [userTasksLocal, setUserTasksLocal] = useState([]);
   const [durations, setDurations] = useState(null);
@@ -279,7 +279,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 </div>
                 <div className="p-2 space-y-1.5">
                   {activeUserTasksLocal.map(task => (
-                    <TaskItem key={task.id} task={task} spawning={isSpawning(task)} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} spawning={isSpawning(task)} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -296,7 +296,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 </div>
                 <div className="p-2 space-y-1.5">
                   {blockedUserTasksLocal.map(task => (
-                    <TaskItem key={task.id} task={task} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -319,7 +319,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 {showCompletedUserTasks && (
                   <div className="p-2 space-y-1.5">
                     {completedUserTasksLocal.map(task => (
-                      <TaskItem key={task.id} task={task} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                      <TaskItem key={task.id} task={task} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                     ))}
                   </div>
                 )}
@@ -352,7 +352,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 </div>
                 <div className="p-2 space-y-1.5">
                   {pendingSystemTasks.map(task => (
-                    <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -369,7 +369,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 </div>
                 <div className="p-2 space-y-1.5">
                   {activeSystemTasks.map(task => (
-                    <TaskItem key={task.id} task={task} isSystem spawning={isSpawning(task)} selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} isSystem spawning={isSpawning(task)} selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -386,7 +386,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 </div>
                 <div className="p-2 space-y-1.5">
                   {blockedSystemTasks.map(task => (
-                    <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -409,7 +409,7 @@ export default function TasksTab({ tasks, agents = [], onRefresh, onTaskAdded, p
                 {showCompletedSystemTasks && (
                   <div className="p-2 space-y-1.5">
                     {completedSystemTasks.map(task => (
-                      <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                      <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} onTaskUnblocked={onTaskUnblocked} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                     ))}
                   </div>
                 )}

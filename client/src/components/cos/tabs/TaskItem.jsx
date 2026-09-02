@@ -139,7 +139,7 @@ function getSuccessRateStyle(rate) {
   return { bg: 'bg-port-error/15', text: 'text-port-error', label: 'low' };
 }
 
-export default function TaskItem({ task, isSystem, spawning = false, selected = false, onRefresh, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
+export default function TaskItem({ task, isSystem, spawning = false, selected = false, onRefresh, onTaskUnblocked, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
   // System tasks are persisted in COS-TASKS.md. Every task
   // mutation must name that source; otherwise the API's user-queue default
   // searches TASKS.md and reports the system task as missing.
@@ -265,6 +265,7 @@ export default function TaskItem({ task, isSystem, spawning = false, selected = 
     const result = await api.updateCosTask(task.id, updates, { silent: true }).catch(err => { toast.error(err.message); return null; });
     if (!result) return false;
     toast.success(successMessage);
+    if (task.status === 'blocked' && newStatus === 'pending') onTaskUnblocked?.(task.id);
     onRefresh();
     return true;
   };
