@@ -550,7 +550,16 @@ const verifyDownloadedLora = async (destPath, { expectedSha256 = null, source = 
 
 // Install a LoRA from a Civitai URL. Returns the new sidecar JSON so the
 // client can render it immediately without a second list round-trip.
-const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) => {
+// Civitai's `type` casing varies in the wild (LORA / Lora / lora) and the
+// family includes LoCon / LyCORIS / DoRA / LoHA — all of which load through
+// diffusers' lora pipeline. Refuse only true non-LoRA checkpoints.
+const ALLOWED_CIVITAI_LORA_TYPES = new Set(['lora', 'locon', 'lycoris', 'dora', 'loha']);
+
+// Shared by performCivitaiInstall and previewCivitaiInstall so a preview can
+// never promise a download the install would actually refuse — early-access
+// gating, the LoRA-type check, and the missing-downloadUrl guard all throw
+// from here now, instead of only guarding the real transfer.
+const resolveCivitaiInstallPlan = async (input, { modelId, versionId, fetchImpl }) => {
   const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
   const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
   const version = pickVersion(model, versionId);
@@ -577,11 +586,7 @@ const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) =
       { status: 422, code: 'CIVITAI_NO_DOWNLOAD' },
     );
   }
-  // Civitai's `type` casing varies in the wild (LORA / Lora / lora) and the
-  // family includes LoCon / LyCORIS / DoRA / LoHA — all of which load
-  // through diffusers' lora pipeline. Refuse only true non-LoRA checkpoints.
-  const ALLOWED_LORA_TYPES = new Set(['lora', 'locon', 'lycoris', 'dora', 'loha']);
-  if (model?.type && !ALLOWED_LORA_TYPES.has(String(model.type).toLowerCase())) {
+  if (model?.type && !ALLOWED_CIVITAI_LORA_TYPES.has(String(model.type).toLowerCase())) {
     throw new ServerError(
       `Civitai model "${model.name}" is type "${model.type}", not a LoRA — refusing to install`,
       { status: 400, code: 'CIVITAI_NOT_A_LORA' },
@@ -595,33 +600,42 @@ const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) =
   const slug = slugifyForFilename(model.name || file.name?.replace(/\.safetensors$/i, ''));
   const filename = `lora-${slug}-v${version.id}.safetensors`;
   const destPath = join(PATHS.loras, filename);
-  if (existsSync(destPath)) {
+  const expectedBytes = Number(file.sizeKB) > 0 ? Number(file.sizeKB) * 1024 : 0;
+
+  return { apiKey, model, version, file, filename, destPath, expectedBytes };
+};
+
+const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) => {
+  const plan = await resolveCivitaiInstallPlan(input, { modelId, versionId, fetchImpl });
+  if (existsSync(plan.destPath)) {
     throw new ServerError(
-      `Already installed: ${filename}. Delete it first or pick a different version.`,
+      `Already installed: ${plan.filename}. Delete it first or pick a different version.`,
       { status: 409, code: 'CIVITAI_ALREADY_INSTALLED' },
     );
   }
 
   await ensureDir(PATHS.loras);
-  const expectedBytes = Number(file.sizeKB) > 0 ? Number(file.sizeKB) * 1024 : 0;
-  assertDownloadFits(await assessDownloadPreflight({ destPath, expectedBytes }));
+  assertDownloadFits(await assessDownloadPreflight({ destPath: plan.destPath, expectedBytes: plan.expectedBytes }));
 
-  console.log(`📥 Installing Civitai LoRA: ${model.name} v${version.id} → ${filename} (${file.sizeKB ? Math.round(file.sizeKB / 1024) + ' MB' : 'size unknown'})`);
+  console.log(`📥 Installing Civitai LoRA: ${plan.model.name} v${plan.version.id} → ${plan.filename} (${plan.file.sizeKB ? Math.round(plan.file.sizeKB / 1024) + ' MB' : 'size unknown'})`);
   // Authenticate downloads via `?token=` only — the Authorization header
   // doesn't survive the 302 to CDN, AND sending both means the token also
   // ends up in CDN access logs. The metadata fetch (fetchCivitaiModel)
   // still uses the header since /api/v1/* doesn't redirect.
-  const tokenized = applyDownloadToken(file.downloadUrl, apiKey);
-  await downloadToFile(tokenized, destPath, {
+  const tokenized = applyDownloadToken(plan.file.downloadUrl, plan.apiKey);
+  await downloadToFile(tokenized, plan.destPath, {
     fetchImpl,
     headers: { 'User-Agent': 'PortOS/civitai-installer' },
-    hasApiKey: !!apiKey,
+    hasApiKey: !!plan.apiKey,
   });
-  await verifyDownloadedLora(destPath, { expectedSha256: file?.hashes?.SHA256 || null, source: 'civitai' });
+  await verifyDownloadedLora(plan.destPath, { expectedSha256: plan.file?.hashes?.SHA256 || null, source: 'civitai' });
 
-  const sidecar = await withKeyLayout(buildSidecar({ model, version, file, filename }), destPath);
-  await writeLoraSidecar(filename, sidecar);
-  console.log(`✅ Installed Civitai LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
+  const sidecar = await withKeyLayout(
+    buildSidecar({ model: plan.model, version: plan.version, file: plan.file, filename: plan.filename }),
+    plan.destPath,
+  );
+  await writeLoraSidecar(plan.filename, sidecar);
+  console.log(`✅ Installed Civitai LoRA: ${plan.filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };
 
@@ -637,20 +651,13 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
 /** Size / dest / free-disk numbers for the LoRA confirm step — no transfer. */
 export const previewCivitaiInstall = async (input, { fetchImpl = fetch } = {}) => {
   const { modelId, versionId } = parseCivitaiUrl(input?.url);
-  const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
-  const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
-  const version = pickVersion(model, versionId);
-  const file = pickPrimaryFile(version);
-  const slug = slugifyForFilename(model.name || file.name?.replace(/\.safetensors$/i, ''));
-  const filename = `lora-${slug}-v${version.id}.safetensors`;
-  const destPath = join(PATHS.loras, filename);
-  const expectedBytes = Number(file.sizeKB) > 0 ? Number(file.sizeKB) * 1024 : 0;
-  const preflight = await assessDownloadPreflight({ destPath, expectedBytes });
+  const plan = await resolveCivitaiInstallPlan(input, { modelId, versionId, fetchImpl });
+  const preflight = await assessDownloadPreflight({ destPath: plan.destPath, expectedBytes: plan.expectedBytes });
   return {
     kind: 'civitai',
     ...preflight,
-    destPath: filename,
-    alreadyDownloaded: existsSync(destPath),
+    destPath: plan.filename,
+    alreadyDownloaded: existsSync(plan.destPath),
   };
 };
 

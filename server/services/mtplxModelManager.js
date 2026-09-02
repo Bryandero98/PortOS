@@ -26,11 +26,9 @@ import { ServerError } from '../lib/errorHandler.js';
 import { assessDownloadPreflight, assertDownloadFits } from '../lib/downloadPreflight.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
 import { getHfCacheRoot } from '../lib/hfCache.js';
-import { fetchHuggingfaceModel } from '../lib/huggingfaceLora.js';
 import { listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { fetchRepoPublishedDates } from './huggingFaceCatalog.js';
-import { getHfToken } from './hfToken.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 
 /** A Hugging Face search is one API call — short, and worth failing fast. */
@@ -69,28 +67,22 @@ export const isMtplxRepoId = (value) => typeof value === 'string' && REPO_ID_RE.
 // the pull actually lands on.
 const mtplxCachePath = () => getHfCacheRoot();
 
-async function expectedMtplxBytes(repo) {
-  if (!repo) return 0;
-  const token = await getHfToken();
-  // `usedStorage` (total repo size) is an EXPANDED field — the default model
-  // response omits it, same as siblings omitting per-file sizes — and an MTPLX
-  // pull grabs the whole repo, so there's no single resolve URL to HEAD/probe
-  // the way the other download paths do. A stalled-but-reachable HF gets a
-  // real timeout rather than blocking the preflight (and the pull behind it)
-  // indefinitely — this call sits in front of the actual download now.
-  const model = await fetchHuggingfaceModel(repo, {
-    token,
-    expand: 'usedStorage',
-    signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-  }).catch(() => null);
-  return Number(model?.usedStorage) || 0;
-}
+// No reliable byte count exists for what an MTPLX pull actually transfers.
+// `usedStorage` (an `expand[]` field fetchHuggingfaceModel can request)
+// looks like a fix, but it's the WHOLE repo's total across EVERY format
+// variant hosted there — pytorch + tf + jax + tflite + onnx + safetensors,
+// etc. — not just what MTPLX downloads, and a multi-format repo can
+// over-report by 2-3x. Refusing a valid pull over files it WON'T fetch is
+// worse than the status quo, so expectedBytes stays 0 (never refuse when
+// the size is unknown) rather than trading an under-protective gap for an
+// over-refusing one.
+const UNKNOWN_MTPLX_BYTES = 0;
 
 export async function previewMtplxPull({ model = null } = {}) {
   const repo = model ? requireRepoId(model) : null;
   const preflight = await assessDownloadPreflight({
     destPath: mtplxCachePath(),
-    expectedBytes: await expectedMtplxBytes(repo),
+    expectedBytes: UNKNOWN_MTPLX_BYTES,
   });
   return { kind: 'mtplx', ...preflight, destPath: repo || 'MTPLX cache', alreadyDownloaded: false };
 }
@@ -219,7 +211,7 @@ export async function pullMtplxModel({ model = null, onProgress = () => {} } = {
   const label = repo || 'MTPLX\'s default verified checkpoint';
   assertDownloadFits(await assessDownloadPreflight({
     destPath: mtplxCachePath(),
-    expectedBytes: await expectedMtplxBytes(repo),
+    expectedBytes: UNKNOWN_MTPLX_BYTES,
   }));
 
   onProgress({ event: 'start', model: repo, message: `Downloading ${label}. This is a multi-gigabyte download and can take a while.` });

@@ -683,6 +683,17 @@ describe('installFromCivitai', () => {
     ).rejects.toThrow(/not a LoRA/);
   });
 
+  // previewCivitaiInstall shares its filename/guard logic with the real
+  // install (resolveCivitaiInstallPlan) — a preview that didn't share it
+  // would show a normal confirm dialog (size, destination, enabled Confirm)
+  // for a download that could never actually start.
+  it('previewCivitaiInstall refuses a non-LoRA model type, same as the real install', async () => {
+    const fetchImpl = async () => (mockJsonResponse({ ...FAKE_MODEL, type: 'Checkpoint' }));
+    await expect(
+      lorasService.previewCivitaiInstall({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }),
+    ).rejects.toThrow(/not a LoRA/);
+  });
+
   it('accepts LoRA-family types case-insensitively (DoRA, Lora, lycoris)', async () => {
     // Civitai's `type` casing isn't stable in the wild — DoRA / LoHA / Lora
     // / lower-case variants are all the same family from diffusers' POV.

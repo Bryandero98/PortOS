@@ -118,24 +118,15 @@ export const buildHfResolveUrl = (repo, revision, file) =>
 // Fetch model metadata from the public HF API. Returns the parsed JSON with
 // `siblings` (file list), `tags`, and `cardData` (carries `base_model`).
 // fetchImpl is injectable for tests.
-//
-// `expand` (string | string[]) requests extra fields the API omits by
-// default — e.g. `usedStorage` (total repo size in bytes), which callers
-// that need a real byte count for a WHOLE repo (no single file to HEAD/
-// range-probe) can't get any other way. The default call — no `expand` —
-// is unaffected: siblings still carry only `rfilename`, and we size-rank
-// via the resolve HEAD only if multiple LoRA files tie.
-export const fetchHuggingfaceModel = async (repo, { token, revision, fetchImpl = fetch, signal, expand } = {}) => {
+// The `blobs=true` expand isn't needed — siblings carry rfilename, and we
+// size-rank via the resolve HEAD only if multiple LoRA files tie.
+export const fetchHuggingfaceModel = async (repo, { token, revision, fetchImpl = fetch, signal } = {}) => {
   if (!/^[^/\s]+\/[^/\s]+$/.test(String(repo))) {
     throw new ServerError(`Invalid HuggingFace repo id: ${repo}`, { status: 400, code: 'HF_BAD_URL' });
   }
-  const base = revision
+  const url = revision
     ? `${HF_API}/${repo}/revision/${encodeURIComponent(revision)}`
     : `${HF_API}/${repo}`;
-  const expandFields = expand ? (Array.isArray(expand) ? expand : [expand]) : [];
-  const url = expandFields.length
-    ? `${base}?${expandFields.map((field) => `expand[]=${encodeURIComponent(field)}`).join('&')}`
-    : base;
   const res = await fetchImpl(url, { headers: { Accept: 'application/json', ...buildHfAuthHeaders(token) }, signal });
   if (!res.ok) {
     if (res.status === 404) {

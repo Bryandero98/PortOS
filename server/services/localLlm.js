@@ -913,21 +913,39 @@ async function localInstallDest(backend) {
   return backend === 'ollama' ? ollamaManager.getModelsDir() : lmStudioManager.getModelsDir()
 }
 
+// A "Redownload" of a model already on disk transfers little to nothing in
+// practice — Ollama's pull re-checks the registry digest and dedupes
+// unchanged layers, and LM Studio's own `lms get` skips files already
+// present — so sizing it against the FULL catalog size (like a genuine
+// net-new install) can refuse a redownload the real transfer would have
+// completed in seconds. `expectedBytes: 0` matches this feature's existing
+// "can't size it, don't block it" convention for that case.
+async function expectedInstallBytes(backend, modelId) {
+  const installed = await listModels(backend).catch(() => [])
+  if (installed.some((m) => m.id === modelId)) return 0
+  return catalogSizeBytes(backend, modelId)
+}
+
 export async function previewInstallModel(backend, modelId) {
   if (!isBackend(backend)) {
     throw new ServerError(`Unknown backend: ${backend}`, { status: 400 })
   }
   const destPath = await localInstallDest(backend)
+  const installed = await listModels(backend).catch(() => [])
+  const alreadyDownloaded = installed.some((m) => m.id === modelId)
   // 0 for a free-text/uncurated model id (e.g. a bare Ollama tag the user
   // typed) — the preflight already treats that as "unknown, never refuse."
-  const preflight = await assessDownloadPreflight({ destPath, expectedBytes: catalogSizeBytes(backend, modelId) })
+  const preflight = await assessDownloadPreflight({
+    destPath,
+    expectedBytes: alreadyDownloaded ? 0 : catalogSizeBytes(backend, modelId),
+  })
   return {
     kind: 'install',
     backend,
     modelId,
     ...preflight,
     destPath,
-    alreadyDownloaded: false,
+    alreadyDownloaded,
   }
 }
 
@@ -940,7 +958,7 @@ export async function installModel(backend, modelId, onProgress, { force = false
   // model N instead of recording one more `status: 'failed'` row and moving on.
   const preflight = await assessDownloadPreflight({
     destPath: await localInstallDest(backend),
-    expectedBytes: catalogSizeBytes(backend, modelId),
+    expectedBytes: await expectedInstallBytes(backend, modelId),
   })
   if (preflight.verdict === DOWNLOAD_VERDICTS.INSUFFICIENT) {
     return { success: false, error: diskInsufficientError(preflight).message, code: 'DISK_INSUFFICIENT' }

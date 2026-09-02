@@ -23,12 +23,13 @@ vi.mock('./localModelAssessmentStore.js', () => ({
 // test can make model #1's preflight fail without also failing model #2's,
 // and the other ~14 installModel/migrateBackend call sites in this file
 // that never set `once` are unaffected.
-const preflightOverride = vi.hoisted(() => ({ once: null }));
+const preflightOverride = vi.hoisted(() => ({ once: null, lastCall: null }));
 vi.mock('../lib/downloadPreflight.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     assessDownloadPreflight: async (opts) => {
+      preflightOverride.lastCall = opts;
       const real = await actual.assessDownloadPreflight(opts);
       if (!preflightOverride.once) return real;
       const verdict = preflightOverride.once;
@@ -156,6 +157,7 @@ let svc;
 beforeEach(async () => {
   vi.clearAllMocks(); // clears calls, keeps the default impls defined above
   preflightOverride.once = null;
+  preflightOverride.lastCall = null;
   // `clearAllMocks` clears recorded CALLS but not queued `…Once` values, and the
   // provider fan-out is fire-and-forget: a test where it correctly never runs
   // (a failed pull) leaves its `getAllProviders` answer queued and the NEXT test
@@ -346,6 +348,22 @@ describe('localLlm', () => {
       const result = await svc.installModel('ollama', 'llama3.2');
       expect(result).toMatchObject({ success: false, code: 'DISK_INSUFFICIENT' });
       expect(mocks.ollama.pullModel).not.toHaveBeenCalled();
+    });
+    // A pull of a model already on disk transfers little to nothing (Ollama
+    // dedupes unchanged registry layers) — sizing it against the full
+    // catalog entry like a genuine net-new install can refuse a
+    // "Redownload" the real transfer would finish in seconds.
+    it('does not size an already-installed model against its full catalog size', async () => {
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([{ id: 'llama3.2', name: 'llama3.2' }]);
+      await svc.installModel('ollama', 'llama3.2', undefined, { force: true });
+      expect(preflightOverride.lastCall).toMatchObject({ expectedBytes: 0 });
+      expect(mocks.ollama.pullModel).toHaveBeenCalled();
+    });
+    it('previewInstallModel reports alreadyDownloaded for an installed model', async () => {
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([{ id: 'llama3.2', name: 'llama3.2' }]);
+      const preview = await svc.previewInstallModel('ollama', 'llama3.2');
+      expect(preview.alreadyDownloaded).toBe(true);
+      expect(preview.expectedBytes).toBe(0);
     });
     it('refreshes Ollama-backed providers after a successful install', async () => {
       mocks.providers.getAllProviders.mockResolvedValueOnce({

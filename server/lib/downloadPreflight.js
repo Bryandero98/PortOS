@@ -246,7 +246,13 @@ export async function streamResumableDownload({
   const existing = await stat(tmpPath).catch(() => null);
   let resumeFrom = existing?.isFile() ? existing.size : 0;
 
-  const reqHeaders = { ...headers };
+  // Force an uncompressed transport. A proxy/mirror that gzips the response
+  // still reports Content-Length for the ENCODED size while the bytes we
+  // actually count and write are decoded — the truncation check below (and
+  // Range math on a resume) would otherwise compare/offset in the wrong
+  // units. Weight files are already-compressed binary blobs, so this costs
+  // nothing on an origin that would have sent them uncompressed anyway.
+  const reqHeaders = { 'Accept-Encoding': 'identity', ...headers };
   if (resumeFrom > 0) {
     reqHeaders.Range = `bytes=${resumeFrom}-`;
     // Makes the resume conditional on the remote object being UNCHANGED
