@@ -1290,7 +1290,7 @@
       "sources": [
         {
           "source": "server/routes/apps/documents.js",
-          "line": 109
+          "line": 129
         }
       ]
     },
@@ -1301,7 +1301,7 @@
       "sources": [
         {
           "source": "server/routes/apps/documents.js",
-          "line": 143
+          "line": 163
         }
       ]
     },
@@ -1312,7 +1312,7 @@
       "sources": [
         {
           "source": "server/routes/apps/documents.js",
-          "line": 158
+          "line": 178
         }
       ]
     },

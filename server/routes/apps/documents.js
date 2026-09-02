@@ -13,9 +13,10 @@
  */
 
 import { Router } from 'express';
-import { readdir, readFile } from 'fs/promises';
-import { join } from 'path';
+import { readdir, readFile, realpath } from 'fs/promises';
+import { dirname, join } from 'path';
 import { atomicWrite, listDirectoryByExtension } from '../../lib/fileUtils.js';
+import { isGitStageableFilePath } from '../../lib/gitArgs.js';
 import { isPathInsideDir, isSafeFilename, isTopLevelEntryName } from '../../lib/pathSafety.js';
 import { documentUpdateSchema } from '../../lib/validation.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
@@ -82,8 +83,15 @@ function isAllowedDocumentPath(rel) {
 /**
  * Validate `*docPath` and resolve it inside the app's repo. Throws the same
  * 400s the single-file allowlist used to, so client error handling is unchanged.
+ *
+ * The containment check runs TWICE, and the second pass is what makes it real:
+ * `isPathInsideDir` is lexical, so a symlinked directory component inside the
+ * repo (`docs/shared -> /outside`) passes the string comparison while `readFile`
+ * and `atomicWrite` happily follow the link. Canonicalizing closes that escape.
+ * The old six-name allowlist had no directory component to subvert; the wildcard
+ * route does, so the canonical check arrived with it.
  */
-function resolveDocumentPath(app, docPath) {
+async function resolveDocumentPath(app, docPath) {
   const filename = Array.isArray(docPath) ? docPath.join('/') : String(docPath || '');
 
   if (!isAllowedDocumentPath(filename)) {
@@ -91,9 +99,21 @@ function resolveDocumentPath(app, docPath) {
   }
 
   const resolved = join(app.repoPath, filename);
-  if (!isPathInsideDir(app.repoPath, resolved)) {
-    throw new ServerError('Invalid document path', { status: 400, code: 'PATH_TRAVERSAL' });
+  const traversal = () =>
+    new ServerError('Invalid document path', { status: 400, code: 'PATH_TRAVERSAL' });
+
+  if (!isPathInsideDir(app.repoPath, resolved)) throw traversal();
+
+  // The PARENT must canonically live in the repo (so a not-yet-created file
+  // still validates), and so must the file itself when it already exists — the
+  // leaf can be a symlink even when every directory above it is real.
+  const realRoot = await realpath(app.repoPath);
+  const realParent = await realpath(dirname(resolved)).catch(() => null);
+  if (!realParent || (realParent !== realRoot && !isPathInsideDir(realRoot, realParent))) {
+    throw traversal();
   }
+  const realFile = await realpath(resolved).catch(() => null);
+  if (realFile && !isPathInsideDir(realRoot, realFile)) throw traversal();
 
   return { filename, resolved };
 }
@@ -144,7 +164,7 @@ router.get('/:id/documents/*docPath', loadApp, asyncHandler(async (req, res) => 
   const app = req.loadedApp;
   await requireRepoPath(app);
 
-  const { filename, resolved } = resolveDocumentPath(app, req.params.docPath);
+  const { filename, resolved } = await resolveDocumentPath(app, req.params.docPath);
 
   if (!await pathExists(resolved)) {
     throw new ServerError('Document not found', { status: 404, code: 'NOT_FOUND' });
@@ -159,7 +179,16 @@ router.put('/:id/documents/*docPath', loadApp, asyncHandler(async (req, res) => 
   const app = req.loadedApp;
   await requireRepoPath(app);
 
-  const { filename, resolved } = resolveDocumentPath(app, req.params.docPath);
+  const { filename, resolved } = await resolveDocumentPath(app, req.params.docPath);
+
+  // Git staging rejects a substring `..` and shell metacharacters, which
+  // `isSafeFilename` allows (`docs/notes..md` is a legal filename). Refuse the
+  // write up front rather than mutating the file and then 500-ing on the commit.
+  if (!isGitStageableFilePath(filename)) {
+    throw new ServerError('Document name cannot be committed by git', {
+      status: 400, code: 'INVALID_DOCUMENT'
+    });
+  }
 
   const { content, commitMessage } = documentUpdateSchema.parse(req.body);
   const created = !await pathExists(resolved);

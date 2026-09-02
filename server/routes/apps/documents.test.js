@@ -8,10 +8,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile, symlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { request } from '../../lib/testHelper.js';
+import { pathExists } from './shared.js';
 
 vi.mock('../../services/apps.js', () => ({ getAppById: vi.fn() }));
 vi.mock('../../services/git.js', () => ({
@@ -130,5 +131,52 @@ describe('Apps Document Routes', () => {
 
     expect(res.status).toBe(400);
     expect(git.stageFiles).not.toHaveBeenCalled();
+  });
+
+  it('refuses to read or write through a symlinked directory that escapes the repo', async () => {
+    // The lexical containment check passes for `docs/escape/...` — only
+    // canonicalizing the path catches that the directory points outside.
+    const outside = await mkdtemp(join(tmpdir(), 'portos-outside-'));
+    await writeFile(join(outside, 'secret.md'), '# Secret');
+    await symlink(outside, join(repoPath, 'docs', 'escape'), 'dir');
+
+    const read = await request(app).get('/api/apps/app-1/documents/docs/escape/secret.md');
+    expect(read.status).toBe(400);
+    expect(read.body.code).toBe('PATH_TRAVERSAL');
+
+    const write = await request(app)
+      .put('/api/apps/app-1/documents/docs/escape/secret.md')
+      .send({ content: 'pwned' });
+    expect(write.status).toBe(400);
+    expect(await readFile(join(outside, 'secret.md'), 'utf-8')).toBe('# Secret');
+
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  it('refuses to read a symlinked FILE that escapes the repo', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'portos-outside-'));
+    await writeFile(join(outside, 'secret.md'), '# Secret');
+    await symlink(join(outside, 'secret.md'), join(repoPath, 'docs', 'leak.md'));
+
+    const res = await request(app).get('/api/apps/app-1/documents/docs/leak.md');
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('PATH_TRAVERSAL');
+
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  it('refuses a write git could never stage, before touching the file', async () => {
+    // `notes..md` is a legal filename that `isSafeFilename` accepts, but git
+    // staging rejects a substring `..` — writing first would leave a mutated
+    // tree behind a 500 from stageFiles.
+    const res = await request(app)
+      .put('/api/apps/app-1/documents/docs/notes..md')
+      .send({ content: '# Notes' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_DOCUMENT');
+    expect(git.stageFiles).not.toHaveBeenCalled();
+    expect(await pathExists(join(repoPath, 'docs', 'notes..md'))).toBe(false);
   });
 });
