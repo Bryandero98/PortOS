@@ -740,6 +740,10 @@ const cachedModelEntry = (modelId) => {
   return modelsCache.models.find((entry) => entry.id === modelId) ?? null;
 };
 
+/** The one shape a caller's Stop takes, wherever in a turn it is noticed. */
+const turnCancelledError = () =>
+  codexError(CODEX_TURN_ERROR_CODES.turnInterrupted, 'The Codex turn was cancelled.', { status: 499 });
+
 /**
  * Run ONE bounded text turn against the ChatGPT subscription.
  *
@@ -773,7 +777,7 @@ export async function runCodexTextTurn({
   // later, so the caller's cancellation has to be honoured here or the turn runs
   // (and bills) for an answer nobody is waiting for.
   if (signal?.aborted) {
-    throw codexError(CODEX_TURN_ERROR_CODES.turnInterrupted, 'The Codex turn was cancelled.', { status: 499 });
+    throw turnCancelledError();
   }
   const benched = getCodexTextTransportBench();
   if (benched) {
@@ -799,7 +803,7 @@ export async function runCodexTextTurn({
   // thread the caller has already abandoned — the up-front check above ran
   // several awaits ago, and no listener is registered yet.
   if (signal?.aborted) {
-    throw codexError(CODEX_TURN_ERROR_CODES.turnInterrupted, 'The Codex turn was cancelled.', { status: 499 });
+    throw turnCancelledError();
   }
   const started = await sendRequest(owner, CODEX_TURN_RPC.threadStart, {
     ...CODEX_TEXT_THREAD_CONFIG,
@@ -835,7 +839,7 @@ export async function runCodexTextTurn({
   }, timeoutMs);
   timer.unref?.();
 
-  const onAbort = () => fail(codexError(CODEX_TURN_ERROR_CODES.turnInterrupted, 'The Codex turn was cancelled.', { status: 499 }));
+  const onAbort = () => fail(turnCancelledError());
   // An AbortSignal fires its 'abort' event exactly once; a listener added after
   // the fact never runs. An abort raised during `connect()`/`thread/start` has
   // to be honoured by re-reading the flag, or the turn streams for the whole
