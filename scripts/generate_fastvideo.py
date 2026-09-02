@@ -19,6 +19,7 @@ entry script rejects instead of silently rendering through the wrong pipeline.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -136,6 +137,10 @@ def parse_args() -> argparse.Namespace:
                    help="Which FastVideo entry script and argv shape to use")
     p.add_argument("--model-root", required=True, help="HF model snapshot path")
     p.add_argument("--mlx-checkpoint", default=None, help="MLX checkpoint path (defaults to model-root)")
+    p.add_argument("--mlx-format", choices=MLX_DIT_FORMATS, default=None,
+                   help="convert this snapshot's transformer/ to an MLX DiT of this format on first use")
+    p.add_argument("--prompt-cache-dir", default=None,
+                   help="reusable FastH3 prompt-embedding cache (default: a shared dir under the repo)")
     p.add_argument("--prompt", required=True)
     p.add_argument("--negative-prompt", default="")
     p.add_argument("--width", type=int, required=True)
@@ -184,6 +189,107 @@ def find_entry_script(repo_dir: Path, family: str = "fastmetal") -> Path:
     if found:
         return found[0]
     raise FileNotFoundError(f"Could not find {glob_name} under {repo_dir}")
+
+
+# FastVideo publishes FastH3 as a bf16 diffusers snapshot: the DiT lives under
+# `transformer/` beside the vae / audio_vae / text_encoder / tokenizer the
+# pipeline loads. mlx_fasth3.py does not read that DiT -- it wants a
+# pre-quantized `mlx_h3_dit` directory. `--mlx-format` bridges the two by
+# running FastVideo's own converter once, so a row can point at the upstream
+# checkpoint instead of depending on a third party having published a repack.
+MLX_DIT_FORMATS = ("int8", "int6", "int4")
+_CONVERTER_SCRIPT = ("scripts", "checkpoint_conversion", "convert_minimax_h3_mlx.py")
+_MLX_CHECKPOINT_FILES = ("mlx_h3_dit.safetensors", "mlx_h3_dit.json")
+
+
+def mlx_checkpoint_root(model_root: Path) -> Path:
+    """Where DiTs converted from `model_root` are cached.
+
+    Keyed by the SNAPSHOT, not by the repo id -- an HF cache path ends in the
+    commit sha, so two revisions of one repo cannot collide on a converted
+    checkpoint. Kept outside the HF cache because `hf` prunes by blob and has no
+    idea these files belong to that snapshot.
+    """
+    parts = [part for part in (model_root.parent.parent.name, model_root.name) if part]
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", "-".join(parts)).strip("-") or "snapshot"
+    # The readable half is for whoever reads the directory listing; the digest is
+    # what carries identity. A --model-root outside the HF cache can share both
+    # its own name and its grandparent's with an unrelated snapshot, and two
+    # snapshots resolving to ONE converted DiT would render the wrong weights
+    # without any error to notice.
+    digest = hashlib.sha256(str(model_root).encode("utf-8")).hexdigest()[:12]
+    return Path.home() / ".portos" / "fastvideo" / "mlx-checkpoints" / f"{label}-{digest}"
+
+
+def is_converted(checkpoint_dir: Path) -> bool:
+    return all((checkpoint_dir / name).is_file() for name in _MLX_CHECKPOINT_FILES)
+
+
+def ensure_mlx_checkpoint(repo_dir: Path, model_root: Path, fmt: str, env: dict) -> Path:
+    """Return the converted MLX DiT for `fmt`, converting it if it is missing."""
+    out_base = mlx_checkpoint_root(model_root)
+    out_dir = out_base / fmt
+    if is_converted(out_dir):
+        return out_dir
+    transformer = model_root / "transformer"
+    if not transformer.is_dir():
+        raise FileNotFoundError(
+            f"{model_root} has no transformer/ to convert to MLX {fmt}. Download the "
+            f"full FastH3 snapshot, or point --mlx-checkpoint at a converted DiT.")
+    converter = repo_dir.joinpath(*_CONVERTER_SCRIPT)
+    if not converter.is_file():
+        raise FileNotFoundError(f"Could not find {converter}")
+    print(f"STATUS:converting the FastH3 DiT to MLX {fmt} — one time, into {out_dir}",
+          file=sys.stderr, flush=True)
+    out_base.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(
+        [sys.executable, str(converter),
+         "--model-root", str(transformer),
+         "--out", str(out_base),
+         "--formats", fmt],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env=env, cwd=str(repo_dir),
+    )
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.rstrip()
+        if line:
+            print(f"STATUS:{line}", file=sys.stderr, flush=True)
+    code = proc.wait()
+    if code != 0:
+        raise RuntimeError(f"FastH3 MLX conversion exited with code {code}")
+    if not is_converted(out_dir):
+        raise RuntimeError(f"FastH3 MLX conversion finished but {out_dir} is incomplete")
+    # The bf16 transformer is dead weight for rendering once this exists, but it
+    # is the user's download: name it, do not delete it.
+    print(f"STATUS:MLX {fmt} DiT ready — {transformer} is no longer needed to render and can be deleted",
+          file=sys.stderr, flush=True)
+    return out_dir
+
+
+def resolve_prompt_cache_dir(args) -> Path:
+    """Where FastH3 caches its conditioning embeddings.
+
+    Streaming the bf16 Qwen3-VL conditioner is HALF the wall clock of a 124-frame
+    render (307s of 621s measured on an M5 Max), and it produces the same
+    embeddings every time. Upstream digests the cache entry over its own cache
+    version, the model root AND the prompt, so one shared directory cannot serve
+    a stale entry across models or across a conditioner change.
+    """
+    if args.prompt_cache_dir:
+        return Path(args.prompt_cache_dir)
+    return Path.home() / ".portos" / "fastvideo" / "prompt-cache"
+
+
+def build_child_env(repo_dir: Path) -> dict:
+    """Environment shared by the conversion child and the inference child."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{str(repo_dir)}:{env.get('PYTHONPATH', '')}".rstrip(":")
+    # Mirrors train_mflux_lora.py's M5 Metal-watchdog mitigation. Preserve an
+    # explicit caller override, but make the validated safe value the default
+    # for the sustained denoise child of either family.
+    env.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
+    return env
 
 
 # mlx_fasth3.py always muxes H.264 at 24 fps with 32 kHz stereo AAC and exposes
@@ -246,7 +352,8 @@ def build_command(args, entry_script: Path, model_root: Path, mlx_checkpoint: Pa
     if args.fps and args.fps != FASTH3_NATIVE_FPS:
         print(f"STATUS:FastH3 always writes {FASTH3_NATIVE_FPS} fps — ignoring the requested {args.fps} fps",
               file=sys.stderr, flush=True)
-    cmd = common + ["--steps", str(args.steps)] + tail
+    cmd = common + ["--steps", str(args.steps),
+                    "--prompt-cache-dir", str(resolve_prompt_cache_dir(args))] + tail
     if args.fast:
         cmd.append("--fast")
     return cmd
@@ -273,18 +380,26 @@ def main() -> int:
         return 1
 
     model_root = Path(args.model_root).resolve()
-    mlx_checkpoint = Path(args.mlx_checkpoint).resolve() if args.mlx_checkpoint else model_root
+    env = build_child_env(repo_dir)
+    # Precedence: an explicit path always wins, so a row that ships a
+    # pre-quantized DiT never triggers a conversion it does not need.
+    if args.mlx_checkpoint:
+        mlx_checkpoint = Path(args.mlx_checkpoint).resolve()
+    elif args.mlx_format:
+        try:
+            mlx_checkpoint = ensure_mlx_checkpoint(repo_dir, model_root, args.mlx_format, env)
+        except (FileNotFoundError, RuntimeError) as err:
+            print(f"❌ {err}", file=sys.stderr)
+            return 1
+    else:
+        mlx_checkpoint = model_root
 
     cmd = build_command(args, entry_script, model_root, mlx_checkpoint)
+    if args.family == "fasth3":
+        resolve_prompt_cache_dir(args).mkdir(parents=True, exist_ok=True)
 
     print(f"🎬 fastvideo {args.family} generate {args.width}x{args.height} frames={args.num_frames} steps={args.steps} seed={args.seed}", file=sys.stderr, flush=True)
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{str(repo_dir)}:{env.get('PYTHONPATH', '')}".rstrip(":")
-    # Mirrors train_mflux_lora.py's M5 Metal-watchdog mitigation. Preserve an
-    # explicit caller override, but make the validated safe value the default
-    # for the sustained denoise child of either family.
-    env.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
     print(
         f"STATUS:watchdog mitigation · AGX_RELAX_CDM_CTXSTORE_TIMEOUT={env['AGX_RELAX_CDM_CTXSTORE_TIMEOUT']}",
         file=sys.stderr,

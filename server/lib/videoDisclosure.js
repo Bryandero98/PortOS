@@ -350,6 +350,22 @@ export const VIDEO_MODEL_DISCLOSURES = Object.freeze({
       reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
     },
   },
+  // FastVideo's own FastH3 Dense / Data-Free snapshot — the checkpoint the
+  // repack below is converted FROM, so same weights, same license, same
+  // territory gate. The three rows share one 144 GB download: the format in the
+  // id names a LOCAL conversion of the snapshot's transformer/, not a separate
+  // repo, which is why they all quote the same figure.
+  ...Object.fromEntries(['int8', 'int6', 'int4'].map((format) => [`fasth3_dense_datafree_${format}`, {
+    shippedRepo: 'FastVideo/FastVideo-FastH3-4-step-Preview-v1-Dense-DataFree',
+    disclosure: {
+      modelCardUrl: hfModelCard('FastVideo/FastVideo-FastH3-4-step-Preview-v1-Dense-DataFree'),
+      weightsLicense: MINIMAX_H3_WEIGHTS,
+      runtimeLicense: RUNTIME_LICENSE.fastvideo,
+      estimatedDownloadGb: 144.0,
+      reviewedAt: VIDEO_DISCLOSURE_REVIEWED_AT,
+    },
+    termsGate: MINIMAX_H3_TERMS_GATE,
+  }])),
   // FastH3 Preview v1 Dense / Data-Free, packed for MLX. Same MiniMax H3
   // weights lineage as the entries above — its `conversion_manifest.json`
   // names FastVideo/…-Dense-DataFree @ f624f08c as the source — so it carries
