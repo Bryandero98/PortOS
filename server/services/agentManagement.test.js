@@ -1212,6 +1212,41 @@ describe('relaunchAgent — moves a running agent\'s task onto another provider'
     expect(stillLiveAtRequeue).toBe(false);
   });
 
+  it('drops the model pinned to the provider it is moving off', async () => {
+    // The whole point of a relaunch is leaving a provider that stopped answering.
+    // `selectModelForTask` hands `metadata.model` to the CLI verbatim, so carrying
+    // the old provider's model across would make the requeued run die on its first
+    // spawn — the failure the relaunch was supposed to end.
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      metadata: { ...PAUSED_TASK.metadata, provider: 'claude', model: 'claude-opus-5', effort: 'high' },
+    });
+    runnerAgents.set('agent-live-1', { taskId: 'task-abc', runId: 'run-1' });
+    pauseAgentViaRunner.mockResolvedValue({ success: true });
+
+    await relaunchAgent('agent-live-1', { provider: 'codex' });
+
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    expect(metadata.provider).toBe('codex');
+    expect(metadata.model).toBe('');
+    expect(metadata.effort).toBe('');
+  });
+
+  it('leaves the model alone when the provider is unchanged — blank still means unchanged there', async () => {
+    getTaskById.mockResolvedValue({
+      ...PAUSED_TASK,
+      metadata: { ...PAUSED_TASK.metadata, provider: 'claude', model: 'claude-opus-5' },
+    });
+    runnerAgents.set('agent-live-1', { taskId: 'task-abc', runId: 'run-1' });
+    pauseAgentViaRunner.mockResolvedValue({ success: true });
+
+    await relaunchAgent('agent-live-1', { provider: 'claude', effort: 'max' });
+
+    const { metadata } = reviveBlockedTask.mock.calls[0][1];
+    expect(metadata).not.toHaveProperty('model');
+    expect(metadata.effort).toBe('max');
+  });
+
   it('refuses an agent that is not running, and one that does not exist', async () => {
     getAgentRecord.mockResolvedValue({ ...LIVE_AGENT, status: 'completed' });
     await expect(relaunchAgent('agent-live-1')).rejects.toMatchObject({

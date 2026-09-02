@@ -536,7 +536,7 @@ async function requeuePausedTask({ task, taskType, overrides }) {
   // `pending` is non-terminal, so the pointer that write lands survives it
   // (updateTask only strips a resume pointer on a terminal status).
   const result = await reviveBlockedTask(task.id, {
-    metadata: resumeOverrideMetadata(overrides, task.metadata?.context)
+    metadata: resumeOverrideMetadata(overrides, task.metadata)
   }, taskType);
   if (result?.error) {
     throw new ServerError(`Failed to requeue task ${task.id}: ${result.error}`, {
@@ -589,7 +589,7 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
     description,
     context, prompt, provider, model, effort, app,
     metadata: inheritedMetadata,
-    ...resumeOverrideMetadata(overrides, context)
+    ...resumeOverrideMetadata(overrides, task?.metadata)
   }, taskType);
   if (created?.error) {
     throw new ServerError(`Failed to queue resume task: ${created.error}`, {
@@ -609,16 +609,27 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
  * NOTE, and folding a note into the agent-facing payload would make the two
  * indistinguishable again (#4153).
  */
-function resumeOverrideMetadata({ context, provider, model, effort, app, screenshots }, existingContext) {
+function resumeOverrideMetadata({ context, provider, model, effort, app, screenshots }, priorMetadata = {}) {
   const patch = {};
   if (context) {
-    patch.context = [existingContext, context].filter(Boolean).join('\n\n');
+    patch.context = [priorMetadata?.context, context].filter(Boolean).join('\n\n');
   }
   if (provider) patch.provider = provider;
   if (model) patch.model = model;
   if (effort) patch.effort = effort;
   if (app) patch.app = app;
   if (screenshots?.length) patch.screenshots = screenshots;
+  // The one place blank does NOT mean unchanged: a provider SWITCH invalidates a
+  // model or effort pinned to the provider being left behind. `selectModelForTask`
+  // returns `metadata.model` verbatim as the user's choice, so carrying
+  // `claude-opus-5` across to codex hands that CLI a model it does not have and the
+  // requeued run dies on its first spawn. Both dialogs clear their model select when
+  // the provider changes, so blank here is the user seeing "Default model" — clear the
+  // stale pin and let the new provider resolve its own.
+  if (provider && provider !== priorMetadata?.provider) {
+    if (!model) patch.model = '';
+    if (!effort) patch.effort = '';
+  }
   return patch;
 }
 
