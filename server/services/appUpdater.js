@@ -8,6 +8,7 @@ import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
 import { parseCommandArgs } from '../lib/commandSecurity.js';
 import { isDetachedRunning, spawnDetached } from '../lib/detachedSpawn.js';
 import { PORTOS_APP_ID } from '../lib/appIdentity.js';
+import { parseBuildCommand } from './appBuilder.js';
 import { syncManagedAppFork } from './managedAppRepositories.js';
 
 const CMD_TIMEOUT_MS = 5 * 60 * 1000;
@@ -70,7 +71,10 @@ async function startDashboardHandoff(app) {
  * 2. install dependencies in each package directory (Bun apps use their
  *    frozen lockfile; existing apps retain npm install)
  * 3. run setup with the same package manager when the script exists
- * 4. Restart PM2 processes
+ * 4. rebuild the production UI when a build command or `scripts.build` exists
+ *    (a pull that only restarts leaves `client/dist` stale and PortOS then
+ *    reports "install out of sync")
+ * 5. Restart PM2 processes
  *
  * @param {object} app - The app object (must have repoPath, pm2ProcessNames, pm2Home)
  * @param {function} emit - Callback (step, status, message) for progress updates
@@ -143,14 +147,28 @@ async function _doUpdate(app, emit, { syncFork }) {
   }
 
   const pkgPath = join(dir, 'package.json');
-  if (existsSync(pkgPath)) {
-    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
-    if (pkg.scripts?.setup) {
-      emit('setup', 'running', 'Running setup...');
-      await runCommand(packageManagerCommand, ['run', 'setup'], dir);
-      emit('setup', 'done', 'Setup complete');
-      steps.push({ step: 'setup', success: true });
-    }
+  const pkg = existsSync(pkgPath) ? JSON.parse(await readFile(pkgPath, 'utf-8')) : null;
+  if (pkg?.scripts?.setup) {
+    emit('setup', 'running', 'Running setup...');
+    await runCommand(packageManagerCommand, ['run', 'setup'], dir);
+    emit('setup', 'done', 'Setup complete');
+    steps.push({ step: 'setup', success: true });
+  }
+
+  const configuredBuild = typeof app.buildCommand === 'string' ? app.buildCommand.trim() : '';
+  let build;
+  if (configuredBuild) {
+    const parsed = parseBuildCommand(configuredBuild);
+    if (!parsed.ok) throw new Error(parsed.message);
+    build = { cmd: parsed.cmd, args: parsed.args };
+  } else if (pkg?.scripts?.build) {
+    build = { cmd: packageManagerCommand, args: ['run', 'build'] };
+  }
+  if (build) {
+    emit('build', 'running', 'Building production UI...');
+    await runCommand(build.cmd, build.args, dir);
+    emit('build', 'done', 'Production UI built');
+    steps.push({ step: 'build', success: true });
   }
 
   const processNames = app.pm2ProcessNames || [];

@@ -342,6 +342,7 @@ export default function RepositorySourcePanel({ appId, appName, onUpdated, refre
             <li>Pull the application checkout from its configured origin</li>
             {companions.length > 0 && <li>Pull {companions.length} independent companion checkout{companions.length === 1 ? '' : 's'}</li>}
             <li>Install dependencies and run the app&apos;s setup script when configured</li>
+            <li>Rebuild the production UI when a build script is configured</li>
             {status?.updateRestartsApp && <li>Restart the app&apos;s managed processes</li>}
           </ul>
         </div>
