@@ -28,7 +28,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { sanitizeTaskMetadata, PIPELINE_STAGE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, resolveClaimReviewerConfig, reviewerConfigMetadata } from '../lib/validation.js';
 import { PATHS } from '../lib/fileUtils.js';
-import { MODEL_ABUSE_GUARD_ID } from '../lib/modelAbuseGuard.js';
+import { MODEL_ABUSE_GUARD_ID, normalizeEligibilityFacts } from '../lib/modelAbuseGuard.js';
 import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
@@ -2088,7 +2088,16 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPul
       emitLog('warn', `Skipping pr-reviewer for ${app.name}: target-pull-request-not-reviewable (#${targetPullRequest})`, { appId: app.id, analysisType: taskType });
       return { skipped: true, reason: 'target-pull-request-not-reviewable' };
     }
-    target = { ...target, prs: scoped };
+    // A maintainer pressed "Review this PR" on this row. The linked-open-issue
+    // prerequisite exists to bound UNATTENDED spend on unsolicited PRs; an
+    // explicit per-PR request is the maintainer choosing to spend that review,
+    // so the fact set records the waiver. The Eligibility Gate still judges the
+    // change itself, and Stage 1 still screens it. Stamped BEFORE the
+    // fingerprint so a targeted run never shares a scan key with a sweep.
+    target = {
+      ...target,
+      prs: scoped.map((pr) => ({ ...pr, eligibilityFacts: { ...normalizeEligibilityFacts(pr.eligibilityFacts), maintainerTargeted: true } })),
+    };
     metadata.targetPullRequest = targetPullRequest;
   }
   const scanKey = securityScanFingerprint(target);
