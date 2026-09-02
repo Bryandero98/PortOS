@@ -510,20 +510,14 @@ const CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS = [
   ...CLAUDE_PUBLIC_REVIEW_COMMON_ARGS,
 ];
 
-function claudePublicReviewSpawnArgs(provider, ctx) {
-  return claudePublicReviewArgs(provider, ctx, CLAUDE_PUBLIC_REVIEW_NO_TOOL_ARGS);
-}
+const claudePublicReviewSpawnArgsFor = (postureArgs) => (provider, ctx) => claudePublicReviewArgs(postureArgs, provider, ctx);
 
-function claudePublicReviewActionsSpawnArgs(provider, ctx) {
-  return claudePublicReviewArgs(provider, ctx, CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS);
-}
-
-function claudePublicReviewArgs(provider, {
+function claudePublicReviewArgs(postureArgs, provider, {
   effectiveModel,
   effort,
   systemPromptFile,
   tui = false,
-} = {}, postureArgs) {
+} = {}) {
   const providerId = provider?.id || 'claude-code';
   const args = [
     ...postureArgs,
@@ -547,6 +541,8 @@ function claudePublicReviewArgs(provider, {
   };
 }
 
+const matchClaudeBinary = (provider) => isDirectBinaryProvider(provider) && isClaudeCommand(provider?.command);
+
 const CLAUDE = {
   id: 'claude',
   idFragment: null, // never matched by id.includes() — it's the outside-the-loop default
@@ -562,12 +558,12 @@ const CLAUDE = {
     // matcher must positively identify the binary — an unknown command must
     // never inherit claude's flag set.
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
-      spawnArgs: claudePublicReviewSpawnArgs,
-      matchProvider: (provider) => isDirectBinaryProvider(provider) && isClaudeCommand(provider?.command),
+      spawnArgs: claudePublicReviewSpawnArgsFor(CLAUDE_PUBLIC_REVIEW_NO_TOOL_ARGS),
+      matchProvider: matchClaudeBinary,
     },
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
-      spawnArgs: claudePublicReviewActionsSpawnArgs,
-      matchProvider: (provider) => isDirectBinaryProvider(provider) && isClaudeCommand(provider?.command),
+      spawnArgs: claudePublicReviewSpawnArgsFor(CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS),
+      matchProvider: matchClaudeBinary,
     },
   },
 };
@@ -679,12 +675,8 @@ export function buildVendorSpawnConfig(provider, ctx) {
   if (posture) {
     const recipe = publicReviewRecipe(provider, posture);
     if (recipe) return recipe.spawnArgs(provider, ctx);
-    // The no-tool gate has no fallback: nothing but an enforced argv can hold
-    // a model tool-free. The actions stage is different — its isolation is the
-    // disposable worktree plus the stripped child environment (no forge
-    // credential, no Claude settings overlay), and the deterministic coordinator
-    // owns every GitHub mutation — so any enabled binary provider may run it
-    // headless through its ordinary recipe when the vendor has no sandbox one.
+    // See supportsPublicReviewPosture for why the actions stage may fall
+    // through to the vendor's ordinary headless recipe and the gate may not.
     if (!supportsPublicReviewPosture(provider, posture)) {
       throw new Error(`Provider '${providerLabel(provider)}' has no enforced ${posture} public-review posture`);
     }
@@ -709,16 +701,17 @@ export function publicReviewPosturesForProvider(provider) {
 }
 
 /**
- * The postures this provider runs through a maintained, vendor-enforced
- * recipe. A subset of `publicReviewPosturesForProvider`: the actions posture
- * is also runnable by a binary provider with no sandbox recipe (see
- * `supportsPublicReviewPosture`), and the schedule UI uses the difference to
- * say which choices are OS-sandboxed and which rely on the worktree alone.
+ * The subset of `publicReviewPosturesForProvider` backed by a vendor-enforced
+ * recipe; the schedule UI uses the difference to say which actions-stage
+ * choices are OS-sandboxed and which rely on the worktree alone.
  */
 export function enforcedPublicReviewPosturesForProvider(provider) {
-  if (!isDirectBinaryProvider(provider)) return [];
-  return PUBLIC_REVIEW_POSTURES.filter((posture) => Boolean(publicReviewRecipe(provider, posture)));
+  return PUBLIC_REVIEW_POSTURES.filter((posture) => enforcesPublicReviewPosture(provider, posture));
 }
+
+const enforcesPublicReviewPosture = (provider, posture) => (
+  isDirectBinaryProvider(provider) && Boolean(publicReviewRecipe(provider, posture))
+);
 
 /**
  * Vendor ids that declare a maintained recipe for `posture`, for naming what a
@@ -741,9 +734,8 @@ export function publicReviewCapableVendorIds(posture) {
  * binary to spawn and fail closed for both.
  */
 export function supportsPublicReviewPosture(provider, posture) {
-  if (!isDirectBinaryProvider(provider)) return false;
-  if (posture === PUBLIC_REVIEW_ACTIONS_POSTURE) return true;
-  return Boolean(publicReviewRecipe(provider, posture));
+  return enforcesPublicReviewPosture(provider, posture)
+    || (posture === PUBLIC_REVIEW_ACTIONS_POSTURE && isDirectBinaryProvider(provider));
 }
 
 /**

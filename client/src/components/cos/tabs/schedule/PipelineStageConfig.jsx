@@ -35,12 +35,20 @@ const providerNames = (providers) => providers.map((p) => p.name || p.id).join('
 // of them the server additionally wraps in the vendor's own OS sandbox, so a
 // choice that relies on the disposable worktree alone is a visible one.
 const actionsStageNote = (eligibleProviders) => {
-  const sandboxed = eligibleProviders.filter((p) => enforcesPublicReviewPosture(p, PUBLIC_REVIEW_ACTIONS_POSTURE));
-  const worktreeOnly = eligibleProviders.filter((p) => !sandboxed.includes(p));
+  const isSandboxed = (p) => enforcesPublicReviewPosture(p, PUBLIC_REVIEW_ACTIONS_POSTURE);
+  const sandboxed = eligibleProviders.filter(isSandboxed);
+  const worktreeOnly = eligibleProviders.filter((p) => !isSandboxed(p));
   const isolation = worktreeOnly.length === 0
-    ? 'Each runs headless inside its vendor\'s maintained OS sandbox.'
-    : `${sandboxed.length > 0 ? `OS-sandboxed by the vendor's own recipe: ${providerNames(sandboxed)}. ` : ''}Headless with standard permissions, isolated by the disposable worktree only: ${providerNames(worktreeOnly)}.`;
-  return `Sandboxed stage. Eligible on this install: ${providerNames(eligibleProviders)}. ${isolation} PortOS passes the selected provider, model, and thinking effort through, with no forge credential or configuration overlays; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.`;
+    ? ['Each runs headless inside its vendor\'s maintained OS sandbox.']
+    : [
+      sandboxed.length > 0 && `OS-sandboxed by the vendor's own recipe: ${providerNames(sandboxed)}.`,
+      `Headless with standard permissions, isolated by the disposable worktree only: ${providerNames(worktreeOnly)}.`,
+    ].filter(Boolean);
+  return [
+    `Sandboxed stage. Eligible on this install: ${providerNames(eligibleProviders)}.`,
+    ...isolation,
+    'PortOS passes the selected provider, model, and thinking effort through, with no forge credential or configuration overlays; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.',
+  ].join(' ');
 };
 
 export default function PipelineStageConfig({ taskType, config, providers, onUpdate, updating, setUpdating }) {

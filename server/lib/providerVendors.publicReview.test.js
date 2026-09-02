@@ -213,8 +213,6 @@ describe('public-review provider postures', () => {
     expect(config.args).not.toContain('--dangerously-skip-permissions');
     expect(config.args).not.toContain('--restricted');
     expect(config.args).not.toContain('plan');
-    // The local wrapper still gets the lean flags; `--bare` is never forced on
-    // a cloud Claude because it disables OAuth/keychain auth.
     expect(config.args).toContain('--bare');
     const cloud = buildVendorSpawnConfig({ id: 'claude-code', type: 'cli', command: 'claude' }, {
       safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
