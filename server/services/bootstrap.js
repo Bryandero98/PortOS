@@ -315,7 +315,7 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
  * Fire-and-forget service inits + scheduler arming. None of these block the
  * server from listening; each logs its own failure and the boot continues.
  */
-const startBackgroundServices = ({ spawnerReady }) => {
+const startBackgroundServices = ({ spawnerReady, io }) => {
   // Explicit call (not a module-level side effect) so test imports of cos.js
   // don't spin up its event listeners and timers. The spawner gate itself lives
   // in bootstrapSequence.js.
@@ -739,7 +739,7 @@ const announceListening = ({ io, httpServer, localHttpServer, httpsEnabled, port
  */
 export const runBootSequence = ({ io, httpServer, localHttpServer, httpsEnabled, port, host, spawnerReady }) =>
   runPostRouteSequence({
-    startBackgroundServices: () => startBackgroundServices({ spawnerReady }),
+    startBackgroundServices: () => startBackgroundServices({ spawnerReady, io }),
 
     // Instance identity + sync log come up before requests are accepted, so a
     // brain mutation can't arrive before the sync log is ready.
