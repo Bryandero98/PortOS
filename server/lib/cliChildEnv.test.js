@@ -138,8 +138,8 @@ describe('buildCliChildEnv — public-review profile', () => {
       HOME: '/home/example',
       LC_ALL: 'C',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:11434',
-      ANTHROPIC_AUTH_TOKEN: 'local-only',
     });
+    expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     expect(env).not.toHaveProperty('GH_TOKEN');
     expect(env).not.toHaveProperty('GITHUB_TOKEN');
     expect(env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');
@@ -166,7 +166,7 @@ describe('buildCliChildEnv — public-review profile', () => {
     });
 
     expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:11434');
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('local-only');
+    expect(env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     expect(env.PWD).toBe('/tmp/public-review');
     expect(env).not.toHaveProperty('GH_TOKEN');
     expect(env).not.toHaveProperty('AWS_PROFILE');
