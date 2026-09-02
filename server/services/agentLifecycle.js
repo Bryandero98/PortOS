@@ -62,7 +62,7 @@ import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
-import { supportsPublicReviewPosture, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
+import { publicReviewProviderBlock, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { formatPublicReviewInputPrompt } from '../lib/modelAbuseGuard.js';
 import { materializePublicReviewInput, materializePublicReviewPatches, readPublicReviewInputSnapshot, validatePublicReviewModel } from './modelAbuseGuard.js';
@@ -463,15 +463,17 @@ async function runAgentSpawn(task) {
     // One posture check for both stages. Eligibility is declared by the vendor
     // row and re-asserted HERE, at spawn time, because a schedule or API
     // payload can be edited without the browser: the picker is a convenience,
-    // never the enforcement.
-    if (!supportsPublicReviewPosture(provider, publicReviewPosture, { tui: isTui })) {
-      const reason = `Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${publicReviewPosture} public-content review mode`;
+    // never the enforcement. The helper owns the "no posture requested" case,
+    // so an ordinary task (posture `null`) passes straight through (#5830).
+    const postureBlock = publicReviewProviderBlock(provider, publicReviewPosture, { tui: isTui });
+    if (postureBlock) {
+      const { reason, category } = postureBlock;
       await updateTask(task.id, {
         status: 'blocked',
         metadata: {
           ...task.metadata,
           blockedReason: reason,
-          blockedCategory: publicReviewActions ? 'public-review-actions-provider-unsupported' : 'public-review-provider-unsupported',
+          blockedCategory: category,
           blockedAt: new Date().toISOString(),
         },
       }, task.taskType || 'user').catch(() => {});

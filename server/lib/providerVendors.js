@@ -629,6 +629,11 @@ export function buildVendorCliArgs(provider, baseArgs, { model, effort }) {
   return vendor.cliArgs(baseArgs, { model, effort, provider });
 }
 
+/** How a provider names itself in an error a user has to act on. */
+function providerLabel(provider) {
+  return provider?.id || provider?.command || 'unknown';
+}
+
 /**
  * `buildCliSpawnConfig` (agentCliSpawning.js): full `{ command, args,
  * stdinMode, streamFormat? }` shape per vendor. Requires `spawnArgs` to be
@@ -641,7 +646,7 @@ export function buildVendorSpawnConfig(provider, ctx) {
   if (posture) {
     const recipe = publicReviewRecipe(provider, posture);
     if (!recipe) {
-      throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' has no enforced ${posture} public-review posture`);
+      throw new Error(`Provider '${providerLabel(provider)}' has no enforced ${posture} public-review posture`);
     }
     return recipe.spawnArgs(provider, ctx);
   }
@@ -676,6 +681,30 @@ export function publicReviewCapableVendorIds(posture) {
 export function supportsPublicReviewPosture(provider, posture, { tui = false } = {}) {
   if (tui || provider?.type !== 'cli') return false;
   return Boolean(publicReviewRecipe(provider, posture));
+}
+
+/**
+ * The spawn-time gate for a public-content stage, as a block or `null`.
+ *
+ * Takes the POSTURE (what the stage requires), not a boolean, because the
+ * caller's posture is `null` for every ordinary task — and `null` has no
+ * recipe, so asking `supportsPublicReviewPosture` about it answers "false"
+ * for work that was never public-content at all. Deciding here keeps the
+ * "no posture requested" case explicit instead of a caller-side `&&` that a
+ * refactor can drop (it was, in #5830: every ordinary agent task blocked with
+ * "has no enforced null public-content review mode").
+ *
+ * @returns {{ reason: string, category: string }|null}
+ */
+export function publicReviewProviderBlock(provider, posture, { tui = false } = {}) {
+  if (!posture) return null;
+  if (supportsPublicReviewPosture(provider, posture, { tui })) return null;
+  return {
+    reason: `Provider '${providerLabel(provider)}' has no enforced ${posture} public-content review mode`,
+    category: posture === PUBLIC_REVIEW_ACTIONS_POSTURE
+      ? 'public-review-actions-provider-unsupported'
+      : 'public-review-provider-unsupported',
+  };
 }
 
 /** Whether a provider can run a tool-free public-content stage. */
