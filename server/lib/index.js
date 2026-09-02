@@ -337,6 +337,7 @@ export * from './localLlmCatalog.js';
 export * from './modelAbuseGuard.js';
 export * from './localLlmDisk.js';
 export * from './specDecodePresets.js';
+export * from './llamaCppInstall.js';
 export * from './localModelHeuristics.js';
 export * from './localModelAssessment.js';
 export * from './localModelTuning.js';

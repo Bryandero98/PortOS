@@ -1007,6 +1007,28 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  it('names the install command the SERVER reports, not a hardcoded Homebrew one', async () => {
+    // The browser cannot know what OS the install runs on, so this copy has to
+    // come off the status payload — a Windows user was previously told to run
+    // `brew install llama.cpp`, which does not exist there.
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue({
+      installed: false,
+      running: false,
+      managed: false,
+      packageManager: 'winget',
+      packageManagerLabel: 'winget',
+      installCommand: 'winget install ggml.llamacpp',
+      presets: specPresets(),
+    });
+
+    await renderTab();
+
+    await screen.findByRole('button', { name: /Install llama\.cpp/ });
+    expect(screen.getAllByText('winget install ggml.llamacpp').length).toBeGreaterThan(0);
+    expect(screen.queryByText('brew install llama.cpp')).not.toBeInTheDocument();
+  });
+
   it('updates llama.cpp from the unified runtime row', async () => {
     const { getLlamaServerStatus, getLlamaServerUpdateStatus, upgradeLlamaServer } = await import('../../services/api');
     getLlamaServerStatus.mockResolvedValue(llamaReady());
