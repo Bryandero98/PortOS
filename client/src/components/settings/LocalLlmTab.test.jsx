@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router';
 
 vi.mock('../../services/api', () => ({
   getLocalLlmStatus: vi.fn(),
+  getSystemCapabilities: vi.fn(),
   getLocalLlmCatalog: vi.fn(),
   getLocalLlmHuggingFaceSearch: vi.fn(),
   installLocalLlmModel: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock('../models/ModelAbuseGuardPanel.jsx', () => ({
 import {
   deleteLocalLlmModel,
   getLocalLlmStatus,
+  getSystemCapabilities,
   getLocalLlmCatalog,
   installLocalLlmBackend,
   patchSettingsSlice,
@@ -67,6 +69,7 @@ import {
 } from '../../services/api';
 import socket from '../../services/socket';
 import { LocalLlmTab } from './LocalLlmTab';
+import { hardwareLlmRecommendation } from './HardwareLlmRecommendation.jsx';
 
 // A realistically long HF model id — the shape that got ellipsised to
 // "hf.co/sja…" on a phone before the row was allowed to wrap.
@@ -120,6 +123,12 @@ beforeEach(() => {
     lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
   });
   getLocalLlmCatalog.mockResolvedValue({ models: [] });
+  getSystemCapabilities.mockResolvedValue({
+    platform: 'darwin',
+    appleSilicon: true,
+    totalMemoryGb: 64,
+    cuda: { status: 'absent', gpus: [], maxVramGb: null },
+  });
   installLocalLlmBackend.mockResolvedValue({ success: true });
   patchSettingsSlice.mockResolvedValue({});
   deleteLocalLlmModel.mockResolvedValue({ success: true });
@@ -132,6 +141,8 @@ describe('LocalLlmTab information architecture', () => {
     expect(screen.getByRole('heading', { name: 'Local Runtime Servers' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Models' })).not.toBeInTheDocument();
     expect(getLocalLlmCatalog).not.toHaveBeenCalled();
+    expect(await screen.findByRole('heading', { name: 'Recommended coding-agent setup' })).toBeInTheDocument();
+    expect(screen.getByText('OpenCode MTPLX TUI')).toBeInTheDocument();
   });
 
   it('gives the model-abuse guard its own panel without mounting the catalog', async () => {
@@ -170,6 +181,25 @@ describe('LocalLlmTab information architecture', () => {
 
     expect(screen.queryByRole('heading', { name: 'Model-abuse guard' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Models' })).toBeInTheDocument();
+  });
+});
+
+describe('hardware coding-agent profiles', () => {
+  it('selects the benchmarked Apple profile by unified-memory tier', () => {
+    expect(hardwareLlmRecommendation({ platform: 'darwin', appleSilicon: true, totalMemoryGb: 48 })).toMatchObject({
+      id: 'apple-48', runtime: 'MTPLX', harness: 'OpenCode MTPLX TUI', context: '64K context',
+    });
+    expect(hardwareLlmRecommendation({ platform: 'darwin', appleSilicon: true, totalMemoryGb: 128 })).toMatchObject({
+      id: 'apple-128', model: expect.stringMatching(/Quality/),
+    });
+  });
+
+  it('selects the llama.cpp path only for the configured RTX 3090 machine', () => {
+    expect(hardwareLlmRecommendation({
+      platform: 'win32',
+      cuda: { maxVramGb: 24, gpus: [{ name: 'NVIDIA GeForce RTX 3090' }] },
+    })).toMatchObject({ id: 'rtx-3090', runtime: 'llama.cpp', harness: 'OpenCode llama TUI' });
+    expect(hardwareLlmRecommendation({ platform: 'win32', cuda: { maxVramGb: 16, gpus: [{ name: 'NVIDIA GeForce RTX 3090' }] } })).toBeNull();
   });
 });
 

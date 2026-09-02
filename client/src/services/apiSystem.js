@@ -40,6 +40,9 @@ export const triageSystemResources = (payload, options = {}) => request('/system
 export const getActiveProcessing = (options) => request('/system/processing', options);
 export const getNetworkExposure = (options) => request('/network-exposure/status', options);
 export const getCapabilities = (options) => request('/capabilities', options);
+// Machine-local hardware facts used for UI fit and recommendation surfaces.
+// This endpoint deliberately stays outside peer-synced health payloads.
+export const getSystemCapabilities = (options) => request('/system/capabilities', options);
 export const updateHealthThresholds = (thresholds, options = {}) => request('/system/health/thresholds', {
   method: 'PUT',
   body: JSON.stringify(thresholds),
