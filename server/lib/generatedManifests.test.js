@@ -72,10 +72,13 @@ export const findPositionalReferences = (value, path = '$') => {
 
 // `git ls-files` prints POSIX separators, so join against the repo root rather
 // than trusting the string to be a usable path on Windows.
-const trackedManifests = () => execFileSync('git', ['ls-files', '*.generated.json'], {
+// Memoized: this file is in ALWAYS_RUN_TESTS, so it runs on every CI job and
+// there is no reason to spawn git once per assertion.
+let tracked;
+const trackedManifests = () => (tracked ??= execFileSync('git', ['ls-files', '*.generated.json'], {
   cwd: REPO_ROOT,
   encoding: 'utf8',
-}).split('\n').filter(Boolean);
+}).split('\n').filter(Boolean));
 
 describe('checked-in generated manifests', () => {
   it('finds the manifests it is meant to guard', () => {
