@@ -340,8 +340,8 @@ router.post('/profiles/:id/fine-tune/start', asyncHandler(async (req, res) => {
 }));
 
 router.get('/profiles/:id/fine-tune/:jobId', asyncHandler(async (req, res) => {
-  const { jobId } = validateRequest(fineTuneJobParamsSchema, req.params);
-  const result = getFineTuningJobStatus(jobId);
+  const { id: profileId, jobId } = validateRequest(fineTuneJobParamsSchema, req.params);
+  const result = await getFineTuningJobStatus(jobId, profileId);
   res.json(result);
 }));
 

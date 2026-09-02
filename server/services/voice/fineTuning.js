@@ -10,11 +10,13 @@
 
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from '../../lib/childProcess.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
+import { closeJobAfterDelay } from '../../lib/sseUtils.js';
 import {
   DEFAULT_CLONE_MODEL,
   QWEN3_TTS_RUNNER_SCRIPT,
@@ -26,8 +28,63 @@ import {
   promoteFineTunedProfile,
 } from './profiles.js';
 
-// In-memory active training job map
+// In-memory active training job map. Entries are evicted once terminal (see
+// `finalizeJob`); the durable record is the `job.json` sidecar written beside
+// the run's checkpoints, so a restart mid-training does not orphan them.
 const activeJobs = new Map();
+
+// Sidecar record written into `<profileDir>/fine-tune/<jobId>/`. It lives with
+// the checkpoints it indexes so the record and its artifacts are deleted
+// together, rather than in a separate store that could outlive them.
+const JOB_RECORD_FILE = 'job.json';
+
+const jobRecordPath = (profileId, jobId) =>
+  join(profileArtifactDirectory(profileId), 'fine-tune', jobId, JOB_RECORD_FILE);
+
+// Drops the runtime-only handles (abort controller, child process, write chain,
+// finalize latch) that cannot — and must not — be serialized.
+const serializableJob = ({
+  controller: _controller,
+  child: _child,
+  persistChain: _persistChain,
+  finalized: _finalized,
+  ...record
+}) => record;
+
+/**
+ * Write the job record to disk. Writes are chained per job because `close` and
+ * `error` can both fire for one child and each rewrites the same file.
+ */
+const persistJob = (jobState) => {
+  jobState.persistChain = (jobState.persistChain || Promise.resolve())
+    .then(() => atomicWrite(jobRecordPath(jobState.profileId, jobState.id), serializableJob(jobState)))
+    .catch((err) => console.error(`❌ Failed to persist fine-tune job ${jobState.id}: ${err.message}`));
+  return jobState.persistChain;
+};
+
+/**
+ * Resolve a job from memory, falling back to its on-disk record. Returns null
+ * when neither exists.
+ */
+async function loadJob(jobId, profileId) {
+  const active = activeJobs.get(jobId);
+  if (active) return active;
+  if (!profileId) return null;
+  return readJSONFile(jobRecordPath(profileId, jobId), null);
+}
+
+/**
+ * Persist the terminal state, then evict the in-memory entry after the SSE
+ * grace window so a status poll racing completion still hits memory while the
+ * map stays bounded. Runs at most once per job — `error` and `close` can both
+ * fire for the same child.
+ */
+const finalizeJob = (jobState) => {
+  if (jobState.finalized) return;
+  jobState.finalized = true;
+  persistJob(jobState);
+  closeJobAfterDelay(activeJobs, jobState.id);
+};
 
 /**
  * Validate training dataset readiness for a given voice profile.
@@ -123,9 +180,11 @@ export async function startFineTuningJob({
     completedAt: null,
     error: null,
     controller: abortController,
+    child: null,
   };
 
   activeJobs.set(jobId, jobState);
+  await persistJob(jobState);
 
   const args = [
     QWEN3_TTS_RUNNER_SCRIPT,
@@ -138,6 +197,8 @@ export async function startFineTuningJob({
   ];
 
   const child = spawn(python, args, safeChildProcessOptions({ signal: abortController.signal }));
+  // Keep a handle on the child so a future shutdown hook can reach in-flight training.
+  jobState.child = child;
 
   let lineBuffer = '';
   child.stdout.on('data', (chunk) => {
@@ -186,12 +247,14 @@ export async function startFineTuningJob({
       }
       jobState.completedAt = new Date().toISOString();
     }
+    finalizeJob(jobState);
   });
 
   child.on('error', (err) => {
     jobState.status = 'failed';
     jobState.error = err.message;
     jobState.completedAt = new Date().toISOString();
+    finalizeJob(jobState);
   });
 
   return {
@@ -204,15 +267,15 @@ export async function startFineTuningJob({
 }
 
 /**
- * Get the current status and checkpoints of a fine-tuning job.
+ * Get the current status and checkpoints of a fine-tuning job, from memory
+ * while it is live and from its `job.json` sidecar afterwards.
  */
-export function getFineTuningJobStatus(jobId) {
-  const job = activeJobs.get(jobId);
+export async function getFineTuningJobStatus(jobId, profileId) {
+  const job = await loadJob(jobId, profileId);
   if (!job) {
     throw new ServerError('Fine-tuning job not found', { status: 404, code: 'JOB_NOT_FOUND' });
   }
-  const { controller: _c, ...serializable } = job;
-  return serializable;
+  return serializableJob(job);
 }
 
 /**
@@ -235,7 +298,7 @@ export function cancelFineTuningJob(jobId) {
  * Explicitly promote a selected checkpoint to the character's voice profile.
  */
 export async function promoteCheckpoint({ profileId, jobId, checkpointId }) {
-  const job = activeJobs.get(jobId);
+  const job = await loadJob(jobId, profileId);
   if (!job) {
     throw new ServerError('Fine-tuning job not found', { status: 404, code: 'JOB_NOT_FOUND' });
   }
