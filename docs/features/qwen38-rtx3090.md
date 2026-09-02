@@ -94,11 +94,22 @@ appended, so your `GPU_UTIL`, `DFLASH_TOKENS` or your own `VLLM_API_KEY` survive
 The API key it generates is written straight onto the two seeded providers, so
 step 2 below is just "enable it".
 
-Two things it deliberately will not do. On Windows it refuses unless
-`VLLM_QWEN_PROJECT_DIR` is set (§1c): the default `~/qwen-serving` resolves to a
-*Windows* home, and 20 GB of weights reached from the WSL2 VM across a 9p share is
-a mistake that costs 20 GB to discover. And it never raises the WSL2 memory
-ceiling — see §1a for why that one stays manual.
+**On Windows it places the project inside WSL2 for you.** The default
+`~/qwen-serving` resolves to a *Windows* home, and 20 GB of weights reached from
+the WSL2 VM across a 9p share is a mistake that costs 20 GB to discover — so
+before it clones anything, PortOS asks WSL for the default distro's name and home
+(`wsl.exe -e sh -c 'echo "$WSL_DISTRO_NAME"; echo "$HOME"'`), checks that
+`\\wsl.localhost\<distro>\home\<user>` is readable from Windows, and records
+the result as `VLLM_QWEN_PROJECT_DIR` in PortOS's own `.env` so the readiness
+check, the Start button and the next server boot all resolve the same directory.
+It refuses only where it genuinely cannot answer the question — no WSL on the
+host, no distro but a container engine's own (`docker-desktop` is recreated on a
+reset), or a `\\wsl.localhost` share Windows cannot read — and each refusal
+names that host's fix. Setting `VLLM_QWEN_PROJECT_DIR` yourself still overrides
+the whole decision (§1c).
+
+The one thing it deliberately will not do is raise the WSL2 memory ceiling — see
+§1a for why that one stays manual.
 
 #### By hand
 
@@ -227,19 +238,22 @@ On Windows, confirm the same URL answers from the PortOS side too — Docker
 Desktop / WSL2 localhost forwarding is what makes a container in the VM
 reachable at `127.0.0.1` on the host.
 
-### 1c. Point PortOS at the project (Windows only)
+### 1c. Point PortOS at the project (Windows, optional)
 
 A native-Win32 PortOS resolves the default `~/qwen-serving` to a *Windows* home
-directory, where the project is not. Set `VLLM_QWEN_PROJECT_DIR` to the distro's
-UNC path so the readiness checklist can see the project and its `models/`:
+directory, where the project is not. **You do not normally have to fix this
+yourself** — the provisioning button and the Start button both detect the distro
+and record the UNC path (see above). Set `VLLM_QWEN_PROJECT_DIR` only to overrule
+that, or when you cloned by hand somewhere other than the default distro's home:
 
 ```
 VLLM_QWEN_PROJECT_DIR=\\wsl.localhost\<distro>\home\<user>\qwen-serving
 ```
 
 Node reads that path, and `docker compose` accepts it as a working directory, so
-both the checklist and the Start button work from it. On Linux the default is
-already correct.
+both the checklist and the Start button work from it. An exported value wins over
+anything PortOS detected on an earlier run. On Linux the default is already
+correct.
 
 **`DFLASH_TOKENS=15` is deliberately not a default.** It is the setting behind
 the headline throughput number, but it costs KV cache: 56k context across 4
@@ -283,9 +297,10 @@ explicitly-named provisioning action above. `prepare` writes them into the proje
 `models/` directory (compose bind-mounts `${MODELS_DIR:-./models}`), which is
 what PortOS looks at; the `qwen-cache` docker volume alongside it holds only the
 torch.compile / Triton / FlashInfer JIT caches. If PortOS cannot read that
-directory at all — the normal case on Windows before `VLLM_QWEN_PROJECT_DIR` is
-set to the UNC path above — the button says so, and `VLLM_QWEN_WEIGHTS_DIR` is
-the escape hatch for weights kept somewhere else entirely.
+directory at all, the button says so, and `VLLM_QWEN_WEIGHTS_DIR` is the escape
+hatch for weights kept somewhere else entirely. On Windows the Start button first
+resolves the WSL2 placement described above, so a project prepared by hand inside
+the distro is found without any configuration.
 
 ## What the numbers mean
 
@@ -319,7 +334,7 @@ concurrent server result.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VLLM_QWEN_PROJECT_DIR` | `~/qwen-serving` | Where the compose project was cloned. Required on Windows, as the `\\wsl.localhost\…` UNC path. |
+| `VLLM_QWEN_PROJECT_DIR` | `~/qwen-serving`, or the `\\wsl.localhost\…` path PortOS detected and recorded in its own `.env` on Windows | Where the compose project was cloned. Set it only to overrule the detected placement — an exported value wins over the record. |
 | `VLLM_QWEN_WEIGHTS_DIR` | *(unset)* | The directory holding the model weights, when it is not the project's own `models/` — e.g. a `MODELS_DIR` pointed elsewhere, or a HuggingFace hub cache shared with another stack. |
 
 ## Related

@@ -184,6 +184,7 @@ export * from './localProviderRuntime.js';
 export * from './mtplxModels.js';
 export * from './managedDaemon.js';
 export * from './vllmQwenProject.js';
+export * from './wslDistro.js';
 export * from './qwenAgentParsers.js';
 export * from './vllmQwenProvision.js';
 export * from './sglangQwenProject.js';
