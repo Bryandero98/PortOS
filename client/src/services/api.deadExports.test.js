@@ -8,9 +8,8 @@ const SRC_ROOT = join(HERE, '..');
 const BARRELS = new Set(['api.js']);
 
 // Deliberate keeps — a one-line, reviewed decision rather than silent
-// accumulation. CLIENT_BUILD_ID lives on socket.js (a build-injected identity
-// for the stale-client check) and is listed here so a future api*.js keep
-// follows the same seam.
+// accumulation. CLIENT_BUILD_ID is the build-injected identity on socket.js
+// for the stale-client check; it has no UI importer by design.
 const INTENTIONALLY_UNREFERENCED = Object.freeze(['CLIENT_BUILD_ID']);
 
 const isTest = (name) => /\.test\.(js|jsx)$/.test(name);
@@ -22,6 +21,53 @@ function walk(dir, acc = []) {
     else if (/\.(js|jsx)$/.test(name)) acc.push(p);
   }
   return acc;
+}
+
+function stripComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const n1 = src[i + 1];
+    if (c === '/' && n1 === '/') {
+      i += 2;
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && n1 === '*') {
+      i += 2;
+      while (i < n - 1 && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i = Math.min(n, i + 2);
+      continue;
+    }
+    if (c === '\'' || c === '"') {
+      const q = c;
+      out += c;
+      i++;
+      while (i < n) {
+        out += src[i];
+        if (src[i] === '\\') { out += src[i + 1] || ''; i += 2; continue; }
+        if (src[i] === q) { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === '`') {
+      out += c;
+      i++;
+      while (i < n) {
+        out += src[i];
+        if (src[i] === '\\') { out += src[i + 1] || ''; i += 2; continue; }
+        if (src[i] === '`') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
 }
 
 function collectNamedExports(src) {
@@ -45,7 +91,7 @@ function identFiles(files) {
   const map = new Map();
   const ident = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
   for (const file of files) {
-    const src = readFileSync(file, 'utf8');
+    const src = stripComments(readFileSync(file, 'utf8'));
     const seen = new Set();
     let m;
     while ((m = ident.exec(src))) {
@@ -59,31 +105,32 @@ function identFiles(files) {
   return map;
 }
 
-function findDeadExports({ extra } = {}) {
+function exportModules() {
+  return readdirSync(HERE)
+    .filter((f) => !isTest(f) && (
+      f === 'socket.js'
+      || (f.startsWith('api') && f.endsWith('.js') && f !== 'api.js')
+    ))
+    .map((f) => join(HERE, f));
+}
+
+function findDeadExports({ extraModule } = {}) {
   const all = walk(SRC_ROOT);
   const sources = all.filter((f) => !isTest(f));
-  const apiFiles = readdirSync(HERE)
-    .filter((f) => f.startsWith('api') && f.endsWith('.js') && !isTest(f) && f !== 'api.js')
-    .map((f) => join(HERE, f));
-
+  const modules = exportModules();
   const corpus = sources.filter((f) => !BARRELS.has(relative(HERE, f)));
   const filesFor = identFiles(corpus);
 
   const dead = [];
-  for (const file of apiFiles) {
-    const names = collectNamedExports(readFileSync(file, 'utf8'));
-    for (const name of names) {
+  const consider = (file, src) => {
+    for (const name of collectNamedExports(src)) {
       if (INTENTIONALLY_UNREFERENCED.includes(name)) continue;
       const hits = (filesFor.get(name) || []).filter((f) => f !== file);
       if (hits.length === 0) dead.push(`${relative(SRC_ROOT, file)}:${name}`);
     }
-  }
-  if (extra) {
-    const hits = (filesFor.get(extra.name) || []).filter((f) => f !== extra.file);
-    if (hits.length === 0 && !INTENTIONALLY_UNREFERENCED.includes(extra.name)) {
-      dead.push(`${extra.file}:${extra.name}`);
-    }
-  }
+  };
+  for (const file of modules) consider(file, readFileSync(file, 'utf8'));
+  if (extraModule) consider(join(HERE, extraModule.file), extraModule.src);
   return dead;
 }
 
@@ -94,14 +141,18 @@ describe('client API wrappers have callers', () => {
   });
 
   it('fails when a caller-less wrapper is added', () => {
+    const src = 'export const definitelyUnusedApiWrapper5727 = () => {};\n';
+    expect(collectNamedExports(src).has('definitelyUnusedApiWrapper5727')).toBe(true);
     const dead = findDeadExports({
-      extra: { file: 'services/apiFake.js', name: 'definitelyUnusedApiWrapper5727' },
+      extraModule: { file: 'apiFake.js', src },
     });
     expect(dead.some((row) => row.endsWith(':definitelyUnusedApiWrapper5727'))).toBe(true);
   });
 
-  it('keeps the intentional-unreferenced allowlist explicit', () => {
+  it('allowlists CLIENT_BUILD_ID as the only intentional keep', () => {
     expect(INTENTIONALLY_UNREFERENCED).toEqual(['CLIENT_BUILD_ID']);
+    const socketSrc = readFileSync(join(HERE, 'socket.js'), 'utf8');
+    expect(collectNamedExports(socketSrc).has('CLIENT_BUILD_ID')).toBe(true);
   });
 });
 // @vitest-environment node

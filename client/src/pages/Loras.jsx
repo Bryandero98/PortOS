@@ -1135,7 +1135,7 @@ function LoraCard({ lora, onDelete, onMeasured, deleting, deleteConfirm }) {
   // and "Delete undefined" is a bad thing to announce over a destructive action.
   const displayName = lora.name || lora.filename;
 
-  // Read straight off the server's CACHED report (listLoras never probes) — an
+  // Read straight off the server's CACHED report (listLorasFull never probes) — an
   // explicit re-check hands the new one to `onMeasured`, which updates the list
   // entry, so the badge survives this card being unmounted by a filter change.
   const effect = lora.effectReport || null;

@@ -64,7 +64,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiQuotaBurn.js` | Quota Burn plan + live status, the job-type catalog its config form renders, and manual runs (`getQuotaBurn`/`getQuotaBurnCatalog`/`saveQuotaBurn`/`runQuotaBurn`), plus `rearmQuotaBurn` to put spent `run once` steps back into the rotation. |
 | `apiRapidReader.js` | Rapid Reader's optional author-hosted Accelerando loader and machine-local shelf API. |
 | `apiSystem.js` | System info (CPU/memory/ports/alerts/active processing and local hardware capabilities) + D&D-style character sheet getter, plus the usage cost report and explicit historical reconciliation (`getUsage`, `getProviderUsage`, `getUsageBackfillStatus`/`startUsageBackfill`, `updateSubscriptionCosts` for the subscription-vs-API savings comparison). |
-| `apiAuth.js` | Optional login password — status, login/logout, set/clear password. |
+| `apiAuth.js` | Optional login password — status, login, set/clear password. |
 | `apiLoops.js` | Scheduled loops. |
 
 ## Personal data / identity
@@ -98,7 +98,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | File | Purpose |
 |---|---|
 | `apiImageVideo.js` | Image-gen local backend extras (gallery, models, LoRAs, cancel, delete). |
-| `apiLoraTraining.js` | Character LoRA training — datasets (CRUD, upload, generate, slice, caption), training runs (start/list/cancel/delete + status), character→LoRA link lookup. |
+| `apiLoraTraining.js` | Character LoRA training — datasets (CRUD, upload, generate, slice, caption), training runs (start/list/cancel + status), character→LoRA link lookup. |
 | `apiMedia.js` | Screenshots + media assets. Also owns the multi-file upload orchestration — `processScreenshotUploads` / `processAttachmentUploads` — moved from `utils/fileUpload.js` since they perform network I/O, not pure transforms. `utils/fileUpload.js` keeps only the pure helpers/constants and no longer re-exports these. |
 | `apiMediaJobs.js` | Media generation job tracking + `refineMediaPrompt` / `promptFromMedia` (vision reverse-prompt). |
 | `apiCreativeDirector.js` | Creative Director (video production). |
