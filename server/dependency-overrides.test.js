@@ -20,6 +20,39 @@ const readOverrides = (rel) => {
   return pkg.overrides ?? {};
 };
 
+const NESTED = 'node_modules/';
+
+const lockfileFor = (manifestRel) => manifestRel.replace(/package\.json$/, 'package-lock.json');
+
+const readLockPackages = (lockRel) =>
+  JSON.parse(readFileSync(join(REPO_ROOT, lockRel), 'utf8')).packages ?? {};
+
+// Lockfile paths are install locations, not names: `node_modules/a/node_modules/b`
+// is package `b`. Everything after the LAST `node_modules/` is the package name,
+// scope included.
+const packageNameFromLockPath = (path) => path.slice(path.lastIndexOf(NESTED) + NESTED.length);
+
+// The package an override key names. A flat key is the package itself; a nested key
+// names its CONSUMER, optionally with a version selector (`minimatch@3`). A scoped
+// name keeps its leading `@` (`@protobufjs/utf8` carries no selector).
+const overrideTargetName = (key) => {
+  const at = key.lastIndexOf('@');
+  return at > 0 ? key.slice(0, at) : key;
+};
+
+// Every package name an `overrides` block governs, flat and nested alike. npm allows
+// arbitrary nesting (`"a@3": { "b": { "c": "1.0.0" } }`), and a dead pin can hide at
+// any depth — a live consumer says nothing about whether the package pinned *under*
+// it still exists. The reserved `"."` key re-pins the consumer itself, which the
+// parent key already covers.
+const overrideTargetNames = (overrides, into = []) => {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key !== '.') into.push(overrideTargetName(key));
+    if (value && typeof value === 'object') overrideTargetNames(value, into);
+  }
+  return into;
+};
+
 // Tracked, not on-disk. `browser/package-lock.json` is deliberately gitignored
 // (.gitignore) yet appears the moment anyone runs an install there, so an
 // existsSync() probe would make these assertions depend on the developer's
@@ -54,8 +87,10 @@ describe('dependency override parity across manifests (#2848)', () => {
     const byPackage = new Map();
     for (const rel of MANIFESTS) {
       for (const [name, version] of Object.entries(readOverrides(rel))) {
-        // Nested overrides (`"minimatch@3": { ... }`) are scoped to one consumer's
-        // subtree and are intentionally manifest-specific — compare only flat pins.
+        // A nested override (`"some-consumer@3": { ... }`) is scoped to one
+        // consumer's subtree and is intentionally manifest-specific — compare only
+        // flat pins. No manifest declares one today; the guard keeps this honest if
+        // one comes back.
         if (typeof version !== 'string') continue;
         if (!byPackage.has(name)) byPackage.set(name, new Map());
         byPackage.get(name).set(rel, version);
@@ -79,13 +114,9 @@ describe('dependency override parity across manifests (#2848)', () => {
     // Add a row here when a new CVE is pinned, so a later careless downgrade of the
     // override (or a copy-paste of a stale pin into a new manifest) fails loudly.
     //
-    // Each entry is scoped to the MAJOR LINE the flat override pins. `brace-expansion`
-    // is also pinned on the 1.x line, but only inside client/'s nested `minimatch@3`
-    // override — which this check skips along with every other nested pin, so the 5.x
-    // minimum below is never compared against a legitimate 1.1.x value. If a 1.x pin
-    // ever becomes a flat override, this table needs a per-major shape first.
+    // Each entry is scoped to the MAJOR LINE the flat override pins, so a package
+    // pinned on two majors at once would need a per-major shape here first.
     const MINIMUM_SAFE = {
-      'brace-expansion': '5.0.7', // GHSA-3jxr-9vmj-r5cp (5.x line)
       'protobufjs': '7.6.5', // GHSA-j3f2-48v5-ccww
       'body-parser': '2.3.0', // GHSA-v422-hmwv-36x6
       // GHSA-52cp-r559-cp3m, then GHSA-5p4m-2wfm-xmqj (quadratic CPU in !!omap
@@ -154,6 +185,54 @@ describe('dependency override parity across manifests (#2848)', () => {
     expect(ungoverned).toEqual([]);
   });
 
+  // A pin outlives its consumer silently: the 2026-08-04 eslint→Biome swap took the
+  // only `minimatch`/`brace-expansion` consumer out of the client tree, but the two
+  // overrides stayed in `client/package.json` for a month (issue #5666). Nothing was
+  // vulnerable — nothing was installed — yet anyone auditing a future
+  // `brace-expansion` advisory would read the manifest, see a pin at the patched
+  // version, and conclude PortOS was covered. Assert instead that every pin governs a
+  // package the workspace actually resolves, so a dead pin fails the build the moment
+  // its consumer leaves.
+  //
+  // Granularity is the package NAME, not the version selector: a `minimatch@3` key
+  // passes while any `minimatch` is installed, even if nothing resolves to 3.x.
+  // Matching selectors would need a semver range matcher for a case no manifest has
+  // today — the name check already catches the whole-package death that actually
+  // happens.
+  it('pins nothing that is absent from the workspace lockfile', () => {
+    const tracked = trackedLockfiles();
+    const missing = [];
+    const scanned = [];
+
+    for (const rel of MANIFESTS) {
+      const lockRel = lockfileFor(rel);
+      if (!tracked.has(lockRel)) continue;
+      const installed = new Set(
+        Object.keys(readLockPackages(lockRel))
+          .filter((path) => path.includes(NESTED))
+          .map(packageNameFromLockPath)
+      );
+
+      const governed = overrideTargetNames(readOverrides(rel));
+      scanned.push({ rel, lockRel, installed: installed.size, governed: governed.length });
+      for (const name of governed) {
+        if (!installed.has(name)) missing.push(`${rel}: pins ${name}, absent from ${lockRel}`);
+      }
+    }
+
+    expect(missing).toEqual([]);
+
+    // Non-vacuity — a scan that skipped every manifest, or parsed a lockfile into an
+    // empty package map, would otherwise report clean. Deliberately not a per-manifest
+    // pin count: removing a genuinely dead pin (what this issue did) must not fail the
+    // very guard that asks for it.
+    expect(scanned.map((s) => s.rel).sort()).toEqual([...MANIFESTS].sort());
+    for (const { lockRel, installed } of scanned) {
+      expect(installed, `${lockRel} parsed to zero packages`).toBeGreaterThan(0);
+    }
+    expect(scanned.reduce((total, s) => total + s.governed, 0)).toBeGreaterThan(0);
+  });
+
   // The source-level assertions above compare manifest against manifest and so
   // cannot see a pin that was declared but never applied: adding an `overrides`
   // entry without regenerating that workspace's lockfile leaves the vulnerable
@@ -173,15 +252,13 @@ describe('dependency override parity across manifests (#2848)', () => {
       }
     }
 
-    const NESTED = 'node_modules/';
     const drift = [];
     for (const lockRel of [...trackedLockfiles()].sort()) {
-      const packages = JSON.parse(readFileSync(join(REPO_ROOT, lockRel), 'utf8')).packages ?? {};
-      for (const [path, meta] of Object.entries(packages)) {
+      for (const [path, meta] of Object.entries(readLockPackages(lockRel))) {
         // '' is the workspace itself, workspace-link entries carry no
         // `node_modules/` segment, and `link: true` entries carry no version.
         if (!path?.includes(NESTED) || !meta?.version) continue;
-        const name = path.slice(path.lastIndexOf(NESTED) + NESTED.length);
+        const name = packageNameFromLockPath(path);
         const pinned = pins.get(name);
         // A package with disagreeing pins is already reported by the parity
         // assertion above; don't double-report it as drift here.
