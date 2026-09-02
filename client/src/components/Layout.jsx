@@ -295,7 +295,7 @@ export const NAV_PRESENTATION = {
   '/api-reference/catalog': { icon: Braces },
   '/settings/autofixer': { icon: Wrench },
   '/settings/backup': { icon: Download },
-  '/settings/code-reviewers': { icon: ShieldCheck },
+  '/models/code-reviewers': { icon: ShieldCheck },
   '/settings/database': { icon: Database },
   '/settings/features': { icon: ListChecks },
   '/settings/general': { icon: Settings },

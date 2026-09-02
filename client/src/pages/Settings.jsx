@@ -5,7 +5,6 @@ import { ApiAccessTab } from '../components/settings/ApiAccessTab';
 import { AutofixerTab } from '../components/settings/AutofixerTab';
 import AiAssignmentsTab from '../components/settings/AiAssignmentsTab';
 import { BackupTab } from '../components/settings/BackupTab';
-import CodeReviewersTab from '../components/settings/CodeReviewersTab';
 import { DatabaseTab } from '../components/settings/DatabaseTab';
 import InstanceFeaturesTab from '../components/settings/InstanceFeaturesTab';
 import { TelegramTab } from '../components/settings/TelegramTab';
@@ -43,7 +42,6 @@ export default function Settings() {
       case 'api-access': return <ApiAccessTab />;
       case 'autofixer': return <AutofixerTab />;
       case 'backup': return <BackupTab />;
-      case 'code-reviewers': return <CodeReviewersTab />;
       case 'database': return <DatabaseTab />;
       case 'features': return <InstanceFeaturesTab />;
       case 'security': return <SecurityTab />;
