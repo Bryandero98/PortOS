@@ -313,6 +313,7 @@ const structuralTestsFor = (changedFiles, trackedSet) => {
   if (changedFiles.some((path) => /^client\/src\/.*\.jsx?$/.test(path))) {
     add('client/src/headingTruncationConventions.test.js');
     add('client/src/hooks/mountedRefConventions.test.js');
+    add('client/src/pollingConventions.test.js');
     add('client/src/popoverClampConventions.test.js');
     add('client/src/responsiveGridConventions.test.js');
     add('client/src/storageConventions.test.js');
