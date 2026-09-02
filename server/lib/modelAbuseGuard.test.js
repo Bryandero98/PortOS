@@ -1,14 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import {
   MODEL_ABUSE_GUARD_MAX_CHUNKS,
+  MODEL_ABUSE_GUARD_STAGES,
   detectDeterministicModelAbuseSignals,
   formatPublicReviewInputPrompt,
   hasToolFreeTextCapability,
   modelAbuseContentFingerprint,
+  modelAbuseGuardStageReadiness,
   normalizeModelAbuseGuardResult,
 } from './modelAbuseGuard.js';
 
 describe('model-abuse guard contract', () => {
+  it('lists every install stage in installer order without implying the classifier is ready', () => {
+    expect(MODEL_ABUSE_GUARD_STAGES.map((stage) => stage.id)).toEqual([
+      'huggingface-token',
+      'python',
+      'venv',
+      'packages',
+      'model',
+    ]);
+    expect(modelAbuseGuardStageReadiness({
+      huggingfaceTokenPresent: true,
+      pythonAvailable: true,
+      venvReady: true,
+    })).toMatchObject({
+      ready: false,
+      stages: [
+        expect.objectContaining({ id: 'huggingface-token', ready: true }),
+        expect.objectContaining({ id: 'python', ready: true }),
+        expect.objectContaining({ id: 'venv', ready: true }),
+        expect.objectContaining({ id: 'packages', ready: false }),
+        expect.objectContaining({ id: 'model', ready: false }),
+      ],
+    });
+    expect(modelAbuseGuardStageReadiness({
+      huggingfaceTokenPresent: true,
+      pythonAvailable: true,
+      venvReady: true,
+      runtimeReady: true,
+      modelCached: true,
+    }).ready).toBe(true);
+  });
+
   it('requires an explicit text capability and rejects native tools', () => {
     expect(hasToolFreeTextCapability(['completion'])).toBe(true);
     expect(hasToolFreeTextCapability(['chat'])).toBe(true);

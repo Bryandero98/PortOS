@@ -9,7 +9,6 @@ import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
-  getModelAbuseGuardStatus, installModelAbuseGuard, cancelModelAbuseGuardInstall,
   deleteLocalLlmModel, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, getLlamaServerUpdateStatus, startLlamaServer, stopLlamaServer, installLlamaServer, upgradeLlamaServer,
   downloadSpecDecodeModel, cancelSpecDecodeModelDownload, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
@@ -23,9 +22,8 @@ import RuntimeServersCard from './RuntimeServersCard.jsx';
 import MtplxServerCard from './MtplxServerCard.jsx';
 import LocalLlmBackendCard from './LocalLlmBackendCard.jsx';
 import LocalLlmInstalledModels from './LocalLlmInstalledModels.jsx';
-import PromptGuardHfAccessNotice from '../imageGen/PromptGuardHfAccessNotice.jsx';
+import ModelAbuseGuardPanel from '../models/ModelAbuseGuardPanel.jsx';
 import TabPills from '../ui/TabPills.jsx';
-import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
@@ -61,9 +59,18 @@ const LLAMA_CACHE_TYPES = ['f16', 'q8_0', 'q4_0'];
 
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
-const LLM_VIEWS = [
+export const LLM_VIEWS = [
   { id: 'runtimes', label: 'Runtimes', icon: Server },
   { id: 'library', label: 'Model Library', icon: Download },
+  { id: 'abuse', label: 'Abuse Guard', icon: ShieldCheck },
+];
+
+// Palettable LLM drill-downs. Runtimes and Model Library stay focused views of
+// `/models/llms` (the Models → LLMs landing). Abuse Guard is a managed
+// classifier lifecycle of its own, so ⌘K and voice need a dedicated path.
+// Scraped by server/lib/navManifest.test.js.
+export const LLM_NAV_SUBROUTES = [
+  { id: 'abuse' },
 ];
 
 const CATEGORY_LABELS = {
@@ -167,10 +174,6 @@ export function LocalLlmTab({ view }) {
   const [catalog, setCatalog] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState('');
-  const [guardStatus, setGuardStatus] = useState(null);
-  const { present: guardHfTokenPresent, source: guardHfTokenSource, refresh: refreshGuardHfToken } = useHfTokenStatus({
-    enabled: activeView === 'library',
-  });
   // Total unified/system memory (GB) reported by the HF search, used to caption
   // the RAM-aware quant defaults. null until the first Hugging Face search.
   const [systemMemoryGb, setSystemMemoryGb] = useState(null);
@@ -266,17 +269,12 @@ export function LocalLlmTab({ view }) {
       .catch(() => null)
   ), []);
 
-  const loadGuardStatus = useCallback(() => (
-    getModelAbuseGuardStatus({ silent: true })
-      .then((res) => {
-        if (res) setGuardStatus(res);
-        return res;
-      })
-      .catch(() => null)
-  ), []);
-
   const loadStatus = useCallback(() => {
     const requestId = ++statusRequestId.current;
+    if (activeView === 'abuse') {
+      setLoading(false);
+      return Promise.resolve();
+    }
     setLoading(true);
     if (activeView === 'runtimes') {
       loadLlamaStatus();
@@ -331,7 +329,6 @@ export function LocalLlmTab({ view }) {
   }, []);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
-  useEffect(() => { loadGuardStatus(); }, [loadGuardStatus]);
 
   // The preset select mounts pre-selected, so the form has to be filled in the
   // moment the presets land — otherwise the recommended preset reads as chosen
@@ -437,7 +434,7 @@ export function LocalLlmTab({ view }) {
       // per model, so answering them would reload the status AND re-query the
       // Hugging Face catalog once per measured model, all night. This tab owns
       // the unscoped install/migrate/upgrade frames only.
-      if (data?.scope === 'assessment' || data?.scope === 'assessment-sweep') return;
+      if (data?.scope === 'assessment' || data?.scope === 'assessment-sweep' || data?.scope === 'security-guard') return;
       clearTimeout(progressTimer.current);
       setProgressMsg(data.message || '');
       if (data.event === 'complete') {
@@ -563,14 +560,6 @@ export function LocalLlmTab({ view }) {
     (r) => r?.message || 'MTPLX stopped'
   ).then(loadMtplxStatus);
 
-  const installGuard = () => runAction(
-    'security-guard-install',
-    () => installModelAbuseGuard(),
-    'Model-abuse guard installed and ready',
-  ).then(loadGuardStatus);
-  const cancelGuard = () => cancelModelAbuseGuardInstall({ silent: true })
-    .then(loadGuardStatus)
-    .catch(() => null);
   // Checkpoint management (search / download / remove), owned by the MTPLX card.
   //
   // `mtplxSearch` keeps a stable identity because the checkpoint panel keys its
@@ -981,7 +970,9 @@ export function LocalLlmTab({ view }) {
         <p className="text-xs text-gray-500">
           {activeView === 'runtimes'
             ? 'Install, start, stop, and configure the local servers that run language models.'
-            : 'Find, install, compare, and remove the model weights available to Ollama and LM Studio.'}
+            : activeView === 'abuse'
+              ? 'Install and verify each stage of the pinned Prompt Guard classifier used to screen external content.'
+              : 'Find, install, compare, and remove the model weights available to Ollama and LM Studio.'}
         </p>
       </div>
 
@@ -1519,80 +1510,10 @@ export function LocalLlmTab({ view }) {
         </section>
       )}
 
+      {activeView === 'abuse' && <ModelAbuseGuardPanel />}
+
       {activeView === 'library' && (
         <section id="llm-management-panel-library" role="tabpanel" aria-labelledby="tab-library">
-      <section
-        aria-labelledby="model-abuse-guard-heading"
-        data-testid="model-abuse-guard-card"
-        className="bg-port-accent/5 border border-port-accent/50 rounded-xl p-4 sm:p-6 space-y-3"
-      >
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="flex items-start gap-2">
-            <ShieldCheck size={18} className="text-port-accent mt-0.5" aria-hidden="true" />
-            <div>
-              <h2 id="model-abuse-guard-heading" className="text-sm font-medium text-white">Model-abuse guard</h2>
-              <p className="text-xs text-port-accent mt-0.5">Recommended safety layer · managed classifier</p>
-            </div>
-          </div>
-          {guardStatus?.ready === true ? (
-            <span className="text-xs px-2 py-1 rounded border border-port-success/40 text-port-success">Ready</span>
-          ) : guardStatus ? (
-            <span className="text-xs px-2 py-1 rounded border border-port-warning/40 text-port-warning">Not installed</span>
-          ) : (
-            <span className="text-xs text-gray-500">Checking status…</span>
-          )}
-        </div>
-        <p className="text-xs text-gray-300 max-w-3xl">
-          Llama Prompt Guard 2 86M screens complete external issues, comments, and pull-request diffs before they reach a reasoning agent. It is a pinned local classifier with no chat, tools, MCP, or repository access; flagged or inconclusive content is withheld.
-        </p>
-        <PromptGuardHfAccessNotice
-          tokenPresent={guardHfTokenPresent}
-          tokenSource={guardHfTokenSource}
-          model={guardStatus}
-          onSaved={refreshGuardHfToken}
-        />
-        <div className="flex items-center gap-2 flex-wrap text-[11px] text-gray-500">
-          <span>Llama Prompt Guard 2 86M</span>
-          <span>·</span>
-          <span>86M · offline · no tools</span>
-          <a
-            href="https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-port-accent hover:underline inline-flex items-center gap-1"
-          >
-            Model card <ExternalLink size={11} />
-          </a>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {guardStatus?.ready === true ? (
-            <span className="text-xs text-port-success">Installed from the pinned model revision.</span>
-          ) : actionInProgress === 'security-guard-install' ? (
-            <>
-              <span className="flex items-center gap-1.5 text-xs text-gray-300"><BrailleSpinner /> Installing the dedicated guard…</span>
-              <button
-                type="button"
-                onClick={cancelGuard}
-                className="px-2.5 py-1 text-xs bg-port-border hover:bg-port-border/70 text-gray-300 rounded"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={installGuard}
-              disabled={busy || !guardStatus || guardHfTokenPresent !== true}
-              className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-            >
-              <Download size={12} /> Install model-abuse guard
-            </button>
-          )}
-          {actionInProgress === 'security-guard-install' && progressMsg && (
-            <span className="text-[11px] text-gray-500">{progressMsg}</span>
-          )}
-        </div>
-      </section>
       {/* Models — backend picker + catalog/install + installed list */}
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">

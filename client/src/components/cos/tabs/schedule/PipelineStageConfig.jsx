@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { Link } from 'react-router';
 import {
   effortAwareModelOptions,
   effortSurvivingModel,
@@ -103,7 +104,10 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
                 <div className="rounded-lg border border-port-accent/30 bg-port-bg/60 px-3 py-2 text-xs text-gray-300">
                   <p className="font-medium text-port-accent">Managed Llama Prompt Guard 2 86M</p>
                   <p className="mt-1">Fixed, pinned, offline classifier. It scans complete external content before Stage 2 and never appears as a chat model or receives tools, MCP servers, repository files, or GitHub credentials.</p>
-                  <p className="mt-1 text-gray-500">Install or check readiness from Models → LLMs → Model Library.</p>
+                  <p className="mt-1 text-gray-500">
+                    Install or check readiness from{' '}
+                    <Link to="/models/llms/abuse" className="underline hover:text-port-accent">Models → LLMs → Abuse Guard</Link>.
+                  </p>
                 </div>
               )}
               {!isSecurityStage && (

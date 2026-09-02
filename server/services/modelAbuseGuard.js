@@ -32,6 +32,7 @@ import {
   MODEL_ABUSE_GUARD_TIMEOUT_MS,
   detectDeterministicModelAbuseSignals,
   hasToolFreeTextCapability,
+  modelAbuseGuardStageReadiness,
   normalizeModelAbuseGuardResult,
 } from '../lib/modelAbuseGuard.js';
 import { findCachedRepoFiles } from '../lib/hfCache.js';
@@ -216,9 +217,13 @@ export function buildModelAbuseGuardEnv(source = process.env) {
   };
 }
 
-const emitInstall = (onEvent, event, message) => {
+const emitInstall = (onEvent, event, message, stage) => {
   if (typeof onEvent !== 'function') return;
-  onEvent({ event, message: String(message || '').slice(0, MAX_INSTALL_EVENT_CHARS) });
+  onEvent({
+    event,
+    message: String(message || '').slice(0, MAX_INSTALL_EVENT_CHARS),
+    ...(stage ? { stage } : {}),
+  });
 };
 
 function availableGuardPython() {
@@ -256,19 +261,32 @@ async function isRuntimeReady(pythonPath) {
  * are intentionally omitted from the API contract.
  */
 export async function getModelAbuseGuardStatus() {
-  const [files, pythonPath] = await Promise.all([
+  const [files, pythonPath, huggingfaceTokenPresent] = await Promise.all([
     findCachedRepoFiles(MODEL_ABUSE_GUARD.repository, MODEL_ABUSE_GUARD_REQUIRED_FILES, {
       revision: MODEL_ABUSE_GUARD.revision,
     }),
     Promise.resolve(availableGuardPython()),
+    getHfToken().then((token) => Boolean(token)).catch(() => false),
   ]);
   const modelCached = Array.isArray(files);
+  const venvReady = Boolean(pythonPath);
+  const pythonAvailable = Boolean(detectVenvBasePythonSync());
   const runtimeReady = await isRuntimeReady(pythonPath);
+  const { stages, ready } = modelAbuseGuardStageReadiness({
+    huggingfaceTokenPresent,
+    pythonAvailable,
+    venvReady,
+    runtimeReady,
+    modelCached,
+  });
   return {
     ...MODEL_ABUSE_GUARD,
     modelCached,
     runtimeReady,
-    ready: modelCached && runtimeReady,
+    pythonAvailable,
+    venvReady,
+    stages,
+    ready,
   };
 }
 
@@ -288,31 +306,31 @@ export function installModelAbuseGuard({ onEvent } = {}) {
     const basePython = detectVenvBasePythonSync();
     if (!basePython) return failure('security-guard-python-unavailable');
     await ensureDir(dirname(GUARD_VENV_DIR));
-    emitInstall(onEvent, 'stage', 'Preparing the dedicated Prompt Guard runtime…');
+    emitInstall(onEvent, 'stage', 'Preparing the dedicated Prompt Guard runtime…', 'venv');
     const pythonPath = await createVenv(basePython, GUARD_VENV_DIR);
     cachedRuntime = null;
 
-    emitInstall(onEvent, 'stage', 'Installing the fixed classifier runtime packages…');
+    emitInstall(onEvent, 'stage', 'Installing the fixed classifier runtime packages…', 'packages');
     const packageRun = installPackages(pythonPath, [...MODEL_ABUSE_GUARD_PYTHON_IMPORTS], ({ type, message }) => {
-      if (type === 'complete') emitInstall(onEvent, 'stage', 'Classifier runtime packages are ready.');
-      else if (type === 'error') emitInstall(onEvent, 'error', 'Classifier runtime package installation failed.');
-      else if (message && /install|uninstall/i.test(message)) emitInstall(onEvent, 'stage', 'Installing classifier runtime packages…');
+      if (type === 'complete') emitInstall(onEvent, 'stage', 'Classifier runtime packages are ready.', 'packages');
+      else if (type === 'error') emitInstall(onEvent, 'error', 'Classifier runtime package installation failed.', 'packages');
+      else if (message && /install|uninstall/i.test(message)) emitInstall(onEvent, 'stage', 'Installing classifier runtime packages…', 'packages');
     });
     installKill = packageRun.kill;
     const packageResult = await packageRun.promise;
     installKill = null;
     if (!packageResult?.ok) return failure('security-guard-runtime-install-failed');
 
-    emitInstall(onEvent, 'stage', 'Downloading the pinned Prompt Guard model snapshot…');
+    emitInstall(onEvent, 'stage', 'Downloading the pinned Prompt Guard model snapshot…', 'model');
     const download = downloadHfRepo({
       repo: MODEL_ABUSE_GUARD.repository,
       revision: MODEL_ABUSE_GUARD.revision,
       only: [...MODEL_ABUSE_GUARD_REQUIRED_FILES],
       pythonPath,
       onEvent: (event) => {
-        if (event?.type === 'error') emitInstall(onEvent, 'error', 'Prompt Guard model download failed.');
-        else if (event?.type === 'progress') emitInstall(onEvent, 'progress', event.stage || 'Downloading Prompt Guard…');
-        else if (event?.type === 'complete') emitInstall(onEvent, 'stage', 'Pinned Prompt Guard model snapshot downloaded.');
+        if (event?.type === 'error') emitInstall(onEvent, 'error', 'Prompt Guard model download failed.', 'model');
+        else if (event?.type === 'progress') emitInstall(onEvent, 'progress', event.stage || 'Downloading Prompt Guard…', 'model');
+        else if (event?.type === 'complete') emitInstall(onEvent, 'stage', 'Pinned Prompt Guard model snapshot downloaded.', 'model');
       },
     });
     installKill = download.kill;
