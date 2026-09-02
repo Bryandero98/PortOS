@@ -59,6 +59,7 @@ const COS_SRC = readFileSync(join(__dirname, 'cos.js'), 'utf-8');
 // listener) stays in cos.js. Source-level guards below read each invariant from
 // whichever module now owns it.
 const GEN_SRC = readFileSync(join(__dirname, 'cosTaskGenerator.js'), 'utf-8');
+const PRESTEP_SRC = readFileSync(join(__dirname, 'cosTaskPreStepBlocks.js'), 'utf-8');
 const SCHED_SRC = readFileSync(join(__dirname, 'cosJobScheduler.js'), 'utf-8');
 // The pure capacity tracker + mission/idle tier-eligibility predicates that
 // dequeueNextTask (and these tests) call live in cosDequeue.js (issue #2530).
@@ -2524,7 +2525,9 @@ describe('pending-merge sweep — own timer, not the evaluation cadence (#3630)'
   });
 
   it('does NOT re-couple the drain to the pr-watcher task type', () => {
-    const watcherFn = extractFnBody(GEN_SRC, GEN_SRC.indexOf('async function resolvePrWatcherBlock'));
+    const start = PRESTEP_SRC.indexOf('async function resolvePrWatcherBlock');
+    expect(start, 'resolvePrWatcherBlock must still be findable — a renamed/moved subject would silently pass').toBeGreaterThan(-1);
+    const watcherFn = extractFnBody(PRESTEP_SRC, start);
     expect(watcherFn).not.toMatch(/sweepPendingMergePrs\(/);
   });
 
