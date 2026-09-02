@@ -29,6 +29,8 @@ const {
   WIN_CMD_SHIMS,
   MAX_OUTPUT_BYTES,
   spawnFailureDetail,
+  guardChildStdin,
+  deliverChildStdin,
 } = await import('./bufferedSpawn.js');
 
 /**
@@ -600,5 +602,72 @@ describe('spawnFailureDetail', () => {
   it('returns the fallback when the command failed without saying anything', () => {
     expect(spawnFailureDetail({}, fallback)).toBe(fallback);
     expect(spawnFailureDetail(null, fallback)).toBe(fallback);
+  });
+});
+
+describe('guardChildStdin', () => {
+  // An 'error' on a stream with no listener is re-thrown by Node. Every CLI-agent
+  // spawn site runs outside the Express request lifecycle, so that throw takes the
+  // whole server process down — with every live agent run, PTY shell and socket on
+  // it. This is the contract every CLI spawn site that writes stdin relies on.
+  it('swallows an EPIPE emitted on the child stdin pipe', () => {
+    const child = { stdin: new EventEmitter() };
+    guardChildStdin(child);
+    expect(() => child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).not.toThrow();
+  });
+
+  it('proves the fake really is unguarded without it (bypass probe)', () => {
+    const child = { stdin: new EventEmitter() };
+    expect(() => child.stdin.emit('error', new Error('write EPIPE'))).toThrow('write EPIPE');
+  });
+
+  it('is a no-op for a spawn that failed command lookup and has no stdio at all', () => {
+    expect(() => guardChildStdin({})).not.toThrow();
+    expect(() => guardChildStdin(null)).not.toThrow();
+  });
+
+  it('returns the child so it can be chained at a spawn site', () => {
+    const child = { stdin: new EventEmitter() };
+    expect(guardChildStdin(child)).toBe(child);
+  });
+});
+
+describe('deliverChildStdin', () => {
+  const streamStdin = (overrides = {}) => Object.assign(new EventEmitter(), {
+    write: vi.fn(), end: vi.fn(), destroy: vi.fn(), ...overrides,
+  });
+
+  it('writes the payload and closes the pipe', () => {
+    const child = { stdin: streamStdin() };
+    expect(deliverChildStdin(child, 'prompt', 'run r1')).toBe(true);
+    expect(child.stdin.write).toHaveBeenCalledWith('prompt');
+    expect(child.stdin.end).toHaveBeenCalled();
+  });
+
+  it('closes the pipe without writing when the prompt already went out by argv', () => {
+    const child = { stdin: streamStdin() };
+    expect(deliverChildStdin(child, null, 'run r1')).toBe(true);
+    expect(child.stdin.write).not.toHaveBeenCalled();
+    expect(child.stdin.end).toHaveBeenCalled();
+  });
+
+  it('destroys the pipe and logs when write throws, instead of letting it escape', () => {
+    // A bare swallow would leave a child that IS reading stdin waiting on a
+    // write that never lands, and file the resulting empty run as clean (#5655).
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = { stdin: streamStdin({ write: vi.fn(() => { throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }); }) }) };
+
+    expect(deliverChildStdin(child, 'prompt', 'run r1')).toBe(false);
+
+    expect(child.stdin.destroy).toHaveBeenCalled();
+    expect(consoleSpy.mock.calls[0][0]).toContain('❌ run r1 stdin write failed');
+    expect(consoleSpy.mock.calls[0][0]).toContain('EPIPE');
+    consoleSpy.mockRestore();
+  });
+
+  it('survives a spawn that failed command lookup and has no stdio at all', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(deliverChildStdin({}, 'prompt', 'run r1')).toBe(false);
+    consoleSpy.mockRestore();
   });
 });

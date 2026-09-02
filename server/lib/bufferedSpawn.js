@@ -424,3 +424,74 @@ export function spawnFailureDetail(result, fallback) {
   if (stdoutTail && !/^[}\]]+,?$/.test(stdoutTail)) return stdoutTail;
   return fallback;
 }
+
+/**
+ * Attach the no-op `'error'` listener every spawned child's `stdin` needs before
+ * anything writes to it.
+ *
+ * A child that dies before reading its stdin (a CLI that isn't on PATH, or one
+ * that exits on a bad flag) makes the pipe emit `EPIPE`. A stream `'error'` with
+ * no listener is re-thrown by Node, and every spawn site here runs OUTSIDE the
+ * Express request lifecycle — there is no `next(err)` to bubble to, so the throw
+ * takes down the single server process that owns every live agent run, PTY
+ * shell, media job and socket. Swallowing it is correct: the child's own
+ * `'error'`/`'exit'`/`'close'` handler is the authoritative settle point and
+ * reports the real cause. It is logged rather than dropped, because a child
+ * that exits 0 after refusing its prompt would otherwise be recorded as a clean
+ * run with no trace of the prompt never having been delivered.
+ *
+ * A crash guard must never be the crash: a `spawn()` that failed command lookup
+ * hands back a handle with no stdio at all, and a child configured with a
+ * non-pipe stdin has no emitter to listen on either. Both are a no-op here
+ * rather than a `TypeError` thrown from the very line meant to prevent one.
+ *
+ * @param {import('child_process').ChildProcess} child
+ * @returns {import('child_process').ChildProcess} the same child, for chaining
+ */
+export function guardChildStdin(child) {
+  if (typeof child?.stdin?.on === 'function') {
+    child.stdin.on('error', (err) => {
+      console.warn(`⚠️ child stdin closed before the prompt was delivered: ${err?.code || err?.message || err}`);
+    });
+  }
+  return child;
+}
+
+/**
+ * Deliver a prompt on a guarded child's `stdin` and close the pipe.
+ *
+ * Pair with `guardChildStdin`, which must already have run — this covers the
+ * OTHER half of the same hazard, a `write()` that throws *synchronously* (an
+ * already-destroyed pipe, or a payload that isn't a string/Buffer). That throw
+ * escapes the spawn site the same way an unlistened `'error'` does, so it is
+ * caught here.
+ *
+ * Two things then have to happen, and both were missed by the naive
+ * swallow-and-continue: the pipe is destroyed, so a child that IS still reading
+ * stdin sees EOF instead of waiting forever on a write that never lands; and
+ * the failure is logged, because a provider that gets an empty prompt and exits
+ * 0 would otherwise be filed as a clean run with nothing to explain the empty
+ * output. The child's own `'error'`/`'close'` handler stays the authoritative
+ * settle point, so this deliberately does not rethrow or settle anything.
+ *
+ * @param {import('child_process').ChildProcess} child
+ * @param {string|Buffer|null} payload - written when non-null; pass null when the
+ *   prompt was already delivered by argv or a temp file and stdin only needs closing
+ * @param {string} label - names the run/agent in the failure log
+ * @returns {boolean} true when the prompt was handed off cleanly
+ */
+export function deliverChildStdin(child, payload, label) {
+  if (!child?.stdin) {
+    console.error(`❌ ${label} has no stdin pipe — the prompt was not delivered`);
+    return false;
+  }
+  try {
+    if (payload != null) child.stdin.write(payload);
+    child.stdin.end();
+    return true;
+  } catch (err) {
+    console.error(`❌ ${label} stdin write failed, closing the pipe: ${err?.code || err?.message || err}`);
+    child.stdin?.destroy();
+    return false;
+  }
+}

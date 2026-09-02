@@ -113,7 +113,9 @@ function makeChild() {
   Object.setPrototypeOf(child, ChildProcess.prototype);
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { write: vi.fn(), end: vi.fn() };
+  // A real ChildProcess stdin is a stream — the fake is one too, or the
+  // production guardChildStdin listener has nothing to attach to (#5655).
+  child.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn(), destroy: vi.fn() });
   child.kill = vi.fn();
   child.killed = false;
   return child;
@@ -621,6 +623,49 @@ describe('executeCliRun — Windows .cmd/.bat shim spawning (#1865)', () => {
     const [command, , options] = spawn.mock.calls.at(-1);
     expect(command).toBe('codex');
     expect(options.shell).toBeFalsy();
+  });
+});
+
+describe('executeCliRun — stdin pipe containment (#5655)', () => {
+  const provider = {
+    id: 'codex', command: 'codex', args: [],
+    defaultModel: 'codex-configured-default', timeout: 5000,
+  };
+
+  it('guards the pipe before writing, so a dead child\'s EPIPE cannot crash the server', async () => {
+    // executeCliRun runs outside the Express request lifecycle: an unlistened
+    // 'error' on the stdin stream is re-thrown by Node and takes the whole
+    // server process down with every live run on it.
+    const child = makeChild();
+    let listenersAtWriteTime = null;
+    child.stdin.write = vi.fn(() => { listenersAtWriteTime = child.stdin.listenerCount('error'); });
+    spawn.mockReturnValue(child);
+
+    await executeCliRun({ runId: 'run-stdin-guard', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE });
+
+    expect(listenersAtWriteTime).toBe(1);
+    expect(() => child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).not.toThrow();
+    child.emit('close', 0);
+  });
+
+  it('closes the pipe and logs when the write throws, rather than stranding the run', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const child = makeChild();
+    child.stdin.write = vi.fn(() => { throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }); });
+    spawn.mockReturnValue(child);
+
+    const onComplete = vi.fn();
+    // The synchronous throw is contained — executeCliRun still returns normally.
+    await executeCliRun({ runId: 'run-stdin-throw', provider, prompt: 'test prompt', workspacePath: TEST_WORKSPACE, onComplete });
+
+    // A child still reading stdin must see EOF instead of waiting on a write that never lands.
+    expect(child.stdin.destroy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('run run-stdin-throw stdin write failed'));
+
+    child.emit('close', 0);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
   });
 });
 

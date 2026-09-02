@@ -66,8 +66,10 @@ describe('cos-runner spawn — per-provider prompt delivery (antigravity --print
 
   it('gates the stdin write on useStdin so an argv-delivered prompt is not also piped', () => {
     // For antigravity (--print value) / grok-on-Windows (temp file) useStdin is
-    // false — writing the prompt to stdin too would be redundant/incorrect.
-    expect(RUNNER_SRC).toMatch(/if\s*\(\s*useStdin\s*\)\s*claudeProcess\.stdin\.write\(prompt\)/);
+    // false — writing the prompt to stdin too would be redundant/incorrect. The
+    // delivery helper writes its payload only when it is non-null, so passing
+    // null there is what "don't pipe it" looks like now (#5655).
+    expect(RUNNER_SRC).toMatch(/deliverChildStdin\(claudeProcess,\s*useStdin \? prompt : null,/);
   });
 });
 
@@ -79,11 +81,25 @@ describe('cos-runner termination', () => {
   // those for real; all this file pins is that index.js delegates to both
   // rather than hand-rolling either.
   it('kills only through the shared killProcessTree helper', () => {
-    expect(RUNNER_SRC).toContain("import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';");
+    // Matched as "killProcessTree is on the bufferedSpawn import line" rather than
+    // as the exact line text — pinning the whole specifier list made an unrelated
+    // helper import (guardChildStdin, #5655) fail a kill-path assertion.
+    expect(RUNNER_SRC).toMatch(/^import \{[^}]*\bkillProcessTree\b[^}]*\} from '\.\.\/lib\/bufferedSpawn\.js';$/m);
     // A BARE `.kill()` is still fine — the sentinel watcher closes a finished
     // TUI session that way, and a bare kill is the one form node-pty accepts
     // on every platform. What must not reappear is a hand-rolled signal kill.
     expect(RUNNER_SRC).not.toContain(".process.kill('SIG");
+  });
+
+  it('guards the child stdin pipe BEFORE writing the prompt to it', () => {
+    // A child that dies before reading stdin emits EPIPE, and an unlistened
+    // stream 'error' in this non-request context kills the runner process
+    // (#5655). Source-text because the route spawns a real child; the helper's
+    // behavior is covered in lib/bufferedSpawn.test.js.
+    const guardAt = RUNNER_SRC.indexOf('guardChildStdin(claudeProcess);');
+    const deliverAt = RUNNER_SRC.indexOf('deliverChildStdin(claudeProcess,');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(deliverAt).toBeGreaterThan(guardAt);
   });
 
   it('escalates through the shared armForceKill on every terminate path', () => {
