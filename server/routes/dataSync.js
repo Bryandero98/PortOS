@@ -46,8 +46,10 @@ const router = Router();
 
 // MUST stay in sync with dataSync.getSupportedCategories() — a category
 // registered in the service but absent here 400s before its snapshot/apply
-// handler can run (the latent bug #730 hit for `storyBuilder`).
-const categoryParam = z.enum(['goals', 'character', 'digitalTwin', 'meatspace', 'universe', 'pipeline', 'mediaCollections', 'videoHistory', 'storyBuilder', 'usage']);
+// handler can run (the latent bug #730 hit for `storyBuilder`). Exported so
+// dataSync.test.js can assert that parity against the REAL service export in
+// both directions, instead of re-typing this list (#5705).
+export const categoryParam = z.enum(['goals', 'character', 'digitalTwin', 'meatspace', 'universe', 'pipeline', 'mediaCollections', 'videoHistory', 'storyBuilder', 'usage']);
 
 // Categories whose payload is the user's own person rather than their creative
 // work — `digitalTwin` alone carries identity, chronotype, longevity markers,

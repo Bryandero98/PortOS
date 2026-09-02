@@ -11,11 +11,16 @@ vi.mock('../services/sharing/tombstoneGc.js', () => ({
   getSweepStatus: vi.fn(),
   TOMBSTONE_GRACE_MS: 24 * 60 * 60 * 1000,
 }));
-vi.mock('../services/dataSync.js', () => ({
+// The three I/O entry points are stubbed so the route test never touches real
+// stores — but `getSupportedCategories` delegates to the REAL export (#5705).
+// It is a pure `Object.keys(CATEGORIES)` with no I/O, and it is the source of
+// truth the route's hand-maintained `categoryParam` enum has to match; a stub
+// would make the parity tests below compare the route to a copy of itself.
+vi.mock('../services/dataSync.js', async () => ({
   getChecksum: vi.fn(),
   getSnapshot: vi.fn(),
   applyRemote: vi.fn(),
-  getSupportedCategories: vi.fn(() => []),
+  getSupportedCategories: (await vi.importActual('../services/dataSync.js')).getSupportedCategories,
 }));
 
 // Stub only the two leaves the REAL peer-pull gate reads — the peer registry
@@ -31,14 +36,19 @@ vi.mock('../services/instances.js', async () => ({
   getPeers: async () => peers,
 }));
 let settings = {};
-vi.mock('../services/settings.js', () => ({
+// Spreads the real module rather than listing one export: pulling the real
+// `getSupportedCategories` above loads the whole dataSync graph, which reaches
+// modules importing other settings exports — a hand-listed stub would break
+// again the next time that graph grows an import.
+vi.mock('../services/settings.js', async () => ({
+  ...(await vi.importActual('../services/settings.js')),
   getSettings: async () => settings,
 }));
 
 import { sweepTombstones, getSweepStatus } from '../services/sharing/tombstoneGc.js';
-import { getChecksum, getSnapshot } from '../services/dataSync.js';
+import { getChecksum, getSnapshot, applyRemote, getSupportedCategories } from '../services/dataSync.js';
 import { PEER_INSTANCE_ID_HEADER, __resetPullWarnThrottleForTests } from '../services/sharing/peerPullAuthorization.js';
-import dataSyncRoutes from './dataSync.js';
+import dataSyncRoutes, { categoryParam } from './dataSync.js';
 
 const PEER_ID = 'peer-a-instance-id';
 // Obviously-fake peer record. `fullSync` stands in for "the user ticked every
@@ -153,22 +163,41 @@ describe('GET /api/sync/:category/checksum — forPeer scoping', () => {
     expect(res.status).toBe(200);
     expect(getChecksum).toHaveBeenCalledWith('universe', { forPeerId: undefined });
   });
+});
 
-  // The category enum is hand-maintained and MUST cover every category the
-  // service supports (a missing one 400s before the snapshot handler runs —
-  // the latent bug #730 hit for `storyBuilder`). Assert each known snapshot
-  // category is accepted (non-400) so a future addition that forgets the enum
-  // is caught here.
-  it.each([
-    'goals', 'character', 'digitalTwin', 'meatspace',
-    'universe', 'pipeline', 'mediaCollections', 'videoHistory', 'storyBuilder', 'usage',
-  ])('accepts the %s category (enum parity with getSupportedCategories)', async (category) => {
-    // Identified as a configured peer so the PII categories clear the pull gate
+// The route's `categoryParam` enum is hand-maintained and has to match
+// `dataSync.getSupportedCategories()` exactly. Drift in either direction is a
+// live bug: a service category missing from the enum 400s before its handler
+// can run (#730 hit that for `storyBuilder`), and an enum entry the service
+// retired lets a request through to a 404 at the service. Both directions are
+// asserted against the REAL export here — the earlier version of this suite
+// stubbed it and iterated a hardcoded copy of the enum, so it compared the
+// route to itself and could not catch either (#5705).
+describe('/api/sync/:category — enum parity with getSupportedCategories()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    settings = {};
+    // A configured, fully-shared peer so the PII categories clear the pull gate
     // (#5663) and this stays a test of the ENUM, not of authorization.
+    setPeers(allowedPeer());
+    __resetPullWarnThrottleForTests();
+    getChecksum.mockResolvedValue({ checksum: 'abc' });
+  });
+
+  it('matches the service category list exactly', () => {
+    // Symmetric on purpose: a missing entry also trips the sweep below, but
+    // only this gives a stale entry (a category the service retired, which now
+    // reaches a 404 at the service) a failure at all — and it names the drift
+    // in the diff instead of as N route errors.
+    expect([...categoryParam.options].sort()).toEqual([...getSupportedCategories()].sort());
+  });
+
+  it.each(getSupportedCategories())('serves a checksum for the %s category', async (category) => {
     const res = await request(buildApp())
       .get(`/api/sync/${category}/checksum`)
       .set(PEER_INSTANCE_ID_HEADER, PEER_ID);
-    expect(res.status).not.toBe(400);
+    expect(res.status).toBe(200);
+    expect(getChecksum).toHaveBeenCalledWith(category, { forPeerId: undefined });
   });
 });
 
@@ -278,10 +307,9 @@ describe('GET /api/sync/:category — peer-pull authorization', () => {
   });
 
   it('leaves the write direction alone — apply is gated by its schema-version check, not this', async () => {
-    const { applyRemote } = await import('../services/dataSync.js');
     applyRemote.mockResolvedValue({ applied: true, count: 1 });
     const res = await request(buildApp()).post('/api/sync/digitalTwin/apply').send({ data: { a: 1 } });
     expect(res.status).toBe(200);
-    expect(applyRemote).toHaveBeenCalled();
+    expect(applyRemote).toHaveBeenCalledWith('digitalTwin', { a: 1 }, { portosMeta: undefined });
   });
 });
