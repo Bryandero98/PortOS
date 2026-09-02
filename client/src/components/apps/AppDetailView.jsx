@@ -10,6 +10,7 @@ import * as api from '../../services/api';
 import { getLaunchUrls } from '../../services/appUrls';
 import socket from '../../services/socket';
 import { APP_DETAIL_TABS, NON_PM2_TYPES, getAppTypeLabel, isAppFeatureEnabled, resolveLaunchPanelProcess } from './constants';
+import { useAutoRefetch } from '../../hooks/useAutoRefetch.js';
 import { useInstanceFeatures } from '../../hooks/useInstanceFeatures.js';
 import DesktopLaunchProgress from './DesktopLaunchProgress';
 import OverviewTab from './tabs/OverviewTab';
@@ -126,29 +127,22 @@ export default function AppDetailView() {
   // Native launch status is independent of the web app's overall PM2 state.
   // Poll only while its live-output panel is open so closing the game moves the
   // panel from Running to Exited without disturbing the standard web controls.
-  useEffect(() => {
-    if (!launchProcess || launchProcess !== app?.nativeLaunch?.processName) return;
-    let cancelled = false;
-    const refresh = () => {
-      api.getNativeLaunchStatus(appId, { silent: true })
-        .then(result => {
-          if (cancelled) return;
-          if (['online', 'launching'].includes(result?.status)) {
-            setNativeLaunchOnline(true);
-          } else if (['stopped', 'errored', 'not_found', 'not_started'].includes(result?.status)) {
-            setNativeLaunchOnline(false);
-          }
-        })
-        // A failed status read is unknown, not evidence that the game exited.
-        .catch(() => {});
-    };
-    refresh();
-    const timer = setInterval(refresh, 1500);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [appId, app?.nativeLaunch?.processName, launchProcess]);
+  const refreshNativeLaunchStatus = useCallback(() => (
+    api.getNativeLaunchStatus(appId, { silent: true })
+      .then(result => {
+        if (['online', 'launching'].includes(result?.status)) {
+          setNativeLaunchOnline(true);
+        } else if (['stopped', 'errored', 'not_found', 'not_started'].includes(result?.status)) {
+          setNativeLaunchOnline(false);
+        }
+      })
+      // A failed status read is unknown, not evidence that the game exited.
+      .catch(() => {})
+  ), [appId]);
+  useAutoRefetch(refreshNativeLaunchStatus, 1500, {
+    enabled: Boolean(launchProcess) && launchProcess === app?.nativeLaunch?.processName,
+    pollOnly: true,
+  });
 
   const handleStop = async () => {
     setActionLoading('stop');

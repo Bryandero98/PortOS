@@ -42,7 +42,7 @@ function StatusBadge({ loop }) {
 
 function CreateLoopForm({ providers, onCreated }) {
   const [prompt, setPrompt] = useState('');
-  const [interval, setInterval] = useState('10m');
+  const [interval, setIntervalPreset] = useState('10m');
   const [customInterval, setCustomInterval] = useState('');
   const [name, setName] = useState('');
   const [providerId, setProviderId] = useState('');
@@ -100,7 +100,7 @@ function CreateLoopForm({ providers, onCreated }) {
               <button
                 key={p.value}
                 type="button"
-                onClick={() => { setInterval(p.value); setCustomInterval(''); }}
+                onClick={() => { setIntervalPreset(p.value); setCustomInterval(''); }}
                 className={`px-2 py-1 text-xs rounded border ${
                   interval === p.value && !customInterval
                     ? 'border-port-accent bg-port-accent/20 text-port-accent'
