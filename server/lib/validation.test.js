@@ -566,6 +566,13 @@ describe('validation.js', () => {
       const result = appSchema.safeParse(app);
       expect(result.success).toBe(false);
     });
+
+    it('accepts an explicit managed-app update command', () => {
+      const app = { name: 'Test', repoPath: '/path', updateCommand: 'npm run update' };
+      const result = appSchema.safeParse(app);
+      expect(result.success).toBe(true);
+      expect(result.data.updateCommand).toBe('npm run update');
+    });
   });
 
   describe('appUpdateSchema', () => {

@@ -5,10 +5,9 @@ import { tmpdir } from 'os';
 import * as gitService from './git.js';
 import * as pm2Service from './pm2.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
-import { parseCommandArgs } from '../lib/commandSecurity.js';
+import { parseCommandArgs, validateCommand } from '../lib/commandSecurity.js';
 import { isDetachedRunning, spawnDetached } from '../lib/detachedSpawn.js';
 import { PORTOS_APP_ID } from '../lib/appIdentity.js';
-import { parseBuildCommand } from './appBuilder.js';
 import { syncManagedAppFork } from './managedAppRepositories.js';
 
 const CMD_TIMEOUT_MS = 5 * 60 * 1000;
@@ -67,14 +66,14 @@ async function startDashboardHandoff(app) {
 
 /**
  * Run a full update cycle for an app:
- * 1. git pull --rebase --autostash
- * 2. install dependencies in each package directory (Bun apps use their
- *    frozen lockfile; existing apps retain npm install)
- * 3. run setup with the same package manager when the script exists
- * 4. rebuild the production UI when a build command or `scripts.build` exists
- *    (a pull that only restarts leaves `client/dist` stale and PortOS then
- *    reports "install out of sync")
- * 5. Restart PM2 processes
+ * 1. switch to origin's default branch and fast-forward it
+ * 2. run an explicitly declared app update routine, when one exists
+ * 3. restart the app's PM2 processes
+ *
+ * PortOS owns its comprehensive update.sh/update.ps1 lifecycle separately.
+ * A generic managed app must opt in to dependency installs, migrations, or a
+ * build: guessing those steps from a package.json can freeze or break apps
+ * whose lifecycle does not resemble PortOS.
  *
  * @param {object} app - The app object (must have repoPath, pm2ProcessNames, pm2Home)
  * @param {function} emit - Callback (step, status, message) for progress updates
@@ -103,7 +102,6 @@ async function _doUpdate(app, emit, { syncFork }) {
   const packageManagerCommand = packageManager === 'bun' && configuredRuntime
     ? configuredRuntime
     : packageManager;
-  const installArgs = packageManager === 'bun' ? ['install', '--frozen-lockfile'] : ['install'];
 
   if (syncFork) {
     emit('git-sync-fork', 'running', 'Syncing the origin fork from canonical upstream...');
@@ -115,9 +113,9 @@ async function _doUpdate(app, emit, { syncFork }) {
     steps.push({ step: 'git-sync-fork', success: true, message: syncMessage });
   }
 
-  emit('git-pull', 'running', 'Pulling latest changes...');
-  const pullResult = await gitService.pull(dir);
-  const pullMsg = pullResult.output?.trim() || 'Up to date';
+  emit('git-pull', 'running', 'Updating from origin default branch...');
+  const pullResult = await gitService.updateDefaultBranch(dir);
+  const pullMsg = pullResult.output?.trim() || `${pullResult.branch} is up to date`;
   emit('git-pull', 'done', pullMsg);
   steps.push({ step: 'git-pull', success: true, message: pullMsg });
 
@@ -128,47 +126,34 @@ async function _doUpdate(app, emit, { syncFork }) {
     const companionPath = companionRepoPaths[index];
     const stepId = `git-pull:companion-${index + 1}`;
     emit(stepId, 'running', `Pulling companion repository ${index + 1}/${companionRepoPaths.length}...`);
-    const companionPull = await gitService.pull(companionPath);
-    const companionMessage = companionPull.output?.trim() || 'Up to date';
+    const companionPull = await gitService.updateDefaultBranch(companionPath);
+    const companionMessage = companionPull.output?.trim() || `${companionPull.branch} is up to date`;
     emit(stepId, 'done', companionMessage);
     steps.push({ step: stepId, success: true, message: companionMessage });
   }
 
-  for (const sub of ['', 'client', 'server', 'admin']) {
-    const subDir = sub ? join(dir, sub) : dir;
-    if (existsSync(join(subDir, 'package.json'))) {
-      const label = sub || 'root';
-      const stepId = `${packageManager}-install:${label}`;
-      emit(stepId, 'running', `Installing ${label} dependencies...`);
-      await runCommand(packageManagerCommand, installArgs, subDir);
-      emit(stepId, 'done', `${label} dependencies installed`);
-      steps.push({ step: stepId, success: true });
-    }
-  }
-
   const pkgPath = join(dir, 'package.json');
   const pkg = existsSync(pkgPath) ? JSON.parse(await readFile(pkgPath, 'utf-8')) : null;
-  if (pkg?.scripts?.setup) {
-    emit('setup', 'running', 'Running setup...');
-    await runCommand(packageManagerCommand, ['run', 'setup'], dir);
-    emit('setup', 'done', 'Setup complete');
-    steps.push({ step: 'setup', success: true });
-  }
-
-  const configuredBuild = typeof app.buildCommand === 'string' ? app.buildCommand.trim() : '';
-  let build;
-  if (configuredBuild) {
-    const parsed = parseBuildCommand(configuredBuild);
-    if (!parsed.ok) throw new Error(parsed.message);
-    build = { cmd: parsed.cmd, args: parsed.args };
-  } else if (pkg?.scripts?.build) {
-    build = { cmd: packageManagerCommand, args: ['run', 'build'] };
-  }
-  if (build) {
-    emit('build', 'running', 'Building production UI...');
-    await runCommand(build.cmd, build.args, dir);
-    emit('build', 'done', 'Production UI built');
-    steps.push({ step: 'build', success: true });
+  const configuredUpdate = typeof app.updateCommand === 'string' ? app.updateCommand.trim() : '';
+  const standardScript = process.platform === 'win32' ? 'update.ps1' : 'update.sh';
+  const standardScriptPath = join(dir, standardScript);
+  if (configuredUpdate || pkg?.scripts?.['portos:update'] || existsSync(standardScriptPath)) {
+    // A configured runtime may be an absolute Bun path, which is trusted app
+    // configuration but not a commandSecurity allowlist token. Only free-form
+    // registry commands go through that parser; the package-script form is a
+    // fixed argument list selected by PortOS.
+    const command = configuredUpdate
+      ? validateCommand(configuredUpdate)
+      : pkg?.scripts?.['portos:update']
+        ? { valid: true, baseCommand: packageManagerCommand, args: ['run', 'portos:update'] }
+        : process.platform === 'win32'
+          ? { valid: true, baseCommand: 'powershell', args: ['-ExecutionPolicy', 'Bypass', '-File', standardScriptPath] }
+          : { valid: true, baseCommand: standardScriptPath, args: [] };
+    if (!command.valid) throw new Error(`Update command is not allowed: ${command.error}`);
+    emit('app-update', 'running', 'Running the app update routine...');
+    await runCommand(command.baseCommand, command.args, dir);
+    emit('app-update', 'done', 'App update routine complete');
+    steps.push({ step: 'app-update', success: true });
   }
 
   const processNames = app.pm2ProcessNames || [];
