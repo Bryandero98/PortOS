@@ -63,7 +63,7 @@ export * from './videoGenResolutions.js';
 export * from './videoGenStatusCache.js';
 export * from './videoGenSubmission.js';
 export * from './videoReferenceModes.js';
-export * from './videoStagePreview.js';
+export * from './videoRenderPhase.js';
 export * from './videoTilingOptions.js';
 export * from './wrImageDefaults.js';
 

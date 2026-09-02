@@ -59,7 +59,7 @@ def register_source_namespace(package_name: str, package_dir: "str | Path"):
 
 
 @contextmanager
-def heartbeat(stage: str, interval: float = 20.0):
+def heartbeat(stage: "str | Callable[[], str]", interval: float = 20.0):
     """Emit a periodic STAGE:<stage>:heartbeat:Ns marker so the JS idle
     watchdog (default 5min) doesn't kill silent long pipeline loads.
 
@@ -69,14 +69,22 @@ def heartbeat(stage: str, interval: float = 20.0):
     the heartbeat line and resets lastActivityAt. True hangs (GIL-pinned
     C extension, no I/O) still trip the watchdog because the heartbeat
     thread can't print either.
+
+    `stage` may be a callable resolved per beat, for a runner that wraps a
+    whole child process rather than one load step: generate_fastvideo.py scrapes
+    the phase out of the child's own log lines, so the phase the heartbeat is
+    reporting changes underneath it. The server stamps that phase onto the
+    status frame, which is what lets the UI name the step during the many
+    minutes a large checkpoint spends streaming in silence.
     """
     stop = threading.Event()
+    resolve_stage = stage if callable(stage) else (lambda: stage)
 
     def beat():
         elapsed = 0
         while not stop.wait(interval):
             elapsed += int(interval)
-            print(f"STAGE:{stage}:heartbeat:{elapsed}s", file=sys.stderr, flush=True)
+            print(f"STAGE:{resolve_stage()}:heartbeat:{elapsed}s", file=sys.stderr, flush=True)
 
     t = threading.Thread(target=beat, daemon=True)
     t.start()

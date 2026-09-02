@@ -406,6 +406,23 @@ describe('videoGen routes', () => {
       }
     });
 
+    // #5872 — the page warns the user BEFORE the screen goes dark, which it can
+    // only do if the server says whether THIS install will actually sleep it
+    // (macOS, and the user hasn't opted out). Warning a user who opted out
+    // would teach them to ignore the warning that matters.
+    it('reports whether a render will sleep the display, honoring the opt-out', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      const dflt = await request(app).get('/api/video-gen/status');
+      expect(typeof dflt.body.displaySleepOnRender).toBe('boolean');
+
+      getSettings.mockResolvedValueOnce({
+        imageGen: { local: { pythonPath: '/usr/bin/python3' } },
+        videoGen: { displaySleep: false },
+      });
+      const optedOut = await request(app).get('/api/video-gen/status');
+      expect(optedOut.body.displaySleepOnRender).toBe(false);
+    });
+
     it('passes each model entry through with its registry disclosure block', async () => {
       videoGenService.listVideoModels.mockReturnValueOnce([
         {

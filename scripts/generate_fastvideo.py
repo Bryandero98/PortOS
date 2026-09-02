@@ -27,13 +27,86 @@ from pathlib import Path
 
 # Same-dir sibling import. _runner_common is stdlib-only at import time.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _runner_common import emit_runtime_fingerprint, establish_process_group  # noqa: E402
+from _runner_common import emit_runtime_fingerprint, establish_process_group, heartbeat  # noqa: E402
 
 
 _DENOISE_STEP_PATTERN = re.compile(
     r'\bdenois(?:e|ing)\s+step\s*(\d+)\s*/\s*(\d+)\b', re.IGNORECASE,
 )
 _PERCENT_PATTERN = re.compile(r'\d+%')
+
+# ---------------------------------------------------------------------------
+# Phase reporting (#5872)
+#
+# FastH3 is silent for MINUTES at a time. Its MLX pipeline
+# (fastvideo/mlx_runtime/minimax_h3_pipeline.py) logs one milestone line per
+# phase and emits no per-step denoise progress at all, so a render that is
+# streaming an ~89 GB INT4 DiT off disk looks identical to a hung one: 0%, no
+# text. PortOS therefore derives the phase itself, by scraping the milestone
+# lines upstream DOES log into a small monotonic state machine.
+#
+# Liveness is the shared `_runner_common.heartbeat`, handed a callable so each
+# beat reports whichever phase the scraper is currently in. The server stamps
+# that phase onto the status frame it broadcasts, so the UI can name the step
+# even while nothing else is being said.
+# ---------------------------------------------------------------------------
+
+# The phase progression, earliest first. Ordering is load-bearing — it is what
+# keeps `advance_phase` monotonic — so it is declared here rather than inferred
+# from the key order of the label table below.
+_PHASE_ORDER = ("load-pipeline", "encode-prompt", "sampling", "mux")
+
+# Phase id -> the sentence the user reads, emitted once per transition. Ids are
+# drawn from the STAGE: vocabulary the server already parses
+# (generateVideoHelpers.js), so the client's phase→step mapping needs no
+# FastVideo-specific entries.
+PHASE_LABELS = {
+    "load-pipeline": "Loading the FastVideo pipeline",
+    "encode-prompt": "Encoding the prompt and streaming model weights",
+    "sampling": "Rendering (denoising)",
+    "mux": "Decoding and muxing video + audio",
+}
+
+# The phase a render is in from spawn until upstream says otherwise.
+INITIAL_PHASE = _PHASE_ORDER[0]
+
+# (lowercase substring, phase it moves us to). First match wins. Each marker is
+# a line upstream logs at the END of the work it names, so it opens the NEXT
+# phase rather than the one it describes.
+_PHASE_MARKERS = (
+    # `Geometry: output=...` is the first line generate() logs, i.e. the
+    # pipeline object is constructed and the long conditioning leg starts here.
+    ("geometry:", "encode-prompt"),
+    # Text conditioning is done — either freshly encoded or read from cache.
+    ("loaded prompt embeddings", "sampling"),
+    # The DiT finished streaming in; denoising is the only thing left before
+    # decode. Both orderings are covered because a prompt-cache hit skips the
+    # encode entirely.
+    ("loaded mlx h3 dit", "sampling"),
+    ("recomputing adaln cache", "sampling"),
+    # Denoising is over; everything after it is VAE decode + ffmpeg mux.
+    ("generation complete", "mux"),
+)
+
+
+def advance_phase(line: str, current: str) -> str:
+    """The phase `line` moves us into, or `current` when it names none.
+
+    Never moves backwards: upstream repeats some milestone lines (a chained or
+    retried leg re-logs `Geometry:`), and a phase that regressed to
+    "Encoding the prompt" halfway through denoising would read as a stall.
+    """
+    # A denoising-step line is proof of the sampler running whatever the
+    # milestone wording said. It is the only marker the fastmetal family emits,
+    # so without this its heartbeat would keep claiming "Loading the FastVideo
+    # pipeline" while the step counter climbed.
+    phase = "sampling" if _DENOISE_STEP_PATTERN.search(line) else None
+    if phase is None:
+        lowered = line.lower()
+        phase = next((p for marker, p in _PHASE_MARKERS if marker in lowered), None)
+    if phase is None or _PHASE_ORDER.index(phase) <= _PHASE_ORDER.index(current):
+        return current
+    return phase
 
 
 def translate_line(line: str) -> str:
@@ -197,7 +270,6 @@ def main() -> int:
 
     cmd = build_command(args, entry_script, model_root, mlx_checkpoint)
 
-    print("STAGE:inference", file=sys.stderr, flush=True)
     print(f"🎬 fastvideo {args.family} generate {args.width}x{args.height} frames={args.num_frames} steps={args.steps} seed={args.seed}", file=sys.stderr, flush=True)
 
     env = os.environ.copy()
@@ -221,17 +293,29 @@ def main() -> int:
         cwd=str(repo_dir),
     )
 
+    def emit(text: str) -> None:
+        print(text, file=sys.stderr, flush=True)
+
+    phase = INITIAL_PHASE
+    emit(f"STAGE:{phase}")
+
     assert proc.stdout is not None
     # Parse output lines and map to STAGE: / STATUS: protocols. Only the
     # upstream denoising-step message represents render progress. Startup
     # model-loading bars also contain percentages (often ending at 100%) and
     # must remain status output or the generic server parser will report them
     # as completed rendering.
-    for raw in proc.stdout:
-        line = raw.rstrip()
-        if not line:
-            continue
-        print(translate_line(line), file=sys.stderr, flush=True)
+    with heartbeat(lambda: phase):
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            next_phase = advance_phase(line, phase)
+            if next_phase != phase:
+                phase = next_phase
+                emit(f"STAGE:{phase}")
+                emit(f"STATUS:{PHASE_LABELS[phase]}")
+            emit(translate_line(line))
 
     return_code = proc.wait()
     if return_code != 0:
