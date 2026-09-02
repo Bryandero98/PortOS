@@ -25,9 +25,12 @@
  * Inside the body of a `setTimeout(async …)` / `setInterval(async …)` callback,
  * every `await` must be either
  *
- *   1. lexically inside a `try { … }` block, or
- *   2. applied to an expression whose own chain ends in `.catch(…)`
- *      (`await save().catch(() => {})`).
+ *   1. lexically inside a `try { … } catch` block (a `try … finally` with no
+ *      `catch` re-throws, so it does not count), or
+ *   2. applied to an expression whose chain ENDS in `.catch(…)`
+ *      (`await save().catch(() => {})`). A `.catch` with another link after it
+ *      does not count — `await work().catch(recover).then(rethrow)` can still
+ *      reject.
  *
  * Both spellings are load-bearing in the tree today, and both genuinely own the
  * rejection, so neither is preferred over the other. The rule deliberately does
@@ -242,13 +245,19 @@ export function timerCallbackBodies(blanked) {
   return bodies;
 }
 
-/** `[start, end)` spans of every `try { … }` block in `body`. */
+/**
+ * `[start, end)` spans of every `try { … }` block in `body` that actually has a
+ * `catch` clause. A `try … finally` with no `catch` runs its cleanup and then
+ * re-throws, so it does NOT own the rejection — counting it would let the exact
+ * bug this guard exists for through.
+ */
 function tryBlockSpans(body) {
   const spans = [];
   for (const match of body.matchAll(/\btry\s*\{/g)) {
     const open = body.indexOf('{', match.index);
     const end = matchBracket(body, open);
-    if (end !== -1) spans.push([open, end]);
+    // Comments between `}` and `catch` are already blanked to spaces.
+    if (end !== -1 && /^\s*catch\b/.test(body.slice(end))) spans.push([open, end]);
   }
   return spans;
 }
@@ -284,7 +293,23 @@ function awaitedChain(body, start) {
 }
 
 /**
- * Awaits in `body` that neither sit inside a `try` block nor end in `.catch(…)`.
+ * True when the LAST link of an awaited chain is `.catch(…)`. It has to be the
+ * last one: `await work().catch(recover).then(rethrow)` handles a rejection from
+ * `work()` and then hands the awaited promise straight back to `then`, so the
+ * chain as a whole can still reject.
+ */
+function chainEndsInCatch(chain) {
+  const at = chain.lastIndexOf('.catch');
+  if (at === -1) return false;
+  let i = at + '.catch'.length;
+  while (i < chain.length && /\s/.test(chain[i])) i += 1;
+  if (chain[i] !== '(') return false;
+  const end = matchBracket(chain, i);
+  return end !== -1 && chain.slice(end).trim() === '';
+}
+
+/**
+ * Awaits in `body` that neither sit inside a `try`/`catch` nor end in `.catch(…)`.
  * Returns the offending chain text for each, so a failure message points at the
  * expression rather than at a line number that rebases away.
  */
@@ -294,7 +319,7 @@ export function unguardedAwaits(body) {
   for (const match of body.matchAll(/\bawait\b/g)) {
     if (spans.some(([from, to]) => match.index > from && match.index < to)) continue;
     const chain = awaitedChain(body, match.index + match[0].length);
-    if (/\.catch\s*\(/.test(chain)) continue;
+    if (chainEndsInCatch(chain)) continue;
     offenders.push(`await ${chain.replace(/\s+/g, ' ').trim()}`);
   }
   return offenders;
@@ -412,6 +437,19 @@ describe('the timer-callback recognizer', () => {
     `)).toEqual([]);
   });
 
+  it('rejects a try with only a finally', () => {
+    // `finally` runs the cleanup and re-throws — the rejection still escapes.
+    expect(findUnguardedTimerAwaits(`
+      setTimeout(async () => {
+        try {
+          await sweep();
+        } finally {
+          inFlight = false;
+        }
+      }, 100);
+    `)).toEqual(['line 2: await sweep()']);
+  });
+
   it('accepts an awaited chain that ends in .catch()', () => {
     expect(findUnguardedTimerAwaits('setTimeout(async () => { await save().catch(() => {}); }, 500);'))
       .toEqual([]);
@@ -428,6 +466,13 @@ describe('the timer-callback recognizer', () => {
     // A chain whose LAST link is .catch still counts when a .then precedes it.
     expect(findUnguardedTimerAwaits('setTimeout(async () => { await f().then(g).catch(h); }, 1);'))
       .toEqual([]);
+  });
+
+  it('rejects a .catch() that is not the last link in the chain', () => {
+    // `.then(h)` is handed the recovered promise and can reject on its own, so
+    // the awaited chain as a whole is still unowned.
+    expect(findUnguardedTimerAwaits('setTimeout(async () => { await f().catch(g).then(h); }, 1);'))
+      .toEqual(['line 1: await f().catch(g).then(h)']);
   });
 
   it('leaves synchronous timer callbacks alone', () => {
