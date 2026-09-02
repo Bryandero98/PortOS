@@ -4,6 +4,7 @@
 // increments the session score, and unlocks discovery recognition.
 // No three.js / React imports — pure, testable in node.
 
+import { safeReadJsonSession, safeWriteJsonSession } from '../lib/safeStorage.js';
 import { WORLD } from './openWorldPlan';
 
 export const SHARD_COLLECTION_RADIUS = 2.4;
@@ -97,23 +98,10 @@ export function getCollectionStats(collectedSet = new Set(), totalCount = TOTAL_
 const STORAGE_KEY = 'openworld.shards';
 
 export function loadCollectedShardIds() {
-  try {
-    if (typeof sessionStorage === 'undefined') return new Set();
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? new Set(parsed) : new Set();
-  } catch {
-    return new Set();
-  }
+  const parsed = safeReadJsonSession(STORAGE_KEY, null);
+  return Array.isArray(parsed) ? new Set(parsed) : new Set();
 }
 
 export function saveCollectedShardIds(set) {
-  try {
-    if (typeof sessionStorage === 'undefined') return;
-    const list = Array.from(set || []);
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch {
-    // Swallow storage exceptions safely
-  }
+  safeWriteJsonSession(STORAGE_KEY, Array.from(set || []));
 }

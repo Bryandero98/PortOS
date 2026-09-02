@@ -8,6 +8,7 @@ import useKeyboardShortcuts from '../hooks/useKeyboardShortcuts';
 import useKeyCapture from '../hooks/useKeyCapture';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { mergeFrameIntoOpenWorldProps } from '../lib/openWorldPlaybackFrame';
+import { safeReadJsonSession, safeWriteJsonSession } from '../lib/safeStorage.js';
 import * as api from '../services/api';
 import OpenWorldScene from '../components/openworld/OpenWorldScene';
 import OpenWorldHud from '../components/openworld/OpenWorldHud';
@@ -29,6 +30,9 @@ import { OpenWorldPaletteProvider } from '../components/openworld/OpenWorldPalet
 import { useThemeContext } from '../components/ThemeContext';
 import { useInstanceFeatures } from '../hooks/useInstanceFeatures';
 import { recommendOpenWorldStartTier } from '../utils/openWorldRenderBudget';
+
+// Tab-scoped: the app filter should survive a reload but not outlive the tab.
+const FILTER_STORAGE_KEY = 'openworld.filter';
 
 // Internal render budgets only. These tiers are selected from sustained frame time and are
 // deliberately not persisted or exposed as player settings; art direction stays coherent while
@@ -151,33 +155,23 @@ function OpenWorldInner() {
   }, [settings, effectiveTier, openWorldTimeOfDay.presetKey, worldStyle]);
 
   const [filter, setFilter] = useState(() => {
-    // try/catch is necessary because sessionStorage values are external state
-    // a corrupted/older-schema entry would throw and crash the page render.
-    try {
-      const raw = sessionStorage.getItem('openworld.filter');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.status === 'string') {
-          return {
-            status: parsed.status,
-            search: typeof parsed.search === 'string' ? parsed.search : '',
-          };
-        }
-      }
-    } catch {
-      // fall through to default
+    // A guarded read is necessary because sessionStorage values are external
+    // state: an inaccessible storage or a corrupted/older-schema entry would
+    // otherwise throw and crash the page render.
+    const parsed = safeReadJsonSession(FILTER_STORAGE_KEY, null);
+    if (parsed && typeof parsed.status === 'string') {
+      return {
+        status: parsed.status,
+        search: typeof parsed.search === 'string' ? parsed.search : '',
+      };
     }
     return { status: 'all', search: '' };
   });
 
   useEffect(() => {
-    // setItem can throw (Safari private mode, storage quota); ignore — this
-    // is a UX nicety, not load-bearing state.
-    try {
-      sessionStorage.setItem('openworld.filter', JSON.stringify(filter));
-    } catch {
-      // intentionally swallow
-    }
+    // Best-effort — the persisted filter is a UX nicety, not load-bearing state,
+    // and setItem throws in Safari private mode / at quota.
+    safeWriteJsonSession(FILTER_STORAGE_KEY, filter);
   }, [filter]);
 
   const filterResult = useMemo(
