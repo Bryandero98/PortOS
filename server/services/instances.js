@@ -148,7 +148,12 @@ export function sanitizePeerForClient(peer) {
   // checkbox off while the server is actively syncing it (and make turning it
   // off take two clicks), and a second, subtly different resolver here would
   // put the UI and the sync loop back out of step on the legacy no-map peer.
-  return { ...peer, auth, syncCategories: resolveEffectiveCategories(peer) };
+  // `masterSwitch: false` — show what the user has CONFIGURED, not what the
+  // master switch currently lets through. The UI renders `peer.syncEnabled`
+  // separately, so masking here would hide the stored selection: every box on a
+  // `syncEnabled: false` peer would read unchecked, and ticking one would
+  // silently reactivate every other category still true underneath it.
+  return { ...peer, auth, syncCategories: resolveEffectiveCategories(peer, { masterSwitch: false }) };
 }
 
 // Default data shape
@@ -374,31 +379,55 @@ function hasOptedInCategory(categories) {
 }
 
 /**
+ * Did the USER establish this peer relationship from this machine? Mirrors
+ * `peerAllowsOutbound`'s reading of `directions`: an absent/empty array is a
+ * legacy record (permissive), `['outbound']` is a peer the user added here, and
+ * `['inbound']` is one that merely ANNOUNCED itself to us and was auto-created
+ * by `handleAnnounce` — never approved by anyone.
+ */
+function peerUserEstablished(peer) {
+  const directions = Array.isArray(peer?.directions) ? peer.directions : [];
+  return directions.length === 0 || directions.includes('outbound');
+}
+
+/**
  * The effective sync-category map for a peer — the single resolution of "what
- * actually syncs with this peer", used by BOTH the sync loop (syncOrchestrator)
- * and the client-facing peer payload (sanitizePeerForClient). Two resolvers
- * would drift, and the UI would then show something the loop doesn't do.
+ * syncs with this peer", used by BOTH the sync loop (syncOrchestrator) and the
+ * client-facing peer payload (sanitizePeerForClient). Two resolvers would drift,
+ * and the UI would then show something the loop doesn't do.
  *
- * Three rules, in order:
+ * The rules, in order:
  *  - A full-sync ("mirror everything") peer implies every current AND future
  *    category on, whatever its stored map says.
  *  - The shipped defaults sit UNDER the stored map, so a category added after
  *    this peer record was written picks up its default instead of reading as
  *    `undefined` (= off) forever. No migration needed; a key the user actually
  *    toggled is present in the stored map and always wins.
- *  - `syncEnabled: false` — the master "don't replicate my content here" switch
- *    — masks the result down to the default-ON categories rather than silencing
- *    the peer outright. Disabling the PEER (`enabled: false`) still stops
- *    everything.
+ *  - **A default-ON category defaults on only for a peer the user established.**
+ *    `handleAnnounce` auto-creates an inbound-only record for any host that can
+ *    reach the port, with no approval step — so letting a default reach those
+ *    would start pulling an unknown machine's data into this install the moment
+ *    it announced itself. An explicit stored `true` still wins there: if the
+ *    user ticked the box for an inbound peer, that is a decision, not a default.
+ *  - `masterSwitch` (default true) applies `syncEnabled: false` — the user's
+ *    "don't replicate my content to this peer" switch — by masking the result
+ *    down to the default-ON categories rather than silencing the peer outright.
+ *    Pass `false` to read what the user has CONFIGURED, independent of that
+ *    switch (what the settings UI renders). Disabling the PEER
+ *    (`enabled: false`) always stops everything, in either mode.
  */
-export function resolveEffectiveCategories(peer) {
+export function resolveEffectiveCategories(peer, { masterSwitch = true } = {}) {
   if (peer?.fullSync === true) return allSyncCategoriesOn();
+  const defaults = { ...DEFAULT_SYNC_CATEGORIES };
+  if (!peerUserEstablished(peer)) {
+    for (const key of DEFAULT_ON_SYNC_CATEGORIES) defaults[key] = false;
+  }
   const stored = peer?.syncCategories
-    ? { ...DEFAULT_SYNC_CATEGORIES, ...peer.syncCategories }
+    ? { ...defaults, ...peer.syncCategories }
     // Legacy fallback: a peer with no stored map but sync on gets brain+memory,
     // the pre-per-category behavior.
-    : { ...DEFAULT_SYNC_CATEGORIES, ...(peer?.syncEnabled !== false ? { brain: true, memory: true } : {}) };
-  if (peer?.syncEnabled !== false) return stored;
+    : { ...defaults, ...(peer?.syncEnabled !== false ? { brain: true, memory: true } : {}) };
+  if (!masterSwitch || peer?.syncEnabled !== false) return stored;
   return Object.fromEntries(DEFAULT_ON_SYNC_CATEGORIES.map((key) => [key, stored[key] === true]));
 }
 
@@ -490,14 +519,24 @@ export async function addPeer({ address, port = DEFAULT_PEER_PORT, name, host, a
 
 export async function removePeer(id) {
   disconnectFromPeer(id);
-  return withData(async (data) => {
+  const removed = await withData(async (data) => {
     const idx = data.peers.findIndex(p => p.id === id);
     if (idx === -1) return null;
-    const [removed] = data.peers.splice(idx, 1);
-    console.log(`🌐 Peer removed: ${removed.name}`);
+    const [entry] = data.peers.splice(idx, 1);
+    console.log(`🌐 Peer removed: ${entry.name}`);
     instanceEvents.emit('peers:updated', data.peers);
-    return removed;
+    return entry;
   });
+  // Retire that instance's federated usage digest. Without this the row stays in
+  // the fleet report forever: our own snapshot forwards every digest we hold, so
+  // a surviving peer would hand it straight back on the next cycle. Dynamic
+  // import keeps peerUsage (and its usage.js graph) off this module's load path.
+  if (removed?.instanceId) {
+    const { forgetInstanceUsage } = await import('./peerUsage.js');
+    await forgetInstanceUsage(removed.instanceId)
+      .catch((err) => console.log(`⚠️ instances: retiring usage digest failed: ${err.message}`));
+  }
+  return removed;
 }
 
 export async function updatePeer(id, updates) {

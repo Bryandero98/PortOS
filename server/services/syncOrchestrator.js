@@ -803,9 +803,13 @@ export async function syncWithPeer(peer) {
  * Check if a peer has any sync category enabled
  */
 function hasAnySyncEnabled(peer) {
-  // No `syncEnabled === false` short-circuit: getEffectiveCategories already
-  // masks such a peer down to its default-ON categories. `peer.enabled === false`
-  // remains the switch that stops everything — syncAllPeers filters on it.
+  // `enabled: false` is the switch that stops everything, and it is checked HERE
+  // rather than only in syncAllPeers: the `peer:online` handler gates solely on
+  // this function, and a default-ON category makes it truthy for almost every
+  // peer — so without this a disabled peer would still sync the moment a manual
+  // Connect flipped its status. No `syncEnabled === false` short-circuit though:
+  // getEffectiveCategories already masks that peer down to its default-ON set.
+  if (peer.enabled === false) return false;
   const cats = getEffectiveCategories(peer);
   return Object.values(cats).some(Boolean);
 }

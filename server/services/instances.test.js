@@ -75,6 +75,7 @@ import {
   handleAnnounce,
   redactPeerForWire,
   sanitizePeerForClient,
+  resolveEffectiveCategories,
   applyReciprocalSync,
   requestReciprocalSync,
   enqueueReciprocalSync,
@@ -450,6 +451,28 @@ describe('instances.js', () => {
     });
   });
 
+  // handleAnnounce auto-creates an inbound-only peer for ANY host that can reach
+  // the port — no approval step, and auth is off by default. A default-ON
+  // category must not reach those, or announcing would be enough to get a
+  // stranger's numbers pulled into this install's fleet report.
+  describe('resolveEffectiveCategories — default-ON scope', () => {
+    it('does not default a category on for an unapproved announce peer', () => {
+      const announced = { id: 'p1', directions: ['inbound'], syncEnabled: false };
+      expect(resolveEffectiveCategories(announced).usage).toBe(false);
+    });
+
+    it('does default it on for a peer the user added here', () => {
+      expect(resolveEffectiveCategories({ id: 'p1', directions: ['outbound'] }).usage).toBe(true);
+      // A legacy record with no directions array stays permissive.
+      expect(resolveEffectiveCategories({ id: 'p2' }).usage).toBe(true);
+    });
+
+    it('honors an explicit opt-IN on an announce peer — that is a user decision', () => {
+      const announced = { id: 'p1', directions: ['inbound'], syncCategories: { usage: true } };
+      expect(resolveEffectiveCategories(announced).usage).toBe(true);
+    });
+  });
+
   describe('sanitizePeerForClient', () => {
     // The sync path layers DEFAULT_SYNC_CATEGORIES *under* the stored map so a
     // peer record written before a category existed picks up its shipped default
@@ -465,6 +488,17 @@ describe('instances.js', () => {
     it('lets an explicit opt-out survive the default merge', () => {
       const sanitized = sanitizePeerForClient({ id: 'p1', syncCategories: { usage: false } });
       expect(sanitized.syncCategories.usage).toBe(false);
+    });
+
+    // The UI renders syncEnabled separately, so the payload shows what the user
+    // CONFIGURED. Masking here would render every box on a syncEnabled:false peer
+    // unchecked, and ticking one would silently reactivate the rest.
+    it('shows the configured selection on a peer whose master switch is off', () => {
+      const sanitized = sanitizePeerForClient({
+        id: 'p1', syncEnabled: false, syncCategories: { brain: true, universe: true },
+      });
+      expect(sanitized.syncCategories.brain).toBe(true);
+      expect(sanitized.syncCategories.universe).toBe(true);
     });
 
     it('redacts the password to a hasPassword marker but keeps the username', () => {

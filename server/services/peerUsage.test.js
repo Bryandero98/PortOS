@@ -30,6 +30,7 @@ const {
   getUsageSnapshot,
   applyUsageRemote,
   getFleetUsage,
+  forgetInstanceUsage,
   PEER_USAGE_FILE,
 } = await import('./peerUsage.js');
 
@@ -194,6 +195,72 @@ describe('usage sync category', () => {
   });
 });
 
+describe('untrusted digest handling', () => {
+  // canonicalStringify (this category's checksum) recurses in JS, with a far
+  // smaller depth budget than native JSON.stringify — so a digest that survives
+  // atomicWrite but blows that recursion would 500 the snapshot endpoint for
+  // every peer, permanently and across restarts. The digest is rebuilt to the
+  // known shallow shape rather than stored as it arrived, so depth is fixed.
+  it('rebuilds a hostile digest to the wire shape instead of storing it', async () => {
+    let deep = { tokensOut: 1 };
+    for (let i = 0; i < 5000; i++) deep = { nested: deep };
+    const hostile = peerEntry({ usage: { ...buildUsageDigest(usageFixture()), evil: deep } });
+
+    expect(await applyUsageRemote({ instances: { 'inst-peer': hostile } })).toEqual({ applied: true, count: 1 });
+    expect((await readStoreFile()).instances['inst-peer'].usage.evil).toBeUndefined();
+    // The checksum must still be computable — this is the failure being pinned.
+    await expect(getUsageSnapshot()).resolves.toMatchObject({ checksum: expect.any(String) });
+  });
+
+  it('drops junk bucket keys and coerces non-numeric counts', async () => {
+    const junk = peerEntry({ usage: {
+      ...buildUsageDigest(usageFixture()),
+      dailyActivity: { 'not-a-day': { tokensOut: 5 }, '2026-08-30': { tokensOut: '900', sessions: 2 } },
+    } });
+    await applyUsageRemote({ instances: { 'inst-peer': junk } });
+
+    const stored = (await readStoreFile()).instances['inst-peer'].usage.dailyActivity;
+    expect(stored['not-a-day']).toBeUndefined();
+    expect(stored['2026-08-30']).toEqual({ sessions: 2 }); // the string count is dropped, not NaN'd
+  });
+});
+
+describe('retiring an instance', () => {
+  // Our snapshot forwards every digest we hold, so a plain delete is undone by
+  // the next peer that still has it — the decommissioned machine's spend would
+  // sit in the fleet total forever.
+  it('tombstones a removed instance so a peer cannot hand it back', async () => {
+    const entry = peerEntry();
+    await applyUsageRemote({ instances: { 'inst-peer': entry } });
+    await forgetInstanceUsage('inst-peer');
+    expect((await readStoreFile()).instances['inst-peer']).toBeUndefined();
+
+    // A peer that hasn't seen the removal re-forwards the same digest.
+    expect(await applyUsageRemote({ instances: { 'inst-peer': entry } })).toEqual({ applied: false, count: 0 });
+    expect((await readStoreFile()).instances['inst-peer']).toBeUndefined();
+  });
+
+  it('propagates the retirement to a peer that still holds the digest', async () => {
+    await applyUsageRemote({ instances: { 'inst-peer': peerEntry() } });
+    const { data } = await getUsageSnapshot();
+    expect(data.instances['inst-peer']).toBeTruthy();
+
+    // The remote retired it; its snapshot carries the tombstone.
+    const result = await applyUsageRemote({ instances: {}, tombstones: [{ instanceId: 'inst-peer', deletedAt: '2026-08-31T00:00:00.000Z' }] });
+    expect(result.count).toBe(1);
+    expect((await readStoreFile()).instances['inst-peer']).toBeUndefined();
+  });
+
+  it('lets a machine that comes back supersede its own tombstone', async () => {
+    await applyUsageRemote({ instances: { 'inst-peer': peerEntry() } });
+    await forgetInstanceUsage('inst-peer');
+
+    const returned = peerEntry({ capturedAt: '2099-01-01T00:00:00.000Z' });
+    expect(await applyUsageRemote({ instances: { 'inst-peer': returned } })).toEqual({ applied: true, count: 1 });
+    expect((await readStoreFile()).instances['inst-peer']).toBeTruthy();
+  });
+});
+
 describe('fleet report', () => {
   it('is empty until a peer digest has synced', async () => {
     expect(await getFleetUsage({ providers: [] })).toEqual({ instances: [], totals: null });
@@ -226,6 +293,28 @@ describe('fleet report', () => {
     const selfRow = fleet.instances.find((i) => i.self);
     // Only the 2026-01-15 bucket is in range; the 2026-01-05 one is not.
     expect(selfRow.totals.tokensOut).toBe(100);
+  });
+
+  // buildUsageReport folds an OVERLAPPING month bucket in whole. Locally that is
+  // safe (months only exist past the 400-day daily retention, far outside any
+  // range anyone asks for), but a peer's digest rolls up at 120 days — well
+  // inside a reachable window — so a narrow explicit from/to over a rolled-up
+  // month would silently count days outside it.
+  it('does not count a rolled-up month the window only clips', async () => {
+    const rolledUp = peerEntry({
+      usage: buildUsageDigest(usageFixture({ day: '2026-05-02', tokensOut: 7000 }), {
+        retentionDays: 30, now: new Date('2026-09-01T00:00:00Z'),
+      }),
+    });
+    await applyUsageRemote({ instances: { 'inst-peer': rolledUp } });
+    expect(rolledUp.usage.monthlyActivity['2026-05']).toBeTruthy();
+
+    const clipped = await getFleetUsage({ from: '2026-05-10', to: '2026-05-15', providers: [] });
+    expect(clipped.totals.tokensOut).toBe(0);
+
+    // A window that covers the whole month still reports it.
+    const whole = await getFleetUsage({ from: '2026-05-01', to: '2026-05-31', providers: [] });
+    expect(whole.totals.tokensOut).toBe(7000);
   });
 
   it('scopes every instance to the same report window', async () => {

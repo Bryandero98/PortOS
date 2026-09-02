@@ -823,6 +823,22 @@ describe('syncOrchestrator', () => {
       await syncAllPeers();
       expect(categoryUrls()).toHaveLength(0);
     });
+
+    // The peer:online handler gates only on hasAnySyncEnabled, and a default-ON
+    // category makes that truthy for nearly every peer — so `enabled: false`
+    // has to be checked there too, or a manual Connect on a disabled peer would
+    // start syncing it.
+    it('a disabled peer is not eligible even when its status flips online', async () => {
+      const disabled = { ...mockPeer, enabled: false, syncCategories: { usage: true } };
+      getPeers.mockResolvedValue([disabled]);
+      initSyncOrchestrator();
+      // instanceEvents is mocked, so invoke the handler the orchestrator just
+      // registered rather than relying on a real emit.
+      const [, onPeerOnline] = instanceEvents.on.mock.calls.find(([event]) => event === 'peer:online');
+      await onPeerOnline(disabled);
+      await vi.runOnlyPendingTimersAsync();
+      expect(categoryUrls()).toHaveLength(0);
+    });
   });
 
   describe('syncAllPeers', () => {

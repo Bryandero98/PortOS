@@ -61,9 +61,19 @@ origin instanceId. Nothing is ever summed into `data/usage.json`.
 `DEFAULT_SYNC_CATEGORIES.usage` is `true`, and `DEFAULT_ON_SYNC_CATEGORIES`
 names the default-on set so the rest of the system can reason about it:
 
-- `getEffectiveCategories` layers a peer's stored map **over** the defaults, so
-  a peer record written before this category existed picks up the shipped
+- `resolveEffectiveCategories` layers a peer's stored map **over** the defaults,
+  so a peer record written before this category existed picks up the shipped
   default instead of reading as `undefined` (= off) forever. No migration needed.
+  It is the single resolver, used by both the sync loop and the client-facing
+  peer payload — two would drift, and the UI would show something the loop
+  doesn't do.
+- **A default reaches only a peer the user established here.** `handleAnnounce`
+  auto-creates an inbound-only peer record for any host that can reach the port,
+  with no approval step and (by default) no auth, so a default-ON category that
+  applied there would mean announcing is enough to get a stranger's numbers
+  pulled into this install's fleet report. `directions` is the discriminator, the
+  same signal `peerAllowsOutbound` reads. An explicit stored `true` still wins:
+  ticking the box for an inbound peer is a decision, not a default.
 - The peer-level `syncEnabled` master switch predates default-on categories and
   means *"don't replicate my content to this peer"*. It therefore masks a peer
   down to the default-on set rather than silencing it entirely.
@@ -71,7 +81,12 @@ names the default-on set so the rest of the system can reason about it:
   outbound pushes (`peerAllowsOutbound`). A default-on category must never flip
   it on by itself, or adding one would silently widen what every existing peer
   is allowed to receive. `hasOptedInCategory` excludes the default-on set from
-  that derivation.
+  that derivation, and `updatePeer` recomputes it on any category edit rather
+  than honoring a caller-supplied value.
+- The **settings UI** reads the configured map, not the masked one
+  (`masterSwitch: false`) — masking there would render every box on a
+  `syncEnabled: false` peer unchecked, and ticking one would silently reactivate
+  every other category still true underneath it.
 - The switches that still stop everything: turning the **category** off for a
   peer, or disabling the **peer** (`enabled: false`).
 
@@ -125,4 +140,19 @@ excluded on both privacy and payload grounds.
   the snapshot pull path per peer and per category — the general fix already
   filed as #3659, not a usage-specific one.
 - A user who wants a machine's spend out of the federation entirely disables the
-  peer (`enabled: false`), which stops every direction.
+  peer (`enabled: false`), which stops every direction — checked in
+  `hasAnySyncEnabled`, so it holds on the `peer:online` path too, not only in
+  the polling loop.
+- **Removing a peer retires its digest via a tombstone**, not a plain delete.
+  Our snapshot forwards every digest we hold, so a surviving peer would hand a
+  deleted row straight back on the next cycle and a decommissioned machine's
+  spend would sit in the fleet total forever. The tombstone rides the same
+  snapshot (`server/lib/tombstones.js`, keyed on `instanceId`) so the removal
+  propagates; a digest captured *after* it supersedes it, so re-adding the
+  machine later works.
+- A peer's digest is **rebuilt to the known wire shape on arrival**, not stored
+  as it came. The shape is fixed and shallow (day → provider → model), and this
+  category's checksum uses `canonicalStringify` — a recursive JS function with a
+  far smaller depth budget than native `JSON.stringify` — so a digest deep
+  enough to pass `atomicWrite` but blow that recursion would otherwise 500 the
+  snapshot endpoint for every peer, permanently and across restarts.
