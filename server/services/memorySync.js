@@ -17,6 +17,7 @@
  */
 
 import { query, withTransaction, arrayToPgvector, pgvectorToArray } from '../lib/db.js';
+import { dedupeByKey } from '../lib/arrayUtils.js';
 
 /**
  * Get memories changed since a given sync sequence.
@@ -92,13 +93,33 @@ export async function applyRemoteChanges(incomingMemories) {
   const COLS = 18;
   const BATCH_SIZE = 100;
 
+  // Collapse duplicate ids BEFORE batching (see `dedupeByKey` for why a
+  // multi-row upsert cannot carry a repeated conflict key). This runs inside a
+  // transaction, so one repeated id anywhere in a peer's payload would roll back
+  // the ENTIRE apply, not just its batch — and the rows arrive from a remote
+  // peer, so uniqueness is not ours to assume.
+  //
+  // The survivor is the newest copy by `updated_at`, not simply the last one:
+  // that is the winner the ON CONFLICT clause's last-writer-wins rule picks when
+  // the same duplicates arrive in separate batches, so how a peer happened to
+  // order its payload can't change the outcome. An unparseable clock compares
+  // false and yields to the later occurrence.
+  const deduped = dedupeByKey(
+    incomingMemories,
+    (mem) => mem.id,
+    (held, next) => (Date.parse(held.updatedAt) > Date.parse(next.updatedAt) ? held : next),
+  );
+  // A collapsed duplicate lost last-writer-wins, which is exactly what `skipped`
+  // counts — so the three tallies still sum to what the peer sent.
+  const collapsed = incomingMemories.length - deduped.length;
+
   return withTransaction(async (client) => {
     let inserted = 0;
     let updated = 0;
-    let skipped = 0;
+    let skipped = collapsed;
 
-    for (let i = 0; i < incomingMemories.length; i += BATCH_SIZE) {
-      const batch = incomingMemories.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < deduped.length; i += BATCH_SIZE) {
+      const batch = deduped.slice(i, i + BATCH_SIZE);
       const values = [];
       const params = [];
 

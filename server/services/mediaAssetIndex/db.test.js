@@ -149,6 +149,33 @@ describe.skipIf(!runDb)('media asset index DB round-trip', () => {
     expect(vids.some((x) => x.id === `${PFX}vid1`)).toBe(true);
   });
 
+  it('survives duplicate refs on disk (multi-row upsert must not self-conflict)', async () => {
+    // Catches the multi-row upsert self-conflicting on a repeated media_key —
+    // a Postgres-level constraint no unit test can pin. See the dedupe comment
+    // in db.js for why disk can hand us the same ref twice.
+    const listGallery = async () => [
+      { filename: `${PFX}dup.png`, prompt: 'first', createdAt: '2026-04-01T00:00:00.000Z' },
+      { filename: `${PFX}dup.png`, prompt: 'second', createdAt: '2026-04-02T00:00:00.000Z' },
+    ];
+    const loadHistory = async () => [
+      { id: `${PFX}dupvid`, filename: `${PFX}dupvid.mp4`, createdAt: '2026-04-03T00:00:00.000Z' },
+      { id: `${PFX}dupvid`, filename: `${PFX}dupvid.mp4`, createdAt: '2026-04-04T00:00:00.000Z' },
+    ];
+
+    const res = await db.reconcileMediaAssets({ listGallery, loadHistory });
+    // `indexed` counts rows written, so the collapsed pair counts once each.
+    expect(res.indexed).toBe(2);
+
+    // Last occurrence wins — the same row a sequential upsert loop would leave.
+    const imgs = await db.listAssets({ kind: 'image' });
+    const dup = imgs.filter((x) => x.filename === `${PFX}dup.png`);
+    expect(dup).toHaveLength(1);
+    expect(dup[0].prompt).toBe('second');
+
+    const vids = await db.listAssets({ kind: 'video' });
+    expect(vids.filter((x) => x.id === `${PFX}dupvid`)).toHaveLength(1);
+  });
+
   it('does NOT prune a kind whose disk read failed — skips, keeps live rows', async () => {
     // Seed an image row that a healthy reconcile would normally prune (its file
     // is not in the "disk" set), and a video row that the healthy video read
