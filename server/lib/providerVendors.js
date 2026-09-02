@@ -471,7 +471,19 @@ function claudeSpawnArgs(provider, { effectiveModel, effort, systemPromptFile, s
   return { command, args, stdinMode: 'prompt', streamFormat: 'stream-json' };
 }
 
-const CLAUDE_PUBLIC_REVIEW_ARGS = [
+// Shared by both Claude postures: no MCP servers, no browser bridge, no
+// persisted session, no slash commands. `--bare` is NOT here: it also disables
+// OAuth/keychain auth, so it would break a subscription-authenticated cloud
+// Claude — `applyLeanClaudeArgs` adds it for the local Ollama wrapper only.
+const CLAUDE_PUBLIC_REVIEW_COMMON_ARGS = [
+  '--strict-mcp-config',
+  '--mcp-config', '{"mcpServers":{}}',
+  '--no-chrome',
+  '--no-session-persistence',
+  '--disable-slash-commands',
+];
+
+const CLAUDE_PUBLIC_REVIEW_NO_TOOL_ARGS = [
   '--permission-mode', 'plan',
   // The code-review model gets the cleared PR material in its prompt. Keep
   // both controls: `--restricted` removes the command/network-capable built-in
@@ -479,24 +491,42 @@ const CLAUDE_PUBLIC_REVIEW_ARGS = [
   // any tool schema to a local model that does not support tool calls.
   '--restricted',
   '--tools', '',
-  '--strict-mcp-config',
-  '--mcp-config', '{"mcpServers":{}}',
-  '--no-chrome',
-  '--no-session-persistence',
-  '--disable-slash-commands',
-  '--bare',
+  ...CLAUDE_PUBLIC_REVIEW_COMMON_ARGS,
 ];
+
+// Claude Code's OS-level sandbox (seatbelt on macOS, bubblewrap on Linux) is a
+// settings switch rather than a flag; `--settings` accepts inline JSON. Inside
+// it, Bash runs without prompting but filesystem writes stay inside the working
+// tree and the empty domain allowlist denies every network request — in
+// `--print` mode a denied request is simply not executed, there is nobody to
+// approve it. The web tools are denied outright for the same reason.
+const CLAUDE_SANDBOX_SETTINGS = JSON.stringify({
+  sandbox: { enabled: true, autoAllowBashIfSandboxed: true, network: { allowedDomains: [] } },
+});
+const CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS = [
+  '--permission-mode', 'acceptEdits',
+  '--settings', CLAUDE_SANDBOX_SETTINGS,
+  '--disallowedTools', 'WebFetch,WebSearch',
+  ...CLAUDE_PUBLIC_REVIEW_COMMON_ARGS,
+];
+
+function claudePublicReviewSpawnArgs(provider, ctx) {
+  return claudePublicReviewArgs(provider, ctx, CLAUDE_PUBLIC_REVIEW_NO_TOOL_ARGS);
+}
+
+function claudePublicReviewActionsSpawnArgs(provider, ctx) {
+  return claudePublicReviewArgs(provider, ctx, CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS);
+}
 
 function claudePublicReviewArgs(provider, {
   effectiveModel,
   effort,
   systemPromptFile,
-  settingsEnv,
   tui = false,
-} = {}) {
+} = {}, postureArgs) {
   const providerId = provider?.id || 'claude-code';
   const args = [
-    ...CLAUDE_PUBLIC_REVIEW_ARGS,
+    ...postureArgs,
     ...(tui ? [] : ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']),
   ];
   if (systemPromptFile) args.push('--append-system-prompt-file', systemPromptFile);
@@ -530,11 +560,13 @@ const CLAUDE = {
   publicReview: {
     // Claude is the historical always-true fallback row, so its posture
     // matcher must positively identify the binary — an unknown command must
-    // never inherit claude's flag set. There is deliberately no
-    // sandboxed-actions recipe: Claude Code has no OS-level sandbox flag, only
-    // permission modes, so it fails closed for the actions stage.
+    // never inherit claude's flag set.
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
-      spawnArgs: claudePublicReviewArgs,
+      spawnArgs: claudePublicReviewSpawnArgs,
+      matchProvider: (provider) => isDirectBinaryProvider(provider) && isClaudeCommand(provider?.command),
+    },
+    [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
+      spawnArgs: claudePublicReviewActionsSpawnArgs,
       matchProvider: (provider) => isDirectBinaryProvider(provider) && isClaudeCommand(provider?.command),
     },
   },
@@ -646,10 +678,16 @@ export function buildVendorSpawnConfig(provider, ctx) {
   const posture = publicReviewPostureForProfile(ctx?.safetyProfile);
   if (posture) {
     const recipe = publicReviewRecipe(provider, posture);
-    if (!recipe) {
+    if (recipe) return recipe.spawnArgs(provider, ctx);
+    // The no-tool gate has no fallback: nothing but an enforced argv can hold
+    // a model tool-free. The actions stage is different — its isolation is the
+    // disposable worktree plus the stripped child environment (no forge
+    // credential, no Claude settings overlay), and the deterministic coordinator
+    // owns every GitHub mutation — so any enabled binary provider may run it
+    // headless through its ordinary recipe when the vendor has no sandbox one.
+    if (!supportsPublicReviewPosture(provider, posture)) {
       throw new Error(`Provider '${providerLabel(provider)}' has no enforced ${posture} public-review posture`);
     }
-    return recipe.spawnArgs(provider, ctx);
   }
   const vendor = PROVIDER_VENDORS.find((v) => v.spawnArgs && matchesProvider(v, provider));
   return vendor.spawnArgs(provider, ctx);
@@ -667,6 +705,17 @@ export function buildVendorSpawnConfig(provider, ctx) {
  * as an interactive session (see `isDirectBinaryProvider`).
  */
 export function publicReviewPosturesForProvider(provider) {
+  return PUBLIC_REVIEW_POSTURES.filter((posture) => supportsPublicReviewPosture(provider, posture));
+}
+
+/**
+ * The postures this provider runs through a maintained, vendor-enforced
+ * recipe. A subset of `publicReviewPosturesForProvider`: the actions posture
+ * is also runnable by a binary provider with no sandbox recipe (see
+ * `supportsPublicReviewPosture`), and the schedule UI uses the difference to
+ * say which choices are OS-sandboxed and which rely on the worktree alone.
+ */
+export function enforcedPublicReviewPosturesForProvider(provider) {
   if (!isDirectBinaryProvider(provider)) return [];
   return PUBLIC_REVIEW_POSTURES.filter((posture) => Boolean(publicReviewRecipe(provider, posture)));
 }
@@ -680,9 +729,20 @@ export function publicReviewCapableVendorIds(posture) {
   return PROVIDER_VENDORS.filter((vendor) => vendor.publicReview?.[posture]?.spawnArgs).map((vendor) => vendor.id);
 }
 
-/** Whether `provider` has a maintained, enforced recipe for one posture. */
+/**
+ * Whether `provider` may run a stage with this posture.
+ *
+ * The no-tool gate requires a maintained recipe: only an enforced argv can
+ * hold a model tool-free. The sandboxed-actions stage is open to EVERY enabled
+ * binary (CLI/TUI) provider — a vendor recipe (Codex, Antigravity, Grok,
+ * Claude) adds an OS-level sandbox on top, but the stage's baseline isolation
+ * is the disposable worktree, the stripped child environment, and the
+ * deterministic coordinator owning all forge mutations. API providers have no
+ * binary to spawn and fail closed for both.
+ */
 export function supportsPublicReviewPosture(provider, posture) {
   if (!isDirectBinaryProvider(provider)) return false;
+  if (posture === PUBLIC_REVIEW_ACTIONS_POSTURE) return true;
   return Boolean(publicReviewRecipe(provider, posture));
 }
 

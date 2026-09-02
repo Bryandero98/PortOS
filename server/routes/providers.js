@@ -37,7 +37,12 @@ import {
 } from '../services/codexAppServer.js';
 import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
 import { localEndpointPort, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
-import { publicReviewPosturesForProvider, PUBLIC_REVIEW_NO_TOOL_POSTURE, PUBLIC_REVIEW_ACTIONS_POSTURE } from '../lib/providerVendors.js';
+import {
+  enforcedPublicReviewPosturesForProvider,
+  publicReviewPosturesForProvider,
+  PUBLIC_REVIEW_NO_TOOL_POSTURE,
+  PUBLIC_REVIEW_ACTIONS_POSTURE,
+} from '../lib/providerVendors.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 import {
   captureSystemCapabilities,
@@ -147,12 +152,14 @@ const presentProvider = (provider, capabilities = captureSystemCapabilities()) =
   // the maintained public-review recipe, not a client-side guess based on a
   // provider name or a user-writable `args` list.
   // `publicReviewPostures` is the value the schedule UI filters on, so a stage
-  // offers exactly the providers this install can actually enforce. The two
-  // booleans are derived from it and kept for existing consumers.
+  // offers exactly the providers this install can actually run it on;
+  // `publicReviewEnforcedPostures` is the subset backed by a vendor sandbox
+  // recipe. The two booleans are derived from it and kept for existing consumers.
   const publicReviewPostures = publicReviewPosturesForProvider(provider);
   return sanitizeProvider({
     ...decorated,
     publicReviewPostures,
+    publicReviewEnforcedPostures: enforcedPublicReviewPosturesForProvider(provider),
     publicReviewSupported: publicReviewPostures.includes(PUBLIC_REVIEW_NO_TOOL_POSTURE),
     publicReviewActionsSupported: publicReviewPostures.includes(PUBLIC_REVIEW_ACTIONS_POSTURE),
   });
