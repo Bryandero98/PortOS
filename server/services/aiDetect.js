@@ -43,11 +43,12 @@ const DEFAULT_START_COMMAND = 'npm run dev';
 
 // The scanned directory's name is operator-supplied rather than model output,
 // but it still becomes a pm2 argv token when the model gives no usable name —
-// so hold it to the same shape PM2_PROCESS_NAME_PATTERN demands (no leading
-// separator, bounded length) instead of passing a raw slug through.
+// so hold the fallback to the SAME predicate the model's answer must satisfy
+// (a directory literally named `all` would otherwise reintroduce the reserved
+// every-process target through the back door).
 const fallbackProcessName = (dirName) => {
   const slug = dirName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 64);
-  return slug || 'app';
+  return isUsablePm2ProcessName(slug) ? slug : 'app';
 };
 
 /**
