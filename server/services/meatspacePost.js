@@ -941,6 +941,9 @@ export function deriveTaskAvgResponseMs(task) {
   return Math.round(timed.reduce((sum, q) => sum + q.responseMs, 0) / timed.length);
 }
 
+// Normalizes a legacy training-log entry into the scored-task shape the
+// session pipeline uses. Stays private: its only cross-module consumer reaches
+// it through summarizeSkillEvidence below.
 function trainingEntryTask(entry) {
   const rawQuestionCount = Number(entry?.questionCount);
   const rawCorrectCount = Number(entry?.correctCount);
@@ -982,7 +985,10 @@ function skillEvidenceSessions(sessions, training) {
   ];
 }
 
-function summarizeSkillEvidence(sessions, training) {
+// Rolls sessions + training entries into per-drill count/accuracy/completion
+// means. Consumed by meatspacePostStats.js (getPostStats); declared here beside
+// deriveTaskAccuracy/deriveTaskCompletion, which it is built on.
+export function summarizeSkillEvidence(sessions, training) {
   const accuracyLists = {};
   const completionLists = {};
   const counts = {};
