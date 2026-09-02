@@ -76,40 +76,49 @@ describe('escapeRegExp', () => {
 // where `String(s).replace` coerced). This guard is what makes the extraction
 // stick: a fresh copy fails the suite instead of shipping.
 //
-// It keys on the escape's CHARACTER CLASS, not on the identifier, because every
-// copy this repo ever grew was a byte-identical paste under a different name (or
-// no name at all). Consequence: even naming the class in a comment trips the
-// guard — describe the rule in prose, or put the example here in textUtils, which
-// is the one file exempt.
+// It keys on the escape IDIOM, not on the identifier, because every copy this repo
+// ever grew was a byte-identical paste under a different name (or no name at all).
+// The `'\\$&'` replacement is the spelling-independent half — it is what makes a
+// `.replace` an escape rather than an edit, and after this migration it appears in
+// exactly the two files below. Consequence: even quoting the idiom in a comment
+// trips the guard — describe the rule in prose, or put the example in textUtils.js,
+// which is the file that owns it.
 //
-// Scope note: `collectServerSources` skips `*.test.js`, so this covers product
-// code only. That is the surface that matters — a private copy in a test can't
-// change what the server does.
-const ESCAPE_COPY = [
-  // The escape's character class, however the copy names (or doesn't name) it.
-  String.raw`\[\.\*\+\?\^\$\{\}\(\)\|\[\\\]\\\\\]`,
+// Scope: `collectServerSources` walks all of `server/` but skips `*.test.js`, so
+// this covers product code. A copy in a test can't change what the server does.
+const ESCAPE_IDIOMS = [
+  // The self-referential replacement every copy of the escape uses.
+  /'\\\\\$&'/,
+  // The escape's character class, for a copy that assembles it differently.
+  /\[\.\*\+\?\^\$\{\}\(\)\|\[\\\]\\\\\]/,
   // A copy that reorders the class but keeps the conventional name.
-  String.raw`(?:^|[^\w$.])(?:const|let|var|function)\s+escapeRegExp\b`,
-].map((source) => new RegExp(source));
+  /(?:^|[^\w$.])(?:const|let|var|function)\s+escapeRegExp\b/,
+];
 
 // `scenePrompt.js` is held byte-for-byte identical to `client/src/lib/scenePrompt.js`
 // by the mirror-parity suite in scenePrompt.test.js, and the browser cannot import
 // `server/lib`. Migrating it needs a client-side textUtils mirror first — #5790,
-// which also deletes this entry. It is the ONLY exemption; do not add another
+// which also deletes this entry. It is the one exemption; do not add another
 // without an issue that removes it.
-const EXEMPT = ['lib/textUtils.js', 'lib/scenePrompt.js'];
+const HOLDOUT = 'lib/scenePrompt.js';
+
+const escapeIdiomCount = (source) => ESCAPE_IDIOMS
+  .map((idiom) => source.match(new RegExp(idiom.source, 'g'))?.length ?? 0)
+  .reduce((most, count) => Math.max(most, count), 0);
 
 describe('no private escapeRegExp', () => {
   it('leaves lib/textUtils.js as the only RegExp-escape implementation under server/', () => {
     const offenders = collectServerSources()
-      .filter((rel) => !EXEMPT.includes(rel))
-      .filter((rel) => {
-        const source = readServerSource(rel);
-        return ESCAPE_COPY.some((pattern) => pattern.test(source));
-      });
+      .filter((rel) => rel !== 'lib/textUtils.js' && rel !== HOLDOUT)
+      .filter((rel) => escapeIdiomCount(readServerSource(rel)) > 0);
     expect(
       offenders,
       `these re-inline the RegExp escape — import escapeRegExp from lib/textUtils.js instead: ${offenders.join(', ')}`
     ).toEqual([]);
+  });
+
+  // The holdout is an exemption for ONE known copy, not a licence for the file.
+  it('holds the exempt mirror to its single known copy', () => {
+    expect(escapeIdiomCount(readServerSource(HOLDOUT))).toBe(1);
   });
 });
