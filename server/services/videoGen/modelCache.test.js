@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Target-shaping contract for the HF cache engine (issue #5711). These three
 // behaviors used to be reachable only by driving /models/status, /models/verify
@@ -26,15 +26,18 @@ vi.mock('../../lib/icLoraWeights.js', () => ({
   icLoraRepos: vi.fn(() => []),
 }));
 
-vi.mock('./local.js', () => ({
-  listVideoModels: vi.fn(() => [
-    { id: 'wan_lightning', repo: 'org/wan-base', revision: 'a'.repeat(40) },
-  ]),
-}));
+vi.mock('./local.js', () => ({ listVideoModels: vi.fn() }));
 
-import {
-  modelDownloadTargets, targetKey, reposToVerify,
-} from './modelCache.js';
+import { modelDownloadTargets, targetKey, reposToVerify } from './modelCache.js';
+import { listVideoModels } from './local.js';
+
+const REV_A = 'a'.repeat(40);
+const REV_B = 'b'.repeat(40);
+const WAN = { id: 'wan_lightning', repo: 'org/wan-base', revision: REV_A };
+
+beforeEach(() => {
+  vi.mocked(listVideoModels).mockReturnValue([WAN]);
+});
 
 describe('videoGen model cache targets', () => {
   it('scopes an unlisted model repo to a whole-repo snapshot', () => {
@@ -44,12 +47,18 @@ describe('videoGen model cache targets', () => {
       .toEqual([{ repo: 'org/ltx2', revision: null, only: [] }]);
   });
 
-  it('keys two targets that differ only by revision distinctly', () => {
-    // A collision here would let reposToVerify() dedupe away a pinned revision
-    // and report a stale repo as fresh.
-    const base = { repo: 'org/wan', only: ['model.safetensors'] };
-    expect(targetKey({ ...base, revision: 'a'.repeat(40) }))
-      .not.toBe(targetKey({ ...base, revision: 'b'.repeat(40) }));
+  it('keeps two same-repo targets that differ only by revision', () => {
+    // The unscoped scan dedupes by targetKey. A collision there would drop one
+    // pinned revision and let a stale repo report as fresh, so two models on
+    // the same repo at different revisions must both survive.
+    vi.mocked(listVideoModels).mockReturnValue([WAN, { ...WAN, id: 'wan_pinned', revision: REV_B }]);
+    const wan = reposToVerify().filter((t) => t.repo === 'org/wan-base');
+    expect(wan.map((t) => t.revision)).toEqual([REV_A, REV_B]);
+    // …while an identical pair still collapses to one walk.
+    vi.mocked(listVideoModels).mockReturnValue([WAN, { ...WAN, id: 'wan_clone' }]);
+    expect(reposToVerify().filter((t) => t.repo === 'org/wan-base')).toHaveLength(1);
+    // No revision keys the same as an explicit null one.
+    const base = { repo: 'org/wan-base', only: [] };
     expect(targetKey({ ...base, revision: null })).toBe(targetKey(base));
   });
 
