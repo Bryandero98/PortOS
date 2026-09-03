@@ -6,6 +6,7 @@ import Modal from '../../ui/Modal';
 import AppContextPicker from '../../AppContextPicker';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import { FormField } from '../../ui/FormField';
+import CollapsibleText from '../../ui/CollapsibleText';
 import { useAsyncAction } from '../../../hooks/useAsyncAction';
 import { effortAwareModelOptions, seedModelEffort } from '../../../utils/providers';
 
@@ -104,7 +105,20 @@ export default function RelaunchAgentModal({ agent, providers, apps, onDone, onC
 
       <div className="mb-4 p-3 bg-port-bg border border-port-border rounded-lg">
         <div className="text-sm text-gray-400 mb-1">Current task</div>
-        <div className="text-white">{taskDescription}</div>
+        {/* A task description is the agent's whole prompt — routinely hundreds of
+            lines. Rendered in full it pushes the provider/model selects and the
+            Relaunch button off a phone screen, so it opens clamped. Expanding
+            swaps in a height-capped scroll box rather than unclamping in place:
+            the point of the dialog is the controls below it, and an expanded
+            prompt must not bury them again. */}
+        <CollapsibleText
+          id={`relaunch-task-${agent?.id || 'current'}`}
+          text={taskDescription}
+          lines={3}
+          className="text-white"
+          expandedContent={taskDescription}
+          expandedClassName="max-h-48 overflow-y-auto whitespace-pre-wrap"
+        />
         <div className="text-sm text-gray-400 mt-2">
           This stops the running agent and requeues the same task on the worktree it leaves
           behind — no second agent, and nothing to clean up afterward.
