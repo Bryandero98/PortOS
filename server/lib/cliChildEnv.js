@@ -41,9 +41,10 @@
  */
 
 import { withSpawnCwdEnv } from './spawnCwd.js';
-import { buildOpencodeEnvVars } from './opencodeConfig.js';
-import { getOpencodeLocalProviderNamespace, isClaudeCommand } from './providerModels.js';
-import { isGatewayNamespace } from './providerGateways.js';
+import { buildOpencodeEnvVars, parseOpencodeConfigContent } from './opencodeConfig.js';
+import { localRuntimeNamespace, isClaudeCommand } from './providerModels.js';
+import { isLocalInstanceEndpoint } from './localEndpoint.js';
+import { isPlainObject } from './objects.js';
 import { agentGuardEnv } from './agentGuard/index.js';
 import { buildSafeCliBaseEnv } from './processEnv.js';
 import { isPublicReviewNoToolProfile, isPublicReviewRestrictedProfile } from './agentExecutionProfiles.js';
@@ -70,8 +71,7 @@ const CLAUDE_LOCAL_MAX_OUTPUT_TOKENS = '65536';
  * `localRuntimeKind` makes.
  */
 function isLocalBackedClaude(provider) {
-  const namespace = getOpencodeLocalProviderNamespace(provider);
-  return !!namespace && !isGatewayNamespace(namespace) && isClaudeCommand(provider?.command);
+  return !!localRuntimeNamespace(provider) && isClaudeCommand(provider?.command);
 }
 
 function claudeLocalEnvDefaults(provider) {
@@ -111,9 +111,11 @@ function claudeLocalEnvDefaults(provider) {
  *   per-call model — `provider.defaultModel` is always declared regardless.
  * @param {object|null} [options.extra] - layered last, so it overrides every
  *   other layer including `provider.envVars` (TERM/COLORTERM for a PTY).
+ * @param {string|null} [options.safetyProfile] - a public-review execution
+ *   profile, which hardens the OpenCode config (see `buildOpencodeEnvVars`).
  * @returns {object} a fresh object holding only these layers
  */
-export function composeProviderEnv({ before = null, provider = null, model = null, extra = null } = {}) {
+export function composeProviderEnv({ before = null, provider = null, model = null, extra = null, safetyProfile = null } = {}) {
   return {
     ...(before || {}),
     ...claudeLocalEnvDefaults(provider),
@@ -122,14 +124,17 @@ export function composeProviderEnv({ before = null, provider = null, model = nul
     // local providers (an empty object for everyone else) so the injected
     // namespaced `--model` isn't rejected as "not valid" — see #2190. It lands
     // after provider.envVars to override the provider's STATIC
-    // OPENCODE_CONFIG_CONTENT, which it was built from.
-    ...buildOpencodeEnvVars(provider, model),
+    // OPENCODE_CONFIG_CONTENT, which it was built from. `safetyProfile` also
+    // reaches it because OpenCode's tool posture lives in that config — see
+    // `hardenOpencodeConfigForNoTool`.
+    ...buildOpencodeEnvVars(provider, model, { safetyProfile }),
     ...(extra || {}),
   };
 }
 
-// Public contributor content is run through a no-tools local Claude wrapper.
-// Keep only runtime essentials plus the local Anthropic-compatible endpoint;
+// Public contributor content is run through a no-tools local harness — a Claude
+// or an OpenCode wrapper pointed at a loopback daemon.
+// Keep only runtime essentials plus the local model endpoint;
 // in particular, never pass forge, cloud, SSH, auth, or arbitrary provider env
 // vars into the child. This is a second boundary in addition to the CLI argv.
 const PUBLIC_REVIEW_ENV_KEYS = new Set([
@@ -148,20 +153,39 @@ const PUBLIC_REVIEW_ENV_KEYS = new Set([
 // disables the keychain — so without the token the CLI exits "Not logged in"
 // before reading the prompt. Keep the credential only for a loopback base URL;
 // against any other host it is a real cloud credential and stays stripped.
+// `isLocalInstanceEndpoint` (localEndpoint.js) is the tree-wide answer to "is
+// this endpoint on the machine PortOS runs on?" — the same predicate
+// `localRuntimeForProvider` uses to decide a provider HAS a local daemon.
+// Reused here rather than re-typed so a credential boundary cannot classify a
+// host differently from the runtime resolver; it also counts the bind-all
+// addresses (`0.0.0.0`, `::`) as local, which they are.
 const LOCAL_ANTHROPIC_CREDENTIAL_KEYS = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
-const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 function localAnthropicCredentialEnv(env) {
-  let hostname;
-  try {
-    hostname = new URL(env?.ANTHROPIC_BASE_URL).hostname.toLowerCase();
-  } catch {
-    return {};
-  }
-  if (!LOOPBACK_HOSTNAMES.has(hostname) && !hostname.startsWith('127.')) return {};
+  if (!isLocalInstanceEndpoint(env?.ANTHROPIC_BASE_URL)) return {};
   return Object.fromEntries(LOCAL_ANTHROPIC_CREDENTIAL_KEYS
     .filter((key) => env[key] != null)
     .map((key) => [key, env[key]]));
+}
+
+/**
+ * An OpenCode run carries its whole configuration — provider endpoint, declared
+ * models, and (under a `no-tool` profile) its entire tool posture — in
+ * `OPENCODE_CONFIG_CONTENT`, so stripping it does not harden the child, it just
+ * points it at the user's own `~/.config/opencode` instead. Keep it, on the same
+ * terms as the local Anthropic credential above: only when every endpoint it
+ * declares is loopback. A config naming a hosted gateway carries that gateway's
+ * API key, which is a real cloud credential and stays stripped — leaving an
+ * OpenCode wrapper front-ending a gateway ineligible for these stages, which is
+ * why `providerVendors.js` scopes the OpenCode recipe to local namespaces.
+ */
+function opencodeLocalConfigEnv(env) {
+  const raw = env?.OPENCODE_CONFIG_CONTENT;
+  const declared = parseOpencodeConfigContent(raw)?.provider;
+  const entries = isPlainObject(declared) ? Object.values(declared) : [];
+  const allLocal = entries.length > 0
+    && entries.every((entry) => isLocalInstanceEndpoint(entry?.options?.baseURL));
+  return allLocal ? { OPENCODE_CONFIG_CONTENT: raw } : {};
 }
 
 function allowlistEnv(env, keys) {
@@ -170,6 +194,7 @@ function allowlistEnv(env, keys) {
       value != null && (keys.has(key) || key.startsWith('LC_'))
     ))),
     ...localAnthropicCredentialEnv(env),
+    ...opencodeLocalConfigEnv(env),
   };
 }
 
@@ -235,7 +260,7 @@ export function buildCliChildEnv({
   safetyProfile = null,
 } = {}) {
   const composed = withSpawnCwdEnv(
-    { ...buildSafeCliBaseEnv(baseEnv, provider), ...composeProviderEnv({ before, provider, model, extra }) },
+    { ...buildSafeCliBaseEnv(baseEnv, provider), ...composeProviderEnv({ before, provider, model, extra, safetyProfile }) },
     cwd,
   );
 

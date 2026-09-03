@@ -601,6 +601,20 @@ export function isOpencodeCommand(command) {
   return commandBasename(command) === 'opencode';
 }
 
+/**
+ * The OpenCode agent a `no-tool` public-review stage runs as (`opencode run
+ * --agent …`). `plan` is OpenCode's OWN built-in read-only agent, chosen over a
+ * PortOS-declared one so the stage never depends on a custom agent definition
+ * being accepted by whatever OpenCode version is installed.
+ *
+ * It is a belt, not the braces: `hardenOpencodeConfigForNoTool`
+ * (`opencodeConfig.js`) still empties this agent's tool map, so a future
+ * OpenCode that widens `plan` cannot widen the stage. Lives HERE rather than
+ * beside that function because `providerVendors.js` — which passes the flag —
+ * must not import `opencodeConfig.js`; doing so pulls `ports.js` in behind it
+ * and breaks a suite that partially mocks it.
+ */
+export const OPENCODE_PUBLIC_REVIEW_AGENT = 'plan';
 
 /**
  * OpenCode addresses models as `provider/model` (e.g. `ollama/qwen2.5:7b`). The
@@ -657,6 +671,27 @@ export function getOpencodeLocalProviderNamespace(provider) {
   // carrying both a local marker and a gateway marker keeps its legacy local
   // outcome, exactly as the old if-chain did with `orcarouterBacked`.
   return gatewayIdForProvider(provider);
+}
+
+/**
+ * The namespace above, but only when it names a LOCAL daemon — a hosted gateway
+ * (`providerGateways.js`) is an OpenCode namespace and a remote API, so every
+ * consumer asking "is there a daemon on this machine behind this provider?"
+ * has to exclude it.
+ *
+ * That exclusion was hand-written at three sites (`isLocalBackedClaude` in
+ * `cliChildEnv.js`, `localRuntimeKind` in `localProviderRuntime.js`, and the
+ * OpenCode public-review recipe in `providerVendors.js`), which is one more
+ * than the `orcarouterBacked` → `providerGateways.js` sweep was meant to leave
+ * behind — so the composed predicate lives here, beside the namespace resolver
+ * it wraps.
+ *
+ * @param {object|null|undefined} provider
+ * @returns {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|null}
+ */
+export function localRuntimeNamespace(provider) {
+  const namespace = getOpencodeLocalProviderNamespace(provider);
+  return namespace && !isGatewayNamespace(namespace) ? namespace : null;
 }
 
 /**

@@ -28,9 +28,8 @@
  * report their working setup as broken.
  */
 
-import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
-import { opencodeLocalBaseUrl } from './opencodeConfig.js';
-import { isGatewayNamespace } from './providerGateways.js';
+import { localRuntimeNamespace, isOpencodeCommand } from './providerModels.js';
+import { opencodeLocalBaseUrl, parseOpencodeConfigContent } from './opencodeConfig.js';
 import { PORTS } from './ports.js';
 import { isLocalInstanceHost, isLocalInstanceEndpoint, localEndpointPort } from './localEndpoint.js';
 
@@ -266,16 +265,10 @@ function envBaseUrl(kind) {
 
 /** The `baseURL` an OpenCode provider config declares for `namespace`, if any. */
 function opencodeConfiguredBaseUrl(provider, namespace) {
-  const stored = provider?.envVars?.OPENCODE_CONFIG_CONTENT;
-  if (typeof stored !== 'string' || stored === '') return null;
-  let parsed = null;
-  try {
-    parsed = JSON.parse(stored);
-  } catch {
-    // A hand-edited config that no longer parses tells us nothing about the
-    // endpoint; fall through to the provider's own fields.
-    return null;
-  }
+  // A hand-edited config that no longer parses tells us nothing about the
+  // endpoint; `parseOpencodeConfigContent` answers null and we fall through to
+  // the provider's own fields.
+  const parsed = parseOpencodeConfigContent(provider?.envVars?.OPENCODE_CONFIG_CONTENT);
   const baseUrl = parsed?.provider?.[namespace]?.options?.baseURL;
   return typeof baseUrl === 'string' && baseUrl.trim() !== '' ? baseUrl : null;
 }
@@ -296,8 +289,8 @@ export function localRuntimeKind(provider) {
   if (!provider || typeof provider !== 'object') return null;
   // Marker-based, NOT command-based: this also resolves `claude-ollama`, which
   // carries `ollamaBacked` without being an OpenCode provider.
-  const namespace = getOpencodeLocalProviderNamespace(provider);
-  if (namespace && !isGatewayNamespace(namespace)) return namespace;
+  const namespace = localRuntimeNamespace(provider);
+  if (namespace) return namespace;
   if (provider?.id === 'slotstream' || /slotstream/i.test(provider?.name || '')) return 'slotstream';
   if (Number(localEndpointPort(provider?.endpoint)) === PORTS.SLOTSTREAM) return 'slotstream';
   return localBackendForProvider(provider);

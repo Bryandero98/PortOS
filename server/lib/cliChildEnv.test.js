@@ -178,6 +178,49 @@ describe('buildCliChildEnv — public-review profile', () => {
   });
 });
 
+describe('buildCliChildEnv — public-review profile, OpenCode harness', () => {
+  // OpenCode is the natural way to drive a local Ollama model, and its whole
+  // tool posture lives in OPENCODE_CONFIG_CONTENT — stripping the variable does
+  // not harden the child, it points it back at the user's own
+  // ~/.config/opencode. It survives on the same loopback terms as the local
+  // Anthropic credential.
+  it('hardens the OpenCode config and carries it through the allowlist', () => {
+    const env = buildCliChildEnv({
+      baseEnv: { PATH: '/usr/bin', GH_TOKEN: 'ambient' },
+      provider: OLLAMA_OPENCODE,
+      model: 'qwen2.5:7b',
+      cwd: '/tmp/public-review',
+      safetyProfile: PUBLIC_REVIEW_EXECUTION_PROFILE,
+    });
+
+    // One posture marker is enough here — `opencodeConfig.test.js` owns the
+    // full matrix. What this test uniquely proves is that the hardened config
+    // survives the allowlist while the credentials beside it do not.
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).tools).toEqual({ '*': false });
+    expect(env).not.toHaveProperty('GH_TOKEN');
+    expect(env).not.toHaveProperty('API_KEY');
+  });
+
+  it('leaves the ordinary (non-public-review) OpenCode config tool-enabled', () => {
+    const env = buildCliChildEnv({ provider: OLLAMA_OPENCODE, model: 'qwen2.5:7b', cwd: '/tmp/work' });
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
+    expect(config.permission).toBe('deny'); // the provider's stored value, untouched
+    expect(config.provider.ollama.models['qwen2.5:7b'].tool_call).toBe(true);
+    expect(config).not.toHaveProperty('tools');
+  });
+
+  it('strips a config declaring a non-loopback endpoint, key and all', () => {
+    const gatewayConfig = JSON.stringify({
+      provider: { openrouter: { options: { baseURL: 'https://openrouter.ai/api/v1', apiKey: 'cloud-secret' } } },
+    });
+    expect(buildPublicReviewCliEnv({ PATH: '/usr/bin', OPENCODE_CONFIG_CONTENT: gatewayConfig }))
+      .not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
+    // A config that no longer parses tells us nothing about the endpoint.
+    expect(buildPublicReviewCliEnv({ OPENCODE_CONFIG_CONTENT: '{not json' }))
+      .not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
+  });
+});
+
 describe('buildCliChildEnv — public-review profile, cloud endpoint', () => {
   it('strips the Anthropic credential when the base URL is not loopback', () => {
     const env = buildPublicReviewCliEnv({
