@@ -443,6 +443,7 @@ export * from './fetchErrorChain.js';
 export * from './isoWeek.js';
 export * from './lwwTimestamp.js';
 export * from './snapshotChecksum.js';
+export * from './syncManifest.js';
 export * from './mapWithConcurrency.js';
 export * from './markedSection.js';
 export * from './mirrorParity.js';
