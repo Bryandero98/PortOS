@@ -138,6 +138,29 @@ function invalidEligibility(reason, message = 'The eligibility gate did not retu
   return { action: 'no-op', accepted: false, reason, message };
 }
 
+/**
+ * A stage agent that finished having written NO parseable deliverable at all
+ * (#6124). This is NOT the same as a payload the validator rejected: there is
+ * nothing to re-read, so the identical stage re-dispatches into the identical
+ * empty result — the shape that burned ~20 spawns in five minutes while the
+ * churn park logged that it had stopped the loop.
+ *
+ * `permanent: true` is the posture `resolvePublicReviewAgentProvider` already
+ * uses when no provider can enforce the stage's contract: surface a blocked
+ * task carrying the reason instead of retrying it. Finalization only honours
+ * the flag when the run named no other cause (see agentFinalization), so a
+ * rate-limited or unauthenticated run still gets its ordinary retries.
+ */
+function stageProducedNoOutput(role) {
+  return {
+    action: 'no-op',
+    accepted: false,
+    permanent: true,
+    reason: 'stage-produced-no-output',
+    message: `The pr-reviewer ${role || 'pipeline'} stage agent finished without writing any parseable output`,
+  };
+}
+
 function processEligibilityTaskOutput({ appId, success, payload, task } = {}) {
   if (!appId) return invalidEligibility('missing-app');
   if (!success) return invalidEligibility('agent-failed', 'The eligibility gate agent failed before returning a decision');
@@ -226,6 +249,11 @@ export function isTaskOutputPayload(payload) {
 
 export async function processTaskOutput(args = {}, deps) {
   const role = prReviewerStageRole(args.task?.metadata?.pipeline?.stages?.[args.task?.metadata?.pipeline?.currentStage ?? 0]);
+  // Checked before the role switch: every stage of this pipeline delivers its
+  // result as a parsed sentinel payload, so "no payload at all" is the same
+  // permanent failure whichever stage produced it, and answering it here keeps
+  // the per-role validators about the CONTENT of a payload that exists.
+  if (args.payload == null) return stageProducedNoOutput(role);
   if (role === 'eligibility') return processEligibilityTaskOutput(args);
   if (role === 'actions') return processIssueWatcherOutput({ ...args, requireEligibilityFacts: true }, deps);
   return invalidEligibility('unsupported-pr-review-stage');

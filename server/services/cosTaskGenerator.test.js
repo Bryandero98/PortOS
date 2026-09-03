@@ -1571,7 +1571,7 @@ describe('pr-reviewer security preflight wiring', () => {
   it('runs the direct preflight before stage gates and resolves the next-stage prompt', () => {
     const start = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
     const body = GEN_SRC.slice(start, GEN_SRC.indexOf('return task;', start));
-    const preflightAt = body.indexOf('runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest)');
+    const preflightAt = body.indexOf('runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest, taskSchedule)');
     const preconditionAt = body.indexOf('shouldSkipForPrecondition(metadata, app, taskType)');
     const promptAt = body.indexOf('getStagePrompt(taskType, currentStageIndex)');
 
@@ -1585,6 +1585,21 @@ describe('pr-reviewer security preflight wiring', () => {
     expect(GEN_SRC).toContain('no-external-open-prs');
     expect(GEN_SRC).toContain('findActiveSecurityScanTask');
     expect(GEN_SRC).toContain('securityScanFingerprint');
+  });
+
+  // #6124: observeAgentChurn parks pr-reviewer, but pr-reviewer runs ON_DEMAND
+  // and shouldRunTask only reads `parkedUntil` on a perpetual interval — so the
+  // park logged "the loop stops burning quota" while the drain regenerated a
+  // fresh task every ~15s. The preflight is the one place every run is built.
+  it('lets an active churn park stop the run before the scan is paid for', () => {
+    const start = GEN_SRC.indexOf('async function runPrReviewerSecurityPreflight');
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return { skipped: false, scan };', start));
+    const parkAt = body.indexOf('taskSchedule.isPerpetualParkActive(taskType, app.id)');
+    const scanAt = body.indexOf('runPrReviewerSecurityScan(');
+
+    expect(parkAt, 'a parked pr-reviewer must not regenerate').toBeGreaterThan(-1);
+    expect(parkAt).toBeLessThan(scanAt);
+    expect(body).toContain("return { skipped: true, reason: 'parked' };");
   });
 
   it('narrows a targeted run before the fingerprint, the scan, and the stage-2 allowlist', () => {
