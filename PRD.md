@@ -22,7 +22,7 @@ Reused verbatim (condensed to objective statements) from [GOALS.md](./GOALS.md)'
 6. **Developer Productivity Toolkit** — shell, git, browser control, and process tooling available from any device.
 7. **Self-Improving Intelligence** — the system tunes its own routing/metrics from observed outcomes rather than staying static.
 8. **Full Digital Autonomy** — agents can act across connected platforms (voice, Telegram, messaging, social) around the clock.
-9. **Knowledge Legacy** — personal knowledge, identity, and creative output are preserved as a durable, local record. PortOS itself is the backup of record (data lives on the user's hardware and is covered by automatic snapshots — see `docs/BACKUP.md`), so per-domain backup-style exports are out of scope; download/export buttons exist only for sharing or handoff to other tools (Sharing buckets, Legacy Bundle).
+9. **Knowledge Legacy** — personal knowledge, identity, and creative output are preserved as a durable, local record. PortOS itself is the backup of record (data lives on the user's hardware and is covered by automatic snapshots — see `docs/BACKUP.md`), so per-domain backup-style exports are out of scope; download/export buttons exist only for sharing or handoff to other tools (Sharing buckets, Legacy Bundle, format-specific creative deliverables).
 10. **Anywhere Access on Private Network** — every feature is reachable from any device on the user's Tailnet, with no public exposure.
 11. **Health & Longevity** — health data (MeatSpace) is tracked and made actionable via mortality/longevity-aware goal scoring.
 12. **Personal Productivity & Life Management** — calendar, goals, and communications are unified with the same tooling that manages digital projects.
