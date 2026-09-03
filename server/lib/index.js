@@ -190,6 +190,7 @@ export * from './mtplxModels.js';
 export * from './mtplxRuntime.js';
 export * from './slotstreamModels.js';
 export * from './managedDaemon.js';
+export * from './recordedProjectDir.js';
 export * from './vllmQwenProject.js';
 export * from './wslDistro.js';
 export * from './qwenAgentParsers.js';
