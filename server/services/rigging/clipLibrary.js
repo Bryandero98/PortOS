@@ -1,5 +1,5 @@
-import { basename, extname, join } from 'path';
-import { dataPath, ensureDir, listDirectoryByExtension } from '../../lib/fileUtils.js';
+import { basename, extname } from 'path';
+import { dataPath, ensureDir, listDirectoryByExtension, makePathResolver } from '../../lib/fileUtils.js';
 
 /**
  * User-owned clip files are file-primary: they are externally supplied binary
@@ -32,7 +32,4 @@ export async function listClipSources({ directory = CLIP_LIBRARY_DIR } = {}) {
 }
 
 /** Resolve a library filename without accepting path traversal or extensions. */
-export function resolveClipSource(filename, { directory = CLIP_LIBRARY_DIR } = {}) {
-  if (typeof filename !== 'string' || !/^[a-z0-9][a-z0-9-]*\.glb$/i.test(filename)) return null;
-  return join(directory, filename);
-}
+export const resolveClipSource = makePathResolver(() => CLIP_LIBRARY_DIR, { extensions: CLIP_SOURCE_EXTENSIONS });

@@ -19,10 +19,11 @@ export const SKELETON_BONE_MAPPINGS = {
 };
 
 const normalizeBoneName = (name) => String(name || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
-const semanticByNormalizedName = new Map(
-  Object.entries(SKELETON_BONE_MAPPINGS).flatMap(([, mapping]) => Object.entries(mapping)
-    .flatMap(([joint, bone]) => [[normalizeBoneName(joint), joint], [normalizeBoneName(bone), joint]])),
-);
+const semanticByNormalizedName = new Map([
+  ...JOINTS.map((joint) => [normalizeBoneName(joint), joint]),
+  ...Object.values(SKELETON_BONE_MAPPINGS).flatMap((mapping) => Object.entries(mapping)
+    .map(([joint, bone]) => [normalizeBoneName(bone), joint])),
+]);
 
 export function knownSkeletonHint(hint) {
   return Object.hasOwn(SKELETON_BONE_MAPPINGS, hint) ? hint : 'unknown';
