@@ -35,7 +35,9 @@ vi.mock('./modelAbuseGuard.js', async (importOriginal) => ({
 }));
 
 const spawnPrRemediationFollowUpMock = vi.fn();
+const PR_REMEDIATION_SPAWN = { QUEUED: 'queued', ALREADY_QUEUED: 'already-queued', FAILED: 'failed' };
 vi.mock('./prRemediationFollowUp.js', () => ({
+  PR_REMEDIATION_SPAWN,
   spawnPrRemediationFollowUp: (...args) => spawnPrRemediationFollowUpMock(...args),
 }));
 
@@ -902,7 +904,10 @@ describe('handing back a PR the coordinator could not merge', () => {
 
   beforeEach(() => {
     spawnPrRemediationFollowUpMock.mockReset();
-    spawnPrRemediationFollowUpMock.mockResolvedValue({ id: 'sys-remediation-1' });
+    spawnPrRemediationFollowUpMock.mockResolvedValue({
+      status: PR_REMEDIATION_SPAWN.QUEUED,
+      task: { id: 'sys-remediation-1' },
+    });
   });
 
   it('sends blocking findings to a remediation agent when the fork branch is writable', async () => {
@@ -1006,7 +1011,7 @@ describe('handing back a PR the coordinator could not merge', () => {
   });
 
   it('falls back to the opener when the remediation task could not be queued', async () => {
-    spawnPrRemediationFollowUpMock.mockResolvedValue(null);
+    spawnPrRemediationFollowUpMock.mockResolvedValue({ status: PR_REMEDIATION_SPAWN.FAILED, task: null });
     installDefaultGhMock({ pr: pullRequest(WRITABLE_FORK) });
 
     await run(decision());
@@ -1023,6 +1028,48 @@ describe('handing back a PR the coordinator could not merge', () => {
     await run(decision());
 
     expect(assignCalls()).toHaveLength(0);
+  });
+
+  // An 'already queued' spawn means an agent OWNS the PR. Assigning the opener
+  // on top of it would put one PR in two queues and set a human to work against
+  // a running agent — and it must not burn an attempt, since no new agent ran.
+  it('leaves a PR with its in-flight agent instead of also assigning the opener', async () => {
+    spawnPrRemediationFollowUpMock.mockResolvedValue({
+      status: PR_REMEDIATION_SPAWN.ALREADY_QUEUED,
+      task: { id: 'sys-existing', duplicate: true },
+    });
+    installDefaultGhMock({ pr: pullRequest(WRITABLE_FORK) });
+
+    await run(decision());
+
+    expect(assignCalls()).toHaveLength(0);
+    expect(apps.get(APP.id).issueWatcherState.prHandbacks).toEqual([
+      expect.objectContaining({ number: 7, disposition: 'remediate', taskId: 'sys-existing', attempts: 0 }),
+    ]);
+  });
+
+  // The two hand-back writers (this pass and the merge poller) both own entries
+  // in this field and can be in flight together — the perpetual refill fires
+  // buildTaskInput on agent:completed, before the completing output hook has
+  // settled. A pass must merge its own entries onto whatever it lands on, never
+  // replace the field wholesale: a lost entry drops the same-revision dedup and
+  // re-spawns an agent for a PR one is already working.
+  it('merges its ledger entry onto a peer pass\' write instead of replacing it', async () => {
+    const peer = { number: 99, headSha: 'd'.repeat(40), disposition: 'remediate', attempts: 1 };
+    installDefaultGhMock({ pr: pullRequest(WRITABLE_FORK) });
+    // Land the peer entry mid-pass: after this pass seeded its tracker, before
+    // it reaches its own end-of-pass write.
+    spawnPrRemediationFollowUpMock.mockImplementation(async () => {
+      const current = apps.get(APP.id);
+      apps.set(APP.id, { ...current, issueWatcherState: { ...current.issueWatcherState, prHandbacks: [peer] } });
+      return { status: PR_REMEDIATION_SPAWN.QUEUED, task: { id: 'sys-remediation-1' } };
+    });
+
+    await run(decision());
+
+    const ledger = apps.get(APP.id).issueWatcherState.prHandbacks;
+    expect(ledger.map((entry) => entry.number).sort()).toEqual([7, 99]);
+    expect(ledger.find((entry) => entry.number === 99)).toMatchObject(peer);
   });
 
   it('hands over an approved PR whose merge polling ran out of ticks', async () => {

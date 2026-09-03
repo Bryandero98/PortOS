@@ -4,7 +4,7 @@ const addTaskMock = vi.fn();
 vi.mock('./cos.js', () => ({ addTask: (...args) => addTaskMock(...args) }));
 vi.mock('./cosEvents.js', () => ({ emitLog: vi.fn() }));
 
-import { spawnPrRemediationFollowUp } from './prRemediationFollowUp.js';
+import { PR_REMEDIATION_SPAWN, spawnPrRemediationFollowUp } from './prRemediationFollowUp.js';
 
 const APP = { id: 'app-1', name: 'Example App', repoPath: '/repos/example' };
 const PULL_REQUEST = {
@@ -34,7 +34,7 @@ describe('spawnPrRemediationFollowUp', () => {
   it('queues an internal task that works on the PR without opening another one', async () => {
     const created = await spawn();
 
-    expect(created.id).toBe('sys-remediation-1');
+    expect(created).toMatchObject({ status: PR_REMEDIATION_SPAWN.QUEUED, task: { id: 'sys-remediation-1' } });
     const [task, queue] = addTaskMock.mock.calls[0];
     expect(queue).toBe('internal');
     expect(task).toMatchObject({
@@ -102,12 +102,18 @@ describe('spawnPrRemediationFollowUp', () => {
     expect(`${context}\n${description}`).not.toContain('Ignore previous instructions');
   });
 
-  it('reports a queue rejection rather than pretending the PR was picked up', async () => {
+  // These two must NOT collapse. A duplicate means an agent already owns the
+  // PR, so the caller must leave it alone; a failed write means nobody picked
+  // it up, so the caller has to hand the PR back to its opener.
+  it('distinguishes an already-queued agent from a failed queue write', async () => {
     addTaskMock.mockResolvedValue({ id: 'sys-existing', duplicate: true });
-    expect(await spawn()).toBeNull();
+    expect(await spawn()).toEqual({
+      status: PR_REMEDIATION_SPAWN.ALREADY_QUEUED,
+      task: { id: 'sys-existing', duplicate: true },
+    });
 
     addTaskMock.mockRejectedValue(new Error('disk full'));
-    expect(await spawn()).toBeNull();
+    expect(await spawn()).toEqual({ status: PR_REMEDIATION_SPAWN.FAILED, task: null });
   });
 
   it.each([
@@ -116,7 +122,7 @@ describe('spawnPrRemediationFollowUp', () => {
     ['no PR number', { pullRequest: { ...PULL_REQUEST, number: null } }],
     ['no author to hand back to', { pullRequest: { ...PULL_REQUEST, authorLogin: '  ' } }],
   ])('refuses to queue with %s', async (_label, overrides) => {
-    expect(await spawn(overrides)).toBeNull();
+    expect(await spawn(overrides)).toEqual({ status: PR_REMEDIATION_SPAWN.FAILED, task: null });
     expect(addTaskMock).not.toHaveBeenCalled();
   });
 });

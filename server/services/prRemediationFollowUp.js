@@ -103,14 +103,30 @@ function renderContext({ app, repoFullName, number, url, headRefName, authorLogi
 }
 
 /**
- * Queue one remediation agent for a reviewed PR. Returns the created task, or
- * `null` when the queue rejected it (already pending for this app + PR) or the
- * inputs were incomplete.
+ * The three outcomes of trying to queue a remediation agent. `already-queued`
+ * must stay distinct from `failed`: a task is already pending or running for
+ * this PR, so an agent OWNS it and the caller must not also hand the PR to its
+ * opener — that would put one PR in two queues and set a human to work against
+ * a running agent. Only `failed` means nobody picked it up.
+ */
+export const PR_REMEDIATION_SPAWN = Object.freeze({
+  QUEUED: 'queued',
+  ALREADY_QUEUED: 'already-queued',
+  FAILED: 'failed',
+});
+
+/**
+ * Queue one remediation agent for a reviewed PR.
+ *
+ * @returns {Promise<{status: string, task: object|null}>} a
+ *   `PR_REMEDIATION_SPAWN` status plus the task when one was created.
  */
 export async function spawnPrRemediationFollowUp({ app, repoFullName, pullRequest, writeAccess, reason } = {}) {
   const number = pullRequest?.number;
   const authorLogin = typeof pullRequest?.authorLogin === 'string' ? pullRequest.authorLogin.trim() : '';
-  if (!app?.id || !app?.repoPath || !repoFullName || !Number.isInteger(number) || !authorLogin) return null;
+  if (!app?.id || !app?.repoPath || !repoFullName || !Number.isInteger(number) || !authorLogin) {
+    return { status: PR_REMEDIATION_SPAWN.FAILED, task: null };
+  }
 
   const description = `[PR Remediation] Land pull request #${number} in ${app.name || repoFullName}`;
   const task = {
@@ -152,9 +168,15 @@ export async function spawnPrRemediationFollowUp({ app, repoFullName, pullReques
     emitLog('warn', `Failed to queue PR remediation for #${number}: ${err.message}`, { appId: app.id, prNumber: number });
     return null;
   });
-  if (!created || created.duplicate) return null;
+  if (!created) return { status: PR_REMEDIATION_SPAWN.FAILED, task: null };
+  if (created.duplicate) {
+    emitLog('info', `🛠️ PR remediation for #${number} is already queued as ${created.id}`, {
+      taskId: created.id, appId: app.id, prNumber: number,
+    });
+    return { status: PR_REMEDIATION_SPAWN.ALREADY_QUEUED, task: created };
+  }
   emitLog('info', `🛠️ Queued PR remediation task ${created.id} for #${number} in ${repoFullName} (${reason})`, {
     taskId: created.id, appId: app.id, prNumber: number,
   });
-  return created;
+  return { status: PR_REMEDIATION_SPAWN.QUEUED, task: created };
 }

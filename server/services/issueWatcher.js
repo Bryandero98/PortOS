@@ -79,11 +79,21 @@ function queueStateWrite(write) {
   return next;
 }
 
+/**
+ * `patch` may be an object, or a FUNCTION of the freshly-read state. The
+ * function form exists because a plain object patch is computed from a snapshot
+ * taken before the queue was entered, and writing an array field from a stale
+ * snapshot replaces whatever another pass wrote in the meantime. A field whose
+ * entries are owned by more than one pass must derive its next value from the
+ * state this write actually lands on — see `handbackStatePatch`.
+ */
 async function persistState(appId, patch) {
   return queueStateWrite(async () => {
     const app = await getAppById(appId);
     if (!app) return null;
-    return updateApp(appId, { issueWatcherState: { ...readState(app), ...patch } });
+    const state = readState(app);
+    const resolved = typeof patch === 'function' ? patch(state) : patch;
+    return updateApp(appId, { issueWatcherState: { ...state, ...resolved } });
   });
 }
 
@@ -278,15 +288,38 @@ const handbackLedger = (state) => (Array.isArray(state?.prHandbacks) ? state.prH
  * Per-pass hand-back accumulator. The ledger is read once at the top of a pass
  * and written once at the end, folded into the `persistState` call the pass
  * already makes — a per-PR write would re-serialize the whole apps file for
- * each PR. Mutated in place like the `approvals`/`remaining` arrays beside
- * it, so a dedup check later in the same loop sees an entry made earlier in it.
+ * each PR. `ledger` is the pass's working view, mutated in place like the
+ * `approvals`/`remaining` arrays beside it so a dedup check later in the
+ * same loop sees an entry made earlier in it. `written` records only the
+ * entries THIS pass produced, keyed by PR number.
+ *
+ * The split matters: `processTaskOutput` and `processPendingApprovals` both
+ * own entries in this field and can be in flight together for one app (the
+ * perpetual refill in cos.js fires `buildTaskInput` on `agent:completed`,
+ * before the completing task's own output hook has settled). Writing
+ * `ledger` wholesale would replace the other pass's entries with a snapshot
+ * taken before they existed — and a LOST entry here is not a benign
+ * re-observation: it drops the same-revision dedup and the attempt budget, so
+ * the next sweep spawns a second remediation agent for a PR one is already
+ * working. Only `written` is applied, merged by number onto whatever the
+ * write actually lands on.
  */
 function createHandbackTracker(app) {
-  return { ledger: handbackLedger(readState(app)), changed: false };
+  return { ledger: handbackLedger(readState(app)), written: new Map() };
 }
 
-/** The ledger fields to merge into a pass's own end-of-pass state write. */
-const handbackStatePatch = (tracker) => (tracker?.changed ? { prHandbacks: tracker.ledger } : {});
+/**
+ * The ledger patch for a pass's own end-of-pass state write, as a function of
+ * fresh state so this pass's entries merge onto a peer's instead of replacing
+ * them. Returns `{}` when the pass handed nothing back.
+ */
+function handbackStatePatch(tracker) {
+  if (!tracker || tracker.written.size === 0) return {};
+  return (state) => {
+    const merged = handbackLedger(state).filter((entry) => !tracker.written.has(entry.number));
+    return { prHandbacks: [...merged, ...tracker.written.values()].slice(-MAX_HANDBACK_LEDGER_ENTRIES) };
+  };
+}
 
 /**
  * Decide and apply who owns a PR the coordinator reviewed but did not merge.
@@ -323,12 +356,16 @@ async function applyPullRequestHandback({
   const login = (authorLogin || pr.author?.login || '').trim();
   let applied = disposition;
   let taskId = null;
+  // Only a NEW agent costs an attempt. Re-observing a PR whose agent is still
+  // queued must not burn the budget that decides when the work goes back to
+  // its opener.
+  let spawned = false;
   if (disposition === PR_HANDBACK.REMEDIATE) {
     // Lazy: the spawner reaches the CoS task store, whose module graph is far
     // heavier than a gather pass that never hands anything back — and the
     // common disposition returns above without ever needing it.
-    const { spawnPrRemediationFollowUp } = await import('./prRemediationFollowUp.js');
-    const task = await spawnPrRemediationFollowUp({
+    const { PR_REMEDIATION_SPAWN, spawnPrRemediationFollowUp } = await import('./prRemediationFollowUp.js');
+    const { status, task } = await spawnPrRemediationFollowUp({
       app,
       repoFullName: ctx.repoFullName,
       pullRequest: {
@@ -341,10 +378,15 @@ async function applyPullRequestHandback({
       writeAccess,
       reason,
     });
-    // A rejected queue write (duplicate, disk error) must not silently drop the
-    // PR: fall back to the hand-back that needs no agent.
-    if (task) taskId = task.id;
-    else applied = PR_HANDBACK.ASSIGN_OPENER;
+    // `already-queued` still means an agent owns this PR, so it stays a
+    // REMEDIATE: assigning the opener on top of a running agent would put the
+    // PR in two queues and set a human to work against it. Only a genuine
+    // queue failure leaves nobody holding the PR and falls back.
+    if (status === PR_REMEDIATION_SPAWN.FAILED) applied = PR_HANDBACK.ASSIGN_OPENER;
+    else {
+      taskId = task?.id || null;
+      spawned = status === PR_REMEDIATION_SPAWN.QUEUED;
+    }
   }
   if (applied === PR_HANDBACK.ASSIGN_OPENER) await assignPullRequestOpener(ctx, pr, login);
 
@@ -352,7 +394,7 @@ async function applyPullRequestHandback({
     number: pr.number,
     headSha,
     taskId: applied === PR_HANDBACK.REMEDIATE ? taskId : null,
-    attempts: applied === PR_HANDBACK.REMEDIATE ? attempts + 1 : attempts,
+    attempts: spawned ? attempts + 1 : attempts,
     // Observability only — nothing reads these back as inputs to the dedup or
     // attempt-budget checks above.
     disposition: applied,
@@ -361,7 +403,7 @@ async function applyPullRequestHandback({
   };
   tracker.ledger = [...tracker.ledger.filter((item) => item.number !== pr.number), entry]
     .slice(-MAX_HANDBACK_LEDGER_ENTRIES);
-  tracker.changed = true;
+  tracker.written.set(pr.number, entry);
   return applied;
 }
 
@@ -895,8 +937,12 @@ async function processPendingApprovals(app, ctx) {
     });
     changed = true;
   }
-  if (changed || handbacks.changed) {
-    await persistState(app.id, { approvedPullRequests: remaining, ...handbackStatePatch(handbacks) });
+  const handbackPatch = handbackStatePatch(handbacks);
+  if (changed || typeof handbackPatch === 'function') {
+    await persistState(app.id, (state) => ({
+      approvedPullRequests: remaining,
+      ...(typeof handbackPatch === 'function' ? handbackPatch(state) : handbackPatch),
+    }));
   }
   return remaining;
 }
@@ -1337,12 +1383,13 @@ export async function processTaskOutput({ appId, success, payload, task, require
       return null;
     });
   }
-  await persistState(appId, {
+  const handbackPatch = handbackStatePatch(handbacks);
+  await persistState(appId, (state) => ({
     approvedPullRequests: approvals,
     pendingIssueComments,
     lastCheckedAt: new Date().toISOString(),
     lastError: commentsHandled ? null : 'issue-response-incomplete',
-    ...handbackStatePatch(handbacks),
-  });
+    ...(typeof handbackPatch === 'function' ? handbackPatch(state) : handbackPatch),
+  }));
   return { action: 'processed', replies, reviewed, rebased, merged, handedBack, commentsHandled };
 }
