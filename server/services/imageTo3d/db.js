@@ -72,6 +72,11 @@ export async function createModel(input) {
     // predates rigging has records with the key ABSENT, so readers must treat absent and
     // `null` the same and never assume the field exists.
     rig: null,
+    // The stored AR Quick Look export's served path, or `null` when the model has
+    // never been exported for AR (#5756). Same absent-vs-null contract as `rig`:
+    // every record created before this feature has the key MISSING, so read it as
+    // `record.usdzPath` truthiness and never assume it exists.
+    usdzPath: null,
     error: null,
     generationOperationId: null,
     runs: [],

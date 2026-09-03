@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, raw } from 'express';
 import { createReadStream } from 'node:fs';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
@@ -14,6 +14,9 @@ import {
   deleteModel,
   getModelAsset,
   getModelFullMesh,
+  getModelUsdz,
+  saveModelUsdz,
+  USDZ_MAX_BYTES,
 } from '../services/imageTo3d/models.js';
 import {
   RENDER_STEPS_MIN, RENDER_STEPS_MAX, RENDER_SEED_MAX, DETAIL_TIERS, ALPHA_MODES,
@@ -306,6 +309,47 @@ router.get('/models/:id/full-mesh', asyncHandler(async (req, res) => {
     contentType: 'model/obj',
     failure: new ServerError('Mesh file not found', { status: 404, code: 'ASSET_MISSING' }),
     label: 'Image-to-3D asset',
+  });
+}));
+
+// ── AR Quick Look (USDZ) ──────────────────────────────────────────────────
+// The conversion runs in the VIEWER (three's USDZExporter over the scene it has
+// already parsed and decoded), not on the server — PortOS ships no USD toolchain
+// and would otherwise have to re-decode the GLB and its textures in Node to
+// produce a file the browser already holds in memory. The server's job is to
+// persist the result: a blob URL is not reliably openable by AR Quick Look and
+// does not survive a reload, so the bytes are stored as a sibling artifact and
+// re-served on every later visit instead of being re-exported.
+
+/**
+ * A raw USDZ body. `express.json()` is mounted app-wide but only claims
+ * `application/json`, so these content types reach the route unparsed. The limit
+ * is enforced here (a 413 from the parser) AND in `saveModelUsdz` — the parser
+ * guards memory before the body is buffered, the service guards the invariant for
+ * any other caller.
+ */
+const usdzBody = raw({
+  type: ['model/vnd.usdz+zip', 'application/octet-stream'],
+  limit: USDZ_MAX_BYTES,
+});
+
+router.post('/models/:id/usdz', usdzBody, asyncHandler(async (req, res) => {
+  // Body-shape validation is byte-level (non-empty, under cap, zip magic), not a
+  // Zod object schema — there is no JSON here to describe.
+  const model = await saveModelUsdz(req.params.id, Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
+  res.status(201).json(withRenderSupport(model));
+}));
+
+// Served `inline`, unlike the GLB/OBJ downloads: AR Quick Look will not engage on
+// an attachment response, and it needs the exact `model/vnd.usdz+zip` type.
+router.get('/models/:id/usdz', asyncHandler(async (req, res) => {
+  const { path, filename } = await getModelUsdz(req.params.id);
+  streamAttachment(res, createReadStream(path), {
+    filename,
+    contentType: 'model/vnd.usdz+zip',
+    disposition: 'inline',
+    failure: new ServerError('USDZ file not found', { status: 404, code: 'ASSET_MISSING' }),
+    label: 'Image-to-3D AR export',
   });
 }));
 

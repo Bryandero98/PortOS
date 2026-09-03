@@ -189,3 +189,4 @@ export * from './wrSceneCursor.js';
 export * from './writingGuide.js';
 export * from './qrCode.js';
 export * from './riggingReasons.js';
+export * from './usdzExport.js';

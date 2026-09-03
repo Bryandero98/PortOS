@@ -7919,6 +7919,22 @@
     },
     {
       "method": "GET",
+      "path": "/api/image-to-3d/models/:id/usdz",
+      "mountPath": "/api/image-to-3d",
+      "sources": [
+        "server/routes/imageTo3d.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/image-to-3d/models/:id/usdz",
+      "mountPath": "/api/image-to-3d",
+      "sources": [
+        "server/routes/imageTo3d.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/image-to-3d/targets",
       "mountPath": "/api/image-to-3d",
       "sources": [
@@ -17440,8 +17456,8 @@
   ],
   "stats": {
     "mounts": 146,
-    "operations": 2160,
-    "declarations": 2168,
+    "operations": 2162,
+    "declarations": 2170,
     "sourceFiles": 229
   }
 }

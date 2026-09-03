@@ -10,6 +10,7 @@ import MediaImage from '../components/MediaImage';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import ImageTo3dRenderOptions from '../components/media/ImageTo3dRenderOptions';
 import RigPanel from '../components/media/RigPanel';
+import ArExportPanel from '../components/media/ArExportPanel';
 import {
   fieldsFromRun, renderOptionsBody, runWantsTransparency, SUBJECT_SCALE_DEFAULT,
 } from '../lib/imageTo3dRenderOptions';
@@ -33,6 +34,10 @@ export default function Media3DDetail() {
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // The three.js graph GlbViewer has loaded, handed up so the AR panel can
+  // re-serialize the very scene on screen to USDZ. `null` until the GLB parses
+  // (and again when it unloads) — the export button stays disabled until then.
+  const [loadedScene, setLoadedScene] = useState(null);
   // Per-run knobs, seeded from the latest run once per id (NOT on every poll
   // tick — that would clobber in-progress edits). Seed stays blank by design:
   // see fieldsFromRun.
@@ -254,6 +259,7 @@ export default function Media3DDetail() {
                 src={meshSrc}
                 downloadHref={imageTo3dAssetUrl(record.id)}
                 forceOpaque={!renderedTransparent}
+                onSceneLoaded={setLoadedScene}
               />
               {/* The viewer loads the decimated GLB because that is what a browser
                   can render; the decoder's full mesh is an order of magnitude
@@ -279,6 +285,8 @@ export default function Media3DDetail() {
           )}
         </div>
       </section>
+
+      <ArExportPanel record={record} scene={loadedScene} onRecordChange={setRecord} />
 
       <RigPanel record={record} onRecordChange={setRecord} />
     </div>
