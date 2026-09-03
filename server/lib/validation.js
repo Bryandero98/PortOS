@@ -556,6 +556,20 @@ export const providerVisionSuiteSchema = z.object({
   model: z.preprocess(emptyToUndefined, z.string().trim().min(1).max(256).optional()),
 });
 
+// POST /api/harnesses/action. Both values are TABLE KEYS, not free text: the
+// service rejects a `runtime` that names no row and an `action` outside this
+// enum before any child is spawned. This bounds the shape at the HTTP boundary
+// so a malformed query fails as a 400 rather than as a lookup miss mid-stream.
+export const harnessActionSchema = z.object({
+  runtime: z.string().trim().min(1).max(64),
+  action: z.enum(['install', 'update', 'uninstall']).optional().default('install'),
+});
+
+// POST /api/harnesses/models/refresh.
+export const harnessRefreshSchema = z.object({
+  runtime: z.string().trim().min(1).max(64),
+});
+
 // POST /api/uploads and POST /api/attachments. The shared upload helper
 // enforces decoded-byte limits and extension allowlists; this schema bounds
 // the JSON shape before the helper receives it.

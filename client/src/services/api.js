@@ -9,6 +9,7 @@ export * from './apiWorkspaceContexts.js';
 export * from './apiReferenceRepos.js';
 export * from './apiPorts.js';
 export * from './apiScaffold.js';
+export * from './apiHarnesses.js';
 export * from './apiProviders.js';
 export * from './apiPrompts.js';
 export * from './apiRuns.js';

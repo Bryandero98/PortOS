@@ -20,6 +20,7 @@ vi.mock('../components/settings/EmbeddingsTab', () => ({ default: () => <div>emb
 vi.mock('../components/models/Image3dRuntimes', () => ({ default: () => <div>3d runtimes panel</div> }));
 vi.mock('../components/models/ModelStatusTab', () => ({ default: () => <div>status panel</div> }));
 vi.mock('../components/settings/CodeReviewersTab', () => ({ default: () => <div>code reviewers panel</div> }));
+vi.mock('../components/models/HarnessesTab', () => ({ default: () => <div>harnesses panel</div> }));
 vi.mock('./Loras', () => ({ default: () => <div>loras panel</div> }));
 vi.mock('./LoraTraining', () => ({ default: () => <div>training panel</div> }));
 vi.mock('./MediaModels', () => ({ default: () => <div>media models panel</div> }));
@@ -35,6 +36,7 @@ const PANEL_MARKER = {
   '3d': '3d runtimes panel',
   'code-reviewers': 'code reviewers panel',
   embeddings: 'embeddings panel',
+  harnesses: 'harnesses panel',
   llms: 'llms panel',
   loras: 'loras panel',
   media: 'media models panel',
