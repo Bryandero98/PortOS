@@ -61,6 +61,7 @@ import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
+import { dropUnsupportedOllamaThinking } from './ollamaAgentContext.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
 import { publicReviewProviderBlock, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
@@ -907,7 +908,7 @@ async function runAgentSpawn(task) {
     // dynamic `agent.build` config instead of mutating saved provider state.
     const taskTemperature = task.metadata?.temperature === '' ? NaN : Number(task.metadata?.temperature);
     const taskThinking = task.metadata?.thinking;
-    const runProvider = {
+    const requestedProvider = {
       ...provider,
       ...(Number.isFinite(taskTemperature) && taskTemperature >= 0 && taskTemperature <= 2
         ? { temperature: taskTemperature }
@@ -915,9 +916,19 @@ async function runAgentSpawn(task) {
       ...([true, false, 'true', 'false'].includes(taskThinking) ? { thinking: taskThinking } : {}),
       ...(typeof task.metadata?.effort === 'string' ? { effort: task.metadata.effort } : {}),
     };
-    // Per-task reasoning-effort override (task form / schedule config). The
-    // builders no-op it for providers without an effort control.
-    const taskEffort = task.metadata?.effort || null;
+    // Ollama 400s the whole request when a model that never implements thinking
+    // is asked to think, so a non-reasoning local model dispatched at any effort
+    // level dies on its first turn with exit 1 and no output. Resolved here,
+    // once, on the provider EVERY spawn path shares — so the two carriers of the
+    // level (the `--effort` argv and OpenCode's `agent.*.reasoningEffort` config)
+    // drop it together. `taskEffort` is the per-task reasoning-effort override
+    // (task form / schedule config); the builders no-op it for providers without
+    // an effort control.
+    const { provider: runProvider, effort: taskEffort } = await dropUnsupportedOllamaThinking(
+      requestedProvider,
+      selectedModel,
+      task.metadata?.effort || null,
+    );
     // Codex counts the root orchestrator against its per-session thread cap.
     // Lift that cap to root + configured workers for cloud swarms so a six-way
     // claim run can actually fan out six issue agents. Never lift it for a
