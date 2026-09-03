@@ -279,10 +279,15 @@ async function runAgentSpawn(task) {
   // "in review" until the next daemon restart (issue #989). The release is a
   // no-op when the task carries no `metadata.app` or the marker is a real
   // `agent-*` id from a different live agent.
+  // The throwaway worktree this attempt cut (set once prepareAgentWorkspace
+  // returns one), so every setup failure after that point removes it. Without
+  // this each failed spawn left a full checkout behind: the task stayed pending
+  // and every retry cut another.
+  let spawnWorktree = null;
   const cleanupOnError = async (error) => {
     // The spawn-dedup guard is released by withSpawnDedupGuard's finally around
     // this whole body (see spawnAgentForTask) — cleanupOnError only owns the
-    // lane, tool-execution, claim, and app-review marker releases.
+    // lane, tool-execution, claim, app-review marker, and setup-worktree releases.
     release(agentId);
     errorExecution(toolExecution.id, { message: error });
     completeExecution(toolExecution.id, { success: false });
@@ -295,6 +300,14 @@ async function runAgentSpawn(task) {
     await releaseAppReviewMarker(task.metadata?.app).catch(err => {
       emitLog('warn', `Failed to release app review marker for ${task.metadata?.app}: ${err.message}`, { taskId: task.id });
     });
+    if (spawnWorktree) {
+      // No agent ever ran in it, so nothing in it is worth keeping.
+      const { removeWorktree } = await import('./worktreeManager.js');
+      const sourceWorkspace = task.metadata?.app ? await getAppWorkspace(task.metadata.app).catch(() => ROOT_DIR) : ROOT_DIR;
+      await removeWorktree(agentId, sourceWorkspace, spawnWorktree.branchName, { discardDirt: true }).catch((cleanupErr) => {
+        emitLog('warn', `Failed to remove the worktree of failed spawn ${agentId}: ${cleanupErr.message}`, { agentId, taskId: task.id });
+      });
+    }
   };
 
   // Acquire the federation lease BEFORE any spawn setup (issue #1563, addressing
@@ -528,6 +541,9 @@ async function runAgentSpawn(task) {
       return null;
     }
     const { workspacePath, resolvedAppName, worktreeInfo, jiraTicket, jiraBranchName, explicitWorktree } = prep;
+    if (worktreeInfo?.branchName && !worktreeInfo.existingBranch && !worktreeInfo.isPersistentWorktree) {
+      spawnWorktree = { branchName: worktreeInfo.branchName };
+    }
 
     if (publicReview) {
       const allowedPullRequestNumbers = publicReviewActions
