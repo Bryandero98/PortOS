@@ -16,7 +16,8 @@
 import { emitLog } from './cosEvents.js';
 import { getActiveProvider, getAllProviders, getProviderById } from './providers.js';
 import { isProviderAvailable, getFallbackProvider, getProviderStatus } from './providerStatus.js';
-import { selectModelForTask } from './agentModelSelection.js';
+import { selectModelForRole, selectModelForTask } from './agentModelSelection.js';
+import { PRIMARY_ORCHESTRATION_ROLE, roleAssignment } from '../lib/orchestrationProfile.js';
 import { publicReviewPostureForTask, resolvePublicReviewProvider } from './publicReviewProviderSelection.js';
 
 /**
@@ -86,7 +87,13 @@ async function resolveOrdinaryProviderAndModel(task) {
   // whole point of pinning. The pinned provider then runs through the same
   // availability/fallback logic below as any other resolved provider.
   let provider = null;
-  const userProviderId = task.metadata?.provider;
+  // An orchestration profile (#5992) pins the top-level agent's provider under
+  // the architect role — that agent is the one that plans and delegates. It is
+  // read as an ordinary provider pin so it inherits the whole chain below
+  // (availability, fallback swap, the model-pin invalidation a swap triggers)
+  // rather than growing a second, subtly-different resolution path. Null on a
+  // `direct` task, so the metadata pin stays authoritative as before.
+  const userProviderId = roleAssignment(task, PRIMARY_ORCHESTRATION_ROLE)?.provider || task.metadata?.provider;
   let userProviderMissing = false;
   if (userProviderId) {
     const userProvider = await getProviderById(userProviderId);
@@ -188,8 +195,10 @@ async function resolveOrdinaryProviderAndModel(task) {
     };
   }
 
-  // Select optimal model for this task (async to allow learning-based suggestions)
-  const modelSelection = await selectModelForTask(task, provider);
+  // Select optimal model for this task (async to allow learning-based suggestions).
+  // Routed through the ARCHITECT role so an orchestrated task's planning model
+  // wins here; with no profile this is `selectModelForTask` unchanged.
+  const modelSelection = await selectModelForRole(task, PRIMARY_ORCHESTRATION_ROLE, provider);
   let selectedModel = modelSelection.model;
 
   // A configured "Fallback Model" pin (from the provider- or task-level

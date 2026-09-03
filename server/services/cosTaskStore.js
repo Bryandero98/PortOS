@@ -26,6 +26,7 @@ import { REQUEUED_AT_KEY } from '../lib/taskRequeue.js';
 import { isInvestigationTask } from '../lib/investigationTasks.js';
 import { PAUSED_BLOCKED_CATEGORIES, USER_DECISION_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
 import { splitTaskPromptFields } from '../lib/cosTaskPrompt.js';
+import { normalizeOrchestrationMode, normalizeOrchestrationProfile } from '../lib/orchestrationProfile.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
 import { CLAIM_METADATA_KEYS, TARGET_INSTANCE_KEY, getTargetInstance } from './cosTaskClaim.js';
@@ -67,7 +68,7 @@ const isTerminalTaskStatus = (status) => status === 'completed' || status === 'b
 // with the #4153 split so the task editor can edit the agent-facing payload the
 // same way it edits the human note — deliberately WITHOUT re-classification, so
 // a multi-line note edit can't overwrite the payload (see `splitTaskPromptFields`).
-const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'temperature', 'thinking', 'app'];
+const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'temperature', 'thinking', 'app', 'orchestrationMode', 'orchestrationProfile'];
 
 // Equality for metadata values across a fresh markdown re-parse: primitives by
 // ===, arrays/objects (reviewers[], screenshots[], …) by JSON since the two
@@ -338,6 +339,16 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.model) metadata.model = taskData.model;
     if (taskData.provider) metadata.provider = taskData.provider;
     if (taskData.effort) metadata.effort = taskData.effort;
+    // Orchestrated execution (#5992). Both keys are persisted only when they
+    // survive normalization, so a mode with no usable profile — or a profile of
+    // empty role objects — leaves the task in today's `direct` posture rather
+    // than stamping an inert override onto it. The default mode is never written:
+    // absent already means `direct`, and writing it would touch every task.
+    const orchestrationProfile = normalizeOrchestrationProfile(taskData.orchestrationProfile);
+    if (orchestrationProfile) metadata.orchestrationProfile = orchestrationProfile;
+    if (normalizeOrchestrationMode(taskData.orchestrationMode) === 'orchestrated') {
+      metadata.orchestrationMode = 'orchestrated';
+    }
     if (taskData.temperature !== undefined) metadata.temperature = taskData.temperature;
     if (taskData.thinking !== undefined) metadata.thinking = taskData.thinking;
     if (taskData.app) metadata.app = taskData.app;
@@ -716,6 +727,17 @@ async function writeTaskUpdate(taskId, updates, taskType, { now, suppressDequeue
   // Only null becomes undefined (→ deleted); absent fields never enter this loop.
   for (const f of LEGACY_DIRECT_FIELDS) {
     if (updates[f] !== undefined) updatedMetadata[f] = updates[f] ?? undefined;
+  }
+  // Re-normalize the orchestration pins the loop above just copied in verbatim
+  // (#5992), so an update lands the same persisted shape `addTask` writes: a
+  // profile of empty role objects, or the default `direct` mode, is stored as
+  // absent rather than as an inert override. A null from the route still reaches
+  // here as `undefined` and is deleted by the cleanup pass — an explicit clear.
+  if (updatedMetadata.orchestrationProfile !== undefined) {
+    updatedMetadata.orchestrationProfile = normalizeOrchestrationProfile(updatedMetadata.orchestrationProfile) ?? undefined;
+  }
+  if (updatedMetadata.orchestrationMode !== undefined) {
+    updatedMetadata.orchestrationMode = normalizeOrchestrationMode(updatedMetadata.orchestrationMode) === 'orchestrated' ? 'orchestrated' : undefined;
   }
 
   // Clear blocked/failure metadata when transitioning out of blocked status.

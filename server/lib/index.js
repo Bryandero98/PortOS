@@ -455,6 +455,7 @@ export * from './mirrorParity.js';
 export * from './objects.js';
 export * from './openapiSpec.js';
 export * from './openapiDowngrade.js';
+export * from './orchestrationProfile.js';
 export * from './apiToolResource.js';
 export * from './mergeGateContract.js';
 export * from './prDisposition.js';

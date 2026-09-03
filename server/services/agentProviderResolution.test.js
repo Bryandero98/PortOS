@@ -22,12 +22,12 @@ vi.mock('./providerStatus.js', () => ({
   getFallbackProvider: vi.fn(),
   getProviderStatus: vi.fn(),
 }));
-vi.mock('./agentModelSelection.js', () => ({ selectModelForTask: vi.fn() }));
+vi.mock('./agentModelSelection.js', () => ({ selectModelForTask: vi.fn(), selectModelForRole: vi.fn() }));
 
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { getActiveProvider, getAllProviders, getProviderById } from './providers.js';
 import { isProviderAvailable, getFallbackProvider, getProviderStatus } from './providerStatus.js';
-import { selectModelForTask } from './agentModelSelection.js';
+import { selectModelForRole, selectModelForTask } from './agentModelSelection.js';
 
 const TASK = { id: 'task-1', metadata: {} };
 
@@ -36,6 +36,10 @@ beforeEach(() => {
   // Sensible defaults: provider present + available, plain model selection.
   isProviderAvailable.mockReturnValue(true);
   selectModelForTask.mockResolvedValue({ model: 'm-default', tier: 'medium', reason: 'default' });
+  // The ordinary path resolves through the ARCHITECT role (#5992); with no
+  // profile that is `selectModelForTask` verbatim, which is what the real
+  // module does and what every selection assertion below is written against.
+  selectModelForRole.mockImplementation((task, _role, provider, agent) => selectModelForTask(task, provider, agent));
 });
 
 describe('resolveAgentProviderAndModel', () => {
@@ -401,5 +405,43 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
     getAllProviders.mockResolvedValue({ providers: [{ id: 'ollama', type: 'api' }], activeProvider: { id: 'ollama' } });
     await expect(resolveAgentProviderAndModel({ id: 't', metadata: { executionProfile: 'public-review-actions' } }))
       .resolves.toMatchObject({ ok: false, permanent: true });
+  });
+});
+
+describe('orchestration profiles (#5992)', () => {
+  it('resolves the architect provider pin instead of the active provider', async () => {
+    const architectProvider = { id: 'p-architect', type: 'cli', defaultModel: 'm-architect', models: ['m-architect'] };
+    getProviderById.mockResolvedValue(architectProvider);
+    getActiveProvider.mockResolvedValue({ id: 'p-active', type: 'cli', defaultModel: 'm-active' });
+    selectModelForRole.mockResolvedValue({ model: 'm-architect', tier: 'user-specified', reason: 'orchestration-role-architect' });
+
+    const result = await resolveAgentProviderAndModel({
+      id: 'task-orchestrated',
+      metadata: {
+        orchestrationMode: 'orchestrated',
+        orchestrationProfile: { architect: { provider: 'p-architect', model: 'm-architect' } },
+      },
+    });
+
+    expect(getProviderById).toHaveBeenCalledWith('p-architect');
+    expect(result.ok).toBe(true);
+    expect(result.provider.id).toBe('p-architect');
+    expect(result.selectedModel).toBe('m-architect');
+  });
+
+  it('leaves a direct-mode task on its own metadata provider pin', async () => {
+    getProviderById.mockResolvedValue({ id: 'p-pinned', type: 'cli', defaultModel: 'm-pinned' });
+    getActiveProvider.mockResolvedValue({ id: 'p-active', type: 'cli', defaultModel: 'm-active' });
+
+    const result = await resolveAgentProviderAndModel({
+      id: 'task-direct',
+      metadata: {
+        provider: 'p-pinned',
+        orchestrationProfile: { architect: { provider: 'p-architect' } },
+      },
+    });
+
+    expect(getProviderById).toHaveBeenCalledWith('p-pinned');
+    expect(result.provider.id).toBe('p-pinned');
   });
 });
