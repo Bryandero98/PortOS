@@ -101,6 +101,16 @@ describe('retarget gate', () => {
     expect(describeRetargetFailure(result.reason, result.metrics))
       .toContain('re-bind 900 of 10000 vertices, and the cap is 200');
 
+    // A CORRECT worker refuses an over-cap proposal before touching a weight, so it
+    // reports `changed: 0`. Gating only on `changed` would pass this run and lose the
+    // sentence naming the numbers behind a generic worker-exit message.
+    const refusedByWorker = cleanReport();
+    refusedByWorker.head_cleanup = {
+      ...refusedByWorker.head_cleanup, mode: 'write', proposed_vertices: 900, changed_vertices: 0,
+    };
+    expect(gate(refusedByWorker, { mode: 'write' }))
+      .toMatchObject({ ok: false, reason: 'head-cleanup-over-cap' });
+
     // At the cap exactly, a write run is allowed — the cap is a ceiling, not a limit
     // that also forbids reaching it.
     const atCap = cleanReport();

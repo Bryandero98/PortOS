@@ -181,13 +181,19 @@ describe('retarget orchestration contract', () => {
     expect(existsSync(paths.stageDir)).toBe(false);
   });
 
-  it('refuses a write-mode run whose cleanup exceeded the cap, leaving nothing published', async () => {
+  it('surfaces the cap sentence when a write-mode run refused its own over-cap cleanup', async () => {
+    // The shape a CORRECT worker produces: it measured an over-cap proposal, changed
+    // nothing, and exited non-zero. The user must get the numbers, not a generic
+    // "worker exited 2" — and nothing may be published.
     const overCap = cleanReport();
-    overCap.head_cleanup = { ...overCap.head_cleanup, mode: 'write', proposed_vertices: 900, changed_vertices: 900 };
+    overCap.head_cleanup = { ...overCap.head_cleanup, mode: 'write', proposed_vertices: 900, changed_vertices: 0 };
     await expect(run({
       mode: 'write',
       spawnImpl: fakeWorker({ probe: cleanProbe(), report: overCap, applyCode: 2 }),
-    })).rejects.toMatchObject({ code: 'RIGGING_RETARGET_GATE_FAILED' });
+    })).rejects.toMatchObject({
+      code: 'RIGGING_RETARGET_GATE_FAILED',
+      message: expect.stringContaining('re-bind 900 of 10000 vertices, and the cap is 200'),
+    });
 
     expect(existsSync(retargetRunPaths({ recordDir, retargetId: RETARGET_ID }).publishedGlb)).toBe(false);
   });

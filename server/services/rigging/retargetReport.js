@@ -187,6 +187,12 @@ export function reduceRetargetGate(report, { thresholds = RETARGET_DEFAULTS, mod
   if (mode === 'diagnostic' && metrics.changedCleanupVertices !== 0) {
     return { ok: false, reason: 'diagnostic-mode-wrote', metrics };
   }
+  // Two shapes of the same refusal, and BOTH are needed. A correct worker refuses an
+  // over-cap proposal before touching a weight and reports `changed: 0`, so gating only
+  // on `changed` would let that run fall through to a generic "worker exited 2" and lose
+  // the sentence naming the numbers. A worker that wrote past the cap anyway is the
+  // defense-in-depth case.
+  if (mode === 'write' && metrics.cleanupOverCap) return { ok: false, reason: 'head-cleanup-over-cap', metrics };
   if (metrics.changedCleanupVertices > capVertices) return { ok: false, reason: 'head-cleanup-over-cap', metrics };
 
   const { roundTrip } = measured;

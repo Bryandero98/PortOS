@@ -131,7 +131,10 @@ def probe(job):
 
     # The clip file first, in its own scene: a clip GLB commonly carries a whole rig of
     # its own, and mixing it with the target here would make the bone lists ambiguous.
+    # The fps is pinned after the reset for the same reason the apply pass pins it -- the
+    # reported clip durations are frames divided by it.
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.context.scene.render.fps = int(SCENE_FPS)
     bpy.ops.import_scene.gltf(filepath=job["clip_glb"])
     animated = []
     for action in bpy.data.actions:
@@ -334,9 +337,11 @@ def apply_clip(job):  # noqa: PLR0911, PLR0915 -- one linear pipeline; each retu
         },
     }
 
-    # (1) The rigged character is the target.
-    bpy.context.scene.render.fps = int(SCENE_FPS)
+    # (1) The rigged character is the target. The fps is pinned AFTER the factory reset
+    #     (which would restore the default) because every frame<->second conversion in
+    #     this file -- the durations in the report included -- reads through it.
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.context.scene.render.fps = int(SCENE_FPS)
     bpy.ops.import_scene.gltf(filepath=job["rig_glb"])
     armatures = _scene_objects(bpy, "ARMATURE")
     meshes = _scene_objects(bpy, "MESH")
