@@ -174,14 +174,16 @@ describe('PipelineStageConfig — posture-driven eligibility', () => {
     expect([...providerSelects[1].options].map((o) => o.value)).toEqual(['', 'grok-cli']);
     // A non-local provider's own catalog is selectable — the installed-local
     // model list only applies where PortOS can probe capabilities.
-    expect(screen.getAllByText(/Eligible on this install: Grok/).length).toBe(2);
+    expect(screen.getByText(/^Tool-free stage\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Sandboxed stage\./)).toBeInTheDocument();
   });
 
   // The bug behind #5906's blocked run: the CLI records were disabled and the
   // TUI records enabled, so the note listed three "eligible" providers while
   // the dropdown offered only the placeholder. Eligibility now follows what the
-  // server publishes for the ENABLED records — TUI siblings included.
-  it('lists only enabled providers as eligible, matching what the dropdown offers', () => {
+  // server publishes for the ENABLED records — TUI siblings included — and the
+  // dropdown is the only place that list is rendered.
+  it('offers only enabled providers in the dropdown, and names none of them in the note', () => {
     renderWith([
       { id: 'codex', name: 'Codex CLI', type: 'cli', command: 'codex', enabled: false, models: ['gpt-5.6'], publicReviewPostures: ['no-tool', 'sandboxed-actions'] },
       { id: 'codex-tui', name: 'Codex TUI', type: 'tui', command: 'codex', enabled: true, models: ['gpt-5.6'], publicReviewPostures: ['no-tool', 'sandboxed-actions'] },
@@ -189,9 +191,11 @@ describe('PipelineStageConfig — posture-driven eligibility', () => {
     ]);
     const providerSelects = screen.getAllByLabelText('Provider');
     expect([...providerSelects[1].options].map((o) => o.value)).toEqual(['', 'codex-tui']);
-    const note = screen.getByText(/Sandboxed stage\. Eligible on this install:/);
-    expect(note.textContent).toContain('Eligible on this install: Codex TUI.');
+    // The dropdown IS the eligible list; the note must not re-name providers,
+    // least of all the disabled ones.
+    const note = screen.getByText(/^Sandboxed stage\./);
     expect(note.textContent).not.toContain('Grok Build CLI');
+    expect(note.textContent).not.toContain('Codex CLI');
   });
 
   it('warns instead of silently offering nothing when a stage has no eligible provider', () => {
@@ -212,8 +216,10 @@ describe('PipelineStageConfig — posture-driven eligibility', () => {
     const providerSelects = screen.getAllByLabelText('Provider');
     expect([...providerSelects[0].options].map((o) => o.value)).toEqual(['', 'codex-tui']);
     expect([...providerSelects[1].options].map((o) => o.value)).toEqual(['', 'codex-tui', 'opencode-tui']);
-    const note = screen.getByText(/Sandboxed stage\. Eligible on this install:/);
-    expect(note.textContent).toContain('Eligible on this install: Codex TUI, OpenCode TUI.');
+    const note = screen.getByText(/^Sandboxed stage\./);
+    // The eligible set is the dropdown's job; the note only separates the
+    // vendor-sandboxed providers from the worktree-only ones.
+    expect(note.textContent).not.toContain('Eligible on this install');
     expect(note.textContent).toContain("OS-sandboxed by the vendor's own recipe: Codex TUI.");
     expect(note.textContent).toContain('isolated by the disposable worktree only: OpenCode TUI.');
   });
