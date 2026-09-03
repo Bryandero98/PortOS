@@ -244,11 +244,16 @@ export async function resolveRunCwd({ runId, workspacePath, label, startTime = D
  * run tracking sees TUI runs as active.
  */
 export function emitRunStarted({ runId, provider, model }) {
-  runnerConfig.hooks?.onRunStarted?.({
-    runId,
-    provider: provider?.name || provider?.id,
-    model: model ?? provider?.defaultModel,
-  });
+  // Fire-and-forget lifecycle notification — a throwing hook must not take
+  // down the already-registered PTY run (same orphaned-run shape as #5792).
+  safeSettle(
+    () => runnerConfig.hooks?.onRunStarted?.({
+      runId,
+      provider: provider?.name || provider?.id,
+      model: model ?? provider?.defaultModel,
+    }),
+    `Run ${runId} onRunStarted hook`,
+  );
 }
 
 /**
