@@ -25,6 +25,8 @@ import {
   getCareSummary,
   autoLogTouchpoints,
   DEFAULT_RING_CADENCE,
+  findDuplicateTribeIdentifiers,
+  checkDuplicateTribeIdentifiers,
 } from './tribe.js';
 
 // ISO date (YYYY-MM-DD) `n` whole days before local today.
@@ -447,5 +449,67 @@ describe('tribe service — autoLogTouchpoints', () => {
     const result = await autoLogTouchpoints([]);
     expect(result).toEqual({ created: 0, matched: 0 });
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe('tribe service — findDuplicateTribeIdentifiers (#5908)', () => {
+  it('flags an email shared by two people, case-insensitively', () => {
+    const report = findDuplicateTribeIdentifiers([
+      { id: 'p1', name: 'Ada', emails: ['Alice@Example.com'], phones: [] },
+      { id: 'p2', name: 'Bea', emails: ['alice@example.com'], phones: [] },
+    ]);
+    expect(report.emails).toEqual([
+      { identifier: 'alice@example.com', people: [{ id: 'p1', name: 'Ada' }, { id: 'p2', name: 'Bea' }] },
+    ]);
+    expect(report.phones).toEqual([]);
+  });
+
+  it('flags a phone shared by two people despite different formatting', () => {
+    const report = findDuplicateTribeIdentifiers([
+      { id: 'p1', name: 'Ada', emails: [], phones: ['(555) 010-0199'] },
+      { id: 'p2', name: 'Bea', emails: [], phones: ['+15550100199'] },
+    ]);
+    expect(report.phones).toEqual([
+      { identifier: '+15550100199', people: [{ id: 'p1', name: 'Ada' }, { id: 'p2', name: 'Bea' }] },
+    ]);
+  });
+
+  it('does not flag a person against themself, even with a near-duplicate raw value', () => {
+    const report = findDuplicateTribeIdentifiers([
+      { id: 'p1', name: 'Ada', emails: ['Alice@Example.com', 'alice@example.com'], phones: [] },
+    ]);
+    expect(report.emails).toEqual([]);
+  });
+
+  it('reports nothing for a unique roster', () => {
+    const report = findDuplicateTribeIdentifiers([
+      { id: 'p1', name: 'Ada', emails: ['ada@x.com'], phones: ['+15551234567'] },
+      { id: 'p2', name: 'Bea', emails: ['bea@x.com'], phones: ['+15557654321'] },
+    ]);
+    expect(report).toEqual({ emails: [], phones: [] });
+  });
+
+  it('handles an empty roster', () => {
+    expect(findDuplicateTribeIdentifiers([])).toEqual({ emails: [], phones: [] });
+    expect(findDuplicateTribeIdentifiers(undefined)).toEqual({ emails: [], phones: [] });
+  });
+});
+
+describe('tribe service — checkDuplicateTribeIdentifiers', () => {
+  beforeEach(() => {
+    query.mockReset();
+  });
+
+  it('loads through listPeople (soft-deleted people already excluded) and reduces to a report', async () => {
+    query.mockResolvedValue({ rows: [
+      { id: 'p1', name: 'Ada', ring: 'core', cadence_days: 21, emails: ['shared@x.com'] },
+      { id: 'p2', name: 'Bea', ring: 'core', cadence_days: 21, emails: ['shared@x.com'] },
+    ] });
+    const report = await checkDuplicateTribeIdentifiers();
+    const [sql] = query.mock.calls[0];
+    expect(sql).toContain('deleted = FALSE');
+    expect(report.emails).toEqual([
+      { identifier: 'shared@x.com', people: [{ id: 'p1', name: 'Ada' }, { id: 'p2', name: 'Bea' }] },
+    ]);
   });
 });

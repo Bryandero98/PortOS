@@ -82,7 +82,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiMeatspace.js` | MeatSpace health, genome, POST, memory-practice, and atomic POST training-run APIs. |
 | `apiMortalLoom.js` | Mortality tracking. |
 | `apiMoodBoard.js` | Mood boards (inspiration canvas + items). |
-| `apiTribe.js` | Tribe people (relationship rings + contacts). |
+| `apiTribe.js` | Tribe people (relationship rings + contacts), plus `getTribeDuplicateIdentifiers()` (`GET /tribe/duplicate-identifiers`): a non-blocking report of emails/phones shared by more than one person. |
 | `apiTimeline.js` | Human-activity timeline: `/timeline/day`. |
 | `apiCalendar.js` | Calendar events. |
 | `apiMessages.js` | Messages / notifications + iMessage manager (#2413). |
