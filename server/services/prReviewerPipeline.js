@@ -9,7 +9,7 @@
  * response, and eligibility reasons can never cross into the action stage.
  */
 
-import { MODEL_ABUSE_GUARD_ID, issuePrerequisiteWaived, normalizeEligibilityFacts } from '../lib/modelAbuseGuard.js';
+import { MODEL_ABUSE_GUARD_ID, isSha256Hex, issuePrerequisiteWaived, normalizeEligibilityFacts } from '../lib/modelAbuseGuard.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE, PUBLIC_REVIEW_GATE_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { createPrReviewerDefaultStages } from './taskScheduleRegistry.js';
 import {
@@ -18,7 +18,6 @@ import {
 } from './issueWatcher.js';
 
 const HEAD_SHA_RE = /^[a-f0-9]{40}$/i;
-const CONTENT_FINGERPRINT_RE = /^[a-f0-9]{64}$/i;
 const MAX_REASON_CHARS = 2_000;
 
 const roleForPromptKey = (promptKey) => ({
@@ -87,7 +86,7 @@ function normalizedExpectedPullRequests(task) {
   const pullRequests = [];
   for (const item of expected.pullRequests) {
     if (!Number.isInteger(item?.number) || item.number < 1 || seen.has(item.number)) return null;
-    if (!HEAD_SHA_RE.test(item.headSha) || !CONTENT_FINGERPRINT_RE.test(item.contentFingerprint)) return null;
+    if (!HEAD_SHA_RE.test(item.headSha) || !isSha256Hex(item.contentFingerprint)) return null;
     if (typeof item.authorLogin !== 'string' || !item.authorLogin.trim()) return null;
     seen.add(item.number);
     pullRequests.push({
@@ -106,6 +105,15 @@ function eligibilityFactsAllow(facts) {
   // The model's own quality verdict still applies to a waived PR.
   if (issuePrerequisiteWaived(facts)) return true;
   if (!facts.issueLookupComplete) return false;
+  // "Related to a filed issue" is only half the bar: the gate also has to have
+  // judged the diff against what that issue actually asks for. No screened
+  // issue text reached it, no intent verdict is possible, so the answer is no —
+  // a model that answered `eligible` without the requirement in front of it
+  // guessed. A fact set the current preflight built always carries this
+  // whenever the open/assigned check below passes, so in practice this rejects
+  // a set persisted before intent screening existed, or one that never came
+  // from the preflight at all.
+  if (!facts.intentFingerprint) return false;
   const linked = new Set(facts.linkedIssueNumbers);
   const open = new Set(facts.openLinkedIssueNumbers);
   return facts.openerAssignedIssueNumbers.some((number) => linked.has(number) && open.has(number));

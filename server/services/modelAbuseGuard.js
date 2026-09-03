@@ -35,8 +35,10 @@ import {
   MODEL_ABUSE_GUARD_TIMEOUT_MS,
   detectDeterministicModelAbuseSignals,
   hasToolFreeTextCapability,
+  isSha256Hex,
   modelAbuseGuardStageReadiness,
   normalizeEligibilityFacts,
+  normalizeLinkedIssues,
   normalizeModelAbuseGuardResult,
 } from '../lib/modelAbuseGuard.js';
 import { findCachedRepoFiles } from '../lib/hfCache.js';
@@ -80,12 +82,11 @@ export const DETERMINISTIC_ONLY_GUARD_MODEL = 'Deterministic hidden-content chec
 const publicReviewModelFailure = (code) => ({ ok: false, code });
 
 const isSha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
-const isScanKey = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
-const publicReviewInputPath = (scanKey) => isScanKey(scanKey)
+const publicReviewInputPath = (scanKey) => isSha256Hex(scanKey)
   ? join(PUBLIC_REVIEW_INPUT_DIR, `${scanKey}.json`)
   : null;
 
-export { normalizeEligibilityFacts };
+export { normalizeEligibilityFacts, normalizeLinkedIssues };
 
 export function normalizePublicReviewInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
@@ -105,6 +106,10 @@ export function normalizePublicReviewInput(input) {
     additions: Number.isInteger(input.additions) ? input.additions : 0,
     deletions: Number.isInteger(input.deletions) ? input.deletions : 0,
     eligibilityFacts: normalizeEligibilityFacts(input.eligibilityFacts),
+    // The filed issue's own words. Carried through the same validation
+    // boundary as the diff so a reviewer can check the change against the
+    // requirement instead of inferring intent from the PR's own description.
+    linkedIssues: normalizeLinkedIssues(input.linkedIssues),
     diff: input.diff,
   };
 }
@@ -115,6 +120,7 @@ function normalizePublicReviewInputs(pullRequests) {
   if (normalized.some((item) => !item)) return null;
   const contentChars = normalized.reduce((total, item) => (
     total + item.title.length + item.body.length + item.diff.length
+    + item.linkedIssues.reduce((chars, issue) => chars + issue.title.length + issue.body.length, 0)
   ), 0);
   return contentChars <= MAX_PUBLIC_REVIEW_SNAPSHOT_CHARS ? normalized : null;
 }
