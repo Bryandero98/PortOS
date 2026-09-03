@@ -526,7 +526,7 @@ export default function PromptManager() {
               <h3 className="text-sm font-medium text-gray-400">Prompt Stages</h3>
               <button
                 onClick={() => setCreatingStage(true)}
-                className="p-1 text-port-accent hover:text-port-accent/80"
+                className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-port-accent hover:text-port-accent/80"
                 title="New Stage" aria-label="New Stage"
               >
                 <Plus size={16} />
@@ -781,7 +781,7 @@ export default function PromptManager() {
               <button
                 onClick={newVariable}
                 aria-label="Add variable"
-                className="p-1 text-port-accent hover:text-port-accent/80"
+                className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-port-accent hover:text-port-accent/80"
               >
                 <Plus size={16} />
               </button>
@@ -818,7 +818,7 @@ export default function PromptManager() {
                     <button
                       onClick={() => requestVarDelete(key)}
                       aria-label={`Delete variable ${v.name || key}`}
-                      className="p-1 text-gray-500 hover:text-port-error"
+                      className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error"
                     >
                       <Trash2 size={14} />
                     </button>

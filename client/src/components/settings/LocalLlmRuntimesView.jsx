@@ -718,7 +718,7 @@ export default function LocalLlmRuntimesView() {
             <button
               onClick={loadLlamaStatus}
               disabled={llamaLoading}
-              className="p-1 text-gray-400 hover:text-white transition-colors"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-400 hover:text-white transition-colors"
               title="Refresh llama-server status"
               aria-label="Refresh llama-server status"
             >

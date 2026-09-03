@@ -1322,7 +1322,7 @@ export default function ImageGen() {
           <button
             onClick={() => refreshStatus(effectiveMode, modelId)}
             disabled={statusLoading}
-            className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50 disabled:opacity-50"
+            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50 disabled:opacity-50"
             title="Refresh status" aria-label="Refresh status"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${statusLoading ? 'animate-spin' : ''}`} />

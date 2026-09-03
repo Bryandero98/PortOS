@@ -304,7 +304,7 @@ export default function FableLoom() {
                         type="button"
                         aria-label={`Delete ${loom.name}`}
                         onClick={() => del.requestDelete(loom.id)}
-                        className="text-port-text-muted hover:text-port-error p-1"
+                        className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-port-text-muted hover:text-port-error p-1"
                       >
                         <Trash2 size={15} />
                       </button>

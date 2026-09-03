@@ -733,7 +733,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
         {/* Action buttons. Keep the delete confirmation here, next to the trash
             icon, rather than at the bottom of the card — a task with a lot of
             context would otherwise push the confirm row far below the fold. */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {!editing && (
             isConfirming(task.id) ? (
               <ConfirmButtonPair
@@ -758,7 +758,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                       if (result?.success) toast.success(`Spawning ${task.id}`);
                       if (onRefresh) onRefresh();
                     }}
-                    className="p-1 text-gray-500 hover:text-port-success transition-colors"
+                    className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-success transition-colors"
                     title="Process now"
                     aria-label="Process task now"
                   >
@@ -771,7 +771,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                   <button
                     type="button"
                     onClick={() => setRelaunching(true)}
-                    className="p-1 text-gray-500 hover:text-port-accent transition-colors"
+                    className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-accent transition-colors"
                     title="Relaunch on a different provider or model"
                     aria-label={`Relaunch task ${task.id} on a different provider or model`}
                   >
@@ -798,7 +798,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                 {task.status !== 'blocked' && task.status !== 'completed' && (
                   <button
                     onClick={handleMarkBlocked}
-                    className="p-1 text-gray-500 hover:text-port-error transition-colors"
+                    className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error transition-colors"
                     title="Mark as blocked"
                     aria-label="Mark task as blocked"
                   >
@@ -807,7 +807,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                 )}
                 <button
                   onClick={() => setEditing(true)}
-                  className="p-1 text-gray-500 hover:text-white transition-colors"
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-white transition-colors"
                   title="Edit"
                   aria-label="Edit task"
                 >
@@ -815,7 +815,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                 </button>
                 <button
                   onClick={() => requestDelete(task.id)}
-                  className="p-1 text-gray-500 hover:text-port-error transition-colors"
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error transition-colors"
                   title="Delete"
                   aria-label="Delete task"
                 >

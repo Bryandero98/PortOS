@@ -1104,7 +1104,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
                 <button
                   type="button"
                   onClick={() => removeAttachment(a.id)}
-                  className="ml-1 p-0.5 text-gray-500 hover:text-port-error transition-colors"
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center ml-1 p-0.5 text-gray-500 hover:text-port-error transition-colors"
                   aria-label={`Remove attachment ${a.originalName}`}
                 >
                   <X size={14} aria-hidden="true" />
