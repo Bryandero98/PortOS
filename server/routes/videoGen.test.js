@@ -2559,14 +2559,25 @@ describe('videoGen routes', () => {
 
     it('decodes a percent-encoded id before looking it up', async () => {
       videoGenService.getHistoryItem.mockResolvedValueOnce(null);
-      await request(app).get(`/api/video-gen/history/${encodeURIComponent('a b/c')}`);
-      expect(videoGenService.getHistoryItem).toHaveBeenCalledWith('a b/c');
+      await request(app).get('/api/video-gen/history/a%2Eb-c');
+      expect(videoGenService.getHistoryItem).toHaveBeenCalledWith('a.b-c');
     });
 
     it('rejects an absurdly long id without touching the service', async () => {
       const r = await request(app).get(`/api/video-gen/history/${'x'.repeat(201)}`);
       expect(r.status).toBe(400);
       expect(videoGenService.getHistoryItem).not.toHaveBeenCalled();
+    });
+
+    // The lookup schema is deliberately looser than the UUID gate on
+    // /last-frame and /upscale, because history rows also arrive from a
+    // caller-supplied download id and from federated peers (#5713).
+    it('accepts a legitimate non-UUID federated id', async () => {
+      const entry = { id: 'dl-abc_123', filename: 'peer.mp4' };
+      videoGenService.getHistoryItem.mockResolvedValueOnce(entry);
+      const r = await request(app).get('/api/video-gen/history/dl-abc_123');
+      expect(r.status).toBe(200);
+      expect(videoGenService.getHistoryItem).toHaveBeenCalledWith('dl-abc_123');
     });
   });
 
@@ -2576,6 +2587,49 @@ describe('videoGen routes', () => {
       const r = await request(app).delete('/api/video-gen/history/abc');
       expect(r.status).toBe(200);
       expect(videoGenService.deleteHistoryItem).toHaveBeenCalledWith('abc');
+    });
+
+    it('deletes a legitimate non-UUID federated id', async () => {
+      videoGenService.deleteHistoryItem.mockResolvedValue({ ok: true });
+      const r = await request(app).delete('/api/video-gen/history/dl-abc_123');
+      expect(r.status).toBe(200);
+      expect(videoGenService.deleteHistoryItem).toHaveBeenCalledWith('dl-abc_123');
+    });
+
+    // The destructive verb shipped with NO id validation, so a value carrying a
+    // path segment reached deleteHistoryItem — which interpolates the id into
+    // nine `${id}-fN.jpg` thumbnail unlinks. Gate it at the boundary (#5713).
+    it('rejects an id carrying a path segment without touching the service', async () => {
+      const r = await request(app).delete(`/api/video-gen/history/${encodeURIComponent('../../etc/passwd')}`);
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('VALIDATION_ERROR');
+      expect(videoGenService.deleteHistoryItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /history/:id/visibility', () => {
+    it('forwards the requested hidden flag', async () => {
+      videoGenService.setHistoryItemHidden.mockResolvedValue({ ok: true, hidden: true });
+      const r = await request(app).post('/api/video-gen/history/abc/visibility').send({ hidden: true });
+      expect(r.status).toBe(200);
+      expect(videoGenService.setHistoryItemHidden).toHaveBeenCalledWith('abc', true);
+    });
+
+    // `!!req.body?.hidden` read a missing body as "unhide", so a malformed
+    // request silently un-hid the row instead of failing (#5713).
+    it('rejects a body without a boolean hidden rather than unhiding', async () => {
+      const r = await request(app).post('/api/video-gen/history/abc/visibility').send({});
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('VALIDATION_ERROR');
+      expect(videoGenService.setHistoryItemHidden).not.toHaveBeenCalled();
+    });
+
+    it('rejects an id carrying a path segment', async () => {
+      const r = await request(app)
+        .post(`/api/video-gen/history/${encodeURIComponent('../../etc/passwd')}/visibility`)
+        .send({ hidden: true });
+      expect(r.status).toBe(400);
+      expect(videoGenService.setHistoryItemHidden).not.toHaveBeenCalled();
     });
   });
 

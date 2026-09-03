@@ -956,6 +956,25 @@ router.post('/cancel', asyncHandler(async (req, res) => {
   res.json({ ok: false, reason: 'no active or queued video render' });
 }));
 
+// The ONE contract every `/history/:id*` route resolves its record id through
+// (#5713) — GET, DELETE, visibility and prompt all name the same stored row, so
+// they share one schema instead of three (loose / strict / none).
+//
+// It stays looser than `historyIdSchema` below on purpose: that UUID check suits
+// ids this install MINTS, but entries also arrive from a caller-supplied
+// download id and from federated peers, so a `.guid()` gate here would 400 rows
+// that are legitimately in the list. The charset bound is the floor — every
+// legitimate id is `[A-Za-z0-9._-]+`, and a value carrying a path segment or a
+// `..` can no longer parse, so `safeUnder()` two modules away in historyOps is
+// defense in depth rather than the only thing standing between a hostile id and
+// an unlink loop.
+const historyRecordIdSchema = z.string().trim().min(1).max(200)
+  .regex(/^[A-Za-z0-9._-]+$/, 'invalid history id');
+const updatePromptSchema = z.object({ prompt: z.string().max(8000) });
+// `hidden` is required: reading an absent body as `false` turned a malformed
+// request into a silent unhide.
+const visibilitySchema = z.object({ hidden: z.boolean() });
+
 router.get('/history', asyncHandler(async (_req, res) => {
   res.json(await loadHistory());
 }));
@@ -966,18 +985,8 @@ router.get('/history', asyncHandler(async (_req, res) => {
 // `finalVideoId`, an EpisodeVideoStage final) has to ask the server which file
 // it points at. Before this route existed, every such surface pulled the WHOLE
 // history list to find one row.
-//
-// The id is validated loosely on purpose: `historyIdSchema`'s UUID check below
-// suits ids this install MINTS, but entries also arrive from a caller-supplied
-// download id and from federated peers, so a `.guid()` gate here would 400 rows
-// that are legitimately in the list. Nothing is interpolated into a path — the
-// value is only compared against stored ids — so a length-capped string is the
-// right bound.
-const historyLookupIdSchema = z.string().min(1).max(200);
-const updatePromptSchema = z.object({ prompt: z.string().max(8000) });
-
 router.get('/history/:id', asyncHandler(async (req, res) => {
-  const parsed = historyLookupIdSchema.safeParse(req.params.id);
+  const parsed = historyRecordIdSchema.safeParse(req.params.id);
   if (!parsed.success) failValidation(parsed);
   const entry = await getHistoryItem(parsed.data);
   if (!entry) throw new ServerError('Not found', { status: 404, code: 'NOT_FOUND' });
@@ -1005,15 +1014,21 @@ router.post('/upload', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/history/:id', asyncHandler(async (req, res) => {
-  res.json(await deleteHistoryItem(req.params.id));
+  const parsed = historyRecordIdSchema.safeParse(req.params.id);
+  if (!parsed.success) failValidation(parsed);
+  res.json(await deleteHistoryItem(parsed.data));
 }));
 
 router.post('/history/:id/visibility', asyncHandler(async (req, res) => {
-  res.json(await setHistoryItemHidden(req.params.id, !!req.body?.hidden));
+  const parsedId = historyRecordIdSchema.safeParse(req.params.id);
+  if (!parsedId.success) failValidation(parsedId);
+  const body = visibilitySchema.safeParse(req.body ?? {});
+  if (!body.success) failValidation(body);
+  res.json(await setHistoryItemHidden(parsedId.data, body.data.hidden));
 }));
 
 router.patch('/history/:id/prompt', asyncHandler(async (req, res) => {
-  const parsedId = historyLookupIdSchema.safeParse(req.params.id);
+  const parsedId = historyRecordIdSchema.safeParse(req.params.id);
   if (!parsedId.success) failValidation(parsedId);
   const body = updatePromptSchema.safeParse(req.body ?? {});
   if (!body.success) failValidation(body);
@@ -1021,9 +1036,10 @@ router.patch('/history/:id/prompt', asyncHandler(async (req, res) => {
 }));
 
 // Render jobs use UUID history ids, while shared-gallery uploads use an
-// `upload-<uuid8>` id. These mutating operations only resolve a stored history
-// record and subsequently derive the path from its guarded filename, so both
-// known id forms are valid here.
+// `upload-<uuid8>` id. These operations derive a NEW artifact path from the
+// resolved record (an anchor frame, an upscale, a stitch output) rather than
+// merely reading or mutating the row, so they hold the tighter of the two
+// contracts and accept only the two id forms this install can mint.
 const historyIdSchema = z.string().regex(
   /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|upload-[a-f0-9]{8})$/i,
   'invalid history id',
