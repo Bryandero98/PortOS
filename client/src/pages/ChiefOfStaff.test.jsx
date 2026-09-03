@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
@@ -61,7 +61,7 @@ vi.mock('../hooks/useProviderModels', () => ({
   }),
 }));
 
-const ChiefOfStaff = (await import('./ChiefOfStaff')).default;
+const { default: ChiefOfStaff, SPEAKING_MS } = await import('./ChiefOfStaff');
 
 const config = {
   avatarStyle: 'svg',
@@ -103,6 +103,16 @@ beforeEach(() => {
   localLlm.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
   localLlm.getToolUseModels.mockResolvedValue({ models: [] });
 });
+
+// Tests that drain a debounce or the avatar's speaking timer install fake timers
+// (see `withFakeTimers` below); this restores real ones for everyone else.
+afterEach(() => vi.useRealTimers());
+
+// `shouldAdvanceTime` keeps the clock ticking on its own so testing-library's
+// `waitFor`/`findBy*` — which poll on a (now faked) interval and do not know how
+// to pump vitest's clock — still resolve, while `advanceTimersByTimeAsync` can
+// still jump a timer window instantly instead of sleeping through it.
+const withFakeTimers = () => vi.useFakeTimers({ shouldAdvanceTime: true });
 
 const renderConfigTab = () => render(
   <MemoryRouter initialEntries={['/cos/config']}>
@@ -561,6 +571,7 @@ describe('ChiefOfStaff task-change subscriptions', () => {
   });
 
   it('coalesces a burst of task-store changes into a single refetch', async () => {
+    withFakeTimers();
     renderTasksTab();
     await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
     const before = api.getCosTasks.mock.calls.length;
@@ -578,7 +589,7 @@ describe('ChiefOfStaff task-change subscriptions', () => {
     // running task's federation lease heartbeat), so the burst must settle into
     // one refresh rather than one per event. Any extra flush would land inside
     // the 400ms window the first one already closed.
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(api.getCosTasks.mock.calls.length).toBe(before + 1);
   });
 
@@ -789,6 +800,7 @@ describe('ChiefOfStaff Issues card', () => {
   // The live path: a health check finishing while the page is open pushes the
   // issue over the socket rather than through fetchData.
   it('names the issue arriving on a live health-check socket event', async () => {
+    withFakeTimers();
     renderWithIssues([]);
     // Wait for the clean first paint so the socket handler is registered.
     for (const card of await issueCards()) expect(within(card).getByText('0')).toBeInTheDocument();
@@ -805,7 +817,7 @@ describe('ChiefOfStaff Issues card', () => {
       expect(within(card).getByText('1')).toBeInTheDocument();
     }
     // Drain the >0 branch's speaking timer so no state update escapes act.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(SPEAKING_MS + 100); });
   });
 
   // Without these, deleting the `tone` prop would leave every tile neutral gray
@@ -843,6 +855,7 @@ describe('ChiefOfStaff Issues card', () => {
   // health (tile, avatar state, status bubble) must come from the merged
   // snapshot, or the bubble names an older issue than the tile is counting.
   it('does not let a slow health read clobber a fresher socket-delivered check', async () => {
+    withFakeTimers();
     const staleWarning = { type: 'warning', category: 'memory', message: 'Stale issue from the older read' };
     api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
     // The slow read carries the OLDER timestamp; the socket event below is newer.
@@ -860,7 +873,8 @@ describe('ChiefOfStaff Issues card', () => {
     await act(async () => {
       handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
     });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+    // Drain the >0 branch's speaking timer so no state update escapes act.
+    await act(async () => { await vi.advanceTimersByTimeAsync(SPEAKING_MS + 100); });
 
     // Now force the slow batch to run again with its stale payload — the merge
     // must keep the socket's newer check, for the tile AND the bubble.
