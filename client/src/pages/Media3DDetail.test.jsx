@@ -102,7 +102,7 @@ describe('Media3DDetail', () => {
       // normalMap is sent explicitly rather than omitted. It defaults OFF (the bake
       // can lose a render outright), and stating it keeps the body honest about what
       // the run asked for even if that default ever moves.
-      { steps: 24, keyBackground: false, normalMap: false },
+      { steps: 24, keyBackground: false, normalMap: false, subjectScale: 1 },
       { silent: true },
     ));
   });
@@ -125,7 +125,7 @@ describe('Media3DDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
     await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
       'image3d-1',
-      { steps: 48, keyBackground: false, normalMap: false },
+      { steps: 48, keyBackground: false, normalMap: false, subjectScale: 1 },
       { silent: true },
     ));
   });
@@ -150,7 +150,32 @@ describe('Media3DDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
     await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
       'image3d-1',
-      { keyBackground: false, detail: 'fast', alphaMode: 'auto', normalMap: false },
+      { keyBackground: false, detail: 'fast', alphaMode: 'auto', normalMap: false, subjectScale: 1 },
+      { silent: true },
+    ));
+  });
+
+  it('carries the subject framing over and reports it on the finished run', async () => {
+    // A framing that produced a good mesh is exactly what a re-render wants to keep;
+    // and the meta line has to say the render was reframed, or the user cannot tell
+    // whether the last result came from the source's own framing or this knob.
+    getImageTo3dModel.mockResolvedValue(record({
+      runs: [{
+        operationId: 'op-1', status: 'completed', percent: 100,
+        subjectScale: 0.65, sourceFramed: true,
+      }],
+    }));
+    generateImageTo3dModel.mockResolvedValue(record({ status: 'generating' }));
+    renderAt();
+    await screen.findByText('Example Beacon');
+
+    await waitFor(() => expect(screen.getByLabelText(/subject framing — 65%/i)).toHaveValue('0.65'));
+    expect(screen.getByText(/framed at 65%/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
+    await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
+      'image3d-1',
+      { keyBackground: false, normalMap: false, subjectScale: 0.65 },
       { silent: true },
     ));
   });

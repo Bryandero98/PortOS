@@ -64,7 +64,10 @@ const assetDiskPath = (id) => join(recordDir(id), 'model.glb');
  */
 const fullMeshDiskPath = (id) => join(recordDir(id), 'model.obj');
 /** Where a background-keyed copy of the source lands (never the gallery file). */
-const keyedSourcePath = (id) => join(recordDir(id), 'source-keyed.png');
+// The prepared (keyed and/or subject-framed) copy of the source. Filename retained
+// from when keying was the only preparation step, so upgrading an install doesn't
+// strand an orphan beside the new one in every existing record directory.
+const preparedSourcePath = (id) => join(recordDir(id), 'source-keyed.png');
 
 /**
  * Remove a record's render directory (the exported GLB + its folder). Used to
@@ -150,31 +153,41 @@ async function failGeneration(id, operationId, error) {
 
 async function executeRender({ id, operationId, adapter, sourcePath, caps, options }) {
   const outputPath = assetDiskPath(id);
-  // keyBackground is consumed here; the sampler knobs ride through to the
-  // adapter as-is, so a future knob added to the options shape flows without
-  // touching this call chain.
-  const { keyBackground, ...samplerOptions } = options;
+  // keyBackground and subjectScale are consumed here (they preprocess the SOURCE,
+  // and no runner takes them); the sampler knobs ride through to the adapter as-is,
+  // so a future knob added to the options shape flows without touching this call
+  // chain.
+  const { keyBackground, subjectScale, ...samplerOptions } = options;
   let lastPersistedPercent = -1;
   let heavyClaim = null;
   try {
     await ensureDir(recordDir(id));
-    // Key a solid background out of the source (into THIS record's render dir — the
-    // shared gallery file is never touched). Opt-in, because handing the pipeline an
-    // alpha channel makes it consume that INSTEAD OF running its own learned matte —
-    // see sourceKeying.js. Runs BEFORE the heavy-job claim: it is CPU-only
-    // preprocessing, so other heavy jobs shouldn't queue behind it and resident models
-    // shouldn't be evicted for it. Best-effort: a keying failure must never fail a
-    // render the model could still attempt raw.
-    const keyedPath = keyBackground
-      ? await prepareSourceImage({ sourcePath, targetPath: keyedSourcePath(id) })
+    // Preprocess the source (into THIS record's render dir — the shared gallery file
+    // is never touched): key a solid background out, and/or centre the subject on a
+    // square canvas so its extremities get margin. Both opt-in — keying because
+    // handing the pipeline an alpha channel makes it consume that INSTEAD OF running
+    // its own learned matte, framing because resampling a source that is already
+    // well-framed only costs detail. See sourceKeying.js. Runs BEFORE the heavy-job
+    // claim: it is CPU-only preprocessing, so other heavy jobs shouldn't queue behind
+    // it and resident models shouldn't be evicted for it. Best-effort: a preparation
+    // failure must never fail a render the model could still attempt raw.
+    const needsPreparedSource = keyBackground || subjectScale < 1;
+    const prepared = needsPreparedSource
+      ? await prepareSourceImage({
+        sourcePath, targetPath: preparedSourcePath(id), keyBackground, subjectScale,
+      })
         .catch((err) => {
-          console.error(`❌ Image-to-3D background keying failed for ${id}: ${err.message}`);
+          console.error(`❌ Image-to-3D source preparation failed for ${id}: ${err.message}`);
           return null;
         })
       : null;
-    if (keyedPath) console.log(`🎨 Image-to-3D keyed a solid background for ${id}`);
+    if (prepared?.keyed) console.log(`🎨 Image-to-3D keyed a solid background for ${id}`);
+    if (prepared?.framed) console.log(`🖼️ Image-to-3D framed ${id} at ${subjectScale} of the canvas`);
     // Record what the render actually consumed (best-effort, like percent below).
-    patchRun(id, operationId, { sourceKeyed: Boolean(keyedPath) });
+    patchRun(id, operationId, {
+      sourceKeyed: Boolean(prepared?.keyed),
+      sourceFramed: Boolean(prepared?.framed),
+    });
     heavyClaim = await claimHeavyLocalJob({ kind: 'image-to-3D generation', id: operationId });
     if (!heavyClaim.ok) {
       throw new ServerError(heavyClaim.message, { status: 409, code: 'HEAVY_LOCAL_JOB_BUSY', context: { holder: heavyClaim.holder } });
@@ -196,7 +209,7 @@ async function executeRender({ id, operationId, adapter, sourcePath, caps, optio
     // the kill handle so deleteModel can SIGTERM this render if the record is deleted
     // mid-flight.
     const { promise, kill } = adapter.run({
-      imagePath: keyedPath ?? sourcePath,
+      imagePath: prepared?.path ?? sourcePath,
       outputPath,
       env,
       // The per-run sampler knobs resolved in beginRender: `seed` is always a
@@ -308,7 +321,7 @@ export async function createModel(input, { caps } = {}) {
   // render — createModel and startGeneration share `beginRender`, so the create
   // path does NOT re-resolve the gallery image, re-assert readiness, or re-fetch
   // the row it just wrote. `input` carries the optional per-run knobs
-  // (steps/seed/keyBackground); beginRender normalizes them.
+  // (steps/seed/keyBackground/subjectScale); beginRender normalizes them.
   return beginRender(created, adapter, sourcePath, hostCaps, input);
 }
 
@@ -373,6 +386,7 @@ async function beginRender(record, adapter, sourcePath, caps, requestOptions) {
           steps: options.steps,
           seed: options.seed,
           keyBackground: options.keyBackground,
+          subjectScale: options.subjectScale,
           // Recorded so the detail view can render the knobs this run actually
           // used — and so the viewer knows whether transparency was requested,
           // which decides if its force-opaque pass should apply.

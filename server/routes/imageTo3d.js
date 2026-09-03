@@ -17,6 +17,7 @@ import {
 } from '../services/imageTo3d/models.js';
 import {
   RENDER_STEPS_MIN, RENDER_STEPS_MAX, RENDER_SEED_MAX, DETAIL_TIERS, ALPHA_MODES,
+  SUBJECT_SCALE_MIN_EXCLUSIVE, SUBJECT_SCALE_MAX,
 } from '../services/imageTo3d/renderOptions.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { openSseStream } from '../lib/sseDownload.js';
@@ -29,7 +30,7 @@ const galleryFilenameSchema = z.string().trim().min(1).max(256)
 // PER-RUN sampler knobs, shared by create and re-generate. Nothing persists
 // between runs: absent steps → the pipeline default, absent seed → a fresh
 // random roll for that run, absent keyBackground → no keying (the pipeline's own
-// learned matte runs instead).
+// learned matte runs instead), absent subjectScale → the source's own framing.
 const renderOptionsSchema = z.object({
   steps: z.number().int().min(RENDER_STEPS_MIN).max(RENDER_STEPS_MAX).optional(),
   seed: z.number().int().min(0).max(RENDER_SEED_MAX).optional(),
@@ -40,6 +41,13 @@ const renderOptionsSchema = z.object({
   detail: z.enum([...DETAIL_TIERS]).optional(),
   alphaMode: z.enum([...ALPHA_MODES]).optional(),
   normalMap: z.boolean().optional(),
+  // Open at zero, closed at one — `1` is the identity (no reframing) and the
+  // default; bounds come from renderOptions.js so the route can't accept a value
+  // the normalizer would silently discard.
+  subjectScale: z.number()
+    .gt(SUBJECT_SCALE_MIN_EXCLUSIVE)
+    .max(SUBJECT_SCALE_MAX)
+    .optional(),
 });
 
 const createModelSchema = z.object({
