@@ -584,10 +584,15 @@ export default function ImageGen() {
     if (!raw) return;
     const file = await normalizeImageOrientation(raw);
     if (!mountedRef.current) return;
+    // Mint the url OUTSIDE the updater. StrictMode invokes a functional updater
+    // twice in dev, and a url created inside it on the discarded pass is never
+    // stored — so it can never be revoked. (The revoke stays inside, where it
+    // can read the authoritative `prev`; revoking twice is a no-op.)
+    const previewUrl = URL.createObjectURL(file);
     setReferenceImages((prev) => {
       const next = [...prev];
       revokeIfBlob(next[slotIndex]?.previewUrl);
-      next[slotIndex] = { file, previewUrl: URL.createObjectURL(file), strength: next[slotIndex]?.strength ?? 1.0 };
+      next[slotIndex] = { file, previewUrl, strength: next[slotIndex]?.strength ?? 1.0 };
       return next;
     });
   };

@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { MemoryRouter } from 'react-router';
 
 // Codex is i2i-capable and declares no input-image cap, so the form offers the
@@ -102,14 +103,15 @@ vi.mock('../components/imageGen/LoraPicker', () => ({ default: () => null }));
 
 const { default: ImageGen } = await import('./ImageGen.jsx');
 
-const mount = async () => {
+const mount = async ({ strict = false } = {}) => {
+  const tree = (
+    <MemoryRouter initialEntries={['/media/image']}>
+      <ImageGen />
+    </MemoryRouter>
+  );
   let result;
   await act(async () => {
-    result = render(
-      <MemoryRouter initialEntries={['/media/image']}>
-        <ImageGen />
-      </MemoryRouter>,
-    );
+    result = render(strict ? <StrictMode>{tree}</StrictMode> : tree);
   });
   return result;
 };
@@ -226,6 +228,22 @@ describe('ImageGen object-URL lifecycle', () => {
     expect(state.revoked).not.toContain(secondRef);
     expect(screen.getByTestId('init-url')).toHaveTextContent(secondInit);
     expect(screen.getByTestId('ref-url-0')).toHaveTextContent(secondRef);
+  });
+
+  // The app renders under StrictMode (client/src/main.jsx), which invokes a
+  // functional state updater TWICE in dev. A url minted inside the updater is
+  // created on both passes but only one is kept, so the other is unreachable
+  // and can never be revoked — a leak on every single reference pick.
+  it('mints exactly one url per pick under StrictMode', async () => {
+    const { unmount } = await mount({ strict: true });
+    await click('pick-init');
+    await click('pick-ref-0');
+
+    await waitFor(() => expect(screen.getByTestId('ref-url-0')).not.toHaveTextContent(''));
+    expect(state.created).toHaveLength(2);
+
+    await act(async () => { unmount(); });
+    expect(liveUrls()).toEqual([]);
   });
 
   // Clearing reclaims immediately, and the later unmount must not re-revoke a
