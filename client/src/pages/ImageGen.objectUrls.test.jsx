@@ -128,7 +128,7 @@ const liveUrls = () => state.created.filter((u) => !state.revoked.includes(u));
 // assigning `undefined` back would leave an own property that later files see
 // as "present but broken".
 const stub = (host, key, value) => {
-  const had = Object.prototype.hasOwnProperty.call(host, key);
+  const had = Object.hasOwn(host, key);
   const prev = host[key];
   host[key] = value;
   return () => { if (had) host[key] = prev; else delete host[key]; };
