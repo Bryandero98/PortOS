@@ -23,13 +23,16 @@ import {
 // Which providers on THIS install the stage's picker actually offers. The
 // posture half is server-published (`publicReviewPostures`, derived from the
 // vendor rows — no vendor names on the client); the rest is the picker's own
-// visibility rule, reused so the "eligible" note can never list a provider
-// the dropdown hides (switched off, hardware-incompatible), which is what left
-// Stage 3 looking unconfigurable.
+// visibility rule, reused so the notes below can never name a provider the
+// dropdown hides (switched off, hardware-incompatible). The eligible set is
+// not re-listed in the copy — the dropdown already IS that list.
 const eligibleProvidersFor = (providers, policy) =>
   selectableProviders(providers, { allowed: policy.provider });
 
 const providerNames = (providers) => providers.map((p) => p.name || p.id).join(', ');
+
+// Constant now that the eligible set is left to the dropdown.
+const NO_TOOL_STAGE_NOTE = "Tool-free stage. A local model must additionally report no tool-calling capability; a cloud model is held tool-free by the provider's own enforced flags. Leave the provider unset to use the first eligible one. It returns only a binary allowlist; the final stage never receives rejected content.";
 
 // Every enabled CLI/TUI provider can run the actions stage; the note says which
 // of them the server additionally wraps in the vendor's own OS sandbox, so a
@@ -39,13 +42,13 @@ const actionsStageNote = (eligibleProviders) => {
   const sandboxed = eligibleProviders.filter(isSandboxed);
   const worktreeOnly = eligibleProviders.filter((p) => !isSandboxed(p));
   const isolation = worktreeOnly.length === 0
-    ? ['Each runs headless inside its vendor\'s maintained OS sandbox.']
+    ? ['Every selectable provider runs headless inside its vendor\'s maintained OS sandbox.']
     : [
       sandboxed.length > 0 && `OS-sandboxed by the vendor's own recipe: ${providerNames(sandboxed)}.`,
       `Headless with standard permissions, isolated by the disposable worktree only: ${providerNames(worktreeOnly)}.`,
     ].filter(Boolean);
   return [
-    `Sandboxed stage. Eligible on this install: ${providerNames(eligibleProviders)}.`,
+    'Sandboxed stage.',
     ...isolation,
     'PortOS passes the selected provider, model, and thinking effort through, with no forge credential or configuration overlays; the deterministic coordinator owns comments, issue filing, CI triggers, and merges.',
   ].join(' ');
@@ -233,7 +236,7 @@ export default function PipelineStageConfig({ taskType, config, providers, provi
                 <p className="text-xs text-gray-500 mt-2">
                   {localModelsLoading
                     ? 'Loading installed local model capability reports…'
-                    : `Tool-free stage. Eligible on this install: ${eligibleProviders.map((p) => p.name || p.id).join(', ')}. A local model must additionally report no tool-calling capability; a cloud model is held tool-free by the provider's own enforced flags. Leave the provider unset to use the first eligible one. It returns only a binary allowlist; the final stage never receives rejected content.`}
+                    : NO_TOOL_STAGE_NOTE}
                 </p>
               )}
               {isActionsStage && eligibleProviders?.length > 0 && (
