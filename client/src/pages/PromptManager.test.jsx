@@ -11,6 +11,8 @@ const getPrompts = vi.fn();
 const getPrompt = vi.fn();
 const getPromptUsage = vi.fn();
 const deletePrompt = vi.fn();
+const savePrompt = vi.fn();
+const createPrompt = vi.fn();
 const getPromptVariables = vi.fn();
 const deletePromptVariable = vi.fn();
 const getJobSkills = vi.fn(() => Promise.resolve({ skills: [] }));
@@ -21,8 +23,8 @@ const previewJobSkill = vi.fn();
 vi.mock('../services/apiPrompts', () => ({
   getPrompts: (...a) => getPrompts(...a),
   getPrompt: (...a) => getPrompt(...a),
-  createPrompt: vi.fn(),
-  savePrompt: vi.fn(),
+  createPrompt: (...a) => createPrompt(...a),
+  savePrompt: (...a) => savePrompt(...a),
   deletePrompt: (...a) => deletePrompt(...a),
   previewPrompt: vi.fn(),
   getPromptUsage: (...a) => getPromptUsage(...a),
@@ -381,6 +383,56 @@ describe('PromptManager delete demotion', () => {
 
 // #3935: the row trash icon used to fire DELETE on the first click, so a
 // mis-click on a 14px target destroyed the variable with no undo.
+describe('PromptManager stage save/create/delete feedback (#6022)', () => {
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getPrompt.mockReset().mockResolvedValue({ name: 'Pipeline — Comic Book Script', template: 'body', variables: [] });
+    getPromptUsage.mockReset().mockResolvedValue({
+      isSystemStage: false, usedBy: [], referencedBy: [], canDelete: true,
+    });
+    savePrompt.mockReset().mockResolvedValue({ success: true });
+    createPrompt.mockReset().mockResolvedValue({ success: true, stageName: 'my-new-stage' });
+    deletePrompt.mockReset().mockResolvedValue({ success: true });
+    toast.error.mockReset();
+    toast.success.mockReset();
+  });
+
+  it('confirms a successful stage save with a named toast', async () => {
+    renderPage('/prompts?stage=pipeline-comic-script');
+    await screen.findByText('Prompt Stages');
+    await screen.findByRole('button', { name: /^save$/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Stage "Pipeline — Comic Book Script" saved'));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('confirms stage creation with a named toast and deep-links straight to the new stage', async () => {
+    renderPage('/prompts');
+    await screen.findByText('Prompt Stages');
+
+    fireEvent.click(screen.getByRole('button', { name: 'New Stage' }));
+    fireEvent.change(screen.getByPlaceholderText('my-stage'), { target: { value: 'my-new-stage' } });
+    fireEvent.change(screen.getByPlaceholderText('Pipeline — My Stage'), { target: { value: 'My New Stage' } });
+    fireEvent.click(screen.getByRole('button', { name: /create stage/i }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Stage "My New Stage" created'));
+    await waitFor(() => expect(currentSearch()).toContain('stage=my-new-stage'));
+  });
+
+  it('confirms a successful stage delete with a named toast', async () => {
+    renderPage('/prompts?stage=pipeline-comic-script');
+    await screen.findByText('Prompt Stages');
+
+    fireEvent.click(await screen.findByRole('button', { name: /^delete$/i }));
+    expect(await screen.findByText('Delete Stage?')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i }).at(-1));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Stage "pipeline-comic-script" deleted'));
+  });
+});
+
 describe('PromptManager variable deletion', () => {
   const VARIABLES = {
     'tone-guide': { name: 'Tone Guide', category: 'style', content: 'stay wry' },

@@ -204,6 +204,7 @@ export default function PromptManager() {
       .catch((err) => { toast.error('Failed to save stage: ' + err.message); return false; });
     if (!ok) { setSaving(false); return; }
     setSaving(false);
+    toast.success(`Stage "${stages[selectedStage]?.name || selectedStage}" saved`);
     await loadData();
   };
 
@@ -283,6 +284,8 @@ export default function PromptManager() {
       variables: [],
       template: ''
     });
+    toast.success(`Stage "${payload.name || payload.stageName}" created`);
+    setSelectedStage(payload.stageName);
     await loadData();
   };
 
@@ -313,6 +316,7 @@ export default function PromptManager() {
     if (selectedStage === stageName) {
       setSelectedStage(null);
     }
+    toast.success(`Stage "${stageName}" deleted`);
     await loadData();
   };
 
