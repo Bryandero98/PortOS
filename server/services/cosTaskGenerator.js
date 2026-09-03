@@ -2053,8 +2053,22 @@ async function findActiveSecurityScanTask(appId, scanKey) {
  * hook's strict envelope check) is scoped to that one PR by construction rather
  * than by a prompt asking the agent to ignore the rest.
  */
-async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest = null) {
+async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest = null, taskSchedule = null) {
   if (taskType !== 'pr-reviewer') return { skipped: false };
+
+  // A churn park has to be a STOP, not just a log line (#6124). pr-reviewer runs
+  // on the ON_DEMAND cadence, and `shouldRunTask` only reads `parkedUntil` on a
+  // `perpetual` interval — so the park `observeAgentChurn` stamps when a stage
+  // loops ("parked ${type} so the loop stops burning quota") gated nothing, and
+  // the drain regenerated a fresh task seconds later. Ask here, the one place
+  // every pr-reviewer run is built, and ask BEFORE the security scan so a parked
+  // type does not keep paying for the preflight it is only going to discard.
+  // A human "Run" is unaffected: applyOnDemandRunResets clears the park for a
+  // USER-origin request before it reaches generation.
+  if (taskSchedule && await taskSchedule.isPerpetualParkActive(taskType, app.id)) {
+    emitLog('info', `Skipping pr-reviewer for ${app.name}: parked until its recheck cadence`, { appId: app.id, analysisType: taskType });
+    return { skipped: true, reason: 'parked' };
+  }
 
   const stages = metadata.pipeline?.stages;
   const securityStage = stages?.[0];
@@ -2811,7 +2825,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
 
   if (taskType === 'pr-reviewer') ensurePrReviewerPipeline(metadata);
   initializePipelineMetadata(metadata);
-  const securityPreflight = await runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest);
+  const securityPreflight = await runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest, taskSchedule);
   if (securityPreflight.skipped) return null;
   if (!skipPreconditions && shouldSkipForPrecondition(metadata, app, taskType)) return null;
 

@@ -1386,6 +1386,24 @@ export async function maybeCreateInvestigationTask(agentId, task, analysis) {
  * }}
  */
 export function resolveFailedTaskDecision(task, errorAnalysis, { agentId = null, now = Date.now() } = {}) {
+  // A PERMANENT failure (#6124) re-fails identically on every re-dispatch — a
+  // pipeline stage whose agent finished with no parseable output has nothing a
+  // retry could read differently. Block on the FIRST occurrence, ahead of the
+  // actionable branch, and file NO investigation task: an investigation agent
+  // is another unbounded spawn against a cause the block already names.
+  if (errorAnalysis?.permanent) {
+    return {
+      status: 'blocked',
+      investigationAnalysis: null,
+      metadataUpdates: {
+        failureCount: (Number(task.metadata?.failureCount) || 0) + 1,
+        lastErrorCategory: errorAnalysis.category || 'unknown',
+        blockedReason: errorAnalysis.message || 'The run failed permanently and will not be retried',
+        blockedCategory: errorAnalysis.category || 'permanent-failure'
+      }
+    };
+  }
+
   // Actionable errors get blocked immediately. The investigation task (created
   // by the wrapper unless the failure is an API-access error) gets the original
   // analysis verbatim.
@@ -1517,7 +1535,10 @@ export async function resolveFailedTaskUpdate(task, errorAnalysis, agentId, now 
     emitLog('warn', `🚫 Task ${task.id} blocked after ${failureCount} failures (${lastErrorCategory})`, {
       taskId: task.id, failureCount, category: lastErrorCategory
     });
-    await maybeCreateInvestigationTask(agentId, task, decision.investigationAnalysis);
+    // A null analysis is the permanent-failure branch's explicit "do not
+    // investigate" — see resolveFailedTaskDecision. Every other blocked path
+    // supplies one.
+    if (decision.investigationAnalysis) await maybeCreateInvestigationTask(agentId, task, decision.investigationAnalysis);
     const at = new Date(now).toISOString();
     return {
       status: 'blocked',
