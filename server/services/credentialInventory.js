@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { CREDENTIALS } from '../lib/credentialRegistry.js';
 import { INSTANCE_FEATURES } from '../lib/instanceFeatureRegistry.js';
 import { PATHS, readJSONFile } from '../lib/fileUtils.js';
-import { parseEnvContents } from '../lib/vllmQwenProvision.js';
+import { parseEnvContents } from '../lib/portosEnv.js';
 import { getSettings } from './settings.js';
 
 export const CREDENTIAL_SOURCES = Object.freeze([

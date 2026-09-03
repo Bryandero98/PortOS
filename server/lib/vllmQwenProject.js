@@ -38,7 +38,6 @@
  * live" is one question and one module should answer it.
  */
 
-import { readFileSync } from 'fs';
 import { readdir, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -47,9 +46,8 @@ import { join } from 'path';
 // replace that whole aggregate with a small literal, and a module-level
 // `PATHS.root` read through it explodes at import time in a suite that never
 // touches this file.
-import { atomicWrite } from './fileCore.js';
 import { PATHS } from './paths.js';
-import { parseEnvContents, upsertEnvLine } from './vllmQwenProvision.js';
+import { PORTOS_ENV_PATH, readPortosEnvValue, upsertPortosEnvLine } from './portosEnv.js';
 
 /** Operator override for where the compose project was cloned. */
 export const VLLM_PROJECT_DIR_ENV = 'VLLM_QWEN_PROJECT_DIR';
@@ -57,16 +55,9 @@ export const VLLM_PROJECT_DIR_ENV = 'VLLM_QWEN_PROJECT_DIR';
 /** The directory name upstream's README uses, inside whichever home holds it. */
 export const VLLM_PROJECT_LEAF = 'qwen-serving';
 
-/**
- * PortOS's own `.env` — where an auto-detected project directory is recorded.
- *
- * `installRoot`, not `root`: what is recorded here is machine-local runtime state
- * ("where this machine's WSL project lives"), so it belongs to the install and
- * not to whichever checkout loaded the code. A server booted from a CoS agent
- * worktree has no `.env` in its own tree (`lib/paths.js`, #1947), and anchoring
- * to `root` there would write a throwaway file the real install never reads.
- */
-export const PORTOS_ENV_PATH = join(PATHS.installRoot, '.env');
+// Re-export for backwards compat — consumers that imported PORTOS_ENV_PATH
+// from here keep working; `portosEnv.js` is the source of truth (#1947).
+export { PORTOS_ENV_PATH };
 
 /**
  * Operator override for the HuggingFace cache holding the weights — the answer
@@ -99,15 +90,13 @@ export const vllmDefaultProjectDir = (env = process.env) => join(resolveHome(env
  * @returns {string}
  */
 export function readRecordedVllmProjectDir(envPath = PORTOS_ENV_PATH) {
-  let contents = '';
-  try { contents = readFileSync(envPath, 'utf8'); } catch { return ''; }
-  return parseEnvContents(contents).get(VLLM_PROJECT_DIR_ENV) || '';
+  return readPortosEnvValue(VLLM_PROJECT_DIR_ENV, envPath) || '';
 }
 
 /**
  * Remember where this project was placed, so nothing has to detect it twice.
  *
- * `upsertEnvLine` rather than an append: a file accumulating one line per
+ * `upsertPortosEnvLine` rather than an append: a file accumulating one line per
  * provisioning run is a config whose meaning depends on which reader opens it
  * (some take the first mention, some the last). Atomic, because PortOS's `.env`
  * also carries the database password and a half-written truncate is readable by
@@ -117,9 +106,7 @@ export function readRecordedVllmProjectDir(envPath = PORTOS_ENV_PATH) {
  * @param {string} [envPath]
  */
 export async function recordVllmProjectDir(dir, envPath = PORTOS_ENV_PATH) {
-  let contents = '';
-  try { contents = readFileSync(envPath, 'utf8'); } catch { /* no .env yet */ }
-  await atomicWrite(envPath, upsertEnvLine(contents, VLLM_PROJECT_DIR_ENV, dir));
+  await upsertPortosEnvLine(VLLM_PROJECT_DIR_ENV, dir, envPath);
 }
 
 /** Compose file names the upstream project may ship under. */
