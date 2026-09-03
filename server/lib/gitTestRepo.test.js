@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtemp, writeFile } from 'fs/promises';
+import { mkdtemp, writeFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -9,6 +9,8 @@ import {
   attachBareOrigin,
   materializeGitRepo,
   destroyGitSandbox,
+  resetGitSandbox,
+  resetGitWorktreeSandbox,
 } from './gitTestRepo.js';
 
 describe('template exit hook', () => {
@@ -87,5 +89,71 @@ describe('attachBareOrigin / materializeGitRepo', () => {
     expect(top).toBeTruthy();
     expect((await execGit(['log', '-1', '--pretty=%s'], dest)).stdout.trim()).toBe('initial');
     expect((await execGit(['config', 'user.email'], dest)).stdout.trim()).toBe('test@example.com');
+  });
+});
+
+describe('resetGitSandbox', () => {
+  it('discards branches, commits, the origin remote, and scratch siblings back to the initial state', async () => {
+    const box = await makeGitSandbox({ prefix: 'portos-git-fx-reset-' });
+    sandboxes.push(box.scratch);
+    const initialHead = (await execGit(['rev-parse', 'HEAD'], box.repo)).stdout.trim();
+
+    await attachBareOrigin(box.scratch, box.repo);
+    await execGit(['checkout', '-b', 'feature'], box.repo);
+    await writeFile(join(box.repo, 'work.txt'), 'wip');
+    await execGit(['add', '-A'], box.repo);
+    await execGit(['commit', '-m', 'feature work'], box.repo);
+    await writeFile(join(box.repo, 'untracked.txt'), 'scratch');
+
+    await resetGitSandbox({ scratch: box.scratch, repo: box.repo, initialHead });
+
+    expect((await execGit(['rev-parse', 'HEAD'], box.repo)).stdout.trim()).toBe(initialHead);
+    expect((await execGit(['rev-parse', '--abbrev-ref', 'HEAD'], box.repo)).stdout.trim()).toBe('main');
+    const branches = (await execGit(['branch', '--format=%(refname:short)'], box.repo)).stdout.trim();
+    expect(branches).toBe('main');
+    expect((await execGit(['remote'], box.repo)).stdout.trim()).toBe('');
+    expect(existsSync(join(box.repo, 'untracked.txt'))).toBe(false);
+    const scratchEntries = await readdir(box.scratch);
+    expect(scratchEntries).toEqual(['primary']);
+  });
+
+  it('is safe to call on a plain repo with no scratch wrapper', async () => {
+    const dest = await mkdtemp(join(tmpdir(), 'portos-git-fx-reset-plain-'));
+    sandboxes.push(dest);
+    await materializeGitRepo(dest);
+    const initialHead = (await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim();
+    await execGit(['checkout', '-b', 'wip'], dest);
+    await writeFile(join(dest, 'work.txt'), 'wip');
+    await execGit(['add', '-A'], dest);
+    await execGit(['commit', '-m', 'wip'], dest);
+
+    await resetGitSandbox({ repo: dest, initialHead });
+
+    expect((await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim()).toBe(initialHead);
+    expect((await execGit(['branch', '--format=%(refname:short)'], dest)).stdout.trim()).toBe('main');
+  });
+});
+
+describe('resetGitWorktreeSandbox', () => {
+  it('removes every worktree it grew, including a locked one, and restores main', async () => {
+    const dest = await mkdtemp(join(tmpdir(), 'portos-git-fx-reset-wt-'));
+    sandboxes.push(dest);
+    await materializeGitRepo(dest);
+    const initialHead = (await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim();
+
+    const wtA = await mkdtemp(join(tmpdir(), 'portos-git-fx-reset-wt-a-'));
+    const wtB = await mkdtemp(join(tmpdir(), 'portos-git-fx-reset-wt-b-'));
+    sandboxes.push(wtA, wtB);
+    await execGit(['worktree', 'add', '-b', 'wt-a', wtA, 'main'], dest);
+    await execGit(['worktree', 'add', '-b', 'wt-b', wtB, 'main'], dest);
+    await execGit(['worktree', 'lock', wtB], dest);
+
+    await resetGitWorktreeSandbox(dest, initialHead);
+
+    const listing = (await execGit(['worktree', 'list', '--porcelain'], dest)).stdout;
+    expect(listing).not.toContain('wt-a');
+    expect(listing).not.toContain('wt-b');
+    expect((await execGit(['branch', '--format=%(refname:short)'], dest)).stdout.trim()).toBe('main');
+    expect((await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim()).toBe(initialHead);
   });
 });

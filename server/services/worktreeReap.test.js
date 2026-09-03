@@ -10,13 +10,18 @@
  * Repos are copied from the shared `gitTestRepo.js` template. The whole file
  * is excluded from `npm run test:fast` (`VITEST_FAST=1`).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises';
 import { existsSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execGit } from '../lib/execGit.js';
-import { materializeGitRepo, SKIP_HEAVY_INTEGRATION } from '../lib/gitTestRepo.js';
+import {
+  materializeGitRepo,
+  resetGitSandbox,
+  resetGitWorktreeSandbox,
+  SKIP_HEAVY_INTEGRATION,
+} from '../lib/gitTestRepo.js';
 import { isBranchMergedInto } from './git.js';
 import { reapMergedWorktrees } from './worktreeManager.js';
 
@@ -52,8 +57,17 @@ async function initRepo() {
 
 describe.skipIf(SKIP_HEAVY_INTEGRATION)('isBranchMergedInto', () => {
   let dir;
-  beforeEach(async () => { dir = await initRepo(); });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+  let initialHead;
+  // One real repo for the whole describe, reset in place between tests
+  // instead of a fresh mkdtemp + materializeGitRepo (fs.cp) + rm per test
+  // (#5902) — the slow part on a Windows filesystem is that copy/delete
+  // cycle, not the handful of git commands each test runs.
+  beforeAll(async () => {
+    dir = await initRepo();
+    initialHead = (await execGit(['rev-parse', 'HEAD'], dir)).stdout.trim();
+  });
+  beforeEach(async () => { await resetGitSandbox({ repo: dir, initialHead }); });
+  afterAll(async () => { await rm(dir, { recursive: true, force: true }); });
 
   it('detects a normal (--no-ff) merge', async () => {
     await execGit(['checkout', '-b', 'feat'], dir);
@@ -118,12 +132,21 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
   // One root OUTSIDE the repo for the includeUnmanagedTrees cases, torn down
   // alongside the repo so a held tree can't leak out of the run.
   let externalRoot;
+  let initialHead;
 
-  beforeEach(async () => {
+  // One real repo (and one external root) for the whole describe, reset in
+  // place between tests via resetGitWorktreeSandbox() instead of a fresh
+  // mkdtemp + materializeGitRepo (fs.cp) + rm per test (#5902) — the reset
+  // tears down every `git worktree add` checkout a test grew (including a
+  // locked one), wherever it lives, so externalRoot is naturally emptied
+  // back out along with dir's own `.claude/worktrees` trees.
+  beforeAll(async () => {
     dir = await initRepo();
     externalRoot = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-ext-')));
+    initialHead = (await execGit(['rev-parse', 'HEAD'], dir)).stdout.trim();
   });
-  afterEach(async () => {
+  beforeEach(async () => { await resetGitWorktreeSandbox(dir, initialHead); });
+  afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
     await rm(externalRoot, { recursive: true, force: true });
   });
