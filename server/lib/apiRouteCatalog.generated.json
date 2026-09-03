@@ -15191,6 +15191,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/sync/:category/manifest",
+      "mountPath": "/api/sync",
+      "sources": [
+        "server/routes/dataSync.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/sync/:category/snapshot",
       "mountPath": "/api/sync",
       "sources": [
@@ -17424,8 +17432,8 @@
   ],
   "stats": {
     "mounts": 146,
-    "operations": 2158,
-    "declarations": 2166,
+    "operations": 2159,
+    "declarations": 2167,
     "sourceFiles": 229
   }
 }
