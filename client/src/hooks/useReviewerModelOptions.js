@@ -31,10 +31,12 @@ const PROBED_LOCAL_BACKENDS = LOCAL_LLM_BACKENDS.map((b) => b.id);
  * the installed Ollama ids (an Ollama-backed `claude` CLI, where `--model` selects
  * the local model). Deduped, order-preserving.
  *
- * `freeText` marks a reviewer whose picker must accept a typed id, not just a
- * pick: an Ollama-backed `claude` can run any locally-installed id, and a
+ * `freeText` marks a reviewer whose picker must ALSO accept a typed id, not only
+ * a pick: an Ollama-backed `claude` can run any locally-installed id, and a
  * Bedrock/Vertex install needs its environment's own id form, neither of which a
- * catalog can enumerate. Consumers render a `<datalist>` for those.
+ * catalog can enumerate. Those still render a dropdown of the catalog — the flag
+ * adds a "Custom…" escape to it (see `ReviewerPicker`'s Model cell); a reviewer
+ * marked `false` gets a closed list, because its options came from a live probe.
  *
  * `unavailable` distinguishes "backend is down" from "backend has no models" so
  * the empty state can say the useful thing. Absent = not probed (every reviewer
