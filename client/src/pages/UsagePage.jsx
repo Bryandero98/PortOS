@@ -60,11 +60,11 @@ function UsageMeter({ limit }) {
           style={{ width: `${Math.min(100, Math.max(0, used))}%` }}
         />
       </div>
-      <div className="flex items-start justify-between gap-1 mt-0.5 sm:mt-1">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-0.5 sm:gap-1 mt-0.5 sm:mt-1">
         <span className="text-[9px] sm:text-xs text-gray-500">{used}% used</span>
         {limit.resetsAt && (
-          <span className="flex min-w-0 text-[9px] sm:text-xs text-gray-500 items-start justify-end gap-1 text-right leading-tight">
-            <Clock size={11} /> resets {formatResetsAt(limit.resetsAt)}
+          <span className="flex min-w-0 text-[9px] sm:text-xs text-gray-500 items-start sm:justify-end gap-1 sm:text-right leading-tight">
+            <Clock size={11} className="shrink-0" /> resets {formatResetsAt(limit.resetsAt)}
           </span>
         )}
       </div>
