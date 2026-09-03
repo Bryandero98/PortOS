@@ -19,6 +19,13 @@ import {
   modelAbuseContentFingerprint,
 } from '../lib/modelAbuseGuard.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
+import {
+  MAX_REVIEW_BODY_CHARS,
+  PR_REVIEW_DECISION_CONTRACT,
+  renderFinding,
+  renderReviewBody,
+  reviewReportText,
+} from '../lib/prReviewReport.js';
 import { githubApiHost, githubRepoSpec } from '../lib/workTracker.js';
 import { getAppById, updateApp } from './apps.js';
 import { execGh, ensureForgeReachable } from './github.js';
@@ -162,14 +169,16 @@ function normalizeFinding(finding, anchors) {
   const path = text(finding.path, 500);
   const side = String(finding.side || '').toUpperCase();
   const line = Number(finding.line);
-  const body = text(finding.body, 3_000);
-  if (!path || side !== 'RIGHT' || !Number.isInteger(line) || line < 1 || !body) return null;
+  // A finding without an explicit boolean is blocking. The watcher must not
+  // turn an incomplete model response into an automatic merge.
+  const blocking = finding.blocking !== false;
+  const rendered = renderFinding(finding, { blocking });
+  if (!path || side !== 'RIGHT' || !Number.isInteger(line) || line < 1 || !rendered) return null;
   if (!anchors.has(`${path}\u0000${side}\u0000${line}`)) return null;
   return {
-    comment: { path, side, line, body },
-    // A finding without an explicit boolean is blocking. The watcher must not
-    // turn an incomplete model response into an automatic merge.
-    blocking: finding.blocking !== false,
+    comment: { path, side, line, body: rendered.body },
+    label: rendered.label,
+    blocking,
   };
 }
 
@@ -184,7 +193,6 @@ function normalizeReviewDecision(value) {
     verdict,
     ciPolicy,
     rebaseRequired: value.rebaseRequired,
-    summary: text(value.summary, 4_000),
     findings: Array.isArray(value.findings) ? value.findings : [],
   };
 }
@@ -197,10 +205,7 @@ export function isTaskOutputPayload(payload) {
 function hasUnsafeGeneratedOutput(payload) {
   const generatedText = [
     ...payload.issueComments.map((item) => item?.body),
-    ...payload.pullRequests.flatMap((item) => [
-      item?.summary,
-      ...(Array.isArray(item?.findings) ? item.findings.map((finding) => finding?.body) : []),
-    ]),
+    ...payload.pullRequests.flatMap((item) => reviewReportText(item)),
   ];
   return generatedText.some((value) => detectDeterministicModelAbuseSignals(value).length > 0);
 }
@@ -632,18 +637,14 @@ Return exactly this envelope through the completion sentinel (the outer \`summar
   "summary": "brief completion summary",
   "payload": {
     "issueComments": [{ "issueNumber": 1, "commentId": 2, "action": "reply|none", "body": "reply text or empty" }],
-    "pullRequests": [{
-      "number": 3,
-      "headSha": "exact supplied SHA",
-      "verdict": "approve|request_changes|defer",
-      "summary": "concise review summary",
-      "findings": [{ "path": "src/file.js", "line": 42, "side": "RIGHT", "blocking": true, "body": "concrete problem and fix" }],
-      "rebaseRequired": false,
-      "ciPolicy": "required|skippable"
-    }]
+    "pullRequests": [ <one decision object per supplied PR> ]
   }
 }
 \`\`\`
+
+${PR_REVIEW_DECISION_CONTRACT}
+
+\`scope\`, \`testEvidence\`, \`verified\`, \`concerns\`, \`title\`, and \`suggestion\` are optional — omit one rather than padding it. This reasoning pass runs no commands, so \`testEvidence\` is normally empty here.
 
 Include one decision for every supplied issue comment and PR, and no others.`;
 }
@@ -914,7 +915,7 @@ async function readCurrentIssueComment(ctx, item) {
 }
 
 async function submitReview(ctx, number, { body, event, comments = [] }) {
-  const input = JSON.stringify({ body: text(body, 4_000), event, comments });
+  const input = JSON.stringify({ body: text(body, MAX_REVIEW_BODY_CHARS), event, comments });
   return runGh([...apiArgs(ctx, `repos/${ctx.repoFullName}/pulls/${number}/reviews`, { method: 'POST' }), '--input', '-'], ctx, input)
     .then(() => true)
     .catch((err) => {
@@ -924,7 +925,7 @@ async function submitReview(ctx, number, { body, event, comments = [] }) {
 }
 
 async function postReviewFallback(ctx, number, body) {
-  return runGh(['pr', 'comment', String(number), '--repo', ctx.repoSpec, '--body', text(body, 5_000)], ctx)
+  return runGh(['pr', 'comment', String(number), '--repo', ctx.repoSpec, '--body', text(body, MAX_REVIEW_BODY_CHARS)], ctx)
     .then(() => true)
     .catch((err) => {
       console.error(`❌ issue-watcher: review comment failed for PR #${number}: ${err.message}`);
@@ -1042,11 +1043,16 @@ export async function processTaskOutput({ appId, success, payload, task, require
     if (!canApprove) {
       if (!await eligibilityStillCurrent()) continue;
       const downgraded = hasInvalidFinding && decision.verdict !== 'request_changes';
-      const summary = `${decision.summary || 'This change needs follow-up before it can merge.'}${
-        downgraded ? '\n\nPortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.' : ''}`;
       const shouldRequestChanges = decision.verdict === 'request_changes'
         || hasInvalidFinding
         || blockingFindings.length > 0;
+      const summary = renderReviewBody({
+        report: raw,
+        verdict: shouldRequestChanges ? 'request_changes' : 'defer',
+        blockingFindings,
+        nonBlockingFindings: normalizedFindings.filter((entry) => !entry.blocking),
+        downgraded,
+      });
       const posted = shouldRequestChanges
         ? await submitReview(ctx, pr.number, { body: summary, event: 'REQUEST_CHANGES', comments: findings })
           || await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT', comments: findings })
@@ -1056,7 +1062,11 @@ export async function processTaskOutput({ appId, success, payload, task, require
       continue;
     }
 
-    const approveBody = decision.summary || 'Reviewed: no material issues found.';
+    const approveBody = renderReviewBody({
+      report: raw,
+      verdict: 'approve',
+      nonBlockingFindings: normalizedFindings,
+    });
     if (!await eligibilityStillCurrent()) continue;
     const approved = await submitReview(ctx, pr.number, {
       body: approveBody,

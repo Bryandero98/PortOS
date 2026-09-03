@@ -21,7 +21,7 @@ import PromptEnhancer from '../components/media/PromptEnhancer';
 import PromptFromMedia from '../components/media/PromptFromMedia';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
-import { RUNNER_FAMILIES, loraCompatKey } from '../lib/runnerFamilies';
+import { RUNNER_FAMILIES, loraCompatKey, usesDiffusersRunner } from '../lib/runnerFamilies';
 import { appendTriggerWords } from '../lib/loraTriggers';
 import Flux2InstallModal from '../components/imageGen/Flux2InstallModal';
 import HfTokenBanner from '../components/imageGen/HfTokenBanner';
@@ -674,6 +674,12 @@ export default function ImageGen() {
 
   const currentModel = models.find((m) => m.id === modelId);
   const isFlux2Model = currentModel?.runner === RUNNER_FAMILIES.FLUX2;
+  // Z-Image/ERNIE/HiDream/Qwen dispatch through the same shared torch venv
+  // FLUX.2 does (isFlux2VenvHealthy in pythonSetup.js gates all of them), so
+  // the install/repair flow below has to cover them too — otherwise a user on
+  // one of those models hits the "FLUX.2 runtime" gate with no UI path to fix
+  // it, since the fetch + Install button used to be flux2-only.
+  const sharesFlux2Venv = isFlux2Model || usesDiffusersRunner(currentModel);
   // Edit-only models (Qwen-Image-Edit) require a source image — submitting
   // text-only crashes the runner, so the server rejects it and we gate the
   // submit button + show a hint rather than letting the user hit a failed job.
@@ -791,14 +797,14 @@ export default function ImageGen() {
   }, [refreshFlux2Status]);
 
   useEffect(() => {
-    if (!isFlux2Model) { setFlux2Status(null); return; }
+    if (!sharesFlux2Venv) { setFlux2Status(null); return; }
     // Abort the in-flight request when the user switches models before it
     // resolves — otherwise a stale response could re-show the banner for
-    // a non-flux2 selection.
+    // a selection that doesn't share the venv.
     const controller = new AbortController();
     refreshFlux2Status(controller.signal);
     return () => controller.abort();
-  }, [isFlux2Model, modelId, refreshFlux2Status]);
+  }, [sharesFlux2Venv, modelId, refreshFlux2Status]);
 
   // Lazy-fetch HF token presence for legacy mflux gated models (FLUX.1-dev).
   // FLUX.2 has its own combined status fetch above (which also covers the
@@ -836,8 +842,11 @@ export default function ImageGen() {
   }, [generating, refreshGallery]);
   useAutoRefetch(pollQueue, 4000, { enabled: queueActive, pollOnly: true });
 
-  const flux2Issue = isFlux2Model && flux2Status
-    ? (!flux2Status.venvInstalled ? 'venv' : !flux2Status.hfTokenPresent ? 'token' : null)
+  // The HF-gated-repo "token" issue only applies to actual FLUX.2 models —
+  // Z-Image/ERNIE/HiDream/Qwen share the venv but aren't gated repos, so a
+  // missing HF token must not block them.
+  const flux2Issue = sharesFlux2Venv && flux2Status
+    ? (!flux2Status.venvInstalled ? 'venv' : (isFlux2Model && !flux2Status.hfTokenPresent) ? 'token' : null)
     : null;
   const { visibleGallery, hiddenGallery } = useMemo(() => {
     const visible = gallery.filter((img) => !img.hidden);
@@ -1361,8 +1370,10 @@ export default function ImageGen() {
           {flux2Issue === 'venv' && (
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
-                FLUX.2 runtime isn't installed yet. PortOS can set it up automatically
-                — torch + diffusers download, ~3-10 min on first run.
+                {isFlux2Model
+                  ? "FLUX.2 runtime isn't installed yet."
+                  : `${currentModel?.name || 'This model'} shares the FLUX.2 torch runtime, which isn't installed yet.`}
+                {' '}PortOS can set it up automatically — torch + diffusers download, ~3-10 min on first run.
               </div>
               <button
                 type="button"

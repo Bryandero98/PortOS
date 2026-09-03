@@ -15199,6 +15199,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/sync/:category/manifest",
+      "mountPath": "/api/sync",
+      "sources": [
+        "server/routes/dataSync.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/sync/:category/snapshot",
       "mountPath": "/api/sync",
       "sources": [
