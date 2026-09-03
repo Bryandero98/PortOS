@@ -213,7 +213,13 @@ The selected work is split across parallel jobs:
   the server on the same job when server source changed (the smoke path uses the
   file backend under `NODE_ENV=test` and does not need Postgres). The install
   and the native-addon rebuild are skipped when a `server/node_modules` cache is
-  restored and its trusted-rebuild mark checks out.
+  restored and its trusted-rebuild mark checks out. This job also runs
+  `npm ci --prefix autofixer` — uncached and never skipped, because resolving
+  that workspace's tracked lockfile *is* the check. It is the only CI step that
+  installs `autofixer/`, which `npm run setup` and `scripts/ensure-deps.js`
+  install on every user's machine; without it a lockfile that stopped resolving
+  shipped green and failed at setup time. (`browser/` gets no such step: zero
+  dependencies, and its lockfile is deliberately gitignored.)
 - **Client tests and build** — affected client tests; production build whenever
   client source changed; client lint on the same install so Biome does not pay a
   second `npm ci`. Lint, build, and the bundle budget run on shard 1 only.
