@@ -47,7 +47,10 @@ export const __testing = { importJobs };
  */
 export function cancelReferenceAudioImport(jobId) {
   const job = importJobs.get(jobId);
-  if (!job || job.canceled) return false;
+  // The job lingers in the map after it ends (closeJobAfterDelay evicts it on
+  // a timer), so a terminal status — not just the flag — is what makes a cancel
+  // for an already-finished import report false.
+  if (!job || job.canceled || job.status !== 'running') return false;
   job.canceled = true;
   const proc = job.process;
   if (proc) killWithEscalation(proc, { label: 'yt-dlp reference audio', stillRunning: () => job.process === proc });
@@ -121,6 +124,7 @@ export async function startReferenceAudioImport(url) {
       // the core handed off and no longer owns.
       await cleanupYtDlpTemp(tempPrefix);
     } finally {
+      job.status = 'done';
       closeJobAfterDelay(importJobs, jobId);
     }
   })();

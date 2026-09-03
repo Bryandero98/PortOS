@@ -142,6 +142,14 @@ describe('cancelYoutubeImport', () => {
     __testing.importJobs.delete('j1');
   });
 
+  it('returns false once the job has finished, while it lingers in the map', () => {
+    // closeJobAfterDelay evicts on a timer, so a finished job is still present —
+    // cancelling it must not report an accepted cancel to the client.
+    __testing.importJobs.set('j3', { id: 'j3', status: 'done', clients: [], process: null, canceled: false });
+    expect(cancelYoutubeImport('j3')).toBe(false);
+    __testing.importJobs.delete('j3');
+  });
+
   it('signals a running child and refuses a second cancel', () => {
     const proc = { pid: 1234 };
     const job = { id: 'j2', status: 'running', clients: [], process: proc, canceled: false };
