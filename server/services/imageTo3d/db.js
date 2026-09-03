@@ -66,6 +66,12 @@ export async function createModel(input) {
     },
     status: 'draft',
     assetPath: null,
+    // The published auto-skin artifact for this mesh, or `null` when it has never been
+    // rigged (`services/rigging/autoSkin.js` owns the shape). The whole record lives in
+    // the `data` JSONB column, so this needs no table change — but every install that
+    // predates rigging has records with the key ABSENT, so readers must treat absent and
+    // `null` the same and never assume the field exists.
+    rig: null,
     error: null,
     generationOperationId: null,
     runs: [],

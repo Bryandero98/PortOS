@@ -9,6 +9,7 @@ import GlbViewer from '../components/media/GlbViewer';
 import MediaImage from '../components/MediaImage';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import ImageTo3dRenderOptions from '../components/media/ImageTo3dRenderOptions';
+import RigPanel from '../components/media/RigPanel';
 import { fieldsFromRun, renderOptionsBody, runWantsTransparency } from '../lib/imageTo3dRenderOptions';
 import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 import toast from '../components/ui/Toast';
@@ -267,6 +268,8 @@ export default function Media3DDetail() {
           )}
         </div>
       </section>
+
+      <RigPanel record={record} onRecordChange={setRecord} />
     </div>
   );
 }

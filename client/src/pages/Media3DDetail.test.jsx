@@ -21,6 +21,9 @@ vi.mock('../components/media/GlbViewer', () => ({
   ),
 }));
 vi.mock('../components/MediaImage', () => ({ default: ({ alt, src }) => <img alt={alt} src={src} /> }));
+// The rig panel owns its own readiness fetch + feature gate (covered by
+// RigPanel.test.jsx); stubbing it keeps this suite about the page.
+vi.mock('../components/media/RigPanel', () => ({ default: () => <div data-testid="rig-panel" /> }));
 vi.mock('../components/ui/Toast', () => ({ default: { error: vi.fn(), success: vi.fn() } }));
 
 const record = (over = {}) => ({

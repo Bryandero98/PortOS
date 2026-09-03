@@ -149,4 +149,4 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `uiInteract.js` | Execute voice `ui_click` / `ui_fill` / `ui_select` against live DOM. |
 | `domIndex.js` | DOM indexer for voice accessibility mode. |
 | `staleBuildToast.jsx` | Sticky toast shown when server's build id differs from client's. |
-| `apiRigging.js` | Character rigging (`GET /rigging/readiness`): whether this install's Blender runtime is provisioned, the resolved interpreter, the module version, and the install command when it is not. |
+| `apiRigging.js` | Character rigging. `getRiggingReadiness()` (`GET /rigging/readiness`): whether this install's Blender runtime is provisioned, the resolved interpreter, the module version, the install command when it is not, and the auto-skin threshold defaults. `rigImageTo3dModel(id, body)` (`POST /rigging/models/:id`): auto-skin a rendered mesh behind the measured weight-coverage gate, resolving with the updated model record. |
