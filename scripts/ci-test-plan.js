@@ -309,11 +309,13 @@ const structuralTestsFor = (changedFiles, trackedSet) => {
   // Both `.js` and `.jsx`: the StrictMode mounted-ref bug the first guard covers
   // reached its widest blast radius through a plain-`.js` hook (`useAsyncAction`),
   // so a `.jsx`-only trigger would miss the case that matters most, and the
-  // responsive-grid, popover-clamp, safe-storage, and heading-truncation guards
-  // read class strings, storage accesses, and JSX markup out of both extensions.
+  // responsive-grid, popover-clamp, safe-storage, heading-truncation, and
+  // global-shadow guards read class strings, storage accesses, declarations, and
+  // JSX markup out of both extensions.
   // None of these files has a source sibling or imports an app module, so nothing
   // else selects them — without this entry they only ever run on a full suite.
   if (changedFiles.some((path) => /^client\/src\/.*\.jsx?$/.test(path))) {
+    add('client/src/globalShadowConventions.test.js');
     add('client/src/headingTruncationConventions.test.js');
     add('client/src/hooks/mountedRefConventions.test.js');
     add('client/src/pollingConventions.test.js');
