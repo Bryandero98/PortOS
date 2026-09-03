@@ -252,11 +252,11 @@ Context tools remain read-only. Semantic reads and writes are independent, defau
 |--------|----------|-------------|
 | GET | `/cos/schedule` | Get full task schedule status |
 | GET | `/cos/upcoming` | Get upcoming scheduled tasks preview |
-| GET | `/cos/schedule/interval-types` | Get available interval types and descriptions |
+| GET | `/cos/schedule/interval-types` | Get the two cadence types (`on-demand`, `cron`) and their descriptions, plus the `perpetual` flag description |
 | GET | `/cos/schedule/due` | List all tasks due to run |
 | GET | `/cos/schedule/due/:appId` | List tasks due for specific app |
 | GET | `/cos/schedule/task/:taskType` | Get interval and schedule settings for a task type |
-| PUT | `/cos/schedule/task/:taskType` | Update schedule settings for a task type |
+| PUT | `/cos/schedule/task/:taskType` | Update schedule settings for a task type (`type`: `on-demand` \| `cron`; `cronExpression`: 5-field or null; `perpetual`: boolean drain flag, orthogonal to `type`) |
 | POST | `/cos/schedule/trigger` | Trigger an on-demand task run |
 | GET | `/cos/schedule/on-demand` | List pending on-demand task requests |
 | DELETE | `/cos/schedule/on-demand/:requestId` | Clear a pending on-demand request |

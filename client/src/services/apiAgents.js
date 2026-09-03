@@ -293,11 +293,6 @@ export const triggerCosOnDemandTask = (taskType, appId = null, options = {}) => 
   body: JSON.stringify({ taskType, appId }),
   ...options
 });
-export const resetCosTaskHistory = (taskType, appId = null, options = {}) => request('/cos/schedule/reset', {
-  method: 'POST',
-  body: JSON.stringify({ taskType, appId }),
-  ...options
-});
 
 // Autonomous Jobs
 export const getCosJobs = (options = {}) => request('/cos/jobs', options);
