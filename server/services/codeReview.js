@@ -364,9 +364,9 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
   }
 
   const cacheKey = `${backend}:${model}`
-  let resolvedEffort = normalizeReviewerEffort(effort, backend) || null
-  let effortUnsupported = thinkingUnsupportedModels.get(cacheKey) === true
-  if (effortUnsupported) resolvedEffort = null
+  const effortUnsupportedCached = thinkingUnsupportedModels.get(cacheKey) === true
+  let resolvedEffort = effortUnsupportedCached ? null : (normalizeReviewerEffort(effort, backend) || null)
+  let effortUnsupported = effortUnsupportedCached
 
   // Local runtime records are normalized to the OpenAI `/v1` root, while the
   // legacy backend managers return the host root. Keep both forms compatible
