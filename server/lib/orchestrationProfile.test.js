@@ -2,10 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_ORCHESTRATION_MODE,
   ORCHESTRATION_ROLES,
-  SPEC_PART_KEYS,
-  formatReasoningDirective,
   isOrchestratedTask,
-  missingSpecParts,
   normalizeOrchestrationMode,
   normalizeOrchestrationProfile,
   parseReasoningDirective,
@@ -64,8 +61,8 @@ describe('mode + role gating', () => {
 });
 
 describe('reasoning directives', () => {
-  it('round-trips a rung the architect wrote into a spec', () => {
-    const spec = `OBJECTIVE: ship it\n${formatReasoningDirective('xhigh')}`;
+  it('reads the rung the architect wrote into a spec', () => {
+    const spec = 'OBJECTIVE: ship it\nREASONING: xhigh';
     expect(parseReasoningDirective(spec)).toEqual({ rung: 'xhigh' });
   });
 
@@ -78,25 +75,6 @@ describe('reasoning directives', () => {
   it('reports absence as null, distinct from an invalid rung', () => {
     expect(parseReasoningDirective('OBJECTIVE: ship it')).toBeNull();
     expect(parseReasoningDirective(undefined)).toBeNull();
-  });
-});
-
-describe('missingSpecParts', () => {
-  it('accepts plain and bulleted/bolded labels', () => {
-    const spec = [
-      'OBJECTIVE: a',
-      '- FILES: b',
-      '- **INTERFACES**: c',
-      'CONSTRAINTS: d',
-      'VERIFICATION: npm test',
-      'REASONING: low',
-    ].join('\n');
-    expect(missingSpecParts(spec)).toEqual([]);
-  });
-
-  it('names every missing part in canonical order', () => {
-    expect(missingSpecParts('OBJECTIVE: a')).toEqual(SPEC_PART_KEYS.filter(k => k !== 'objective'));
-    expect(missingSpecParts(null)).toEqual([...SPEC_PART_KEYS]);
   });
 });
 

@@ -46,7 +46,7 @@ const MAX_MODEL_ID_LENGTH = 300;
  * The six parts every delegated unit of work must carry. A delegated lane shares
  * NONE of the architect's context — it sees only the spec — so a spec missing
  * any of these is a lane that has to guess. Rendered into the doctrine section
- * and used by `missingSpecParts` to check a spec the architect wrote.
+ * so the architect prompt and any later spec check read one definition.
  */
 export const SPEC_PARTS = Object.freeze([
   Object.freeze({ key: 'objective', label: 'OBJECTIVE', description: 'the single outcome this unit delivers, stated so it can be judged done or not' }),
@@ -56,10 +56,6 @@ export const SPEC_PARTS = Object.freeze([
   Object.freeze({ key: 'verification', label: 'VERIFICATION', description: 'one runnable command that proves the unit landed' }),
   Object.freeze({ key: 'reasoning', label: 'REASONING', description: `the effort rung for this step — one of ${EFFORT_LEVELS.join(', ')}` }),
 ]);
-
-export const SPEC_PART_KEYS = Object.freeze(SPEC_PARTS.map(part => part.key));
-
-const SPEC_PART_BY_LABEL = new Map(SPEC_PARTS.map(part => [part.label, part]));
 
 /** Directive line the architect writes to pin one step's reasoning effort. */
 export const REASONING_DIRECTIVE_LABEL = 'REASONING';
@@ -133,11 +129,6 @@ export function roleAssignment(task, role) {
   return normalizeOrchestrationProfile(task?.metadata?.orchestrationProfile)?.[role] ?? null;
 }
 
-/** Render the `REASONING: <rung>` line for a spec. */
-export function formatReasoningDirective(rung) {
-  return `${REASONING_DIRECTIVE_LABEL}: ${rung}`;
-}
-
 /**
  * Parse a `REASONING: <rung>` directive out of spec text.
  *
@@ -161,17 +152,3 @@ export function parseReasoningDirective(text) {
   return { rung };
 }
 
-/**
- * Which of the six spec parts a piece of spec text is missing, in canonical
- * order. `[]` means the spec is complete.
- */
-export function missingSpecParts(text) {
-  if (typeof text !== 'string') return [...SPEC_PART_KEYS];
-  const present = new Set();
-  for (const line of text.split('\n')) {
-    const label = line.match(/^\s*(?:[-*]\s*)?(?:\*\*)?([A-Z]+)(?:\*\*)?\s*:/)?.[1];
-    const part = label ? SPEC_PART_BY_LABEL.get(label) : null;
-    if (part) present.add(part.key);
-  }
-  return SPEC_PART_KEYS.filter(key => !present.has(key));
-}
