@@ -47,7 +47,7 @@ export default function AppTaskTypeSection({ tasks, apps, providers, providersLo
         </div>
       </div>
       <p className="text-sm text-gray-400">
-        Tasks that analyze and improve PortOS and managed apps. Click a card to configure schedule and per-app overrides.
+        Tasks that analyze and improve PortOS and managed apps. Click a card to configure its schedule and to turn it on or off per app.
       </p>
 
       <div className="relative max-w-sm">
