@@ -290,8 +290,11 @@ export const REVIEWER_OPTIONS = [
   { value: 'codex', label: 'Codex', description: 'Codex CLI reviews the PR diff (optional model tier on Models → Code Reviewers)' },
   { value: 'grok', label: 'Grok', description: 'Grok Build CLI (grok) reviews the PR diff' },
   { value: 'cursor', label: 'Cursor Agent', description: 'Cursor Agent CLI (cursor-agent) reviews the PR diff' },
+  { value: 'opencode', label: 'OpenCode', description: 'OpenCode CLI reviews the PR diff (optional provider/model on Models → Code Reviewers)' },
+  { value: 'kimi', label: 'Kimi', description: 'Kimi CLI reviews the PR diff (optional model on Models → Code Reviewers)' },
   { value: 'lmstudio', label: 'LM Studio', description: 'Local LM Studio model reviews the diff (set model on AI Providers)' },
-  { value: 'ollama', label: 'Ollama', description: 'Local Ollama model reviews the diff (set model on AI Providers)' }
+  { value: 'ollama', label: 'Ollama', description: 'Local Ollama model reviews the diff (set model on AI Providers)' },
+  { value: 'mtplx', label: 'MTPLX', description: 'Local MTPLX model reviews the diff (set model on AI Providers)' }
 ];
 // The display label for a reviewer token — the one place UI copy turns a
 // reviewer slug into prose, so a roster addition renders everywhere without a

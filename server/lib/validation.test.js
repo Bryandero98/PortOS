@@ -1559,11 +1559,20 @@ describe('validation.js', () => {
         .toBe('--review-with ollama[qwen2.5:7b]~opt~max=1');
     });
 
-    it('never brackets copilot, a @username, or lmstudio (no slashdo slug takes one)', () => {
-      // lmstudio's model rides in the /api/code-review/local request body instead.
+    it('never brackets copilot or a @username, and drops a PortOS-only reviewer entirely', () => {
+      // lmstudio has no slashdo slug at all: emitting it would abort the command
+      // (unknown --review-with value), so it is dropped from the flag rather than
+      // bracketed. Its model rides in the /api/code-review/local request body.
       expect(buildReviewWithArgs(['copilot', 'lmstudio'], { usernames: ['Bot'], reviewerModels: {
         copilot: 'x', lmstudio: 'local-a', '@Bot': 'y',
-      } })).toBe('--review-with copilot,lmstudio,@Bot');
+      } })).toBe('--review-with copilot,@Bot');
+    });
+
+    it('emits no flag at all when every configured reviewer is PortOS-only', () => {
+      // `--review-with` with an empty value is as fatal to slashdo as an unknown
+      // slug; the surrounding prompt still names the reviewers and the Local
+      // Reviewer Procedure that runs them.
+      expect(buildReviewWithArgs(['mtplx', 'opencode'])).toBe('');
     });
 
     it('does not let a stray copilot pin force the suppressed lone-default flag on', () => {

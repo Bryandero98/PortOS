@@ -29,6 +29,9 @@ import {
   resolveReviewerConfig,
   resolveClaimReviewerConfig,
   reviewerTokenSlug,
+  reviewerModelFlag,
+  splitSlashdoReviewerTokens,
+  PORTOS_ONLY_REVIEWERS,
 } from './reviewerConfig.js';
 // The Zod half of the old cosValidation.js — these cases assert that a reviewer
 // pin survives the schema that persists it, so they need both modules.
@@ -94,6 +97,47 @@ describe('reviewerConfig reviewer CLI binaries', () => {
     expect(LOCAL_LLM_REVIEWERS.some(isCliReviewer)).toBe(false);
   });
 
+  // Every coding-agent CLI PortOS can spawn is selectable as a reviewer, so the
+  // provider a user is told is their best local agent can also review their code.
+  it('covers the OpenCode and Kimi CLIs, naming their own binaries', () => {
+    for (const slug of ['opencode', 'kimi']) {
+      expect(REVIEWER_VALUES).toContain(slug);
+      expect(isCliReviewer(slug)).toBe(true);
+      expect(reviewerCliBinary(slug)).toBe(slug);
+      expect(MODEL_CAPABLE_CLI_REVIEWERS).toContain(slug);
+    }
+  });
+
+  // `opencode run -m <provider/model>` — rendering `--model` would send the
+  // follow-up agent probing for a flag OpenCode does not document.
+  it('spells the model flag the way each CLI does', () => {
+    expect(reviewerModelFlag('opencode')).toBe('-m');
+    for (const slug of ['codex', 'claude', 'antigravity', 'gemini', 'grok', 'cursor', 'kimi']) {
+      expect(reviewerModelFlag(slug)).toBe('--model');
+    }
+  });
+
+  // MTPLX is an OpenAI-compatible local server, so it reviews through
+  // `POST /api/code-review/local` like lmstudio/ollama — never as a spawned CLI.
+  it('treats mtplx as a local-LLM backend, not a CLI', () => {
+    expect(LOCAL_LLM_REVIEWERS).toContain('mtplx');
+    expect(isCliReviewer('mtplx')).toBe(false);
+    expect(reviewerCliBinary('mtplx')).toBeNull();
+    expect(reviewerEffortLevels('mtplx')).toEqual(LOCAL_LLM_EFFORT_LEVELS);
+  });
+
+  // slashdo's `--review-with` vocabulary is copilot/codex/agy/claude/grok/cursor/
+  // ollama/@login. Anything else aborts the command, so PortOS's own reviewers
+  // must never reach that flag.
+  it('classifies every reviewer slashdo cannot parse as PortOS-only', () => {
+    expect([...PORTOS_ONLY_REVIEWERS].sort()).toEqual(['kimi', 'lmstudio', 'mtplx', 'opencode']);
+    const { flagTokens, portosOnly } = splitSlashdoReviewerTokens([
+      'ollama[qwen2.5:7b]~max=1', 'opencode', '@octocat', 'mtplx~effort=high', 'codex',
+    ]);
+    expect(flagTokens).toEqual(['ollama[qwen2.5:7b]~max=1', '@octocat', 'codex']);
+    expect(portosOnly).toEqual(['opencode', 'mtplx']);
+  });
+
   // slashdoInvocation keeps its own copy of the roster to decide which slashdo
   // `lib/*` includes a reviewer needs. Two hand-maintained lists of the same
   // reviewers drift the moment one gains a member — the `grok` addition is the
@@ -129,7 +173,7 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
 
   it('EFFORT_SELECTABLE_REVIEWERS is exactly the reviewers with a non-empty ladder', () => {
     expect([...EFFORT_SELECTABLE_REVIEWERS].sort())
-      .toEqual(['antigravity', 'claude', 'codex', 'cursor', 'grok', 'lmstudio', 'ollama']);
+      .toEqual(['antigravity', 'claude', 'codex', 'cursor', 'grok', 'lmstudio', 'mtplx', 'ollama']);
     for (const reviewer of REVIEWER_VALUES) {
       expect(EFFORT_SELECTABLE_REVIEWERS.includes(reviewer))
         .toBe((reviewerEffortLevels(reviewer) || []).length > 0);

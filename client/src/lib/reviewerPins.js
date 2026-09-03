@@ -27,16 +27,18 @@ import {
  * unaffected.
  */
 
-// CLI reviewers whose binary takes a `--model <id>` tier. Mirror of
+// CLI reviewers whose binary takes a model id. Mirror of
 // MODEL_CAPABLE_CLI_REVIEWERS (`antigravity` runs `agy --model <id>`, `grok` runs
-// `grok --model <id>`, and Cursor runs `cursor-agent --model <id>` — `grok` takes
-// a model but no effort at all, so this roster is deliberately wider than
-// EFFORT_SELECTABLE_REVIEWERS below; Cursor takes both, but carries its effort
-// INSIDE the model id rather than as a separate flag).
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor'];
+// `grok --model <id>`, Cursor runs `cursor-agent --model <id>`, and `opencode`
+// runs `opencode run -m <provider/model>` — the server owns which flag spells it,
+// see `reviewerModelFlag`). This roster is deliberately wider than
+// EFFORT_SELECTABLE_REVIEWERS below: `grok`/`opencode`/`kimi` take a model but no
+// pickable effort, and Cursor takes both while carrying its effort INSIDE the
+// model id rather than as a separate flag.
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor', 'opencode', 'kimi'];
 
 // The local-LLM backends, which take both a model and an effort.
-export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
+export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama', 'mtplx'];
 
 // Every reviewer whose model the user can pick per row in ReviewerPicker — the
 // model-capable CLIs plus the local-LLM backends. Mirror of
@@ -70,6 +72,7 @@ export const REVIEWER_EFFORT_LEVELS = Object.freeze({
   grok: GROK_EFFORT_LEVELS,
   lmstudio: LOCAL_LLM_EFFORT_LEVELS,
   ollama: LOCAL_LLM_EFFORT_LEVELS,
+  mtplx: LOCAL_LLM_EFFORT_LEVELS,
 });
 
 // Every reviewer whose effort the user can pick per row in ReviewerPicker.
