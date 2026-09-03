@@ -11,6 +11,10 @@ const mock = vi.hoisted(() => ({
   updateDefaultBranch: vi.fn(),
   spawn: vi.fn(),
   executeUpdate: vi.fn(),
+  setUpdateInProgress: vi.fn(),
+  dashboardOpen: vi.fn(),
+  dashboardRunning: vi.fn(),
+  dashboardHandle: { on: vi.fn() },
   restart: vi.fn(),
   syncFork: vi.fn(),
 }));
@@ -26,6 +30,11 @@ vi.mock('../lib/bufferedSpawn.js', async (importOriginal) => {
   return { ...actual, bufferedSpawnOrThrow: mock.spawn };
 });
 vi.mock('./updateExecutor.js', () => ({ executeUpdate: mock.executeUpdate }));
+vi.mock('./updateChecker.js', () => ({ setUpdateInProgress: mock.setUpdateInProgress }));
+vi.mock('../lib/detachedSpawn.js', () => ({
+  isDetachedRunning: mock.dashboardRunning,
+  spawnDetached: mock.dashboardOpen,
+}));
 vi.mock('./managedAppRepositories.js', () => ({ syncManagedAppFork: mock.syncFork }));
 
 import { updateApp } from './appUpdater.js';
@@ -43,6 +52,9 @@ describe('managed app updates', () => {
     mock.updateDefaultBranch.mockResolvedValue({ branch: 'main', output: 'Already up to date' });
     mock.spawn.mockResolvedValue({ stdout: '', stderr: '' });
     mock.executeUpdate.mockResolvedValue({ success: true, version: '9.9.9' });
+    mock.setUpdateInProgress.mockResolvedValue(true);
+    mock.dashboardRunning.mockResolvedValue(false);
+    mock.dashboardOpen.mockResolvedValue(mock.dashboardHandle);
     mock.restart.mockResolvedValue({ success: true });
     mock.syncFork.mockResolvedValue({
       alreadyUpToDate: false,
@@ -52,6 +64,10 @@ describe('managed app updates', () => {
   });
 
   afterEach(async () => {
+    await Promise.all(mock.dashboardOpen.mock.calls
+      .map(([, , options]) => options?.controlDir)
+      .filter(Boolean)
+      .map((controlDir) => rm(controlDir, { recursive: true, force: true })));
     await rm(repo, { recursive: true, force: true });
   });
 
@@ -114,6 +130,11 @@ describe('managed app updates', () => {
     expect(result.success).toBe(true);
     expect(mock.executeUpdate).toHaveBeenCalledWith('2.56.0', emit);
     expect(mock.spawn).not.toHaveBeenCalled();
+    // The flag CoS spawn gates read (#4124) has to be up before the script that
+    // deletes portos-cos starts, not after.
+    expect(mock.setUpdateInProgress).toHaveBeenCalledWith(true);
+    expect(mock.setUpdateInProgress.mock.invocationCallOrder[0])
+      .toBeLessThan(mock.executeUpdate.mock.invocationCallOrder[0]);
     expect(emit).toHaveBeenCalledWith('app-update', 'done', 'App update routine complete');
   });
 
@@ -133,6 +154,8 @@ describe('managed app updates', () => {
     expect(mock.restart).not.toHaveBeenCalled();
     expect(result.steps.some((step) => step.step === 'restart')).toBe(false);
     expect(emit).not.toHaveBeenCalledWith('restart', expect.anything(), expect.anything());
+    // update.sh runs open-ui-in-browser.js itself once the ecosystem is back.
+    expect(mock.dashboardOpen).not.toHaveBeenCalled();
   });
 
   it('surfaces a failed PortOS update instead of reporting success', async () => {
@@ -147,6 +170,43 @@ describe('managed app updates', () => {
       repoPath: repo,
       pm2ProcessNames: ['portos-server'],
     }, vi.fn())).rejects.toThrow('Update failed at step "npm-install" (exit code 1)');
+  });
+
+  it('refuses to launch a second update while one already holds the flag', async () => {
+    // The same atomic lock POST /api/update/execute takes — the two entry points
+    // into update.sh must not launch it concurrently.
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
+    mock.setUpdateInProgress.mockResolvedValue(false);
+
+    await expect(updateApp({
+      id: 'portos-default',
+      name: 'PortOS',
+      type: 'express',
+      repoPath: repo,
+      pm2ProcessNames: ['portos-server'],
+    }, vi.fn())).rejects.toThrow(/already in progress/i);
+
+    expect(mock.executeUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still delegates when the record spells this checkout differently', async () => {
+    // repoPath is user-editable and not force-synced, so a trailing slash or a
+    // '..' segment is a realistic spelling — and treating it as "not this
+    // checkout" would silently re-arm the attached spawn of #5976.
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
+
+    await updateApp({
+      id: 'portos-default',
+      name: 'PortOS',
+      type: 'express',
+      repoPath: `${repo}/client/..`,
+      pm2ProcessNames: ['portos-server'],
+    }, vi.fn());
+
+    expect(mock.executeUpdate).toHaveBeenCalled();
+    expect(mock.spawn).not.toHaveBeenCalled();
   });
 
   it('does not delegate when the PortOS record points outside this checkout', async () => {
@@ -207,6 +267,10 @@ describe('managed app updates', () => {
     expect(mock.executeUpdate).not.toHaveBeenCalled();
     expect(mock.spawn).toHaveBeenCalledWith('npm', ['run', 'update'], expect.objectContaining({ cwd: repo }));
     expect(mock.restart).toHaveBeenCalledWith('portos-server', undefined);
+    // This path still restarts PortOS itself, so it still owns the dashboard
+    // handoff — only the delegated one hands that to update.sh.
+    expect(mock.dashboardOpen).toHaveBeenCalled();
+    expect(mock.dashboardOpen.mock.invocationCallOrder[0]).toBeLessThan(mock.restart.mock.invocationCallOrder[0]);
   });
 
   it('runs an explicit update command before restarting', async () => {

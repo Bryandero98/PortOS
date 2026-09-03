@@ -1,13 +1,16 @@
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { existsSync, realpathSync } from 'fs';
+import { join, resolve } from 'path';
 import { readFile } from 'fs/promises';
+import { tmpdir } from 'os';
 import * as gitService from './git.js';
 import * as pm2Service from './pm2.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
 import { parseCommandArgs, validateCommand } from '../lib/commandSecurity.js';
+import { isDetachedRunning, spawnDetached } from '../lib/detachedSpawn.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { PORTOS_APP_ID } from '../lib/appIdentity.js';
 import { executeUpdate } from './updateExecutor.js';
+import { setUpdateInProgress } from './updateChecker.js';
 import { syncManagedAppFork } from './managedAppRepositories.js';
 
 const CMD_TIMEOUT_MS = 5 * 60 * 1000;
@@ -23,6 +26,80 @@ function runCommand(cmd, args, cwd) {
 
 // Per-app lock to prevent concurrent updates
 const updatingApps = new Set();
+const DASHBOARD_OPEN_SCRIPT = 'scripts/open-ui-in-browser.js';
+const DASHBOARD_OPEN_CONTROL_DIR = join(tmpdir(), 'portos-dashboard-open');
+
+/**
+ * Start the post-update dashboard handoff before any PortOS process is
+ * restarted. The handoff is deliberately detached through the shared
+ * double-fork helper: PM2's tree-kill would otherwise take the helper down
+ * with portos-server before it can wait for the browser to return.
+ *
+ * Only the paths that restart PortOS from HERE need it. The delegated
+ * self-update does not: update.sh runs `open-ui-in-browser.js` itself once the
+ * ecosystem is back up.
+ *
+ * @param {object} app
+ * @returns {Promise<void>}
+ */
+async function startDashboardHandoff(app) {
+  if (app.id !== PORTOS_APP_ID) return;
+
+  const scriptPath = join(app.repoPath, DASHBOARD_OPEN_SCRIPT);
+  const alreadyRunning = await isDetachedRunning(DASHBOARD_OPEN_CONTROL_DIR, {
+    executable: process.execPath,
+    args: [scriptPath],
+  }).catch((err) => {
+    // Do not let an unreadable control dir be mistaken for an idle one: the
+    // detached helper clears stale sentinels before launching and could then
+    // race a handoff that is still alive after the previous PM2 restart.
+    console.error(`⚠️ Dashboard auto-open status check failed: ${err.message}`);
+    return true;
+  });
+  if (alreadyRunning) return;
+
+  const handoff = await spawnDetached(
+    process.execPath,
+    [scriptPath],
+    { cwd: app.repoPath, controlDir: DASHBOARD_OPEN_CONTROL_DIR, cleanup: true },
+  ).catch((err) => {
+    console.error(`⚠️ Dashboard auto-open could not start: ${err.message}`);
+    return null;
+  });
+  handoff?.on('error', (err) => {
+    console.error(`⚠️ Dashboard auto-open failed: ${err.message}`);
+  });
+}
+
+/**
+ * Whether two filesystem paths name the same directory. A trailing slash, a
+ * symlinked checkout, or a different case on APFS/NTFS all spell one path more
+ * than one way — and the caller below turns "these differ" into "take the
+ * ATTACHED spawn", which is exactly the headless failure of #5976. Resolve
+ * symlinks where possible, and case-fold on the platforms whose filesystems
+ * are case-insensitive by default (mirrors `scripts/lib/directInvocation.js`).
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function isSamePath(a, b) {
+  if (!a || !b) return false;
+  const caseFold = process.platform === 'win32' || process.platform === 'darwin';
+  const normalize = (path) => {
+    // realpath throws when the path does not exist yet; resolve() alone still
+    // collapses a trailing slash and any '..' segment.
+    const absolute = (() => {
+      try {
+        return realpathSync(resolve(path));
+      } catch {
+        return resolve(path);
+      }
+    })();
+    return caseFold ? absolute.toLowerCase() : absolute;
+  };
+  return normalize(a) === normalize(b);
+}
 
 /**
  * Run a full update cycle for an app:
@@ -108,7 +185,12 @@ async function _doUpdate(app, emit, { syncFork }) {
   // PortOS record carrying a custom `updateCommand`, or pointing somewhere
   // other than this checkout, keeps the ordinary attached path rather than
   // silently running a different script than the one configured.
-  const detachSelfUpdate = app.id === PORTOS_APP_ID && usesStandardScript && dir === PATHS.root;
+  const detachSelfUpdate = app.id === PORTOS_APP_ID && usesStandardScript && isSamePath(dir, PATHS.root);
+  if (app.id === PORTOS_APP_ID && !detachSelfUpdate) {
+    // Never silent: this is the branch that runs update.sh attached, and an
+    // attached run is what left the install headless in #5976.
+    console.log(`⚠️ PortOS update is using the attached path — ${usesStandardScript ? 'repoPath is not this checkout' : 'a custom update command is configured'}`);
+  }
   if (configuredUpdate || pkg?.scripts?.['portos:update'] || usesStandardScript) {
     // A configured runtime may be an absolute Bun path, which is trusted app
     // configuration but not a commandSecurity allowlist token. Only free-form
@@ -138,8 +220,20 @@ async function _doUpdate(app, emit, { syncFork }) {
       // delegate rather than keeping a second detached-spawn implementation
       // in sync here. The version is only a logging/fallback label; the true
       // post-update version comes from the script's completion marker.
+      // Acquiring the update flag is what holds CoS agent spawns off a process
+      // update.sh is about to `pm2 delete` (#4124) — `subAgentSpawner`,
+      // `agentLifecycle` and `persistentMindSupervisor` all gate on it. It is
+      // also the atomic lock `POST /api/update/execute` takes, so the two entry
+      // points into update.sh cannot launch it concurrently.
+      const acquired = await setUpdateInProgress(true);
+      if (!acquired) throw new Error('A PortOS update is already in progress');
       const version = typeof pkg?.version === 'string' ? pkg.version : 'unknown';
-      const outcome = await executeUpdate(version, emit);
+      // Every outcome executeUpdate REPORTS clears the flag again through
+      // recordUpdateResult; a rejection from the launcher itself reports none.
+      const outcome = await executeUpdate(version, emit).catch(async (err) => {
+        await setUpdateInProgress(false);
+        throw err;
+      });
       if (!outcome.success) {
         throw new Error(outcome.errorMessage || `PortOS update failed at step "${outcome.failedStep || 'unknown'}"`);
       }
@@ -157,6 +251,7 @@ async function _doUpdate(app, emit, { syncFork }) {
   const processNames = detachSelfUpdate ? [] : (app.pm2ProcessNames || []);
   if (processNames.length > 0) {
     emit('restart', 'running', 'Restarting app...');
+    await startDashboardHandoff(app);
     const restartResults = await Promise.all(
       processNames.map(name =>
         pm2Service.restartApp(name, app.pm2Home).then(() => null, e => e)

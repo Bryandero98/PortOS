@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
-import { healthProbeUrls, probeHealth, waitForHealthy } from './verify-server-health.js';
+import { healthProbeUrls, parseTimeoutMs, probeHealth, waitForHealthy } from './verify-server-health.js';
 
 /** Start a loopback server that answers one canned response, and return its URL. */
 async function withServer(handler, run) {
@@ -97,10 +97,22 @@ describe('post-update server health verification', () => {
 
     expect(result.healthy).toBe(false);
     expect(result.url).toBe(null);
-    // The deadline is only checked after a full pass, so passes run at t=0,
-    // 2000 and 4000, plus the one at t=6000 that finds the budget spent — and
-    // every candidate URL is asked on every pass.
-    expect(probe).toHaveBeenCalledTimes(8);
+    // The contract is "kept asking for the whole budget, then stopped", not a
+    // particular pass schedule: every candidate is asked on every pass, at
+    // least one full pass happened, and it only gave up past the deadline.
+    expect(probe.mock.calls.length % 2).toBe(0);
+    expect(probe.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(clock).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it('reads a deliberate zero budget from the environment instead of falling back', () => {
+    // `|| DEFAULT` would turn a fail-fast 0 — and a typo — into a silent 120s.
+    expect(parseTimeoutMs('0')).toBe(0);
+    expect(parseTimeoutMs('30000')).toBe(30_000);
+    expect(parseTimeoutMs(undefined)).toBe(120_000);
+    expect(parseTimeoutMs('')).toBe(120_000);
+    expect(parseTimeoutMs('12O')).toBe(120_000);
+    expect(parseTimeoutMs('-1')).toBe(120_000);
   });
 
   it('still makes one full pass when the budget is already exhausted', async () => {

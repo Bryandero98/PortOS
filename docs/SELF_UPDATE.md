@@ -69,13 +69,17 @@ To prevent that confusion, `POST /api/update/execute` rejects fork runs with **4
 
 **PortOS is also a managed app**, so an update started from **App Management** reaches `update.sh` through `appUpdater.js` rather than `routes/update.js`. That path delegates to `executeUpdate()` for the PortOS record instead of spawning the script itself — a second detached-spawn implementation would be one more thing to keep in sync, and the attached one it replaced produced exactly the headless failure above (#5976). `appUpdater` also **skips its own `restart` step** for that case: the script runs `pm2 start ecosystem.config.cjs` itself, so restarting on top of it would be redundant and would race the script.
 
-A PortOS record carrying a custom `updateCommand` keeps the ordinary attached path — delegating there would silently run `update.sh` instead of the configured command. Non-PortOS managed apps are unaffected.
+Both entry points take the same atomic `setUpdateInProgress(true)` lock before launching, so they cannot run `update.sh` concurrently — and because that flag is what `subAgentSpawner`, `agentLifecycle` and `persistentMindSupervisor` gate on, holding it also stops a CoS agent from being spawned into a process the script is about to `pm2 delete` (#4124).
+
+A PortOS record carrying a custom `updateCommand`, or a `repoPath` that is not this checkout, keeps the ordinary attached path — delegating there would silently run `update.sh` instead of the configured command. That decision is logged rather than silent, since the attached path is the one that failed. The `repoPath` comparison resolves symlinks and case-folds on macOS/Windows: `repoPath` is user-editable and not force-synced, so a trailing slash or a different spelling must not be mistaken for a different checkout. Non-PortOS managed apps are unaffected, and still get their own PM2 restart and dashboard handoff from `appUpdater`.
 
 ## Post-update health verification
 
 `pm2 start` exiting 0 is not proof the server came back, and the process that would notice is the one that did not. Both platform scripts therefore close with a `verify` step that polls `/api/system/health` (`scripts/verify-server-health.js`) until it reports `ok` or the budget — `PORTOS_HEALTH_WAIT_MS`, default 120s — runs out. On failure they spend one more `pm2 start ecosystem.config.cjs` and then log the outcome loudly, with the manual recovery command.
 
 The probe tries the loopback HTTP mirror (`:5553`) first, then the API port over HTTP and HTTPS, because the listening scheme depends on whether a cert is provisioned; `/api/system/health` is in the always-public set, so it works with the optional instance password on. The recovery only fires when the probe fails, so it cannot make a healthy update worse.
+
+**When the probe still fails after the recovery, the scripts say so and exit non-zero** — the closing banner reads "Update applied, but PortOS is DOWN" instead of "Update Complete". The script outlives the server it restarts, so its exit status and the tail of `data/update.log` are the only signals a wrapper, a CI job, or an operator still has; printing a success banner over a confirmed-headless install is how the failure went unnoticed for hours in the first place.
 
 ## Syncing a fork
 

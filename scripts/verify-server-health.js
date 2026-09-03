@@ -39,6 +39,22 @@ const DEFAULT_INTERVAL_MS = 2_000;
 const PROBE_TIMEOUT_MS = 5_000;
 
 /**
+ * Read a non-negative millisecond budget from the environment. `|| DEFAULT`
+ * would be wrong here: it collapses "unset" and "not a number" together with a
+ * deliberate `0` (fail fast, one pass and out), which `waitForHealthy`
+ * explicitly supports.
+ *
+ * @param {string|undefined} raw
+ * @param {number} fallback
+ * @returns {number}
+ */
+export function parseTimeoutMs(raw, fallback = DEFAULT_TIMEOUT_MS) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
  * The loopback URLs a healthy PortOS could be answering on, in the order worth
  * trying: the plain-HTTP mirror first (always cert-free), then the API port
  * over each scheme. Deduped so a plain-HTTP install (mirror port unbound,
@@ -136,7 +152,7 @@ export async function waitForHealthy({
 async function runCli() {
   const apiPort = Number(process.env.PORT) || PORTS.API;
   const mirrorPort = Number(process.env.PORTOS_HTTP_PORT) || PORTS.API_LOCAL;
-  const timeoutMs = Number(process.env.PORTOS_HEALTH_WAIT_MS) || DEFAULT_TIMEOUT_MS;
+  const timeoutMs = parseTimeoutMs(process.env.PORTOS_HEALTH_WAIT_MS);
   const urls = healthProbeUrls({ apiPort, mirrorPort });
 
   const result = await waitForHealthy({ urls, timeoutMs });
