@@ -763,6 +763,13 @@ async function runAgentSpawn(task) {
       phase: 'initializing',
       useRunner: dispatchUseRunner,
       executionMode,
+      // The public-review posture this run executes under (null for an ordinary
+      // task). Projected beside `executionMode` because the UI cannot otherwise
+      // explain why the card has no "Open Shell" link: a public-review stage is
+      // forced headless (`spawnHeadless = publicReview || !isTui` above) even
+      // when the user configured it onto a TUI provider, so without this the
+      // card is indistinguishable from an agent whose PTY failed to attach.
+      publicReviewPosture,
       taskAnalysisType: task.metadata?.analysisType || null,
       taskReviewType: task.metadata?.reviewType || null,
       taskApp: task.metadata?.app || null,

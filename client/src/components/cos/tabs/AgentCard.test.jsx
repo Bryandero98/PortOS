@@ -368,3 +368,51 @@ describe('AgentCard task description (#4170)', () => {
     expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
   });
 });
+
+describe('AgentCard missing shell explanation', () => {
+  const running = (metadata) => ({
+    ...agent,
+    status: 'running',
+    completedAt: null,
+    metadata: { ...agent.metadata, ...metadata },
+  });
+
+  const renderCard = (a) => render(
+    <MemoryRouter>
+      <AgentCard agent={a} />
+    </MemoryRouter>
+  );
+
+  it('says why a public-review stage has no shell instead of leaving the card silent', () => {
+    // These stages are forced headless even on a TUI provider, so the "Open
+    // Shell" link never appears. Silence made a slow run look wedged with
+    // nowhere to look.
+    renderCard(running({ publicReviewPosture: 'sandboxed-actions', executionMode: 'direct' }));
+
+    expect(screen.queryByText('Open Shell')).not.toBeInTheDocument();
+    expect(screen.getByText('No shell')).toBeInTheDocument();
+    expect(screen.getByTitle(/public-review stage always runs headless/)).toBeInTheDocument();
+  });
+
+  it('stays silent on a TUI run that has not registered its session yet', () => {
+    // `executionMode` is stamped at registration but `tuiSessionId` only lands
+    // once the PTY attaches, so every healthy TUI spawn passes through this
+    // state — a chip here would put the "looks wedged" noise straight back.
+    renderCard(running({ executionMode: 'tui', phase: 'initializing' }));
+
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
+  });
+
+  it('adds no chip to an ordinary headless CLI agent — none was ever expected', () => {
+    renderCard(running({ executionMode: 'direct' }));
+
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
+  });
+
+  it('links to the live shell, with no explanation chip, once a session exists', () => {
+    renderCard(running({ executionMode: 'tui', tuiSessionId: 'sess-abcdef123' }));
+
+    expect(screen.getByText('Open Shell')).toBeInTheDocument();
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
+  });
+});

@@ -737,6 +737,16 @@ describe('runAgentSpawn source — instance provenance + claim ordering (#1563)'
     expect(metaSlice).toContain('configClaimFlow: isClaimFlowTask(task, isTruthyMeta)');
     expect(metaSlice.indexOf('configClaimFlow')).toBeGreaterThan(metaSlice.indexOf('configOpenPR'));
   });
+
+  it('projects the public-review posture so the UI can explain the missing shell link', () => {
+    // `spawnHeadless = publicReview || !isTui` forces a public-review stage
+    // headless even on a TUI provider, so its card never gets an "Open Shell"
+    // link. Without this projection the card cannot tell that apart from a PTY
+    // that failed to attach, and the run reads as wedged.
+    const registerIdx = RUN_SPAWN_BODY.indexOf('registerAgent(agentId, task.id, {');
+    const metaSlice = RUN_SPAWN_BODY.slice(registerIdx, RUN_SPAWN_BODY.indexOf('\n  });', registerIdx));
+    expect(metaSlice).toMatch(/^\s*publicReviewPosture,$/m);
+  });
 });
 
 // These used to be three source-regex assertions pinning a hand-spread env
