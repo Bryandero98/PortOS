@@ -9,15 +9,25 @@ import { FormField } from '../../ui/FormField';
 import CollapsibleText from '../../ui/CollapsibleText';
 import { useAsyncAction } from '../../../hooks/useAsyncAction';
 import { effortAwareModelOptions, seedModelEffort } from '../../../utils/providers';
+import { agentResumeMessage } from '../../../lib/agentResumeOutcome';
 
 // What each relaunch outcome actually did. The server reuses `resumeAgent`'s
-// modes (agentManagement.js): only `requeued` restarts the work — `already-active`
-// and `superseded` deliberately queue NOTHING, so an unmapped mode must not fall
-// through to a message claiming the task was relaunched.
+// modes (agentManagement.js): only `requeued` and `new-task` put work back on the
+// queue — `already-active` and `superseded` deliberately queue NOTHING, so those
+// carry no `running` wording and an unmapped mode falls through to the plain
+// fallback rather than a message claiming the task was relaunched. See
+// `agentResumeMessage` for the queued-vs-running contract.
 const RELAUNCH_MESSAGES = {
-  requeued: 'Relaunched — the task is queued again on its preserved worktree',
-  'already-active': 'Its task is already queued or running — nothing new was created',
-  superseded: 'A later agent now holds this task paused — that pause was left intact',
+  requeued: {
+    queued: 'Relaunched — the task is queued again on its preserved worktree',
+    running: 'Relaunched — the task is running again on its preserved worktree',
+  },
+  'new-task': {
+    queued: 'Relaunched — a replacement task is queued',
+    running: 'Relaunched — a replacement task is running',
+  },
+  'already-active': { queued: 'Its task is already queued or running — nothing new was created' },
+  superseded: { queued: 'A later agent now holds this task paused — that pause was left intact' },
 };
 
 /**
@@ -72,7 +82,7 @@ export default function RelaunchAgentModal({ agent, providers, apps, onDone, onC
       app: formData.app || undefined,
       context: formData.note.trim() || undefined
     }, { silent: true });
-    toast.success(RELAUNCH_MESSAGES[result?.mode] || 'Relaunched');
+    toast.success(agentResumeMessage(result, RELAUNCH_MESSAGES, 'Relaunched'));
     onDone?.(result);
     onClose();
     return result;
@@ -120,8 +130,9 @@ export default function RelaunchAgentModal({ agent, providers, apps, onDone, onC
           expandedClassName="max-h-48 overflow-y-auto whitespace-pre-wrap"
         />
         <div className="text-sm text-gray-400 mt-2">
-          This stops the running agent and requeues the same task on the worktree it leaves
-          behind — no second agent, and nothing to clean up afterward.
+          This stops the running agent and restarts the same task on the worktree it leaves
+          behind — no second agent, and nothing to clean up afterward. It starts right away
+          when an agent slot is free, and stays queued until one is otherwise.
         </div>
       </div>
 

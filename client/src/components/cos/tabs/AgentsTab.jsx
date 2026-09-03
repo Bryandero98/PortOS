@@ -8,16 +8,22 @@ import ResumeAgentModal from './ResumeAgentModal';
 import RelaunchAgentModal from './RelaunchAgentModal';
 import BrailleSpinner from '../../BrailleSpinner';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
+import { agentResumeMessage } from '../../../lib/agentResumeOutcome';
 
 // What each `resumeAgent` outcome actually did (server modes, agentManagement.js).
 // `already-active` and `superseded` deliberately queue NOTHING — the task is already
-// in flight, or a later pause owns it — so an unmapped mode must NOT fall through to
-// "created a resume task". The server's `created` flag decides that (see below); this
-// map only supplies the specific wording.
+// in flight, or a later pause owns it — so they carry no `running` wording, and an
+// unmapped mode must NOT fall through to "created a resume task". The server's
+// `created` flag decides that (see below); this map only supplies the specific
+// wording. `requeued` has both variants because the server force-spawns the resumed
+// task when a slot is free — see `agentResumeMessage` for that contract.
 const RESUME_MESSAGES = {
-  requeued: 'Resumed — the paused task is queued on its preserved worktree',
-  'already-active': 'Its task is already queued or running — nothing new was created',
-  superseded: 'A later agent now holds this task paused — that pause was left intact',
+  requeued: {
+    queued: 'Resumed — the paused task is queued on its preserved worktree',
+    running: 'Resumed — the paused task is running again on its preserved worktree',
+  },
+  'already-active': { queued: 'Its task is already queued or running — nothing new was created' },
+  superseded: { queued: 'A later agent now holds this task paused — that pause was left intact' },
 };
 
 // Only agents from a manually-filled task form ask for a rating — scheduled/
@@ -165,8 +171,8 @@ export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, a
     // A resume that created nothing (`created: false`) never claims it did, even for
     // a mode this build has no wording for — the completed-agent branch above has no
     // `created` field at all and did queue a task, so it keeps the default.
-    toast.success(RESUME_MESSAGES[result.mode]
-      || (result.created === false ? 'Resumed — nothing new was queued' : `Created ${type === 'internal' ? 'system ' : ''}resume task`));
+    toast.success(agentResumeMessage(result, RESUME_MESSAGES,
+      result.created === false ? 'Resumed — nothing new was queued' : `Created ${type === 'internal' ? 'system ' : ''}resume task`));
     setResumingAgent(null);
     onRefresh();
   };
