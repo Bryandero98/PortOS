@@ -16,26 +16,38 @@ import { ANTIGRAVITY_COMMAND } from './antigravity.js';
 import { CURSOR_COMMAND } from './cursor.js';
 
 // Reviewer choices for the Review Loop. `copilot` requests a native GitHub
-// Copilot review; `claude`/`antigravity`/`codex`/`grok`/`cursor` instruct the review-loop
-// follow-up agent to invoke the named CLI to critique the PR diff; `lmstudio`/`ollama`
-// route the diff through PortOS's local code-review endpoint
-// (`POST /api/code-review/local`) which runs the configured local LLM model.
+// Copilot review; `claude`/`antigravity`/`codex`/`grok`/`cursor`/`opencode`/`kimi`
+// instruct the review-loop follow-up agent to invoke the named CLI to critique the
+// PR diff; `lmstudio`/`ollama`/`mtplx` route the diff through PortOS's local
+// code-review endpoint (`POST /api/code-review/local`) which runs the configured
+// local LLM model.
+//
+// The roster deliberately covers EVERY coding-agent vendor PortOS can already
+// spawn (`PROVIDER_VENDORS` in providerVendors.js) plus every OpenAI-compatible
+// local backend it manages, so the provider a user is told is their best local
+// coding agent is also selectable as their reviewer. `opencode` is the one CLI
+// whose model flag is `-m` rather than `--model` (see REVIEWER_MODEL_FLAGS), and
+// `opencode`/`kimi`/`mtplx` — like `lmstudio` — have no slashdo counterpart, so
+// they are PORTOS_ONLY_REVIEWERS.
 // Mirrored in client/src/components/cos/constants.js → REVIEWER_OPTIONS.
-export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'grok', 'cursor', 'lmstudio', 'ollama'];
+export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'grok', 'cursor', 'opencode', 'kimi', 'lmstudio', 'ollama', 'mtplx'];
 export const REVIEWER_ALIASES = { gemini: 'antigravity', 'cursor-agent': 'cursor' };
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 // Reviewers that resolve to a local-LLM backend (rather than a CLI or GitHub
 // bot). Used by the code-review endpoint, settings panel, and prompt builder
 // to gate model-id resolution.
-export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
+export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama', 'mtplx'];
 // Reviewers PortOS serves ITSELF, with no counterpart in slashdo's reviewer
-// vocabulary: `lmstudio` runs through `POST /api/code-review/local`, which takes
-// its model in the request body. slashdo has no such slug, so it can neither
-// carry a `[<model>]` bracket nor appear in a `--review-with` list (an unknown
-// value aborts the command). One constant so a future addition can't be fixed
-// in one of those two places and missed in the other.
-export const PORTOS_ONLY_REVIEWERS = ['lmstudio'];
+// vocabulary (`copilot`/`codex`/`agy`/`claude`/`grok`/`cursor`/`ollama`/`@login`):
+// `lmstudio`/`mtplx` run through `POST /api/code-review/local`, which takes their
+// model in the request body, and `opencode`/`kimi` are CLIs PortOS's own review
+// procedure spawns. slashdo has no such slug, so none can carry a `[<model>]`
+// bracket or appear in a `--review-with` list (an unknown value aborts the
+// command). One constant so a future addition can't be fixed in one of those two
+// places and missed in the other — `splitSlashdoReviewerTokens` is the shared
+// partition every emitter goes through.
+export const PORTOS_ONLY_REVIEWERS = ['lmstudio', 'mtplx', 'opencode', 'kimi'];
 // CLI reviewers whose binary accepts a `--model <id>` tier the user can pin on
 // the Code Review Defaults panel (stored as a `<reviewer>Model` settings scalar,
 // e.g. `codexModel` / `claudeModel` / `antigravityModel`). The review-loop
@@ -51,11 +63,15 @@ export const PORTOS_ONLY_REVIEWERS = ['lmstudio'];
 // for one list. `cursor` runs `cursor-agent --model <id>` and DOES take an
 // effort — but as a parameter of the model id (`gpt-5[effort=max]`), not a flag,
 // so its pin rides this roster's `--model` rather than an `--effort` argv.
+// `opencode` runs `opencode run -m <provider/model>` and `kimi` runs
+// `kimi --model <id>`; neither offers a pickable effort, so they widen this roster
+// past EFFORT_SELECTABLE_REVIEWERS the same way `grok` does. `reviewerModelFlag`
+// owns which of `--model`/`-m` each one spells.
 // Copilot/local-LLM reviewers are excluded — the former has no CLI, the latter
 // get their model injected server-side by `POST /api/code-review/local`. Add a
 // reviewer here when its CLI gains model selection; the `<reviewer>Model`
 // settings scalar is generated from this roster (codeReviewSettingsSchema).
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor'];
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor', 'opencode', 'kimi'];
 // Every reviewer whose model the user can PICK in the UI: the model-capable CLIs
 // above (threaded into the follow-up prompt as `<reviewer> --model <id>`) plus the
 // local-LLM backends (whose id is injected server-side by
@@ -80,7 +96,29 @@ export const REVIEWER_CLI_BINARIES = {
   codex: 'codex',
   grok: 'grok',
   cursor: CURSOR_COMMAND,
+  opencode: 'opencode',
+  kimi: 'kimi',
 };
+
+// The `--model` flag a CLI reviewer's binary actually spells. Only a reviewer
+// that deviates from `--model` appears; `reviewerModelFlag` supplies the default
+// for the rest. `opencode` takes its model as `opencode run -m <provider/model>`
+// (mirroring `opencodeCliArgs` in providerVendors.js) — rendering `--model`
+// there would have the follow-up agent probe for a flag that is not the
+// documented one.
+const REVIEWER_MODEL_FLAGS = { opencode: '-m' };
+
+/**
+ * The flag a CLI reviewer's pinned model must be passed with (`--model` unless
+ * that reviewer's binary spells it differently). Accepts the `gemini` alias.
+ *
+ * @param {string} reviewer - reviewer slug
+ * @returns {string}
+ */
+export function reviewerModelFlag(reviewer) {
+  const slug = typeof reviewer === 'string' ? reviewer.trim().toLowerCase() : '';
+  return REVIEWER_MODEL_FLAGS[REVIEWER_ALIASES[slug] ?? slug] || '--model';
+}
 
 /**
  * Is this reviewer a CLI the agent spawns itself? Derived by EXCLUSION rather
@@ -865,7 +903,7 @@ export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}, { revie
       // a model-only pin is not this sentence's business.
       if (!normalizeReviewerEffort(efforts[r], r)) return null;
       const model = reviewerModelArg(r, models[r], efforts[r]);
-      return model ? `\`${binary} --model ${model}\`` : null;
+      return model ? `\`${binary} ${reviewerModelFlag(r)} ${model}\`` : null;
     })
     .filter(Boolean);
   if (!entries.length) return '';
@@ -889,6 +927,32 @@ const REVIEW_LOOP_SLASHDO_EXAMPLES_MD = ['/do:pr', '/do:next', '/do:review', '/d
  * by a round-trip test, so a grammar change can't silently mis-slug here.
  */
 export const reviewerTokenSlug = (token) => String(token).split('[')[0].split('~')[0].trim().toLowerCase();
+
+/**
+ * Partition emitted `--review-with` tokens into the ones slashdo can parse and
+ * the ones PortOS serves itself.
+ *
+ * slashdo's parser ABORTS the whole command on an unknown `--review-with` value,
+ * so a PORTOS_ONLY_REVIEWERS slug in that flag doesn't degrade the run — it kills
+ * it, and the PR the invocation existed to open never gets created. Every emitter
+ * of that flag therefore drops those slugs and names them separately, alongside
+ * the Local Reviewer Procedure that actually runs them.
+ *
+ * An `@login` entry is always a valid slashdo reviewer. `portosOnly` is reported
+ * by BARE slug — the `[<model>]`/`~<suffix>` decoration is slashdo grammar, and
+ * these reviewers never reach a slashdo parser.
+ *
+ * @param {string[]} tokens - emitted reviewer tokens (decorated or bare)
+ * @returns {{flagTokens: string[], portosOnly: string[]}}
+ */
+export function splitSlashdoReviewerTokens(tokens) {
+  const trimmed = (Array.isArray(tokens) ? tokens : []).map(t => String(t).trim()).filter(Boolean);
+  const isSlashdoToken = t => t.startsWith('@') || !PORTOS_ONLY_REVIEWERS.includes(reviewerTokenSlug(t));
+  return {
+    flagTokens: trimmed.filter(isSlashdoToken),
+    portosOnly: [...new Set(trimmed.filter(t => !isSlashdoToken(t)).map(reviewerTokenSlug))],
+  };
+}
 
 /**
  * Prose block pinning a claim prompt's reviewer list against slashdo's SAVED
@@ -924,11 +988,7 @@ export function buildReviewerPinNote(reviewersCsv) {
   // unless PortOS serves it itself. Emitting a PORTOS_ONLY_REVIEWERS slug in a
   // `--review-with` list would abort the command outright, so it is dropped from
   // the flag text and named separately with the procedure that DOES run it.
-  const tokens = csv.split(',').map(t => t.trim()).filter(Boolean);
-  const flagTokens = tokens.filter(t => t.startsWith('@') || !PORTOS_ONLY_REVIEWERS.includes(reviewerTokenSlug(t)));
-  // Named by bare slug: the `[<model>]`/`~<suffix>` decoration is slashdo
-  // grammar, and these reviewers never reach a slashdo parser.
-  const portosOnly = [...new Set(tokens.filter(t => !flagTokens.includes(t)).map(reviewerTokenSlug))];
+  const { flagTokens, portosOnly } = splitSlashdoReviewerTokens(csv.split(','));
 
   return [
     '## Reviewer pin — use the reviewers PortOS configured',
@@ -1092,6 +1152,11 @@ export function buildReviewersCsv(reviewers, usernames = [], optionalReviewers =
  *   effort DOES force the flag on (otherwise the suffix — the whole point — would be
  *   dropped with the flag).
  *
+ * - A `PORTOS_ONLY_REVIEWERS` slug (`lmstudio`/`mtplx`/`opencode`/`kimi`) is
+ *   DROPPED from the emitted list: slashdo aborts on an unknown `--review-with`
+ *   value, so emitting one would kill the whole invocation rather than degrade
+ *   it. With nothing left to name, no flag is emitted at all.
+ *
  * Everything past `reviewers` is an options object: the two reviewer-name lists
  * (`usernames` / `optionalReviewers`) and the three per-reviewer lookup maps
  * (`reviewerMaxRounds` / `reviewerModels` / `reviewerEfforts`) are same-shaped.
@@ -1118,7 +1183,11 @@ export function buildReviewWithArgs(reviewers, {
 } = {}) {
   const users = normalizeReviewUsernames(usernames);
   const keyed = resolveKeyedReviewers(reviewers, users.length > 0);
-  const combined = [...keyed, ...users.map(u => `@${u}`)];
+  const configured = [...keyed, ...users.map(u => `@${u}`)];
+  // PortOS-only reviewers are dropped rather than emitted — see the doc comment
+  // above and `splitSlashdoReviewerTokens`. The surrounding prompt still names the
+  // full reviewer list and the Local Reviewer Procedure that runs them.
+  const combined = splitSlashdoReviewerTokens(configured).flagTokens;
   const optSet = optionalReviewerSet(optionalReviewers);
   const maxLookup = reviewerMaxRoundsLookup(reviewerMaxRounds);
   const modelLookup = reviewerModelLookup(reviewerModels);
@@ -1126,12 +1195,21 @@ export function buildReviewWithArgs(reviewers, {
   // The lone-default-copilot suppression only applies when copilot carries NO
   // per-entry suffix — a `copilot~opt` / `copilot~max=2` / `copilot~effort=high` list must still
   // emit the flag to carry that suffix.
-  const isDefaultOnly = combined.length === 1 && combined[0] === DEFAULT_REVIEWER
+  //
+  // Measured against the CONFIGURED list, not the emitted one. Suppressing the
+  // flag hands `--review-with` to the host's saved slashdo defaults, which name
+  // some other reviewer set — right for a run that asked for nothing but the
+  // default copilot, wrong for `[lmstudio, copilot]`, where the user chose this
+  // pair and only lmstudio's slug is unemittable. Reading the filtered list here
+  // would silently swap copilot out for whatever `.slashdo.json` happens to say.
+  const isDefaultOnly = configured.length === 1 && configured[0] === DEFAULT_REVIEWER
     && !optSet.has(DEFAULT_REVIEWER) && maxLookup.get(DEFAULT_REVIEWER) === undefined
     && effortLookup.get(DEFAULT_REVIEWER) === undefined;
-  const hasNonCopilot = keyed.some(r => r !== DEFAULT_REVIEWER);
+  const hasNonCopilot = combined.some(r => !r.startsWith('@') && r !== DEFAULT_REVIEWER);
   const parts = [];
-  if (!isDefaultOnly) parts.push(`--review-with ${combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup, effortLookup)).join(',')}`);
+  // Nothing slashdo can parse (a list of PortOS-only reviewers): emit no flag at
+  // all rather than a bare `--review-with`.
+  if (!isDefaultOnly && combined.length) parts.push(`--review-with ${combined.map(t => markSuffixes(t, optSet, maxLookup, modelLookup, effortLookup)).join(',')}`);
   if (combined.length >= 2) {
     if (stopMode === 'on-findings') parts.push('--review-stop-on-findings');
     else if (stopMode === 'on-clean') parts.push('--review-stop-on-clean');

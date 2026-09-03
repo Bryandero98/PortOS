@@ -1,5 +1,5 @@
 /**
- * Local-LLM code review backend for the Review Loop's `lmstudio` / `ollama`
+ * Local-LLM code review backend for the Review Loop's `lmstudio` / `ollama` / `mtplx`
  * reviewer kinds. The follow-up agent (a CLI like Claude / Antigravity / Codex)
  * POSTs the PR diff to `/api/code-review/local`; we feed it through the
  * configured backend's OpenAI-compatible `/v1/chat/completions` endpoint with
@@ -42,14 +42,24 @@ import { getSettings, settingsEvents } from './settings.js'
 import { getBaseUrl as getLmStudioBaseUrl } from './lmStudioManager.js'
 import { getBaseUrl as getOllamaBaseUrl } from './ollamaManager.js'
 
-// Both LM Studio (`:1234`) and Ollama (`:11434`) ship OpenAI-compatible
-// `/v1/chat/completions`. Resolve through each manager's live `getBaseUrl()`
-// so a runtime `updateConfig({ baseUrl })` from the local-LLM tab takes
-// effect here too — otherwise the catalog UI and the reviewer would silently
-// desync when a user relocates their LM Studio install.
+// LM Studio (`:1234`), Ollama (`:11434`) and MTPLX (`:8000/v1`) all ship
+// OpenAI-compatible `/v1/chat/completions`. Resolve through each manager's live
+// endpoint accessor so a runtime `updateConfig({ baseUrl })` from the local-LLM
+// tab — or an MTPLX daemon relaunched on another port — takes effect here too;
+// otherwise the catalog UI and the reviewer would silently desync when a user
+// relocates their install.
+//
+// Every entry is awaited at the call site, which lets MTPLX's stay a DYNAMIC
+// import. That is deliberate: `mtplxServerManager.js` pulls in the managed-daemon
+// watcher and its PM2/filesystem graph, and this module is imported by the agent
+// spawn path — a static import would put that whole graph behind every one of its
+// importers (and did break suites that partially mock `lib/fileUtils.js`). The
+// review request is a one-off HTTP call, so paying the resolve lazily costs
+// nothing.
 const BACKEND_BASE_URLS = {
   lmstudio: () => getLmStudioBaseUrl(),
   ollama: () => getOllamaBaseUrl(),
+  mtplx: async () => (await import('./mtplxServerManager.js')).getMtplxServerEndpoint(),
 }
 
 export function isLocalLlmReviewer(backend) {
@@ -208,7 +218,7 @@ export async function resolveReviewLoopOptions(metadata, { normalize }) {
  * Per-reviewer CLI-binary install probe, keyed by reviewer slug (e.g.
  * `{ claude: true, antigravity: false, codex: true, grok: false, cursor: true }`). Only CLI
  * reviewers (`isCliReviewer`) are probed — `copilot` is a GitHub API review
- * and `lmstudio`/`ollama` route through `/api/code-review/local`, neither has
+ * and `lmstudio`/`ollama`/`mtplx` route through `/api/code-review/local`, neither has
  * a binary to find.
  *
  * TTL-cached (`authGate.js`'s inline Map+expiresAt pattern) rather than
@@ -276,7 +286,7 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
   // Local runtime records are normalized to the OpenAI `/v1` root, while the
   // legacy backend managers return the host root. Keep both forms compatible
   // with the one endpoint suffix below.
-  const baseUrl = String(requestedBaseUrl || BACKEND_BASE_URLS[backend]())
+  const baseUrl = String(requestedBaseUrl || await BACKEND_BASE_URLS[backend]())
     .replace(/\/+$/, '')
     .replace(/\/v\d+$/i, '')
   const body = {
@@ -317,7 +327,7 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
  * for surfacing the text findings to the agent driving the review loop.
  *
  * @param {Object} opts
- * @param {'lmstudio'|'ollama'} opts.backend
+ * @param {'lmstudio'|'ollama'|'mtplx'} opts.backend
  * @param {string} opts.model - Installed model id (e.g. `qwen2.5-coder:7b`).
  * @param {string} opts.diff - Unified diff text to review.
  * @param {string} [opts.effort] - Reasoning effort (`low`/`medium`/`high`), sent

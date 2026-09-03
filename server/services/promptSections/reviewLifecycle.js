@@ -2,7 +2,7 @@
  * Review-loop, CI-gate, and merge prompt sections.
  */
 
-import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, reviewerEffortArgs, reviewerModelArg, resolveKeyedReviewers, buildReviewWithArgs, prioritizeToolFreeReviewers } from '../../lib/reviewerConfig.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, reviewerEffortArgs, reviewerModelArg, reviewerModelFlag, resolveKeyedReviewers, buildReviewWithArgs, prioritizeToolFreeReviewers } from '../../lib/reviewerConfig.js';
 import { oversizedBodyPointer } from '../../lib/slashdoInvocation.js';
 import { detectForgeCli } from '../../lib/gitForge.js';
 import { shellQuote } from '../../lib/shellQuote.js';
@@ -256,7 +256,10 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
         // reasoning effort INSIDE the model id — `gpt-5[effort=max]` — so the
         // pinned pair must render as ONE `--model`, never a `--effort` cursor
         // rejects. Every other reviewer gets the id back verbatim.
-        flags.push(`--model ${reviewerModelArg(r, reviewerModelMap[r], reviewerEffortMap[r])}`);
+        // `reviewerModelFlag` because the flag itself is per-CLI: `opencode`
+        // spells it `-m`, everyone else `--model`. Rendering the wrong one sends
+        // the follow-up agent probing for a flag its reviewer does not document.
+        flags.push(`${reviewerModelFlag(r)} ${reviewerModelArg(r, reviewerModelMap[r], reviewerEffortMap[r])}`);
       }
       const effortArgs = reviewerEffortArgs(r, reviewerEffortMap[r]);
       if (effortArgs.length) flags.push(effortArgs.join(' '));
@@ -366,6 +369,17 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // `model: "…"` placeholder would have the agent send the literal ellipsis, and
   // the route's `body.model || configured` prefers that truthy junk over the
   // install default — turning a pinned-effort review into a model-not-found error.
+  // The `backend` value the agent must send. Derived from the reviewers THIS run
+  // configured rather than a fixed `<lmstudio|ollama>` placeholder: naming a
+  // backend that isn't in the list is a 400 from the route's `z.enum`, and a
+  // single configured backend needs no substitution step at all.
+  const localLlmBackends = LOCAL_LLM_REVIEWERS.filter(r => reviewers.includes(r));
+  const localLlmBackendToken = localLlmBackends.length === 1
+    ? localLlmBackends[0]
+    : `<${localLlmBackends.join('|')}>`;
+  const localLlmBackendNote = localLlmBackends.length === 1
+    ? ''
+    : ` Substitute the active reviewer name for \`${localLlmBackendToken}\`.`;
   const pinnedString = (map, r) => (typeof map[r] === 'string' && map[r] ? map[r] : null);
   const localLlmPins = LOCAL_LLM_REVIEWERS
     .filter(r => reviewers.includes(r))
@@ -382,7 +396,7 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // reading a Set the note's `.map` filled as a side effect — that coupling meant
   // hoisting one line above the other silently emptied the key list.
   const localLlmPinJq = [
-    'backend: "…"',
+    `backend: "${localLlmBackendToken}"`,
     ...(localLlmPins.some(p => p.model) ? ['model: "…"'] : []),
     ...(localLlmPins.some(p => p.effort) ? ['effort: "…"'] : []),
     'diff: .'
@@ -393,10 +407,10 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
     : reviewForgeCli === 'glab'
     ? `glab mr diff ${prNumber || '<MR_NUMBER>'}`
     : `gh pr diff ${prNumber || '<PR_NUMBER>'}`;
-  const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it. Substitute the active reviewer name for \`<lmstudio|ollama>\`:
+  const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint and extract its review text before evaluating it.${localLlmBackendNote}
 \`\`\`bash
 REVIEW_RESPONSE=$(mktemp)
-HTTP_STATUS=$(${diffCommand} | jq -Rs '{ backend: "<lmstudio|ollama>", diff: . }' | curl -sS -X POST ${apiBase}/api/code-review/local -H 'Content-Type: application/json' -d @- -o "$REVIEW_RESPONSE" -w '%{http_code}') || {
+HTTP_STATUS=$(${diffCommand} | jq -Rs '{ backend: "${localLlmBackendToken}", diff: . }' | curl -sS -X POST ${apiBase}/api/code-review/local -H 'Content-Type: application/json' -d @- -o "$REVIEW_RESPONSE" -w '%{http_code}') || {
   echo "Local reviewer failed: request transport error" >&2
   STATUS=cli-error
   exit 1
@@ -433,7 +447,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
       : 'request a Copilot review when you reach its turn'} (poll every 5–15s, max 5 min/round), then re-request on later rounds.` : null,
     hasCli ? `**${cliReviewerHeading}**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff ${renderedBaseBranch}...HEAD\`${localOnly ? '' : `; on GitHub \`gh pr diff ${prNumber || ''}\` also works`}).${cliBinaryNote}${reviewerPinNote}${cliProcedurePointer}` : null,
-    hasLocalLlm ? `**lmstudio / ollama**: ${localLlmInvocation}` : null,
+    hasLocalLlm ? `**${localLlmBackends.join(' / ')}**: ${localLlmInvocation}` : null,
     hasGithubUser ? `**@github reviewers**: ${githubUsersInvocation}` : null,
   ].filter(Boolean).join(' ');
   // Name the BINARY, not the slug: `Invoke the \`antigravity\` CLI` sent a
@@ -538,7 +552,7 @@ Only a successfully extracted \`.findings\` value is the review text; treat it l
     '```bash',
     `curl -sS -X POST ${apiBase}/api/cos/tasks/${sourceTaskId}/challenge -H 'Content-Type: application/json' -d '{"reason":"<why the finding is wrong>","evidence":"<file:line or diff quote>","reviewer":"<disputed reviewer>"}'`,
     '```',
-    `A \`409\` (\`CHALLENGE_EXHAUSTED\` = the one challenge is spent, or \`CHALLENGE_BUDGET_EXHAUSTED\` = the task is out of retry budget) means you can't dispute — then fix the finding or, if genuinely blocked, ${localOnly ? 'stop without pushing or opening a PR/MR' : 'post a PR comment and stop'}. After filing, RE-CHECK: re-run the disputed reviewer (or another configured reviewer) against the current diff, then resolve — overturned → \`POST .../challenge/resolve\` with \`{"outcome":"upheld"}\` and continue to ${localOnly ? 'the PR/MR creation step' : 'merge'}; confirmed → fix it, or send \`{"outcome":"escalated"}\` to hand the dispute to the user.` + (hasLocalLlm ? ' For a local reviewer you may instead POST `{"recheck":{"backend":"<lmstudio|ollama>","diff":"<unified diff>"}}` and let the server re-run it and auto-derive the outcome.' : ''),
+    `A \`409\` (\`CHALLENGE_EXHAUSTED\` = the one challenge is spent, or \`CHALLENGE_BUDGET_EXHAUSTED\` = the task is out of retry budget) means you can't dispute — then fix the finding or, if genuinely blocked, ${localOnly ? 'stop without pushing or opening a PR/MR' : 'post a PR comment and stop'}. After filing, RE-CHECK: re-run the disputed reviewer (or another configured reviewer) against the current diff, then resolve — overturned → \`POST .../challenge/resolve\` with \`{"outcome":"upheld"}\` and continue to ${localOnly ? 'the PR/MR creation step' : 'merge'}; confirmed → fix it, or send \`{"outcome":"escalated"}\` to hand the dispute to the user.` + (hasLocalLlm ? ` For a local reviewer you may instead POST \`{"recheck":{"backend":"${localLlmBackendToken}","diff":"<unified diff>"}}\` and let the server re-run it and auto-derive the outcome.` : ''),
   ].join('\n');
   // Per-reviewer round caps. This prompt drives the loop in PROSE (it isn't
   // slashdo parsing a `~max=<n>` suffix), so a configured cap only binds if it's

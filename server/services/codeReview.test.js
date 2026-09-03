@@ -165,6 +165,9 @@ describe('codeReview helpers', () => {
         antigravityModel: 'gemini-3.6-flash',
         grokModel: 'grok-code-fast-1',
         cursorModel: null,
+        opencodeModel: null,
+        kimiModel: null,
+        mtplxModel: null,
         ...NO_EFFORTS,
       })
     })
@@ -200,8 +203,8 @@ describe('codeReview helpers', () => {
       const probed = []
       commandExistsMock.impl = async (binary) => { probed.push(binary); return binary !== 'agy' }
       const out = await getReviewerCliInstalled()
-      expect(out).toEqual({ claude: true, antigravity: false, codex: true, grok: true, cursor: true })
-      expect(probed.sort()).toEqual(['agy', 'claude', 'codex', 'cursor-agent', 'grok'])
+      expect(out).toEqual({ claude: true, antigravity: false, codex: true, grok: true, cursor: true, opencode: true, kimi: true })
+      expect(probed.sort()).toEqual(['agy', 'claude', 'codex', 'cursor-agent', 'grok', 'kimi', 'opencode'])
     })
 
     it('caches the result within the TTL — a second call does not re-probe', async () => {
@@ -209,7 +212,7 @@ describe('codeReview helpers', () => {
       commandExistsMock.impl = async () => { calls += 1; return true }
       await getReviewerCliInstalled()
       await getReviewerCliInstalled()
-      expect(calls).toBe(5) // one probe per CLI reviewer, only on the first call
+      expect(calls).toBe(7) // one probe per CLI reviewer, only on the first call
     })
 
     it('probes with the longer 15s timeout these heavier agentic CLIs need', async () => {
