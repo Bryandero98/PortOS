@@ -407,6 +407,54 @@ describe('detectVenvBasePythonSync', () => {
     const { detectVenvBasePythonSync } = await loadModule();
     expect(detectVenvBasePythonSync()).toBeNull();
   });
+
+  it('never picks PortOS\'s own image-gen venv as a venv-creation base when a system Python is also present (#5980)', async () => {
+    // Regression: PYTHON_CANDIDATES ranks `data/python/venv` first because it's
+    // the best PIP TARGET (non-externally-managed) — but building a *second*
+    // venv from an already-provisioned venv is what broke on some Homebrew
+    // point-release upgrades. An app-managed venv present alongside a system
+    // Python must not win.
+    mockState.presentPaths.add('/data/python/venv/bin/python3');
+    mockState.presentPaths.add('/opt/homebrew/bin/python3');
+    const { detectVenvBasePythonSync, detectPythonSync } = await loadModule();
+    expect(detectVenvBasePythonSync()).toBe('/opt/homebrew/bin/python3');
+    // detectPythonSync (the pip-target picker) is unchanged: it still prefers
+    // the app-managed venv for installing packages.
+    expect(detectPythonSync()).toBe('/data/python/venv/bin/python3');
+  });
+
+  it('excludes all three app-managed venvs, not just the image-gen one', async () => {
+    mockState.presentPaths.add('/Users/test/.portos/venv/bin/python3');
+    mockState.presentPaths.add('/Users/test/.pixie-forge/venv/bin/python3');
+    mockState.presentPaths.add('/usr/bin/python3');
+    const { detectVenvBasePythonSync } = await loadModule();
+    expect(detectVenvBasePythonSync()).toBe('/usr/bin/python3');
+  });
+
+  it('falls back to an app-managed venv only when nothing non-app-managed exists anywhere', async () => {
+    mockState.presentPaths.add('/data/python/venv/bin/python3');
+    const { detectVenvBasePythonSync } = await loadModule();
+    expect(detectVenvBasePythonSync()).toBe('/data/python/venv/bin/python3');
+  });
+});
+
+describe('venvBaseCandidatesSync', () => {
+  beforeEach(resetState);
+
+  it('orders standalone builds first, excludes app-managed venvs, and lists every present fallback for retry', async () => {
+    mockState.presentPaths.add('/data/python/venv/bin/python3');
+    mockState.presentPaths.add('/opt/miniconda3/bin/python3');
+    mockState.presentPaths.add('/opt/homebrew/bin/python3');
+    const { venvBaseCandidatesSync } = await loadModule();
+    expect(venvBaseCandidatesSync()).toEqual(['/opt/miniconda3/bin/python3', '/opt/homebrew/bin/python3']);
+  });
+
+  it('returns an empty list when only app-managed venvs exist', async () => {
+    mockState.presentPaths.add('/data/python/venv/bin/python3');
+    mockState.presentPaths.add('/Users/test/.portos/venv/bin/python3');
+    const { venvBaseCandidatesSync } = await loadModule();
+    expect(venvBaseCandidatesSync()).toEqual([]);
+  });
 });
 
 describe('isFlux2VenvHealthy', () => {
