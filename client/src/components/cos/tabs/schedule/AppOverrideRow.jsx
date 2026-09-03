@@ -8,7 +8,7 @@ import ToggleSwitch from '../../../ToggleSwitch';
 import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
-const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, doWorkRequiresWorktree, inheritedProviderText, providers, override, onUpdate }) {
+const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, doWorkRequiresWorktree, inheritedProviderText, providers, providersLoaded = true, override, onUpdate }) {
   const [updating, setUpdating] = useState(false);
   const [cronEditing, setCronEditing] = useState(false);
   const isEnabled = override?.enabled === true;
@@ -202,6 +202,7 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
         <div className="w-full sm:w-auto sm:min-w-[240px] sm:max-w-[360px] sm:flex-1">
           <AppProviderPin
             providers={providers}
+            loading={!providersLoaded}
             providerId={override?.providerId}
             model={override?.model}
             onChange={handlePinChange}

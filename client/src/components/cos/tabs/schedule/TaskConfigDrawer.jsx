@@ -28,6 +28,7 @@ export default function TaskConfigDrawer({
   onUpdate,
   onTrigger,
   providers,
+  providersLoaded,
   activeProviderId,
   apps,
   onUpdateOverride,
@@ -75,6 +76,7 @@ export default function TaskConfigDrawer({
               taskType={taskType}
               config={config}
               providers={providers}
+              providersLoaded={providersLoaded}
               onUpdate={onUpdate}
               updating={updating}
               setUpdating={setUpdating}
@@ -89,6 +91,7 @@ export default function TaskConfigDrawer({
               onTrigger={onTrigger}
               category="appImprovement"
               providers={providers}
+              providersLoaded={providersLoaded}
               activeProviderId={activeProviderId}
               apps={apps}
               updating={updating}
@@ -105,6 +108,7 @@ export default function TaskConfigDrawer({
               config={config}
               apps={apps}
               providers={providers}
+              providersLoaded={providersLoaded}
               onUpdateOverride={onUpdateOverride}
               onBulkToggleOverride={onBulkToggleOverride}
             />
