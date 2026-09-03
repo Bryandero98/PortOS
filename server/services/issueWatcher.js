@@ -322,7 +322,7 @@ async function applyPullRequestHandback({
 
   const login = (authorLogin || pr.author?.login || '').trim();
   let applied = disposition;
-  let taskId = previous?.taskId || null;
+  let taskId = null;
   if (disposition === PR_HANDBACK.REMEDIATE) {
     // Lazy: the spawner reaches the CoS task store, whose module graph is far
     // heavier than a gather pass that never hands anything back — and the

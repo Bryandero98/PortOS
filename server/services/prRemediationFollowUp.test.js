@@ -71,6 +71,22 @@ describe('spawnPrRemediationFollowUp', () => {
     expect(context).toContain('UNTRUSTED DATA');
   });
 
+  // A same-repo head has no contributor who "left the branch writable", so the
+  // prompt must not tell the agent one did — it names a real person.
+  it('describes push access from the head repository, not from a fork claim', async () => {
+    await spawn({ writeAccess: 'own-repo' });
+    const ownRepo = addTaskMock.mock.calls[0][0].context;
+    expect(ownRepo).toContain('lives in o/r itself');
+    expect(ownRepo).not.toContain('Allow edits by maintainers');
+    expect(ownRepo).not.toContain('FORK');
+
+    addTaskMock.mockClear();
+    await spawn({ writeAccess: 'fork-maintainer-modifiable' });
+    const fork = addTaskMock.mock.calls[0][0].context;
+    expect(fork).toContain('@contributor left the head branch writable by maintainers');
+    expect(fork).toContain('lives in their FORK');
+  });
+
   // The screened title/body/diff stay on the far side of the Stage 1 boundary:
   // the agent is pointed at the PR, never handed contributor prose in a prompt.
   it('carries no contributor-authored text into the prompt', async () => {
