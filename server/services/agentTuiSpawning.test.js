@@ -110,6 +110,16 @@ vi.mock('./git.js', () => ({
   getDiff: vi.fn().mockResolvedValue('diff content here'),
   // No owner-matched gh account by default → empty overlay (ambient auth kept).
   resolveForgeTokenEnv: vi.fn().mockResolvedValue({}),
+  // Read by the merge-gate contract check (#5876) to name the branch it
+  // probes the forge for.
+  getBranch: vi.fn().mockResolvedValue('claim/issue-5876'),
+}));
+
+// The forge lookup itself (`resolveForgeForRepo` + gitlab.js/github.js) is
+// exercised on its own in prProbe.test.js — this suite only needs to drive
+// the merge-gate contract check's branching on the tri-state result.
+vi.mock('./prProbe.js', () => ({
+  probePrForBranch: vi.fn().mockResolvedValue({ prState: null, prUrl: null, prNumber: null, cli: null, readable: true }),
 }));
 
 // Lazily imported by finish()'s cleanup block to record a failed run's resume
@@ -227,6 +237,7 @@ import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import * as agentErrorAnalysis from './agentErrorAnalysis.js';
 import * as cosAgentLifecycle from './cosAgentLifecycle.js';
 import * as gitService from './git.js';
+import { probePrForBranch } from './prProbe.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import {
   SELF_CLEARING_RESUBMIT_INTERVAL_MS,
@@ -2424,5 +2435,128 @@ describe('spawnTuiAgent runtime', () => {
       );
     });
 
+  });
+
+  // ── Merge Gate contract check (#5876) ────────────────────────────────────
+  // A run that owns its own PR lifecycle (`openPR: true`, a TUI/CLI provider,
+  // not leaned/handed-to-a-human) is told to merge its own PR before exiting.
+  // These tests drive `finish()` via the shell-exit path (same as the
+  // completion-sentinel suite above) with a `.agent-done` sentinel already on
+  // disk, and assert on the re-prompt delivery (`shellService.pasteToSession`)
+  // and on whether `finalizeAgent` — the point of no return — was reached.
+  describe('merge-gate contract check (#5876)', () => {
+    const openPrTask = { id: 'task-1', description: 'ship the fix', metadata: { openPR: true } };
+
+    const withSentinel = (summary) => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFile).mockImplementation(async (p) =>
+        typeof p === 'string' && p.endsWith('.agent-done-agent-1') ? summary : ''
+      );
+    };
+
+    // The merge-gate check adds real await hops (ingestDoneSentinel's readFile,
+    // git.getBranch, probePrForBranch) before finish() reaches finalizeAgent —
+    // more than the module-level `flushMicrotasks`'s fixed 3 hops reliably
+    // drains. Loop it rather than deepen the shared helper for every caller.
+    const settle = async () => {
+      for (let i = 0; i < 8; i += 1) await flushMicrotasks();
+    };
+
+    it('re-prompts exactly once when the PR is open and the summary names no blocker, then finalizes on the next completion even if it is still open', async () => {
+      vi.mocked(shellService.pasteToSession).mockReturnValue(999);
+      vi.mocked(probePrForBranch).mockResolvedValue({
+        prState: 'OPEN', prUrl: 'https://example.com/pr/1', prNumber: 1, cli: 'gh', readable: true,
+      });
+      withSentinel('## Summary\nShipped the fix and opened the PR.');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+
+      // Round 1: nudged, not finalized.
+      expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+      expect(shellService.pasteToSession.mock.calls[0][1]).toContain('still OPEN');
+      expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+
+      // Round 2 (a fresh completion after the nudge): still OPEN, still no
+      // blocker stated — but the cap is one nudge per run, so this finalizes.
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+      await spawnPromise;
+
+      expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('finalizes on the first sentinel with no re-prompt when the PR is already merged', async () => {
+      vi.mocked(probePrForBranch).mockResolvedValue({
+        prState: 'MERGED', prUrl: 'https://example.com/pr/1', prNumber: 1, cli: 'gh', readable: true,
+      });
+      withSentinel('## Summary\nMerged the PR.');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+      await spawnPromise;
+
+      expect(shellService.pasteToSession).not.toHaveBeenCalled();
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('finalizes on the first sentinel with no re-prompt when the summary states it is deliberately leaving the PR open', async () => {
+      vi.mocked(probePrForBranch).mockResolvedValue({
+        prState: 'OPEN', prUrl: 'https://example.com/pr/1', prNumber: 1, cli: 'gh', readable: true,
+      });
+      withSentinel('## Summary\nA required check is still red after two fix attempts — leaving the PR open for a human.');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+      await spawnPromise;
+
+      expect(shellService.pasteToSession).not.toHaveBeenCalled();
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('finalizes on the first sentinel with no re-prompt when the forge lookup is unreadable', async () => {
+      vi.mocked(probePrForBranch).mockResolvedValue({
+        prState: null, prUrl: null, prNumber: null, cli: null, readable: false,
+      });
+      withSentinel('## Summary\nShipped the fix and opened the PR.');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+      await spawnPromise;
+
+      expect(shellService.pasteToSession).not.toHaveBeenCalled();
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('never probes the forge or re-prompts for a run that never asked for a PR', async () => {
+      withSentinel('## Summary\nDid the audit, no PR needed.');
+
+      const spawnPromise = runSpawn({
+        task: { id: 'task-1', description: 'audit only', metadata: {} },
+        workspacePath: '/tmp/ws',
+      });
+      await flushMicrotasks();
+
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+      await spawnPromise;
+
+      expect(probePrForBranch).not.toHaveBeenCalled();
+      expect(shellService.pasteToSession).not.toHaveBeenCalled();
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
   });
 });
