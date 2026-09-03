@@ -16,6 +16,10 @@ const mockState = {
   pathPython: null,
   // Directory names under uv python root, as readdirSync would return them.
   uvPythonDirs: null,
+  // Controls the `from diffusers import Flux2KleinPipeline` probe independently
+  // of execShouldFail (which also drives the unrelated arch probe).
+  fluxImportShouldFail: false,
+  fluxImportCalls: 0,
 };
 
 vi.mock('node:os', async () => {
@@ -64,6 +68,10 @@ vi.mock('./childProcess.js', async () => {
     if (probeArg.includes('platform.machine')) {
       const a = mockState.archByPath.get(bin) ?? mockState.arch;
       resolve({ stdout: `${a}\n`, stderr: '' });
+    } else if (probeArg.includes('Flux2KleinPipeline')) {
+      mockState.fluxImportCalls += 1;
+      if (mockState.fluxImportShouldFail) reject(new Error('ModuleNotFoundError'));
+      else resolve({ stdout: '', stderr: '' });
     } else {
       resolve({ stdout: '', stderr: '' });
     }
@@ -95,6 +103,8 @@ const resetState = () => {
   mockState.execShouldFail = false;
   mockState.pathPython = null;
   mockState.uvPythonDirs = null;
+  mockState.fluxImportShouldFail = false;
+  mockState.fluxImportCalls = 0;
 };
 
 describe('REQUIRED_PACKAGES', () => {
@@ -396,5 +406,44 @@ describe('detectVenvBasePythonSync', () => {
   it('returns null when there is no Python at all', async () => {
     const { detectVenvBasePythonSync } = await loadModule();
     expect(detectVenvBasePythonSync()).toBeNull();
+  });
+});
+
+describe('isFlux2VenvHealthy', () => {
+  beforeEach(resetState);
+  afterEach(() => vi.useRealTimers());
+
+  it('re-probes after a short TTL instead of caching a failure forever', async () => {
+    mockState.presentPaths.add('/Users/test/.portos/venv-flux2/bin/python3');
+    mockState.fluxImportShouldFail = true;
+    vi.useFakeTimers();
+    const { isFlux2VenvHealthy } = await loadModule();
+
+    await expect(isFlux2VenvHealthy()).resolves.toBe(false);
+    expect(mockState.fluxImportCalls).toBe(1);
+
+    // The package now imports fine (e.g. the user finished installing it by
+    // hand), but the cached negative result must not re-probe immediately.
+    mockState.fluxImportShouldFail = false;
+    await expect(isFlux2VenvHealthy()).resolves.toBe(false);
+    expect(mockState.fluxImportCalls).toBe(1);
+
+    // Once the negative-result TTL elapses, the next call re-probes and picks
+    // up the fixed state without requiring a server restart.
+    await vi.advanceTimersByTimeAsync(60_001);
+    await expect(isFlux2VenvHealthy()).resolves.toBe(true);
+    expect(mockState.fluxImportCalls).toBe(2);
+  });
+
+  it('caches a healthy result indefinitely', async () => {
+    mockState.presentPaths.add('/Users/test/.portos/venv-flux2/bin/python3');
+    vi.useFakeTimers();
+    const { isFlux2VenvHealthy } = await loadModule();
+
+    await expect(isFlux2VenvHealthy()).resolves.toBe(true);
+    mockState.fluxImportShouldFail = true; // must not matter — already cached true
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await expect(isFlux2VenvHealthy()).resolves.toBe(true);
+    expect(mockState.fluxImportCalls).toBe(1);
   });
 });

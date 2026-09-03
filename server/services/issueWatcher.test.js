@@ -333,7 +333,10 @@ describe('processTaskOutput', () => {
     expect(reviewCall).toBeTruthy();
     expect(JSON.parse(reviewCall[2].input)).toMatchObject({
       event: 'REQUEST_CHANGES',
-      comments: [{ path: 'src/example.js', line: 2, side: 'RIGHT', body: 'Validate input before this call.' }],
+      comments: [{
+        path: 'src/example.js', line: 2, side: 'RIGHT',
+        body: '⛔ **Blocking**\n\nValidate input before this call.',
+      }],
     });
     expect(mergePrMock).not.toHaveBeenCalled();
   });
@@ -558,7 +561,7 @@ describe('processTaskOutput', () => {
       event: 'APPROVE',
       comments: [{
         path: 'src/example.js', line: 2, side: 'RIGHT',
-        body: 'Consider making this helper name more specific in a follow-up.',
+        body: '💡 **Non-blocking**\n\nConsider making this helper name more specific in a follow-up.',
       }],
     });
     expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
