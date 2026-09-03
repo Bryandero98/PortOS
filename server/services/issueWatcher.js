@@ -3,9 +3,9 @@
  *
  * The gather pass does the forge work that does not need a model: it reads only
  * activity newer than the per-app cursor, assigns explicit volunteer comments
- * on currently-unassigned issues, finds external PRs without an owner review on
- * their current head, and supplies bounded diffs to one reasoning agent. The
- * output pass validates that agent's structured decisions against fresh forge
+ * on currently-unassigned issues and marks them `in-progress`, finds external
+ * PRs without an owner review on their current head, and supplies bounded diffs
+ * to one reasoning agent. The output pass validates that agent's structured decisions against fresh forge
  * state before it replies, posts inline reviews, updates stale branches, or
  * merges. No model is asked to discover/filter forge records or execute a forge
  * mutation itself.
@@ -18,6 +18,7 @@ import {
   detectDeterministicModelAbuseSignals,
   modelAbuseContentFingerprint,
 } from '../lib/modelAbuseGuard.js';
+import { IN_PROGRESS_LABEL, dispatchLabelSpec } from '../lib/dispatchLabels.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import {
   MAX_REVIEW_BODY_CHARS,
@@ -34,6 +35,8 @@ import { mergePR, resolveForgeForRepo } from './git.js';
 import { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifications.js';
 import { normalizeEligibilityFacts, runModelAbuseScan } from './modelAbuseGuard.js';
 import { issuePrerequisiteWaived } from '../lib/modelAbuseGuard.js';
+
+const IN_PROGRESS_LABEL_SPEC = dispatchLabelSpec(IN_PROGRESS_LABEL);
 
 const GH_TIMEOUT_MS = 60_000;
 const LIST_LIMIT = 100;
@@ -245,13 +248,48 @@ async function getRepositoryIdentity(ctx) {
   return ownerLogin ? { ownerLogin } : null;
 }
 
+/**
+ * Take an unassigned issue on a volunteer's behalf: set the assignee and stamp
+ * `in-progress`.
+ *
+ * The assignee is what actually removes the issue from the autonomous claim
+ * queue — `perpetualWork.js#isActionableIssue` already rejects any issue held
+ * by someone other than this install's login. The label is for the humans and
+ * the UI: it is what the Issues tab hides on, and it keeps a volunteer-claimed
+ * issue reading the same as an agent-claimed one.
+ *
+ * ONE combined edit is the fast path. `gh issue edit --add-label` fails the
+ * WHOLE call when the repo has never defined the label, so the fallback splits
+ * it — assign alone (the half that must not be lost on a fork), create the
+ * label, then apply it. `--add-assignee` is idempotent, so the retry is safe
+ * whether or not the combined attempt got as far as assigning. The label is
+ * created without `--force` so an install that recolored it keeps its color.
+ *
+ * Returns whether the ASSIGNMENT landed, never whether the label did: a missing
+ * label leaves the issue claimable, which a later pass can repair, while a
+ * missing assignment means the volunteer's comment still needs an answer and
+ * must go on to the reasoning agent.
+ */
 async function assignVolunteer(ctx, issueNumber, login) {
-  return runGh(['issue', 'edit', String(issueNumber), '--repo', ctx.repoSpec, '--add-assignee', login], ctx)
+  const edit = (...flags) => runGh(['issue', 'edit', String(issueNumber), '--repo', ctx.repoSpec, ...flags], ctx);
+  const assignFlags = ['--add-assignee', login];
+  const labelFlags = ['--add-label', IN_PROGRESS_LABEL];
+  if (await edit(...assignFlags, ...labelFlags).then(() => true, () => false)) return true;
+
+  const assigned = await edit(...assignFlags)
     .then(() => true)
     .catch((err) => {
       console.error(`❌ issue-watcher: could not assign issue #${issueNumber} to ${login}: ${err.message}`);
       return false;
     });
+  if (!assigned) return false;
+  await runGh(['label', 'create', IN_PROGRESS_LABEL_SPEC.name, '--repo', ctx.repoSpec,
+    '--color', IN_PROGRESS_LABEL_SPEC.color, '--description', IN_PROGRESS_LABEL_SPEC.description], ctx)
+    .catch(() => null);
+  await edit(...labelFlags).catch((err) => {
+    console.error(`❌ issue-watcher: could not mark issue #${issueNumber} ${IN_PROGRESS_LABEL}: ${err.message}`);
+  });
+  return true;
 }
 
 /**

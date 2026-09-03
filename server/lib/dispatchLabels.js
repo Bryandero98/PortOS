@@ -12,6 +12,11 @@
  * Contributor labels (`good first issue`, `help wanted`) are a third, equally
  * optional axis: apply them when the work is actually onboarding-shaped, not
  * because `model` happened to be `light`.
+ *
+ * The WORKFLOW labels below (`epic`, `decomposed`, `in-progress`) are not hints
+ * at all — they are state every claim/reconcile flow reads and writes. They live
+ * here because `dispatchLabelSpec` is what lazily creates any of them on a repo
+ * that has never defined it.
  */
 
 import { shellQuote } from './shellQuote.js';
@@ -80,14 +85,26 @@ export const EPIC_DECOMPOSED_LABEL = 'decomposed';
  */
 export const EPIC_LABEL = 'epic';
 
+/**
+ * The claim marker: 'this issue is claimed and being worked'. Written by every
+ * flow that takes ownership of an issue — a CoS claim, and the issue-watcher's
+ * deterministic volunteer assignment — and read as a hard skip by the claim
+ * queue (`perpetualWork.js#NON_ACTIONABLE_ISSUE_LABELS`) and by the zombie scan
+ * in `issueReconcile.js`. One spelling here so an assigning flow and a
+ * releasing flow can never drift apart.
+ */
+export const IN_PROGRESS_LABEL = 'in-progress';
+
 export const WORKFLOW_LABEL_COLORS = Object.freeze({
   [EPIC_DECOMPOSED_LABEL]: 'BFD4F2',
   [EPIC_LABEL]: 'B60205',
+  [IN_PROGRESS_LABEL]: 'FFA500',
 });
 
 export const WORKFLOW_LABEL_DESCRIPTIONS = Object.freeze({
   [EPIC_DECOMPOSED_LABEL]: 'Epic already split into per-slice child issues',
   [EPIC_LABEL]: 'Umbrella/tracking issue — shipped as per-slice children, never as one PR',
+  [IN_PROGRESS_LABEL]: 'Claimed and being worked',
 });
 
 /**
