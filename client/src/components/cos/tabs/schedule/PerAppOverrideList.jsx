@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { providerModelLabel } from '../../../../utils/providers';
 import AppOverrideRow from './AppOverrideRow';
 
-export default function PerAppOverrideList({ taskType, config, apps, providers, onUpdateOverride, onBulkToggleOverride }) {
+export default function PerAppOverrideList({ taskType, config, apps, providers, providersLoaded = true, onUpdateOverride, onBulkToggleOverride }) {
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const activeApps = apps?.filter(app => !app.archived) || [];
   const appOverrides = config.appOverrides || {};
@@ -58,6 +58,7 @@ export default function PerAppOverrideList({ taskType, config, apps, providers, 
             doWorkRequiresWorktree={config.doWorkRequiresWorktree}
             inheritedProviderText={inheritedProviderText}
             providers={providers}
+            providersLoaded={providersLoaded}
             override={appOverrides[app.id]}
             onUpdate={onUpdateOverride}
           />

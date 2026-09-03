@@ -40,7 +40,7 @@ const REVIEW_CONFIG_KEYS = [
   'reviewerApplies',
 ];
 
-export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, category: _category, providers, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled, dataInputCatalog }) {
+export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, category: _category, providers, providersLoaded = true, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled, dataInputCatalog }) {
   const reviewDefaults = useCodeReviewDefaults();
   // Resolved model lists for the reviewer table's Model column (the picker itself
   // never fetches — see its `modelOptions` prop).
@@ -389,10 +389,12 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
             <select
               value={selectedProviderId}
               onChange={(e) => handleProviderChange(e.target.value)}
-              disabled={updating}
+              disabled={updating || !providersLoaded}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
-              <option value="">{defaultProviderLabel}</option>
+              {/* Mid-fetch the list is empty, so "Default (active provider)" would
+                  be this select's only option — a slow control that reads broken. */}
+              <option value="">{providersLoaded ? defaultProviderLabel : 'Loading providers…'}</option>
               {providers?.map(provider => (
                 <option key={provider.id} value={provider.id}>{provider.name}</option>
               ))}
@@ -404,7 +406,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
             <select
               value={selectedModel}
               onChange={(e) => handleModelChange(e.target.value)}
-              disabled={updating}
+              disabled={updating || !providersLoaded}
               className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
             >
               {/* `availableModels` already carries a pin the provider no longer

@@ -51,7 +51,7 @@ const actionsStageNote = (eligibleProviders) => {
   ].join(' ');
 };
 
-export default function PipelineStageConfig({ taskType, config, providers, onUpdate, updating, setUpdating }) {
+export default function PipelineStageConfig({ taskType, config, providers, providersLoaded = true, onUpdate, updating, setUpdating }) {
   const stages = pipelineStages(config);
   const needsSecurityModelPolicy = taskType === 'pr-reviewer';
   const { ollama, lmstudio, capabilitiesByBackend, loading: localModelsLoading } = useLocalModels({
@@ -203,6 +203,7 @@ export default function PipelineStageConfig({ taskType, config, providers, onUpd
               )}
               {!isSecurityStage && (
                 <ProviderModelSelector
+                  loading={!providersLoaded}
                   providers={providers || []}
                   selectedProviderId={stageProviderId}
                   selectedModel={stageModel}

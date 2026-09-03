@@ -6,6 +6,7 @@ import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { useValidTab } from '../hooks/useValidTab';
 import * as api from '../services/api';
 import { coalesce } from '../utils/coalesce';
+import { sameJsonShape } from '../lib/sameJsonShape';
 import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -101,6 +102,9 @@ export default function ChiefOfStaff() {
   // Which provider an unpinned task actually runs on — the Schedule tab names it
   // on the "Default" option and resolves model/effort choices against it.
   const [activeProviderId, setActiveProviderId] = useState(null);
+  // `[]` is ambiguous — "not fetched yet" vs "fetched, none configured". The
+  // pickers below need the difference; see ProviderModelSelector's `loading`.
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [agentState, setAgentState] = useState('sleeping');
@@ -163,6 +167,19 @@ export default function ChiefOfStaff() {
     return resolved;
   }, []);
 
+  // The single write path for the provider list, mirroring `applyHealth` above:
+  // stamping the settle flag anywhere else could set `providers` without it.
+  // `sameJsonShape` keeps the array identity stable when the payload is
+  // unchanged — which it is on essentially every 30s poll — so the early commit
+  // that fixes first-paint latency doesn't cost a full-tree re-render each tick
+  // (`providers` is an unmemoized prop down through every schedule card).
+  const applyProviders = useCallback((data) => {
+    setProviders(prev => (sameJsonShape(prev, data.providers || []) ? prev : data.providers || []));
+    setActiveProviderId(data.activeProvider || null);
+    setProvidersLoaded(true);
+    return data;
+  }, []);
+
   // Derive agent state from system status
   const deriveAgentState = useCallback((statusData, agentsData, healthData) => {
     if (!statusData?.running) return 'sleeping';
@@ -196,9 +213,16 @@ export default function ChiefOfStaff() {
       applyHealth(data, { merge: true });
       return data;
     });
+    // `/providers` is a cache-only read that returns in milliseconds, but bundling
+    // it into the Promise.all below held it until the SLOWEST sibling settled —
+    // and `getCosActionableInsights` runs a server-side PM2/memory health check.
+    // That left the Schedule tab's provider pickers empty for seconds, rendering
+    // a lone "Default (active provider)" option that reads as broken. Same fix as
+    // `healthRead`: commit on its own settle.
+    const providersRead = api.getProviders()
+      .catch(() => ({ providers: [] }))
+      .then(applyProviders);
     const secondaryRead = Promise.all([
-      healthRead,
-      api.getProviders().catch(() => ({ providers: [] })),
       api.getApps().catch(() => []),
       api.getCosLearningSummary().catch(() => null),
       // `silent: true` keeps transient poll blips quiet, matching the banner's
@@ -230,7 +254,10 @@ export default function ChiefOfStaff() {
     const runningAgent = agentsData.find(a => a.status === 'running');
     setActiveAgentMeta(runningAgent?.metadata || null);
 
-    const [, providersData, appsData, learningSummaryData, insightsData] = await secondaryRead;
+    const [appsData, learningSummaryData, insightsData] = await secondaryRead;
+    // Both self-committing reads are barriers, not values: `mergedHealth` below
+    // reads what `healthRead` wrote, so it must not run before they settle.
+    await Promise.all([healthRead, providersRead]);
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
@@ -239,8 +266,6 @@ export default function ChiefOfStaff() {
     // failed); everything below derives from what it returned, never from the
     // raw read, so the bubble can't name an older issue than the tile shows.
     const mergedHealth = healthRef.current;
-    setProviders(providersData.providers || []);
-    setActiveProviderId(providersData.activeProvider || null);
     // Filter out PortOS Autofixer (it's part of PortOS project)
     setApps(appsData.filter(a => a.id !== 'portos-autofixer'));
     setLearningSummary(learningSummaryData);
@@ -1178,7 +1203,7 @@ export default function ChiefOfStaff() {
         {activeTab === 'schedule' && (
           <div role="tabpanel" id="tabpanel-schedule" aria-labelledby="tab-schedule">
             <Suspense fallback={<TabLoadFallback label="schedule" />}>
-              <ScheduleTab apps={apps} providers={providers} activeProviderId={activeProviderId} />
+              <ScheduleTab apps={apps} providers={providers} activeProviderId={activeProviderId} providersLoaded={providersLoaded} />
             </Suspense>
           </div>
         )}
