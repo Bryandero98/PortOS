@@ -16456,6 +16456,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/video-gen/model-context",
+      "mountPath": "/api/video-gen",
+      "sources": [
+        "server/routes/videoGen.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/video-gen/model-terms",
       "mountPath": "/api/video-gen",
       "sources": [
@@ -17497,8 +17505,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2167,
-    "declarations": 2175,
+    "operations": 2168,
+    "declarations": 2176,
     "sourceFiles": 230
   }
 }
