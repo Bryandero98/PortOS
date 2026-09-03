@@ -30,9 +30,10 @@ import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, e
 import { readOriginRemoteUrl } from '../lib/gitRemote.js';
 import { withGlabJson } from '../lib/glabArgs.js';
 import { githubApiHost, hostFromOriginUrl } from '../lib/workTracker.js';
-// The epic marker lives with the forge label vocabulary (name + color + the
+// The workflow markers live with the forge label vocabulary (name + color + the
 // `label create` idiom the prompt bodies interpolate), so the detector and the
-// live claim agent cannot drift on what "already decomposed" is spelled.
+// live claim agent cannot drift on how "already decomposed" or "claimed and
+// being worked" is spelled.
 import { EPIC_DECOMPOSED_LABEL, EPIC_LABEL, IN_PROGRESS_LABEL } from '../lib/dispatchLabels.js';
 
 export { EPIC_DECOMPOSED_LABEL };
