@@ -992,4 +992,25 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(PROMPT_VERSIONS[stageKey]).toBeUndefined();
     expect(PREVIOUS_DEFAULT_PROMPTS[stageKey]).toBeUndefined();
   });
+
+  // #5963: Claude Code's sandbox permanently denies working-tree writes under
+  // `.claude/skills`, `.claude/agents`, `.claude/commands`, `.claude/hooks`,
+  // `.claude/workflows`, and `.mcp.json` — no `sandbox.filesystem.allowWrite`
+  // setting can lift it (see the comment on CLAUDE_SANDBOX_SETTINGS in
+  // providerVendors.js). A patch touching only those paths (e.g. a docs-only
+  // skill edit) fails `git apply` in the working tree even though the review
+  // is otherwise clean, so Stage 3 must know the `git apply --cached` +
+  // index-verification fallback instead of guessing between `approve` and
+  // `defer`.
+  it('pr-reviewer-review teaches the git apply --cached fallback for sandbox-protected .claude/ paths', () => {
+    const current = DEFAULT_TASK_PROMPTS['pr-reviewer-review'];
+    expect(current).toContain('.claude/skills');
+    expect(current).toContain('.claude/agents');
+    expect(current).toContain('.claude/commands');
+    expect(current).toContain('.claude/hooks');
+    expect(current).toContain('git apply --cached -- <patch>');
+    expect(current).toContain('git show :<path>');
+    expect(current).toContain('never by reading the\n   working-tree file');
+    expect(current).toContain('never `defer` for this reason alone');
+  });
 });

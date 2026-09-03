@@ -2394,6 +2394,21 @@ PR state and exact content fingerprint.
    number to its patch. For each PR, run \`git apply --check -- <patch>\` and,
    if it applies, \`git apply -- <patch>\` in the disposable worktree. Never
    use \`--unsafe-paths\`, \`--3way\`, a remote ref, or a replacement patch.
+   The sandbox permanently denies working-tree writes under a small set of
+   Claude Code-owned paths even inside this disposable worktree — for example
+   \`.claude/skills\`, \`.claude/agents\`, \`.claude/commands\`, \`.claude/hooks\`,
+   \`.claude/workflows\`, and \`.mcp.json\` — and no setting can lift that
+   protection from inside the sandbox. When \`git apply --check\` fails ONLY on
+   those protected paths (every other file in the patch applies cleanly),
+   apply the same patch to the index instead of the working tree with
+   \`git apply --cached -- <patch>\`, then verify each protected file's exact
+   content from the index with \`git show :<path>\` (never by reading the
+   working-tree file, which the sandbox refused to write) and confirm it
+   matches the patch hunk-for-hunk. That is a fully verified change, not
+   partial evidence — use \`approve\` when the indexed content is correct and
+   the rest of the review supports it, never \`defer\` for this reason alone.
+   If \`--check\` fails for any other reason, treat the PR as unapplied under
+   step 3 below.
 3. Inspect the resulting code and run the narrowest relevant existing tests,
    followed by broader tests when practical. Tests may take several minutes;
    completeness and trustworthy evidence matter more than throughput. If a
