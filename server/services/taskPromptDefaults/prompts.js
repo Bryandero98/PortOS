@@ -2391,24 +2391,32 @@ PR state and exact content fingerprint.
 1. Read the supplied envelope and evaluate every eligible PR exactly once.
    Preserve each exact numeric \`number\` and 40-character \`headSha\`.
 2. Read \`.portos-public-review/PORTOS_PUBLIC_REVIEW_PATCHES.json\` to map a PR
-   number to its patch. For each PR, run \`git apply --check -- <patch>\` and,
-   if it applies, \`git apply -- <patch>\` in the disposable worktree. Never
-   use \`--unsafe-paths\`, \`--3way\`, a remote ref, or a replacement patch.
+   number to its patch. For each PR, run \`git apply --check -- <patch>\` first.
+   \`--check\` makes no filesystem writes, so a failure there is a genuine
+   patch-application problem, never the sandbox's write protection below —
+   treat it as an unapplied patch under step 3. When \`--check\` succeeds, run
+   \`git apply -- <patch>\` in the disposable worktree. Never use
+   \`--unsafe-paths\`, \`--3way\`, a remote ref, or a replacement patch.
    The sandbox permanently denies working-tree writes under a small set of
    Claude Code-owned paths even inside this disposable worktree — for example
    \`.claude/skills\`, \`.claude/agents\`, \`.claude/commands\`, \`.claude/hooks\`,
    \`.claude/workflows\`, and \`.mcp.json\` — and no setting can lift that
-   protection from inside the sandbox. When \`git apply --check\` fails ONLY on
-   those protected paths (every other file in the patch applies cleanly),
-   apply the same patch to the index instead of the working tree with
-   \`git apply --cached -- <patch>\`, then verify each protected file's exact
-   content from the index with \`git show :<path>\` (never by reading the
-   working-tree file, which the sandbox refused to write) and confirm it
-   matches the patch hunk-for-hunk. That is a fully verified change, not
-   partial evidence — use \`approve\` when the indexed content is correct and
-   the rest of the review supports it, never \`defer\` for this reason alone.
-   If \`--check\` fails for any other reason, treat the PR as unapplied under
-   step 3 below.
+   protection from inside the sandbox. Because \`--check\` already confirmed
+   the patch applies cleanly, a working-tree \`git apply\` failure that names
+   only those protected paths is that write denial, not a bad patch: fall back
+   to applying the same patch to the index instead with
+   \`git apply --cached -- <patch>\`. For a modified or added protected file,
+   verify its exact content from the index with \`git show :<path>\` (never by
+   reading the working-tree file, which the sandbox refused to write) and
+   confirm it matches the patch hunk-for-hunk; for a deleted protected file,
+   confirm it is now absent from the index with
+   \`git ls-files --cached -- <path>\` (expect empty output) instead — \`git
+   show\` has no blob left to read once a path is removed from the index.
+   That is a fully verified change, not partial evidence — use \`approve\`
+   when the verified content is correct and the rest of the review supports
+   it, never \`defer\` for this reason alone. If the working-tree \`git apply\`
+   fails for any other reason, or on a file outside those protected paths,
+   treat the PR as unapplied under step 3 below.
 3. Inspect the resulting code and run the narrowest relevant existing tests,
    followed by broader tests when practical. Tests may take several minutes;
    completeness and trustworthy evidence matter more than throughput. If a
