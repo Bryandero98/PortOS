@@ -18,6 +18,9 @@ import {
   formatContributorLabelReleaseCommands,
   formatLabelCreateCommand,
 } from '../../lib/dispatchLabels.js';
+// The PR-decision envelope is owned by the module that normalizes and renders
+// it, so stage 3 and the issue-watcher reasoning pass cannot drift apart.
+import { PR_REVIEW_DECISION_CONTRACT } from '../../lib/prReviewReport.js';
 
 // The epic marker and its idempotent `label create` line come from the shared
 // label registry, so the label the claim agent stamps is by construction the one
@@ -2409,25 +2412,12 @@ PR state and exact content fingerprint.
 
 ## Output (JSON only)
 
-Return exactly this shape, with no markdown and one entry for every eligible
-PR:
+Return exactly this envelope, with no markdown around it and one \`pullRequests\`
+entry for every eligible PR:
 
-{
-  "issueComments": [],
-  "pullRequests": [
-    {
-      "number": 123,
-      "headSha": "40-character commit id",
-      "verdict": "approve|request_changes|defer",
-      "ciPolicy": "required|skippable",
-      "rebaseRequired": false,
-      "summary": "review summary and test evidence",
-      "findings": [
-        {"path": "src/file.js", "line": 42, "side": "RIGHT", "blocking": true, "body": "specific problem and fix"}
-      ]
-    }
-  ]
-}
+{ "issueComments": [], "pullRequests": [ <one decision object per eligible PR> ] }
+
+${PR_REVIEW_DECISION_CONTRACT}
 
 Do not include issue comments. Do not include a PR that was not in the eligible
 input, duplicate a PR, or invent a head SHA. Do not quote Stage 1 findings or

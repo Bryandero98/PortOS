@@ -451,6 +451,7 @@ export * from './openapiSpec.js';
 export * from './openapiDowngrade.js';
 export * from './apiToolResource.js';
 export * from './prDisposition.js';
+export * from './prReviewReport.js';
 export * from './repoStateExpectations.js';
 export * from './shellCd.js';
 export * from './shellExit.js';
