@@ -4,7 +4,13 @@ import { asyncHandler } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import { rigImageTo3dModel } from '../services/rigging/autoSkin.js';
 import { AUTO_SKIN_DEFAULTS, AUTO_SKIN_LIMITS } from '../services/rigging/autoSkinReport.js';
+import { buildClipCoverage } from '../services/rigging/clipCapabilities.js';
+import { listClipSources } from '../services/rigging/clipLibrary.js';
 import { getRiggingReadiness } from '../services/rigging/readiness.js';
+import { retargetImageTo3dModel } from '../services/rigging/retarget.js';
+import {
+  DEFAULT_RETARGET_MODE, RETARGET_DEFAULTS, RETARGET_LIMITS, RETARGET_MODES,
+} from '../services/rigging/retargetReport.js';
 import { SKELETON_BONE_MAPPINGS } from '../services/rigging/skeletonMapping.js';
 
 const router = Router();
@@ -34,6 +40,25 @@ const rigRequestSchema = z.object({
 const modelIdSchema = z.object({ id: z.string().trim().min(1).max(128) });
 
 /**
+ * One retarget run. `clip` names a file in the local clip library — `resolveClipSource`
+ * rejects traversal and any extension that is not a clip, so the schema only has to
+ * bound the length. `clipName` selects an animation INSIDE that file and is optional
+ * because a library drop is normally single-clip.
+ *
+ * `mode` defaults to the diagnostic one deliberately: the head-zone cleanup edits skin
+ * weights, so the user gets the measured proposal first and opts into the edit second.
+ */
+const retargetRequestSchema = z.object({
+  clip: z.string().trim().min(1).max(255),
+  clipName: z.string().trim().min(1).max(255).optional(),
+  mode: z.enum(RETARGET_MODES).default(DEFAULT_RETARGET_MODE),
+  headCleanupFraction: z.number()
+    .min(RETARGET_LIMITS.headCleanupFractionMin)
+    .max(RETARGET_LIMITS.headCleanupFractionMax)
+    .optional(),
+});
+
+/**
  * Whether this host can run character rigging, and — when it cannot — WHY, by a stable
  * reason code the client mirrors to a label (`client/src/lib/riggingReasons.js`).
  *
@@ -47,7 +72,24 @@ const modelIdSchema = z.object({ id: z.string().trim().min(1).max(128) });
 router.get('/readiness', asyncHandler(async (req, res) => {
   const { refresh } = validateRequest(readinessQuerySchema, req.query);
   const readiness = await getRiggingReadiness({ refresh: Boolean(refresh) });
-  res.json({ ...readiness, defaults: AUTO_SKIN_DEFAULTS, skeletons: Object.keys(SKELETON_BONE_MAPPINGS) });
+  res.json({
+    ...readiness,
+    defaults: AUTO_SKIN_DEFAULTS,
+    retargetDefaults: RETARGET_DEFAULTS,
+    skeletons: Object.keys(SKELETON_BONE_MAPPINGS),
+  });
+}));
+
+/**
+ * The animation clips this install has locally, plus which CoS states they cover.
+ *
+ * Read-only and cheap: clips are user-dropped GLB files (`clipLibrary.js`), so this is a
+ * directory listing, never a download. The coverage answer rides along so a caller sees
+ * what the roster can and cannot drive without re-deriving the vocabulary.
+ */
+router.get('/clips', asyncHandler(async (_req, res) => {
+  const clips = await listClipSources();
+  res.json({ clips, coverage: buildClipCoverage(clips.map((clip) => clip.label)) });
 }));
 
 /**
@@ -63,6 +105,20 @@ router.post('/models/:id', asyncHandler(async (req, res) => {
   const { id } = validateRequest(modelIdSchema, req.params);
   const options = validateRequest(rigRequestSchema, req.body ?? {});
   res.json(await rigImageTo3dModel(id, options));
+}));
+
+/**
+ * Retarget one locally-held animation clip onto a model's published rig, publishing the
+ * animated GLB + its report only if the export demonstrably MOVES.
+ *
+ * Explicit user action only, and inline for the same reason the rig route is: the
+ * measured refusal — an incompatible skeleton, a cleanup over its cap, a zero-motion
+ * export — IS the product, and a fire-and-forget 202 would bury it.
+ */
+router.post('/models/:id/retarget', asyncHandler(async (req, res) => {
+  const { id } = validateRequest(modelIdSchema, req.params);
+  const options = validateRequest(retargetRequestSchema, req.body ?? {});
+  res.json(await retargetImageTo3dModel(id, options));
 }));
 
 export default router;

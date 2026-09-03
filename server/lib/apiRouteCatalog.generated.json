@@ -14031,8 +14031,24 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/rigging/clips",
+      "mountPath": "/api/rigging",
+      "sources": [
+        "server/routes/rigging.js"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/rigging/models/:id",
+      "mountPath": "/api/rigging",
+      "sources": [
+        "server/routes/rigging.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/rigging/models/:id/retarget",
       "mountPath": "/api/rigging",
       "sources": [
         "server/routes/rigging.js"
@@ -17481,8 +17497,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2165,
-    "declarations": 2173,
+    "operations": 2167,
+    "declarations": 2175,
     "sourceFiles": 230
   }
 }

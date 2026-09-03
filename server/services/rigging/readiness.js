@@ -16,6 +16,7 @@
  * unsupported host — is unit-testable with no real install.
  */
 
+import { ServerError } from '../../lib/errorHandler.js';
 import {
   RIGGING_INSTALL_COMMAND,
   RIGGING_MODULE_REQUIREMENT,
@@ -177,4 +178,33 @@ export async function getRiggingReadiness({ refresh = false, now = Date.now, pro
   cached = { at, value };
   console.log(`🦴 Rigging readiness: ${value.ready ? 'ready' : value.reason}`);
   return value;
+}
+
+/**
+ * The interpreter a rigging run may spawn, or a named 409 explaining why it may not.
+ *
+ * Both worker lanes (`autoSkin.js`, `retarget.js`) open with exactly this check, and it
+ * fails CLOSED twice: once on the readiness verdict, and once on an answer that claims
+ * ready without naming an interpreter. `readiness` is injectable so a run can reuse an
+ * answer it already has (and so tests need no Blender install).
+ *
+ * @param {{readiness?: object, python?: string|null}} [opts]
+ * @returns {Promise<string>} The interpreter path.
+ */
+export async function requireRiggingInterpreter({ readiness, python } = {}) {
+  const ready = readiness ?? await getRiggingReadiness();
+  if (!ready.ready) {
+    throw new ServerError(riggingReasonLabel(ready.reason), {
+      status: 409,
+      code: 'RIGGING_RUNTIME_UNAVAILABLE',
+      context: { reason: ready.reason, detail: ready.detail },
+    });
+  }
+  const interpreter = python ?? ready.interpreter ?? resolveRiggingPython();
+  if (!interpreter) {
+    throw new ServerError(riggingReasonLabel('runtime-not-installed'), {
+      status: 409, code: 'RIGGING_RUNTIME_UNAVAILABLE', context: { reason: 'runtime-not-installed' },
+    });
+  }
+  return interpreter;
 }

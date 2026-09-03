@@ -35,10 +35,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { spawn } from '../../lib/childProcess.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { atomicWrite, ensureDir, PATHS, readJSONFile, sha256File } from '../../lib/fileUtils.js';
 import { moveWithoutReplace } from '../../lib/noReplaceMove.js';
@@ -50,9 +49,9 @@ import {
   summarizeAutoSkin,
   thresholdsForWorker,
 } from './autoSkinReport.js';
-import { getRiggingReadiness, riggingReasonLabel } from './readiness.js';
-import { resolveRiggingPython } from './runtime.js';
+import { requireRiggingInterpreter } from './readiness.js';
 import { buildHumanoidArmatureSpec } from './skeletonMapping.js';
+import { runRiggingWorker } from './workerProcess.js';
 import { getModel, mutateModel } from '../imageTo3d/db.js';
 
 /** Per-record directory holding every rig run's published pair. */
@@ -61,9 +60,6 @@ export const RIG_DIR_NAME = 'rig';
 export const RIG_STAGING_DIR_NAME = '.staging';
 export const RIGGED_GLB_NAME = 'character.rigged.glb';
 export const RIG_REPORT_NAME = 'character.rig.json';
-
-/** A rig is minutes of CPU, not hours; past this the worker is wedged, not working. */
-const WORKER_TIMEOUT_MS = 20 * 60 * 1000;
 
 const WORKER_SCRIPT = fileURLToPath(new URL('./autoSkinWorker.py', import.meta.url));
 
@@ -113,7 +109,10 @@ export async function publishRigArtifacts({ paths, report }) {
   await atomicWrite(paths.stagedReport, JSON.stringify({
     ...report,
     report_version: AUTO_SKIN_REPORT_VERSION,
-    output_file: RIGGED_GLB_NAME,
+    // Named from the path actually being published, not from a constant: the retarget
+    // lane publishes a differently-named GLB through this same helper, and the reader
+    // below resolves the artifact from this key rather than guessing a filename.
+    output_file: basename(paths.publishedGlb),
     output_bytes: info.size,
     output_sha256: sha256,
   }, null, 2));
@@ -138,36 +137,17 @@ export async function publishRigArtifacts({ paths, report }) {
  * @returns {Promise<{ok: boolean, reason?: string, report?: object, glbPath?: string}>}
  */
 export async function readRiggedArtifact({ publishDir }) {
-  const glbPath = join(publishDir, RIGGED_GLB_NAME);
   const report = await readJSONFile(join(publishDir, RIG_REPORT_NAME), null, { logError: false });
   if (!report || typeof report.output_sha256 !== 'string') return { ok: false, reason: 'missing-report' };
+  // The report names its own artifact, so one reader serves both the auto-skin and the
+  // retarget lane. `basename` because the report is a file on disk: a report carrying a
+  // traversing `output_file` must resolve inside the publish dir or not at all.
+  const glbPath = join(publishDir, basename(String(report.output_file || RIGGED_GLB_NAME)));
   const exists = await stat(glbPath).then((info) => info.isFile(), () => false);
   if (!exists) return { ok: false, reason: 'missing-glb' };
   const digest = await sha256File(glbPath);
   if (digest !== report.output_sha256) return { ok: false, reason: 'digest-mismatch' };
   return { ok: true, report, glbPath };
-}
-
-/**
- * Run the Blender worker to completion. Resolves with the exit code and a bounded tail
- * of its output — never rejects on a non-zero exit, so the caller owns the vocabulary
- * of failure rather than inheriting "exited 1".
- */
-function runWorker({ python, jobFile, spawnImpl = spawn, timeoutMs = WORKER_TIMEOUT_MS }) {
-  return new Promise((resolve) => {
-    const child = spawnImpl(python, [WORKER_SCRIPT, '--job', jobFile], {});
-    let tail = '';
-    const collect = (buf) => { tail = `${tail}${buf}`.slice(-4000); };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
-    const timer = setTimeout(() => {
-      tail = `${tail}\nRigging worker exceeded ${Math.round(timeoutMs / 60000)} minutes and was terminated.`;
-      child.kill?.('SIGTERM');
-    }, timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
-    child.on('error', (error) => { clearTimeout(timer); resolve({ code: -1, tail: `${tail}\n${error.message}` }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, tail: tail.trim() }); });
-  });
 }
 
 const rigError = (message, code, extra = {}) => new ServerError(message, { status: 422, code, ...extra });
@@ -194,20 +174,7 @@ export async function runAutoSkin({
   timeoutMs,
   verify = readRiggedArtifact,
 }) {
-  const ready = readiness ?? await getRiggingReadiness();
-  if (!ready.ready) {
-    throw new ServerError(riggingReasonLabel(ready.reason), {
-      status: 409,
-      code: 'RIGGING_RUNTIME_UNAVAILABLE',
-      context: { reason: ready.reason, detail: ready.detail },
-    });
-  }
-  const interpreter = python ?? ready.interpreter ?? resolveRiggingPython();
-  if (!interpreter) {
-    throw new ServerError(riggingReasonLabel('runtime-not-installed'), {
-      status: 409, code: 'RIGGING_RUNTIME_UNAVAILABLE', context: { reason: 'runtime-not-installed' },
-    });
-  }
+  const interpreter = await requireRiggingInterpreter({ readiness, python });
 
   const thresholds = resolveAutoSkinThresholds(overrides);
   const paths = rigRunPaths({ recordDir, rigId });
@@ -224,7 +191,9 @@ export async function runAutoSkin({
       armature: buildHumanoidArmatureSpec({ skeletonHint }),
     }, null, 2));
 
-    const { code, tail } = await runWorker({ python: interpreter, jobFile: paths.jobFile, spawnImpl, timeoutMs });
+    const { code, tail } = await runRiggingWorker({
+      python: interpreter, script: WORKER_SCRIPT, jobFile: paths.jobFile, spawnImpl, timeoutMs,
+    });
     const report = await readJSONFile(paths.workerReport, null, { logError: false });
 
     // A non-zero exit with a readable report is the EXPECTED gate failure: the worker
