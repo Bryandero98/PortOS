@@ -17,9 +17,10 @@ export const RUNNER_FAMILIES = Object.freeze({
 // server/lib/pythonSetup.js) — Z-Image, ERNIE, HiDream, and Qwen all dispatch
 // through that same shared torch venv rather than the mflux interpreter.
 // Mirror of server/lib/runners.js#usesDiffusersRunner.
-export const usesDiffusersRunner = (model) => [
+const DIFFUSERS_RUNNER_SET = new Set([
   RUNNER_FAMILIES.Z_IMAGE, RUNNER_FAMILIES.ERNIE, RUNNER_FAMILIES.HIDREAM, RUNNER_FAMILIES.QWEN,
-].includes(model?.runner);
+]);
+export const usesDiffusersRunner = (model) => DIFFUSERS_RUNNER_SET.has(model?.runner);
 
 // Video-LoRA families — kept separate from the image RUNNER_FAMILIES so the
 // Civitai iteration (which only knows image baseModels) never sees them. Video
