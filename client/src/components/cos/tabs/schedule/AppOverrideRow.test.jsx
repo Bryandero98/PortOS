@@ -278,7 +278,7 @@ describe('AppOverrideRow — per-app provider pin', () => {
   });
 });
 
-describe('AppOverrideRow — run toggle', () => {
+describe('AppOverrideRow — enabled toggle', () => {
   // The switch is what turns the scheduled task on for the app; it is NOT an
   // "apply my overrides" flag. It carries no visible on/off text, so the
   // accessible name has to say which task, which app, and the current state.
@@ -286,13 +286,13 @@ describe('AppOverrideRow — run toggle', () => {
   // are asserted rather than indexing into the list.
   it('names the task, the app, and the current state on every slot', () => {
     renderRow({ taskType: 'feature-ideas' });
-    const off = screen.getAllByRole('switch', { name: 'Run feature-ideas for Acme: off' });
+    const off = screen.getAllByRole('switch', { name: 'feature-ideas enabled for Acme: off' });
     expect(off).toHaveLength(2);
     off.forEach(sw => expect(sw).toHaveAttribute('aria-checked', 'false'));
 
     cleanup();
     renderRow({ taskType: 'feature-ideas', override: { enabled: true } });
-    const on = screen.getAllByRole('switch', { name: 'Run feature-ideas for Acme: on' });
+    const on = screen.getAllByRole('switch', { name: 'feature-ideas enabled for Acme: on' });
     expect(on).toHaveLength(2);
     on.forEach(sw => expect(sw).toHaveAttribute('aria-checked', 'true'));
   });
@@ -300,7 +300,7 @@ describe('AppOverrideRow — run toggle', () => {
   it('enables the task for the app while preserving its interval override', async () => {
     const onUpdate = renderRow({ override: { enabled: false, interval: 'on-demand' } });
     await act(async () => {
-      fireEvent.click(screen.getAllByRole('switch', { name: 'Run feature-ideas for Acme: off' })[0]);
+      fireEvent.click(screen.getAllByRole('switch', { name: 'feature-ideas enabled for Acme: off' })[0]);
     });
     expect(onUpdate).toHaveBeenCalledWith('app-1', 'feature-ideas', { enabled: true, interval: 'on-demand' });
   });

@@ -256,19 +256,22 @@ export default function AutomationTab({ appId, appName }) {
               <div key={taskType} className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
                 {/* Row 1: name + toggle + configure + run now */}
                 <div className="flex items-center gap-3">
+                  {/* Labelled "Enabled", not "Run" — the row already has a Run
+                      (trigger now) button, and this switch is the on/off state
+                      that gates both the schedule and that button. */}
                   <span
                     className="flex items-center gap-1.5 shrink-0"
                     title={isEnabled
                       ? `${taskType} runs for this app on the schedule below. Turn off to stop scheduling it.`
                       : `${taskType} does not run for this app. Turn on to schedule it.`}
                   >
-                    <span className="text-[10px] uppercase tracking-wide text-gray-500">Run</span>
+                    <span className="text-[10px] uppercase tracking-wide text-gray-500">Enabled</span>
                     <ToggleSwitch
                       enabled={isEnabled}
                       onChange={() => handleToggle(taskType, isEnabled)}
                       size="sm"
                       activeColor="bg-port-success"
-                      ariaLabel={`Run ${taskType} for this app: ${isEnabled ? 'on' : 'off'}`}
+                      ariaLabel={`${taskType} enabled for this app: ${isEnabled ? 'on' : 'off'}`}
                     />
                   </span>
                   <div className="flex-1 min-w-0">

@@ -16,8 +16,8 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   // "use my overrides" flag — every other control on the row is inert until it
   // is on. Say so in the accessible name and the tooltip, since the switch
   // itself carries no visible state text.
-  const runToggleLabel = `Run ${taskType} for ${app.name}: ${isEnabled ? 'on' : 'off'}`;
-  const runToggleTitle = isEnabled
+  const enabledToggleLabel = `${taskType} enabled for ${app.name}: ${isEnabled ? 'on' : 'off'}`;
+  const enabledToggleTitle = isEnabled
     ? `${taskType} runs for ${app.name} on the schedule set here. Turn off to stop scheduling it for this app.`
     : `${taskType} does not run for ${app.name}. Turn on to schedule it for this app.`;
   const currentInterval = override?.interval || null;
@@ -113,15 +113,15 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
     }
   );
 
-  const runToggle = (
+  const enabledToggle = (
     <>
-      <span className="text-[10px] uppercase tracking-wide text-gray-500">Run</span>
+      <span className="text-[10px] uppercase tracking-wide text-gray-500">Enabled</span>
       <ToggleSwitch
         enabled={isEnabled}
         onChange={handleToggle}
         disabled={updating}
         size="sm"
-        ariaLabel={runToggleLabel}
+        ariaLabel={enabledToggleLabel}
       />
     </>
   );
@@ -131,7 +131,7 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
       <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto sm:flex-1">
         <AppIcon icon={app.icon || 'package'} appId={app.id} hasAppIcon={!!app.appIconPath} size={16} className="text-gray-400 shrink-0" />
         <span className="text-sm text-white truncate flex-1">{app.name}</span>
-        <div className="sm:hidden flex items-center gap-1.5 shrink-0" title={runToggleTitle}>{runToggle}</div>
+        <div className="sm:hidden flex items-center gap-1.5 shrink-0" title={enabledToggleTitle}>{enabledToggle}</div>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -316,7 +316,7 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
           </select>
         )}
 
-        <div className="hidden sm:flex items-center gap-1.5" title={runToggleTitle}>{runToggle}</div>
+        <div className="hidden sm:flex items-center gap-1.5" title={enabledToggleTitle}>{enabledToggle}</div>
 
       </div>
     </div>
