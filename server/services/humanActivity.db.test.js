@@ -252,8 +252,21 @@ describe.skipIf(!runDb)('source-scoped read plan (#5715)', () => {
   const explainWithoutSeqScan = (sql, params) => withTransaction(async (client) => {
     await client.query('SET LOCAL enable_seqscan = off');
     const res = await client.query(`EXPLAIN (FORMAT JSON) ${sql}`, params);
-    return JSON.stringify(res.rows[0]['QUERY PLAN']);
+    return res.rows[0]['QUERY PLAN'][0].Plan;
   });
+
+  const planNodes = (node) => [node, ...(node.Plans || []).flatMap(planNodes)];
+
+  // The point of the composite is that the index supplies the ordering, so the
+  // LIMIT stops early. A bitmap scan feeding a Sort would still name the index
+  // while re-reading and sorting every matching row — the exact regression this
+  // pins — so assert an ordered Index Scan AND the absence of a Sort node.
+  const expectOrderedIndexScan = (plan, indexName) => {
+    const nodes = planNodes(plan);
+    expect(nodes.map((n) => n['Node Type'])).not.toContain('Sort');
+    expect(nodes.some((n) => /^Index (Only )?Scan$/.test(n['Node Type']) && n['Index Name'] === indexName))
+      .toBe(true);
+  };
 
   it('uses idx_human_activity_source_happened for a source-scoped newest-first read', async () => {
     await recordEvents([mk({ dedupeKey: 'plan-1' }), mk({ dedupeKey: 'plan-2' })]);
@@ -264,7 +277,7 @@ describe.skipIf(!runDb)('source-scoped read plan (#5715)', () => {
        LIMIT 50`,
       [SOURCE],
     );
-    expect(plan).toContain('idx_human_activity_source_happened');
+    expectOrderedIndexScan(plan, 'idx_human_activity_source_happened');
   });
 
   it('uses idx_human_activity_source_kind_happened when the read is also kind-scoped', async () => {
@@ -276,6 +289,6 @@ describe.skipIf(!runDb)('source-scoped read plan (#5715)', () => {
        LIMIT 50`,
       [SOURCE, 'message.received'],
     );
-    expect(plan).toContain('idx_human_activity_source_kind_happened');
+    expectOrderedIndexScan(plan, 'idx_human_activity_source_kind_happened');
   });
 });

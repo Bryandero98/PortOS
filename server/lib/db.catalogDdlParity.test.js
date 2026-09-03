@@ -106,18 +106,21 @@ function extractIndexNames(source, prefix = 'idx_catalog_') {
 }
 
 // Names alone can't catch an index that exists in both files under the same
-// name but over different columns (or a different sort order) — that ships a
-// fresh install an index the boot-time DDL never intended. Pair each name with
-// its normalized column list so the parity check compares definitions.
+// name but over different columns (or a different sort order, or having lost
+// its UNIQUE) — that ships a fresh install an index the boot-time DDL never
+// intended, and a dropped UNIQUE breaks the ON CONFLICT idempotency contract
+// the store relies on. Pair each name with its normalized definition so the
+// parity check compares shape, not just identity.
 function extractIndexDefs(source, prefix) {
   const out = new Map();
   const re = new RegExp(
-    `CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\\s+(${prefix}\\w+)\\s+ON\\s+\\w+\\s*\\(([^)]*)\\)`,
+    `CREATE (UNIQUE )?INDEX IF NOT EXISTS\\s+(${prefix}\\w+)\\s+ON\\s+\\w+\\s*\\(([^)]*)\\)`,
     'gi',
   );
   let m;
   while ((m = re.exec(source)) !== null) {
-    out.set(m[1], m[2].replace(/\s+/g, ' ').trim().toLowerCase());
+    const cols = m[3].replace(/\s+/g, ' ').trim().toLowerCase();
+    out.set(m[2], `${m[1] ? 'unique ' : ''}(${cols})`);
   }
   return out;
 }
@@ -212,10 +215,10 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     // happened_at walk — dropping either from both files, or silently losing
     // the DESC ordering, would otherwise read as a passing set match.
     const expected = {
-      idx_human_activity_dedupe: 'source, dedupe_key',
-      idx_human_activity_happened: 'happened_at',
-      idx_human_activity_source_happened: 'source, happened_at desc',
-      idx_human_activity_source_kind_happened: 'source, kind, happened_at desc',
+      idx_human_activity_dedupe: 'unique (source, dedupe_key)',
+      idx_human_activity_happened: '(happened_at)',
+      idx_human_activity_source_happened: '(source, happened_at desc)',
+      idx_human_activity_source_kind_happened: '(source, kind, happened_at desc)',
     };
     expect(Object.fromEntries(sqlIdx)).toEqual(expected);
     expect(Object.fromEntries(jsIdx)).toEqual(expected);
