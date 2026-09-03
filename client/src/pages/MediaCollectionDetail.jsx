@@ -276,6 +276,11 @@ export default function MediaCollectionDetail() {
       });
       if (r && r !== 'dupe') { added++; placedKeys.add(it.key); }
     }
+    // A move is two writes: add to the target, then remove from here. When the
+    // second half fails the item now lives in BOTH collections — that is a
+    // half-completed move, not a success, so track those keys separately from
+    // the add failures and keep them selected for a retry.
+    const removeFailedKeys = new Set();
     if (mode === 'move' && placedKeys.size > 0) {
       if (isUnsorted) {
         // Source is synthetic — placing items in any real collection takes
@@ -286,18 +291,34 @@ export default function MediaCollectionDetail() {
         for (const it of selectedItems) {
           if (!placedKeys.has(it.key)) continue;
           const r = await removeMediaCollectionItem(collection.id, it.key, { silent: true }).catch(() => null);
-          if (r) lastOk = r;
+          if (r) lastOk = r; else removeFailedKeys.add(it.key);
         }
+        // The last successful removal carries the authoritative server state,
+        // so a partial failure still reconciles the items that did move out.
         if (lastOk) setCollection(lastOk);
       }
     }
     setBulkBusy(false);
-    exitSelectMode();
+    if (removeFailedKeys.size > 0) {
+      // Stay in select mode with only the half-moved items selected so the
+      // user can re-run the move (or remove) on exactly what failed.
+      setSelected(removeFailedKeys);
+    } else {
+      exitSelectMode();
+    }
     const verb = mode === 'move' ? (isUnsorted ? 'Filed' : 'Moved') : 'Copied';
     const note = dupes > 0 ? ` (${dupes} already there)` : '';
     const stranded = selectedItems.length - added - dupes;
-    if (stranded > 0) toast.error(`${verb} ${added} to "${targetName}"${note}; ${stranded} failed`);
-    else toast.success(`${verb} ${added} to "${targetName}"${note}`);
+    const addNote = stranded > 0 ? `; ${stranded} failed to add` : '';
+    if (removeFailedKeys.size > 0) {
+      // Deliberately says "Copied" — calling a half-completed move a "Move"
+      // is the false success this branch exists to prevent.
+      toast.error(`Copied ${added} to "${targetName}"${note}, but ${removeFailedKeys.size} could not be removed from "${collection.name}"${addNote}`);
+    } else if (stranded > 0) {
+      toast.error(`${verb} ${added} to "${targetName}"${note}; ${stranded} failed`);
+    } else {
+      toast.success(`${verb} ${added} to "${targetName}"${note}`);
+    }
   };
 
   // Remix / SendToVideo / Continue / Clean share a single implementation
