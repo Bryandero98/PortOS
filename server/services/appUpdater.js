@@ -186,11 +186,6 @@ async function _doUpdate(app, emit, { syncFork }) {
   // other than this checkout, keeps the ordinary attached path rather than
   // silently running a different script than the one configured.
   const detachSelfUpdate = app.id === PORTOS_APP_ID && usesStandardScript && isSamePath(dir, PATHS.root);
-  if (app.id === PORTOS_APP_ID && !detachSelfUpdate) {
-    // Never silent: this is the branch that runs update.sh attached, and an
-    // attached run is what left the install headless in #5976.
-    console.log(`⚠️ PortOS update is using the attached path — ${usesStandardScript ? 'repoPath is not this checkout' : 'a custom update command is configured'}`);
-  }
   if (configuredUpdate || pkg?.scripts?.['portos:update'] || usesStandardScript) {
     // A configured runtime may be an absolute Bun path, which is trusted app
     // configuration but not a commandSecurity allowlist token. Only free-form
@@ -204,6 +199,18 @@ async function _doUpdate(app, emit, { syncFork }) {
           ? { valid: true, baseCommand: 'powershell', args: ['-ExecutionPolicy', 'Bypass', '-File', standardScriptPath] }
           : { valid: true, baseCommand: standardScriptPath, args: [] };
     if (!command.valid) throw new Error(`Update command is not allowed: ${command.error}`);
+    if (app.id === PORTOS_APP_ID && !detachSelfUpdate) {
+      // Never silent: this is PortOS about to run its update routine ATTACHED,
+      // and an attached run is what left the install headless in #5976. Name
+      // which of the three narrowings declined it, so an operator debugging the
+      // misconfiguration is not sent after the wrong one.
+      const reason = configuredUpdate
+        ? 'a custom update command is configured'
+        : pkg?.scripts?.['portos:update']
+          ? 'a portos:update package script is configured'
+          : 'repoPath is not this checkout';
+      console.log(`⚠️ PortOS update is using the attached path — ${reason}`);
+    }
     emit('app-update', 'running', 'Running the app update routine...');
     if (detachSelfUpdate) {
       // PortOS is itself a managed app, so an App Management update reaches
