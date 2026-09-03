@@ -40,6 +40,21 @@ const DETECTORS = {
     const { hasConfiguredInstances } = await import('./jira.js');
     return hasConfiguredInstances();
   },
+  // The rigging runtime is a machine-local install, not a config file — so "configured"
+  // here means the Blender module actually imports. The probe memoizes its answer, so
+  // this does not spawn an interpreter on every page load's feature read.
+  rigging: async () => {
+    const { getRiggingReadiness } = await import('./rigging/readiness.js');
+    // FAIL CLOSED, unlike the config-file detectors above. Those fail open because an
+    // unreadable config file still means the integration is probably set up; here a
+    // probe that could not answer means the runtime may simply not exist, and
+    // advertising rigging on such a host trades a named blocker for a spawn error.
+    const readiness = await getRiggingReadiness().catch((error) => {
+      console.error(`❌ Rigging readiness detection failed: ${error.message}`);
+      return null;
+    });
+    return readiness?.ready === true;
+  },
   facetime: async () => {
     if (process.platform !== 'darwin') return false;
     const { checkSetup } = await import('./voice/facetimeBridge.js');
