@@ -291,12 +291,13 @@ describe('resolveReconcileDrainGate', () => {
  */
 describe('applyPerpetualDrainCap', () => {
   const fakeSchedule = (dispatchCount = 0) => ({
-    INTERVAL_TYPES: { ON_DEMAND: 'on-demand', PERPETUAL: 'perpetual' },
+    INTERVAL_TYPES: { ON_DEMAND: 'on-demand', CRON: 'cron' },
     getPerpetualDrainState: vi.fn(async () => ({ signature: null, dispatchCount })),
     parkPerpetual: vi.fn(async () => {})
   });
   const app = { id: 'app-1', name: 'App One' };
-  const perpetual = (over = {}) => ({ type: 'perpetual', ...over });
+  // The drain signal is the orthogonal `perpetual` flag, not the cadence type.
+  const perpetual = (over = {}) => ({ type: 'on-demand', perpetual: true, ...over });
 
   it('parks drain-cap once the budget is spent, clearing the signature in the park write', async () => {
     const ts = fakeSchedule(5);
@@ -333,12 +334,15 @@ describe('applyPerpetualDrainCap', () => {
 
   it('ignores non-perpetual intervals entirely', async () => {
     const ts = fakeSchedule(500);
-    expect(await applyPerpetualDrainCap(app, 'security', { type: 'daily', drainDispatchCap: 5 }, ts)).toEqual({ skip: false });
+    expect(await applyPerpetualDrainCap(app, 'security', { type: 'cron', cronExpression: '0 7 * * *', drainDispatchCap: 5 }, ts)).toEqual({ skip: false });
     expect(ts.getPerpetualDrainState).not.toHaveBeenCalled();
+    // A reconcile task WITHOUT the flag is no longer special-cased by name.
+    expect(await applyPerpetualDrainCap(app, 'branch-reconcile', { type: 'on-demand', drainDispatchCap: 5 }, ts)).toEqual({ skip: false });
   });
 
-  it('applies the cap to the on-demand reconciliation drain', async () => {
+  it('applies the cap to a cron-scheduled perpetual drain, not just an on-demand one', async () => {
     const ts = fakeSchedule(5);
-    expect(await applyPerpetualDrainCap(app, 'branch-reconcile', { type: 'on-demand', drainDispatchCap: 5 }, ts)).toEqual({ skip: true });
+    const cronDrain = { type: 'cron', cronExpression: '0 7 * * *', perpetual: true, drainDispatchCap: 5 };
+    expect(await applyPerpetualDrainCap(app, 'branch-reconcile', cronDrain, ts)).toEqual({ skip: true });
   });
 });

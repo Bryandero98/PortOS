@@ -21,7 +21,6 @@ import { join } from 'path';
 import { getActiveProvider } from './providers.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { isAutoApprovableInvestigation } from '../lib/investigationTasks.js';
-import { INTERVAL_TYPES, isReconcileDrainTaskType } from './taskScheduleConstants.js';
 import { isRetryHeld, isStaleRetryHold } from '../lib/taskRetryHold.js';
 import { isAppOnCooldown, markAppReviewCooldown, bindAppReviewAgent, clearStaleActiveAgents } from './appActivity.js';
 import { getActiveApps } from './apps.js';
@@ -1477,12 +1476,10 @@ export function isPerpetualRefillCandidate(agent, schedule) {
   const analysisType = agentScheduledType(agent);
   if (!analysisType) return false;
   const taskDef = schedule?.tasks?.[analysisType];
-  const isPerpetual = taskDef?.type === INTERVAL_TYPES.PERPETUAL;
-  const isOnDemandReconcile = taskDef?.type === INTERVAL_TYPES.ON_DEMAND
-    && isReconcileDrainTaskType(analysisType);
-  // Reconciliation keeps its drain semantics even though its fresh-install
-  // interval is on-demand; all other on-demand tasks remain single-run actions.
-  return Boolean(taskDef?.enabled) && (isPerpetual || isOnDemandReconcile);
+  // `perpetual` is the single drain signal, orthogonal to the cadence type: an
+  // on-demand or cron task carrying the flag re-queues on completion, and one
+  // without it stays a single-run action.
+  return Boolean(taskDef?.enabled) && taskDef?.perpetual === true;
 }
 
 /**

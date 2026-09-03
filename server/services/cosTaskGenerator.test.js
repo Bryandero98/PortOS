@@ -967,7 +967,7 @@ describe('emitOnDemandEmpty', () => {
   // and the INTERVAL_TYPES enum the perpetual check reads.
   const stubMod = {
     getPerpetualParkInfo: async () => null,
-    INTERVAL_TYPES: { ON_DEMAND: 'on-demand', PERPETUAL: 'perpetual' }
+    INTERVAL_TYPES: { ON_DEMAND: 'on-demand', CRON: 'cron' }
   };
 
   it("emits an 'idle' event with reason null for a non-LI task type", async () => {
@@ -979,7 +979,7 @@ describe('emitOnDemandEmpty', () => {
         taskScheduleMod: stubMod,
         request: { id: 'req-1', taskType: 'pr-watcher' },
         targetApp: { id: 'app-1', name: 'App One' },
-        taskConfig: { type: 'custom' }
+        taskConfig: { type: 'cron', cronExpression: '0 7 * * *' }
       });
     } finally {
       cosEvents.off('schedule:on-demand-empty', handler);
@@ -1004,7 +1004,7 @@ describe('emitOnDemandEmpty', () => {
         taskScheduleMod: stubMod,
         request: { id: 'req-2', taskType },
         targetApp: { id: 'app-1', name: 'App One' },
-        taskConfig: { type: 'perpetual' }
+        taskConfig: { type: 'on-demand', perpetual: true }
       });
     } finally {
       cosEvents.off('schedule:on-demand-empty', handler);
@@ -1018,7 +1018,7 @@ describe('emitOnDemandEmpty', () => {
     expect(await emitTransient('claim-issue')).toMatchObject({ outcome: 'transient', forge: null });
   });
 
-  it('treats on-demand reconciliation as detector-driven for transient feedback', async () => {
+  it('treats a perpetual on-demand drain as detector-driven for transient feedback', async () => {
     recordPerpetualTransient('branch-reconcile', 'app-1', { cli: null, reason: 'probe-failed' });
     const events = [];
     const handler = (data) => events.push(data);
@@ -1028,7 +1028,7 @@ describe('emitOnDemandEmpty', () => {
         taskScheduleMod: stubMod,
         request: { id: 'req-reconcile', taskType: 'branch-reconcile' },
         targetApp: { id: 'app-1', name: 'App One' },
-        taskConfig: { type: 'on-demand' }
+        taskConfig: { type: 'on-demand', perpetual: true }
       });
     } finally {
       cosEvents.off('schedule:on-demand-empty', handler);
