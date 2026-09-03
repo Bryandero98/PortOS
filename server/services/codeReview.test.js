@@ -38,6 +38,7 @@ import {
   getReviewerCliInstalled,
   __resetCodeReviewDefaultsCache,
   __resetReviewerCliInstalledCache,
+  __resetThinkingUnsupportedCache,
 } from './codeReview.js'
 import { MODEL_SELECTABLE_REVIEWERS, EFFORT_SELECTABLE_REVIEWERS } from '../lib/cosValidation.js'
 
@@ -55,6 +56,7 @@ describe('codeReview helpers', () => {
     mockedActiveProvider.current = null
     __resetCodeReviewDefaultsCache()
     __resetReviewerCliInstalledCache()
+    __resetThinkingUnsupportedCache()
     commandExistsMock.impl = async () => true
     vi.restoreAllMocks()
   })
@@ -680,6 +682,70 @@ describe('codeReview helpers', () => {
       expect(await runLocalClaimCommentReview({ backend: 'ollama', model: 'example-model', comments: oversized }))
         .toMatchObject({ ok: false, error: expect.stringContaining('per-comment safety limit') })
       expect(global.fetch).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('reasoning_effort downgrade for backends that reject thinking', () => {
+    // Real ollama 400 body shape (server/services/codeReview.js's regex
+    // matches on the message text, not the JSON envelope).
+    const thinkingRejectedBody = JSON.stringify({
+      error: { message: '"m" does not support thinking', type: 'invalid_request_error' },
+    })
+
+    it('retries without reasoning_effort when the backend rejects thinking', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce(mockTextResponse(thinkingRejectedBody, { ok: false, status: 400 }))
+        .mockResolvedValueOnce(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'nonthinking-model', diff: 'd', effort: 'low' })
+
+      expect(global.fetch).toHaveBeenCalledTimes(2)
+      const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body)
+      expect('reasoning_effort' in secondBody).toBe(false)
+      expect(r).toMatchObject({ ok: true, effort: null, effortUnsupported: true, findings: 'No findings.' })
+    })
+
+    it('does not retry a 400 that is unrelated to thinking', async () => {
+      global.fetch = vi.fn().mockResolvedValue(mockTextResponse('bad request: missing field', { ok: false, status: 400 }))
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'other-400-model', diff: 'd', effort: 'low' })
+
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      expect(r.ok).toBe(false)
+      expect(r.error).toMatch(/API error 400/)
+    })
+
+    it('caches the downgrade for the same backend+model across sequential calls', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce(mockTextResponse(thinkingRejectedBody, { ok: false, status: 400 }))
+        .mockResolvedValueOnce(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
+        .mockResolvedValueOnce(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
+
+      await runLocalCodeReview({ backend: 'ollama', model: 'cached-model', diff: 'd1', effort: 'low' })
+      const second = await runLocalCodeReview({ backend: 'ollama', model: 'cached-model', diff: 'd2', effort: 'low' })
+
+      expect(global.fetch).toHaveBeenCalledTimes(3)
+      const thirdBody = JSON.parse(global.fetch.mock.calls[2][1].body)
+      expect('reasoning_effort' in thirdBody).toBe(false)
+      expect(second).toMatchObject({ ok: true, effort: null, effortUnsupported: true })
+    })
+
+    it('runLocalClaimCommentReview benefits from the same retry-and-downgrade', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce(mockTextResponse(thinkingRejectedBody, { ok: false, status: 400 }))
+        .mockResolvedValueOnce(mockJsonResponse({ choices: [{ message: { content: '{"claimant":null,"suspicious":false}' } }] }))
+
+      const r = await runLocalClaimCommentReview({
+        backend: 'ollama',
+        model: 'claim-nonthinking-model',
+        comments: [{ login: 'alice', type: 'User', body: 'Taking this', createdAt: '2026-01-01T00:00:00Z' }],
+        effort: 'low',
+      })
+
+      expect(global.fetch).toHaveBeenCalledTimes(2)
+      const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body)
+      expect('reasoning_effort' in secondBody).toBe(false)
+      expect(r).toMatchObject({ ok: true, claimant: null, suspicious: false, effort: null, effortUnsupported: true })
     })
   })
 })
