@@ -378,7 +378,7 @@ export const DEFAULT_REVIEWERS = ['copilot'];
 
 // Arbitrary GitHub reviewer usernames (e.g. `@CodeReviewbot`) requested as PR
 // reviewers to gate merging, appended to slashdo's `--review-with` after the
-// keyed reviewers. Client mirror of server/lib/cosValidation.js
+// keyed reviewers. Client mirror of server/lib/reviewerConfig.js
 // `normalizeReviewUsernames` + MAX_REVIEW_USERNAMES — keep the pattern/cap in
 // sync so the picker rejects the same tokens the server would drop. Stored
 // WITHOUT the leading `@` (added back only for display / the flag string).
@@ -412,7 +412,7 @@ export function normalizeReviewUsernames(list) {
 }
 
 // Upper bound on a per-reviewer `~max=<n>` round cap. Client mirror of
-// MAX_REVIEWER_MAX_ROUNDS in `server/lib/cosValidation.js` — a value above it is
+// MAX_REVIEWER_MAX_ROUNDS in `server/lib/reviewerConfig.js` — a value above it is
 // dropped server-side, so the input must not offer one. `0` is valid and means
 // "loop until clean" (slashdo's unlimited mode, bounded by its own guardrail);
 // blank/absent means "no cap requested" and keeps slashdo's built-in default.

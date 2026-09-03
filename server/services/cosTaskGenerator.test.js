@@ -502,7 +502,7 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // gets — it runs each reviewer by hand, so a configured cap only reaches the
     // run if the CSV carries it. Both the scheduled path and buildClaimWorkTask
     // feed the cap into the shared claim resolver, which applies task-over-default
-    // precedence (unit-tested in cosValidation.test.js).
+    // precedence (unit-tested in reviewerConfig.test.js).
     expect(GEN_SRC).toContain('reviewerMaxRounds: reviewerMaxRounds ?? metadata.reviewerMaxRounds');
     expect(GEN_SRC).toContain('resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers)');
     expect(GEN_SRC).not.toContain('resolveReviewerMaxRounds(');
