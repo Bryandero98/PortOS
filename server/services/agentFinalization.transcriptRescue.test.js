@@ -79,14 +79,14 @@ const printedTranscript = (answer = REASONER_ANSWER, { echoSchema = false } = {}
 ].join('');
 
 let agentId = 0;
-const setupRun = ({ transcript, sentinel = null }) => {
+const setupRun = ({ transcript, sentinel = null, spool = 'raw.txt' }) => {
   agentId += 1;
   const id = `agent-${agentId}`;
   const agentDir = join(TEMP_ROOT, 'cos/agents', id);
   const workspace = join(TEMP_ROOT, 'workspaces', id);
   mkdirSync(agentDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
-  if (transcript !== null) writeFileSync(join(agentDir, 'raw.txt'), transcript);
+  if (transcript !== null) writeFileSync(join(agentDir, spool), transcript);
   // The sentinel filename is scoped to the agent instance (doneSentinelName).
   if (sentinel !== null) writeFileSync(join(workspace, `.agent-done-${id}`), sentinel);
   return { agentId: id, workspacePath: workspace };
@@ -114,6 +114,17 @@ describe('printed-payload transcript rescue (#3640)', () => {
 
     expect(hook).toHaveBeenCalledWith(expect.objectContaining({
       success: true,
+      payload: { analysis: 'Nothing worth proposing this cycle.', proposal: null, pause: null },
+    }));
+  });
+
+  it('reads output.txt when the run was a direct CLI spawn with no raw.txt spool', async () => {
+    // Every public-review stage spawns the CLI directly (stream-json to
+    // output.txt); only the PTY spawner writes raw.txt. Reading raw.txt alone
+    // rejected the tool-free Eligibility Gate's printed decision as invalid.
+    const hook = await runDispatch({ transcript: printedTranscript(), spool: 'output.txt' });
+
+    expect(hook).toHaveBeenCalledWith(expect.objectContaining({
       payload: { analysis: 'Nothing worth proposing this cycle.', proposal: null, pause: null },
     }));
   });
