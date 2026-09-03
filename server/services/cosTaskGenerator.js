@@ -1509,16 +1509,13 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     blockedTaskTypes, ignoreTaskId, wakeAfterRecord
   });
 
-  // Load the activity snapshot ONCE before the per-app loop. Both the
-  // cooldown gate and the rotation `lastType` lookup are derived from
-  // `data/app-activity.json`; before this hoist, each app paid two
-  // separate disk reads (one via `isAppOnCooldown` + one via
-  // `getAppActivityById`), so a 10-app deployment did 20 reads of the
-  // same file per scheduler tick. With the snapshot pinned, the cost
-  // is O(1) read per `queueEligibleImprovementTasks` invocation. Falls
-  // back to an empty `apps` map on disk error so the loop's per-app
-  // lookups uniformly return `undefined` (both gates treat that as
-  // "no activity yet — not on cooldown, no last type").
+  // Load the activity snapshot ONCE before the per-app loop. The cooldown gate
+  // is derived from `data/app-activity.json`; before this hoist, each app paid a
+  // separate disk read (via `isAppOnCooldown`), so a 10-app deployment re-read
+  // the same file once per app per scheduler tick. With the snapshot pinned, the
+  // cost is O(1) read per `queueEligibleImprovementTasks` invocation. Falls back
+  // to an empty `apps` map on disk error so the loop's per-app lookups uniformly
+  // return `undefined` (read as "no activity yet — not on cooldown").
   const activitySnapshot = await loadAppActivity().catch(() => ({ apps: {} }));
 
   // Queue eligible improvement tasks for all managed apps (including PortOS)
@@ -1565,13 +1562,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // alone). When NOT on cooldown, the normal full-priority pick runs.
     const onCooldown = isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs);
 
-    // `getNextTaskType` falls back to ROTATION when nothing is time-due, and the
-    // rotation pointer is derived from `lastType` — without it the rotation
-    // always restarts from index 0 and starves every other rotation type for the
-    // app. Mirror `generateManagedAppTask` (the legacy direct-spawn caller) which
-    // threads the per-app `lastImprovementType` in.
-    const lastType = appActivity?.lastImprovementType || '';
-    const nextTypeResult = await getNextTaskType(app.id, lastType, { perpetualOnly: onCooldown }).catch(() => null);
+    const nextTypeResult = await getNextTaskType(app.id, { perpetualOnly: onCooldown }).catch(() => null);
     if (!nextTypeResult) continue;
     const nextType = nextTypeResult.taskType;
 
@@ -2285,7 +2276,7 @@ export function applyAppWorktreeDefault(metadata, app) {
 }
 
 async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = null } = {}) {
-  const { getAppActivityById, updateAppActivity } = await import('./appActivity.js');
+  const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
 
   // First, check for any on-demand task requests for this app
@@ -2315,12 +2306,8 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
     selectionReason = 'on-demand';
     emitLog('info', `Processing on-demand app task request: ${nextType} for ${app.name}`, { requestId: request.id });
   } else {
-    // Get last improvement type for this app
-    const appActivity = await getAppActivityById(app.id);
-    const lastType = appActivity?.lastImprovementType || '';
-
     // Use the schedule service to determine the next task type
-    const nextTypeResult = await taskSchedule.getNextTaskType(app.id, lastType);
+    const nextTypeResult = await taskSchedule.getNextTaskType(app.id);
 
     if (!nextTypeResult) {
       emitLog('info', `No app improvement tasks are eligible for ${app.name} based on schedule`);
@@ -2429,8 +2416,7 @@ function takePerpetualTransient(taskType, appId) {
 export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, taskConfig }) {
   const appId = targetApp?.id || null;
   const parkInfo = await taskScheduleMod.getPerpetualParkInfo(request.taskType, appId).catch(() => null);
-  const isDetectorDriven = taskConfig?.type === taskScheduleMod.INTERVAL_TYPES.PERPETUAL
-    || isReconcileDrainTaskType(request.taskType);
+  const isDetectorDriven = taskConfig?.perpetual === true;
   const outcome = parkInfo ? 'parked' : (isDetectorDriven ? 'transient' : 'idle');
 
   // Layered Intelligence skips (e.g. a provider that can't drive an agent) record
@@ -2606,8 +2592,9 @@ async function resolveClaimWorkRouting(app, taskType, metadata, taskSchedule) {
  * evaluations alone, parking it for `drain-cap` without a single dispatch.
  */
 async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, interval, taskSchedule, { ignoreTaskId = null } = {}) {
-  if (interval.type !== taskSchedule.INTERVAL_TYPES.PERPETUAL
-      || taskType === 'branch-reconcile' || taskType === 'issue-reconcile') {
+  // The reconcile drains run their own scan-driven gate (the blocks in
+  // cosTaskPreStepBlocks), so they opt out of the generic work detector.
+  if (interval.perpetual !== true || isReconcileDrainTaskType(taskType)) {
     return { skip: false };
   }
   const { detectActionableWork } = await import('./perpetualWork.js');

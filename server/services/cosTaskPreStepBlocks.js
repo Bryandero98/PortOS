@@ -29,7 +29,6 @@ import { emitLog } from './cosEvents.js';
 import { getActiveApps } from './apps.js';
 import { getCodeReviewDefaults } from './codeReview.js';
 import { NON_ACTIONABLE_ISSUE_LABELS } from './perpetualWork.js';
-import { isReconcileDrainTaskType } from './taskScheduleConstants.js';
 import {
   appendReviewerEffortBlock,
   buildLocalReviewerInstructions,
@@ -248,10 +247,7 @@ export function buildPlanConstraintBlock(planId) {
  * @returns {Promise<{skip:boolean}>}
  */
 export async function applyPerpetualDrainCap(app, taskType, interval, taskSchedule) {
-  const isPerpetual = interval.type === taskSchedule.INTERVAL_TYPES.PERPETUAL;
-  const isOnDemandReconcile = interval.type === taskSchedule.INTERVAL_TYPES.ON_DEMAND
-    && isReconcileDrainTaskType(taskType);
-  if (!isPerpetual && !isOnDemandReconcile) return { skip: false };
+  if (interval.perpetual !== true) return { skip: false };
   // Coerce before validating: this key is not on the schedule route's allowlist, so
   // the only way it arrives non-numeric is a hand-edited schedule.json, where `"5"`
   // is the likeliest shape and reading it as "no cap" would silently unbound the

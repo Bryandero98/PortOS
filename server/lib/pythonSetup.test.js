@@ -417,10 +417,10 @@ describe('detectVenvBasePythonSync', () => {
     mockState.presentPaths.add('/data/python/venv/bin/python3');
     mockState.presentPaths.add('/opt/homebrew/bin/python3');
     const { detectVenvBasePythonSync, detectPythonSync } = await loadModule();
-    expect(detectVenvBasePythonSync()).toBe('/opt/homebrew/bin/python3');
+    expect(posixPath(detectVenvBasePythonSync())).toBe('/opt/homebrew/bin/python3');
     // detectPythonSync (the pip-target picker) is unchanged: it still prefers
     // the app-managed venv for installing packages.
-    expect(detectPythonSync()).toBe('/data/python/venv/bin/python3');
+    expect(posixPath(detectPythonSync())).toBe('/data/python/venv/bin/python3');
   });
 
   it('excludes all three app-managed venvs, not just the image-gen one', async () => {
@@ -428,13 +428,13 @@ describe('detectVenvBasePythonSync', () => {
     mockState.presentPaths.add('/Users/test/.pixie-forge/venv/bin/python3');
     mockState.presentPaths.add('/usr/bin/python3');
     const { detectVenvBasePythonSync } = await loadModule();
-    expect(detectVenvBasePythonSync()).toBe('/usr/bin/python3');
+    expect(posixPath(detectVenvBasePythonSync())).toBe('/usr/bin/python3');
   });
 
   it('falls back to an app-managed venv only when nothing non-app-managed exists anywhere', async () => {
     mockState.presentPaths.add('/data/python/venv/bin/python3');
     const { detectVenvBasePythonSync } = await loadModule();
-    expect(detectVenvBasePythonSync()).toBe('/data/python/venv/bin/python3');
+    expect(posixPath(detectVenvBasePythonSync())).toBe('/data/python/venv/bin/python3');
   });
 });
 
