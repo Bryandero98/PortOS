@@ -39,7 +39,7 @@ const needsAgentFeedback = (agent) => {
   return !isSystemAgent && isManualUserAgent && !agent.feedback?.rating;
 };
 
-export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, apps }) {
+export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, providersLoaded, apps }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [resumingAgent, setResumingAgent] = useState(null);
   const [relaunchingAgent, setRelaunchingAgent] = useState(null);
@@ -435,6 +435,7 @@ export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, a
         <RelaunchAgentModal
           agent={relaunchingAgent}
           providers={providers}
+          providersLoaded={providersLoaded}
           apps={apps}
           onDone={onRefresh}
           onClose={() => setRelaunchingAgent(null)}
@@ -447,6 +448,7 @@ export default function AgentsTab({ agents, onRefresh, liveOutputs, providers, a
           agent={resumingAgent}
           taskType={resumingAgent.taskId?.startsWith('sys-') || resumingAgent.metadata?.taskType === 'internal' ? 'internal' : 'user'}
           providers={providers}
+          providersLoaded={providersLoaded}
           apps={apps}
           onSubmit={handleResumeSubmit}
           onClose={() => setResumingAgent(null)}

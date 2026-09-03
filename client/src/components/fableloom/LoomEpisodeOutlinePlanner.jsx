@@ -373,6 +373,7 @@ export default function LoomEpisodeOutlinePlanner({
         layout="stacked"
         disabled={busy || generating || saving || validating || reviewing || expanding}
         modelDisabled={busy || generating || saving || validating || reviewing || expanding}
+        loading={providersLoading}
         emptyProviderOption="Default (outline stage or active provider)"
         emptyModelOption="Default model"
         alwaysShowModel={!!route.providerId}

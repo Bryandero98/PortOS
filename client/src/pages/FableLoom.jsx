@@ -234,6 +234,7 @@ export default function FableLoom() {
               label="Plan AI provider"
               disabled={creating || providersLoading}
               modelDisabled={creating || providersLoading}
+              loading={providersLoading}
               emptyProviderOption="Default (series-plan stage or active provider)"
               emptyModelOption="Default model"
               alwaysShowModel={!!planRoute.providerId}

@@ -190,6 +190,18 @@ export default function ChiefOfStaff() {
     return data;
   }, []);
 
+  // Same self-committing-read fix as `applyProviders`, for the same reason: apps
+  // feeds the Schedule/Tasks/Agents app pickers, so bundling it into
+  // `secondaryRead`'s Promise.all held it hostage to `getCosActionableInsights`
+  // (a server-side health check) and left those pickers showing an empty list
+  // for seconds. `sameJsonShape` keeps the array identity stable on an unchanged
+  // 30s poll payload so this doesn't cost a full-tree re-render each tick.
+  const applyApps = useCallback((data) => {
+    const filtered = (Array.isArray(data) ? data : []).filter(a => a.id !== 'portos-autofixer');
+    setApps(prev => (sameJsonShape(prev, filtered) ? prev : filtered));
+    return filtered;
+  }, []);
+
   // Derive agent state from system status
   const deriveAgentState = useCallback((statusData, agentsData, healthData) => {
     if (!statusData?.running) return 'sleeping';
@@ -232,8 +244,10 @@ export default function ChiefOfStaff() {
     const providersRead = api.getProviders()
       .catch(() => ({ providers: [] }))
       .then(applyProviders);
+    // Same rationale as providersRead above: apps commits on its own settle
+    // instead of waiting on the slower siblings in secondaryRead.
+    const appsRead = api.getApps().catch(() => []).then(applyApps);
     const secondaryRead = Promise.all([
-      api.getApps().catch(() => []),
       api.getCosLearningSummary().catch(() => null),
       // `silent: true` keeps transient poll blips quiet, matching the banner's
       // retired 60s poll; `.catch(() => null)` → preserve last-good below.
@@ -264,10 +278,10 @@ export default function ChiefOfStaff() {
     const runningAgent = agentsData.find(a => a.status === 'running');
     setActiveAgentMeta(runningAgent?.metadata || null);
 
-    const [appsData, learningSummaryData, insightsData] = await secondaryRead;
-    // Both self-committing reads are barriers, not values: `mergedHealth` below
-    // reads what `healthRead` wrote, so it must not run before they settle.
-    await Promise.all([healthRead, providersRead]);
+    const [learningSummaryData, insightsData] = await secondaryRead;
+    // All three self-committing reads are barriers, not values: `mergedHealth`
+    // below reads what `healthRead` wrote, so it must not run before they settle.
+    await Promise.all([healthRead, providersRead, appsRead]);
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
@@ -276,8 +290,6 @@ export default function ChiefOfStaff() {
     // failed); everything below derives from what it returned, never from the
     // raw read, so the bubble can't name an older issue than the tile shows.
     const mergedHealth = healthRef.current;
-    // Filter out PortOS Autofixer (it's part of PortOS project)
-    setApps(appsData.filter(a => a.id !== 'portos-autofixer'));
     setLearningSummary(learningSummaryData);
     // Apply a real insights payload (including a legitimately-empty []); a null
     // from a failed/transient fetch preserves the last-good array so the banner
@@ -1186,12 +1198,12 @@ export default function ChiefOfStaff() {
         {activeTab === 'tasks' && (
           <div role="tabpanel" id="tabpanel-tasks" aria-labelledby="tab-tasks">
             <ActionableInsightsBanner insights={insights} onTaskUnblocked={handleTaskUnblocked} onRefresh={fetchData} />
-            <TasksTab tasks={tasks} agents={agents} onRefresh={fetchData} onTaskAdded={handleUserTaskAdded} onTaskUnblocked={handleTaskUnblocked} providers={providers} apps={apps} />
+            <TasksTab tasks={tasks} agents={agents} onRefresh={fetchData} onTaskAdded={handleUserTaskAdded} onTaskUnblocked={handleTaskUnblocked} providers={providers} providersLoaded={providersLoaded} apps={apps} />
           </div>
         )}
         {activeTab === 'agents' && (
           <div role="tabpanel" id="tabpanel-agents" aria-labelledby="tab-agents">
-            <AgentsTab agents={agents} onRefresh={fetchData} liveOutputs={liveOutputs} providers={providers} apps={apps} />
+            <AgentsTab agents={agents} onRefresh={fetchData} liveOutputs={liveOutputs} providers={providers} providersLoaded={providersLoaded} apps={apps} />
           </div>
         )}
         {activeTab === 'jobs' && (
@@ -1232,7 +1244,7 @@ export default function ChiefOfStaff() {
         {activeTab === 'workflow' && (
           <div role="tabpanel" id="tabpanel-workflow" aria-labelledby="tab-workflow">
             <Suspense fallback={<TabLoadFallback label="workflow" />}>
-              <WorkflowTab apps={apps} providers={providers} />
+              <WorkflowTab apps={apps} providers={providers} providersLoaded={providersLoaded} />
             </Suspense>
           </div>
         )}

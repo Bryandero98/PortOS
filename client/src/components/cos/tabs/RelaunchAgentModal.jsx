@@ -42,7 +42,7 @@ const RELAUNCH_MESSAGES = {
  * because it is mounted from two places (the agent card and the in-progress task
  * card) and the server's mode enum should have exactly one client reader.
  */
-export default function RelaunchAgentModal({ agent, providers, apps, onDone, onClose }) {
+export default function RelaunchAgentModal({ agent, providers, providersLoaded = true, apps, onDone, onClose }) {
   const currentProvider = agent?.metadata?.providerId || agent?.metadata?.provider || '';
   const taskDescription = agent?.metadata?.taskDescription || agent?.taskId || 'Current task';
 
@@ -163,6 +163,7 @@ export default function RelaunchAgentModal({ agent, providers, apps, onDone, onC
           emptyModelOption="Default model"
           alwaysShowModel
           highlightToolUse
+          loading={!providersLoaded}
         />
 
         <FormField label="Additional Instructions (optional)">

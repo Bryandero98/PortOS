@@ -141,7 +141,7 @@ function getSuccessRateStyle(rate) {
   return { bg: 'bg-port-error/15', text: 'text-port-error', label: 'low' };
 }
 
-export default function TaskItem({ task, agent = null, isSystem, spawning = false, selected = false, onRefresh, onTaskUnblocked, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
+export default function TaskItem({ task, agent = null, isSystem, spawning = false, selected = false, onRefresh, onTaskUnblocked, providers, providersLoaded, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
   // System tasks are persisted in COS-TASKS.md. Every task
   // mutation must name that source; otherwise the API's user-queue default
   // searches TASKS.md and reports the system task as missing.
@@ -831,6 +831,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
         <RelaunchAgentModal
           agent={agent}
           providers={providers}
+          providersLoaded={providersLoaded}
           apps={apps}
           onDone={onRefresh}
           onClose={() => setRelaunching(false)}
