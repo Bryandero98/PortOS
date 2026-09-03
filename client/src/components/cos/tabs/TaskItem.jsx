@@ -405,8 +405,13 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
       {/* The icon rail and the task body cannot share a row on a phone: up to
           five 44px targets leave the body ~120px wide, so the task id breaks a
           few characters per line and every badge lands on its own row. The
-          16rem basis on the body is what forces the rail onto its own wrapped
-          line under `sm`; `sm:flex-nowrap` puts them back on one row above it. */}
+          rail's `basis-full` under `sm` is what drops it onto its own wrapped
+          line, leaving the handle, the status glyph and the body together on the
+          first; `sm:basis-auto` + `sm:flex-nowrap` put them back on one row above
+          it. Sizing the BODY instead (a `basis-64` that pushes the rail off the
+          line) reads the same at 390px but strands the two 16px glyphs alone on
+          row 1 once they no longer fit beside it — at 360px and below, and at
+          390px on any row that also carries a drag handle. */}
       <div className="flex items-start gap-3 flex-wrap sm:flex-nowrap">
         {/* Drag handle - only show for user tasks. */}
         {dragHandleProps && !isSystem && (
@@ -435,7 +440,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
         >
           {statusIcons[displayStatus]}
         </button>
-        <div className="flex-1 basis-64 min-w-0">
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-sm font-mono text-gray-500 min-w-0 break-words">{task.id}</span>
             {task.metadata?.app && apps?.find(a => a.id === task.metadata.app)?.name && (
@@ -738,7 +743,7 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
         {/* Action buttons. Keep the delete confirmation here, next to the trash
             icon, rather than at the bottom of the card — a task with a lot of
             context would otherwise push the confirm row far below the fold. */}
-        <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2 shrink-0 ml-auto">
+        <div className="flex flex-wrap items-center justify-end gap-1 sm:gap-2 shrink-0 ml-auto basis-full sm:basis-auto">
           {!editing && (
             isConfirming(task.id) ? (
               <ConfirmButtonPair
