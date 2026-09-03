@@ -184,6 +184,7 @@ export * from './quotaBurnValidation.js';
 export * from './quotaReset.js';
 export * from './quotaWindows.js';
 export * from './recurrenceValidation.js';
+export * from './opencodeCatalogCache.js';
 export * from './opencodeConfig.js';
 export * from './localProviderRuntime.js';
 export * from './mtplxModels.js';
