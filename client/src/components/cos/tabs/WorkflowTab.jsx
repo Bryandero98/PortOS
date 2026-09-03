@@ -132,7 +132,7 @@ function TimelineRow({ node, occurrences, windows, timeline, hours, timezone, se
   const divisions = hours === 168 ? 7 : 8;
   const dependencyWarning = node.pendingDeps?.length > 0;
 
-  // App overrides only apply to task types (system jobs are not per-app). The
+  // Per-app options only apply to task types (system jobs are not per-app). The
   // server's active-app counts drive the toggle + badge (single source of
   // truth); PerAppOverrideList does its own `apps` filtering when expanded.
   const { enabledAppCount = 0, totalAppCount = 0 } = node;
@@ -148,7 +148,7 @@ function TimelineRow({ node, occurrences, windows, timeline, hours, timezone, se
               type="button"
               onClick={() => onToggleExpand(node.id)}
               aria-expanded={expanded}
-              aria-label={`${expanded ? 'Hide' : 'Show'} app overrides for ${node.label}`}
+              aria-label={`${expanded ? 'Hide' : 'Show'} per-app options for ${node.label}`}
               title={countTitle}
               className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-white/10 hover:text-gray-300"
             >
@@ -271,7 +271,7 @@ export default function WorkflowTab({ apps, providers }) {
   const [graph, setGraph] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  // Which task rows have their per-app override panel expanded. Kept as local
+  // Which task rows have their per-app options panel expanded. Kept as local
   // view state (a lightweight detail, not a selected record) rather than in the
   // URL — the ?track= param already owns the selected editor panel.
   const [expandedIds, setExpandedIds] = useState(() => new Set());
@@ -305,7 +305,7 @@ export default function WorkflowTab({ apps, providers }) {
     return () => { fetchGeneration.current += 1; };
   }, [fetchGraph]);
 
-  // Per-app override mutations are shared with ScheduleTab; refetch the graph so
+  // Per-app option mutations are shared with ScheduleTab; refetch the graph so
   // the enabled-app counts and inherited defaults stay in sync after each change.
   const { handleUpdateOverride, handleBulkToggleOverride } = useAppOverrideActions(apps, fetchGraph);
 
@@ -445,7 +445,7 @@ export default function WorkflowTab({ apps, providers }) {
                               type="button"
                               onClick={() => toggleExpand(node.id)}
                               aria-expanded={expandedIds.has(node.id)}
-                              aria-label={`${expandedIds.has(node.id) ? 'Hide' : 'Show'} app overrides for ${node.label}`}
+                              aria-label={`${expandedIds.has(node.id) ? 'Hide' : 'Show'} per-app options for ${node.label}`}
                               title={`${node.enabledAppCount || 0} of ${node.totalAppCount} apps enabled`}
                               className="flex h-full items-center border-l border-port-border/60 px-1.5 text-gray-500 hover:bg-white/10 hover:text-gray-300"
                             >
@@ -458,7 +458,7 @@ export default function WorkflowTab({ apps, providers }) {
                   </div>
                   {model.flexible.filter(node => expandedIds.has(node.id) && node.kind === 'task' && (node.totalAppCount || 0) > 0).map(node => (
                     <div key={node.id} className="mt-2 rounded border border-port-border/60 bg-port-bg/20 px-3 py-3">
-                      <div className="mb-2 text-xs font-medium text-gray-300">{node.label} <span className="text-gray-600">· app overrides</span></div>
+                      <div className="mb-2 text-xs font-medium text-gray-300">{node.label} <span className="text-gray-600">· per-app options</span></div>
                       <AppOverridePanel node={node} apps={apps} providers={providers} onUpdateOverride={handleUpdateOverride} onBulkToggleOverride={handleBulkToggleOverride} />
                     </div>
                   ))}
