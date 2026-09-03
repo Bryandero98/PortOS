@@ -45,20 +45,19 @@ import { cleanupMultipartTemp } from '../services/videoGen/prepareParams.js';
 import { submitVideoGenJob } from '../services/videoGen/submitJob.js';
 import { VIDEO_GEN_LOCAL_ONLY_FIELDS } from '../services/videoGen/requestFields.js';
 import { attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
-import { repoForModel, getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
+import { getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
 import {
-  IC_LORA_MODE_VALUES, icLoraSpecForMode, icLoraRepos, listIcLoraWeights,
+  IC_LORA_MODE_VALUES, icLoraSpecForMode, listIcLoraWeights,
   icLoraWeightCandidates, findCachedIcLoraWeight,
 } from '../lib/icLoraWeights.js';
+import { publicTextEncoderOption } from '../lib/videoTextEncoders.js';
+import { DRAFT_DECODE_IDS } from '../lib/videoDraftDecoders.js';
+import { repairModelCache, repairCachedFile, summarizeVerify } from '../lib/hfCache.js';
 import {
-  downloadableVideoTextEncoders, downloadableVideoTextEncoder, publicTextEncoderOption,
-} from '../lib/videoTextEncoders.js';
-import { DRAFT_DECODE_IDS, downloadableVideoDraftDecoders } from '../lib/videoDraftDecoders.js';
-import {
-  inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
-  verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
-  isSafeHfRepoRelativePath,
-} from '../lib/hfCache.js';
+  modelDownloadTargets, textEncoderDownloadTarget, textEncoderDownloadTargets,
+  verifyDownloadTarget, repairDownloadTarget, reposToVerify,
+  repoCacheStatus, modelCacheStatus, icLoraSpecFromParam, textEncoderFromParam,
+} from '../services/videoGen/modelCache.js';
 import { startHfDownloadStream } from '../services/hfDownloadStream.js';
 import { openSseStream } from '../lib/sseDownload.js';
 import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
@@ -531,142 +530,6 @@ router.get('/models', asyncHandler(async (_req, res) => {
   res.json(models);
 }));
 
-// Resolve the repo set an integrity scan should cover. A specific `modelId`
-// scopes to that model's repo; no modelId scans every model repo plus the
-// shared text encoder.
-// One definition of "a valid `only` list" for every download target this file
-// builds — model repos, their required weights, and the substitutable prompt
-// conditioners. `owner` is only used to name the offender in the error, so a
-// conditioner entry can pass its own registry id.
-const safeOnlyList = (owner, files, label) => {
-  const only = Array.isArray(files) ? files.filter((file) => typeof file === 'string' && file.length > 0) : [];
-  if (only.some((file) => !isSafeHfRepoRelativePath(file))) {
-    throw new ServerError(
-      `${owner} has an unsafe ${label} path. Use repo-relative POSIX filenames only.`,
-      { status: 500, code: 'VIDEO_MODEL_MISCONFIGURED' },
-    );
-  }
-  return only;
-};
-
-const videoModelLabel = (model) => `Video model "${model?.id}"`;
-
-const modelDownloadTargets = (model) => {
-  const repo = repoForModel(model);
-  if (!repo) return [];
-  // `repoFiles` narrows the model's OWN repo to an explicit file list, the way
-  // `requiredWeights[].files` already does for a secondary repo. It is required
-  // — not an optimization — whenever the model's repo is an aggregate that
-  // holds more than the one component set the runner loads: MiniMax H3 ships
-  // its diffusers layout, a second transformer partition and the original
-  // non-diffusers layout in one ~498 GB repo, so the default whole-snapshot
-  // target would pull 3.5x what the render path can use. Absent (every other
-  // model) still means "snapshot the repo".
-  const targets = [{
-    repo,
-    revision: model?.revision || null,
-    only: safeOnlyList(videoModelLabel(model), model?.repoFiles, 'repo-file'),
-  }];
-  for (const dep of Array.isArray(model?.requiredWeights) ? model.requiredWeights : []) {
-    if (typeof dep?.repo !== 'string') continue;
-    const only = safeOnlyList(videoModelLabel(model), dep.files, 'required-weight');
-    if (only.length > 0) targets.push({ repo: dep.repo, revision: dep.revision || null, only });
-  }
-  // The model's preview-fidelity decoder (#5423), when it declares one. Scoped
-  // to its pinned file for the same reason every other entry here is — and
-  // listed under the MODEL rather than as a standalone target, because it is
-  // useless without the checkpoint it decodes for, so the download badge that
-  // offers it belongs beside that model's own.
-  for (const decoder of downloadableVideoDraftDecoders([model])) {
-    targets.push({
-      repo: decoder.repo,
-      revision: decoder.revision || null,
-      only: safeOnlyList(`Draft decoder "${decoder.id}"`, decoder.files, 'weight-file'),
-    });
-  }
-  return targets;
-};
-
-// One download target per substitutable prompt conditioner. Each names an
-// explicit file list inside a repo that holds more than the loader can use —
-// quantizations and generation tails in a repack, or the language layers past
-// the conditioning depth in an upstream checkpoint — so these are ALWAYS scoped
-// to `only: entry.files`. A repo-wide snapshot would pull ~130 GB of unusable
-// variants for the repack and ~10 GB of never-built layers for the upstream one.
-const textEncoderDownloadTarget = (entry) => ({
-  repo: entry.repo,
-  revision: entry.revision || null,
-  only: safeOnlyList(`Text encoder "${entry.id}"`, entry.files, 'weight-file'),
-});
-// Paired with its entry so the status lane can project the registry fields
-// (label, size) alongside the cache verdict without a second lookup.
-const textEncoderDownloadTargets = () => downloadableVideoTextEncoders()
-  .map((entry) => ({ entry, target: textEncoderDownloadTarget(entry) }));
-
-const targetKey = (target) => `${target.repo}@${target.revision || 'latest'}::${target.only.join(',')}`;
-const targetVerifyOptions = (target, deep) => ({
-  deep,
-  ...(target.revision ? { revision: target.revision } : {}),
-});
-const verifyDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
-  ? verifyCachedRepoFiles(target.repo, target.only, targetVerifyOptions(target, deep))
-  : verifyModelCache(target.repo, targetVerifyOptions(target, deep));
-const repairDownloadTarget = (target, { deep = false } = {}) => target.only.length > 0
-  ? repairCachedRepoFiles(target.repo, target.only, targetVerifyOptions(target, deep))
-  : repairModelCache(target.repo, targetVerifyOptions(target, deep));
-
-const reposToVerify = (modelId) => {
-  if (modelId) {
-    const m = listVideoModels().find((x) => x.id === modelId);
-    return m ? modelDownloadTargets(m) : [];
-  }
-  const targets = listVideoModels().flatMap(modelDownloadTargets);
-  const enc = getTextEncoderRepo();
-  if (isHfRepoId(enc)) targets.push({ repo: enc, only: [] });
-  // Substitutable prompt conditioners are single pinned files the render path
-  // depends on, so an unscoped scan must reach them too — a truncated one
-  // otherwise only surfaces as a load failure minutes into a render.
-  targets.push(...textEncoderDownloadTargets().map(({ target }) => target));
-  // IC-LoRA remix weights are separate HF pulls that the render path depends
-  // on, so an unscoped integrity scan must cover them too — otherwise a
-  // corrupt IC weight only surfaces as a garbled render.
-  targets.push(...icLoraRepos().map((repo) => ({ repo, only: [] })));
-  return [...new Map(targets.map((target) => [targetKey(target), target])).values()];
-};
-
-// Per-model download status — see /api/image-gen/models/status for the
-// shape contract. We also surface the active text-encoder repo so the
-// video form can warn when the Gemma encoder isn't downloaded yet (a
-// surprise multi-GB pull on top of the model itself).
-// Cache + integrity for one HF repo, in the `{ cached, sizeBytes, integrity }`
-// shape every download badge consumes. The integrity check only runs for a repo
-// that's actually downloaded — a not-yet-cached repo gets the Download badge,
-// not a Repair banner. Shared by all three lanes of /models/status below so the
-// badge semantics can't drift between models, the encoder, and IC weights.
-const repoCacheStatus = async (repo) => {
-  const { cached, sizeBytes } = await inspectModelCache(repo);
-  return { cached, sizeBytes, integrity: cached ? summarizeVerify(await verifyModelCache(repo)) : null };
-};
-
-const modelCacheStatus = async (model, cache = null) => {
-  const targets = modelDownloadTargets(model);
-  if (targets.length === 0) return { repo: null, cached: null, sizeBytes: 0, integrity: null };
-  const readTarget = (target) => {
-    if (!cache) return verifyDownloadTarget(target);
-    const key = targetKey(target);
-    if (!cache.has(key)) cache.set(key, verifyDownloadTarget(target));
-    return cache.get(key);
-  };
-  const verifies = await Promise.all(targets.map(readTarget));
-  return {
-    repo: targets[0].repo,
-    requiredRepos: [...new Set(targets.map((target) => target.repo))],
-    cached: verifies.every((verify) => verify.status === 'ok'),
-    sizeBytes: verifies.reduce((sum, verify) => sum + (verify.sizeBytes || 0), 0),
-    integrity: aggregateVerifies(verifies),
-  };
-};
-
 router.get('/models/status', asyncHandler(async (_req, res) => {
   // Text encoder is shared across all video renders. A registry entry with
   // `localPath` (e.g. an LM Studio install) trumps the HF cache check, so
@@ -797,17 +660,6 @@ router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
 // but are NOT listVideoModels() entries, so the model-id-keyed routes above
 // can't reach them. Keyed by the PortOS remix mode ('ic-control', …) so the
 // client uses the same identifier it puts in the render payload.
-const icLoraSpecFromParam = (mode) => {
-  const spec = icLoraSpecForMode(mode);
-  if (!spec) {
-    throw new ServerError(
-      `Unknown IC-LoRA remix mode: ${mode} (expected one of ${IC_LORA_MODE_VALUES.join(', ')})`,
-      { status: 404, code: 'IC_LORA_UNKNOWN_MODE' },
-    );
-  }
-  return spec;
-};
-
 // Download one IC weight. A spec with a `mirrorRepo` is fetched SINGLE-FILE and
 // only ever single-file: the official Ingredients repo is gated (an anonymous
 // pull 401s) and its un-gated mirror is the ~708 GB `DeepBeepMeep/LTX-2`
@@ -863,18 +715,6 @@ router.post('/ic-loras/:mode/repair', asyncHandler(async (req, res) => {
 // Distinct from the /text-encoder/* pair below, which is the SHARED LTX encoder
 // (one repo, install-wide, selected in the media-models registry). These are
 // per-model alternatives chosen per render.
-const textEncoderFromParam = (id) => {
-  const entry = downloadableVideoTextEncoder(id);
-  if (!entry) {
-    const known = downloadableVideoTextEncoders().map((e) => e.id);
-    throw new ServerError(
-      `Unknown text encoder: ${id}${known.length ? ` (expected one of ${known.join(', ')})` : ''}`,
-      { status: 404, code: 'VIDEO_TEXT_ENCODER_UNKNOWN' },
-    );
-  }
-  return entry;
-};
-
 // Always the entry's pinned file list, never a snapshot: these repos publish
 // more than the loader can read — INT8 ConvRot / NVFP4 quantizations and 50-63
 // generation tails in a repack, the language layers past the conditioning depth
