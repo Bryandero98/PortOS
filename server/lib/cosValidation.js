@@ -178,6 +178,18 @@ export const createCosTaskSchema = z.object({
     v => v === 'true' ? true : v === 'false' ? false : v,
     z.boolean().optional()
   ),
+  // Marks a task the user queued as an INVESTIGATION (#6043) — today the
+  // installer-failure "Queue agent to investigate" button. The flag is all a
+  // client may supply: the route derives the dedup fingerprint server-side
+  // (`clientInvestigationFingerprint`) and applies `CLIENT_INVESTIGATION_DELIVERY`,
+  // so a client can neither hand-craft a key that collides with an auto-filed
+  // investigation nor pick its own delivery posture. Without this field Zod
+  // stripped the flag, leaving UI-queued repairs outside the investigation
+  // dedup, the circuit breaker, and the meta-cascade guard.
+  isInvestigation: z.preprocess(
+    v => v === 'true' ? true : v === 'false' ? false : v,
+    z.boolean().optional()
+  ),
   whenDone: z.enum(['commit-push', 'leave-uncommitted']).optional(),
   // Read-only planning mode: investigate the codebase and file the issue, but
   // do not start implementation delivery. The task store expands this into
