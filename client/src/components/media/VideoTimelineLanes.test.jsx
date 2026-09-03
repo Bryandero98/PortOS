@@ -161,7 +161,7 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     expect(screen.queryByText('gone.png')).not.toBeInTheDocument();
   });
 
-  it('provides a 28px remove target without selecting a normal-width block', () => {
+  it('provides a 44px remove target without selecting a normal-width block', () => {
     const onSelect = vi.fn();
     const onRemove = vi.fn();
     render(
@@ -169,8 +169,8 @@ describe('LaneBlock — free-floating overlay/bed placement', () => {
     );
 
     const remove = screen.getByRole('button', { name: 'Remove logo.png from timeline' });
-    expect(remove.className).toContain('min-w-[28px]');
-    expect(remove.className).toContain('min-h-[28px]');
+    expect(remove.className).toContain('min-w-[44px]');
+    expect(remove.className).toContain('min-h-[44px]');
 
     fireEvent.pointerDown(remove);
     fireEvent.click(remove);

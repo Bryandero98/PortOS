@@ -65,7 +65,7 @@ export default function AppTaskTypeSection({ tasks, apps, providers, activeProvi
             type="button"
             onClick={() => setSearch('')}
             aria-label="Clear filter"
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-white"
+            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-white"
           >
             <X size={14} />
           </button>

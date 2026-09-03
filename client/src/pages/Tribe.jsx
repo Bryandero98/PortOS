@@ -493,7 +493,7 @@ function MemoryLinksPanel({ personId }) {
                 onClick={() => unlinkMemory(link.memoryId)}
                 title="Unlink memory"
                 aria-label="Unlink memory"
-                className="shrink-0 rounded p-1 text-gray-500 hover:text-rose-300"
+                className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center shrink-0 rounded p-1 text-gray-500 hover:text-rose-300"
               >
                 <X size={14} aria-hidden="true" />
               </button>

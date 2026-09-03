@@ -50,7 +50,7 @@ export default function AppOperationBanner({ appName, type, steps, error, comple
         {onDismiss && (
           <button
             onClick={onDismiss}
-            className="shrink-0 p-1 rounded text-gray-400 hover:text-white focus:outline-hidden focus:ring-2 focus:ring-port-accent"
+            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center shrink-0 p-1 rounded text-gray-400 hover:text-white focus:outline-hidden focus:ring-2 focus:ring-port-accent"
             aria-label={`Dismiss ${name} operation status`}
           >
             <X size={16} aria-hidden="true" />

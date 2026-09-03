@@ -410,7 +410,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                 event.stopPropagation();
                 copyToClipboard(agent.id, 'Agent ID copied to clipboard');
               }}
-              className="p-1 rounded text-gray-500 hover:bg-port-border/60 hover:text-white transition-colors shrink-0"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 rounded text-gray-500 hover:bg-port-border/60 hover:text-white transition-colors shrink-0"
               title="Copy agent ID"
               aria-label="Copy agent ID"
             >
@@ -544,7 +544,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               ) : (
                 <button
                   onClick={() => requestDelete(agent.id)}
-                  className="p-1 text-gray-500 hover:text-port-error transition-colors"
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error transition-colors"
                   aria-label="Remove agent"
                 >
                   <Trash2 size={14} aria-hidden="true" />
@@ -879,7 +879,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                 <button
                   onClick={() => submitFeedback('positive')}
                   disabled={submittingFeedback}
-                  className={`p-1.5 rounded transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center ${
+                  className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 rounded transition-colors ${
                     feedbackState === 'positive'
                       ? 'bg-port-success/30 text-port-success'
                       : 'text-gray-500 hover:text-port-success hover:bg-port-success/10'
@@ -893,7 +893,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                 <button
                   onClick={() => submitFeedback('negative')}
                   disabled={submittingFeedback}
-                  className={`p-1.5 rounded transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center ${
+                  className={`min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 rounded transition-colors ${
                     feedbackState === 'negative'
                       ? 'bg-port-error/30 text-port-error'
                       : 'text-gray-500 hover:text-port-error hover:bg-port-error/10'
@@ -906,7 +906,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
                 </button>
                 <button
                   onClick={() => setShowFeedbackComment(!showFeedbackComment)}
-                  className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-port-border/50 transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 rounded text-gray-500 hover:text-white hover:bg-port-border/50 transition-colors"
                   title={feedbackState ? 'Add feedback detail' : 'Add feedback comment'}
                   aria-label={feedbackState ? 'Add feedback detail' : 'Add feedback comment'}
                   aria-expanded={showFeedbackComment}

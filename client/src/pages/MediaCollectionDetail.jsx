@@ -514,7 +514,7 @@ export default function MediaCollectionDetail() {
               type="button"
               onClick={exitSelectMode}
               disabled={bulkBusy}
-              className="p-1 text-gray-400 hover:text-white disabled:opacity-40"
+              className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-400 hover:text-white disabled:opacity-40"
               title="Exit select mode"
               aria-label="Exit select mode"
             >

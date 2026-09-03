@@ -848,7 +848,7 @@ export default function ChiefOfStaff() {
       {desktopPanelCollapsed && (
         <button
           onClick={toggleDesktopPanel}
-          className="hidden lg:flex absolute left-0 top-2 z-20 p-1.5 text-port-text-muted hover:text-port-text transition-colors rounded-r-md hover:bg-port-border/80 bg-port-card/60 border border-l-0 border-port-accent-2/20"
+          className="min-h-[44px] min-w-[44px] items-center justify-center hidden lg:flex absolute left-0 top-2 z-20 p-1.5 text-port-text-muted hover:text-port-text transition-colors rounded-r-md hover:bg-port-border/80 bg-port-card/60 border border-l-0 border-port-accent-2/20"
           aria-label="Expand CoS panel"
           title="Expand CoS panel"
         >
@@ -866,7 +866,7 @@ export default function ChiefOfStaff() {
             <div className="hidden lg:block relative">
               <button
                 onClick={toggleDesktopPanel}
-                className="absolute top-2 right-2 z-10 p-1.5 text-gray-500 hover:text-white transition-colors rounded-md hover:bg-white/5"
+                className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center absolute top-2 right-2 z-10 p-1.5 text-gray-500 hover:text-white transition-colors rounded-md hover:bg-white/5"
                 aria-label="Collapse CoS panel"
                 title="Collapse CoS panel"
               >
@@ -947,7 +947,7 @@ export default function ChiefOfStaff() {
           {/* Desktop Collapse Button */}
           <button
             onClick={toggleDesktopPanel}
-            className="hidden lg:flex absolute top-2 right-2 z-20 p-1.5 text-gray-500 hover:text-white transition-colors rounded-md hover:bg-white/5"
+            className="min-h-[44px] min-w-[44px] items-center justify-center hidden lg:flex absolute top-2 right-2 z-20 p-1.5 text-gray-500 hover:text-white transition-colors rounded-md hover:bg-white/5"
             aria-label="Collapse CoS panel"
             title="Collapse CoS panel"
           >
