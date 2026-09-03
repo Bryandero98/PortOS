@@ -1082,7 +1082,7 @@ export default function LocalLlmRuntimesView() {
               {showLlamaLogs ? 'Hide server logs' : `View server logs (${llamaStatus.recentLogs.length} lines)`}
             </button>
             {showLlamaLogs && (
-              <pre className="text-[10px] text-gray-400 bg-port-bg border border-port-border/60 p-2.5 rounded max-h-40 overflow-y-auto font-mono whitespace-pre-wrap">
+              <pre className="text-[10px] text-gray-400 bg-port-bg border border-port-border/60 p-2.5 rounded max-h-40 overflow-y-auto font-mono whitespace-pre-wrap break-all">
                 {llamaStatus.recentLogs.join('\n')}
               </pre>
             )}

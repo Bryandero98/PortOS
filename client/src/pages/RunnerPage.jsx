@@ -507,7 +507,7 @@ ${prompt.trim()}`;
           className="bg-port-bg border border-port-border rounded-lg p-3 sm:p-4 h-64 sm:h-80 overflow-auto font-mono text-xs sm:text-sm"
         >
           {output ? (
-            <pre className="text-gray-300 whitespace-pre-wrap">{output}</pre>
+            <pre className="text-gray-300 whitespace-pre-wrap break-all">{output}</pre>
           ) : (
             <div className="text-gray-500">Output will appear here...</div>
           )}
