@@ -17,7 +17,7 @@
 
 import { randomUUID } from 'crypto';
 import { join } from 'node:path';
-import { rm, access } from 'node:fs/promises';
+import { rm, access, writeFile } from 'node:fs/promises';
 import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, resolveGalleryImage, ensureDir } from '../../lib/fileUtils.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
@@ -68,6 +68,28 @@ const fullMeshDiskPath = (id) => join(recordDir(id), 'model.obj');
 // from when keying was the only preparation step, so upgrading an install doesn't
 // strand an orphan beside the new one in every existing record directory.
 const preparedSourcePath = (id) => join(recordDir(id), 'source-keyed.png');
+
+/**
+ * The value stored on `record.usdzPath` once an AR export exists — the static
+ * `/data` mount's path for it, and the record's "has been exported" marker.
+ * `null` (or, on records predating this feature, ABSENT — readers must treat the
+ * two the same, exactly like `rig`) means nobody has exported it yet.
+ *
+ * The 3D page still points its AR anchor at `GET /api/image-to-3d/models/:id/usdz`
+ * rather than at this path: AR Quick Look needs `model/vnd.usdz+zip` served
+ * `inline`, and only that route guarantees the pair.
+ */
+const usdzUrl = (id) => `/data/image-to-3d/${id}/model.usdz`;
+/**
+ * The AR Quick Look artifact, exported by the viewer from the SAME `model.glb`
+ * the 3D page loads and stored beside it.
+ *
+ * Deliberately NOT in backup's DEFAULT_EXCLUDES: it is a few megabytes (the
+ * viewer-grade GLB with 1024px textures, not the gigabyte `model.obj` sidecar),
+ * and re-deriving it needs a browser session with the model open — so it is
+ * cheaper to keep than to reproduce, exactly like the published `rig/` pair.
+ */
+const usdzDiskPath = (id) => join(recordDir(id), 'model.usdz');
 
 /**
  * Remove a record's render directory (the exported GLB + its folder). Used to
@@ -250,6 +272,10 @@ async function executeRender({ id, operationId, adapter, sourcePath, caps, optio
         ...current,
         status: 'ready',
         assetPath: assetUrl(id),
+        // A new mesh invalidates the AR export derived from the OLD one. Cleared on
+        // success only: a FAILED render leaves model.glb untouched, so its USDZ is
+        // still a faithful copy of what the viewer shows and must survive.
+        usdzPath: null,
         error: null,
         generationOperationId: null,
         generatedAt: completedAt,
@@ -260,6 +286,8 @@ async function executeRender({ id, operationId, adapter, sourcePath, caps, optio
         }),
       };
     }, { includeDeleted: true });
+    await rm(usdzDiskPath(id), { force: true })
+      .catch((err) => console.error(`❌ Image-to-3D stale USDZ cleanup failed for ${id}: ${err.message}`));
     console.log(`🧊 Image-to-3D mesh ready: ${id}`);
   } catch (error) {
     console.error(`❌ Image-to-3D render failed for ${id}: ${cleanError(error)}`);
@@ -447,6 +475,78 @@ export async function getModelFullMesh(id, { exists = pathExists } = {}) {
     );
   }
   return { path, filename: `${slugifyForFilename(model.name)}-full.obj` };
+}
+
+/**
+ * The largest USDZ the AR export route will accept.
+ *
+ * The viewer exports from the SAME viewer-grade GLB the page already rendered, so a
+ * legitimate payload is single-digit megabytes; the cap exists so a wrong/hostile
+ * body can't fill the record directory, not to shape a real export.
+ */
+export const USDZ_MAX_BYTES = 64 * 1024 * 1024;
+
+/** USDZ is a plain (stored, uncompressed) zip archive — every one starts `PK\x03\x04`. */
+const isZipArchive = (bytes) => bytes.length >= 4
+  && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+
+/**
+ * Store the viewer's USDZ export for a ready record, beside its GLB.
+ *
+ * The bytes come from the CLIENT (three's USDZExporter over the already-loaded
+ * scene) rather than from a server-side converter, so they are validated here as
+ * untrusted input: ready record, non-empty, under the cap, and actually a zip.
+ * Re-exporting simply overwrites — the file is derived, so there is no version to
+ * preserve.
+ */
+export async function saveModelUsdz(id, bytes) {
+  const model = await store.getModel(id);
+  if (!model) throw new ServerError('Image-to-3D model not found', { status: 404, code: 'NOT_FOUND' });
+  if (model.status !== 'ready' || !model.assetPath) {
+    throw new ServerError('This model has no generated mesh yet', { status: 409, code: 'MODEL_NOT_READY' });
+  }
+  if (!bytes?.length) {
+    throw new ServerError('USDZ payload is empty', { status: 400, code: 'USDZ_INVALID' });
+  }
+  if (bytes.length > USDZ_MAX_BYTES) {
+    throw new ServerError(
+      `USDZ payload exceeds the ${Math.round(USDZ_MAX_BYTES / (1024 * 1024))} MB limit`,
+      { status: 413, code: 'USDZ_TOO_LARGE' },
+    );
+  }
+  if (!isZipArchive(bytes)) {
+    throw new ServerError('Payload is not a USDZ archive', { status: 400, code: 'USDZ_INVALID' });
+  }
+  await ensureDir(recordDir(id));
+  await writeFile(usdzDiskPath(id), bytes);
+  console.log(`🥽 Image-to-3D stored AR export for ${id} (${bytes.length} bytes)`);
+  return store.mutateModel(id, (current) => ({
+    ...current,
+    usdzPath: usdzUrl(id),
+    usdzGeneratedAt: new Date().toISOString(),
+  }));
+}
+
+/**
+ * Resolve a record's stored USDZ for download.
+ *
+ * Like `getModelFullMesh`, its absence is not an error state of the RECORD — a
+ * model nobody has exported for AR yet is perfectly healthy — so it probes disk
+ * rather than trusting `usdzPath` alone. That also covers the reverse skew: a
+ * record whose file was pruned out from under it still 404s instead of streaming a
+ * missing path.
+ */
+export async function getModelUsdz(id, { exists = pathExists } = {}) {
+  const model = await store.getModel(id);
+  if (!model) throw new ServerError('Image-to-3D model not found', { status: 404, code: 'NOT_FOUND' });
+  const path = usdzDiskPath(id);
+  if (!await exists(path)) {
+    throw new ServerError(
+      'This model has not been exported for AR yet. Open it in the 3D viewer and export it.',
+      { status: 404, code: 'USDZ_MISSING' },
+    );
+  }
+  return { path, filename: `${slugifyForFilename(model.name)}.usdz` };
 }
 
 export async function recoverInterruptedModels() {
