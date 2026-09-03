@@ -1097,7 +1097,13 @@ async function rescueTranscriptPayload({ agentId, taskType }) {
     const isPayload = await getTaskOutputPayloadPredicate(taskType);
     if (!isPayload) return null;
     const { PATHS, readFileTail } = await import('../lib/fileUtils.js');
-    const transcript = await readFileTail(join(PATHS.cosAgents, agentId, 'raw.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES);
+    // A PTY/TUI run spools its terminal to raw.txt; a direct CLI run (every
+    // public-review stage, and any cli-typed provider) has only output.txt.
+    // Reading raw.txt alone made the tool-free Eligibility Gate's printed JSON
+    // invisible, so a valid decision was rejected as eligibility-response-invalid.
+    const agentDir = join(PATHS.cosAgents, agentId);
+    const transcript = await readFileTail(join(agentDir, 'raw.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES)
+      || await readFileTail(join(agentDir, 'output.txt'), TRANSCRIPT_RESCUE_TAIL_BYTES);
     if (!transcript) return null;
     const { extractSentinelPayloadFromTranscript } = await import('../lib/agentSentinel.js');
     const { payload } = await extractSentinelPayloadFromTranscript(transcript, isPayload);
