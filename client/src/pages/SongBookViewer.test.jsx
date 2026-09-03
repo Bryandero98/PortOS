@@ -379,7 +379,7 @@ E|--3-----|`;
       expect(screen.getByRole('button', { name: /Transpose up \(currently 0 semitones\)/ })).toBeTruthy();
       // Visible offset stays numeric-only so the control keeps its compact width (#5999).
       const transposeStatus = statuses.find((status) => status.textContent === 'Transpose 0 semitones');
-      expect(transposeStatus.querySelector('[aria-hidden="true"]').textContent).toBe('0');
+      expect(transposeStatus.querySelector('span:not(.sr-only)').textContent).toBe('0');
 
       fireEvent.click(screen.getByRole('button', { name: /Transpose up \(currently 0/ }));
       expect(screen.getAllByRole('status').some((status) => status.textContent === 'Transpose +1 semitones')).toBe(true);
