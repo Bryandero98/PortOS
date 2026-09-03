@@ -12,6 +12,7 @@ import { formatDurationMs } from '../utils/formatters';
 import BrailleSpinner from '../components/BrailleSpinner';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { clickableProps } from '../lib/a11yKeyboard.js';
+import EmptyState from '../components/EmptyState';
 
 const INTERVAL_PRESETS = [
   { label: '30s', value: '30s' },
@@ -40,7 +41,7 @@ function StatusBadge({ loop }) {
   );
 }
 
-function CreateLoopForm({ providers, onCreated }) {
+function CreateLoopForm({ providers, onCreated, promptRef }) {
   const [prompt, setPrompt] = useState('');
   const [interval, setIntervalPreset] = useState('10m');
   const [customInterval, setCustomInterval] = useState('');
@@ -84,6 +85,7 @@ function CreateLoopForm({ providers, onCreated }) {
       </div>
 
       <textarea
+        ref={promptRef}
         aria-label="Loop prompt"
         value={prompt}
         onChange={e => setPrompt(e.target.value)}
@@ -339,6 +341,9 @@ const ACTION_MAP = {
 };
 
 export default function Loops() {
+  // The create form is always on screen above the list, so the empty state's
+  // call to action focuses its prompt field rather than opening anything.
+  const promptRef = useRef(null);
   const [loops, setLoops] = useState([]);
   const [providers, setProviders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -401,17 +406,20 @@ export default function Loops() {
         </div>
       </div>
 
-      <CreateLoopForm providers={providers} onCreated={fetchLoops} />
+      <CreateLoopForm providers={providers} onCreated={fetchLoops} promptRef={promptRef} />
 
       {loading ? (
         <div className="flex items-center justify-center py-12 text-gray-500">
           <Loader2 size={20} className="animate-spin mr-2" /> Loading loops...
         </div>
       ) : loops.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">
-          <RefreshCw size={32} className="mx-auto mb-2 opacity-30" />
-          <p className="text-sm">No loops yet. Create one above to get started.</p>
-        </div>
+        <EmptyState
+          icon={RefreshCw}
+          title="No loops yet"
+          message="A loop re-runs one prompt on a schedule with any AI provider. Describe the first one in the form above."
+          actionLabel="Describe your first loop"
+          onAction={() => promptRef.current?.focus()}
+        />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
           {loops.map(loop => (
