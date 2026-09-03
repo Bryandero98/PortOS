@@ -254,20 +254,36 @@ export function resolveFlux2Python() {
 // killed-mid-install run leaves the binary but no packages, and we'd
 // otherwise report that broken state as "ready" forever. Cached because the
 // import probe spawns a process; bust via invalidateFlux2Health().
+//
+// A positive result is cached indefinitely — once the venv imports cleanly it
+// stays that way short of the user deleting it, which only happens through
+// this module's own install/invalidate path. A NEGATIVE result gets a short
+// TTL instead of the same indefinite cache: the shared diffusers venv also
+// gates Z-Image/ERNIE/HiDream/Qwen (usesDiffusersRunner in runners.js), and a
+// transient failure (venv mid-install, a package upgrade the user ran by hand
+// outside PortOS) would otherwise report "unavailable" for the rest of the
+// server's lifetime with no way for the user to recover short of a restart.
+const FLUX2_HEALTH_NEGATIVE_TTL_MS = 60_000;
 let cachedFlux2Healthy = null;
+let cachedFlux2HealthyAt = 0;
 export async function isFlux2VenvHealthy() {
-  if (cachedFlux2Healthy !== null) return cachedFlux2Healthy;
+  if (cachedFlux2Healthy === true) return true;
+  if (cachedFlux2Healthy === false && Date.now() - cachedFlux2HealthyAt < FLUX2_HEALTH_NEGATIVE_TTL_MS) {
+    return false;
+  }
   const py = resolveFlux2Python();
-  if (!py) { cachedFlux2Healthy = false; return false; }
+  if (!py) { cachedFlux2Healthy = false; cachedFlux2HealthyAt = Date.now(); return false; }
   const ok = await execFileAsync(py, ['-c', 'from diffusers import Flux2KleinPipeline'], safeChildProcessOptions({ timeout: 30_000 }))
     .then(() => true)
     .catch(() => false);
   cachedFlux2Healthy = ok;
+  cachedFlux2HealthyAt = Date.now();
   return ok;
 }
 export function invalidateFlux2Health() {
   cachedFlux2Python = null;
   cachedFlux2Healthy = null;
+  cachedFlux2HealthyAt = 0;
 }
 
 // mflux's `mflux-train` LoRA trainer CLI is a console script installed beside
