@@ -16,6 +16,21 @@
  * dynamically at spawn time, declaring the provider's configured models (+ the
  * model being run) under
  * `provider.<local-backend>.models` with bare ids.
+ *
+ * **The custom-provider shape above is still the supported one** — re-verified
+ * against OpenCode 1.18.27, where a config carrying the models map round-trips a
+ * local Ollama model fine. What CHANGED is the diagnostic: the same undeclared
+ * model that used to say "Model ollama/… is not valid" now fails as an opaque
+ *
+ *     {"name":"UnknownError","data":{"message":"Unexpected server error…"}}
+ *
+ * so a config missing the map reads like a broken provider rather than a
+ * misconfigured one. It cost #6125 an investigation; do not re-derive it. Two
+ * OTHER failures land in the same "spawns, ~12s, no output" shape and are NOT
+ * this one — `model '<id>' not found` (the daemon no longer holds that model,
+ * which `services/providerReadiness.js` now reports up front) and
+ * `<id> does not support tools` (a non-tool-capable model, which the
+ * `_fetchOllamaToolCapableModels` refresh filters out of the provider's list).
  */
 
 import {
