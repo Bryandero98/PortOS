@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -6,17 +6,34 @@ import { describe, expect, it } from 'vitest';
 import { CHUNK_GROUPS } from '../../vite.chunkGroups.js';
 
 const CLIENT_DIR = resolve(import.meta.dirname, '../..');
-// Client deps install into client/node_modules; a few hoist to the repo root.
-const NODE_MODULES_DIRS = [
-  resolve(CLIENT_DIR, 'node_modules'),
-  resolve(CLIENT_DIR, '../node_modules'),
-].filter(existsSync);
 
-const isInstalled = (name) => NODE_MODULES_DIRS.some((dir) => (
-  name.endsWith('*')
-    ? readdirSync(dir).some((entry) => entry.startsWith(name.slice(0, -1)))
-    : existsSync(resolve(dir, name))
-));
+// Resolve against the checked-in lockfiles, not an installed `node_modules`
+// tree: the lockfile is deterministic, covers nested (unflattened) transitive
+// dependencies the group regexes still match at any depth, and cannot be
+// satisfied by a stale directory left behind by an uninstalled package.
+const lockedPackageNames = () => {
+  const names = new Set();
+  for (const lockfile of ['package-lock.json', '../package-lock.json']) {
+    const file = resolve(CLIENT_DIR, lockfile);
+    if (!existsSync(file)) continue;
+    for (const key of Object.keys(JSON.parse(readFileSync(file, 'utf-8')).packages ?? {})) {
+      const marker = key.lastIndexOf('node_modules/');
+      if (marker !== -1) names.add(key.slice(marker + 'node_modules/'.length));
+    }
+  }
+  return [...names];
+};
+
+const LOCKED_PACKAGES = lockedPackageNames();
+
+const isInstalled = (name) => {
+  if (name.endsWith('*')) return LOCKED_PACKAGES.some((pkg) => pkg.startsWith(name.slice(0, -1)));
+  // A bare `@scope` entry stands for every package published under it.
+  if (name.startsWith('@') && !name.includes('/')) {
+    return LOCKED_PACKAGES.some((pkg) => pkg.startsWith(`${name}/`));
+  }
+  return LOCKED_PACKAGES.includes(name);
+};
 
 const groupNamed = (name) => CHUNK_GROUPS.find((group) => group.name === name);
 
@@ -27,7 +44,7 @@ describe('vite chunk groups', () => {
   it('only names packages that are actually installed', () => {
     const missing = CHUNK_GROUPS.flatMap(({ name, packages }) =>
       packages.filter((pkg) => !isInstalled(pkg)).map((pkg) => `${name} -> ${pkg}`));
-    expect(NODE_MODULES_DIRS.length).toBeGreaterThan(0);
+    expect(LOCKED_PACKAGES.length).toBeGreaterThan(0);
     expect(missing).toEqual([]);
   });
 
@@ -42,8 +59,8 @@ describe('vite chunk groups', () => {
   });
 
   it('keeps package names from bleeding across the separator', () => {
-    // `react` must not swallow `react-router-dom` or a nested `react` copy's
-    // sibling; the trailing separator is what enforces a whole-segment match.
+    // A declared name must match a whole path segment: `react` must not swallow
+    // `react-redux`. The trailing separator is what enforces that.
     const { test } = groupNamed('vendor-react');
     expect(test.test('/app/node_modules/react/index.js')).toBe(true);
     expect(test.test('/app/node_modules/react-redux/index.js')).toBe(false);
