@@ -1027,4 +1027,23 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('git ls-files --cached -- <path>');
     expect(current).toContain('deleted protected file');
   });
+
+  // A stage-3 review ran the ENTIRE server suite twice — once patched, once at
+  // the unpatched base — to establish that all 3533 failures were the sandbox
+  // (that suite is green outside it), then reported both runs as `fail`. That
+  // is ~76k tests of spend for zero signal plus two misleading ❌ rows under an
+  // ✅ Approved verdict. Step 3 must scope test selection to the patched files
+  // and name the honest statuses for the two non-zero exits that say nothing
+  // about the change.
+  it('pr-reviewer-review scopes test runs to the patched files and names the non-fail evidence statuses', () => {
+    const current = DEFAULT_TASK_PROMPTS['pr-reviewer-review'];
+    expect(current).toContain('test files that cover the\n   patched files');
+    expect(current).toContain('Do NOT run a whole workspace suite as review evidence');
+    // The wasteful half is the SECOND full run, so the prompt has to forbid it
+    // by name rather than leaving "compare against the base" open-ended.
+    expect(current).toContain('do not re-run everything at the base');
+    expect(current).toMatch(/re-run only the\s+failing files there/);
+    expect(current).toContain('`blocked`');
+    expect(current).toContain('`expected-fail`');
+  });
 });

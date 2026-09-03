@@ -33,8 +33,29 @@ const MAX_FINDING_TITLE_CHARS = 160;
 const MAX_FINDING_BODY_CHARS = 3_000;
 const MAX_SUGGESTION_CHARS = 2_000;
 const MAX_INDEX_LABEL_CHARS = 160;
-const TEST_STATUSES = ['pass', 'fail', 'not-run'];
-const STATUS_ICON = { pass: '✅', fail: '❌', 'not-run': '⏭️' };
+/**
+ * What one command says about THE CHANGE, which is not the same thing as its
+ * exit code. `fail` is the only status a reader sees as a red mark, so the two
+ * ways a non-zero exit means nothing about the patch need statuses of their
+ * own: without them a model with an honest story has to stamp `fail` and put
+ * the exculpation in `detail`, which is how an ✅ Approved review shipped three
+ * ❌ rows — one deliberate mutation probe that was *supposed* to fail, and two
+ * whole-suite runs whose thousands of failures were the review sandbox denying
+ * sockets, out-of-tree writes, GPU access, and language toolchains.
+ *
+ * The icon map is the single source of truth and the accepted-status list is
+ * derived from it, so a status can never exist without a mark to render it
+ * with. Exported so the contract test can prove each one is documented in
+ * PR_REVIEW_DECISION_CONTRACT — the half no construction can guarantee.
+ */
+const STATUS_ICON = {
+  pass: '✅',
+  fail: '❌',
+  'expected-fail': '🧪',
+  blocked: '🚧',
+  'not-run': '⏭️',
+};
+export const TEST_EVIDENCE_STATUSES = Object.keys(STATUS_ICON);
 const TRIM_NOTE = '_Some sections of this review were omitted to stay within the comment size limit._';
 const DOWNGRADE_NOTE = 'PortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.';
 
@@ -68,7 +89,7 @@ Each pull-request decision has this shape:
   "summary": "1-3 sentences: the verdict and why it is that verdict",
   "scope": "one line naming what the change touches",
   "testEvidence": [
-    {"command": "npm test -w server", "status": "pass|fail|not-run", "detail": "counts, failure, or why it could not run"}
+    {"command": "npm test -w server", "status": "pass|fail|expected-fail|blocked|not-run", "detail": "counts, the failure, or why the run says nothing about the change"}
   ],
   "verified": ["one claim you confirmed, citing path:line"],
   "concerns": ["a non-blocking observation with no specific line to anchor"],
@@ -91,6 +112,15 @@ Field rules:
 - \`scope\` is one line ("docs-only change to two files under docs/").
 - \`testEvidence\` is one entry per command you actually ran, plus one
   \`not-run\` entry naming each relevant suite you could not run and why.
+  Choose the status by what the run proves about THIS CHANGE, never by the
+  exit code — \`fail\` is the only one a reader sees as a red mark, so it is
+  reserved for "the change breaks this command". Use \`expected-fail\` for a
+  deliberate probe that had to fail to prove something (reverting the fix to
+  show a new test is not vacuous), \`blocked\` when the command ran but its
+  failures came from the environment — a sandbox denial, a missing toolchain
+  or service, a resource limit — so it proved nothing either way, and
+  \`not-run\` when you never ran it. If you find yourself writing a \`detail\`
+  that explains a \`fail\` away, the status was wrong.
 - \`verified\` holds claims you checked against the code, one per entry, each
   citing the \`path:line\` that proves it. Leave it empty rather than padding.
 - \`concerns\` is for non-blocking observations that have no line to anchor to.
@@ -124,7 +154,7 @@ function normalizeTestEvidence(value) {
       const command = line(item?.command, MAX_BULLET_CHARS);
       const detail = line(item?.detail, MAX_BULLET_CHARS);
       if (!command && !detail) return null;
-      const status = TEST_STATUSES.includes(item?.status) ? item.status : 'not-run';
+      const status = TEST_EVIDENCE_STATUSES.includes(item?.status) ? item.status : 'not-run';
       return { command, status, detail };
     })
     .filter(Boolean)

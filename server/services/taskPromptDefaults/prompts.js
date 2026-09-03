@@ -2417,11 +2417,25 @@ PR state and exact content fingerprint.
    it, never \`defer\` for this reason alone. If the working-tree \`git apply\`
    fails for any other reason, or on a file outside those protected paths,
    treat the PR as unapplied under step 3 below.
-3. Inspect the resulting code and run the narrowest relevant existing tests,
-   followed by broader tests when practical. Tests may take several minutes;
-   completeness and trustworthy evidence matter more than throughput. If a
-   patch cannot be applied or a relevant test cannot run, use \`defer\` unless
-   the evidence supports a clearly blocking review finding.
+3. Inspect the resulting code and run the existing test files that cover the
+   patched files — the narrowest suite first, then the suites its callers live
+   in. Tests may take several minutes; completeness and trustworthy evidence
+   matter more than throughput. If a patch cannot be applied or a relevant
+   test cannot run, use \`defer\` unless the evidence supports a clearly
+   blocking review finding.
+   Do NOT run a whole workspace suite as review evidence. This sandbox denies
+   network binds and outbound requests, writes outside the worktree, GPU
+   access, and the language toolchains and background services a minority of
+   suites need, so a from-zero full run reports failures by the thousands for
+   reasons that have nothing to do with the patch — and re-running the whole
+   suite unpatched to demonstrate that costs a second full run and still
+   yields no signal about the change. When a broader run you did attempt
+   reports failures, do not re-run everything at the base: re-run only the
+   failing files there, and record that command as \`blocked\` rather than
+   \`fail\` for failures that reproduce unpatched or name one of those
+   denials. A probe you ran deliberately to prove a new test is not
+   vacuous — reverting the fix and watching the test fail — is
+   \`expected-fail\`, never \`fail\`.
 4. After recording each PR's decision, return the worktree to its clean base
    with \`git reset --hard HEAD\` and \`git clean -fd --exclude=PORTOS_PUBLIC_REVIEW_INPUT.json --exclude=.portos-public-review\`
    before applying the next patch. Do not alter the supplied input or patch
