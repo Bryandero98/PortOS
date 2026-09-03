@@ -247,6 +247,30 @@ jobs:
             vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
             vitest-server-${{ runner.os }}-
 
+      # `autofixer/` is a real install target — its own package.json, its own
+      # tracked lockfile, its own .npmrc — installed by `npm run setup` and by
+      # scripts/ensure-deps.js on every `npm start`. Nothing else in CI resolves
+      # it, so a lockfile that no longer installs (a yanked version, a corrupted
+      # integrity hash, a manifest/lockfile mismatch) would ship green and only
+      # break on a user's machine at setup time. The parity assertions in
+      # server/dependency-overrides.test.js are static — they parse the JSON;
+      # only `npm ci` proves the tree still resolves.
+      #
+      # Deliberately uncached and deliberately ungated within the job: a cache
+      # hit that skipped the install would skip the very check this step exists
+      # for, and the job as a whole already gates on the planner's server_mode
+      # (autofixer/ is one of the server runner's roots in ci-test-plan.js, so a
+      # change here selects this job). Unlike the once-only steps that pin to
+      # shard 1, it runs on every shard: autofixer/*.test.js is globbed by the
+      # server runner, and which shard picks up a file that imports `express` is
+      # not knowable from here. 67 packages, well under a second.
+      #
+      # No rebuild step follows. autofixer/.npmrc pins ignore-scripts=true and
+      # scripts/trusted-rebuilds.js deliberately lists no rebuilds for this
+      # workspace, because nothing it depends on ships a native addon.
+      - name: Install autofixer dependencies
+        run: npm ci --prefix autofixer
+
       - name: Check server entry-point syntax
         run: node --check server/index.js
 
