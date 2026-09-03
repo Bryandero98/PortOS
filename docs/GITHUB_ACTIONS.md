@@ -79,6 +79,69 @@ writes Vitest wall time to the job summary so later runs can be compared
 against the pre-change full-suite job wall on `main` (2026-08-16, run
 `31951919659`): server ~300s, client+build ~467s, Windows ~463s.
 
+### Test environment cost (jsdom vs happy-dom)
+
+`environment` — the per-file cost of constructing the DOM the test runs in — is
+the single largest phase of the client suite. On the 2026-08-16 full run it was
+`environment 489s` against `tests 384s`: building jsdom cost more than running
+the assertions. Two levers exist.
+
+**Lever 1 — don't build a DOM you don't need (applied).** A test file that never
+touches the DOM opts out with a `// @vitest-environment node` pragma on line 1,
+and pays ~0ms instead of ~0.35s (local) / ~0.7s (CI runner) for its environment.
+Every file under `client/src/{lib,utils,services}` that passes in `node` now
+carries the pragma. Measured on the 36 files converted in that sweep:
+
+| environment | wall |
+| --- | --- |
+| jsdom: 12.69s | 1.76s |
+| node: 0.002s | 0.74s |
+
+When adding a test under `client/src/{lib,utils,services}`, default to the
+pragma and only drop it if the file (or the module it imports) genuinely needs
+`document`/`window`. The 13 files in that tree that legitimately keep jsdom do
+so because the *module under test* reaches for a browser global — e.g.
+`apiApps.js` navigates via `window.location`, `webglSupport.js` calls
+`document.createElement('canvas')`.
+
+**Lever 2 — a cheaper DOM (measured, not adopted).** happy-dom 20.14 was
+prototyped against the whole `client/src/components/` tree (440 files) on
+Node 24, versus the jsdom 30 baseline:
+
+| environment | wall | failures |
+| --- | --- | --- |
+| jsdom 30.0.1: 146.19s | 33.86s | baseline |
+| happy-dom 20.14.0: 55.05s | 21.02s | 3 files / 7 assertions |
+
+A 62% cut to the environment phase, which would put the full-run figure under
+the 300s target on its own. `client/src/test/setup.js` needs no change: its
+`scrollIntoView`, `HTMLMediaElement`, and `HTMLCanvasElement` stubs are all
+either guarded or unconditional assignments that happy-dom accepts, and
+`installTestStorage()` covers the storage difference already.
+
+The gap is in the *tests*, not the setup, and it is small but real:
+
+1. **`getComputedStyle` returns no UA defaults.** happy-dom reports
+   `display: ""` for an unstyled `<span>` where jsdom reports `"inline"`.
+   `dom-accessibility-api` reads that as block-level and joins the text with a
+   space, so `getByRole('button', { name: 'Ollama1' })` has to become
+   `'Ollama 1'`. Hits every query whose expected accessible name concatenates a
+   label with an adjacent inline element (`AiAssignmentsTab.test.jsx`, 4
+   assertions — the `TabPills` count badge).
+2. **No `SVGAnimatedString`.** `svgEl.className` is a plain string, so
+   `.baseVal` is `undefined` (`VideoTimelineLanes.test.jsx`, 1 assertion).
+   Assert on `getAttribute('class')` instead, which works in both.
+3. **Unresolved async-settling divergence** in `MediaJobsQueue.test.jsx`
+   (2 assertions): a `type="submit"` click whose `onSubmit` produces no call
+   under happy-dom while the same click in sibling tests in the same file does.
+   Implicit form submission itself is fine in both — a minimal
+   `<form onSubmit><button type="submit">` probe fires once in each — so this
+   one needs a root cause before the switch, not a mechanical edit.
+
+Conclusion: **viable, deferred to #6144.** The switch is a new devDependency
+plus a default-environment flip affecting all 868 client test files, so it ships
+as its own change rather than riding along with the pragma sweep.
+
 ### Reusing the server install
 
 Three jobs install the server workspace — `server`, `database`, and
