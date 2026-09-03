@@ -38,6 +38,7 @@ import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import usePreviewRoute from '../hooks/usePreviewRoute';
+import useMounted from '../hooks/useMounted';
 import {
   Image as ImageIcon, Sparkles, Download, RefreshCw, Settings as SettingsIcon,
   AlertTriangle, X, Film,
@@ -178,6 +179,13 @@ export default function ImageGen() {
   const [initImage, setInitImage] = useState({ source: null, file: null, name: null, previewUrl: null });
   const initImagePreviewRef = useRef(initImage.previewUrl);
   initImagePreviewRef.current = initImage.previewUrl;
+  // Both upload handlers AWAIT EXIF normalization before they mint their object
+  // URL, so an unmount during that await would run the cleanup sweep below and
+  // the handler would then resume to create a url nothing is left to revoke.
+  // (The init image is the live leak: the reference handler mints inside a state
+  // updater React skips once unmounted — an implementation detail to guard
+  // against, not to rely on.)
+  const mountedRef = useMounted();
   const [initImageStrength, setInitImageStrength] = useState(0.4);
   // Visual gallery picker target: null (closed), { kind: 'init' }, or
   // { kind: 'reference', slot: i }. The search/browse alternative to the plain
@@ -543,6 +551,7 @@ export default function ImageGen() {
     const raw = e.target.files?.[0];
     if (!raw) return;
     const file = await normalizeImageOrientation(raw);
+    if (!mountedRef.current) return;
     revokeIfBlob(initImagePreviewRef.current);
     setInitImage({ source: 'upload', file, name: file.name, previewUrl: URL.createObjectURL(file) });
     // Default the output resolution to the uploaded image's dimensions, clamped
@@ -574,6 +583,7 @@ export default function ImageGen() {
     const raw = e.target.files?.[0];
     if (!raw) return;
     const file = await normalizeImageOrientation(raw);
+    if (!mountedRef.current) return;
     setReferenceImages((prev) => {
       const next = [...prev];
       revokeIfBlob(next[slotIndex]?.previewUrl);

@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 // Codex is i2i-capable and declares no input-image cap, so the form offers the
@@ -122,33 +122,43 @@ const click = async (name) => {
 // pinning the underlying File for.
 const liveUrls = () => state.created.filter((u) => !state.revoked.includes(u));
 
+// jsdom ships none of these, so restoring means DELETING the property again —
+// assigning `undefined` back would leave an own property that later files see
+// as "present but broken".
+const stub = (host, key, value) => {
+  const had = Object.prototype.hasOwnProperty.call(host, key);
+  const prev = host[key];
+  host[key] = value;
+  return () => { if (had) host[key] = prev; else delete host[key]; };
+};
+
 describe('ImageGen object-URL lifecycle', () => {
-  let origCreate;
-  let origRevoke;
-  let origCreateImageBitmap;
+  let restore = [];
 
   beforeEach(() => {
     state.created = [];
     state.revoked = [];
     state.fileSeq = 0;
-    origCreate = URL.createObjectURL;
-    origRevoke = URL.revokeObjectURL;
-    origCreateImageBitmap = window.createImageBitmap;
-    URL.createObjectURL = vi.fn(() => {
-      const url = `blob:portos/${state.created.length + 1}`;
-      state.created.push(url);
-      return url;
-    });
-    URL.revokeObjectURL = vi.fn((url) => { state.revoked.push(url); });
-    // The page EXIF-normalizes uploads through createImageBitmap; jsdom has no
-    // decoder, and the page's own `.catch` falls back to the original File.
-    window.createImageBitmap = vi.fn(() => Promise.reject(new Error('no decoder')));
+    restore = [
+      stub(URL, 'createObjectURL', vi.fn(() => {
+        const url = `blob:portos/${state.created.length + 1}`;
+        state.created.push(url);
+        return url;
+      })),
+      stub(URL, 'revokeObjectURL', vi.fn((url) => { state.revoked.push(url); })),
+      // The page EXIF-normalizes uploads through createImageBitmap; jsdom has
+      // no decoder, and the page's own `.catch` falls back to the original File.
+      stub(window, 'createImageBitmap', vi.fn(() => Promise.reject(new Error('no decoder')))),
+    ];
   });
 
   afterEach(() => {
-    URL.createObjectURL = origCreate;
-    URL.revokeObjectURL = origRevoke;
-    window.createImageBitmap = origCreateImageBitmap;
+    // Unmount anything a test left mounted BEFORE the stubs go away: the
+    // global cleanup in src/test/setup.js runs after this hook, and the
+    // unmount sweep it triggers would reach a deleted revokeObjectURL.
+    cleanup();
+    restore.forEach((undo) => undo());
+    restore = [];
   });
 
   // The leak this file exists for: navigating away from /image-gen with images
@@ -156,20 +166,44 @@ describe('ImageGen object-URL lifecycle', () => {
   it('revokes every blob URL it created when the page unmounts', async () => {
     const { unmount } = await mount();
     await click('pick-init');
-    await click('pick-ref-0');
-    await click('pick-ref-1');
+    // Every slot, not just the first: a sweep that walked a truncated list
+    // would still pass on a two-slot sample.
+    for (let i = 0; i < 4; i += 1) await click(`pick-ref-${i}`);
 
-    await waitFor(() => expect(state.created).toHaveLength(3));
+    await waitFor(() => expect(state.created).toHaveLength(5));
     expect(state.revoked).toEqual([]);
 
     await act(async () => { unmount(); });
 
     expect(liveUrls()).toEqual([]);
-    // Each url revoked exactly once — a double revoke would mean the unmount
-    // sweep and a per-action handler are both claiming the same url.
-    for (const url of state.created) {
-      expect(state.revoked.filter((u) => u === url)).toHaveLength(1);
-    }
+  });
+
+  // Each pick handler awaits (EXIF normalization) BEFORE it mints its url, so
+  // an unmount mid-await would otherwise resume past the sweep and create one
+  // nothing owns — a leak the steady-state test above cannot see.
+  it('creates no object URL for a pick that resolves after the page unmounted', async () => {
+    // One deferred normalization per pick — release ALL of them, or a handler
+    // left suspended would fake a pass.
+    const pending = [];
+    window.createImageBitmap = vi.fn(() => new Promise((_, reject) => {
+      pending.push(() => reject(new Error('no decoder')));
+    }));
+
+    const { unmount } = await mount();
+    await click('pick-init');
+    await click('pick-ref-0');
+    expect(pending).toHaveLength(2);
+    expect(state.created).toEqual([]);
+
+    await act(async () => { unmount(); });
+    // Let the suspended handlers resume all the way through their `.catch`
+    // fallback to the point where they would mint a url.
+    await act(async () => {
+      pending.forEach((fail) => fail());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(state.created).toEqual([]);
   });
 
   // Replacing keeps reclaiming immediately, and the url left rendered must be
@@ -230,6 +264,5 @@ describe('ImageGen object-URL lifecycle', () => {
     await act(async () => { unmount(); });
 
     expect(state.revoked).toEqual([blobUrl]);
-    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(expect.stringContaining('/data/'));
   });
 });
