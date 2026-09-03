@@ -23,6 +23,7 @@ import {
 import PeerAppsList from '../components/instances/PeerAppsList';
 import PeerAgentsSection from '../components/instances/PeerAgentsSection';
 import { SchemaGapBadge } from '../components/instances/SchemaGapBadge';
+import { DEFAULT_PEER_PORT } from '../lib/ports.js';
 import PeerMediaProviderPanel from '../components/instances/PeerMediaProviderPanel';
 import UnattendedRenderRouting from '../components/instances/UnattendedRenderRouting';
 import BrainParityPanel from '../components/instances/BrainParityPanel';
@@ -202,9 +203,11 @@ function SelfCard({ self, onUpdate, syncStatus, tailnetInfo }) {
   );
 }
 
-function AddPeerForm({ onAdd }) {
+// Exported for focused tests (the port input's placeholder must advertise the
+// same default the form actually submits — see Instances.test.jsx).
+export function AddPeerForm({ onAdd }) {
   const [address, setAddress] = useState('');
-  const [port, setPort] = useState('5555');
+  const [port, setPort] = useState(String(DEFAULT_PEER_PORT));
   const [name, setName] = useState('');
   const [showAuth, setShowAuth] = useState(false);
   const [username, setUsername] = useState('');
@@ -215,7 +218,7 @@ function AddPeerForm({ onAdd }) {
     e.preventDefault();
     if (!address.trim()) return;
     setAdding(true);
-    const data = { address: address.trim(), port: parseInt(port, 10) || 5555 };
+    const data = { address: address.trim(), port: parseInt(port, 10) || DEFAULT_PEER_PORT };
     if (name.trim()) data.name = name.trim();
     // Only attach credentials when a password was entered — username alone
     // (or neither) is treated as "no auth" by the server's sanitizer.
@@ -224,7 +227,7 @@ function AddPeerForm({ onAdd }) {
     setAdding(false);
     if (!result) return;
     setAddress('');
-    setPort('5555');
+    setPort(String(DEFAULT_PEER_PORT));
     setName('');
     setUsername('');
     setPassword('');
@@ -252,7 +255,7 @@ function AddPeerForm({ onAdd }) {
           aria-label="Peer port"
           value={port}
           onChange={e => setPort(e.target.value)}
-          placeholder="5554"
+          placeholder={String(DEFAULT_PEER_PORT)}
           type="number"
           min="1"
           max="65535"
