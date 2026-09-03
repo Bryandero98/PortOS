@@ -384,6 +384,30 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
       .resolves.toMatchObject({ provider: { id: 'codex-cli' }, selectedModel: 'm-default' });
   });
 
+  // A stage pin outlives edits to the provider's own model list: the live
+  // pr-reviewer gate sat pinned to an id its provider no longer offered, so
+  // every run spawned a CLI that could not serve the model, produced no
+  // output, and was retried — matching the provider is not enough on its own.
+  it('drops a model pin the matching provider no longer offers', async () => {
+    const CURATED = { id: 'grok-cli', type: 'cli', command: 'grok', models: ['grok-4'], defaultModel: 'grok-4' };
+    getAllProviders.mockResolvedValue({ providers: [CURATED], activeProvider: null });
+
+    // Still listed → honored.
+    await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-4' })))
+      .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'grok-4' });
+
+    // Retired from the list → the provider's own selection wins instead.
+    await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-3-retired' })))
+      .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'm-default' });
+  });
+
+  // A provider that enumerates no models is a pass-through, so the pin stands.
+  it('honors a model pin on a provider that enumerates no models', async () => {
+    getAllProviders.mockResolvedValue({ providers: [GROK], activeProvider: null });
+    await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'anything-goes' })))
+      .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'anything-goes' });
+  });
+
   it('blocks PERMANENTLY when no enabled provider can enforce the posture', async () => {
     getAllProviders.mockResolvedValue({ providers: [OPENCODE], activeProvider: { id: 'opencode' } });
     const r = await resolveAgentProviderAndModel(gateTask());

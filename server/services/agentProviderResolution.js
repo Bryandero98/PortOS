@@ -63,12 +63,30 @@ async function resolvePublicReviewAgentProvider(task, posture) {
       providerId: provider.id,
     });
   }
-  // A model pin only survives when it was chosen FOR this provider; otherwise
-  // fall back to the provider's own default rather than handing one vendor's
-  // model id to another (the failure mode documented in the ordinary path).
+  // A model pin only survives when it was chosen FOR this provider AND that
+  // provider still offers it; otherwise fall back to the provider's own default
+  // rather than handing one vendor's model id to another (the failure mode
+  // documented in the ordinary path). Matching the provider alone is not
+  // enough: a stage pin outlives edits to that provider's own `models` list,
+  // and a retired id reaches the CLI as a model it cannot serve, so the stage
+  // spawns, produces no output, and is retried. The ordinary path guards this
+  // at its list check; `cliProviderRun.js#resolveCliProviderAndModel` does too.
   const modelSelection = await selectModelForTask(task, provider);
   const pinnedModel = task.metadata?.model;
-  const selectedModel = pinnedModel && task.metadata?.provider === provider.id
+  const pinnedForThisProvider = Boolean(pinnedModel) && task.metadata?.provider === provider.id;
+  // A provider that enumerates NO models is a pass-through (any id is its
+  // caller's to choose), so only a non-empty list can invalidate a pin.
+  const offeredModels = Array.isArray(provider.models) ? provider.models : [];
+  const pinIsOffered = offeredModels.length === 0 || offeredModels.includes(pinnedModel);
+  if (pinnedForThisProvider && !pinIsOffered) {
+    emitLog('warn', `Public-review stage model "${pinnedModel}" is not offered by provider "${provider.id}" — using its default instead`, {
+      taskId: task.id,
+      requestedModel: pinnedModel,
+      providerId: provider.id,
+      validModels: offeredModels,
+    });
+  }
+  const selectedModel = pinnedForThisProvider && pinIsOffered
     ? pinnedModel
     : (modelSelection.model || provider.defaultModel || null);
   emitLog('info', `Public-review stage (${posture}) resolved to provider ${provider.id}${selectedModel ? ` model ${selectedModel}` : ''}`, {
