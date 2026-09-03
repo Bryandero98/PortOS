@@ -6,6 +6,7 @@ import BrailleSpinner from '../BrailleSpinner';
 import { usePrevious } from '../../hooks/usePrevious.js';
 import { useInstallStream } from '../../hooks/useInstallStream.js';
 import useMounted from '../../hooks/useMounted.js';
+import QueueInstallInvestigationButton from '../install/QueueInstallInvestigationButton';
 import { checkImageGenSetup, detectImageGenPython, createImageGenVenv } from '../../services/api';
 
 export default function LocalSetupPanel({ pythonPath, onPythonPathChange, onPackagesChanged }) {
@@ -83,6 +84,7 @@ export default function LocalSetupPanel({ pythonPath, onPythonPathChange, onPack
   // handling, unmount teardown, and auto-scroll.
   const {
     logs: installLog,
+    currentStage: installStage,
     done: installDone,
     error: installError,
     streamStarted: installStarted,
@@ -276,6 +278,18 @@ export default function LocalSetupPanel({ pythonPath, onPythonPathChange, onPack
                   ))}
                   <div ref={logsEndRef} />
                 </pre>
+              )}
+              {installError && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-port-error">Install failed — see the log above.</span>
+                  <QueueInstallInvestigationButton
+                    label="PortOS local Python packages"
+                    stage={installStage}
+                    error={installError}
+                    logs={installLog}
+                    surface="client/src/components/settings/LocalSetupPanel.jsx"
+                  />
+                </div>
               )}
             </>
           )}
