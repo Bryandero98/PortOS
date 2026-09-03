@@ -42,7 +42,10 @@ import {
 import { getSettings, settingsEvents } from './settings.js'
 import { getActiveProvider } from './providers.js'
 import { getBaseUrl as getLmStudioBaseUrl } from './lmStudioManager.js'
-import { getBaseUrl as getOllamaBaseUrl } from './ollamaManager.js'
+import {
+  getBaseUrl as getOllamaBaseUrl,
+  getModelCapabilities as getOllamaModelCapabilities,
+} from './ollamaManager.js'
 
 // LM Studio (`:1234`), Ollama (`:11434`) and MTPLX (`:8000/v1`) all ship
 // OpenAI-compatible `/v1/chat/completions`. Resolve through each manager's live
@@ -324,13 +327,42 @@ function adaptiveFence(content) {
 
 // Ollama translates the OpenAI-compatible `reasoning_effort` field into its
 // own `thinking` parameter, and a model that never implements thinking 400s
-// on the whole request rather than ignoring the field. There is no reliable
-// per-model "supports thinking" capability flag to probe ahead of time, so
-// this remembers which `backend:model` pairs have already 400'd on it — for
-// the life of the process — so a multi-round review loop pays the retry once
-// instead of on every round.
+// on the whole request rather than ignoring the field. Ollama's `/api/show`
+// DOES answer that per model, so `modelRejectsThinking` resolves it BEFORE
+// the request and simply omits the field — the 400-retry further down stays
+// as the fail-safe for a backend with no such probe (LM Studio, MTPLX) or a
+// probe that could not answer. Resolving ahead matters because every reviewer
+// invocation from a claim/PR run is its own short-lived `node` process: a
+// purely reactive downgrade re-uploads the entire diff on every single call,
+// since the in-process cache below never survives to the next one.
+//
+// This map remembers which `backend:model` pairs are known thinking-less —
+// for the life of the process — so a multi-round review loop inside ONE
+// process pays neither the probe nor the retry twice.
 const thinkingUnsupportedModels = new Map()
+const thinkingCacheKey = (backend, model) => `${backend}:${model}`
 export function __resetThinkingUnsupportedCache() { thinkingUnsupportedModels.clear() }
+
+/**
+ * Does this `backend:model` reject `reasoning_effort`?
+ *
+ * `true` only when we KNOW it does — a cached prior downgrade, or an
+ * authoritative capability list that omits `thinking`. Ollama reports `null`
+ * when the per-model probe failed and `[]` when the daemon answered without
+ * reporting any capabilities; both mean *unknown*, not *unsupported*, so they
+ * fall through to the request (and its 400-retry) rather than silently
+ * dropping a level the model does in fact accept.
+ */
+async function modelRejectsThinking(backend, model) {
+  const cacheKey = thinkingCacheKey(backend, model)
+  if (thinkingUnsupportedModels.get(cacheKey) === true) return true
+  if (backend !== 'ollama') return false
+  const capabilities = await getOllamaModelCapabilities(model).catch(() => null)
+  if (!Array.isArray(capabilities) || capabilities.length === 0) return false
+  if (capabilities.includes('thinking')) return false
+  thinkingUnsupportedModels.set(cacheKey, true)
+  return true
+}
 
 async function sendChatCompletion(baseUrl, { model, messages, timeoutMs }, effortForRequest) {
   const body = {
@@ -363,10 +395,11 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
     return { ok: false, error: `No model configured for ${backend} reviewer — set one on the Settings → Code Reviewers page.` }
   }
 
-  const cacheKey = `${backend}:${model}`
-  const effortUnsupportedCached = thinkingUnsupportedModels.get(cacheKey) === true
-  let resolvedEffort = effortUnsupportedCached ? null : (normalizeReviewerEffort(effort, backend) || null)
-  let effortUnsupported = effortUnsupportedCached
+  // Probe only when there is actually a level to drop — an unpinned effort
+  // sends no field either way, so a capability round-trip would buy nothing.
+  const requestedEffort = normalizeReviewerEffort(effort, backend) || null
+  let effortUnsupported = requestedEffort ? await modelRejectsThinking(backend, model) : false
+  let resolvedEffort = effortUnsupported ? null : requestedEffort
 
   // Local runtime records are normalized to the OpenAI `/v1` root, while the
   // legacy backend managers return the host root. Keep both forms compatible
@@ -379,7 +412,7 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
 
   if (!attempt.ok && attempt.status === 400 && resolvedEffort && /does not support thinking/i.test(attempt.text || '')) {
     console.warn(`⚠️ ${backend} model ${model} ignores reasoning_effort — retried without it`)
-    thinkingUnsupportedModels.set(cacheKey, true)
+    thinkingUnsupportedModels.set(thinkingCacheKey(backend, model), true)
     resolvedEffort = null
     effortUnsupported = true
     attempt = await sendChatCompletion(baseUrl, { model, messages, timeoutMs }, null)
@@ -419,9 +452,13 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
  * @param {string} opts.diff - Unified diff text to review.
  * @param {string} [opts.effort] - Reasoning effort (`low`/`medium`/`high`), sent
  *   as the OpenAI-compatible `reasoning_effort` field. Omitted from the body
- *   entirely when unset or not a level this backend accepts — a non-reasoning
- *   model would otherwise get a field it has no answer for, and `absent` is the
- *   only spelling of "use the model's own default".
+ *   entirely when unset, when it is not a level this backend accepts, or when
+ *   THIS MODEL does not support thinking — the decision is per model, not per
+ *   backend, because one ollama daemon serves both kinds. A non-reasoning model
+ *   would otherwise get a field it has no answer for (ollama 400s the whole
+ *   request), and `absent` is the only spelling of "use the model's own
+ *   default". The response carries `effortUnsupported: true` when a pinned
+ *   level was dropped for that reason.
  * @param {number} [opts.timeoutMs=120000] - 2 min default — LM Studio cold-
  *   load of a large coder model regularly exceeds 30s but rarely 2 min.
  * @param {string} [opts.baseUrl] - Validated local OpenAI-compatible base URL;

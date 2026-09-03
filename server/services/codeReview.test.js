@@ -21,7 +21,15 @@ vi.mock('./providers.js', () => ({
   getActiveProvider: () => Promise.resolve(mockedActiveProvider.current),
 }))
 vi.mock('./lmStudioManager.js', () => ({ getBaseUrl: () => 'http://localhost:1234' }))
-vi.mock('./ollamaManager.js', () => ({ getBaseUrl: () => 'http://localhost:11434' }))
+// Ollama's per-model `/api/show` capability probe, which the reviewer now
+// consults BEFORE attaching `reasoning_effort`. Default `null` = "probe could
+// not answer", the sentinel that keeps a test on the reactive 400-retry path;
+// individual tests set an authoritative array to drive the proactive one.
+const mockedOllamaCapabilities = { current: null }
+vi.mock('./ollamaManager.js', () => ({
+  getBaseUrl: () => 'http://localhost:11434',
+  getModelCapabilities: () => Promise.resolve(mockedOllamaCapabilities.current),
+}))
 // Reviewer-CLI-installed probe: stub the shared execFile-based helper so the
 // test controls per-binary results without touching the real PATH.
 const commandExistsMock = { impl: async () => true }
@@ -57,6 +65,7 @@ describe('codeReview helpers', () => {
     __resetCodeReviewDefaultsCache()
     __resetReviewerCliInstalledCache()
     __resetThinkingUnsupportedCache()
+    mockedOllamaCapabilities.current = null
     commandExistsMock.impl = async () => true
     vi.restoreAllMocks()
   })
@@ -692,6 +701,11 @@ describe('codeReview helpers', () => {
       error: { message: '"m" does not support thinking', type: 'invalid_request_error' },
     })
 
+    // Default happy response; tests asserting the retry sequence override it.
+    beforeEach(() => {
+      global.fetch = vi.fn().mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
+    })
+
     it('retries without reasoning_effort when the backend rejects thinking', async () => {
       global.fetch = vi.fn()
         .mockResolvedValueOnce(mockTextResponse(thinkingRejectedBody, { ok: false, status: 400 }))
@@ -746,6 +760,78 @@ describe('codeReview helpers', () => {
       const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body)
       expect('reasoning_effort' in secondBody).toBe(false)
       expect(r).toMatchObject({ ok: true, claimant: null, suspicious: false, effort: null, effortUnsupported: true })
+    })
+
+    it('omits reasoning_effort on the FIRST request when /api/show reports no thinking capability', async () => {
+      // The reactive retry alone re-uploads the whole diff on every fresh
+      // process (a claim run spawns one `node` per review call), so the
+      // capability probe has to prevent the doomed request, not just recover.
+      mockedOllamaCapabilities.current = ['completion', 'tools']
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'probed-nonthinking', diff: 'd', effort: 'low' })
+
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      expect('reasoning_effort' in JSON.parse(global.fetch.mock.calls[0][1].body)).toBe(false)
+      expect(r).toMatchObject({ ok: true, effort: null, effortUnsupported: true })
+    })
+
+    it('still sends reasoning_effort when /api/show reports the thinking capability', async () => {
+      mockedOllamaCapabilities.current = ['completion', 'tools', 'thinking']
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'probed-thinking', diff: 'd', effort: 'low' })
+
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body).reasoning_effort).toBe('low')
+      expect(r).toMatchObject({ ok: true, effort: 'low' })
+      expect('effortUnsupported' in r).toBe(false)
+    })
+
+    it('treats an empty capability list as unknown, not as "no thinking"', async () => {
+      // Ollama answers `[]` for a model it reports no capabilities for at all.
+      // Collapsing that into "unsupported" would silently strip a level a
+      // reasoning model does accept, so it must fall through to the request.
+      mockedOllamaCapabilities.current = []
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'no-caps-reported', diff: 'd', effort: 'low' })
+
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body).reasoning_effort).toBe('low')
+      expect(r).toMatchObject({ ok: true, effort: 'low' })
+    })
+
+    it('falls back to the 400-retry when the capability probe cannot answer', async () => {
+      mockedOllamaCapabilities.current = null
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce(mockTextResponse(thinkingRejectedBody, { ok: false, status: 400 }))
+        .mockResolvedValueOnce(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'unprobeable', diff: 'd', effort: 'low' })
+
+      expect(global.fetch).toHaveBeenCalledTimes(2)
+      expect(r).toMatchObject({ ok: true, effort: null, effortUnsupported: true })
+    })
+
+    it('does not probe capabilities when no effort is pinned', async () => {
+      // Nothing to drop, so the round-trip would be pure cost — and a model
+      // that legitimately reports no thinking must not be flagged as a
+      // downgrade when the caller never asked for a level.
+      mockedOllamaCapabilities.current = ['completion']
+
+      const r = await runLocalCodeReview({ backend: 'ollama', model: 'unpinned', diff: 'd' })
+
+      expect('reasoning_effort' in JSON.parse(global.fetch.mock.calls[0][1].body)).toBe(false)
+      expect(r).toMatchObject({ ok: true, effort: null })
+      expect('effortUnsupported' in r).toBe(false)
+    })
+
+    it('does not probe ollama capabilities for a non-ollama backend', async () => {
+      // LM Studio ignores an unknown field rather than 400-ing, and has no
+      // equivalent probe — sending the level is still the right default.
+      mockedOllamaCapabilities.current = ['completion']
+
+      const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'd', effort: 'low' })
+
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body).reasoning_effort).toBe('low')
+      expect(r).toMatchObject({ ok: true, effort: 'low' })
     })
   })
 })
