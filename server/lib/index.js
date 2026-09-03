@@ -457,6 +457,7 @@ export * from './openapiDowngrade.js';
 export * from './apiToolResource.js';
 export * from './mergeGateContract.js';
 export * from './prDisposition.js';
+export * from './prHandbackPolicy.js';
 export * from './prReviewReport.js';
 export * from './repoStateExpectations.js';
 export * from './shellCd.js';

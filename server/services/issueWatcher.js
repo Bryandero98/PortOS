@@ -27,6 +27,7 @@ import {
   reviewReportText,
 } from '../lib/prReviewReport.js';
 import { githubApiHost, githubRepoSpec } from '../lib/workTracker.js';
+import { MAX_PR_REMEDIATION_ATTEMPTS, PR_HANDBACK, PR_REVIEW_OUTCOME, resolveHandbackDisposition, resolvePullRequestWriteAccess } from '../lib/prHandbackPolicy.js';
 import { getAppById, updateApp } from './apps.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { mergePR, resolveForgeForRepo } from './git.js';
@@ -42,6 +43,14 @@ const MAX_TOTAL_DIFF_CHARS = MAX_DIFF_CHARS * MAX_PULL_REQUESTS_PER_RUN;
 const MAX_ISSUE_COMMENTS_PER_RUN = 25;
 const MAX_ISSUE_CONTEXT_CHARS = 40_000;
 const MAX_PENDING_ISSUE_COMMENTS = 250;
+// One entry per PR, so this only grows with the count of external PRs that were
+// reviewed and did not merge. Bounded anyway: the ledger lives in app state,
+// which is read on every gather pass.
+const MAX_HANDBACK_LEDGER_ENTRIES = 200;
+// Two paths reach the same outcome — the review pass and the merge poller both
+// find an approved PR with a red check — so the hand-back reads identically
+// whichever one got there first.
+const CI_FAILING_HANDBACK_REASON = 'the PR was approved but CI is failing';
 export const MAX_PENDING_APPROVAL_TICKS = 12;
 export const MAX_PENDING_ISSUE_COMMENT_TICKS = 12;
 const GREEN_CHECKS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
@@ -70,11 +79,21 @@ function queueStateWrite(write) {
   return next;
 }
 
+/**
+ * `patch` may be an object, or a FUNCTION of the freshly-read state. The
+ * function form exists because a plain object patch is computed from a snapshot
+ * taken before the queue was entered, and writing an array field from a stale
+ * snapshot replaces whatever another pass wrote in the meantime. A field whose
+ * entries are owned by more than one pass must derive its next value from the
+ * state this write actually lands on — see `handbackStatePatch`.
+ */
 async function persistState(appId, patch) {
   return queueStateWrite(async () => {
     const app = await getAppById(appId);
     if (!app) return null;
-    return updateApp(appId, { issueWatcherState: { ...readState(app), ...patch } });
+    const state = readState(app);
+    const resolved = typeof patch === 'function' ? patch(state) : patch;
+    return updateApp(appId, { issueWatcherState: { ...state, ...resolved } });
   });
 }
 
@@ -235,6 +254,159 @@ async function assignVolunteer(ctx, issueNumber, login) {
     });
 }
 
+/**
+ * Put a reviewed PR back in its opener's queue. Idempotent against the forge
+ * read that produced `pr`, so a scheduled sweep that re-observes the same
+ * still-unmerged PR doesn't re-issue the edit every tick.
+ *
+ * A failure here is logged, not propagated: the REQUEST_CHANGES review is
+ * already posted and is the contributor's real signal. GitHub also refuses to
+ * assign a login with no read access on the repo, which is an ordinary outcome
+ * for an outside contributor rather than a coordinator error.
+ */
+async function assignPullRequestOpener(ctx, pr, authorLogin) {
+  const login = (authorLogin || pr?.author?.login || '').trim();
+  if (!login || !Number.isInteger(pr?.number)) return false;
+  const assigned = (Array.isArray(pr.assignees) ? pr.assignees : [])
+    .some((assignee) => sameLogin(assignee?.login, login));
+  if (assigned) return true;
+  return runGh(['pr', 'edit', String(pr.number), '--repo', ctx.repoSpec, '--add-assignee', login], ctx)
+    .then(() => {
+      console.log(`📌 issue-watcher: handed PR #${pr.number} back to @${login}`);
+      return true;
+    })
+    .catch((err) => {
+      console.error(`❌ issue-watcher: could not assign PR #${pr.number} to ${login}: ${err.message}`);
+      return false;
+    });
+}
+
+const handbackLedger = (state) => (Array.isArray(state?.prHandbacks) ? state.prHandbacks : [])
+  .filter((entry) => Number.isInteger(entry?.number));
+
+/**
+ * Per-pass hand-back accumulator. The ledger is read once at the top of a pass
+ * and written once at the end, folded into the `persistState` call the pass
+ * already makes — a per-PR write would re-serialize the whole apps file for
+ * each PR. `ledger` is the pass's working view, mutated in place like the
+ * `approvals`/`remaining` arrays beside it so a dedup check later in the
+ * same loop sees an entry made earlier in it. `written` records only the
+ * entries THIS pass produced, keyed by PR number.
+ *
+ * The split matters: `processTaskOutput` and `processPendingApprovals` both
+ * own entries in this field and can be in flight together for one app (the
+ * perpetual refill in cos.js fires `buildTaskInput` on `agent:completed`,
+ * before the completing task's own output hook has settled). Writing
+ * `ledger` wholesale would replace the other pass's entries with a snapshot
+ * taken before they existed — and a LOST entry here is not a benign
+ * re-observation: it drops the same-revision dedup and the attempt budget, so
+ * the next sweep spawns a second remediation agent for a PR one is already
+ * working. Only `written` is applied, merged by number onto whatever the
+ * write actually lands on.
+ */
+function createHandbackTracker(app) {
+  return { ledger: handbackLedger(readState(app)), written: new Map() };
+}
+
+/**
+ * The ledger patch for a pass's own end-of-pass state write, as a function of
+ * fresh state so this pass's entries merge onto a peer's instead of replacing
+ * them. Returns `{}` when the pass handed nothing back.
+ */
+function handbackStatePatch(tracker) {
+  if (!tracker || tracker.written.size === 0) return {};
+  return (state) => {
+    const merged = handbackLedger(state).filter((entry) => !tracker.written.has(entry.number));
+    return { prHandbacks: [...merged, ...tracker.written.values()].slice(-MAX_HANDBACK_LEDGER_ENTRIES) };
+  };
+}
+
+/**
+ * Decide and apply who owns a PR the coordinator reviewed but did not merge.
+ *
+ * The decision itself is `prHandbackPolicy.js`; everything here is the state it
+ * needs. The per-PR ledger does two jobs the pure policy cannot: it stops a
+ * repeated sweep from re-dispatching an agent for a revision already handled,
+ * and it caps how many remediation agents one PR may consume before the work
+ * goes back to its opener regardless of write access.
+ */
+async function applyPullRequestHandback({
+  app, ctx, pr, tracker, authorLogin, reason,
+  reviewOutcome = null, notMergeReady = false, downgraded = false,
+} = {}) {
+  if (!app?.id || !ctx || !tracker || !Number.isInteger(pr?.number)) return PR_HANDBACK.NONE;
+  const headSha = pr.headRefOid || null;
+  const previous = tracker.ledger.find((entry) => entry.number === pr.number) || null;
+  // Same revision, already dispatched: the outstanding agent (or the assignment
+  // already made) owns it. Re-firing would queue a duplicate the moment the
+  // first one completed without landing the PR.
+  if (previous && headSha && previous.headSha === headSha) return PR_HANDBACK.NONE;
+
+  const attempts = previous?.attempts || 0;
+  const { canEdit, reason: writeAccess } = resolvePullRequestWriteAccess(pr);
+  const disposition = resolveHandbackDisposition({
+    reviewOutcome,
+    notMergeReady,
+    downgraded,
+    canEdit,
+    remediationExhausted: attempts >= MAX_PR_REMEDIATION_ATTEMPTS,
+  });
+  if (disposition === PR_HANDBACK.NONE) return PR_HANDBACK.NONE;
+
+  const login = (authorLogin || pr.author?.login || '').trim();
+  let applied = disposition;
+  let taskId = null;
+  // Only a NEW agent costs an attempt. Re-observing a PR whose agent is still
+  // queued must not burn the budget that decides when the work goes back to
+  // its opener.
+  let spawned = false;
+  if (disposition === PR_HANDBACK.REMEDIATE) {
+    // Lazy: the spawner reaches the CoS task store, whose module graph is far
+    // heavier than a gather pass that never hands anything back — and the
+    // common disposition returns above without ever needing it.
+    const { PR_REMEDIATION_SPAWN, spawnPrRemediationFollowUp } = await import('./prRemediationFollowUp.js');
+    const { status, task } = await spawnPrRemediationFollowUp({
+      app,
+      repoFullName: ctx.repoFullName,
+      pullRequest: {
+        number: pr.number,
+        url: pr.url,
+        headSha,
+        headRefName: pr.headRefName,
+        authorLogin: login,
+      },
+      writeAccess,
+      reason,
+    });
+    // `already-queued` still means an agent owns this PR, so it stays a
+    // REMEDIATE: assigning the opener on top of a running agent would put the
+    // PR in two queues and set a human to work against it. Only a genuine
+    // queue failure leaves nobody holding the PR and falls back.
+    if (status === PR_REMEDIATION_SPAWN.FAILED) applied = PR_HANDBACK.ASSIGN_OPENER;
+    else {
+      taskId = task?.id || null;
+      spawned = status === PR_REMEDIATION_SPAWN.QUEUED;
+    }
+  }
+  if (applied === PR_HANDBACK.ASSIGN_OPENER) await assignPullRequestOpener(ctx, pr, login);
+
+  const entry = {
+    number: pr.number,
+    headSha,
+    taskId: applied === PR_HANDBACK.REMEDIATE ? taskId : null,
+    attempts: spawned ? attempts + 1 : attempts,
+    // Observability only — nothing reads these back as inputs to the dedup or
+    // attempt-budget checks above.
+    disposition: applied,
+    reason: reason || null,
+    at: new Date().toISOString(),
+  };
+  tracker.ledger = [...tracker.ledger.filter((item) => item.number !== pr.number), entry]
+    .slice(-MAX_HANDBACK_LEDGER_ENTRIES);
+  tracker.written.set(pr.number, entry);
+  return applied;
+}
+
 async function gatherIssueComments(ctx, { since, ownerLogin }) {
   const rows = await listPaginated(ctx, `repos/${ctx.repoFullName}/issues`, [
     ['state', 'open'], ['since', since], ['sort', 'updated'], ['direction', 'asc'], ['per_page', LIST_LIMIT],
@@ -281,7 +453,12 @@ async function gatherIssueComments(ctx, { since, ownerLogin }) {
 async function readPullRequest(ctx, number) {
   return runJson([
     'pr', 'view', String(number), '--repo', ctx.repoSpec,
-    '--json', 'number,title,body,url,state,isDraft,author,labels,files,additions,deletions,baseRefName,baseRefOid,headRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup',
+    // `isCrossRepository`/`maintainerCanModify` decide who owns a PR the
+    // coordinator did not merge: with write access on the head branch PortOS
+    // lands it itself, without it the PR goes to the opener's queue
+    // (`prHandbackPolicy.js`). `assignees` keeps that assignment idempotent
+    // across scheduled sweeps.
+    '--json', 'number,title,body,url,state,isDraft,author,assignees,labels,files,additions,deletions,baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository,maintainerCanModify,mergeable,mergeStateStatus,statusCheckRollup',
   ], ctx);
 }
 
@@ -649,10 +826,20 @@ ${PR_REVIEW_DECISION_CONTRACT}
 Include one decision for every supplied issue comment and PR, and no others.`;
 }
 
-async function keepPendingApproval(app, approval, remaining, reason, patch = {}) {
+async function keepPendingApproval(app, approval, remaining, reason, { patch = {}, ctx = null, pr = null, tracker = null } = {}) {
   const next = { ...approval, ...patch, ticks: (approval.ticks || 0) + 1 };
   if (next.ticks >= MAX_PENDING_APPROVAL_TICKS) {
     await notifyPendingApproval(app, approval, `PortOS stopped polling after ${MAX_PENDING_APPROVAL_TICKS} checks because ${reason}.`);
+    // Polling gave up, so this is the last moment anything is watching the PR.
+    // Hand it over rather than leave an approved-but-unlandable PR unowned.
+    // `pr` is null only when the forge read itself failed, and there is nothing
+    // to decide from in that case.
+    await applyPullRequestHandback({
+      app, ctx, pr, tracker,
+      authorLogin: approval.authorLogin,
+      reason: `PortOS stopped polling because ${reason}`,
+      notMergeReady: true,
+    });
   } else {
     remaining.push(next);
   }
@@ -661,11 +848,12 @@ async function keepPendingApproval(app, approval, remaining, reason, patch = {})
 async function processPendingApprovals(app, ctx) {
   const approvals = Array.isArray(readState(app).approvedPullRequests) ? readState(app).approvedPullRequests : [];
   const remaining = [];
+  const handbacks = createHandbackTracker(app);
   let changed = false;
   for (const approval of approvals) {
     const pr = await readPullRequest(ctx, approval.number);
     if (!pr) {
-      await keepPendingApproval(app, approval, remaining, 'it could not be read from GitHub');
+      await keepPendingApproval(app, approval, remaining, 'it could not be read from GitHub', { tracker: handbacks });
       changed = true;
       continue;
     }
@@ -699,14 +887,14 @@ async function processPendingApprovals(app, ctx) {
     if (approval.rebaseRequired) {
       const behindBy = await readBehindBy(ctx, pr);
       if (behindBy === null) {
-        await keepPendingApproval(app, approval, remaining, 'its base relationship could not be read');
+        await keepPendingApproval(app, approval, remaining, 'its base relationship could not be read', { ctx, pr, tracker: handbacks });
         changed = true;
         continue;
       }
       if (behindBy > 0) {
         if (await updatePullRequestBranch(ctx, pr.number, pr.headRefOid)) changed = true;
         else {
-          await keepPendingApproval(app, approval, remaining, 'its required rebase could not be applied');
+          await keepPendingApproval(app, approval, remaining, 'its required rebase could not be applied', { ctx, pr, tracker: handbacks });
           changed = true;
         }
         continue;
@@ -717,6 +905,13 @@ async function processPendingApprovals(app, ctx) {
     if (checks === 'failed') {
       await notifyPendingApproval(app, approval, 'CI reported a failing status, so PortOS stopped automatic merge polling.');
       changed = true;
+      // Dropped from the poll list, so this is the PR's last owner-less moment.
+      await applyPullRequestHandback({
+        app, ctx, pr, tracker: handbacks,
+        authorLogin: approval.authorLogin,
+        reason: CI_FAILING_HANDBACK_REASON,
+        notMergeReady: true,
+      });
       continue;
     }
     // A run GitHub is still holding for approval also shows up as no checks;
@@ -737,11 +932,18 @@ async function processPendingApprovals(app, ctx) {
       }
     }
     await keepPendingApproval(app, approval, remaining, 'CI or mergeability did not settle', {
-      noChecksObserved: approval.noChecksObserved === true || checkRollup.length === 0,
+      patch: { noChecksObserved: approval.noChecksObserved === true || checkRollup.length === 0 },
+      ctx, pr, tracker: handbacks,
     });
     changed = true;
   }
-  if (changed) await persistState(app.id, { approvedPullRequests: remaining });
+  const handbackPatch = handbackStatePatch(handbacks);
+  if (changed || typeof handbackPatch === 'function') {
+    await persistState(app.id, (state) => ({
+      approvedPullRequests: remaining,
+      ...(typeof handbackPatch === 'function' ? handbackPatch(state) : handbackPatch),
+    }));
+  }
   return remaining;
 }
 
@@ -1001,9 +1203,11 @@ export async function processTaskOutput({ appId, success, payload, task, require
     && commentDecisions.size === expectedComments.size;
 
   let approvals = Array.isArray(readState(app).approvedPullRequests) ? readState(app).approvedPullRequests : [];
+  const handbacks = createHandbackTracker(app);
   let reviewed = 0;
   let merged = 0;
   let rebased = 0;
+  let handedBack = 0;
   for (const raw of payload.pullRequests) {
     const decision = normalizeReviewDecision(raw);
     const target = decision && expectedPullRequests.get(decision.number);
@@ -1058,7 +1262,18 @@ export async function processTaskOutput({ appId, success, payload, task, require
           || await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT', comments: findings })
         : await submitReview(ctx, pr.number, { body: summary, event: 'COMMENT', comments: findings })
           || await postReviewFallback(ctx, pr.number, summary);
-      if (posted) reviewed += 1;
+      if (!posted) continue;
+      reviewed += 1;
+      // The review is posted and the PR is going nowhere on its own. Hand it to
+      // whoever can act on it — a remediation agent when the head branch is
+      // writable and the findings are concrete, the opener otherwise.
+      if (await applyPullRequestHandback({
+        app, ctx, pr, tracker: handbacks,
+        authorLogin: target.authorLogin,
+        reason: 'the review reported blocking findings',
+        reviewOutcome: shouldRequestChanges ? PR_REVIEW_OUTCOME.REQUEST_CHANGES : PR_REVIEW_OUTCOME.DEFER,
+        downgraded,
+      }) !== PR_HANDBACK.NONE) handedBack += 1;
       continue;
     }
 
@@ -1118,6 +1333,14 @@ export async function processTaskOutput({ appId, success, payload, task, require
         url: pr.url,
       }, 'CI reported a failing status, so PortOS did not merge this approved PR.');
       approvals = approvals.filter((entry) => entry.number !== pr.number);
+      // Approved on its content but not landable. Polling is over (the approval
+      // was just dropped), so without a hand-back this PR would have nobody.
+      if (await applyPullRequestHandback({
+        app, ctx, pr, tracker: handbacks,
+        authorLogin: target.authorLogin,
+        reason: CI_FAILING_HANDBACK_REASON,
+        notMergeReady: true,
+      }) !== PR_HANDBACK.NONE) handedBack += 1;
       continue;
     }
     approvals = mergeApproval(approvals, {
@@ -1160,11 +1383,13 @@ export async function processTaskOutput({ appId, success, payload, task, require
       return null;
     });
   }
-  await persistState(appId, {
+  const handbackPatch = handbackStatePatch(handbacks);
+  await persistState(appId, (state) => ({
     approvedPullRequests: approvals,
     pendingIssueComments,
     lastCheckedAt: new Date().toISOString(),
     lastError: commentsHandled ? null : 'issue-response-incomplete',
-  });
-  return { action: 'processed', replies, reviewed, rebased, merged, commentsHandled };
+    ...(typeof handbackPatch === 'function' ? handbackPatch(state) : handbackPatch),
+  }));
+  return { action: 'processed', replies, reviewed, rebased, merged, handedBack, commentsHandled };
 }

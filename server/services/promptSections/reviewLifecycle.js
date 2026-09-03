@@ -799,12 +799,18 @@ export const LEAVE_PR_OPEN_STEP = (step, jiraTracked = false) => `${step}. **Lea
  *   run. Callers derive this with `detectForgeCli` — a GitHub Enterprise host is
  *   `github`, not "not github.com". `unknown` (the agent's own completion
  *   workflow, which runs before the PR exists) emits both, commented.
+ * @param {boolean} [opts.deleteBranch=true] - whether the merge command also
+ *   deletes the head branch. False for a PR whose head lives in a CONTRIBUTOR's
+ *   fork: PortOS may have push rights there (`maintainerCanModify`) without it
+ *   being our call to delete someone else's branch.
  * @returns {{lines: string[], nextStep: number}}
  */
-export function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>', forge = 'github', alreadyMergedHint = ' (a saved `/do:pr` default can merge it for you)', localReviewers = [], localReviewRequired = false }) {
+export function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>', forge = 'github', alreadyMergedHint = ' (a saved `/do:pr` default can merge it for you)', localReviewers = [], localReviewRequired = false, deleteBranch = true }) {
   const gh = forge !== 'gitlab';
   const glab = forge !== 'github';
   const both = gh && glab;
+  const ghDelete = deleteBranch ? ' --delete-branch' : '';
+  const glabDelete = deleteBranch ? ' --remove-source-branch' : '';
   const localReviewNames = Array.isArray(localReviewers) && localReviewers.length
     ? localReviewers.map(reviewer => `\`${reviewer}\``).join(', ')
     : '';
@@ -833,13 +839,13 @@ export function buildCiMergeGateSteps(startStep, { prRef, mrRef = '<MR_NUMBER>',
     `${startStep + 1}. **Clear whatever blocks the merge, then re-check.** If a check failed, read the failing job's log (${gh ? `\`gh run view --log-failed\`${glab ? ' on GitHub, `glab ci trace` on GitLab' : ''}` : '`glab ci trace`'}), fix the cause here, run the project's tests, commit (\`fix:\` prefix, no Co-Authored-By), push, and go back to the previous step — cap this at 5 rounds. If ${mergeableCmd}, \`git fetch origin\`, rebase onto the base branch, resolve the conflicts keeping BOTH sides' intent,${localReviewRecheck} re-run the tests, \`git push --force-with-lease\`, and re-check.`,
     `${startStep + 2}. **Merge** with exactly these flags, nothing else — a true merge commit keeps the branch tip in the base branch's history so automated worktree cleanup can prove the branch is merged, and any merge-deferral flag leaves the PR open after you exit. If it is already merged${alreadyMergedHint}, skip to the next step:`,
     '   ```bash',
-    gh ? `   ${both ? '# GitHub:  ' : ''}gh pr merge ${prRef} --merge --delete-branch` : null,
+    gh ? `   ${both ? '# GitHub:  ' : ''}gh pr merge ${prRef} --merge${ghDelete}` : null,
     // `glab mr merge` takes an MR IID or source branch — a URL is not accepted.
-    glab ? `   ${both ? '# GitLab:  ' : ''}glab mr merge ${mrRef} --yes --remove-source-branch` : null,
+    glab ? `   ${both ? '# GitLab:  ' : ''}glab mr merge ${mrRef} --yes${glabDelete}` : null,
     '   ```',
     // Not every repo allows merge commits; a repo restricted to squash/rebase
     // rejects `--merge` outright, which would leave the PR open forever.
-    gh ? `   If that is rejected because this repo disallows merge commits, re-check what it allows (\`gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed\`) and merge with an allowed method instead — \`--squash\` first, else \`--rebase\` — keeping \`--delete-branch\`.` : null,
+    gh ? `   If that is rejected because this repo disallows merge commits, re-check what it allows (\`gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed\`) and merge with an allowed method instead — \`--squash\` first, else \`--rebase\`${deleteBranch ? ', keeping \`--delete-branch\`' : ''}.` : null,
     `${startStep + 3}. **Confirm the merge before exiting**: ${stateCmd}. If it is still open or was closed unmerged, investigate (failing check, merge conflict, branch protection), fix, and retry. Leave it open — saying so explicitly in your completion summary — if CI stays red after a genuine fix attempt, a conflict needs a human decision, expected checks never attached, or a branch protection you cannot satisfy blocks the merge (a required approving review, a required check only a human can trigger). Hand those to a human rather than retrying until you time out.`,
   ].filter(Boolean);
   return { lines, nextStep: startStep + 4 };
