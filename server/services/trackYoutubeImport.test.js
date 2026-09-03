@@ -74,6 +74,35 @@ describe('YOUTUBE_URL_RE / assertYoutubeUrl', () => {
     expect(YOUTUBE_URL_RE.test('https://www.youtube.com/watch?list=PL123&v=dQw4w9WgXcQ')).toBe(true);
   });
 
+  // #6014: this path used to declare its OWN, older regex that predated
+  // music.youtube.com / shorts / live / embed support, so a Music Video track
+  // import of a YouTube Music or Shorts link 400'd while the brain ingest and
+  // the Takeout importer both accepted it.
+  it.each([
+    'https://music.youtube.com/watch?v=dQw4w9WgXcQ',
+    'https://www.youtube.com/shorts/dQw4w9WgXcQ',
+    'https://youtube.com/shorts/dQw4w9WgXcQ',
+    'https://www.youtube.com/live/dQw4w9WgXcQ',
+    'https://www.youtube.com/embed/dQw4w9WgXcQ',
+  ])('accepts %s', (url) => {
+    expect(YOUTUBE_URL_RE.test(url)).toBe(true);
+    expect(() => assertYoutubeUrl(url)).not.toThrow();
+  });
+
+  it('returns the video id so the caller need not re-parse the URL', () => {
+    expect(assertYoutubeUrl('https://music.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+    expect(assertYoutubeUrl('https://youtu.be/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it.each([
+    'https://www.youtube.com/playlist?list=PLabcdefghij',
+    'https://www.youtube.com/@somechannel',
+    'https://www.youtube.com/feed/history',
+  ])('rejects %s — a batch paste must not start a 300-video download', (url) => {
+    expect(YOUTUBE_URL_RE.test(url)).toBe(false);
+    expect(() => assertYoutubeUrl(url)).toThrow(/single-video YouTube URL/);
+  });
+
   it('rejects a non-YouTube host', () => {
     expect(YOUTUBE_URL_RE.test('https://vimeo.com/12345')).toBe(false);
     expect(() => assertYoutubeUrl('https://vimeo.com/12345')).toThrow(/YouTube/);
