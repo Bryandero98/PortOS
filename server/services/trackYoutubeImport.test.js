@@ -15,12 +15,29 @@ vi.mock('./tracks/index.js', () => ({
   DURATION_MAX_SEC: 3600,
 }));
 vi.mock('../lib/childProcess.js', async (importOriginal) => ({ ...(await importOriginal()), spawn: vi.fn() }));
+vi.mock('../lib/sseUtils.js', () => ({
+  broadcastSse: vi.fn(),
+  attachSseClient: vi.fn(() => true),
+  closeJobAfterDelay: vi.fn(),
+}));
+vi.mock('../lib/killWithEscalation.js', () => ({ killWithEscalation: vi.fn() }));
+// Spy that calls through, so the argv test still exercises the real yt-dlp core
+// while the cancellation tests can substitute an outcome.
+vi.mock('./ytdlpAudioImport.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, downloadAudioToTempMp3: vi.fn(actual.downloadAudioToTempMp3) };
+});
 
 const { findYtDlp } = await import('../lib/ytdlp.js');
 const { findFfmpeg } = await import('../lib/ffmpeg.js');
 const { spawn } = await import('../lib/childProcess.js');
+const { broadcastSse } = await import('../lib/sseUtils.js');
+const { killWithEscalation } = await import('../lib/killWithEscalation.js');
+const { downloadAudioToTempMp3 } = await import('./ytdlpAudioImport.js');
+const { importUploadedTrack } = await import('./pipeline/musicLibrary.js');
+const { createTrack } = await import('./tracks/index.js');
 const {
-  YOUTUBE_URL_RE, assertYoutubeUrl, startYoutubeImport,
+  YOUTUBE_URL_RE, assertYoutubeUrl, startYoutubeImport, cancelYoutubeImport, __testing,
 } = await import('./trackYoutubeImport.js');
 
 // A fake yt-dlp child that immediately closes with the given exit code —
@@ -105,5 +122,74 @@ describe('startYoutubeImport — yt-dlp argv', () => {
     const [, args] = spawn.mock.calls[0];
     expect(args).toEqual(expect.arrayContaining(['--max-filesize', String(50 * 1024 * 1024)]));
     expect(args).toEqual(expect.arrayContaining(['--match-filters', 'duration <= 3600']));
+  });
+});
+
+describe('cancelYoutubeImport', () => {
+  it('returns false for an unknown job id', () => {
+    expect(cancelYoutubeImport('nope')).toBe(false);
+    expect(killWithEscalation).not.toHaveBeenCalled();
+  });
+
+  it('records the cancel and returns true even when no child has spawned yet', () => {
+    const job = { id: 'j1', status: 'running', clients: [], process: null, canceled: false };
+    __testing.importJobs.set('j1', job);
+    expect(cancelYoutubeImport('j1')).toBe(true);
+    expect(job.canceled).toBe(true);
+    // job.process is null during setup and again during post-processing — there
+    // is nothing to signal, but the cancel must still be recorded.
+    expect(killWithEscalation).not.toHaveBeenCalled();
+    __testing.importJobs.delete('j1');
+  });
+
+  it('returns false once the job has finished, while it lingers in the map', () => {
+    // closeJobAfterDelay evicts on a timer, so a finished job is still present —
+    // cancelling it must not report an accepted cancel to the client.
+    __testing.importJobs.set('j3', { id: 'j3', status: 'done', clients: [], process: null, canceled: false });
+    expect(cancelYoutubeImport('j3')).toBe(false);
+    __testing.importJobs.delete('j3');
+  });
+
+  it('signals a running child and refuses a second cancel', () => {
+    const proc = { pid: 1234 };
+    const job = { id: 'j2', status: 'running', clients: [], process: proc, canceled: false };
+    __testing.importJobs.set('j2', job);
+    expect(cancelYoutubeImport('j2')).toBe(true);
+    expect(killWithEscalation).toHaveBeenCalledWith(proc, expect.objectContaining({ label: 'yt-dlp import' }));
+    expect(cancelYoutubeImport('j2')).toBe(false);
+    expect(killWithEscalation).toHaveBeenCalledOnce();
+    __testing.importJobs.delete('j2');
+  });
+});
+
+describe('startYoutubeImport — cancellation windows', () => {
+  it('emits canceled and creates no track when cancelled after the download finished', async () => {
+    // Cancel lands while the download is settling: the child has already exited
+    // (job.process back to null), so only the flag can carry the cancel.
+    // An assertion thrown inside the detached kickoff would be swallowed by its
+    // catch, so record the result and assert it out here.
+    let canceledOk = null;
+    downloadAudioToTempMp3.mockImplementationOnce(async () => {
+      const jobId = [...__testing.importJobs.keys()].pop();
+      canceledOk = cancelYoutubeImport(jobId);
+      return { outcome: 'complete', outPath: '/tmp/x.mp3', title: 'Clip' };
+    });
+
+    await startYoutubeImport('https://youtu.be/dQw4w9WgXcQ');
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setImmediate(r));
+
+    expect(canceledOk).toBe(true);
+    expect(broadcastSse).toHaveBeenCalledWith(expect.anything(), { type: 'canceled' });
+    expect(importUploadedTrack).not.toHaveBeenCalled();
+    expect(createTrack).not.toHaveBeenCalled();
+  });
+
+  it('emits canceled when the core reports the child was killed mid-download', async () => {
+    downloadAudioToTempMp3.mockResolvedValueOnce({ outcome: 'canceled' });
+    await startYoutubeImport('https://youtu.be/dQw4w9WgXcQ');
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setImmediate(r));
+
+    expect(broadcastSse).toHaveBeenCalledWith(expect.anything(), { type: 'canceled' });
+    expect(createTrack).not.toHaveBeenCalled();
   });
 });
