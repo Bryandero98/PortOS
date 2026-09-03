@@ -174,10 +174,14 @@ export async function resetGitSandbox({ scratch, repo, initialHead }) {
   assertTempPath(repo, 'git sandbox reset');
   // A test can delete `repo` itself (simulating a checkout that vanished
   // mid-run) — rebuild it from the template rather than handing every git
-  // call below a cwd that no longer exists.
+  // call below a cwd that no longer exists. The template's own working copy
+  // still has ITS `origin` pointing at the shared per-worker bare origin, so
+  // strip it here too — leaving it would wire this sandbox at a remote every
+  // other sandbox in the worker shares.
   if (!existsSync(repo)) {
     const template = await getTemplate();
     await copyTree(template.repo, repo);
+    await stripOrigin(repo);
   }
   const gitDir = join(repo, '.git');
   // Every git subprocess costs real wall time (spawn overhead alone runs
@@ -202,7 +206,7 @@ export async function resetGitSandbox({ scratch, repo, initialHead }) {
   try {
     hasOrigin = /\[remote "origin"\]/.test(readFileSync(join(gitDir, 'config'), 'utf8'));
   } catch { /* no config to read — nothing to remove */ }
-  if (hasOrigin) await execGit(['remote', 'remove', 'origin'], repo, { ignoreExitCode: true });
+  if (hasOrigin) await stripOrigin(repo);
   if (scratch) {
     const keep = basename(repo);
     const entries = await readdir(scratch, { withFileTypes: true }).catch(() => []);
@@ -220,19 +224,32 @@ export async function resetGitSandbox({ scratch, repo, initialHead }) {
  */
 export async function resetGitWorktreeSandbox(repo, initialHead) {
   assertTempPath(repo, 'git worktree sandbox reset');
-  const { stdout } = await execGit(['worktree', 'list', '--porcelain'], repo);
-  // Each block is `worktree <path>\n[HEAD ...\n][branch ...\n][locked[ <reason>]\n]`.
-  // Skip the first block — it's always `repo` itself, never a grown worktree.
-  const entries = stdout.split('\n\n').slice(1).map((block) => ({
-    path: block.match(/^worktree (.+)$/m)?.[1],
-    locked: /^locked\b/m.test(block),
-  })).filter((entry) => entry.path);
-  for (const { path, locked } of entries) {
-    if (locked) await execGit(['worktree', 'unlock', path], repo, { ignoreExitCode: true });
-    await execGit(['worktree', 'remove', '--force', path], repo, { ignoreExitCode: true });
-    await rm(path, { recursive: true, force: true }).catch(() => {});
+  // A missing `repo` has no worktrees to list — let resetGitSandbox()'s own
+  // rebuild-from-template handle it below instead of handing `worktree list`
+  // a cwd that doesn't exist.
+  if (existsSync(repo)) {
+    const { stdout } = await execGit(['worktree', 'list', '--porcelain'], repo);
+    // On Windows this output is CRLF (see listWorktrees() in worktreeManager.js
+    // for the same fix) — a bare '\n' split leaves a trailing \r on `path`,
+    // which then goes straight into `worktree remove <path>` and `rm(path)`.
+    let current = null;
+    const entries = [];
+    for (const line of stdout.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) {
+        current = { path: line.slice('worktree '.length), locked: false };
+        entries.push(current);
+      } else if (current && (line === 'locked' || line.startsWith('locked '))) {
+        current.locked = true;
+      }
+    }
+    // The first entry is always `repo` itself, never a grown worktree.
+    for (const { path, locked } of entries.slice(1)) {
+      if (locked) await execGit(['worktree', 'unlock', path], repo, { ignoreExitCode: true });
+      await execGit(['worktree', 'remove', '--force', path], repo, { ignoreExitCode: true });
+      await rm(path, { recursive: true, force: true }).catch(() => {});
+    }
+    if (entries.length > 1) await execGit(['worktree', 'prune'], repo, { ignoreExitCode: true });
   }
-  if (entries.length) await execGit(['worktree', 'prune'], repo, { ignoreExitCode: true });
   await resetGitSandbox({ repo, initialHead });
 }
 
