@@ -5,6 +5,7 @@ import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { useValidTab } from '../hooks/useValidTab';
 import * as api from '../services/api';
+import { isRiggedAvatarStyle, riggedRecordForStyle, useAvatarCapabilities } from '../hooks/useAvatarCapabilities';
 import { coalesce } from '../utils/coalesce';
 import { sameJsonShape } from '../lib/sameJsonShape';
 import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
@@ -70,6 +71,12 @@ const LAZY_AVATARS = {
   miniFemaleD: lazy(() => import('../components/cos/MiniCharFemaleD')),
 };
 
+// A verified animated record renders through the same mini-character stage —
+// the variant URL resolves to the record's GLB via /api/avatar, and playback
+// falls back to a present clip per its coverage. Lazy like every other 3D
+// avatar so three.js stays out of the main chunk until it is picked.
+const LazyRiggedAvatar = lazy(() => import('../components/cos/MiniCharacterCoSAvatar'));
+
 const CANVAS_AVATAR_STYLES = new Set([
   'cyber', 'sigil', 'esoteric', 'nexus', 'muse',
   'miniMaleC', 'miniFemaleD',
@@ -133,6 +140,9 @@ export default function ChiefOfStaff() {
   // overwrite a fresher optimistic mutation or fetchQueue result.
   const queueSeqRef = useRef(0);
   const socket = useSocket();
+
+  // Verified animated records for the avatar selector and rigged playback (#5894).
+  const { records: riggedAvatars } = useAvatarCapabilities();
 
   // Derive avatar style from server config, with optional dynamic override
   const configAvatarStyle = status?.config?.avatarStyle || 'svg';
@@ -710,7 +720,7 @@ export default function ChiefOfStaff() {
     el.scrollBy({ left: direction === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
   }, []);
 
-  const hasCanvasAvatar = CANVAS_AVATAR_STYLES.has(avatarStyle);
+  const hasCanvasAvatar = CANVAS_AVATAR_STYLES.has(avatarStyle) || isRiggedAvatarStyle(avatarStyle);
 
   // Learning tile behaviour shared by the compact (sidebar/mobile) and mini
   // (ascii stats bar) renderings — only the icon scale and the empty-state
@@ -834,6 +844,18 @@ export default function ChiefOfStaff() {
   );
 
   const renderAvatar = (background = false) => {
+    // A rigged record plays on the mini-character stage: the variant URL
+    // resolves to its animated GLB, and its coverage drives the fallback to
+    // a present clip. A record deleted after being picked 404s its HEAD
+    // probe, so the stage shows the missing-model hint instead of a canvas.
+    if (isRiggedAvatarStyle(avatarStyle)) {
+      const record = riggedRecordForStyle(riggedAvatars, avatarStyle);
+      return (
+        <Suspense fallback={<div className="flex items-center justify-center h-full"><BrailleSpinner /></div>}>
+          <LazyRiggedAvatar state={agentState} speaking={speaking} background={background} variant={avatarStyle} coverage={record?.coverage || null} />
+        </Suspense>
+      );
+    }
     const LazyAvatar = LAZY_AVATARS[avatarStyle];
     if (LazyAvatar) {
       return (
@@ -1259,7 +1281,7 @@ export default function ChiefOfStaff() {
         {activeTab === 'config' && (
           <div role="tabpanel" id="tabpanel-config" aria-labelledby="tab-config">
             <Suspense fallback={<TabLoadFallback label="configuration" />}>
-              <ConfigTab config={status?.config} onUpdate={fetchData} onEvaluate={handleForceEvaluate} avatarStyle={configAvatarStyle} setAvatarStyle={setAvatarStyle} />
+              <ConfigTab config={status?.config} onUpdate={fetchData} onEvaluate={handleForceEvaluate} avatarStyle={configAvatarStyle} setAvatarStyle={setAvatarStyle} riggedAvatars={riggedAvatars} />
             </Suspense>
           </div>
         )}

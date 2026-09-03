@@ -66,6 +66,7 @@ export default function PracticeLogger({ song, onLogged, className = '' }) {
             type="button"
             onClick={() => logPractice(rating.quality)}
             disabled={logging}
+            aria-label={rating.label}
             className="min-h-[48px] px-2.5 py-2 text-left sm:text-center rounded-lg border border-port-border text-gray-300 hover:text-white hover:border-port-accent/50 hover:bg-port-border/50 disabled:opacity-50 flex flex-col justify-center"
           >
             <span className="text-xs sm:text-sm font-semibold text-white">{rating.label}</span>

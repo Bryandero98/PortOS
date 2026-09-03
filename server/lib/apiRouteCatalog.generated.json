@@ -1503,6 +1503,14 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/avatar/rigged",
+      "mountPath": "/api/avatar",
+      "sources": [
+        "server/routes/avatar.js"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/backup/restore",
       "mountPath": "/api/backup",
@@ -17505,8 +17513,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2168,
-    "declarations": 2176,
+    "operations": 2169,
+    "declarations": 2177,
     "sourceFiles": 230
   }
 }
