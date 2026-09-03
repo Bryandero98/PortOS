@@ -123,6 +123,30 @@ describe('RelaunchAgentModal', () => {
     expect(screen.getByRole('button', { name: /show less/i })).toBeInTheDocument();
   });
 
+  it('says the task is running when the server started it, not that it is queued', async () => {
+    const user = userEvent.setup();
+    api.relaunchCosAgent.mockResolvedValue({ success: true, taskId: 'task-abc', mode: 'requeued', spawned: true });
+    renderModal();
+
+    await user.click(screen.getByRole('button', { name: 'Relaunch Agent' }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/running again/i)));
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/queued/i));
+  });
+
+  it('names why a relaunched task stayed queued instead of leaving the user to hunt for it', async () => {
+    const user = userEvent.setup();
+    api.relaunchCosAgent.mockResolvedValue({
+      success: true, taskId: 'task-abc', mode: 'requeued',
+      spawned: false, spawnHold: 'No available agent slots (3/3)',
+    });
+    renderModal();
+
+    await user.click(screen.getByRole('button', { name: 'Relaunch Agent' }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/No available agent slots \(3\/3\)/)));
+  });
+
   it('keeps the dialog open and surfaces the error when the relaunch fails', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
