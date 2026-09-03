@@ -680,6 +680,44 @@ describe('stream error containment', () => {
     });
   });
 
+  // ─── Fast-exiting child: events emitted during the post-spawn await (#5791) ─
+
+  it('does not drop stdout or close emitted while the post-spawn await is still yielding', async () => {
+    // The child's whole life cycle can land between spawn() and the point where
+    // the real stdout/stderr/close handler bodies are installed: the
+    // `updateAgent(agentId, { pid })` in between is real state-file I/O, so it
+    // yields for a macrotask, not just a microtask. A CLI that dies instantly
+    // (bad flag, instant auth refusal) exits inside that window — before the fix
+    // its output was lost and its `close` landed on nothing, leaving the run
+    // record, the execution lane and the activeAgents entry non-terminal until
+    // the orphan reaper eventually noticed.
+    const { activeAgents } = await import('./agentState.js');
+    const { finalizeAgent } = await import('./agentFinalization.js');
+    activeAgents.clear();
+    finalizeAgent.mockClear();
+    agentStateMocks.updateAgent.mockImplementationOnce(async () => {
+      // Emit from inside the same macrotask yield the real updateAgent creates.
+      await new Promise((r) => setImmediate(r));
+      fakeProcess.stdout.emit('data', Buffer.from(
+        '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"unknown flag --nope\\n"}}}\n'
+      ));
+      fakeProcess.emit('close', 2);
+    });
+
+    await expect(spawnDirectly(minimalArgs)).resolves.toBe('agent-test');
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(finalizeAgent).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'agent-test',
+      exitCode: 2,
+      success: false,
+      // The output the child managed to write before exiting is exactly what
+      // explains the failure, so it has to survive the buffering too.
+      outputBuffer: expect.stringContaining('unknown flag --nope'),
+    }));
+    expect(activeAgents.has('agent-test')).toBe(false);
+  });
+
   // ─── Lifecycle ledger — the first-output boundary (#4540) ─────────────────
 
   it('records ONE run.output on the first real byte, and never again', async () => {
