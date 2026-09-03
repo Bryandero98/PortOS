@@ -46,7 +46,7 @@ export default function QueueInstallInvestigationButton({
     const task = buildInstallFailureTask({ label, stage, error, logs, surface });
     // The description is deterministic per installer + stage, so retrying the
     // same failing install and clicking again hits the store's duplicate guard
-    // (409 DUPLICATE_TASK). That is the queued state, not a failure.
+    // (409 DUPLICATE_TASK). A task already exists — not a failure to report.
     const duplicateMessage = await addCosTask({ ...task, ...INSTALL_INVESTIGATION_DELIVERY }, { silent: true })
       .then(() => null)
       .catch((err) => {
@@ -65,9 +65,11 @@ export default function QueueInstallInvestigationButton({
       type="button"
       onClick={queueTask}
       disabled={queueing || queueResult !== null}
-      title={queueResult
-        ? 'A CoS task for this failure already exists — see Agent Ops'
-        : 'Queue a PortOS agent task to investigate this install failure'}
+      title={queueResult === 'queued'
+        ? 'Queued — track it in Agent Ops'
+        : queueResult === 'duplicate'
+          ? 'A CoS task for this failure already exists — see Agent Ops'
+          : 'Queue a PortOS agent task to investigate this install failure'}
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-port-accent text-white hover:bg-port-accent/80 disabled:opacity-50 disabled:hover:bg-port-accent ${className}`}
     >
       {queueResult ? <Check size={14} /> : <Bot size={14} />}
