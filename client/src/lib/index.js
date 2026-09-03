@@ -187,3 +187,4 @@ export * from './webglSupport.js';
 export * from './wrSceneCursor.js';
 export * from './writingGuide.js';
 export * from './qrCode.js';
+export * from './riggingReasons.js';

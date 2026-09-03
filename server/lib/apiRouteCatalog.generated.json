@@ -108,6 +108,7 @@
     "/api/rapid-reader",
     "/api/remote-desktop",
     "/api/review",
+    "/api/rigging",
     "/api/rounds",
     "/api/runs",
     "/api/scaffold",
@@ -13990,6 +13991,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/rigging/readiness",
+      "mountPath": "/api/rigging",
+      "sources": [
+        "server/routes/rigging.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/rounds",
       "mountPath": "/api/rounds",
       "sources": [
@@ -17414,9 +17423,9 @@
     }
   ],
   "stats": {
-    "mounts": 145,
-    "operations": 2157,
-    "declarations": 2165,
-    "sourceFiles": 228
+    "mounts": 146,
+    "operations": 2158,
+    "declarations": 2166,
+    "sourceFiles": 229
   }
 }
