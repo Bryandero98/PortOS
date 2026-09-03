@@ -3045,7 +3045,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
 
   return task;
 }
-// `normalizeClaimReviewers` moved to server/lib/cosValidation.js (#4770): the
+// `normalizeClaimReviewers` moved to server/lib/reviewerConfig.js (#4770, #5702): the
 // prompt builder needs the same copilot guard when it re-resolves reviewers off
 // a persisted claim task, and a service-level definition would have meant a
 // second copy there.

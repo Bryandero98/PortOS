@@ -2,7 +2,7 @@
  * Review-loop, CI-gate, and merge prompt sections.
  */
 
-import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, reviewerEffortArgs, reviewerModelArg, resolveKeyedReviewers, buildReviewWithArgs, prioritizeToolFreeReviewers } from '../../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, reviewerEffortArgs, reviewerModelArg, resolveKeyedReviewers, buildReviewWithArgs, prioritizeToolFreeReviewers } from '../../lib/reviewerConfig.js';
 import { oversizedBodyPointer } from '../../lib/slashdoInvocation.js';
 import { detectForgeCli } from '../../lib/gitForge.js';
 import { shellQuote } from '../../lib/shellQuote.js';

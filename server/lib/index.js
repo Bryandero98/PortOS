@@ -173,6 +173,10 @@ export * from './providerPrerequisites.js';
 // collision check as flat exports.
 export * as providerVendors from './providerVendors.js';
 export * from './providerTranscriptUsage.js';
+// Namespaced: reviewerConfig.js is re-exported flat by cosValidation.js (and so
+// by validation.js), so a flat `export *` here would trip the barrel's
+// duplicate-identifier collision check.
+export * as reviewerConfig from './reviewerConfig.js';
 export * from './quotaBurnConfig.js';
 export * from './quotaBurnPresets.js';
 export * from './auditCatalog.js';

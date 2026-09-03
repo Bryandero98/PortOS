@@ -2,7 +2,7 @@
  * Completion workflow, worktree, and sentinel prompt sections.
  */
 
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, normalizeReviewUsernames, resolveClaimReviewerConfig, buildReviewerPinNote, buildReviewerEffortNote, buildReviewWithArgs } from '../../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, normalizeReviewUsernames, resolveClaimReviewerConfig, buildReviewerPinNote, buildReviewerEffortNote, buildReviewWithArgs } from '../../lib/reviewerConfig.js';
 import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../../lib/agentSentinel.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow } from '../../lib/slashdoInvocation.js';
 import { shellQuote } from '../../lib/shellQuote.js';

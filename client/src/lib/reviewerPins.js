@@ -8,13 +8,13 @@ import {
 
 /**
  * Client mirrors of the per-reviewer PIN vocabularies in
- * `server/lib/cosValidation.js` — which reviewers can carry a model or an effort
+ * `server/lib/reviewerConfig.js` — which reviewers can carry a model or an effort
  * pin, and which values each one accepts.
  *
  * **Why these live in a leaf module rather than in `components/cos/constants.js`.**
  * The server suite pins this mirror against the server's own derived ladders (see
  * the `client mirror of the reviewer effort ladders` test in
- * `server/lib/cosValidation.test.js`) — a level offered here but rejected there
+ * `server/lib/reviewerConfig.test.js`) — a level offered here but rejected there
  * would show the user a pin that silently never persists, and the reverse would
  * hide a tier their CLI accepts. That test runs in the SERVER workspace, which has
  * no client dependencies installed, so anything it imports must not reach for one.
