@@ -1328,7 +1328,7 @@ export async function resolveTaskChallenge(taskId, { outcome, note, resolvedBy }
  * (→ upheld). This is the cheap confirm/overturn pass that runs BEFORE falling back
  * to user escalation, closing the gap #2470 left ("this slice resolves manually").
  *
- * Only the in-process local reviewers (`lmstudio`/`ollama`) are re-run here; CLI
+ * Only the in-process local reviewers (`LOCAL_LLM_REVIEWERS`) are re-run here; CLI
  * reviewers are re-run by the follow-up agent itself, which then calls the manual
  * `resolveTaskChallenge` path with an explicit outcome.
  *
@@ -1354,19 +1354,21 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
   // stale level is null by the time it reaches here — same as the model read below.
   const recheckDefaults = await getCodeReviewDefaults().catch(() => null);
   const effort = recheckDefaults?.[`${backend}Effort`] || null;
-  let model = recheck?.model;
-  if (!model) {
-    model = backend === 'ollama' ? recheckDefaults?.ollamaModel : recheckDefaults?.lmstudioModel;
-  }
-  // A missing model is a config problem (no Code Review Defaults set), not an
-  // upstream-reviewer failure — surface it as a 4xx (RECHECK_NO_MODEL → 400), not
-  // the 502 bucket reserved for a reviewer that's actually unreachable.
-  if (!model) {
-    return { error: `No model configured for the ${backend} reviewer — set one on the Settings → Code Reviewers page.`, code: 'RECHECK_NO_MODEL' };
-  }
-  console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model}${effort ? `, ${effort} effort` : ''})`);
+  // Keyed off the roster's `<reviewer>Model` scalar rather than a per-backend
+  // branch (matching `POST /api/code-review/local`): the old ollama-or-lmstudio
+  // ternary read LM STUDIO's model for any third local backend, so an `mtplx`
+  // re-check ran against a model id from the wrong daemon.
+  //
+  // An unset scalar is no longer fatal here: `runLocalCodeReview` falls back to the
+  // model the backend is actually serving when that answer is unambiguous, so a
+  // single-model daemon re-checks without one. It reports `code: 'NO_MODEL'` when it
+  // could not resolve one either, which stays a config problem (4xx) rather than the
+  // 502 bucket reserved for a reviewer that's actually unreachable.
+  const model = recheck?.model || recheckDefaults?.[`${backend}Model`] || null;
+  console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model || 'model from the backend'}${effort ? `, ${effort} effort` : ''})`);
   const review = await runLocalCodeReview({ backend, model, effort, diff: recheck?.diff });
   if (!review?.ok) {
+    if (review?.code === 'NO_MODEL') return { error: review.error, code: 'RECHECK_NO_MODEL' };
     return { error: `Re-check failed: ${review?.error || 'unknown reviewer error'}`, code: 'RECHECK_FAILED' };
   }
   const outcome = classifyRecheckOutcome(review.findings);
@@ -1378,6 +1380,9 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
     : `a blocking finding still stands (${backend})`;
   // The resolution note is auto-generated from the re-check verdict (any caller
   // `note` is intentionally not threaded here — the machine verdict is the record).
-  const note = `Auto re-check by ${backend} (${model}): ${verdict}.`;
+  // `review.model` rather than `model`: the reviewer resolves an unpinned id from
+  // what the backend is serving, and the record has to name the model that actually
+  // produced this verdict, not `null`.
+  const note = `Auto re-check by ${backend} (${review.model || model}): ${verdict}.`;
   return resolveTaskChallenge(taskId, { outcome, note, resolvedBy: resolvedBy || `recheck:${backend}` }, taskType, { now });
 }
