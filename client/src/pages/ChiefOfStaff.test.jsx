@@ -114,13 +114,38 @@ afterEach(() => vi.useRealTimers());
 // still jump a timer window instantly instead of sleeping through it.
 const withFakeTimers = () => vi.useFakeTimers({ shouldAdvanceTime: true });
 
-const renderConfigTab = () => render(
-  <MemoryRouter initialEntries={['/cos/config']}>
+const renderPageAt = (tab) => render(
+  <MemoryRouter initialEntries={[`/cos/${tab}`]}>
     <Routes>
       <Route path="/cos/:tab" element={<ChiefOfStaff />} />
     </Routes>
   </MemoryRouter>,
 );
+
+// #5857 — the page fans out several mocked reads on mount and each resolution
+// is its own macrotask, so a bare `findBy*` straight after render polls blind
+// through that whole chain. Under a contended worker it ran past testing-
+// library's async budget and flaked, while passing in isolation. The page
+// already publishes an exact settle signal — the loading branch's busy region
+// (asserted by `ChiefOfStaff loading skeleton` below) — so wait for that to
+// clear and let the following query spend its budget on one render instead of
+// the entire mount. Raising `asyncUtilTimeout` / lowering `maxWorkers` was
+// already spent on this file twice (#3474, client/vitest.config.js); the fix
+// is to settle, not to buy more budget.
+//
+// Every test that reaches into a tab's contents mounts through here. Only the
+// loading-skeleton guards below call `renderPageAt` bare — they hold a core
+// read open precisely so the busy branch is what renders, and settling would
+// hang.
+const renderSettledAt = async (tab) => {
+  const result = renderPageAt(tab);
+  await waitFor(() => expect(
+    screen.queryByRole('status', { name: 'Loading Chief of Staff' }),
+  ).toBeNull());
+  return result;
+};
+
+const renderSettledConfigTab = () => renderSettledAt('config');
 
 // #4144 — `/cos` is an `isFullWidth` route, so its `<main>` is a bare
 // `relative overflow-hidden`. The old centered `h-64` BrailleSpinner reserved
@@ -131,7 +156,7 @@ describe('ChiefOfStaff loading skeleton', () => {
   it('reserves the two-pane shell instead of a centered spinner while loading', async () => {
     // Hold the first fetch open so the loading branch is what renders.
     api.getCosStatus.mockReturnValue(new Promise(() => {}));
-    const { container } = renderConfigTab();
+    const { container } = renderPageAt('config');
 
     const busy = await screen.findByRole('status');
     expect(busy).toHaveAttribute('aria-busy', 'true');
@@ -150,13 +175,7 @@ describe('ChiefOfStaff loading skeleton', () => {
     });
     api.getCosActionableInsights.mockReturnValue(new Promise((resolve) => { releaseInsights = resolve; }));
 
-    render(
-      <MemoryRouter initialEntries={['/cos/tasks']}>
-        <Routes>
-          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderPageAt('tasks');
 
     expect(await screen.findByText('Example queued task')).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: 'Loading Chief of Staff' })).toBeNull();
@@ -170,7 +189,7 @@ describe('ChiefOfStaff loading skeleton', () => {
 describe('ChiefOfStaff handleForceEvaluate', () => {
   it('does not toast success or advance the status message when the evaluate fails', async () => {
     api.forceCosEvaluate.mockRejectedValue(new Error('evaluate failed'));
-    renderConfigTab();
+    await renderSettledConfigTab();
 
     const button = await screen.findByRole('button', { name: /Force Evaluate/i });
     fireEvent.click(button);
@@ -185,7 +204,7 @@ describe('ChiefOfStaff handleForceEvaluate', () => {
 
   it('toasts success and advances the status message after the evaluate resolves', async () => {
     api.forceCosEvaluate.mockResolvedValue({ success: true });
-    renderConfigTab();
+    await renderSettledConfigTab();
 
     const button = await screen.findByRole('button', { name: /Force Evaluate/i });
     fireEvent.click(button);
@@ -202,7 +221,7 @@ describe('ChiefOfStaff handleForceEvaluate', () => {
 describe('ChiefOfStaff daemon pause controls', () => {
   it('pauses new CoS scheduling through the persistent pause API', async () => {
     api.getCosStatus.mockResolvedValue({ running: true, paused: false, config, stats: {} });
-    renderConfigTab();
+    await renderSettledConfigTab();
 
     fireEvent.click((await screen.findAllByRole('button', { name: /pause chief of staff scheduling/i }))[0]);
 
@@ -221,7 +240,7 @@ describe('ChiefOfStaff daemon pause controls', () => {
       config,
       stats: {},
     });
-    renderConfigTab();
+    await renderSettledConfigTab();
 
     expect((await screen.findAllByText('Paused')).length).toBeGreaterThan(0);
 
@@ -255,14 +274,6 @@ describe('ChiefOfStaff Learning card skipped label', () => {
     totalCompleted: 20,
   };
 
-  const renderAt = (tab) => render(
-    <MemoryRouter initialEntries={[`/cos/${tab}`]}>
-      <Routes>
-        <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-      </Routes>
-    </MemoryRouter>,
-  );
-
   // The page renders more than one Learning card (the compact card in the CoS
   // panel, plus the `mini` card in the ascii-mode stats bar — Tailwind-`hidden`,
   // but jsdom applies no CSS so it is still queryable). Never index into a
@@ -278,7 +289,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
 
   it('stacks the skipped label under the value instead of in a flex row', async () => {
     api.getCosLearningSummary.mockResolvedValue(summaryWithSkipped);
-    renderAt('config');
+    await renderSettledAt('config');
 
     for (const card of await learningCards()) {
       const value = within(card).getByText('84%');
@@ -297,7 +308,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
 
   it('truncates the skipped label so it clips inside the card', async () => {
     api.getCosLearningSummary.mockResolvedValue(summaryWithSkipped);
-    renderAt('config');
+    await renderSettledAt('config');
 
     for (const card of await learningCards()) {
       expect(within(card).getByText(/skipped/).classList.contains('truncate')).toBe(true);
@@ -312,7 +323,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
     // column spills past the border again — the exact reported bug, with the
     // truncate still present and every other assertion here still green.
     api.getCosLearningSummary.mockResolvedValue(summaryWithSkipped);
-    renderAt('config');
+    await renderSettledAt('config');
 
     // Scope to the compact cards: the ascii `mini` card's label parent is the
     // <button> itself (not a flex-item column), so this leg doesn't apply there.
@@ -330,7 +341,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
     // 0% from disguising itself as "No data" — the highest-signal state reading
     // as the empty one. Pins the branch against a future truthiness collapse.
     api.getCosLearningSummary.mockResolvedValue({ overallSuccessRate: 0, skipped: 0, status: 'critical', totalCompleted: 12 });
-    renderAt('config');
+    await renderSettledAt('config');
 
     for (const card of await learningCards()) {
       expect(within(card).getByText('0%')).toBeInTheDocument();
@@ -345,7 +356,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
     // "No data", is wider than the compact card's ~45px text column and would
     // render clipped as "No dat…" instead of wrapping.
     api.getCosLearningSummary.mockResolvedValue({ overallSuccessRate: null, skipped: 0, status: 'unknown', totalCompleted: 0 });
-    renderAt('config');
+    await renderSettledAt('config');
 
     // Only the compact card spells the empty state "No data" — the ascii `mini`
     // card renders an em dash — so scope to the card that actually shows it.
@@ -362,7 +373,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
     // the server's status chain to keep classifying it that way — this fixture
     // is deliberately the mismatched combination (skipped 3 / status 'warning').
     api.getCosLearningSummary.mockResolvedValue(summaryWithSkipped);
-    renderAt('config');
+    await renderSettledAt('config');
 
     for (const card of await learningCards()) {
       expect(within(card).getByText(/skipped/).className).toContain('text-port-error');
@@ -372,7 +383,7 @@ describe('ChiefOfStaff Learning card skipped label', () => {
 
   it('omits the skipped label entirely when nothing was skipped', async () => {
     api.getCosLearningSummary.mockResolvedValue({ ...summaryWithSkipped, skipped: 0, status: 'good' });
-    renderAt('config');
+    await renderSettledAt('config');
 
     expect(await screen.findAllByText('84%')).not.toHaveLength(0);
     expect(screen.queryByText(/skipped/)).not.toBeInTheDocument();
@@ -392,16 +403,8 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
     return entry?.[1];
   };
 
-  const renderAt = (tab) => render(
-    <MemoryRouter initialEntries={[`/cos/${tab}`]}>
-      <Routes>
-        <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-      </Routes>
-    </MemoryRouter>,
-  );
-
   it('does NOT re-fetch insights on a socket health-check (no feedback loop)', async () => {
-    renderConfigTab();
+    await renderSettledConfigTab();
     // The initial fetchData pulls insights once; wait for it before firing.
     await waitFor(() => expect(api.getCosActionableInsights).toHaveBeenCalled());
     const before = api.getCosActionableInsights.mock.calls.length;
@@ -422,7 +425,7 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
   });
 
   it('does NOT re-fetch insights on the manual "Run Check" button (no second process-restart)', async () => {
-    renderAt('health');
+    await renderSettledAt('health');
     await waitFor(() => expect(api.getCosActionableInsights).toHaveBeenCalled());
     const before = api.getCosActionableInsights.mock.calls.length;
 
@@ -440,7 +443,7 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
   it('keeps the Health tab pending until its own read settles', async () => {
     let releaseHealth;
     api.getCosHealth.mockReturnValue(new Promise((resolve) => { releaseHealth = resolve; }));
-    renderAt('health');
+    await renderSettledAt('health');
 
     expect(await screen.findByText('Loading health...')).toBeInTheDocument();
     expect(screen.queryByText('All Systems Healthy')).not.toBeInTheDocument();
@@ -460,7 +463,7 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
       lastCheck: '2026-01-01T00:00:02Z',
       issues: [{ type: 'error', category: 'memory', message: 'FRESH_ISSUE' }],
     });
-    renderAt('health');
+    await renderSettledAt('health');
     // Initial fetchData paints the fresh issue.
     expect(await screen.findByText('FRESH_ISSUE')).toBeInTheDocument();
 
@@ -484,7 +487,7 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
       lastCheck: '2026-01-01T00:00:02Z',
       issues: [{ type: 'error', category: 'memory', message: 'FRESH_ISSUE' }],
     });
-    renderAt('health');
+    await renderSettledAt('health');
     expect(await screen.findByText('FRESH_ISSUE')).toBeInTheDocument();
 
     // A read with no (parseable) lastCheck must not overwrite the timestamped,
@@ -506,7 +509,7 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
       lastCheck: '2026-01-01T00:00:02Z',
       issues: [{ type: 'error', category: 'memory', message: 'FRESH_ISSUE' }],
     });
-    renderAt('health');
+    await renderSettledAt('health');
     expect(await screen.findByText('FRESH_ISSUE')).toBeInTheDocument();
 
     // A failed health read (rejects → .catch → null) must not blank the banner.
@@ -533,16 +536,10 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
 describe('ChiefOfStaff task-change subscriptions', () => {
   const getSocketHandler = (event) => socketStub.on.mock.calls.find(([evt]) => evt === event)?.[1];
 
-  const renderTasksTab = () => render(
-    <MemoryRouter initialEntries={['/cos/tasks']}>
-      <Routes>
-        <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-      </Routes>
-    </MemoryRouter>,
-  );
+  const renderSettledTasksTab = () => renderSettledAt('tasks');
 
   it('renders a newly queued system task straight off the watcher event', async () => {
-    renderTasksTab();
+    await renderSettledTasksTab();
     await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
     const before = api.getCosTasks.mock.calls.length;
 
@@ -561,7 +558,7 @@ describe('ChiefOfStaff task-change subscriptions', () => {
   });
 
   it('renders a submitted user task before the follow-up refresh resolves', async () => {
-    renderTasksTab();
+    await renderSettledTasksTab();
     await screen.findByRole('button', { name: 'Add test task' });
     api.getCosTasks.mockReturnValue(new Promise(() => {}));
 
@@ -572,7 +569,7 @@ describe('ChiefOfStaff task-change subscriptions', () => {
 
   it('coalesces a burst of task-store changes into a single refetch', async () => {
     withFakeTimers();
-    renderTasksTab();
+    await renderSettledTasksTab();
     await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
     const before = api.getCosTasks.mock.calls.length;
 
@@ -594,7 +591,7 @@ describe('ChiefOfStaff task-change subscriptions', () => {
   });
 
   it('refreshes the queue without re-running the health-checking insights read', async () => {
-    renderTasksTab();
+    await renderSettledTasksTab();
     await waitFor(() => expect(api.getCosActionableInsights).toHaveBeenCalled());
     const insightsBefore = api.getCosActionableInsights.mock.calls.length;
 
@@ -635,17 +632,11 @@ describe('ChiefOfStaff task unblock freshness', () => {
   const renderBlockedTask = (insights = []) => {
     api.getCosTasks.mockResolvedValue({ user: { tasks: [] }, cos: { tasks: [blockedTask] } });
     api.getCosActionableInsights.mockResolvedValue({ insights });
-    return render(
-      <MemoryRouter initialEntries={['/cos/tasks']}>
-        <Routes>
-          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    return renderSettledAt('tasks');
   };
 
   it('moves a banner-unblocked task and removes its insight before refresh settles', async () => {
-    renderBlockedTask([blockedInsight]);
+    await renderBlockedTask([blockedInsight]);
     expect(await screen.findByText('1 blocked task')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'View Tasks' }));
     const banner = screen.getByText('1 blocked task').closest('.border');
@@ -666,7 +657,7 @@ describe('ChiefOfStaff task unblock freshness', () => {
   });
 
   it('moves a card-unblocked task before its follow-up refresh settles', async () => {
-    renderBlockedTask();
+    await renderBlockedTask();
     expect(await screen.findByText('Blocked (1)')).toBeInTheDocument();
     // Keep the post-mutation read pending so this assertion only passes when the
     // card uses the shared optimistic update rather than waiting for onRefresh.
@@ -696,13 +687,7 @@ describe('ChiefOfStaff stale queue-read guard', () => {
 
     // Initial paint.
     api.getCosTasks.mockResolvedValue(stale);
-    render(
-      <MemoryRouter initialEntries={['/cos/tasks']}>
-        <Routes>
-          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    await renderSettledAt('tasks');
     expect(await screen.findByText('STALE pending copy')).toBeInTheDocument();
 
     // A spawn kicks off the slow full fetch, whose insights read we hold open so
@@ -742,13 +727,7 @@ describe('ChiefOfStaff Issues card', () => {
   const renderWithIssues = (issues) => {
     api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
     api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues });
-    return render(
-      <MemoryRouter initialEntries={['/cos/config']}>
-        <Routes>
-          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    return renderSettledConfigTab();
   };
 
   // Same "never index a match list" rule as the Learning card above: the page
@@ -762,20 +741,20 @@ describe('ChiefOfStaff Issues card', () => {
   };
 
   it('names the health issue in the status bubble instead of the generic investigating line', async () => {
-    renderWithIssues([memoryWarning]);
+    await renderWithIssues([memoryWarning]);
 
     expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
     expect(screen.queryByText('Investigating issue...')).not.toBeInTheDocument();
   });
 
   it('summarizes the count when more than one issue is open', async () => {
-    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+    await renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
 
     expect(await screen.findByText(/^2 health issues: /)).toBeInTheDocument();
   });
 
   it('makes every Issues tile a button that carries the issue summary', async () => {
-    renderWithIssues([memoryWarning]);
+    await renderWithIssues([memoryWarning]);
 
     for (const card of await issueCards()) {
       expect(card).toHaveAttribute('title', memoryWarning.message);
@@ -784,7 +763,7 @@ describe('ChiefOfStaff Issues card', () => {
   });
 
   it('opens the Health tab when the tile is clicked', async () => {
-    renderWithIssues([memoryWarning]);
+    await renderWithIssues([memoryWarning]);
     const cards = await issueCards();
 
     // Clicking the first is enough: the assertion above pins every variant to
@@ -801,7 +780,7 @@ describe('ChiefOfStaff Issues card', () => {
   // issue over the socket rather than through fetchData.
   it('names the issue arriving on a live health-check socket event', async () => {
     withFakeTimers();
-    renderWithIssues([]);
+    await renderWithIssues([]);
     // Wait for the clean first paint so the socket handler is registered.
     for (const card of await issueCards()) expect(within(card).getByText('0')).toBeInTheDocument();
 
@@ -823,7 +802,7 @@ describe('ChiefOfStaff Issues card', () => {
   // Without these, deleting the `tone` prop would leave every tile neutral gray
   // while the helper's own unit tests stayed green.
   it('colors the tile amber for a warning-only check', async () => {
-    renderWithIssues([memoryWarning]);
+    await renderWithIssues([memoryWarning]);
 
     for (const card of await issueCards()) {
       expect(card.className).toContain('border-port-warning');
@@ -832,7 +811,7 @@ describe('ChiefOfStaff Issues card', () => {
   });
 
   it('escalates the tile to red when an issue is error-level', async () => {
-    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+    await renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
 
     for (const card of await issueCards()) {
       expect(card.className).toContain('border-port-error');
@@ -840,7 +819,7 @@ describe('ChiefOfStaff Issues card', () => {
   });
 
   it('stays a click-through to Health when there are no issues at all', async () => {
-    renderWithIssues([]);
+    await renderWithIssues([]);
 
     for (const card of await issueCards()) {
       expect(card).toHaveAttribute('title', 'No issues detected — view system health');
@@ -860,13 +839,7 @@ describe('ChiefOfStaff Issues card', () => {
     api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
     // The slow read carries the OLDER timestamp; the socket event below is newer.
     api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues: [staleWarning] });
-    render(
-      <MemoryRouter initialEntries={['/cos/config']}>
-        <Routes>
-          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    await renderSettledConfigTab();
     expect(await screen.findByText(staleWarning.message)).toBeInTheDocument();
 
     const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
