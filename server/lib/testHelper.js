@@ -331,6 +331,31 @@ export function pinPlatform(value) {
 }
 
 /**
+ * Budget for a vitest test that shells out to a real Python interpreter.
+ *
+ * Pass it as `it()`'s third argument (`it('…', () => { … }, PY_TEST_TIMEOUT_MS)`)
+ * on every case that spawns one. Such a test's wall time tracks how loaded the
+ * machine is, not anything the assertion controls: a case that runs in ~4s alone
+ * crosses the global 10s `testTimeout` on a contended worker during a full-suite
+ * run. Stating the budget where the cost actually is beats loosening the global
+ * default, which is deliberately tight so it still catches genuinely hung async
+ * work across the rest of the tree.
+ */
+export const PY_TEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Budget for the Python subprocess itself — pass it as `execFileSync`'s
+ * `timeout` at every site that spawns an interpreter.
+ *
+ * Deliberately BELOW `PY_TEST_TIMEOUT_MS` so an actually-hung interpreter trips
+ * this guard first and fails with the spawn's own ETIMEDOUT (naming the command)
+ * instead of a bare vitest timeout that says only that the test ran long. A
+ * subprocess allowance above the vitest budget is dead intent — vitest always
+ * wins — so the two must stay nested in this order.
+ */
+export const PY_SUBPROCESS_TIMEOUT_MS = 90_000;
+
+/**
  * Resolve a Python interpreter that actually RUNS, or `null` when there is
  * none — for suites that shell out to one of PortOS's `.py` scripts. Pair it
  * with `describe.skipIf(!resolveTestPython())`.
@@ -372,7 +397,7 @@ export function resolveTestPython() {
 
   return candidates.find((candidate) => {
     try {
-      execFileSync(candidate, ['-c', 'pass'], { stdio: 'ignore' });
+      execFileSync(candidate, ['-c', 'pass'], { stdio: 'ignore', timeout: PY_SUBPROCESS_TIMEOUT_MS });
       return true;
     } catch {
       return false;
