@@ -48,8 +48,6 @@ const SERVICES_DIR = dirname(fileURLToPath(import.meta.url));
 // assertion below fails while a fixed entry is still listed, which is what stops
 // this list from becoming a wish.
 const KNOWN_CYCLIC_COMPONENTS = [
-  // #5917 — caption resolution and subject derivation import each other.
-  { issue: 5917, members: ['loraDatasetCaption.js', 'loraDatasetGenerate.js'] },
   // #5919 — the receive path reaches subscription state back through the barrel.
 ];
 
