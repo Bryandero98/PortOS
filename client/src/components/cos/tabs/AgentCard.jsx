@@ -329,6 +329,15 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
   ), [inactive, fullOutput, liveOutput, agent.output]);
   const lastOutput = output.length > 0 ? output[output.length - 1]?.line : null;
 
+  // Why this run has NO "Open Shell" link. Scoped to the one case where the user
+  // configured a TUI provider and got no shell anyway: a public-review stage is
+  // forced headless regardless (`spawnHeadless = publicReview || !isTui`). An
+  // ordinary headless CLI agent gets no chip — nobody expected a shell there, and
+  // one on every card would be the noise this exists to remove.
+  const noShellReason = !agent.metadata?.tuiSessionId && agent.metadata?.publicReviewPosture
+    ? 'No shell: a public-review stage always runs headless, even when you configure it onto a TUI provider — the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
+    : null;
+
   // Extract recent tool activity (last few tool lines) for live display
   const recentActivity = useMemo(() => {
     if (inactive || output.length === 0) return [];
@@ -615,6 +624,15 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               <span>Open Shell</span>
               <span className="font-mono text-[10px] text-port-on-success">{agent.metadata.tuiSessionId.slice(0, 6)}</span>
             </Link>
+          )}
+          {!inactive && noShellReason && (
+            <span
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-port-border/40 text-gray-400 whitespace-nowrap"
+              title={noShellReason}
+            >
+              <Terminal size={10} aria-hidden="true" className="shrink-0" />
+              <span>No shell</span>
+            </span>
           )}
           {!remote && (
             <button
