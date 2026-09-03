@@ -880,7 +880,7 @@ export default function AIProviders() {
 
           {runOutput && (
             <div className="bg-port-bg border border-port-border rounded-lg p-3 max-h-64 overflow-auto">
-              <pre className="text-sm text-gray-300 font-mono whitespace-pre-wrap">{runOutput}</pre>
+              <pre className="text-sm text-gray-300 font-mono whitespace-pre-wrap break-all">{runOutput}</pre>
             </div>
           )}
         </div>

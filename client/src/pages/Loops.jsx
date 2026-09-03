@@ -276,7 +276,7 @@ function LoopCard({ loop, onAction, expandedId, onToggle }) {
         <div className="border-t border-port-border">
           <div className="px-4 py-2 bg-port-bg/30">
             <div className="text-xs text-gray-500 mb-1">Prompt</div>
-            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">{loop.prompt}</pre>
+            <pre className="text-xs text-gray-300 whitespace-pre-wrap break-words font-mono">{loop.prompt}</pre>
           </div>
 
           {loop.history?.length > 0 && (
