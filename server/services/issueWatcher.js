@@ -29,6 +29,7 @@ import {
 } from '../lib/prReviewReport.js';
 import { githubApiHost, githubRepoSpec } from '../lib/workTracker.js';
 import { MAX_PR_REMEDIATION_ATTEMPTS, PR_HANDBACK, PR_REVIEW_OUTCOME, resolveHandbackDisposition, resolvePullRequestWriteAccess } from '../lib/prHandbackPolicy.js';
+import { forkHeadFromGithubPr } from '../lib/forkHead.js';
 import { getAppById, updateApp } from './apps.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { mergePR, resolveForgeForRepo } from './git.js';
@@ -412,6 +413,9 @@ async function applyPullRequestHandback({
         headSha,
         headRefName: pr.headRefName,
         authorLogin: login,
+        // Where that head branch lives when the PR came from a fork — the
+        // remediation worktree has no `origin/<branch>` to attach to otherwise.
+        forkHead: forkHeadFromGithubPr(pr),
       },
       writeAccess,
       reason,
@@ -494,9 +498,11 @@ async function readPullRequest(ctx, number) {
     // `isCrossRepository`/`maintainerCanModify` decide who owns a PR the
     // coordinator did not merge: with write access on the head branch PortOS
     // lands it itself, without it the PR goes to the opener's queue
-    // (`prHandbackPolicy.js`). `assignees` keeps that assignment idempotent
-    // across scheduled sweeps.
-    '--json', 'number,title,body,url,state,isDraft,author,assignees,labels,files,additions,deletions,baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository,maintainerCanModify,mergeable,mergeStateStatus,statusCheckRollup',
+    // (`prHandbackPolicy.js`). `headRepository`/`headRepositoryOwner` are where
+    // a fork's head branch actually lives, which is what lets the remediation
+    // agent's worktree attach to it at all (#6064). `assignees` keeps that
+    // assignment idempotent across scheduled sweeps.
+    '--json', 'number,title,body,url,state,isDraft,author,assignees,labels,files,additions,deletions,baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository,maintainerCanModify,headRepository,headRepositoryOwner,mergeable,mergeStateStatus,statusCheckRollup',
   ], ctx);
 }
 
