@@ -23,7 +23,8 @@ const pullRequests = [{
   headSha,
   title: 'docs: example change',
   body: '',
-  diff: 'diff --git a/README.md b/README.md\n+example\n',
+  // Trailing newline already stripped, as the gh wrapper's stdout trim leaves it.
+  diff: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+example',
 }];
 
 let workspace;
@@ -45,7 +46,8 @@ describe('materializing the screened public-review snapshot', () => {
     expect(await materializePublicReviewPatches({ scanKey, workspacePath: workspace, allowedPullRequestNumbers: [42] })).toBe(true);
     const manifest = JSON.parse(await readFile(join(workspace, PUBLIC_REVIEW_PATCH_DIRNAME, PUBLIC_REVIEW_PATCH_MANIFEST_FILENAME), 'utf8'));
     expect(manifest.patches).toEqual([expect.objectContaining({ number: 42, headSha, path: `${PUBLIC_REVIEW_PATCH_DIRNAME}/PR-42.patch` })]);
-    expect(await readFile(join(workspace, PUBLIC_REVIEW_PATCH_DIRNAME, 'PR-42.patch'), 'utf8')).toBe(pullRequests[0].diff);
+    // git apply rejects a patch whose last line has no newline ("corrupt patch").
+    expect(await readFile(join(workspace, PUBLIC_REVIEW_PATCH_DIRNAME, 'PR-42.patch'), 'utf8')).toBe(`${pullRequests[0].diff}\n`);
     expect((await stat(join(workspace, PUBLIC_REVIEW_PATCH_DIRNAME, 'PR-42.patch'))).mode & 0o222).toBe(0);
   });
 });
