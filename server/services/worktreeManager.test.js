@@ -1078,7 +1078,10 @@ describe('createWorktree upstream safety (#4172)', () => {
   // git is proved in lib/branchUpstreamGuard.test.js (real repos, real config).
   // What can only be checked here is that createWorktree actually reaches for
   // it — the flag on the add, and the guard on the result.
-  function scriptGit({ mergeReadings = [] } = {}) {
+  // `originHasBranch` / `forkRemoteUrl` / `forkRefResolves` script the three
+  // lookups the existingBranch resolve order makes, so a test can put the tree
+  // in the fork-PR state: no local branch, no origin ref, a fork that answers.
+  function scriptGit({ mergeReadings = [], originHasBranch = true, forkRemoteUrl = null, forkRefResolves = true } = {}) {
     const readings = [...mergeReadings];
     execGitMock.mockReset();
     execGitMock.mockImplementation((args) => {
@@ -1087,6 +1090,16 @@ describe('createWorktree upstream safety (#4172)', () => {
         // exitCode 1 mirrors `git config --get` on an unset key, which the guard
         // must read as "no upstream" rather than as an error.
         return Promise.resolve({ stdout: answer, stderr: '', exitCode: answer ? 0 : 1 });
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        const ref = args[2] || '';
+        const resolves = ref.startsWith('origin/') ? originHasBranch : forkRefResolves;
+        return Promise.resolve({ stdout: resolves ? 'deadbeef' : '', stderr: '', exitCode: resolves ? 0 : 1 });
+      }
+      if (args[0] === 'remote' && args[1] === 'get-url') {
+        return forkRemoteUrl
+          ? Promise.resolve({ stdout: `${forkRemoteUrl}\n`, stderr: '', exitCode: 0 })
+          : Promise.resolve({ stdout: '', stderr: 'No such remote', exitCode: 2 });
       }
       return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
     });
@@ -1146,6 +1159,96 @@ describe('createWorktree upstream safety (#4172)', () => {
 
     expect(argsFor(a => a[0] === 'worktree' && a[1] === 'remove')).toHaveLength(1);
     expect(argsFor(a => a[0] === 'branch' && a[1] === '-D')).toHaveLength(0);
+  });
+
+  it('attaches a FORK PR head from a fork remote and leaves its upstream on the fork (#6064)', async () => {
+    // The regression: a fork PR's head has no `origin/<branch>` at all, so
+    // before this every "work on this PR's branch" path threw at workspace prep
+    // for exactly the PRs external contributors open.
+    scriptGit({ originHasBranch: false });
+
+    await createWorktree('agent-fork', '/repo', 'task-fork', {
+      existingBranch: 'contributor/fix-thing',
+      forkHead: { remoteUrl: 'https://github.com/contributor/widget.git', ownerLogin: 'contributor' },
+    });
+
+    expect(argsFor(a => a[0] === 'remote' && a[1] === 'add'))
+      .toEqual([['remote', 'add', 'fork-contributor', 'https://github.com/contributor/widget.git']]);
+    expect(argsFor(a => a[0] === 'fetch' && a[1] === 'fork-contributor'))
+      .toEqual([['fetch', 'fork-contributor', 'contributor/fix-thing']]);
+    // The start point is the whole point: it is what makes the branch track the
+    // CONTRIBUTOR's fork, so a later `git push` lands there and not on upstream.
+    const [add] = argsFor(a => a[0] === 'worktree' && a[1] === 'add');
+    expect(add).toEqual([
+      'worktree', 'add', '-B', 'contributor/fix-thing',
+      join(PATHS.worktrees, 'agent-fork'), 'fork-contributor/contributor/fix-thing',
+    ]);
+    // ...and the #4172 guard must not "repair" that fork upstream away.
+    expect(argsFor(a => a[0] === 'branch' && a[1] === '--unset-upstream')).toHaveLength(0);
+  });
+
+  it('re-points a stale fork remote instead of duplicating it or failing', async () => {
+    // The remote is named from the OWNER so re-runs reuse it; a contributor who
+    // renamed or moved their fork leaves the recorded URL stale.
+    scriptGit({ originHasBranch: false, forkRemoteUrl: 'https://github.com/contributor/old-name.git' });
+
+    await createWorktree('agent-fork2', '/repo', 'task-fork2', {
+      existingBranch: 'contributor/fix-thing',
+      forkHead: { remoteUrl: 'https://github.com/contributor/widget.git', ownerLogin: 'contributor' },
+    });
+
+    expect(argsFor(a => a[0] === 'remote' && a[1] === 'add')).toHaveLength(0);
+    expect(argsFor(a => a[0] === 'remote' && a[1] === 'set-url'))
+      .toEqual([['remote', 'set-url', 'fork-contributor', 'https://github.com/contributor/widget.git']]);
+  });
+
+  it('leaves a fork remote alone when it already points at the right URL', async () => {
+    scriptGit({ originHasBranch: false, forkRemoteUrl: 'https://github.com/contributor/widget.git' });
+
+    await createWorktree('agent-fork3', '/repo', 'task-fork3', {
+      existingBranch: 'contributor/fix-thing',
+      forkHead: { remoteUrl: 'https://github.com/contributor/widget.git', ownerLogin: 'contributor' },
+    });
+
+    expect(argsFor(a => a[0] === 'remote' && (a[1] === 'add' || a[1] === 'set-url'))).toHaveLength(0);
+    const [add] = argsFor(a => a[0] === 'worktree' && a[1] === 'add');
+    expect(add).toContain('fork-contributor/contributor/fix-thing');
+  });
+
+  it('still throws today\'s exact error when no forkHead is supplied', async () => {
+    // The fork path is a third FALLBACK: a caller that passes no coordinates
+    // must get the pre-#6064 behavior, message included.
+    scriptGit({ originHasBranch: false });
+
+    await expect(createWorktree('agent-fork4', '/repo', 'task-fork4', { existingBranch: 'contributor/fix-thing' }))
+      .rejects.toThrow('Cannot attach worktree to contributor/fix-thing: branch missing locally and origin/contributor/fix-thing unavailable');
+
+    expect(argsFor(a => a[0] === 'remote')).toHaveLength(0);
+    expect(argsFor(a => a[0] === 'worktree' && a[1] === 'add')).toHaveLength(0);
+  });
+
+  it('falls back to the origin-only error when the fork fetch leaves no ref', async () => {
+    // A fetch that "succeeded" but produced no remote-tracking ref must not send
+    // `worktree add` at a start point git would resolve somewhere else.
+    scriptGit({ originHasBranch: false, forkRefResolves: false });
+
+    await expect(createWorktree('agent-fork5', '/repo', 'task-fork5', {
+      existingBranch: 'contributor/fix-thing',
+      forkHead: { remoteUrl: 'https://github.com/contributor/widget.git', ownerLogin: 'contributor' },
+    })).rejects.toThrow(/branch missing locally and origin\/contributor\/fix-thing unavailable/);
+
+    expect(argsFor(a => a[0] === 'worktree' && a[1] === 'add')).toHaveLength(0);
+  });
+
+  it('never consults the fork when origin already has the branch', async () => {
+    await createWorktree('agent-fork6', '/repo', 'task-fork6', {
+      existingBranch: 'shared/branch',
+      forkHead: { remoteUrl: 'https://github.com/contributor/widget.git', ownerLogin: 'contributor' },
+    });
+
+    expect(argsFor(a => a[0] === 'remote')).toHaveLength(0);
+    const [add] = argsFor(a => a[0] === 'worktree' && a[1] === 'add');
+    expect(add).toContain('origin/shared/branch');
   });
 
   it('checks the re-attached branch of an existingBranch worktree too', async () => {
