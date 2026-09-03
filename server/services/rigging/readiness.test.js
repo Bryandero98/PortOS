@@ -3,6 +3,7 @@ import {
   RIGGING_INSTALL_COMMAND,
   RIGGING_MODULE_REQUIREMENT,
   RIGGING_RUNTIME,
+  resolveRiggingPython,
 } from './runtime.js';
 import {
   __resetRiggingReadinessCache,
@@ -12,9 +13,9 @@ import {
   riggingUnavailableReason,
 } from './readiness.js';
 
-const FAKE_ROOT = '/opt/conda';
-const FAKE_PYTHON = `${FAKE_ROOT}/envs/${RIGGING_RUNTIME.condaEnv}/bin/python`;
-const ENV = { CONDA_ROOT: FAKE_ROOT };
+// Derived, not a forward-slash literal — `join()` emits backslashes on Windows.
+const ENV = { CONDA_ROOT: '/opt/conda' };
+const FAKE_PYTHON = resolveRiggingPython({ exists: () => true, env: ENV });
 const READY_HOST = { supportedPlatform: true, platform: 'linux', python: FAKE_PYTHON, probe: { status: 'ok', version: '4.2.0' } };
 
 describe('riggingUnavailableReason', () => {

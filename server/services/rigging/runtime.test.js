@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { posixPath } from '../../lib/testHelper.js';
 import {
   BLENDER_MODULE_PROBE_SOURCE,
   RIGGING_INSTALL_COMMAND,
@@ -11,9 +12,11 @@ import {
 
 // A conda root that exists only in this test's `exists` predicate — no real install is
 // consulted, so the resolver's behavior is the same on any developer's machine and CI.
-const FAKE_ROOT = '/opt/conda';
-const FAKE_PYTHON = `${FAKE_ROOT}/envs/${RIGGING_RUNTIME.condaEnv}/bin/python`;
-const ENV = { CONDA_ROOT: FAKE_ROOT };
+// The interpreter path is DERIVED rather than written as a forward-slash literal: the
+// resolver composes it with `join()`, which emits backslashes on Windows (the same trap
+// `condaEnv.test.js` documents).
+const ENV = { CONDA_ROOT: '/opt/conda' };
+const FAKE_PYTHON = resolveRiggingPython({ exists: () => true, env: ENV });
 
 describe('rigging runtime — install descriptor', () => {
   it('pins the Blender module to an exact version in the install command', () => {
@@ -51,7 +54,7 @@ describe('resolveRiggingPython', () => {
   it('uses its own env name, not another heavy lane’s', () => {
     const seen = [];
     resolveRiggingPython({ exists: (p) => { seen.push(p); return false; }, env: ENV });
-    expect(seen.every((p) => p.includes(`/envs/${RIGGING_RUNTIME.condaEnv}/`))).toBe(true);
+    expect(seen.every((p) => posixPath(p).includes(`/envs/${RIGGING_RUNTIME.condaEnv}/`))).toBe(true);
   });
 });
 
