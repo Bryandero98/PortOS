@@ -35,7 +35,11 @@ export default function QueueInstallInvestigationButton({
   surface,
   className = '',
 }) {
-  const [queued, setQueued] = useState(false);
+  // null = not queued yet · 'queued' = this click created the task ·
+  // 'duplicate' = the store already held one. They read differently to the user:
+  // the store's 409 also fires for a task it has BLOCKED, which will not run
+  // without intervention, so this must not claim an agent is on it.
+  const [queueResult, setQueueResult] = useState(null);
   // `useAsyncAction` owns the failure toast, so the request itself is silent —
   // otherwise the user gets two toasts for one failed queue.
   const [queueTask, queueing] = useAsyncAction(async () => {
@@ -43,14 +47,16 @@ export default function QueueInstallInvestigationButton({
     // The description is deterministic per installer + stage, so retrying the
     // same failing install and clicking again hits the store's duplicate guard
     // (409 DUPLICATE_TASK). That is the queued state, not a failure.
-    const alreadyQueued = await addCosTask({ ...task, ...INSTALL_INVESTIGATION_DELIVERY }, { silent: true })
-      .then(() => false)
+    const duplicateMessage = await addCosTask({ ...task, ...INSTALL_INVESTIGATION_DELIVERY }, { silent: true })
+      .then(() => null)
       .catch((err) => {
-        if (err?.code === 'DUPLICATE_TASK') return true;
+        // The server names the existing task's status ("already pending" /
+        // "already blocked"); pass it through rather than guessing.
+        if (err?.code === 'DUPLICATE_TASK') return err.message || 'A task for this failure already exists';
         throw err;
       });
-    setQueued(true);
-    if (alreadyQueued) toast('An agent task for this failure is already queued', { icon: '🤖' });
+    setQueueResult(duplicateMessage ? 'duplicate' : 'queued');
+    if (duplicateMessage) toast(duplicateMessage, { icon: '🤖' });
     else toast.success('Queued an agent to investigate this failure');
   }, { errorMessage: 'Failed to queue the investigation task' });
 
@@ -58,14 +64,18 @@ export default function QueueInstallInvestigationButton({
     <button
       type="button"
       onClick={queueTask}
-      disabled={queueing || queued}
-      title={queued
-        ? 'An agent task for this failure is already queued'
+      disabled={queueing || queueResult !== null}
+      title={queueResult
+        ? 'A CoS task for this failure already exists — see Agent Ops'
         : 'Queue a PortOS agent task to investigate this install failure'}
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-port-accent text-white hover:bg-port-accent/80 disabled:opacity-50 disabled:hover:bg-port-accent ${className}`}
     >
-      {queued ? <Check size={14} /> : <Bot size={14} />}
-      {queued ? 'Agent queued' : queueing ? 'Queueing…' : 'Queue agent to investigate'}
+      {queueResult ? <Check size={14} /> : <Bot size={14} />}
+      {queueResult === 'queued'
+        ? 'Agent queued'
+        : queueResult === 'duplicate'
+          ? 'Task already exists'
+          : queueing ? 'Queueing…' : 'Queue agent to investigate'}
     </button>
   );
 }

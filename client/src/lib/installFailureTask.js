@@ -40,6 +40,9 @@ const stripLeadingLoneSurrogate = (text) => {
   return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
 };
 
+// Also applied to the error string: `useInstallStream` copies the same text into
+// `logs`, so redacting only inside the fence would reprint the raw home path one
+// line above it.
 const redactLogLine = (line) => {
   const withoutHome = HOME_PATH_PATTERNS.reduce(
     (text, [pattern, replacement]) => text.replace(pattern, replacement),
@@ -92,7 +95,7 @@ const cleanLabel = (value) => (typeof value === 'string' ? value.trim() : '');
 export function buildInstallFailureTask({ label, stage, error, logs, surface } = {}) {
   const name = cleanLabel(label) || 'PortOS';
   const failedStage = cleanLabel(stage);
-  const message = cleanLabel(error) || 'Installer failed with no error message.';
+  const message = redactLogLine(cleanLabel(error)) || 'Installer failed with no error message.';
   const description = failedStage
     ? `Fix ${name} installer failure at the ${failedStage} stage`
     : `Fix ${name} installer failure`;

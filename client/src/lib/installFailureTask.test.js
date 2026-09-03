@@ -53,11 +53,15 @@ describe('installLogTail', () => {
   });
 
   it('never emits a lone surrogate when one huge line is cut mid-pair', () => {
-    // Every code point here is a surrogate pair, so a raw slice always lands inside one.
-    const logs = [{ text: '\u{1F40D}'.repeat(INSTALL_FAILURE_LOG_TAIL_CHARS) }];
+    // Pairs plus ONE trailing BMP char, so the fixed-width cut from the end lands
+    // at an ODD offset inside the pair region — an actual mid-pair slice. (An
+    // even-length all-pairs line always cuts cleanly and proves nothing.)
+    const logs = [{ text: `${'\u{1F40D}'.repeat(INSTALL_FAILURE_LOG_TAIL_CHARS)}x` }];
     const tail = installLogTail(logs);
     expect(tail).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
     expect(tail).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    // Sanity: the tail really is the end of that line, so the guard had to fire.
+    expect(tail.endsWith('x')).toBe(true);
   });
 
   it('redacts home-directory paths and neutralizes fences in the log tail', () => {
@@ -101,6 +105,17 @@ describe('buildInstallFailureTask', () => {
     expect(prompt).toContain('fatal: repository not found');
     // The fenced tail is labelled so the queued agent reads it as evidence, not orders.
     expect(prompt).toMatch(/untrusted third-party process output/i);
+  });
+
+  it('redacts the error line too — useInstallStream copies it into the logs as well', () => {
+    const raw = 'ERROR: no write access to /Users/someone/.cache/pip';
+    const { prompt } = buildInstallFailureTask({
+      label: 'FLUX.2 Runtime',
+      error: raw,
+      logs: [{ kind: 'error', text: raw }],
+    });
+    expect(prompt).not.toContain('someone');
+    expect(prompt).toContain('Error: ERROR: no write access to /Users/<user>/.cache/pip');
   });
 
   it('still produces a usable task when the stream failed with no message or logs', () => {

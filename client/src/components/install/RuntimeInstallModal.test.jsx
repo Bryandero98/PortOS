@@ -89,8 +89,10 @@ describe('RuntimeInstallModal failure footer', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it('reads a duplicate-task 409 as already queued, not as a failure', async () => {
-    const duplicate = Object.assign(new Error('A task with this description is already pending'), {
+  it('reads a duplicate-task 409 as an existing task, not as a failure or a fresh queue', async () => {
+    // The store returns 409 for an existing PENDING **or BLOCKED** task, so the
+    // button must not claim an agent is on it — it surfaces the server's wording.
+    const duplicate = Object.assign(new Error('A task with this description is already blocked'), {
       code: 'DUPLICATE_TASK',
       status: 409,
     });
@@ -99,8 +101,10 @@ describe('RuntimeInstallModal failure footer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /queue agent to investigate/i }));
 
-    const queued = await screen.findByRole('button', { name: /agent queued/i });
-    expect(queued.disabled).toBe(true);
+    const existing = await screen.findByRole('button', { name: /task already exists/i });
+    expect(existing.disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: /agent queued/i })).toBeNull();
+    expect(toast).toHaveBeenCalledWith('A task with this description is already blocked', { icon: '🤖' });
     expect(toast.error).not.toHaveBeenCalled();
   });
 
