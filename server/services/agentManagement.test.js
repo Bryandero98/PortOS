@@ -924,6 +924,7 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
       resumeWorktreePath: '/tmp/worktrees/agent-paused-1',
     });
     forceSpawnTask.mockResolvedValue({ success: true, taskId: 'task-abc' });
+    getAgents.mockResolvedValue([]);
   });
 
   it('flips the SAME task back to pending — no new task', async () => {
@@ -1166,6 +1167,20 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
     await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ spawned: true, spawnHold: null });
   });
 
+  // A spawn registers its agent as `running` BEFORE it flips the task off
+  // `pending`, and the refusal that lands in that window is forceSpawnTask's own
+  // holder guard. Reading the task status alone still sees `pending` there, so
+  // the resume would report a hold for a run that is already under way — the
+  // exact mis-report this dispatch exists to avoid.
+  it('treats a task claimed mid-spawn as started, even while it still reads pending', async () => {
+    forceSpawnTask.mockImplementation(async () => {
+      getAgents.mockResolvedValue([{ id: 'agent-new-1', status: 'running', taskId: 'task-abc' }]);
+      return { error: 'Agent agent-new-1 is already running this task' };
+    });
+
+    await expect(resumeAgent('agent-paused-1')).resolves.toMatchObject({ spawned: true, spawnHold: null });
+  });
+
   it('does not dispatch a mode that deliberately queued nothing', async () => {
     // `already-active` means some other path already put the work in flight —
     // force-spawning here is the duplicate agent classifyResume exists to prevent.
@@ -1217,6 +1232,7 @@ describe('relaunchAgent — moves a running agent\'s task onto another provider'
     getTaskById.mockResolvedValue(PAUSED_TASK);
     reviveBlockedTask.mockResolvedValue({ metadata: {} });
     forceSpawnTask.mockResolvedValue({ success: true, taskId: 'task-abc' });
+    getAgents.mockResolvedValue([]);
   });
 
   it('requeues the SAME task with the new provider/model/effort — no second task', async () => {

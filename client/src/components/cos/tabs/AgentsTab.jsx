@@ -22,6 +22,10 @@ const RESUME_MESSAGES = {
     queued: 'Resumed — the paused task is queued on its preserved worktree',
     running: 'Resumed — the paused task is running again on its preserved worktree',
   },
+  'new-task': {
+    queued: 'Resumed — a replacement task is queued',
+    running: 'Resumed — a replacement task is running',
+  },
   'already-active': { queued: 'Its task is already queued or running — nothing new was created' },
   superseded: { queued: 'A later agent now holds this task paused — that pause was left intact' },
 };

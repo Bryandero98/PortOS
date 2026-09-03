@@ -478,11 +478,26 @@ async function dispatchResumedTask({ taskId, mode }) {
   if (result?.success) return { spawned: true, spawnHold: null };
 
   // The dequeue `completeAgent` schedules races this call, so a refusal can mean
-  // "already claimed" rather than "held". Read the task back and treat only a
-  // real claim (`in_progress`) as started — string-matching the refusal would
-  // drift the moment forceSpawnTask reworded one of them.
-  const task = await getTaskById(taskId).catch(() => null);
-  if (task?.status === 'in_progress') return { spawned: true, spawnHold: null };
+  // "already claimed" rather than "held". Read the state back and treat a real
+  // claim as started — string-matching the refusal would drift the moment
+  // forceSpawnTask reworded one of them.
+  //
+  // BOTH halves are load-bearing. A spawn registers its agent as `running`
+  // BEFORE it flips the task off `pending` (the window `forceSpawnTask`'s own
+  // holder guard exists for), so mid-spawn the task still reads `pending` while
+  // the run is genuinely under way — and the refusal that lands there is that
+  // holder guard, so checking only the task status would report a hold for a
+  // task that is already running. The holder half is only reachable while that
+  // guard is refusing, i.e. while the holder is young enough to be mid-spawn:
+  // an older, zombie holder is superseded by `forceSpawnTask` instead, so this
+  // can't read a dead agent's record as a live run.
+  const [task, agents] = await Promise.all([
+    getTaskById(taskId).catch(() => null),
+    getAgents().catch(() => []),
+  ]);
+  const heldByRunningAgent = agents.some(agent =>
+    agent.status === 'running' && (agent.taskId === taskId || agent.metadata?.taskId === taskId));
+  if (task?.status === 'in_progress' || heldByRunningAgent) return { spawned: true, spawnHold: null };
 
   const spawnHold = result?.error || 'Task could not be spawned';
   emitLog('info', `⏳ Resumed task ${taskId} stays queued — ${spawnHold}`, { taskId });
