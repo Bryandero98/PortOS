@@ -63,6 +63,7 @@ import {
   MAX_PENDING_ISSUE_COMMENT_TICKS,
 } from './issueWatcher.js';
 import { MAX_PR_REMEDIATION_ATTEMPTS } from '../lib/prHandbackPolicy.js';
+import { IN_PROGRESS_LABEL, dispatchLabelSpec } from '../lib/dispatchLabels.js';
 
 const APP = { id: 'app-1', name: 'Example App', repoPath: '/repos/example' };
 const DIFF = [
@@ -115,10 +116,13 @@ function installDefaultGhMock({
       .map((arg) => arg.match(/^repos\/o\/r\/issues\/(\d+)$/))
       .find(Boolean);
     if (args[0] === 'api' && issueDetail) return JSON.stringify(issueDetails[issueDetail[1]] || {});
+    // `pr: null` = no open external PRs, so a test can exercise the issue side
+    // alone without hand-rolling a replacement mock.
     if (args[0] === 'pr' && args[1] === 'list') {
+      if (!pr) return '[]';
       return JSON.stringify([{ number: pr.number, title: pr.title, author: pr.author, url: pr.url, isDraft: false, headRefOid: pr.headRefOid, updatedAt: '2026-08-30T01:00:00Z' }]);
     }
-    if (args[0] === 'api' && args.some((arg) => String(arg).endsWith(`/pulls/${pr.number}/reviews`))) return JSON.stringify(reviews);
+    if (args[0] === 'api' && pr && args.some((arg) => String(arg).endsWith(`/pulls/${pr.number}/reviews`))) return JSON.stringify(reviews);
     if (args[0] === 'pr' && args[1] === 'view') return JSON.stringify(pr);
     if (args[0] === 'api' && args.some((arg) => String(arg).includes('/compare/'))) return JSON.stringify({ behind_by: 2 });
     if (args[0] === 'pr' && args[1] === 'diff') return DIFF;
@@ -161,6 +165,7 @@ describe('issue-watcher pure contracts', () => {
     'I can take this issue',
     "I'd like to work on it",
     'Can you assign this to me?',
+    "I'd like to work on this — could you assign it to me?",
   ])('recognizes an explicit volunteer request: %s', (body) => {
     expect(isIssueClaimRequest(body)).toBe(true);
   });
@@ -196,6 +201,39 @@ describe('issue-watcher pure contracts', () => {
 });
 
 describe('buildTaskInput', () => {
+  /** Recorded `gh` argv lists whose leading arguments match `prefix`. */
+  const ghCalls = (...prefix) => execGhMock.mock.calls
+    .map(([args]) => args)
+    .filter((args) => prefix.every((value, index) => args[index] === value));
+
+  /** One unassigned issue carrying one volunteer comment, and no open PRs. */
+  function installVolunteerGhMock({ body = 'I can take this issue' } = {}) {
+    apps.set(APP.id, { ...APP, issueWatcherState: { cursor: '2026-08-29T00:00:00.000Z' } });
+    installDefaultGhMock({
+      pr: null,
+      issueRows: [[{ number: 12, title: 'Small task', body: 'Please help', assignees: [] }]],
+      commentRows: [[{
+        id: 99,
+        body,
+        created_at: '2026-08-30T00:00:00.000Z',
+        html_url: 'https://github.com/o/r/issues/12#issuecomment-99',
+        user: { login: 'alice' },
+      }]],
+    });
+  }
+
+  /**
+   * Layer a failure-injecting handler over the installed mock. Returning
+   * `undefined` falls through to it, so a test names only the calls it breaks.
+   */
+  function interceptGh(handler) {
+    const base = execGhMock.getMockImplementation();
+    execGhMock.mockImplementation(async (...args) => {
+      const injected = await handler(args[0]);
+      return injected === undefined ? base(...args) : injected;
+    });
+  }
+
   it('baselines issue comments but still reviews an existing unreviewed external PR', async () => {
     installDefaultGhMock();
 
@@ -220,60 +258,81 @@ describe('buildTaskInput', () => {
   });
 
   it('assigns an explicit volunteer without spending a cognition run', async () => {
-    apps.set(APP.id, { ...APP, issueWatcherState: { cursor: '2026-08-29T00:00:00.000Z' } });
-    installDefaultGhMock({
-      issueRows: [[{ number: 12, title: 'Small task', body: 'Please help', assignees: [] }]],
-      commentRows: [[{
-        id: 99,
-        body: 'I can take this issue',
-        created_at: '2026-08-30T00:00:00.000Z',
-        html_url: 'https://github.com/o/r/issues/12#issuecomment-99',
-        user: { login: 'alice' },
-      }]],
-      pr: null,
-    });
-    execGhMock.mockImplementation(async (args) => {
-      if (args[0] === 'api' && args.includes('repos/o/r') && !args.some((arg) => String(arg).includes('/issues'))) {
-        return JSON.stringify({ owner: { login: 'owner', type: 'User' }, default_branch: 'main' });
+    installVolunteerGhMock();
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(ghCalls('issue', 'edit')).toEqual([
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice', '--add-label', 'in-progress'],
+    ]);
+    expect(apps.get(APP.id).issueWatcherState.cursor).toMatch(/^2026-/);
+  });
+
+  it('recognizes a volunteer request phrased as a question and still claims the issue', async () => {
+    // Verbatim phrasing of a real volunteer comment — an em dash and a trailing
+    // request, neither of which the claim regex may be thrown off by.
+    installVolunteerGhMock({ body: "I'd like to work on this — could you assign it to me?" });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(ghCalls('issue', 'edit')).toHaveLength(1);
+  });
+
+  it('creates the in-progress label and retries when the repo has never defined it', async () => {
+    installVolunteerGhMock();
+    let labelExists = false;
+    interceptGh((args) => {
+      if (args[0] === 'label' && args[1] === 'create') {
+        labelExists = true;
+        return '';
       }
-      if (args[0] === 'api' && args.some((arg) => String(arg).endsWith('/issues'))) {
-        return JSON.stringify([[{ number: 12, title: 'Small task', body: 'Please help', assignees: [] }]]);
+      if (args[0] === 'issue' && args[1] === 'edit' && args.includes('--add-label') && !labelExists) {
+        throw new Error("HTTP 422: 'in-progress' not found");
       }
-      if (args[0] === 'api' && args.some((arg) => String(arg).includes('/comments'))) {
-        return JSON.stringify([[{ id: 99, body: 'I can take this issue', created_at: '2026-08-30T00:00:00.000Z', user: { login: 'alice' } }]]);
-      }
-      if (args[0] === 'issue' && args[1] === 'edit') return '';
-      if (args[0] === 'pr' && args[1] === 'list') return '[]';
-      return '{}';
+      return undefined;
     });
 
     const result = await buildTaskInput({ app: apps.get(APP.id) });
 
     expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
-    expect(execGhMock).toHaveBeenCalledWith(
+    // Asserted against the shared spec, not literals: the color/description are
+    // dispatchLabels.js's contract, covered by its own suite.
+    expect(ghCalls('label', 'create')[0]).toEqual([
+      'label', 'create', IN_PROGRESS_LABEL, '--repo', 'github.com/o/r',
+      '--color', dispatchLabelSpec(IN_PROGRESS_LABEL).color,
+      '--description', dispatchLabelSpec(IN_PROGRESS_LABEL).description,
+    ]);
+    // Combined edit (rejected) → assignee alone → label alone.
+    expect(ghCalls('issue', 'edit')).toEqual([
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice', '--add-label', 'in-progress'],
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice'],
-      expect.any(Number),
-      expect.objectContaining({ cwd: APP.repoPath, env: { GH_TOKEN: 'test-token' } }),
-    );
-    expect(apps.get(APP.id).issueWatcherState.cursor).toMatch(/^2026-/);
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-label', 'in-progress'],
+    ]);
+  });
+
+  it('keeps a volunteer assignment that succeeded when the in-progress label cannot be applied', async () => {
+    installVolunteerGhMock();
+    interceptGh((args) => {
+      if (args[0] === 'label' && args[1] === 'create') throw new Error('HTTP 403');
+      if (args[0] === 'issue' && args[1] === 'edit' && args.includes('--add-label')) throw new Error('HTTP 422');
+      return undefined;
+    });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    // The assignment landed, so the comment is retired rather than handed to
+    // the reasoning agent — a lost label must not re-spend a cognition run.
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
   });
 
   it('continues to cognition when an explicit volunteer cannot be assigned', async () => {
-    apps.set(APP.id, { ...APP, issueWatcherState: { cursor: '2026-08-29T00:00:00.000Z' } });
-    installDefaultGhMock({ pr: null });
-    execGhMock.mockImplementation(async (args) => {
-      if (args[0] === 'api' && args.includes('repos/o/r') && !args.some((arg) => String(arg).includes('/issues'))) {
-        return JSON.stringify({ owner: { login: 'owner', type: 'User' } });
-      }
-      if (args[0] === 'api' && args.some((arg) => String(arg).endsWith('/issues'))) {
-        return JSON.stringify([[{ number: 12, title: 'Small task', body: 'Please help', assignees: [] }]]);
-      }
-      if (args[0] === 'api' && args.some((arg) => String(arg).includes('/comments'))) {
-        return JSON.stringify([[{ id: 99, body: 'I can take this issue', created_at: '2026-08-30T00:00:00.000Z', user: { login: 'alice' } }]]);
-      }
+    installVolunteerGhMock();
+    interceptGh((args) => {
       if (args[0] === 'issue' && args[1] === 'edit') throw new Error('HTTP 422');
-      if (args[0] === 'pr' && args[1] === 'list') return '[]';
-      return '{}';
+      return undefined;
     });
 
     const result = await buildTaskInput({ app: apps.get(APP.id) });

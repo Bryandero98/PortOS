@@ -29,6 +29,7 @@ import {
   dispatchLabelSpec,
   allDispatchLabelSpecs,
   formatLabelCreateCommand,
+  IN_PROGRESS_LABEL,
   formatRepeatedLabelFlags,
   CONTRIBUTOR_LABELS,
   JIRA_CONTRIBUTOR_LABELS,
@@ -119,6 +120,17 @@ describe('label specs and CLI formatting', () => {
     });
     expect(dispatchLabelSpec('plan')).toBe(null);
     expect(dispatchLabelSpec('model-light')).toBe(null);
+  });
+
+  it('resolves the in-progress workflow marker so it can be lazily created', () => {
+    // The claim marker is state every claim/reconcile flow reads, so it must be
+    // creatable on a repo (or fork) that has never defined it.
+    expect(dispatchLabelSpec(IN_PROGRESS_LABEL)).toEqual({
+      name: 'in-progress',
+      color: 'FFA500',
+      description: 'Claimed and being worked',
+    });
+    expect(formatLabelCreateCommand(IN_PROGRESS_LABEL)).toContain('gh label create in-progress');
   });
 
   it('lists all eight specs without dropping an axis', () => {

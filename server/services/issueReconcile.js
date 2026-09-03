@@ -54,6 +54,7 @@ import { execGit } from '../lib/execGit.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { execGlabJson } from './gitlab.js';
 import { fetchMyCurrentSprintTickets } from './jira.js';
+import { IN_PROGRESS_LABEL } from '../lib/dispatchLabels.js';
 import { resolveAppForgeTarget, resolveRepoForgeTarget } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 
@@ -61,10 +62,6 @@ import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 const GH_LIST_LIMIT = 200;
 // glab paginates via `--per-page`; its practical max page is 100.
 const GL_PER_PAGE = 100;
-
-// The `in-progress` label = "claimed and being worked". Kept as a constant so
-// the scan, the classifier docs, and any future config share one spelling.
-export const IN_PROGRESS_LABEL = 'in-progress';
 
 /**
  * Extract the issue number a git ref claims, or null. Recognizes both claim
