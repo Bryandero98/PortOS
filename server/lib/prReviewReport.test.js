@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_REVIEW_BODY_CHARS,
   PR_REVIEW_DECISION_CONTRACT,
+  TEST_EVIDENCE_STATUSES,
   normalizeReviewReport,
   renderFinding,
   renderReviewBody,
@@ -38,6 +39,42 @@ describe('renderReviewBody', () => {
     expect(body).toContain('- ⏭️ `npx vitest` — no node_modules in the disposable worktree');
     expect(body).toContain('#### Notes');
     expect(body).toContain('<details><summary>Claims verified against the code</summary>');
+  });
+
+  // A ❌ on an approved review is a lie a human has to read past. Stage 3 hits
+  // two non-zero exits that say nothing about the patch — a deliberate mutation
+  // probe that must fail, and a suite the review sandbox strangles — and each
+  // needs its own mark, or the model stamps `fail` and explains it away in the
+  // detail (which is exactly what shipped three ❌ rows under an ✅ Approved).
+  it('marks a deliberate probe and an environment-blocked run without the red fail icon', () => {
+    const body = renderReviewBody({
+      verdict: 'approve',
+      report: {
+        testEvidence: [
+          { command: 'npx vitest run installState.test.js -t "Finder metadata"', status: 'expected-fail', detail: 'with the guard reverted, so the new test is not vacuous' },
+          { command: 'npx vitest run', status: 'blocked', detail: 'EPERM on listen and spawn inside the review sandbox' },
+        ],
+      },
+    });
+    expect(body).toContain('- 🧪 `npx vitest run installState.test.js -t "Finder metadata"` — with the guard reverted, so the new test is not vacuous');
+    expect(body).toContain('- 🚧 `npx vitest run` — EPERM on listen and spawn inside the review sandbox');
+    expect(body).not.toContain('❌');
+  });
+
+  // Deriving the status list from the icon map already makes "every status has
+  // an icon" true by construction. What that cannot guarantee is that the
+  // statuses stay DISTINGUISHABLE, and that exactly one of them is the red
+  // mark — give `blocked` a ❌ and the misleading review is back with no
+  // vocabulary change to notice.
+  it('renders each evidence status distinguishably, with only `fail` as the red mark', () => {
+    const icons = TEST_EVIDENCE_STATUSES.map((status) => renderReviewBody({
+      verdict: 'approve',
+      report: { testEvidence: [{ command: 'cmd', status, detail: 'd' }] },
+    }).match(/- (\S+) `cmd`/)?.[1]);
+
+    expect(new Set(icons).size).toBe(TEST_EVIDENCE_STATUSES.length);
+    expect(icons[TEST_EVIDENCE_STATUSES.indexOf('fail')]).toBe('❌');
+    expect(icons.filter((icon) => icon === '❌')).toHaveLength(1);
   });
 
   it('still renders a legacy plain-string summary with no structured fields', () => {
@@ -175,7 +212,9 @@ describe('PR_REVIEW_DECISION_CONTRACT', () => {
     for (const field of ['path', 'line', 'side', 'blocking', 'title', 'body', 'suggestion']) {
       expect(PR_REVIEW_DECISION_CONTRACT, field).toContain(`"${field}"`);
     }
-    for (const status of ['pass', 'fail', 'not-run']) {
+    // Derived from the real list: a status the normalizer accepts but the
+    // contract never names is one the model has no way to know it may use.
+    for (const status of TEST_EVIDENCE_STATUSES) {
       expect(PR_REVIEW_DECISION_CONTRACT, status).toContain(status);
     }
   });
