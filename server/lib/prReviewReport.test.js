@@ -120,6 +120,17 @@ describe('renderFinding', () => {
     expect(renderFinding({ body: 'x', suggestion: '```\nrm -rf /\n```' }).body).not.toContain('```');
   });
 
+  it('drops the suggestion when the body leaves a fence open, so it cannot render as inert text', () => {
+    const rendered = renderFinding({ body: 'Replace it:\n\n```js\nconst a = 1;', suggestion: 'const a = 2;' });
+    expect(rendered.body).not.toContain('```suggestion');
+    expect(rendered.body).toContain('const a = 1;');
+  });
+
+  it('keeps the suggestion when the body fences are balanced', () => {
+    const rendered = renderFinding({ body: 'Today:\n\n```js\nconst a = 1;\n```', suggestion: 'const a = 2;' });
+    expect(rendered.body).toContain('```suggestion\nconst a = 2;\n```');
+  });
+
   it('rejects a finding with no usable body', () => {
     expect(renderFinding({ title: 'no body' })).toBeNull();
   });

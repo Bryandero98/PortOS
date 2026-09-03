@@ -187,12 +187,16 @@ export function renderFinding(raw, { blocking = true } = {}) {
   const { title, body, suggestion } = normalizeFindingPresentation(raw);
   if (!body) return null;
   const marker = blocking ? '⛔ **Blocking**' : '💡 **Non-blocking**';
+  // An odd number of fences in the body leaves one open, which would swallow
+  // the suggestion block below and render it as inert text instead of an
+  // applyable change. Drop the suggestion rather than emit a dead one.
+  const bodyLeavesFenceOpen = ((body.match(/```/g) || []).length % 2) === 1;
   return {
     body: [
       title ? `${marker} — ${title}` : marker,
       '',
       body,
-      ...(suggestion ? ['', '```suggestion', suggestion, '```'] : []),
+      ...(suggestion && !bodyLeavesFenceOpen ? ['', '```suggestion', suggestion, '```'] : []),
     ].join('\n'),
     label: title || line(body, MAX_INDEX_LABEL_CHARS),
   };
