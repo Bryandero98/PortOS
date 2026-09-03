@@ -101,6 +101,7 @@ export * from './repoUrl.js';
 export * from './healthProvenance.js';
 export * from './joinInfluenceList.js';
 export * from './kanbanColumns.js';
+export * from './localLlmBackends.js';
 export * from './localLlmTargetKey.js';
 export * from './loomLayout.js';
 export * from './loopbackHost.js';
