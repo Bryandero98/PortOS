@@ -19,6 +19,9 @@ import { fileURLToPath } from 'url';
 /** The `server/` root — the scan root for the source-guard helpers below. */
 export const SERVER_DIR = fileURLToPath(new URL('..', import.meta.url));
 
+/** The `client/src/` root — the scan root for the client-side source guards. */
+export const CLIENT_SRC_DIR = fileURLToPath(new URL('../../client/src/', import.meta.url));
+
 function startServer(app) {
   return new Promise((resolve, reject) => {
     const server = createServer(app);
@@ -233,6 +236,50 @@ export function collectServerSources(dir = SERVER_DIR) {
 /** Read a source file named by a `collectServerSources()` path. */
 export function readServerSource(rel) {
   return readFileSync(join(SERVER_DIR, rel), 'utf8');
+}
+
+/**
+ * Walk `client/src/` and return every source file, relative to that root.
+ *
+ * The client counterpart of `collectServerSources`, for the guards that must
+ * cover BOTH sides of a server/client mirror — `textUtils.test.js`'s
+ * "no private escapeRegExp" scan is the first, since the escape's client copies
+ * are exactly what a `server/`-only walk could never see.
+ *
+ * Two deliberate differences from the server walk:
+ *   - `.jsx` counts. Half the client tree is components, and the escape was
+ *     re-inlined in two of them — a `.js`-only walk would report a clean tree.
+ *   - `*.test.js` is INCLUDED. The server walk skips tests because the guard
+ *     that reads it lives in `server/` and would flag itself; a client test has
+ *     no such exemption to claim, and one of the re-inlined copies this closes
+ *     lived in a client test file.
+ *
+ * @param {string} [dir] - directory to walk (defaults to `client/src/`)
+ * @returns {string[]} paths relative to `client/src/`, e.g. `lib/scenePrompt.js`
+ */
+export function collectClientSources(dir = CLIENT_SRC_DIR) {
+  // Same vanishing-directory tolerance as the server walk — see the note there.
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return [];
+    throw err;
+  }
+  return entries.flatMap((entry) => {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) return [];
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) return collectClientSources(abs);
+    if (!entry.name.endsWith('.js') && !entry.name.endsWith('.jsx')) return [];
+    // POSIX separators always — these are IDENTIFIERS compared against literals
+    // in guard tables, not paths to open. See `collectServerSources`.
+    return [relative(CLIENT_SRC_DIR, abs).split('\\').join('/')];
+  });
+}
+
+/** Read a source file named by a `collectClientSources()` path. */
+export function readClientSource(rel) {
+  return readFileSync(join(CLIENT_SRC_DIR, rel), 'utf8');
 }
 
 /**
