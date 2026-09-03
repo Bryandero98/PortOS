@@ -106,7 +106,7 @@ function TrackGrid({ divisions }) {
 // Reshapes a task node into the `config` shape PerAppOverrideList expects and
 // renders it. Shared by the pinned TimelineRow and the flexible-queue rows so
 // the config reconstruction lives in exactly one place.
-function AppOverridePanel({ node, apps, providers, onUpdateOverride, onBulkToggleOverride }) {
+function AppOverridePanel({ node, apps, providers, providersLoaded, onUpdateOverride, onBulkToggleOverride }) {
   return (
     <PerAppOverrideList
       taskType={node.label}
@@ -120,13 +120,14 @@ function AppOverridePanel({ node, apps, providers, onUpdateOverride, onBulkToggl
       }}
       apps={apps}
       providers={providers}
+      providersLoaded={providersLoaded}
       onUpdateOverride={onUpdateOverride}
       onBulkToggleOverride={onBulkToggleOverride}
     />
   );
 }
 
-function TimelineRow({ node, occurrences, windows, timeline, hours, timezone, selected, apps, providers, expanded, onSelect, onToggleExpand, onUpdateOverride, onBulkToggleOverride }) {
+function TimelineRow({ node, occurrences, windows, timeline, hours, timezone, selected, apps, providers, providersLoaded, expanded, onSelect, onToggleExpand, onUpdateOverride, onBulkToggleOverride }) {
   const palette = trackPalette(node);
   const Icon = node.kind === 'job' ? Bot : GitBranch;
   const divisions = hours === 168 ? 7 : 8;
@@ -205,7 +206,7 @@ function TimelineRow({ node, occurrences, windows, timeline, hours, timezone, se
       </div>
       {canExpand && expanded && (
         <div className="border-t border-port-border/40 bg-port-bg/20 px-3 py-3">
-          <AppOverridePanel node={node} apps={apps} providers={providers} onUpdateOverride={onUpdateOverride} onBulkToggleOverride={onBulkToggleOverride} />
+          <AppOverridePanel node={node} apps={apps} providers={providers} providersLoaded={providersLoaded} onUpdateOverride={onUpdateOverride} onBulkToggleOverride={onBulkToggleOverride} />
         </div>
       )}
     </div>
@@ -246,7 +247,7 @@ function NextUp({ occurrences, nodeMap, hours, timezone, onSelect }) {
 // `providers` is the same ChiefOfStaff-owned list ScheduleTab renders — without it
 // the per-app rows here degraded to raw provider ids while the Schedule tab showed
 // display names for the very same pin (#4783).
-export default function WorkflowTab({ apps, providers }) {
+export default function WorkflowTab({ apps, providers, providersLoaded }) {
   // Zoom window + selected track live in the URL so the open editor and view
   // are shareable/bookmarkable and survive reload — the same "URL is the
   // source of truth for what's open" convention as ScheduleTab's ?task=.
@@ -414,6 +415,7 @@ export default function WorkflowTab({ apps, providers }) {
                         selected={selectedId === node.id}
                         apps={apps}
                         providers={providers}
+                        providersLoaded={providersLoaded}
                         expanded={expandedIds.has(node.id)}
                         onSelect={setSelectedId}
                         onToggleExpand={toggleExpand}
@@ -459,7 +461,7 @@ export default function WorkflowTab({ apps, providers }) {
                   {model.flexible.filter(node => expandedIds.has(node.id) && node.kind === 'task' && (node.totalAppCount || 0) > 0).map(node => (
                     <div key={node.id} className="mt-2 rounded border border-port-border/60 bg-port-bg/20 px-3 py-3">
                       <div className="mb-2 text-xs font-medium text-gray-300">{node.label} <span className="text-gray-600">· per-app options</span></div>
-                      <AppOverridePanel node={node} apps={apps} providers={providers} onUpdateOverride={handleUpdateOverride} onBulkToggleOverride={handleBulkToggleOverride} />
+                      <AppOverridePanel node={node} apps={apps} providers={providers} providersLoaded={providersLoaded} onUpdateOverride={handleUpdateOverride} onBulkToggleOverride={handleBulkToggleOverride} />
                     </div>
                   ))}
                 </section>

@@ -454,6 +454,7 @@ function SeriesAiEditor({ loom, dirty, onLoomUpdate }) {
         layout="stacked"
         disabled={busy || loading}
         modelDisabled={busy || loading}
+        loading={loading}
         emptyProviderOption="Default (series-plan stage or active provider)"
         emptyModelOption="Default model"
         alwaysShowModel={!!route.providerId}
