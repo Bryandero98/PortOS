@@ -105,6 +105,23 @@ function extractIndexNames(source, prefix = 'idx_catalog_') {
   return out;
 }
 
+// Names alone can't catch an index that exists in both files under the same
+// name but over different columns (or a different sort order) — that ships a
+// fresh install an index the boot-time DDL never intended. Pair each name with
+// its normalized column list so the parity check compares definitions.
+function extractIndexDefs(source, prefix) {
+  const out = new Map();
+  const re = new RegExp(
+    `CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\\s+(${prefix}\\w+)\\s+ON\\s+\\w+\\s*\\(([^)]*)\\)`,
+    'gi',
+  );
+  let m;
+  while ((m = re.exec(source)) !== null) {
+    out.set(m[1], m[2].replace(/\s+/g, ' ').trim().toLowerCase());
+  }
+  return out;
+}
+
 function extractFunctionNames(source, prefix = 'update_catalog_') {
   const out = new Set();
   const re = new RegExp(`CREATE OR REPLACE FUNCTION\\s+(${prefix}\\w+)`, 'gi');
@@ -184,19 +201,24 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     expect([...new Set(extractColumnNames(sqlBody))].sort())
       .toEqual([...new Set(extractColumnNames(jsBody))].sort());
 
-    const sqlIdx = extractIndexNames(INIT_SQL, 'idx_human_activity_');
-    const jsIdx = extractIndexNames(DB_JS, 'idx_human_activity_');
-    expect([...sqlIdx].sort()).toEqual([...jsIdx].sort());
-    // Name them: the dedupe index is the idempotency contract (ON CONFLICT
-    // (source, dedupe_key) DO NOTHING) and the two composites (#5715) are what
-    // keep a source-scoped timeline read off a full happened_at walk — dropping
-    // either from both files would otherwise read as a passing set match.
-    expect([...sqlIdx].sort()).toEqual([
-      'idx_human_activity_dedupe',
-      'idx_human_activity_happened',
-      'idx_human_activity_source_happened',
-      'idx_human_activity_source_kind_happened',
-    ]);
+    // Compare definitions, not just names: an index present in both files under
+    // the same name but over different columns would ship a fresh install
+    // something the boot-time DDL never intended.
+    const sqlIdx = extractIndexDefs(INIT_SQL, 'idx_human_activity_');
+    const jsIdx = extractIndexDefs(DB_JS, 'idx_human_activity_');
+    // Spell out the expected map: the dedupe index is the idempotency contract
+    // (ON CONFLICT (source, dedupe_key) DO NOTHING) and the two composites
+    // (#5715) are what keep a source-scoped timeline read off a full
+    // happened_at walk — dropping either from both files, or silently losing
+    // the DESC ordering, would otherwise read as a passing set match.
+    const expected = {
+      idx_human_activity_dedupe: 'source, dedupe_key',
+      idx_human_activity_happened: 'happened_at',
+      idx_human_activity_source_happened: 'source, happened_at desc',
+      idx_human_activity_source_kind_happened: 'source, kind, happened_at desc',
+    };
+    expect(Object.fromEntries(sqlIdx)).toEqual(expected);
+    expect(Object.fromEntries(jsIdx)).toEqual(expected);
   });
 
   it('user_action_events has the same columns and indexes in both files', () => {
