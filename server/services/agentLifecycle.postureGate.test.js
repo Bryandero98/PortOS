@@ -78,6 +78,7 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
   cleanupAgentWorktree: vi.fn(),
   releaseRetryHold: vi.fn().mockResolvedValue({}),
 }));
+vi.mock('./worktreeManager.js', () => ({ removeWorktree: vi.fn().mockResolvedValue({ removed: true }) }));
 vi.mock('./agentCompletionCleanup.js', () => ({ runAgentCompletionCleanup: vi.fn() }));
 vi.mock('./agentSummaryExtraction.js', () => ({ extractFinalSummary: vi.fn() }));
 vi.mock('./agentManagement.js', () => ({ handleOrphanedTask: vi.fn() }));
@@ -108,6 +109,9 @@ vi.mock('./modelAbuseGuard.js', () => ({
 }));
 
 import { spawnAgentForTask } from './agentLifecycle.js';
+import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
+import { materializePublicReviewInput } from './modelAbuseGuard.js';
+import { removeWorktree } from './worktreeManager.js';
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { updateTask } from './cos.js';
 import { spawningTasks, runnerAgents } from './agentState.js';
@@ -130,6 +134,32 @@ beforeEach(() => {
   runnerAgents.clear();
   vi.mocked(resolveAgentProviderAndModel).mockResolvedValue({
     ok: true, provider: CLAUDE_TUI, selectedModel: 'sonnet', modelSelection: {},
+  });
+});
+
+describe('spawn setup failure after the worktree exists', () => {
+  // Every failed Stage 2 spawn used to leave its checkout behind: the task
+  // stayed pending and each retry cut another worktree.
+  it('removes the worktree this attempt cut', async () => {
+    vi.mocked(prepareAgentWorkspace).mockResolvedValueOnce({
+      outcome: 'ready',
+      workspacePath: '/tmp/worktrees/agent-x',
+      worktreeInfo: { worktreePath: '/tmp/worktrees/agent-x', branchName: 'cos/task-public-review/agent-x' },
+    });
+    vi.mocked(materializePublicReviewInput).mockRejectedValueOnce(new Error('The "cb" argument must be of type function'));
+
+    await spawnAgentForTask({
+      id: 'task-public-review',
+      metadata: {
+        executionProfile: 'public-review-gate',
+        pipeline: { securityScan: { completed: true, status: 'passed', safePrCount: 1 }, reviewInputKey: 'a'.repeat(64) },
+      },
+    });
+
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+    const [, , branchName, options] = vi.mocked(removeWorktree).mock.calls[0];
+    expect(branchName).toBe('cos/task-public-review/agent-x');
+    expect(options).toEqual({ discardDirt: true });
   });
 });
 

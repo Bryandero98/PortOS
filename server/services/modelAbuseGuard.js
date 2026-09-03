@@ -9,7 +9,8 @@
  * credentials, or network access.
  */
 
-import { chmod, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { chmod } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFile, spawn } from '../lib/childProcess.js';

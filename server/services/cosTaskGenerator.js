@@ -2124,7 +2124,6 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPul
   }
 
   const status = !scan.ok ? 'unavailable' : (scan.passed ? 'passed' : 'findings');
-  const requiresApproval = reports.length > 0;
   const snapshotWritten = await writePublicReviewInputSnapshot({
     scanKey: scan.scanKey || scanKey,
     pullRequests: scan.ok ? (scan.reviewInputs || []) : [],
@@ -2174,7 +2173,6 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPul
       findingCount: reports.filter((report) => !reportIsSafe(report)).length,
       reports,
       noActionsTaken: true,
-      requiresApproval,
       safePrCount: safeReports.length,
     },
   };
@@ -2220,9 +2218,14 @@ async function runPrReviewerSecurityPreflight(taskType, app, metadata, targetPul
     }
   }
 
-  // applyOnDemandConsent deliberately honors this marker, so a user-triggered
-  // run cannot silently bypass the human gate for external contributor PRs.
-  if (requiresApproval) metadata.requireApproval = true;
+  // No forced human approval here. The pipeline's own gates bound what an
+  // external PR can do: Stage 1 already screened it, the Eligibility Gate is
+  // tool-free, and Stage 3 runs sandboxed with the deterministic coordinator
+  // owning every forge mutation. Forcing approval on every scanned PR held
+  // the cheap tool-free gate behind a click on each run, including a targeted
+  // "Review this PR" the maintainer had just pressed. The schedule's own
+  // "Require approval" toggle (metadata.requireApproval from the interval
+  // config) still holds the run when the user asks for that.
   emitLog(
     status === 'passed' ? 'info' : 'warn',
     `pr-reviewer security scan ${status} for ${app.name}: ${reports.length} external PR(s)`,
