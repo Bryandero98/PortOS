@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { ChildProcess, execFile } from './childProcess.js';
@@ -50,6 +50,53 @@ const onClose = (handle) => new Promise((resolve, reject) => {
   handle.on('error', reject);
 });
 
+// Wait for the OS-level state a test is actually about (the job is running, the
+// cleanup rm landed, the log holds a line) instead of sleeping a fixed budget
+// and hoping. These are real processes and real files, so there is no clock to
+// fake — but a condition wait returns the moment the state arrives, which is
+// typically ~1 tick rather than the 50–200ms the fixed sleeps it replaced cost
+// unconditionally. Bounded so a genuine regression fails the assertion below
+// rather than hanging the suite to the vitest timeout.
+const WAIT_POLL_MS = 5;
+const waitUntil = async (predicate, { timeoutMs = 5000 } = {}) => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
+  }
+};
+
+const ppidOf = async (pid) => {
+  const { stdout } = await execFileAsync('ps', ['-o', 'ppid=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
+  const n = Number.parseInt(stdout.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+};
+const aliveByPs = async (pid) => {
+  const { stdout } = await execFileAsync('ps', ['-o', 'pid=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
+  return stdout.trim().length > 0;
+};
+// Walk a process's ancestor chain to the root (PPID 1 / 0).
+const ancestorsOf = async (pid) => {
+  const chain = [];
+  let cur = await ppidOf(pid);
+  while (cur > 1 && chain.length < 50) {
+    chain.push(cur);
+    cur = await ppidOf(cur);
+  }
+  return chain;
+};
+
+// The job's stdout as the tailer sees it on disk.
+const readStdoutLog = (controlDir) => readFile(join(controlDir, 'stdout.log'), 'utf8').catch(() => '');
+
+// A `sh` fragment that blocks until the test writes `marker`. Replaces a fixed
+// `sleep N` in the fixtures below: the window a test needs open stays open for
+// exactly as long as the test needs it, and not a second longer.
+const blockUntil = (marker) => `while [ ! -f "${marker}" ]; do sleep 0.02; done`;
+
 describe('spawnDetached', () => {
   it('streams stdout and stderr, then closes with the exit code', async () => {
     const controlDir = await tmpControlDir();
@@ -76,26 +123,6 @@ describe('spawnDetached', () => {
     expect(signal).toBeNull();
   });
 
-  const ppidOf = async (pid) => {
-    const { stdout } = await execFileAsync('ps', ['-o', 'ppid=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
-    const n = Number.parseInt(stdout.trim(), 10);
-    return Number.isFinite(n) ? n : 0;
-  };
-  const aliveByPs = async (pid) => {
-    const { stdout } = await execFileAsync('ps', ['-o', 'pid=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
-    return stdout.trim().length > 0;
-  };
-  // Walk a process's ancestor chain to the root (PPID 1 / 0).
-  const ancestorsOf = async (pid) => {
-    const chain = [];
-    let cur = await ppidOf(pid);
-    while (cur > 1 && chain.length < 50) {
-      chain.push(cur);
-      cur = await ppidOf(cur);
-    }
-    return chain;
-  };
-
   it.runIf(IS_POSIX)('reparents the job out of the spawner tree (escapes pm2 TreeKill)', async () => {
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });
@@ -106,11 +133,10 @@ describe('spawnDetached', () => {
     // briefly to let the outer sh exit, then assert the spawner is absent from
     // the job's full ancestor chain.
     let ancestors = [];
-    for (let i = 0; i < 40; i += 1) {
+    await waitUntil(async () => {
       ancestors = await ancestorsOf(handle.pid);
-      if (!ancestors.includes(process.pid)) break;
-      await new Promise((r) => setTimeout(r, 25));
-    }
+      return !ancestors.includes(process.pid);
+    });
     expect(ancestors).not.toContain(process.pid);
     handle.kill('SIGKILL');
     await onClose(handle);
@@ -120,8 +146,9 @@ describe('spawnDetached', () => {
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });
     expect(handle.pid).toBeGreaterThan(0);
-    // Give the launcher a beat to write the PID file and start the sleeper.
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait for the sleeper to actually be running under the recorded PID —
+    // signalling before then would test nothing.
+    await waitUntil(() => aliveByPs(handle.pid));
     const killed = handle.kill('SIGKILL');
     expect(killed).toBe(true);
     const { code, signal } = await onClose(handle);
@@ -141,22 +168,20 @@ describe('spawnDetached', () => {
     ].join('; ')], { controlDir, pollMs: 25, killProcessGroup: true });
     const getOut = collect(handle.stdout);
     let runtimePid = 0;
-    for (let i = 0; i < 80; i += 1) {
+    await waitUntil(() => {
       runtimePid = Number.parseInt(getOut().trim(), 10);
-      if (runtimePid > 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+      return runtimePid > 0;
+    });
     expect(runtimePid).toBeGreaterThan(0);
     expect(await aliveByPs(runtimePid)).toBe(true);
     const closed = onClose(handle);
     expect(handle.kill('SIGKILL')).toBe(true);
     await closed;
     let alive = true;
-    for (let i = 0; i < 80; i += 1) {
+    await waitUntil(async () => {
       alive = await aliveByPs(runtimePid);
-      if (!alive) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+      return !alive;
+    });
     expect(alive).toBe(false);
   });
 
@@ -177,8 +202,9 @@ describe('spawnDetached', () => {
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached('sh', ['-c', 'printf "x\\n"; exit 0'], { controlDir, pollMs: 25, cleanup: true });
     await onClose(handle);
-    // finish() schedules the rm after emitting close — give it a tick.
-    await new Promise((r) => setTimeout(r, 50));
+    // finish() fires the rm off unawaited after emitting close — wait for the
+    // dir to actually be gone rather than for a fixed budget.
+    await waitUntil(async () => !(await stat(controlDir).then(() => true).catch(() => false)));
     const present = await stat(controlDir).then(() => true).catch(() => false);
     expect(present).toBe(false);
   });
@@ -187,7 +213,9 @@ describe('spawnDetached', () => {
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached('sh', ['-c', 'printf "x\\n"; exit 0'], { controlDir, pollMs: 25 });
     await onClose(handle);
-    await new Promise((r) => setTimeout(r, 50));
+    // No wait to burn: without `cleanup` nothing schedules a removal at all, so
+    // asserting immediately after close is the stronger check — a regression
+    // that starts removing the dir has no grace window to hide in.
     const present = await stat(controlDir).then(() => true).catch(() => false);
     expect(present).toBe(true);
   });
@@ -239,7 +267,7 @@ describe('spawnDetached', () => {
     const marker = join(controlDir, 'go');
     const handle = await spawnDetached(
       process.execPath,
-      ['-e', `const {existsSync}=require('fs');const t=setInterval(()=>{if(existsSync(process.argv[1])){clearInterval(t);process.exit(${exitCode});}},25);`, marker],
+      ['-e', `const {existsSync}=require('fs');const t=setInterval(()=>{if(existsSync(process.argv[1])){clearInterval(t);process.exit(${exitCode});}},5);`, marker],
       { controlDir }
     );
     return { handle, terminate: () => writeFile(marker, '1') };
@@ -385,7 +413,7 @@ describe('spawnDetached', () => {
     // Attach the close listener BEFORE killing — the tail loop can fire 'close'
     // as soon as the signal lands.
     const closed = onClose(handle);
-    await new Promise((r) => setTimeout(r, 50));
+    await waitUntil(() => aliveByPs(handle.pid));
     expect(handle.kill('SIGKILL')).toBe(true);
     expect(killProcessTree).not.toHaveBeenCalled();
     await closed;
@@ -400,7 +428,7 @@ describe('spawnDetached', () => {
       // Attach the close listener BEFORE reaping — the killed sleeper writes
       // exit and the handle's own tail loop can fire 'close' before reap returns.
       const closed = onClose(handle);
-      await new Promise((r) => setTimeout(r, 50));
+      await waitUntil(() => aliveByPs(pid));
       const res = await reapDetached(controlDir, { graceMs: 3000, pollMs: 25 });
       expect(res.reaped).toBe(true);
       expect(res.pid).toBe(pid);
@@ -432,8 +460,10 @@ describe('spawnDetached', () => {
       const hB = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir: b, pollMs: 25 });
       const closedA = onClose(hA);
       const closedB = onClose(hB);
-      await new Promise((r) => setTimeout(r, 50));
-      const res = await reapAndCleanDetachedDirs(parent);
+      await waitUntil(async () => (await aliveByPs(hA.pid)) && (await aliveByPs(hB.pid)));
+      // pollMs matches the per-job cadence the rest of this suite spawns with;
+      // the default 250ms sentinel poll costs a quarter-second per dir here.
+      const res = await reapAndCleanDetachedDirs(parent, { pollMs: 25 });
       expect(res.reaped).toBe(2);
       expect(res.scanned).toBe(2);
       expect(await stat(a).then(() => true).catch(() => false)).toBe(false);
@@ -546,20 +576,23 @@ describe('isDetachedRunning', () => {
 describe.runIf(IS_POSIX)('reattachDetached', () => {
   it('replays a still-running survivor from the start and closes with its exit code', async () => {
     const controlDir = await tmpControlDir();
-    // early output, then a beat, then late output + a non-zero exit.
+    const release = join(controlDir, 'go');
+    // early output, then a pause the TEST releases, then late output + a
+    // non-zero exit.
     const original = await spawnDetached(
-      'sh', ['-c', 'printf "early\\n"; sleep 1; printf "late\\n"; exit 5'],
+      'sh', ['-c', `printf "early\\n"; ${blockUntil(release)}; printf "late\\n"; exit 5`],
       { controlDir, pollMs: 25 }
     );
     // Attach the original's close listener NOW (before it can fire) — 'close' is
     // one-shot, so a listener added after the child exits would never resolve.
     const originalClosed = onClose(original);
     // Let "early" land on disk, then re-attach as if the server had restarted.
-    await new Promise((r) => setTimeout(r, 150));
+    await waitUntil(async () => (await readStdoutLog(controlDir)).includes('early'));
     const reattached = await reattachDetached(controlDir, { pollMs: 25 });
     expect(reattached).not.toBeNull();
     expect(reattached.pid).toBe(original.pid);
     const getOut = collect(reattached.stdout);
+    await writeFile(release, '1');
     const { code, signal } = await onClose(reattached);
     // The re-attached tailer reads from offset 0, so it sees the FULL output —
     // including bytes written before it attached — and the terminal exit code.
@@ -583,17 +616,26 @@ describe.runIf(IS_POSIX)('reattachDetached', () => {
 
   it('emits a one-time "replayed" signal once the initial backlog is drained', async () => {
     const controlDir = await tmpControlDir();
+    const release = join(controlDir, 'go');
     const original = await spawnDetached(
-      'sh', ['-c', 'printf "h1\\nh2\\n"; sleep 1; printf "live\\n"; exit 0'],
+      'sh', ['-c', `printf "h1\\nh2\\n"; ${blockUntil(release)}; printf "live\\n"; exit 0`],
       { controlDir, pollMs: 25 }
     );
     const originalClosed = onClose(original);
-    await new Promise((r) => setTimeout(r, 200)); // let the backlog (h1/h2) land
+    // let the backlog (h1/h2) land
+    await waitUntil(async () => (await readStdoutLog(controlDir)).includes('h2'));
     const reattached = await reattachDetached(controlDir, { pollMs: 25 });
     const getOut = collect(reattached.stdout);
     let replayedCount = 0;
     let outAtReplayed = null;
-    reattached.on('replayed', () => { replayedCount += 1; outAtReplayed = getOut(); });
+    const replayed = new Promise((resolve) => {
+      reattached.on('replayed', () => { replayedCount += 1; outAtReplayed = getOut(); resolve(); });
+    });
+    // Release "live" only once the replay boundary has been observed. The old
+    // `sleep 1` made that ordering a race the test happened to win; gating on
+    // the event makes it the thing the fixture guarantees.
+    await replayed;
+    await writeFile(release, '1');
     const { code } = await onClose(reattached);
     // 'replayed' fires exactly once, AFTER the pre-existing backlog was emitted
     // but BEFORE the post-restart "live" line — that's the boundary the stall
@@ -622,7 +664,7 @@ describe.runIf(IS_POSIX)('reattachDetached', () => {
     // Attach before the kill — the shared child's death closes BOTH handles, and
     // 'close' is one-shot, so the original's listener has to be wired up front.
     const originalClosed = onClose(original);
-    await new Promise((r) => setTimeout(r, 100));
+    await waitUntil(() => aliveByPs(original.pid));
     const reattached = await reattachDetached(controlDir, { pollMs: 25 });
     const closed = onClose(reattached);
     expect(reattached.kill('SIGTERM')).toBe(true);
