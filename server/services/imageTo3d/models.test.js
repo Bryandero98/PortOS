@@ -418,7 +418,9 @@ describe('render options and source keying', () => {
   });
 
   it('a keyed source image is what the render consumes', async () => {
-    prepareSourceImage.mockImplementation(async ({ targetPath }) => targetPath);
+    prepareSourceImage.mockImplementation(async ({ targetPath }) => ({
+      path: targetPath, keyed: true, framed: false,
+    }));
 
     await createModel({ name: 'Beacon', filename: 'example.png', keyBackground: true });
     await vi.waitFor(() => expect(current.status).toBe('ready'));
