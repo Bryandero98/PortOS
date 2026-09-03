@@ -992,4 +992,39 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(PROMPT_VERSIONS[stageKey]).toBeUndefined();
     expect(PREVIOUS_DEFAULT_PROMPTS[stageKey]).toBeUndefined();
   });
+
+  // #5963: Claude Code's sandbox permanently denies working-tree writes under
+  // `.claude/skills`, `.claude/agents`, `.claude/commands`, `.claude/hooks`,
+  // `.claude/workflows`, and `.mcp.json` — no `sandbox.filesystem.allowWrite`
+  // setting can lift it (see the comment on CLAUDE_SANDBOX_SETTINGS in
+  // providerVendors.js). A patch touching only those paths (e.g. a docs-only
+  // skill edit) fails `git apply` in the working tree even though the review
+  // is otherwise clean, so Stage 3 must know the `git apply --cached` +
+  // index-verification fallback instead of guessing between `approve` and
+  // `defer`.
+  it('pr-reviewer-review teaches the git apply --cached fallback for sandbox-protected .claude/ paths', () => {
+    const current = DEFAULT_TASK_PROMPTS['pr-reviewer-review'];
+    expect(current).toContain('.claude/skills');
+    expect(current).toContain('.claude/agents');
+    expect(current).toContain('.claude/commands');
+    expect(current).toContain('.claude/hooks');
+    expect(current).toContain('.claude/workflows');
+    expect(current).toContain('.mcp.json');
+    expect(current).toContain('git apply --cached -- <patch>');
+    expect(current).toContain('git show :<path>');
+    // Reflow-tolerant: every whitespace run (including a line-wrap newline,
+    // wherever it happens to fall) matches `\s+`, so a harmless rewrap of this
+    // prose can't break the assertion.
+    expect(current).toMatch(/never\s+by\s+reading\s+the\s+working-tree\s+file/);
+    expect(current).toContain('never `defer` for this reason alone');
+    // `git apply --check` performs no writes, so the fallback must gate on the
+    // real (write) `git apply` failing — not on `--check`, which the sandbox's
+    // write-only protection can never cause to fail (#5963 review finding).
+    expect(current).toContain('`--check` makes no filesystem writes');
+    expect(current).not.toContain('When `--check` fails ONLY on');
+    // A deleted protected file has no index blob left for `git show :<path>`
+    // to read — the fallback must verify absence instead.
+    expect(current).toContain('git ls-files --cached -- <path>');
+    expect(current).toContain('deleted protected file');
+  });
 });

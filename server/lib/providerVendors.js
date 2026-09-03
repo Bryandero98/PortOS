@@ -500,6 +500,18 @@ const CLAUDE_PUBLIC_REVIEW_NO_TOOL_ARGS = [
 // tree and the empty domain allowlist denies every network request — in
 // `--print` mode a denied request is simply not executed, there is nobody to
 // approve it. The web tools are denied outright for the same reason.
+//
+// `sandbox.filesystem.allowWrite` (a real, current setting) does NOT reach a
+// PR that edits `.claude/skills`, `.claude/agents`, `.claude/commands`,
+// `.claude/hooks`, `.claude/workflows`, or `.mcp.json` — Claude Code's docs
+// state plainly that these are "protected paths" and "there is no way to
+// exempt one of them: an allowWrite entry ... doesn't lift the protection."
+// (docs.claude.com/en/docs/claude-code/sandboxing, "Protected paths"). The
+// only way to lift it is `sandbox.filesystem.disabled`, which turns off
+// filesystem isolation for every path — defeating the point of sandboxing an
+// untrusted PR's patch. So the Stage 3 review prompt (`pr-reviewer-review` in
+// taskPromptDefaults/prompts.js) is taught the `git apply --cached` +
+// index-verification fallback instead (#5963).
 const CLAUDE_SANDBOX_SETTINGS = JSON.stringify({
   sandbox: { enabled: true, autoAllowBashIfSandboxed: true, network: { allowedDomains: [] } },
 });
