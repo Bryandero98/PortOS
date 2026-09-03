@@ -255,7 +255,11 @@ export async function materializePublicReviewPatches({ scanKey, workspacePath, a
     const filename = `PR-${pullRequest.number}.patch`;
     const relativePath = `${PUBLIC_REVIEW_PATCH_DIRNAME}/${filename}`;
     const destination = join(patchDir, filename);
-    await atomicWrite(destination, pullRequest.diff);
+    // The gh wrapper trims stdout, which drops the diff's final newline; git
+    // apply then rejects the file as "corrupt patch at line N". Restore it so
+    // the reviewer can apply the patch verbatim (the fingerprint is computed
+    // on the trimmed text upstream and is unaffected).
+    await atomicWrite(destination, pullRequest.diff.endsWith('\n') ? pullRequest.diff : `${pullRequest.diff}\n`);
     const restricted = await chmod(destination, 0o444).then(() => true).catch(() => false);
     if (!restricted) return false;
     patches.push({
