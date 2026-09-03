@@ -280,6 +280,34 @@ async function readPullRequest(ctx, number) {
   ], ctx);
 }
 
+// GitHub holds the workflow runs of a first-time fork contributor until a
+// maintainer clicks "Approve and run", so an approved external PR otherwise
+// sits at zero checks and never merges. CI is deliberately NOT started before
+// that point: an unreviewed or rejected PR must not spend runner minutes or
+// get a foothold on the runners. Only once the coordinator has posted its own
+// APPROVE on content it screened and reviewed does it approve the held runs
+// itself — and never when the PR edits a workflow file, since that run would
+// execute the contributor's workflow changes; those stay for a human.
+const WORKFLOW_PATH_RE = /^\.github\/workflows\//;
+const touchesWorkflowFiles = (pr) => (Array.isArray(pr?.files) ? pr.files : [])
+  .some((file) => WORKFLOW_PATH_RE.test(String(file?.path || '')));
+
+async function approveHeldWorkflowRuns(ctx, pr) {
+  if (touchesWorkflowFiles(pr)) return 0;
+  const runs = await runJson(apiArgs(ctx, `repos/${ctx.repoFullName}/actions/runs?head_sha=${pr.headRefOid}&status=action_required&per_page=20`), ctx);
+  const held = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
+  let approved = 0;
+  for (const run of held) {
+    if (!Number.isInteger(run?.id)) continue;
+    const ok = await runGh(apiArgs(ctx, `repos/${ctx.repoFullName}/actions/runs/${run.id}/approve`, { method: 'POST' }), ctx)
+      .then(() => true)
+      .catch(() => false);
+    if (ok) approved += 1;
+  }
+  if (approved > 0) console.log(`✅ issue-watcher: approved ${approved} held workflow run(s) for PR #${pr.number}`);
+  return approved;
+}
+
 function sameNumberList(left, right) {
   const a = Array.isArray(left) ? left : [];
   const b = Array.isArray(right) ? right : [];
@@ -690,6 +718,9 @@ async function processPendingApprovals(app, ctx) {
       changed = true;
       continue;
     }
+    // A run GitHub is still holding for approval also shows up as no checks;
+    // this PR already carries the coordinator's APPROVE, so release it.
+    if (checkRollup.length === 0) await approveHeldWorkflowRuns(ctx, pr);
     // An empty rollup is ambiguous immediately after review: CI may simply not
     // have attached yet. A low-risk PR may skip CI only after two consecutive
     // scheduled observations see no checks. Active checks are never waived.
@@ -1037,6 +1068,7 @@ export async function processTaskOutput({ appId, success, payload, task, require
     }));
     if (!approved) continue;
     reviewed += 1;
+    await approveHeldWorkflowRuns(ctx, pr);
 
     const behindBy = await readBehindBy(ctx, pr);
     if (decision.rebaseRequired && (behindBy === null || behindBy > 0)) {

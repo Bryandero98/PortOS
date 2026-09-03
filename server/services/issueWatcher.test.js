@@ -91,9 +91,11 @@ function pullRequest(overrides = {}) {
 }
 
 function installDefaultGhMock({
-  pr = pullRequest(), issueRows = [[]], commentRows = [[]], reviews = [[]], issueDetails = {},
+  pr = pullRequest(), issueRows = [[]], commentRows = [[]], reviews = [[]], issueDetails = {}, heldRuns = [],
 } = {}) {
   execGhMock.mockImplementation(async (args) => {
+    if (args[0] === 'api' && args.some((arg) => String(arg).includes('/actions/runs?'))) return JSON.stringify({ workflow_runs: heldRuns });
+    if (args[0] === 'api' && args.some((arg) => String(arg).includes('/actions/runs/'))) return '';
     if (args[0] === 'api' && args.includes('repos/o/r') && !args.some((arg) => String(arg).includes('/issues'))
       && !args.some((arg) => String(arg).includes('/pulls/')) && !args.some((arg) => String(arg).includes('/compare/'))) {
       return JSON.stringify({ owner: { login: 'owner', type: 'User' }, default_branch: 'main' });
@@ -687,6 +689,72 @@ describe('processTaskOutput', () => {
     expect(followUp).toEqual({ skip: { reason: 'baselined' } });
     expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
     expect(apps.get(APP.id).issueWatcherState.approvedPullRequests).toEqual([]);
+  });
+
+  // GitHub holds a first-time fork contributor's workflow runs until a
+  // maintainer approves them. Left alone, an approved PR sits at zero checks
+  // for every sweep tick and is finally handed back as a notification — the
+  // exact hand-off the deterministic coordinator exists to make unnecessary.
+  // CI is released only AFTER the coordinator's own APPROVE, so an unreviewed
+  // or rejected PR never spends runner minutes.
+  it('approves a held workflow run after approving a fork PR, then merges once CI is green', async () => {
+    installDefaultGhMock({ pr: pullRequest({ statusCheckRollup: [] }), heldRuns: [{ id: 55 }] });
+    mergePrMock.mockResolvedValue({ success: true });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'Documentation-only and safe.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 0 });
+    const approveRun = execGhMock.mock.calls.find(([args]) => args.includes('repos/o/r/actions/runs/55/approve'));
+    expect(approveRun[0]).toContain('POST');
+    expect(mergePrMock).not.toHaveBeenCalled();
+
+    installDefaultGhMock({
+      pr: pullRequest({ statusCheckRollup: [{ conclusion: 'SUCCESS' }] }),
+      reviews: [[{ user: { login: 'owner' }, commit_id: 'a'.repeat(40), state: 'APPROVED' }]],
+    });
+    await buildTaskInput({ app: apps.get(APP.id) });
+    expect(mergePrMock).toHaveBeenCalledWith(APP.repoPath, 7);
+  });
+
+  it('does not release CI for a PR it did not approve', async () => {
+    installDefaultGhMock({ pr: pullRequest({ statusCheckRollup: [] }), heldRuns: [{ id: 55 }] });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'request_changes', summary: 'Needs work.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(execGhMock.mock.calls.some(([args]) => args.some((arg) => String(arg).includes('/actions/runs')))).toBe(false);
+  });
+
+  it('leaves a held workflow run alone when the PR edits a workflow file', async () => {
+    installDefaultGhMock({
+      pr: pullRequest({ statusCheckRollup: [], files: [{ path: '.github/workflows/ci.yml' }] }),
+      heldRuns: [{ id: 55 }],
+    });
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'CI tweak.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({ appId: APP.id, success: true, payload, task: { metadata } });
+
+    expect(result).toMatchObject({ reviewed: 1, merged: 0 });
+    expect(execGhMock.mock.calls.some(([args]) => args.some((arg) => String(arg).includes('/actions/runs/')))).toBe(false);
   });
 
   it('never waives an actively running check for a low-risk PR', async () => {
