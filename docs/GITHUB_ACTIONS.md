@@ -138,9 +138,9 @@ The gap is in the *tests*, not the setup, and it is small but real:
    `<form onSubmit><button type="submit">` probe fires once in each — so this
    one needs a root cause before the switch, not a mechanical edit.
 
-Conclusion: **viable, deferred.** The switch is a new devDependency plus a
-default-environment flip affecting all 868 client test files, so it ships as its
-own change rather than riding along with the pragma sweep.
+Conclusion: **viable, deferred to #6144.** The switch is a new devDependency
+plus a default-environment flip affecting all 868 client test files, so it ships
+as its own change rather than riding along with the pragma sweep.
 
 ### Reusing the server install
 
