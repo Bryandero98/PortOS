@@ -24,8 +24,8 @@
  *       `MiniMaxAI/MiniMax-H3` ships three layouts totalling ~498 GB where the
  *       CUDA runner needs ~144 GB of them — since the download, cache-status,
  *       integrity-verify and repair paths all fan out from the same
- *       `modelDownloadTargets()` in routes/videoGen.js and would otherwise pull
- *       and checksum the lot.
+ *       `modelDownloadTargets()` in services/videoGen/modelCache.js and would
+ *       otherwise pull and checksum the lot.
  *       `offloadProfile` (optional, `minimax_h3_cuda` only) pins the weight
  *       offload recipe to one of `auto` / `bf16` / `int8-stream` / `int8-lean`
  *       instead of letting the runner size one from the card's own VRAM. Left
