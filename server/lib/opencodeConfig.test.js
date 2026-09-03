@@ -8,6 +8,7 @@ import {
   toBareModelIds,
 } from './opencodeConfig.js';
 import { LOCAL_RUNTIMES } from './localProviderRuntime.js';
+import { PUBLIC_REVIEW_GATE_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
 
 describe('toBareModelIds', () => {
   it('strips the ollama/ namespace, drops empties, and dedupes', () => {
@@ -463,5 +464,80 @@ describe('small-model pin', () => {
         .OPENCODE_CONFIG_CONTENT,
     );
     expect(config.small_model).toBe('ollama/qwen3');
+  });
+});
+
+describe('hardenOpencodeConfigForNoTool', () => {
+  // OpenCode has no read-only argv flag — this IS the vendor's enforced recipe
+  // for the pr-reviewer eligibility gate, so it has to override a user's stored
+  // config rather than merely default around it.
+  const harden = (provider, model) => JSON.parse(
+    buildOpencodeEnvVars(provider, model, { safetyProfile: PUBLIC_REVIEW_GATE_EXECUTION_PROFILE })
+      .OPENCODE_CONFIG_CONTENT,
+  );
+
+  it('overrides a stored allow-everything posture', () => {
+    const stored = JSON.stringify({
+      permission: 'allow',
+      mcp: { fetch: { type: 'local', command: ['mcp-fetch'] } },
+      plugin: ['some-plugin'],
+      agent: { build: { temperature: 0.2, tools: { bash: true } } },
+    });
+    const config = harden(
+      { command: 'opencode', ollamaBacked: true, temperature: 0.2, models: ['gemma3:27b'], envVars: { OPENCODE_CONFIG_CONTENT: stored } },
+      'gemma3:27b',
+    );
+
+    // The string shorthand denies EVERY permission category, including any
+    // OpenCode adds later; naming three would leave a new one at its default.
+    expect(config.permission).toBe('deny');
+    expect(config.tools).toEqual({ '*': false });
+    // Per-agent settings override the root block, and OpenCode's built-in
+    // `build`/`plan` agents carry tool maps of their own.
+    expect(config.agent.build.tools).toEqual({ '*': false });
+    expect(config.agent.build.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny' });
+    // Generation settings are configuration, not posture — they survive.
+    expect(config.agent.build.temperature).toBe(0.2);
+    // The agent the spawner actually selects is hardened even when the stored
+    // config never mentioned it.
+    expect(config.agent.plan.tools['*']).toBe(false);
+    expect(config.provider.ollama.models['gemma3:27b'].tool_call).toBe(false);
+    expect(config.mcp).toEqual({});
+    expect(config.plugin).toEqual([]);
+    expect(config.share).toBe('disabled');
+    expect(config.autoupdate).toBe(false);
+  });
+
+  // The stage's effort control writes to `agent.build` (OpenCode's default
+  // agent), but this profile runs `--agent plan` — so an uncopied level would
+  // silently leave the gate on the backend default.
+  it('carries the stage generation settings onto the agent it actually runs', () => {
+    const config = harden(
+      { command: 'opencode', ollamaBacked: true, temperature: 0.3, effort: 'high', models: ['gemma3:27b'] },
+      'gemma3:27b',
+    );
+    expect(config.agent.plan.reasoningEffort).toBe('high');
+    expect(config.agent.plan.temperature).toBe(0.3);
+  });
+
+  it('lets a user-declared plan agent keep its own generation settings', () => {
+    const stored = JSON.stringify({ agent: { plan: { reasoningEffort: 'low' } } });
+    const config = harden(
+      {
+        command: 'opencode',
+        ollamaBacked: true,
+        effort: 'high',
+        models: ['gemma3:27b'],
+        envVars: { OPENCODE_CONFIG_CONTENT: stored },
+      },
+      'gemma3:27b',
+    );
+    expect(config.agent.plan.reasoningEffort).toBe('low');
+  });
+
+  it('leaves the endpoint and the auxiliary-model pin intact', () => {
+    const config = harden({ command: 'opencode', ollamaBacked: true, models: ['gemma3:27b'] }, 'gemma3:27b');
+    expect(config.provider.ollama.options.baseURL).toBe('http://localhost:11434/v1');
+    expect(config.small_model).toBe('ollama/gemma3:27b');
   });
 });

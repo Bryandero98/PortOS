@@ -29,6 +29,13 @@ const localClaude = {
 const codex = { id: 'codex-cli', type: 'cli', command: 'codex', models: ['gpt-5.6'] };
 const antigravity = { id: 'antigravity-cli', type: 'cli', command: 'agy', models: ['gemini-3.6-flash-high'] };
 const grok = { id: 'grok-cli', type: 'cli', command: 'grok' };
+const opencodeOllama = {
+  id: 'opencode-ollama-tui',
+  type: 'tui',
+  command: 'opencode',
+  ollamaBacked: true,
+  models: ['gemma3:27b'],
+};
 
 describe('public-review provider postures', () => {
   // The whole point of the posture table: eligibility is DECLARED per vendor,
@@ -103,12 +110,89 @@ describe('public-review provider postures', () => {
     expect(config.args).not.toContain('--full-auto');
   });
 
+  // OpenCode is how a user actually drives a local Ollama model, so the gate
+  // has to be configurable on it — otherwise the only local option is a Claude
+  // binary pointed at an Anthropic-compatible shim.
+  it('offers the no-tool gate on a local-backed OpenCode wrapper', () => {
+    expect(publicReviewPosturesForProvider(opencodeOllama))
+      .toEqual([PUBLIC_REVIEW_NO_TOOL_POSTURE, PUBLIC_REVIEW_ACTIONS_POSTURE]);
+    // Enforced for the gate (config recipe), worktree-only for the actions
+    // stage — OpenCode ships no OS sandbox of its own.
+    expect(enforcedPublicReviewPosturesForProvider(opencodeOllama)).toEqual([PUBLIC_REVIEW_NO_TOOL_POSTURE]);
+  });
+
+  // The gate's enforcement rides in OPENCODE_CONFIG_CONTENT, which the
+  // public-review env allowlist keeps only for a config declaring on-box
+  // endpoints — so a wrapper fronting a hosted gateway must not be offered a
+  // stage it cannot authenticate.
+  it('withholds the gate from an OpenCode wrapper with no local backend', () => {
+    const gateway = { id: 'opencode-openrouter-tui', type: 'tui', command: 'opencode', gatewayBacked: 'openrouter' };
+    expect(publicReviewPosturesForProvider(gateway)).toEqual([PUBLIC_REVIEW_ACTIONS_POSTURE]);
+    expect(supportsPublicReviewProvider(gateway)).toBe(false);
+  });
+
+  // The marker alone is not enough, and this is the security case, not a tidy-up:
+  // `cliChildEnv.js` strips a config whose endpoint is off-box, and a stripped
+  // config does not harden the child — OpenCode falls back to reading the user's
+  // own ~/.config/opencode with its tools, plugins and MCP servers intact, while
+  // the stage still reports an enforced tool-free gate. Eligibility must use the
+  // same locality rule the allowlist does.
+  it('withholds the gate from an ollama-marked wrapper pointed off-box', () => {
+    const relocated = {
+      ...opencodeOllama,
+      envVars: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          provider: { ollama: { options: { baseURL: 'http://192.0.2.10:11434/v1' } } },
+        }),
+      },
+    };
+    expect(supportsPublicReviewProvider(relocated)).toBe(false);
+    // A config that keeps the daemon on this machine is still eligible.
+    expect(supportsPublicReviewProvider({
+      ...opencodeOllama,
+      envVars: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          provider: { ollama: { options: { baseURL: 'http://127.0.0.1:11434/v1' } } },
+        }),
+      },
+    })).toBe(true);
+  });
+
+  // Every other local runtime is rejected at spawn time by
+  // `validatePublicReviewModel` (`public-review-runtime-unsupported` — only an
+  // Ollama catalog can be probed for the authoritative no-tools answer), so
+  // offering them would put a permanently blocking choice in the picker.
+  it('withholds the gate from local runtimes the model check cannot validate', () => {
+    for (const marker of ['llamaBacked', 'vllmBacked', 'sglangBacked', 'mtplxBacked']) {
+      const provider = { id: `opencode-${marker}`, type: 'tui', command: 'opencode', [marker]: true };
+      expect(supportsPublicReviewProvider(provider), marker).toBe(false);
+      expect(publicReviewPosturesForProvider(provider), marker).toEqual([PUBLIC_REVIEW_ACTIONS_POSTURE]);
+    }
+  });
+
+  it('builds the OpenCode gate on its read-only agent with a namespaced model and no provider args', () => {
+    const config = buildVendorSpawnConfig({ ...opencodeOllama, args: ['--agent', 'build'] }, {
+      effectiveModel: 'gemma3:27b',
+      effort: 'low',
+      safetyProfile: PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+    });
+    expect(config).toEqual({
+      command: 'opencode',
+      args: ['run', '--agent', 'plan', '-m', 'ollama/gemma3:27b'],
+      stdinMode: 'prompt',
+    });
+    // A saved `--agent build` would select the tool-enabled agent; `--effort` is
+    // not an `opencode run` flag at all.
+    expect(config.args).not.toContain('build');
+    expect(config.args).not.toContain('--effort');
+  });
+
   it('fails closed for the no-tool gate on transports and vendors with no maintained recipe', () => {
     // An HTTP api provider has no binary to spawn and no enforced argv.
     expect(publicReviewPosturesForProvider({ ...codex, type: 'api' })).toEqual([]);
-    // opencode/kimi/cursor have no maintained no-tool recipe, so they can run
-    // only the actions stage. An unknown command must never inherit claude's
-    // always-true fallback row for the gate either.
+    // A namespace-less opencode record, and kimi/cursor, have no maintained
+    // no-tool recipe, so they can run only the actions stage. An unknown command
+    // must never inherit claude's always-true fallback row for the gate either.
     expect(publicReviewPosturesForProvider({ id: 'opencode-tui', type: 'tui', command: 'opencode' })).toEqual([PUBLIC_REVIEW_ACTIONS_POSTURE]);
     expect(publicReviewPosturesForProvider({ id: 'custom', type: 'cli', command: 'custom-agent' })).toEqual([PUBLIC_REVIEW_ACTIONS_POSTURE]);
     expect(supportsPublicReviewProvider({ id: 'kimi', type: 'cli', command: 'kimi' })).toBe(false);

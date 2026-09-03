@@ -51,7 +51,10 @@
  * cursor.js / codex.js): imports only the vendor files above, providerModels.js,
  * and node builtins, so it stays importable from the standalone autofixer
  * process (which pulls in cliProviderArgs.js and must NOT drag in the AI
- * toolkit / data layer).
+ * toolkit / data layer). That is load-bearing, not cosmetic: reaching into
+ * opencodeConfig.js for the OpenCode public-review agent name pulled ports.js
+ * in behind it and broke a suite that partially mocks it — which is why that
+ * constant lives in providerModels.js beside its siblings.
  */
 
 import {
@@ -68,6 +71,9 @@ import {
   buildEffortArgs,
   isOpencodeCommand,
   prefixOpencodeModel,
+  localRuntimeNamespace,
+  opencodeProviderIsLocalOnly,
+  OPENCODE_PUBLIC_REVIEW_AGENT,
   applyLeanClaudeArgs,
 } from './providerModels.js';
 import {
@@ -333,6 +339,57 @@ function opencodeCliArgs(baseArgs, { model, provider }) {
   return args;
 }
 
+/**
+ * An OpenCode wrapper this install can actually run the tool-free gate on.
+ * Three conditions, each closing a different way the stage would otherwise be
+ * offered and then fail — or, worse, appear to succeed:
+ *
+ *   - **an Ollama namespace.** `validatePublicReviewModel` can only probe an
+ *     Ollama catalog for the authoritative "no `tools` capability" answer, and
+ *     rejects every other local runtime with `public-review-runtime-unsupported`.
+ *     Offering MTPLX / llama.cpp / vLLM / SGLang here would put a permanently
+ *     blocking choice in the picker. (A hosted gateway is excluded by
+ *     `localRuntimeNamespace` before that.)
+ *   - **only local endpoints.** The enforcement rides in
+ *     `OPENCODE_CONFIG_CONTENT`, which `cliChildEnv.js` keeps through the
+ *     public-review env allowlist under the SAME `opencodeConfigIsLocalOnly`
+ *     rule. A provider carrying `ollamaBacked` but a relocated off-box
+ *     `baseURL` would pass a marker-only check here, then have its hardened
+ *     config stripped there — and OpenCode falls back to the user's own
+ *     `~/.config/opencode`, tools and MCP servers intact, while the gate still
+ *     reports as enforced. Sharing one predicate is what makes that
+ *     unrepresentable.
+ *   - **a spawnable binary**, as for every other vendor.
+ */
+const isLocalOpencodeProvider = (provider) => isDirectBinaryProvider(provider)
+  && isOpencodeCommand(provider?.command)
+  && localRuntimeNamespace(provider) === 'ollama'
+  && opencodeProviderIsLocalOnly(provider);
+
+/**
+ * OpenCode is the natural harness for a local Ollama model — but unlike every
+ * other vendor here it has NO read-only argv flag: its tool posture, permission
+ * block and per-model `tool_call` advertisement all live in the config. So this
+ * recipe is only half the enforcement; the other half is
+ * `hardenOpencodeConfigForNoTool` in `opencodeConfig.js`, which the same
+ * `safetyProfile` applies to `OPENCODE_CONFIG_CONTENT`.
+ *
+ * The argv is the ordinary headless one seeded with the read-only agent (the
+ * shape grok's recipe uses), so `run`/`-m` namespacing cannot drift from the
+ * normal path. Provider args are deliberately not forwarded: a saved
+ * `--agent build` would select the tool-enabled agent. There is no effort flag
+ * to add — `opencode run` has none; the level rides
+ * `agent.<name>.reasoningEffort` in the config, which the harden step copies
+ * onto this agent (see `hardenOpencodeConfigForNoTool`).
+ */
+function opencodePublicReviewSpawnArgs(provider, { effectiveModel } = {}) {
+  return {
+    command: provider?.command || 'opencode',
+    args: opencodeCliArgs(['--agent', OPENCODE_PUBLIC_REVIEW_AGENT], { model: effectiveModel, provider }),
+    stdinMode: 'prompt',
+  };
+}
+
 const OPENCODE = {
   id: 'opencode',
   idFragment: 'opencode',
@@ -343,6 +400,15 @@ const OPENCODE = {
   // matchCliProvider is absent).
   cliArgs: opencodeCliArgs,
   spawnArgs: defaultSpawnArgs(opencodeCliArgs, 'opencode'),
+  publicReview: {
+    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
+      spawnArgs: opencodePublicReviewSpawnArgs,
+      matchProvider: isLocalOpencodeProvider,
+    },
+    // No `sandboxed-actions` recipe: OpenCode ships no OS sandbox of its own,
+    // so it stays in the open-to-every-binary tier where the disposable
+    // worktree is the isolation — see `supportsPublicReviewPosture`.
+  },
 };
 
 // ─── grok ───────────────────────────────────────────────────────────────────
