@@ -395,6 +395,34 @@ $global:LASTEXITCODE = 0
 Step "restart" "done" "PortOS started"
 Write-SafeHost ""
 
+# Defense in depth (#5976): `pm2 start` exiting 0 is not proof the server came
+# back — a half-failed delete/start bracket leaves the install headless, and
+# this script is the only PortOS process still running to notice. Poll
+# /api/system/health, and on failure spend one more `pm2 start` before saying
+# so loudly. Mirrors update.sh.
+$verifyFailed = 0
+Step "verify" "running" "Verifying PortOS came back..."
+Invoke-Logged node scripts/verify-server-health.js
+if ($LASTEXITCODE -eq 0) {
+    Step "verify" "done" "PortOS is answering /api/system/health"
+} else {
+    Write-SafeHost "PortOS did not answer /api/system/health after the restart - re-running pm2 start" -ForegroundColor Yellow
+    Invoke-Logged node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs
+    $global:LASTEXITCODE = 0
+    Invoke-Logged node scripts/verify-server-health.js
+    if ($LASTEXITCODE -eq 0) {
+        Step "verify" "done" "PortOS recovered after a second pm2 start"
+        Write-SafeHost "PortOS recovered after a second pm2 start" -ForegroundColor Green
+    } else {
+        $verifyFailed = 1
+        Step "verify" "warning" "PortOS is not answering /api/system/health"
+        Write-SafeHost "PortOS is STILL not answering /api/system/health." -ForegroundColor Red
+        Write-SafeHost "    Recover with: node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs" -ForegroundColor Red
+    }
+}
+$global:LASTEXITCODE = 0
+Write-SafeHost ""
+
 # Open the dashboard in the PortOS-managed browser. Fail-soft — explicitly
 # reset $LASTEXITCODE to 0 after the call so a non-zero exit from the auto-
 # open script doesn't propagate as the script's own exit code (the update
@@ -402,9 +430,18 @@ Write-SafeHost ""
 Invoke-Logged node scripts/open-ui-in-browser.js
 $global:LASTEXITCODE = 0
 
-Write-SafeHost "===================================" -ForegroundColor Green
-Write-SafeHost "  ✅ Update Complete!" -ForegroundColor Green
-Write-SafeHost "===================================" -ForegroundColor Green
+if ($verifyFailed -eq 0) {
+    Write-SafeHost "===================================" -ForegroundColor Green
+    Write-SafeHost "  ✅ Update Complete!" -ForegroundColor Green
+    Write-SafeHost "===================================" -ForegroundColor Green
+} else {
+    # The source update finished, but the install is down. Say so where the
+    # banner would have been — a wrapper reading only the tail of the log, or
+    # this script's exit status, must not read a headless install as a clean run.
+    Write-SafeHost "===================================" -ForegroundColor Red
+    Write-SafeHost "  ⚠️  Update applied, but PortOS is DOWN" -ForegroundColor Red
+    Write-SafeHost "===================================" -ForegroundColor Red
+}
 Write-SafeHost ""
 
 # Tell the user where to open PortOS — leads with the working local URL
@@ -438,3 +475,7 @@ if ($stashedForBranch) {
     }
     Write-SafeHost "    The stash entry is at the top of 'git stash list'." -ForegroundColor Cyan
 }
+
+# Exit non-zero when the install did not come back. This script outlives the
+# server it restarts, so its status is the only signal a caller still has.
+exit $verifyFailed

@@ -358,13 +358,47 @@ run node ./node_modules/pm2/bin/pm2 save || true
 step "restart" "done" "PortOS started"
 log ""
 
+# Defense in depth (#5976): `pm2 start` exiting 0 is not proof the server came
+# back — a half-failed delete/start bracket leaves the install headless, and
+# this script is the only PortOS process still running to notice. Poll
+# /api/system/health, and on failure spend one more `pm2 start` before saying
+# so loudly. A recovery that only fires when the probe fails cannot make a
+# healthy update worse.
+verify_failed=0
+step "verify" "running" "Verifying PortOS came back..."
+if run node scripts/verify-server-health.js; then
+  step "verify" "done" "PortOS is answering /api/system/health"
+else
+  log "⚠️  PortOS did not answer /api/system/health after the restart — re-running pm2 start"
+  run node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs || true
+  if run node scripts/verify-server-health.js; then
+    step "verify" "done" "PortOS recovered after a second pm2 start"
+    log "✅ PortOS recovered after a second pm2 start"
+  else
+    verify_failed=1
+    step "verify" "warning" "PortOS is not answering /api/system/health"
+    log "❌ PortOS is STILL not answering /api/system/health."
+    log "    Recover with: node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs"
+  fi
+fi
+log ""
+
 # Open the dashboard in the PortOS-managed browser. Fail-soft — never blocks
 # the update return.
 run node scripts/open-ui-in-browser.js || true
 
-log "==================================="
-log "  ✅ Update Complete!"
-log "==================================="
+if [ "$verify_failed" -eq 0 ]; then
+  log "==================================="
+  log "  ✅ Update Complete!"
+  log "==================================="
+else
+  # The source update finished, but the install is down. Say so where the
+  # banner would have been — a wrapper reading only the tail of the log, or
+  # this script's exit status, must not read a headless install as a clean run.
+  log "==================================="
+  log "  ⚠️  Update applied, but PortOS is DOWN"
+  log "==================================="
+fi
 log ""
 
 # Tell the user where to open PortOS — leads with the working local URL
@@ -393,3 +427,7 @@ if [ -n "$stashed_for_branch" ]; then
   fi
   log "    The stash entry is at the top of 'git stash list'."
 fi
+
+# Exit non-zero when the install did not come back. This script outlives the
+# server it restarts, so its status is the only signal a caller still has.
+exit "$verify_failed"
