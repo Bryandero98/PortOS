@@ -16,6 +16,8 @@ import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
 import { readResponseJson } from '../lib/readResponseJson.js'
 import { commandExists } from '../lib/commandExists.js'
 import { extractJson } from '../lib/jsonExtract.js'
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js'
+import { normalizeOpenAiBaseUrl } from '../lib/localProviderRuntime.js'
 import {
   LOCAL_LLM_REVIEWERS,
   DEFAULT_REVIEWERS,
@@ -387,19 +389,45 @@ async function sendChatCompletion(baseUrl, { model, messages, timeoutMs }, effor
   return { ok: true, response }
 }
 
-async function runToolFreeLocalCompletion({ backend, model, messages, effort, timeoutMs, baseUrl: requestedBaseUrl = null }) {
+const SERVED_MODEL_PROBE_TIMEOUT_MS = 5_000
+
+/**
+ * The model a local reviewer runs with when the user pinned none: ask the
+ * backend what it is actually serving, and use it when the answer is
+ * unambiguous.
+ *
+ * A single-model daemon (MTPLX, llama.cpp, vLLM — and LM Studio with one model
+ * loaded) makes "which model?" a question with exactly one answer, so failing
+ * the whole review pass over an unset `<backend>Model` scalar blocks a review
+ * loop on a config field that carries no information. An MTPLX reviewer hit
+ * exactly that: the daemon was up and serving, and the pass returned no verdict
+ * because nothing had typed the model id into settings.
+ *
+ * Ambiguity is NOT resolved by guessing. Ollama lists every installed model, so
+ * a normal install answers with many — picking one would silently review with a
+ * model the user never chose (a small embedding or chat model reads a diff very
+ * differently from a coder model). Several models, none, or an unreadable
+ * listing all fall through to the "pin one" error.
+ *
+ * @returns {Promise<{model: string|null, reason: string|null}>}
+ */
+async function resolveServedModel(backend, baseUrl) {
+  // Back to the `/v1` root the probe wants, through the shared normalizer rather
+  // than a re-typed suffix — the caller collapsed it to the host root for the
+  // chat-completions path.
+  const probe = await probeOpenAiModels(normalizeOpenAiBaseUrl(baseUrl), { timeoutMs: SERVED_MODEL_PROBE_TIMEOUT_MS })
+    .catch((err) => ({ reachable: false, models: null, error: err.message }))
+  if (!probe.reachable) return { model: null, reason: `${backend} is not reachable (${probe.error || 'no response'})` }
+  if (!Array.isArray(probe.models)) return { model: null, reason: `${backend} did not report which models it is serving` }
+  if (probe.models.length === 0) return { model: null, reason: `${backend} is serving no models` }
+  if (probe.models.length > 1) return { model: null, reason: `${backend} is serving ${probe.models.length} models, so there is no unambiguous default` }
+  return { model: probe.models[0], reason: null }
+}
+
+async function runToolFreeLocalCompletion({ backend, model: pinnedModel, messages, effort, timeoutMs, baseUrl: requestedBaseUrl = null }) {
   if (!isLocalLlmReviewer(backend)) {
     return { ok: false, error: `Unsupported reviewer backend: ${backend}` }
   }
-  if (!model || typeof model !== 'string') {
-    return { ok: false, error: `No model configured for ${backend} reviewer — set one on the Settings → Code Reviewers page.` }
-  }
-
-  // Probe only when there is actually a level to drop — an unpinned effort
-  // sends no field either way, so a capability round-trip would buy nothing.
-  const requestedEffort = normalizeReviewerEffort(effort, backend) || null
-  let effortUnsupported = requestedEffort ? await modelRejectsThinking(backend, model) : false
-  let resolvedEffort = effortUnsupported ? null : requestedEffort
 
   // Local runtime records are normalized to the OpenAI `/v1` root, while the
   // legacy backend managers return the host root. Keep both forms compatible
@@ -407,6 +435,27 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
   const baseUrl = String(requestedBaseUrl || await BACKEND_BASE_URLS[backend]())
     .replace(/\/+$/, '')
     .replace(/\/v\d+$/i, '')
+
+  // An unpinned model is recoverable when the backend serves exactly one — see
+  // `resolveServedModel`. Resolved BEFORE the effort probe below, which is keyed
+  // by `backend:model`.
+  let model = pinnedModel
+  if (!model || typeof model !== 'string') {
+    const served = await resolveServedModel(backend, baseUrl)
+    if (!served.model) {
+      // `code` so a caller can tell a config gap from a reviewer that ran and
+      // failed (a 4xx vs the 502 bucket) without matching on the message text.
+      return { ok: false, code: 'NO_MODEL', error: `No model configured for ${backend} reviewer and ${served.reason} — set one on the Settings → Code Reviewers page.` }
+    }
+    model = served.model
+    console.log(`🔍 No ${backend} reviewer model configured — using the only model it serves: ${model}`)
+  }
+
+  // Probe only when there is actually a level to drop — an unpinned effort
+  // sends no field either way, so a capability round-trip would buy nothing.
+  const requestedEffort = normalizeReviewerEffort(effort, backend) || null
+  let effortUnsupported = requestedEffort ? await modelRejectsThinking(backend, model) : false
+  let resolvedEffort = effortUnsupported ? null : requestedEffort
 
   let attempt = await sendChatCompletion(baseUrl, { model, messages, timeoutMs }, resolvedEffort)
 
@@ -448,7 +497,10 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
  *
  * @param {Object} opts
  * @param {'lmstudio'|'ollama'|'mtplx'} opts.backend
- * @param {string} opts.model - Installed model id (e.g. `qwen2.5-coder:7b`).
+ * @param {string} [opts.model] - Installed model id (e.g. `qwen2.5-coder:7b`).
+ *   Optional: when unset, the model the backend is serving is used, provided it
+ *   is serving exactly one (a single-model daemon like MTPLX). Several, none, or
+ *   an unreadable listing is an error rather than a guess.
  * @param {string} opts.diff - Unified diff text to review.
  * @param {string} [opts.effort] - Reasoning effort (`low`/`medium`/`high`), sent
  *   as the OpenAI-compatible `reasoning_effort` field. Omitted from the body
@@ -468,9 +520,9 @@ export async function runLocalCodeReview({ backend, model, diff, effort = null, 
   if (!isLocalLlmReviewer(backend)) {
     return { ok: false, error: `Unsupported reviewer backend: ${backend}` }
   }
-  if (!model || typeof model !== 'string') {
-    return { ok: false, error: `No model configured for ${backend} reviewer — set one on the Settings → Code Reviewers page.` }
-  }
+  // No model pre-check here: an unpinned model is resolved from what the backend
+  // is serving inside `runToolFreeLocalCompletion`, and a second copy of the
+  // guard would reject the recoverable case before that ever ran.
   const trimmedDiff = typeof diff === 'string' ? diff.trim() : ''
   if (!trimmedDiff) {
     return { ok: false, error: 'Empty diff — nothing to review.' }
@@ -499,7 +551,9 @@ export async function runLocalCodeReview({ backend, model, diff, effort = null, 
   return {
     ok: true,
     backend,
-    model,
+    // The model the pass actually ran with, which is not the argument when it
+    // was unpinned and resolved from the backend's own listing.
+    model: result.model,
     effort: result.effort,
     ...(result.effortUnsupported ? { effortUnsupported: true } : {}),
     findings: result.content,
@@ -550,17 +604,20 @@ export async function runLocalClaimCommentReview({ backend, model, comments, cur
     ],
   })
   if (!result.ok) return result
+  // The model the pass actually ran with, which is not the argument when it was
+  // unpinned and resolved from the backend's own listing.
+  const usedModel = result.model
 
   const { value: parsed } = extractJson(result.content, {
     shapePredicate: (value) => value !== null && typeof value === 'object' && !Array.isArray(value),
   })
   if (parsed === undefined) {
-    return { ok: false, backend, model, error: `${backend} returned malformed claim-comment JSON.` }
+    return { ok: false, backend, model: usedModel, error: `${backend} returned malformed claim-comment JSON.` }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
     || (parsed.claimant !== null && typeof parsed.claimant !== 'string')
     || typeof parsed.suspicious !== 'boolean') {
-    return { ok: false, backend, model, error: `${backend} returned an invalid claim-comment verdict.` }
+    return { ok: false, backend, model: usedModel, error: `${backend} returned an invalid claim-comment verdict.` }
   }
 
   const claimant = parsed.claimant
@@ -570,13 +627,13 @@ export async function runLocalClaimCommentReview({ backend, model, comments, cur
       && comment.login !== String(currentUser || '')
   ))
   if (!claimantIsEligibleInput) {
-    return { ok: false, backend, model, error: `${backend} returned a claimant not present as an eligible human commenter.` }
+    return { ok: false, backend, model: usedModel, error: `${backend} returned a claimant not present as an eligible human commenter.` }
   }
 
   return {
     ok: true,
     backend,
-    model,
+    model: usedModel,
     effort: result.effort,
     ...(result.effortUnsupported ? { effortUnsupported: true } : {}),
     claimant,

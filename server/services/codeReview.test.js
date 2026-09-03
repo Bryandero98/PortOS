@@ -21,6 +21,10 @@ vi.mock('./providers.js', () => ({
   getActiveProvider: () => Promise.resolve(mockedActiveProvider.current),
 }))
 vi.mock('./lmStudioManager.js', () => ({ getBaseUrl: () => 'http://localhost:1234' }))
+// MTPLX's endpoint is resolved through a DYNAMIC import in the SUT (its manager
+// drags in the managed-daemon/PM2 graph), and it reports the OpenAI `/v1` root
+// rather than the host root — both halves of what the reviewer has to tolerate.
+vi.mock('./mtplxServerManager.js', () => ({ getMtplxServerEndpoint: () => Promise.resolve('http://127.0.0.1:8000/v1') }))
 // Ollama's per-model `/api/show` capability probe, which the reviewer now
 // consults BEFORE attaching `reasoning_effort`. Default `null` = "probe could
 // not answer", the sentinel that keeps a test on the reactive 400-retry path;
@@ -478,10 +482,67 @@ describe('codeReview helpers', () => {
       expect(r.error).toMatch(/Unsupported reviewer backend/)
     })
 
-    it('requires a model id', async () => {
-      const r = await runLocalCodeReview({ backend: 'lmstudio', model: '', diff: 'a' })
-      expect(r.ok).toBe(false)
-      expect(r.error).toMatch(/No model configured/)
+    describe('with no model pinned', () => {
+      // A single-model daemon (MTPLX, llama.cpp — or LM Studio with one model
+      // loaded) answers "which model?" unambiguously, so an unset
+      // `<backend>Model` scalar must not fail the whole review pass: an mtplx
+      // review loop was blocked with "no verdict" while its daemon was up and
+      // serving, purely because nothing had typed the id into settings.
+      const modelListing = (ids) => mockJsonResponse({ data: ids.map((id) => ({ id })) })
+
+      it('reviews with the only model the backend reports serving', async () => {
+        global.fetch = vi.fn()
+          .mockResolvedValueOnce(modelListing(['mlx-community/example-coder']))
+          .mockResolvedValueOnce(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
+
+        const r = await runLocalCodeReview({ backend: 'mtplx', diff: 'diff --git a b' })
+
+        expect(r.ok).toBe(true)
+        // The resolved id is reported back, not the (absent) argument — callers
+        // record which model produced the verdict.
+        expect(r.model).toBe('mlx-community/example-coder')
+        const [probeUrl] = global.fetch.mock.calls[0]
+        // MTPLX's manager reports the `/v1` root; the probe must not double it.
+        expect(probeUrl).toBe('http://127.0.0.1:8000/v1/models')
+        const [chatUrl, chatInit] = global.fetch.mock.calls[1]
+        expect(chatUrl).toBe('http://127.0.0.1:8000/v1/chat/completions')
+        expect(JSON.parse(chatInit.body).model).toBe('mlx-community/example-coder')
+      })
+
+      it('refuses to guess when the backend serves several models', async () => {
+        // Ollama lists every INSTALLED model, so picking one would silently
+        // review with a model the user never chose.
+        global.fetch = vi.fn().mockResolvedValue(modelListing(['qwen2.5-coder:7b', 'nomic-embed-text']))
+
+        const r = await runLocalCodeReview({ backend: 'ollama', diff: 'diff --git a b' })
+
+        expect(r.ok).toBe(false)
+        expect(r.code).toBe('NO_MODEL')
+        expect(r.error).toMatch(/serving 2 models/)
+        // Probe only — no review request went out on an unresolved model.
+        expect(global.fetch).toHaveBeenCalledTimes(1)
+      })
+
+      it('names an unreachable backend rather than reporting a bare config gap', async () => {
+        global.fetch = vi.fn().mockRejectedValue(Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' }))
+
+        const r = await runLocalCodeReview({ backend: 'mtplx', diff: 'diff --git a b' })
+
+        expect(r.ok).toBe(false)
+        expect(r.code).toBe('NO_MODEL')
+        expect(r.error).toMatch(/not reachable/)
+      })
+
+      it('still asks for a pin when the backend is up and serving nothing', async () => {
+        global.fetch = vi.fn().mockResolvedValue(modelListing([]))
+
+        const r = await runLocalCodeReview({ backend: 'lmstudio', model: '', diff: 'diff --git a b' })
+
+        expect(r.ok).toBe(false)
+        expect(r.code).toBe('NO_MODEL')
+        expect(r.error).toMatch(/No model configured/)
+        expect(r.error).toMatch(/Code Reviewers/)
+      })
     })
 
     it('requires a non-empty diff', async () => {

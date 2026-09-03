@@ -1878,13 +1878,35 @@ describe('cosTaskStore.resolveTaskChallengeWithRecheck (#2471)', () => {
     expect(mock.reviewCalls[0].model).toBe('coder-7b');
   });
 
-  it('returns RECHECK_NO_MODEL (config problem, not 502) when no model is configured', async () => {
+  // The model read is keyed off `<backend>Model`, not an ollama-or-lmstudio
+  // ternary — that ternary handed a third local backend LM STUDIO's model id.
+  it("reads the re-check model from the challenged backend's own scalar", async () => {
+    const id = await seedChallenged('mtplx');
+    mock.reviewDefaults = { lmstudioModel: 'wrong-model', mtplxModel: 'mtplx-model' };
+    mock.review = { ok: true, model: 'mtplx-model', findings: 'No findings.' };
+    await resolveTaskChallengeWithRecheck(id, { recheck: { backend: 'mtplx', diff: 'diff' } });
+    expect(mock.reviewCalls[0].model).toBe('mtplx-model');
+  });
+
+  it('leaves an unconfigured model to the reviewer, which resolves it from the backend', async () => {
     const id = await seedChallenged();
     mock.reviewDefaults = { lmstudioModel: null, ollamaModel: null };
+    mock.review = { ok: true, model: 'served-by-the-daemon', findings: 'No findings.' };
+    const resolved = await resolveTaskChallengeWithRecheck(id, { recheck: { backend: 'ollama', diff: 'diff' } });
+    expect(mock.reviewCalls[0].model).toBeNull();
+    expect(resolved.status).toBe('pending');
+    // The record names the model that actually produced the verdict, not `null`.
+    expect(resolved.metadata.challengeResolution.note).toContain('served-by-the-daemon');
+  });
+
+  it('returns RECHECK_NO_MODEL (config problem, not 502) when nothing can name a model', async () => {
+    const id = await seedChallenged();
+    mock.reviewDefaults = { lmstudioModel: null, ollamaModel: null };
+    mock.review = { ok: false, code: 'NO_MODEL', error: 'No model configured for ollama reviewer and ollama is serving no models — set one on the Settings → Code Reviewers page.' };
     const result = await resolveTaskChallengeWithRecheck(id, { recheck: { backend: 'ollama', diff: 'diff' } });
     expect(result.code).toBe('RECHECK_NO_MODEL');
-    // No reviewer call attempted without a model.
-    expect(mock.reviewCalls.length).toBe(0);
+    // Surfaced verbatim: the reviewer's message says WHICH gap it is.
+    expect(result.error).toMatch(/No model configured/);
   });
 
   it('returns RECHECK_FAILED when the reviewer is unreachable', async () => {
