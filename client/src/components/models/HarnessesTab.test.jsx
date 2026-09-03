@@ -128,6 +128,10 @@ describe('HarnessesTab', () => {
     // have changed what npm has published.
     await waitFor(() => expect(getHarnesses).toHaveBeenCalledTimes(2));
     expect(getHarnesses).toHaveBeenLastCalledWith(expect.objectContaining({ fresh: false }));
+    // The modal's terminal frame IS the result ("…is up to date (1.19.0)").
+    // Unmounting it on completion makes a removal and a no-op update look
+    // identical — a modal that blinks shut with nothing said.
+    expect(screen.getByTestId('install-modal')).toBeInTheDocument();
   });
 
   it('renders a refusal reason verbatim instead of a generic failure', async () => {

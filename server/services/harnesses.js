@@ -33,7 +33,7 @@ import { prepareCliSpawn } from '../lib/bufferedSpawn.js';
 import { commandOutput } from '../lib/commandExists.js';
 import { compareHarnessVersions, parseHarnessModels, parseNpmLatestVersion } from '../lib/harnessOutput.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
-import { getOpencodeLocalProviderNamespace } from '../lib/providerModels.js';
+import { getOpencodeLocalProviderNamespace, isConfiguredDefaultModel } from '../lib/providerModels.js';
 import { providerRuntimeKey } from '../lib/providerPrerequisites.js';
 import { createStaleWhileRevalidate } from '../lib/staleWhileRevalidate.js';
 import * as providerService from './providers.js';
@@ -117,7 +117,33 @@ export function __resetLatestVersionCache() {
  * is silent in the worst direction: a refresh replacing a working `models` list
  * with ids that record's own backend cannot resolve.
  */
-export const usesHarnessCatalog = (provider) => !getOpencodeLocalProviderNamespace(provider);
+export const usesHarnessCatalog = (provider) =>
+  !getOpencodeLocalProviderNamespace(provider) && !declaresOwnOpencodeProvider(provider);
+
+/**
+ * Does this record hand-declare its own OpenCode provider entries?
+ *
+ * The `*Backed` / `gatewayBacked` markers above are only ever written by
+ * PortOS's own editor, so a user who hand-wrote an `OPENCODE_CONFIG_CONTENT`
+ * with `provider: { myco: … }` and a model list scoped to it is invisible to
+ * them — and one Refresh click would replace that curated list with the
+ * harness's own catalog, which their config cannot resolve. A declared provider
+ * entry IS the backend marker for those records.
+ *
+ * The seeded Zen wrappers ship `{"permission":"allow"}` with no `provider` key,
+ * so they stay in the class. An unparseable config declares nothing.
+ */
+function declaresOwnOpencodeProvider(provider) {
+  const stored = provider?.envVars?.OPENCODE_CONFIG_CONTENT;
+  if (typeof stored !== 'string' || stored === '') return false;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return false; // unparseable — it declares nothing OpenCode can read either
+  }
+  return Object.keys(parsed?.provider || {}).length > 0;
+}
 
 /**
  * Every provider record this harness's runtime row actually answers for.
@@ -143,11 +169,13 @@ const providersForHarness = (providers, runtime) => {
  * account name.
  */
 export async function listHarnesses({ fresh = false, run = commandOutput, ...probeDeps } = {}) {
-  const [statuses, data] = await Promise.all([
+  const [statuses, providers] = await Promise.all([
     getProviderRuntimeStatuses({ ...probeDeps, fresh }),
-    providerService.getAllProviders(),
+    // `listProviders()`, not `getAllProviders()`: that one resolves an ENVELOPE
+    // (`{ activeProvider, providers: [...] }`), and reaching past it by hand is
+    // the mistake its own docblock records.
+    providerService.listProviders(),
   ]);
-  const providers = Object.values(data?.providers || {});
 
   return Promise.all(PROVIDER_RUNTIMES.map(async (runtime) => {
     const status = statuses[runtime.id] || {};
@@ -231,18 +259,24 @@ export async function refreshHarnessModels(id, { run = commandOutput, ...probeDe
     };
   }
 
-  const data = await providerService.getAllProviders();
-  const targets = providersForHarness(Object.values(data?.providers || {}), runtime).filter(usesHarnessCatalog);
+  const targets = providersForHarness(await providerService.listProviders(), runtime).filter(usesHarnessCatalog);
   const updated = [];
   for (const provider of targets) {
-    // A stored default that the harness no longer lists would leave the record
+    // A `*-configured-default` sentinel is NOT a model the vendor will ever
+    // print — it is the "send no --model, let the CLI use its own default"
+    // marker (`resolveCliModel` maps it to null). Dropping it would silently
+    // repin an agy/grok wrapper onto a concrete model AND remove the option
+    // from the editor's picker, which renders it from this same list. So it
+    // survives the rewrite rather than reading as an orphaned id.
+    const next = [...(provider.models || []).filter(isConfiguredDefaultModel), ...models];
+    // A stored default the harness no longer lists would leave the record
     // pinned to a model its own picker cannot show. Keep it when it survived
-    // the refresh, otherwise fall to the first id the vendor listed (vendors
-    // list newest first).
-    const defaultModel = models.includes(provider.defaultModel) ? provider.defaultModel : models[0];
+    // the refresh, otherwise fall to the first id (sentinel first when there
+    // is one, then whatever the vendor listed newest-first).
+    const defaultModel = next.includes(provider.defaultModel) ? provider.defaultModel : next[0];
     // Serialized rather than batched: each write is a read-modify-write of the
     // same providers.json, and Promise.all would have them clobber each other.
-    await providerService.updateProvider(provider.id, { models, defaultModel });
+    await providerService.updateProvider(provider.id, { models: next, defaultModel });
     updated.push(provider.id);
   }
   console.log(`🔄 ${runtime.label}: ${models.length} models → ${updated.length} provider(s)`);

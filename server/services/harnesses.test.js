@@ -5,7 +5,11 @@ const npmGlobalBin = vi.hoisted(() => ({ adoptNpmGlobalBinDir: vi.fn(async () =>
 vi.mock('../lib/npmGlobalBin.js', () => npmGlobalBin);
 
 const providerService = vi.hoisted(() => ({
-  getAllProviders: vi.fn(),
+  // `listProviders()` resolves the records as an ARRAY — the envelope
+  // (`{ activeProvider, providers: [...] }`) is `getAllProviders`'s shape, and
+  // mocking the wrong one is exactly how a caller's `Array.isArray` guard
+  // silently yields an empty list.
+  listProviders: vi.fn(),
   updateProvider: vi.fn(async () => ({})),
 }));
 vi.mock('./providers.js', () => providerService);
@@ -38,7 +42,7 @@ const providers = {
 beforeEach(() => {
   __resetRuntimeStatusCache();
   __resetLatestVersionCache();
-  providerService.getAllProviders.mockResolvedValue({ providers });
+  providerService.listProviders.mockResolvedValue(Object.values(providers));
   providerService.updateProvider.mockClear();
 });
 
@@ -88,6 +92,27 @@ describe('usesHarnessCatalog', () => {
   it('reads the legacy per-gateway boolean, so old records need no migration', () => {
     expect(usesHarnessCatalog({ command: 'opencode', orcarouterBacked: true })).toBe(false);
   });
+
+  // The `*Backed` markers are only ever written by PortOS's own editor, so a
+  // hand-written config declaring its own provider entry is invisible to them —
+  // and a refresh would replace its curated list with ids that config cannot
+  // resolve. A declared provider entry IS the backend marker for those records.
+  it('is false for a record that hand-declares its own OpenCode provider entry', () => {
+    expect(usesHarnessCatalog({
+      command: 'opencode',
+      envVars: { OPENCODE_CONFIG_CONTENT: '{"provider":{"myco":{"npm":"@ai-sdk/openai-compatible"}}}' },
+    })).toBe(false);
+  });
+
+  it('stays true for the seeded Zen shape and for an unparseable config', () => {
+    // The seeds ship a posture and nothing else.
+    expect(usesHarnessCatalog({
+      command: 'opencode',
+      envVars: { OPENCODE_CONFIG_CONTENT: '{"permission":"allow"}' },
+    })).toBe(true);
+    // OpenCode cannot read a broken config either, so it declares nothing.
+    expect(usesHarnessCatalog({ command: 'opencode', envVars: { OPENCODE_CONFIG_CONTENT: '{not json' } })).toBe(true);
+  });
 });
 
 describe('listHarnesses', () => {
@@ -122,13 +147,11 @@ describe('listHarnesses', () => {
   // its own PATH. Attributing those here would inflate the removal warning and
   // let a refresh rewrite them from a catalog a different binary printed.
   it('does not claim a provider that pins its own path or PATH', async () => {
-    providerService.getAllProviders.mockResolvedValue({
-      providers: {
-        pathed: { id: 'pathed', type: 'cli', command: '/opt/tools/opencode', name: 'Pathed' },
-        envd: { id: 'envd', type: 'cli', command: 'opencode', name: 'Own PATH', envVars: { PATH: '/opt/tools' } },
-        plain: { id: 'plain', type: 'cli', command: 'opencode', name: 'Plain' },
-      },
-    });
+    providerService.listProviders.mockResolvedValue(Object.values({
+      pathed: { id: 'pathed', type: 'cli', command: '/opt/tools/opencode', name: 'Pathed' },
+      envd: { id: 'envd', type: 'cli', command: 'opencode', name: 'Own PATH', envVars: { PATH: '/opt/tools' } },
+      plain: { id: 'plain', type: 'cli', command: 'opencode', name: 'Plain' },
+    }));
 
     const opencode = (await listHarnesses(deps())).find((row) => row.id === 'opencode');
 
@@ -164,12 +187,10 @@ describe('refreshHarnessModels', () => {
 
   it('repoints a default model the harness no longer lists, and keeps one it does', async () => {
     const run = vi.fn(async (command, args) => (args[0] === 'models' ? OPENCODE_MODELS : '1.18.27'));
-    providerService.getAllProviders.mockResolvedValue({
-      providers: {
-        stale: { id: 'stale', type: 'cli', command: 'opencode', models: [], defaultModel: 'opencode/gone' },
-        kept: { id: 'kept', type: 'cli', command: 'opencode', models: [], defaultModel: 'opencode/mimo-v2.5-free' },
-      },
-    });
+    providerService.listProviders.mockResolvedValue(Object.values({
+      stale: { id: 'stale', type: 'cli', command: 'opencode', models: [], defaultModel: 'opencode/gone' },
+      kept: { id: 'kept', type: 'cli', command: 'opencode', models: [], defaultModel: 'opencode/mimo-v2.5-free' },
+    }));
 
     await refreshHarnessModels('opencode', { run, ...found });
 
@@ -178,6 +199,31 @@ describe('refreshHarnessModels', () => {
     // own picker no longer shows.
     expect(patches.stale.defaultModel).toBe('opencode/big-pickle');
     expect(patches.kept.defaultModel).toBe('opencode/mimo-v2.5-free');
+  });
+
+  // A `*-configured-default` is the "send no --model" marker, not a model the
+  // vendor will ever print. Dropping it silently repins the wrapper onto a
+  // concrete model AND removes the option from the editor's picker, which is
+  // rendered from this same list — so the refresh would be unrecoverable in the UI.
+  it('preserves a configured-default sentinel the harness will never list', async () => {
+    const run = vi.fn(async (command, args) => (args[0] === 'models'
+      ? 'Available models:\n  * grok-4.6 (default)\n  - grok-4.5\n'
+      : 'grok 1.0.13'));
+    providerService.listProviders.mockResolvedValue([{
+      id: 'grok-cli',
+      type: 'cli',
+      command: 'grok',
+      models: ['grok-configured-default'],
+      defaultModel: 'grok-configured-default',
+    }]);
+
+    const result = await refreshHarnessModels('grok', { run, ...found });
+
+    expect(result.ok).toBe(true);
+    const [, patch] = providerService.updateProvider.mock.calls[0];
+    expect(patch.models).toEqual(['grok-configured-default', 'grok-4.6', 'grok-4.5']);
+    // The pin survives, so the provider keeps sending no `--model` at all.
+    expect(patch.defaultModel).toBe('grok-configured-default');
   });
 
   it('refuses an empty probe rather than blanking every picker', async () => {

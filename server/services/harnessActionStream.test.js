@@ -73,7 +73,7 @@ beforeEach(() => {
 });
 
 describe('streamHarnessAction — update', () => {
-  it('runs the vendor updater and reports the version it landed on', async () => {
+  it('reports the version transition the update actually produced', async () => {
     installer.getProviderRuntimeStatus
       .mockResolvedValueOnce(statusOf('opencode'))
       .mockResolvedValueOnce(statusOf('opencode', { version: '1.19.0' }));
@@ -81,8 +81,28 @@ describe('streamHarnessAction — update', () => {
     const response = await runAction('runtime=opencode&action=update', { stdout: 'upgraded\n' });
 
     expect(installer.spawnRuntimeInstaller).toHaveBeenCalledWith('opencode', { action: 'update' });
-    expect(response.text).toContain('OpenCode CLI is up to date (1.19.0).');
+    expect(response.text).toContain('OpenCode CLI updated: 1.18.27 → 1.19.0.');
     expect(response.text).toContain('upgraded');
+  });
+
+  // "Up to date" asserted from an exit code alone contradicts the row behind the
+  // modal, which still shows Update-available against the published version. Say
+  // what the version did instead.
+  it('does not claim currency when the version did not move', async () => {
+    installer.getProviderRuntimeStatus.mockResolvedValue(statusOf('opencode'));
+
+    const response = await runAction('runtime=opencode&action=update');
+
+    expect(response.text).toContain('left it on 1.18.27');
+    expect(response.text).not.toContain('up to date');
+  });
+
+  it('says so when it could not read a version to compare', async () => {
+    installer.getProviderRuntimeStatus.mockResolvedValue(statusOf('opencode', { version: null }));
+
+    const response = await runAction('runtime=opencode&action=update');
+
+    expect(response.text).toContain('could not read a version to compare');
   });
 
   // An install short-circuits on "already there"; an update must NOT — that is

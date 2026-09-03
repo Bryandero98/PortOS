@@ -213,7 +213,7 @@ export async function streamHarnessAction(req, res, { runtime: runtimeId, action
       // availability seconds ago, and re-reading it would report the state the
       // action just changed.
       const after = await getProviderRuntimeStatus(row.id, { fresh: true });
-      emit(terminalFrame({ action, code, status: after, copy, command: row.command }));
+      emit(terminalFrame({ action, code, status: after, copy, command: row.command, before: status.version }));
       safeEnd();
     } catch (err) {
       // Child-process completion runs outside Express's request lifecycle.
@@ -228,7 +228,7 @@ export async function streamHarnessAction(req, res, { runtime: runtimeId, action
  * The one terminal SSE frame an action ends on, decided from the exit code AND
  * the re-probed availability.
  */
-function terminalFrame({ action, code, status, copy, command }) {
+function terminalFrame({ action, code, status, copy, command, before }) {
   if (code !== 0) {
     return { type: 'error', message: `${status.label} ${copy.noun} exited with code ${code}.` };
   }
@@ -241,7 +241,18 @@ function terminalFrame({ action, code, status, copy, command }) {
     return { type: 'error', message: `The ${copy.noun} finished, but PortOS still cannot run \`${command}\`. npm wrote it to a bin directory that is not on this machine's PATH — run \`npm prefix -g\` in a terminal, add that directory (plus \`/bin\` off Windows) to your PATH, then restart PortOS.` };
   }
   const version = status.version ? ` (${status.version})` : '';
-  return action === 'update'
-    ? { type: 'complete', message: `${status.label} is up to date${version}.` }
-    : { type: 'complete', message: `${status.label} is installed and available to PortOS${version}.` };
+  if (action !== 'update') {
+    return { type: 'complete', message: `${status.label} is installed and available to PortOS${version}.` };
+  }
+  // Report what the version actually DID, never "up to date" from an exit code
+  // alone. A vendor updater that exits 0 without touching the copy on PATH would
+  // otherwise claim currency in the modal while the row behind it still shows
+  // the Update-available badge against the published version — two contradictory
+  // claims on one screen. A version we could not read on either side says so.
+  if (!status.version || !before) {
+    return { type: 'complete', message: `${status.label} updater finished. PortOS could not read a version to compare.` };
+  }
+  return status.version === before
+    ? { type: 'complete', message: `${status.label} updater finished and left it on ${before} — that is the newest ${command} can reach itself. If a newer release exists, install it the way this copy was installed.` }
+    : { type: 'complete', message: `${status.label} updated: ${before} → ${status.version}.` };
 }

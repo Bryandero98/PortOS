@@ -200,7 +200,9 @@ export default function HarnessesTab() {
   const [error, setError] = useState(null);
   // `{ harness, action }` while the SSE modal is open; null = closed.
   const [pendingAction, setPendingAction] = useState(null);
-  const [refreshingId, setRefreshingId] = useState(null);
+  // A SET, not one slot: two rows can refresh at once, and a single slot lets
+  // the first completion re-enable the second row's button mid-flight.
+  const [refreshingIds, setRefreshingIds] = useState(() => new Set());
   // Keyed by harness id so one row's outcome cannot overwrite another's.
   const [refreshResults, setRefreshResults] = useState({});
 
@@ -219,7 +221,13 @@ export default function HarnessesTab() {
   useEffect(() => { load(); }, [load]);
 
   const handleRefreshModels = async (harness) => {
-    setRefreshingId(harness.id);
+    setRefreshingIds((prev) => new Set(prev).add(harness.id));
+    // Drop any banner from this row's previous refresh, so a stale outcome
+    // cannot sit under the row while a new probe is running.
+    setRefreshResults((prev) => {
+      const { [harness.id]: _dropped, ...rest } = prev;
+      return rest;
+    });
     const result = await refreshHarnessModels(harness.id, { silent: true })
       .then((data) => ({
         ok: true,
@@ -227,7 +235,11 @@ export default function HarnessesTab() {
       }))
       .catch((err) => ({ ok: false, message: err?.message || 'Could not read the model list.' }));
     setRefreshResults((prev) => ({ ...prev, [harness.id]: result }));
-    setRefreshingId(null);
+    setRefreshingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(harness.id);
+      return next;
+    });
     // Deliberately no reload: the refresh writes `models` and `defaultModel`,
     // and this page shows neither — the banner above already reports what
     // changed. Re-reading would cost a probe sweep to render the same rows.
@@ -279,7 +291,7 @@ export default function HarnessesTab() {
               harness={harness}
               onAction={(target, action) => setPendingAction({ harness: target, action })}
               onRefreshModels={handleRefreshModels}
-              refreshing={refreshingId === harness.id}
+              refreshing={refreshingIds.has(harness.id)}
               refreshResult={refreshResults[harness.id]}
             />
           ))}
@@ -298,12 +310,18 @@ export default function HarnessesTab() {
         params={pendingAction ? { action: pendingAction.action } : undefined}
         streamMethod="POST"
         onClose={() => setPendingAction(null)}
+        // Re-read the list, but LEAVE THE MODAL OPEN — its terminal frame is the
+        // result ("…is up to date (1.19.0)", "…has been removed"), and clearing
+        // `pendingAction` here unmounts it the instant that frame arrives, so a
+        // removal and a no-op update look identical: a modal that blinks shut.
+        // The user closes it, matching every other caller of this modal.
+        //
         // `load()`, not `load({ fresh: true })`: the stream already re-probed the
         // acted-on harness with `fresh` on the server and wrote that into the
         // status cache, and clicking Install cannot have changed what npm has
         // published — a fresh read here would spend five registry round trips to
         // render identical numbers.
-        onComplete={() => { setPendingAction(null); load(); }}
+        onComplete={() => load()}
       />
     </div>
   );
