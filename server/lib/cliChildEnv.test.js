@@ -549,7 +549,31 @@ describe('buildCliChildEnv — per-call-site composition', () => {
     });
   });
 
+  it('cos-runner/index.js: an auth-only descriptor never regenerates a layer over the POSTed delta', () => {
+    // The full two-hop shape every runner-owned spawn really takes: PortOS
+    // composes the delta from the FULL provider record, then POSTs it alongside
+    // `cliProviderAuthDescriptor`'s identity-only view. Regenerating any layer
+    // from that partial view lands ABOVE `before`, so it replaces the complete
+    // value with a worse one — the OpenCode config rebuilt with an empty models
+    // map, which stops `--model ollama/<id>` resolving and drops the run onto
+    // OpenCode's own catalog. Asserted on the composed env, not on one key, so
+    // a future generative layer added to composeProviderEnv is covered too.
+    const envVars = composeProviderEnv({ provider: OLLAMA_OPENCODE, model: 'qwen3-coder:30b' });
+    const env = buildCliChildEnv({
+      baseEnv: { PATH: '/usr/bin' },
+      before: envVars,
+      provider: cliProviderAuthDescriptor(OLLAMA_OPENCODE),
+      cwd: '/workspace',
+    });
+
+    expect(declaredModels(env)).toContain('qwen3-coder:30b');
+    expect(env).toEqual({ ...envVars, PATH: '/usr/bin', PWD: '/workspace' });
+  });
+
   it('retains ambient auth for the selected provider when the runner supplies its descriptor', () => {
+    // The descriptor's other half: inert for composition (above), but still the
+    // input `buildSafeCliBaseEnv` picks the ambient-auth allowlist from — which
+    // is the whole reason the runner is POSTed one.
     const provider = { id: 'codex', command: 'codex', envVars: { OPENAI_API_KEY: 'not serialized' } };
     const env = buildCliChildEnv({
       baseEnv: { PATH: '/usr/bin', OPENAI_API_KEY: 'ambient-key' },
