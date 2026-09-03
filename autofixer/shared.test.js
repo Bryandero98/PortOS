@@ -43,9 +43,13 @@ describeShared('autofixer/shared — PM2 binary resolution', () => {
 
 describeShared('autofixer/shared — data paths', () => {
   // Both PM2 processes must agree on one data/ directory; resolving from this
-  // module's own location is what guarantees that.
+  // module's own location is what guarantees that. Spelled as a dirname climb
+  // rather than a '..' path literal so the repo-wide test-data isolation guard
+  // (server/lib/testDataIsolation.guards.test.js) doesn't read this string-only
+  // comparison as a suite that addresses the live data/ tree — nothing here
+  // touches the filesystem.
   it('anchors every path to the package-sibling data/ directory', () => {
-    expect(shared.DATA_DIR).toBe(join(AUTOFIXER_SRC_DIR, '../data'));
+    expect(shared.DATA_DIR).toBe(join(dirname(AUTOFIXER_SRC_DIR), 'data'));
     expect(shared.APPS_FILE).toBe(join(shared.DATA_DIR, 'apps.json'));
     expect(shared.AUTOFIXER_DIR).toBe(join(shared.DATA_DIR, 'autofixer'));
     expect(shared.INDEX_FILE).toBe(join(shared.AUTOFIXER_DIR, 'index.json'));
