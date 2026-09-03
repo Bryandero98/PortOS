@@ -149,6 +149,11 @@ export async function handlePipelineProgression(task, agentId, success) {
   if (publicReviewPostureForProfile(nextStage.executionProfile)) {
     for (const key of ['provider', 'providerId', 'model', 'effort']) delete nextTask.metadata[key];
   }
+  // The previous stage's agent payload must not travel: `description` above IS
+  // this stage's prompt, and addTask only promotes it to `metadata.prompt` when
+  // none is set — an inherited one made every stage after the first run on the
+  // stage before it's instructions.
+  delete nextTask.metadata.prompt;
   if (nextStage.model) nextTask.metadata.model = nextStage.model;
   if (nextStage.providerId) {
     nextTask.metadata.provider = nextStage.providerId;

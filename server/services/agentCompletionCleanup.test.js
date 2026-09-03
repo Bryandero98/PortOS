@@ -90,6 +90,17 @@ describe('handlePipelineProgression', () => {
     expect(nextTask.metadata.effort).toBe('xhigh');
   });
 
+  it('does not carry the previous stage prompt into the next stage task', async () => {
+    // addTask promotes a multi-line description to metadata.prompt only when
+    // none is set, so an inherited prompt made stage 1+ run on stage 0's text.
+    const task = { id: 't', taskType: 'user', metadata: { prompt: 'stage-0 instructions\nmore', context: 'note', pipeline: runningPipeline() } };
+    await handlePipelineProgression(task, 'agent-1', true);
+    const [nextTask] = addTask.mock.calls[0];
+    expect(nextTask.metadata).not.toHaveProperty('prompt');
+    expect(nextTask.metadata.context).toBe('note');
+    expect(nextTask.description).toBe('do stage work in {appName}');
+  });
+
   it('leaves effort unset when the next stage has no effort pin', async () => {
     const task = { id: 't', taskType: 'user', metadata: { pipeline: runningPipeline() } };
     await handlePipelineProgression(task, 'agent-1', true);

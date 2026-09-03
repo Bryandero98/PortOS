@@ -281,6 +281,29 @@ describe('reconcileSplitContext', () => {
   });
 });
 
+describe('tool-free public-review stage completion', () => {
+  // The Eligibility Gate runs with every tool removed. The No-Code contract
+  // (deliver via an API call, then write the sentinel) sent the model narrating
+  // "I will now update PortOS" instead of printing the JSON envelope.
+  const gateTask = () => makeTask({
+    metadata: {
+      context: 'Security scan status: passed.', noCodeOutput: true, discardWorktree: true, openPR: false,
+      executionProfile: 'public-review-gate',
+    },
+  });
+
+  it('tells the model its reply is the deliverable and never mentions a sentinel or API action', () => {
+    const prompt = buildLightContextPrompt(gateTask(), '/repo', null, isTruthyMeta, {
+      providerId: 'claude-ollama', providerCommand: 'claude',
+    });
+    expect(prompt).toMatch(/## Completion \(Tool-Free Reasoning\)/);
+    expect(prompt).toMatch(/final message of this reply/);
+    expect(prompt).not.toMatch(/## Completion \(No Code Output\)/);
+    expect(prompt).not.toMatch(/\.agent-done/);
+    expect(prompt).not.toMatch(/API request or command/);
+  });
+});
+
 describe('no-code / API-action task completion (CD agents must NOT be told to /do:push)', () => {
   // A Creative Director agent's deliverable is an HTTP PATCH described in its
   // prompt, not a commit — so it must get the No-Code completion section, never
