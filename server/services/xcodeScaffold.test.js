@@ -41,8 +41,7 @@ describe('scaffoldXcode', () => {
 
     expect(await listFiles(repoPath)).toEqual([
       '.env.example',
-      'AGENTS.md',
-      'CLAUDE.md',
+      'AGENTS.md', 'CLAUDE.md', // AGENTS.md is canonical; CLAUDE.md is its one-line bridge
       'Sample_App/Assets.xcassets/AppIcon.appiconset/Contents.json',
       'Sample_App/Assets.xcassets/Contents.json',
       'Sample_App/ContentView.swift',
