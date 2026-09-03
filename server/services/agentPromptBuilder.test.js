@@ -304,6 +304,22 @@ describe('tool-free public-review stage completion', () => {
   });
 });
 
+describe('sandboxed public-review actions stage completion', () => {
+  // Stage 3 has tools and a discarded worktree; its deliverable is the JSON
+  // payload in the sentinel, which the No-Code contract explicitly disclaims.
+  it('gets the programmatic-output sentinel contract, not the API-action one', () => {
+    const task = makeTask({
+      metadata: { noCodeOutput: true, discardWorktree: true, openPR: false, executionProfile: 'public-review-actions' },
+    });
+    const prompt = buildLightContextPrompt(task, '/repo', null, isTruthyMeta, {
+      providerId: 'codex-tui', providerCommand: 'codex',
+    });
+    expect(prompt).toMatch(/exact payload format described in your task instructions/);
+    expect(prompt).not.toMatch(/## Completion \(No Code Output\)/);
+    expect(prompt).not.toMatch(/## Completion \(Tool-Free Reasoning\)/);
+  });
+});
+
 describe('no-code / API-action task completion (CD agents must NOT be told to /do:push)', () => {
   // A Creative Director agent's deliverable is an HTTP PATCH described in its
   // prompt, not a commit — so it must get the No-Code completion section, never

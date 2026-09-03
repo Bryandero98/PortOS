@@ -28,7 +28,7 @@ import { buildCompactionSection, buildTaskBlock, reconcileSplitContext } from '.
 import { applySlashdoInvocation } from './promptSections/slashdo.js';
 import { manualForgeCli, resolveManualForgeCli } from './promptSections/forge.js';
 import { buildPlannerAttributionSection } from './promptSections/plannerAttribution.js';
-import { isPublicReviewNoToolProfile } from '../lib/agentExecutionProfiles.js';
+import { isPublicReviewNoToolProfile, isPublicReviewRestrictedProfile } from '../lib/agentExecutionProfiles.js';
 import {
   DISCARD_WORKTREE_NOTE,
   buildActionOutputCompletionSection,
@@ -414,6 +414,10 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // A tool-free public-review stage has no sentinel, API, or command to reach
   // for: its reply IS the deliverable. Wins over every other completion contract.
   const toolFreeReasoning = isPublicReviewNoToolProfile(task.metadata?.executionProfile);
+  // The sandboxed review stage has tools and a discarded worktree; its output
+  // is the JSON payload in the sentinel, not an API action — so it takes the
+  // programmatic-output contract ahead of the no-code one.
+  const sentinelPayloadOutput = isPublicReviewRestrictedProfile(task.metadata?.executionProfile) && !toolFreeReasoning;
   const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   const worktreeCommitNote = worktreeInfo
@@ -518,6 +522,8 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   // its output channel.
   const tuiCompletionSection = toolFreeReasoning
     ? buildToolFreeReasoningCompletionSection()
+    : sentinelPayloadOutput
+    ? buildProgrammaticOutputCompletionSection(sentinelPath)
     : noCodeOutput
     ? buildActionOutputCompletionSection({ isTui, sentinelPath })
     : discardWorktree
@@ -743,7 +749,7 @@ ${(() => {
   const bullet = buildCompletionGuidelineBullet({
     isReadOnly: isTruthyMetaFn(task.metadata?.readOnly), whenDone,
     isTui, tuiCompletionCommand, slashdoFree: isTui && !canRunSlashCommands,
-    worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput, noChangeSuccess,
+    worktreeInfo, willOpenPR, prCompletion, discardWorktree, noCodeOutput: noCodeOutput && !sentinelPayloadOutput, noChangeSuccess,
     leavePrOpen: leavesPrForHuman(task),
     isPrFollowUp: isReviewLoopFollowUp, claimFlow, toolFreeReasoning,
   });
@@ -757,7 +763,7 @@ ${(() => {
 ${noChangeSuccess ? `- **No-change audits may exit cleanly.** ${NO_CHANGE_AUDIT_GUIDANCE}` : ''}
 ${toolFreeReasoning
   ? `- **No git at all.** You have no tools; the Completion section above is the whole contract.`
-  : noCodeOutput
+  : noCodeOutput && !sentinelPayloadOutput
   ? `- **Do NOT commit, push, or open a PR.** This task changes no code — its result is delivered by the API call or command described above. Without this, a no-worktree task of this shape was told to \`/do:push\` **directly to the branch it is standing on**, which for a task running in the app's live checkout is its default branch.`
   : discardWorktree
   ? `- **Do NOT commit, push, or open a PR.** This worktree is discarded on exit — your only output is the completion sentinel (see the Completion section above).`
@@ -843,6 +849,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // tasks (queued before this flag existed) are recognized without a migration.
   const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
   const toolFreeReasoning = isPublicReviewNoToolProfile(task.metadata?.executionProfile);
+  const sentinelPayloadOutput = isPublicReviewRestrictedProfile(task.metadata?.executionProfile) && !toolFreeReasoning;
   const noChangeSuccess = isTruthyMetaFn(task.metadata?.noChangeSuccess);
   const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
@@ -1018,7 +1025,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     // No tools at all: the reply is the deliverable (see the full path's
     // tuiCompletionSection ternary for the same precedence).
     contractSections.push(buildToolFreeReasoningCompletionSection());
-  } else if (noCodeOutput) {
+  } else if (noCodeOutput && !sentinelPayloadOutput) {
     contractSections.push(buildActionOutputCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
