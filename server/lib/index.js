@@ -290,6 +290,7 @@ export * from './processEnv.js';
 export * from './primaryCheckoutGuard.js';
 export * from './pythonSetup.js';
 export * from './vttTranscript.js';
+export * from './youtubeUrl.js';
 export * from './ytdlp.js';
 
 // === Networking ===

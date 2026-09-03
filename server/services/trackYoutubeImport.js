@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'crypto';
 import { join } from 'path';
-import { ServerError } from '../lib/errorHandler.js';
+import { assertYoutubeVideoUrl, YOUTUBE_VIDEO_URL_RE } from '../lib/youtubeUrl.js';
 import { shortId, PATHS } from '../lib/fileUtils.js';
 import { probeVideoDuration } from '../lib/ffmpeg.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../lib/sseUtils.js';
@@ -22,20 +22,16 @@ import { importUploadedTrack, MUSIC_UPLOAD_MAX_BYTES } from './pipeline/musicLib
 import { createTrack, DURATION_MAX_SEC } from './tracks/index.js';
 import { resolveYtDlpBinaries, downloadAudioToTempMp3, cleanupYtDlpTemp } from './ytdlpAudioImport.js';
 
-// youtube.com/watch, youtu.be, and m.youtube.com only (issue #1945 scope:
-// "start narrow" — other video hosts are explicitly out of scope). This also
-// constrains what a shelled-out yt-dlp will touch, even though args are
-// passed as an array (no shell interpolation).
-export const YOUTUBE_URL_RE = /^https?:\/\/(www\.|m\.)?(youtube\.com\/watch\?[^\s#]*\bv=[\w-]{6,}|youtu\.be\/[\w-]{6,})/i;
-
-export function assertYoutubeUrl(url) {
-  if (typeof url !== 'string' || !YOUTUBE_URL_RE.test(url)) {
-    throw new ServerError(
-      'Not a recognized YouTube URL (expected youtube.com/watch, youtu.be, or m.youtube.com)',
-      { status: 400, code: 'YOUTUBE_URL_INVALID' },
-    );
-  }
-}
+// YouTube-only by design (issue #1945 scope: "start narrow" — other video hosts
+// are explicitly out of scope). This also constrains what a shelled-out yt-dlp
+// will touch, even though args are passed as an array (no shell interpolation).
+// The rule itself is canonical in `lib/youtubeUrl.js` (#6014) — importing it is
+// what taught this path to accept music.youtube.com, shorts, live, and embed
+// links, which the brain ingest and the Takeout importer already handled.
+export {
+  YOUTUBE_VIDEO_URL_RE as YOUTUBE_URL_RE,
+  assertYoutubeVideoUrl as assertYoutubeUrl,
+};
 
 // jobId -> { clients, lastPayload, process, canceled }
 const importJobs = new Map();
@@ -75,7 +71,7 @@ export function cancelYoutubeImport(jobId) {
  * or `{ type: 'canceled' }`.
  */
 export async function startYoutubeImport(url) {
-  assertYoutubeUrl(url);
+  assertYoutubeVideoUrl(url);
   const { ytDlp, ffmpeg } = await resolveYtDlpBinaries();
 
   const jobId = randomUUID();

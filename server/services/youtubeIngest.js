@@ -52,7 +52,7 @@ import { vttToPlainText } from '../lib/vttTranscript.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { downloadAudioToTempMp3 } from './ytdlpAudioImport.js';
 import { downloadVideoIntoLibrary } from './videoDownload.js';
-import { youtubeVideoIdFromUrl } from './youtubeImport.js';
+import { assertYoutubeVideoUrl, YOUTUBE_VIDEO_URL_RE } from '../lib/youtubeUrl.js';
 import * as obsidian from './obsidian.js';
 import * as brainStorage from './brainStorage.js';
 import { createLinkFromUrl } from './brain.js';
@@ -64,27 +64,12 @@ import { recordEvents } from './humanActivity.js';
 // cos.js listens on to spawn, so queueing behaves identically either way.
 import { addTask } from './cosTaskStore.js';
 
-// Accepts the URL shapes that carry a single video id. Playlists, channels, and
-// `/@handle` pages are rejected up front so a paste that would have yt-dlp pull
-// 300 videos fails with a clear message instead of running for an hour.
-export const YOUTUBE_INGEST_URL_RE =
-  /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com\/(watch\?[^\s#]*\bv=[\w-]{6,}|shorts\/[\w-]{6,}|live\/[\w-]{6,}|embed\/[\w-]{6,})|youtu\.be\/[\w-]{6,})/i;
-
-/**
- * Validate an ingest URL and hand back the video id it carries — the id has to
- * be parsed to validate at all, so returning it keeps the caller from parsing
- * the same URL a second time (and from disagreeing about the answer).
- */
-export function assertYoutubeIngestUrl(url) {
-  const videoId = typeof url === 'string' && YOUTUBE_INGEST_URL_RE.test(url) ? youtubeVideoIdFromUrl(url) : null;
-  if (!videoId) {
-    throw new ServerError(
-      'Expected a single-video YouTube URL (watch, shorts, live, or youtu.be) — playlists and channels are not supported',
-      { status: 400, code: 'YOUTUBE_URL_INVALID' },
-    );
-  }
-  return videoId;
-}
+// The accept rule and its validator are canonical in `lib/youtubeUrl.js` (#6014);
+// these aliases keep the ingest's established names for existing importers.
+export {
+  YOUTUBE_VIDEO_URL_RE as YOUTUBE_INGEST_URL_RE,
+  assertYoutubeVideoUrl as assertYoutubeIngestUrl,
+};
 
 // Bound resource use, same reasoning as the audio/video importers: a livestream
 // archive or a 12-hour upload would otherwise download unbounded. Generous —
@@ -570,7 +555,7 @@ export async function startYoutubeIngest({
   tags = [],
   priority,
 } = {}) {
-  const videoId = assertYoutubeIngestUrl(url);
+  const videoId = assertYoutubeVideoUrl(url);
   if (!captureTranscript && !downloadVideo && !ingestAudio) {
     throw new ServerError('Pick at least one of: transcript, video, audio', {
       status: 400,
