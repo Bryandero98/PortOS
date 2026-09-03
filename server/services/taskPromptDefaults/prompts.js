@@ -18,6 +18,9 @@ import {
   formatContributorLabelReleaseCommands,
   formatLabelCreateCommand,
 } from '../../lib/dispatchLabels.js';
+// The PR-decision envelope is owned by the module that normalizes and renders
+// it, so stage 3 and the issue-watcher reasoning pass cannot drift apart.
+import { PR_REVIEW_DECISION_CONTRACT } from '../../lib/prReviewReport.js';
 
 // The epic marker and its idempotent `label create` line come from the shared
 // label registry, so the label the claim agent stamps is by construction the one
@@ -2409,59 +2412,12 @@ PR state and exact content fingerprint.
 
 ## Output (JSON only)
 
-Return exactly this shape, with no markdown and one entry for every eligible
-PR. Emit **plain prose in every text field** — the deterministic coordinator
-renders the markdown a human reads on the PR page (headings, bullets, code
-spans, inline anchors), so a field that already contains markdown or a wall of
-run-on prose renders badly. Say each thing once, in the field that carries it:
-a blocking problem belongs in a \`findings\` entry anchored to its line, not
-restated in \`summary\`.
+Return exactly this envelope, with no markdown around it and one \`pullRequests\`
+entry for every eligible PR:
 
-{
-  \"issueComments\": [],
-  \"pullRequests\": [
-    {
-      \"number\": 123,
-      \"headSha\": \"40-character commit id\",
-      \"verdict\": \"approve|request_changes|defer\",
-      \"ciPolicy\": \"required|skippable\",
-      \"rebaseRequired\": false,
-      \"summary\": \"1-3 sentences: the verdict and why it is that verdict\",
-      \"scope\": \"one line naming what the change touches\",
-      \"testEvidence\": [
-        {\"command\": \"npm test -w server\", \"status\": \"pass|fail|not-run\", \"detail\": \"counts, failure, or why it could not run\"}
-      ],
-      \"verified\": [\"one claim you confirmed, citing path:line\"],
-      \"concerns\": [\"a non-blocking observation with no specific line to anchor\"],
-      \"findings\": [
-        {
-          \"path\": \"src/file.js\",
-          \"line\": 42,
-          \"side\": \"RIGHT\",
-          \"blocking\": true,
-          \"title\": \"short label, under ~80 characters\",
-          \"body\": \"the concrete problem, the wrong outcome it produces, and the fix\",
-          \"suggestion\": \"optional exact replacement text for this one line, no code fence\"
-        }
-      ]
-    }
-  ]
-}
+{ "issueComments": [], "pullRequests": [ <one decision object per eligible PR> ] }
 
-Field rules:
-
-- \`summary\` is the headline only. Keep it under about 3 sentences.
-- \`scope\` is one line (\"docs-only change to two files under docs/\").
-- \`testEvidence\` is one entry per command you actually ran, plus one
-  \`not-run\` entry naming each relevant suite you could not run and why.
-- \`verified\` holds claims you checked against the code, one per entry, each
-  citing the \`path:line\` that proves it. Leave it empty rather than padding.
-- \`concerns\` is for non-blocking observations that have no line to anchor to.
-  Anything that does have a line belongs in \`findings\` with
-  \`\"blocking\": false\`.
-- \`suggestion\` is optional and must be the literal replacement for the single
-  anchored line, with no code fence and no surrounding prose. Omit it when the
-  fix is not a one-line edit.
+${PR_REVIEW_DECISION_CONTRACT}
 
 Do not include issue comments. Do not include a PR that was not in the eligible
 input, duplicate a PR, or invent a head SHA. Do not quote Stage 1 findings or

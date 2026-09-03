@@ -1,5 +1,6 @@
 /**
- * Structured pr-reviewer report → GitHub markdown.
+ * Structured pr-reviewer report → GitHub markdown, plus the prompt contract
+ * that asks for it.
  *
  * Stage 3 of the pr-reviewer pipeline used to hand the coordinator one
  * `summary` string, which was posted verbatim as the review body: a single
@@ -8,6 +9,12 @@
  * so the model now returns those as separate fields and the deterministic
  * coordinator renders the markdown. The model never composes markup, which
  * keeps rendering (and its length budget) on the trusted side of the boundary.
+ *
+ * The field spec lives here as `PR_REVIEW_DECISION_CONTRACT` rather than in
+ * either prompt, because two producers ask for this envelope — the pr-reviewer
+ * stage-3 body and the issue-watcher reasoning pass — and both feed this one
+ * normalizer. Adding a field to the prompt of only one of them would silently
+ * degrade the other's reviews with nothing failing.
  *
  * Every field is optional and a plain-string `summary` still renders, so an
  * older stage body — or a model that ignores the structured shape — degrades to
@@ -25,15 +32,73 @@ const MAX_BULLETS = 12;
 const MAX_FINDING_TITLE_CHARS = 160;
 const MAX_FINDING_BODY_CHARS = 3_000;
 const MAX_SUGGESTION_CHARS = 2_000;
+const MAX_INDEX_LABEL_CHARS = 160;
 const TEST_STATUSES = ['pass', 'fail', 'not-run'];
 const STATUS_ICON = { pass: '✅', fail: '❌', 'not-run': '⏭️' };
 const TRIM_NOTE = '_Some sections of this review were omitted to stay within the comment size limit._';
+const DOWNGRADE_NOTE = 'PortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.';
 
 const VERDICT_BANNER = {
   approve: '✅ **Approved**',
   request_changes: '🔴 **Changes requested**',
   defer: '💬 **Review — no verdict yet**',
 };
+
+const VERDICT_DEFAULT_SUMMARY = {
+  approve: 'Reviewed: no material issues found.',
+  request_changes: 'This change needs follow-up before it can merge.',
+  defer: 'This change needs follow-up before it can merge.',
+};
+
+/**
+ * The per-PR decision shape both review producers must emit. Each prompt wraps
+ * this in its own envelope (stage 3 returns it directly, the reasoning pass
+ * nests it under a completion sentinel) and may append its own notes.
+ */
+export const PR_REVIEW_DECISION_CONTRACT = `Every text field is PLAIN PROSE — deterministic code renders the markdown a human reads on the PR page, so do not write markdown into a field, and do not restate a finding inside \`summary\`. Say each thing once, in the field that carries it: a blocking problem belongs in a \`findings\` entry anchored to its line.
+
+Each pull-request decision has this shape:
+
+{
+  "number": 123,
+  "headSha": "exact supplied 40-character commit id",
+  "verdict": "approve|request_changes|defer",
+  "ciPolicy": "required|skippable",
+  "rebaseRequired": false,
+  "summary": "1-3 sentences: the verdict and why it is that verdict",
+  "scope": "one line naming what the change touches",
+  "testEvidence": [
+    {"command": "npm test -w server", "status": "pass|fail|not-run", "detail": "counts, failure, or why it could not run"}
+  ],
+  "verified": ["one claim you confirmed, citing path:line"],
+  "concerns": ["a non-blocking observation with no specific line to anchor"],
+  "findings": [
+    {
+      "path": "src/file.js",
+      "line": 42,
+      "side": "RIGHT",
+      "blocking": true,
+      "title": "short label, under ~80 characters",
+      "body": "the concrete problem, the wrong outcome it produces, and the fix",
+      "suggestion": "optional exact replacement text for this one line, no code fence"
+    }
+  ]
+}
+
+Field rules:
+
+- \`summary\` is the headline only. Keep it under about 3 sentences.
+- \`scope\` is one line ("docs-only change to two files under docs/").
+- \`testEvidence\` is one entry per command you actually ran, plus one
+  \`not-run\` entry naming each relevant suite you could not run and why.
+- \`verified\` holds claims you checked against the code, one per entry, each
+  citing the \`path:line\` that proves it. Leave it empty rather than padding.
+- \`concerns\` is for non-blocking observations that have no line to anchor to.
+  Anything that does have a line belongs in \`findings\` with
+  \`"blocking": false\`.
+- \`title\` and \`suggestion\` are optional. \`suggestion\` must be the literal
+  replacement for the single anchored line, with no code fence and no
+  surrounding prose — omit it when the fix is not a one-line edit.`;
 
 /** Collapse whitespace runs so a model paragraph cannot inject list/heading markup mid-line. */
 function line(value, max) {
@@ -67,9 +132,9 @@ function normalizeTestEvidence(value) {
 }
 
 /**
- * Normalize the optional structured report fields of one stage-3 PR decision.
- * Unknown/malformed entries drop out; the caller still owns verdict, findings,
- * and every forge-state check.
+ * Normalize the optional structured report fields of one PR decision. Unknown
+ * or malformed entries drop out; the caller still owns verdict, finding
+ * anchoring, and every forge-state check.
  */
 export function normalizeReviewReport(raw) {
   return {
@@ -81,8 +146,8 @@ export function normalizeReviewReport(raw) {
   };
 }
 
-/** Normalize the presentation fields of one inline finding (anchoring stays with the caller). */
-export function normalizeFindingPresentation(raw) {
+/** The presentation fields of one finding (anchoring stays with the caller). */
+function normalizeFindingPresentation(raw) {
   const suggestion = block(raw?.suggestion, MAX_SUGGESTION_CHARS);
   return {
     title: line(raw?.title, MAX_FINDING_TITLE_CHARS),
@@ -93,92 +158,101 @@ export function normalizeFindingPresentation(raw) {
   };
 }
 
-/** Every model-authored string in a report, for the model-abuse scan. */
+/**
+ * Every model-authored string in one raw PR decision, for the model-abuse scan.
+ * One module enumerates them so a field added above cannot ship unscanned.
+ */
 export function reviewReportText(raw) {
   const report = normalizeReviewReport(raw);
+  const findings = Array.isArray(raw?.findings) ? raw.findings : [];
   return [
     report.summary,
     report.scope,
     ...report.testEvidence.flatMap((item) => [item.command, item.detail]),
     ...report.verified,
     ...report.concerns,
+    ...findings.flatMap((finding) => {
+      const { title, body, suggestion } = normalizeFindingPresentation(finding);
+      return [title, body, suggestion];
+    }),
   ].filter(Boolean);
 }
 
-/** Markdown for one inline review comment. */
-export function renderFindingBody(finding, { blocking = true } = {}) {
-  const { title, body, suggestion } = normalizeFindingPresentation(finding);
-  const label = blocking ? '⛔ **Blocking**' : '💡 **Non-blocking**';
-  return [
-    title ? `${label} — ${title}` : label,
-    '',
-    body,
-    ...(suggestion ? ['', '```suggestion', suggestion, '```'] : []),
-  ].join('\n').trim();
+/**
+ * Render one finding as an inline review comment, plus the short label the
+ * review body's finding index shows for it. Returns null when the finding
+ * carries no usable body.
+ */
+export function renderFinding(raw, { blocking = true } = {}) {
+  const { title, body, suggestion } = normalizeFindingPresentation(raw);
+  if (!body) return null;
+  const marker = blocking ? '⛔ **Blocking**' : '💡 **Non-blocking**';
+  return {
+    body: [
+      title ? `${marker} — ${title}` : marker,
+      '',
+      body,
+      ...(suggestion ? ['', '```suggestion', suggestion, '```'] : []),
+    ].join('\n'),
+    label: title || line(body, MAX_INDEX_LABEL_CHARS),
+  };
 }
 
-function findingsSection(findings, heading, icon) {
-  if (findings.length === 0) return null;
-  return [
+function listSection(heading, items, renderItem, tail = null) {
+  if (items.length === 0) return '';
+  return [heading, ...items.map(renderItem), ...(tail ? [tail] : [])].join('\n');
+}
+
+function findingsIndex(findings, heading, icon) {
+  return listSection(
     `#### ${icon} ${heading} (${findings.length})`,
-    ...findings.map(({ comment, presentation }) => {
-      const label = presentation.title || line(presentation.body, 160);
-      return `- \`${comment.path}:${comment.line}\` — ${label}`;
-    }),
-  ].join('\n');
+    findings,
+    ({ comment, label }) => `- \`${comment.path}:${comment.line}\` — ${label}`,
+  );
 }
 
 /**
  * Render the review body a human reads on the PR page. Sections are emitted in
- * priority order and dropped from the end once the budget is spent, so a long
- * report loses its least important section instead of being cut mid-sentence.
+ * priority order and any that does not fit the budget is skipped whole, so a
+ * long report loses its least important section instead of being cut
+ * mid-sentence.
  */
 export function renderReviewBody({
   report,
   verdict,
   blockingFindings = [],
   nonBlockingFindings = [],
-  appendix = '',
+  downgraded = false,
 } = {}) {
   const normalized = normalizeReviewReport(report);
   const sections = [
     VERDICT_BANNER[verdict] || VERDICT_BANNER.defer,
-    normalized.summary || 'This change needs follow-up before it can merge.',
-    normalized.scope ? `**Scope:** ${normalized.scope}` : null,
-    findingsSection(blockingFindings, 'Blocking', '⛔'),
-    findingsSection(nonBlockingFindings, 'Non-blocking', '💡'),
-    normalized.testEvidence.length > 0
-      ? ['#### Test evidence', ...normalized.testEvidence.map((item) => {
-        const icon = STATUS_ICON[item.status];
-        const head = item.command ? `\`${item.command}\`` : item.detail;
-        const tail = item.command && item.detail ? ` — ${item.detail}` : '';
-        return `- ${icon} ${head}${tail}`;
-      })].join('\n')
-      : null,
-    normalized.concerns.length > 0
-      ? ['#### Notes', ...normalized.concerns.map((item) => `- ${item}`)].join('\n')
-      : null,
-    normalized.verified.length > 0
-      ? ['<details><summary>Claims verified against the code</summary>', '',
-        ...normalized.verified.map((item) => `- ${item}`), '</details>'].join('\n')
-      : null,
-    block(appendix, MAX_SUMMARY_CHARS) || null,
+    normalized.summary || VERDICT_DEFAULT_SUMMARY[verdict] || VERDICT_DEFAULT_SUMMARY.defer,
+    normalized.scope && `**Scope:** ${normalized.scope}`,
+    findingsIndex(blockingFindings, 'Blocking', '⛔'),
+    findingsIndex(nonBlockingFindings, 'Non-blocking', '💡'),
+    listSection('#### Test evidence', normalized.testEvidence, (item) => {
+      const head = item.command ? `\`${item.command}\`` : item.detail;
+      const tail = item.command && item.detail ? ` — ${item.detail}` : '';
+      return `- ${STATUS_ICON[item.status]} ${head}${tail}`;
+    }),
+    listSection('#### Notes', normalized.concerns, (item) => `- ${item}`),
+    // One section, closing tag included: the budget must never drop the
+    // </details> and leave the body with an unclosed block.
+    listSection('<details><summary>Claims verified against the code</summary>\n', normalized.verified, (item) => `- ${item}`, '</details>'),
+    downgraded && DOWNGRADE_NOTE,
   ].filter(Boolean);
 
   const kept = [];
   // Reserve room for the trim note so adding it cannot push the body past the cap.
   const budget = MAX_REVIEW_BODY_CHARS - TRIM_NOTE.length - 2;
   let used = 0;
-  let dropped = false;
   for (const section of sections) {
     const cost = section.length + 2;
-    if (used + cost > budget) {
-      dropped = true;
-      continue;
-    }
+    if (used + cost > budget) continue;
     kept.push(section);
     used += cost;
   }
-  if (dropped) kept.push(TRIM_NOTE);
+  if (kept.length < sections.length) kept.push(TRIM_NOTE);
   return kept.join('\n\n');
 }

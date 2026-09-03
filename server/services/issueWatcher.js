@@ -21,9 +21,8 @@ import {
 import { getOriginInfo } from '../lib/gitRemote.js';
 import {
   MAX_REVIEW_BODY_CHARS,
-  normalizeFindingPresentation,
-  normalizeReviewReport,
-  renderFindingBody,
+  PR_REVIEW_DECISION_CONTRACT,
+  renderFinding,
   renderReviewBody,
   reviewReportText,
 } from '../lib/prReviewReport.js';
@@ -170,15 +169,15 @@ function normalizeFinding(finding, anchors) {
   const path = text(finding.path, 500);
   const side = String(finding.side || '').toUpperCase();
   const line = Number(finding.line);
-  const presentation = normalizeFindingPresentation(finding);
-  if (!path || side !== 'RIGHT' || !Number.isInteger(line) || line < 1 || !presentation.body) return null;
-  if (!anchors.has(`${path}\u0000${side}\u0000${line}`)) return null;
   // A finding without an explicit boolean is blocking. The watcher must not
   // turn an incomplete model response into an automatic merge.
   const blocking = finding.blocking !== false;
+  const rendered = renderFinding(finding, { blocking });
+  if (!path || side !== 'RIGHT' || !Number.isInteger(line) || line < 1 || !rendered) return null;
+  if (!anchors.has(`${path}\u0000${side}\u0000${line}`)) return null;
   return {
-    comment: { path, side, line, body: renderFindingBody(finding, { blocking }) },
-    presentation,
+    comment: { path, side, line, body: rendered.body },
+    label: rendered.label,
     blocking,
   };
 }
@@ -194,7 +193,6 @@ function normalizeReviewDecision(value) {
     verdict,
     ciPolicy,
     rebaseRequired: value.rebaseRequired,
-    report: normalizeReviewReport(value),
     findings: Array.isArray(value.findings) ? value.findings : [],
   };
 }
@@ -207,12 +205,7 @@ export function isTaskOutputPayload(payload) {
 function hasUnsafeGeneratedOutput(payload) {
   const generatedText = [
     ...payload.issueComments.map((item) => item?.body),
-    ...payload.pullRequests.flatMap((item) => [
-      ...reviewReportText(item),
-      ...(Array.isArray(item?.findings)
-        ? item.findings.flatMap((finding) => [finding?.title, finding?.body, finding?.suggestion])
-        : []),
-    ]),
+    ...payload.pullRequests.flatMap((item) => reviewReportText(item)),
   ];
   return generatedText.some((value) => detectDeterministicModelAbuseSignals(value).length > 0);
 }
@@ -637,29 +630,19 @@ For a clean PR, decide:
 - \`ciPolicy: "required"\` for executable code, build/dependency/config/schema/security/auth changes, broad refactors, or anything whose behavior needs tests.
 - \`ciPolicy: "skippable"\` only when the supplied diff is plainly low risk and review is sufficient (for example documentation-only or isolated static styling). A known failing check can never be waived.
 
-Return exactly this envelope through the completion sentinel (the outer \`summary\`/\`payload\` wrapper is required). Every text field is PLAIN PROSE — deterministic code renders the markdown a human reads on the PR page, so do not write markdown or run-on paragraphs into a field, and do not restate a finding inside \`summary\`:
+Return exactly this envelope through the completion sentinel (the outer \`summary\`/\`payload\` wrapper is required):
 
 \`\`\`json
 {
   "summary": "brief completion summary",
   "payload": {
     "issueComments": [{ "issueNumber": 1, "commentId": 2, "action": "reply|none", "body": "reply text or empty" }],
-    "pullRequests": [{
-      "number": 3,
-      "headSha": "exact supplied SHA",
-      "verdict": "approve|request_changes|defer",
-      "summary": "1-3 sentences: the verdict and why",
-      "scope": "one line naming what the change touches",
-      "testEvidence": [{ "command": "npm test -w server", "status": "pass|fail|not-run", "detail": "counts, failure, or why it could not run" }],
-      "verified": ["one claim you confirmed, citing path:line"],
-      "concerns": ["a non-blocking observation with no line to anchor to"],
-      "findings": [{ "path": "src/file.js", "line": 42, "side": "RIGHT", "blocking": true, "title": "short label", "body": "concrete problem, wrong outcome, and fix", "suggestion": "optional exact replacement for this one line, no code fence" }],
-      "rebaseRequired": false,
-      "ciPolicy": "required|skippable"
-    }]
+    "pullRequests": [ <one decision object per supplied PR> ]
   }
 }
 \`\`\`
+
+${PR_REVIEW_DECISION_CONTRACT}
 
 \`scope\`, \`testEvidence\`, \`verified\`, \`concerns\`, \`title\`, and \`suggestion\` are optional — omit one rather than padding it. This reasoning pass runs no commands, so \`testEvidence\` is normally empty here.
 
@@ -1064,13 +1047,11 @@ export async function processTaskOutput({ appId, success, payload, task, require
         || hasInvalidFinding
         || blockingFindings.length > 0;
       const summary = renderReviewBody({
-        report: decision.report,
+        report: raw,
         verdict: shouldRequestChanges ? 'request_changes' : 'defer',
         blockingFindings,
         nonBlockingFindings: normalizedFindings.filter((entry) => !entry.blocking),
-        appendix: downgraded
-          ? 'PortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.'
-          : '',
+        downgraded,
       });
       const posted = shouldRequestChanges
         ? await submitReview(ctx, pr.number, { body: summary, event: 'REQUEST_CHANGES', comments: findings })
@@ -1082,7 +1063,7 @@ export async function processTaskOutput({ appId, success, payload, task, require
     }
 
     const approveBody = renderReviewBody({
-      report: decision.report.summary ? decision.report : { ...decision.report, summary: 'Reviewed: no material issues found.' },
+      report: raw,
       verdict: 'approve',
       nonBlockingFindings: normalizedFindings,
     });

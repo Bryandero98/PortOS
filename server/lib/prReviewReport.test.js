@@ -1,16 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_REVIEW_BODY_CHARS,
+  PR_REVIEW_DECISION_CONTRACT,
   normalizeReviewReport,
-  renderFindingBody,
+  renderFinding,
   renderReviewBody,
   reviewReportText,
 } from './prReviewReport.js';
 
-const finding = (path, line, presentation) => ({
-  comment: { path, line, side: 'RIGHT', body: 'rendered' },
-  presentation: { title: '', body: '', suggestion: '', ...presentation },
-});
+const finding = (path, line, label) => ({ comment: { path, line }, label });
 
 describe('renderReviewBody', () => {
   it('renders a full structured report as scannable markdown sections', () => {
@@ -26,8 +24,8 @@ describe('renderReviewBody', () => {
         verified: ['update.sh always ends on main — update.sh:132-143'],
         concerns: ['The Windows entry point is not mentioned.'],
       },
-      blockingFindings: [finding('docs/SELF_UPDATE.md', 108, { title: 'Bare npm install dirties tracked lockfiles' })],
-      nonBlockingFindings: [finding('docs/SELF_UPDATE.md', 112, { title: 'Ordering rationale is downstream of line 108' })],
+      blockingFindings: [finding('docs/SELF_UPDATE.md', 108, 'Bare npm install dirties tracked lockfiles')],
+      nonBlockingFindings: [finding('docs/SELF_UPDATE.md', 112, 'Ordering rationale is downstream of line 108')],
     });
 
     expect(body).toContain('🔴 **Changes requested**');
@@ -53,13 +51,19 @@ describe('renderReviewBody', () => {
     expect(renderReviewBody({})).toContain('This change needs follow-up before it can merge.');
   });
 
-  it('appends the coordinator appendix as its own section', () => {
+  it('appends the deterministic downgrade note as its own trailing section', () => {
     const body = renderReviewBody({
       verdict: 'request_changes',
       report: { summary: 'Two problems.' },
-      appendix: 'PortOS could not anchor one or more reported findings to this diff.',
+      downgraded: true,
     });
-    expect(body.endsWith('PortOS could not anchor one or more reported findings to this diff.')).toBe(true);
+    expect(body).toBe([
+      '🔴 **Changes requested**',
+      '',
+      'Two problems.',
+      '',
+      'PortOS could not anchor one or more reported findings to this diff, so the review is blocking until they are restated against exact added lines.',
+    ].join('\n'));
   });
 
   it('drops whole low-priority sections instead of truncating mid-sentence', () => {
@@ -85,32 +89,39 @@ describe('renderReviewBody', () => {
   });
 });
 
-describe('renderFindingBody', () => {
+describe('renderFinding', () => {
   it('labels a blocking finding and renders an applyable suggestion block', () => {
-    const body = renderFindingBody({
+    expect(renderFinding({
       title: 'Use the repo install path',
       body: 'Bare `npm install` rewrites tracked lockfiles.',
       suggestion: 'for d in . client server autofixer; do (cd "$d" && npm install --no-save); done',
+    })).toEqual({
+      label: 'Use the repo install path',
+      body: [
+        '⛔ **Blocking** — Use the repo install path',
+        '',
+        'Bare `npm install` rewrites tracked lockfiles.',
+        '',
+        '```suggestion',
+        'for d in . client server autofixer; do (cd "$d" && npm install --no-save); done',
+        '```',
+      ].join('\n'),
     });
-    expect(body).toBe([
-      '⛔ **Blocking** — Use the repo install path',
-      '',
-      'Bare `npm install` rewrites tracked lockfiles.',
-      '',
-      '```suggestion',
-      'for d in . client server autofixer; do (cd "$d" && npm install --no-save); done',
-      '```',
-    ].join('\n'));
   });
 
-  it('labels a non-blocking finding and omits an absent suggestion', () => {
-    const body = renderFindingBody({ body: 'Consider naming Windows too.' }, { blocking: false });
-    expect(body).toBe('💡 **Non-blocking**\n\nConsider naming Windows too.');
+  it('labels a non-blocking finding, omits an absent suggestion, and falls back to the body for the index label', () => {
+    expect(renderFinding({ body: 'Consider naming Windows too.' }, { blocking: false })).toEqual({
+      body: '💡 **Non-blocking**\n\nConsider naming Windows too.',
+      label: 'Consider naming Windows too.',
+    });
   });
 
   it('drops a suggestion containing a fence so it cannot break out of the code block', () => {
-    const body = renderFindingBody({ body: 'x', suggestion: '```\nrm -rf /\n```' });
-    expect(body).not.toContain('```');
+    expect(renderFinding({ body: 'x', suggestion: '```\nrm -rf /\n```' }).body).not.toContain('```');
+  });
+
+  it('rejects a finding with no usable body', () => {
+    expect(renderFinding({ title: 'no body' })).toBeNull();
   });
 });
 
@@ -131,11 +142,35 @@ describe('normalizeReviewReport', () => {
 });
 
 describe('reviewReportText', () => {
-  it('exposes every model-authored string so the abuse scan sees the new fields', () => {
+  it('exposes every model-authored string, report and finding alike, so the abuse scan sees them all', () => {
     expect(reviewReportText({
       summary: 'a', scope: 'b',
       testEvidence: [{ command: 'c', status: 'pass', detail: 'd' }],
       verified: ['e'], concerns: ['f'],
-    })).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+      findings: [{ title: 'g', body: 'h', suggestion: 'i' }],
+    })).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
+  });
+});
+
+describe('PR_REVIEW_DECISION_CONTRACT', () => {
+  // Two producers ask for this envelope (the pr-reviewer stage-3 body and the
+  // issue-watcher reasoning pass) and both feed normalizeReviewReport /
+  // renderFinding. A field added to the normalizer but not to the contract
+  // would silently never be asked for.
+  it('names every field the normalizer and the finding renderer read', () => {
+    for (const field of ['summary', 'scope', 'testEvidence', 'verified', 'concerns', 'findings']) {
+      expect(PR_REVIEW_DECISION_CONTRACT, field).toContain(`"${field}"`);
+    }
+    for (const field of ['path', 'line', 'side', 'blocking', 'title', 'body', 'suggestion']) {
+      expect(PR_REVIEW_DECISION_CONTRACT, field).toContain(`"${field}"`);
+    }
+    for (const status of ['pass', 'fail', 'not-run']) {
+      expect(PR_REVIEW_DECISION_CONTRACT, status).toContain(status);
+    }
+  });
+
+  it('is what the pr-reviewer stage-3 prompt actually ships', async () => {
+    const { DEFAULT_TASK_PROMPTS } = await import('../services/taskPromptDefaults/prompts.js');
+    expect(DEFAULT_TASK_PROMPTS['pr-reviewer-review']).toContain(PR_REVIEW_DECISION_CONTRACT);
   });
 });
