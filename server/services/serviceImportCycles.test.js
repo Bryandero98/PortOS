@@ -50,8 +50,6 @@ const SERVICES_DIR = dirname(fileURLToPath(import.meta.url));
 const KNOWN_CYCLIC_COMPONENTS = [
   // #5917 — caption resolution and subject derivation import each other.
   { issue: 5917, members: ['loraDatasetCaption.js', 'loraDatasetGenerate.js'] },
-  // #5918 — the fixer reaches back for the review-comment store accessors.
-  { issue: 5918, members: ['pipeline/manuscriptFix.js', 'pipeline/manuscriptReview.js'] },
   // #5919 — the receive path reaches subscription state back through the barrel.
 ];
 
