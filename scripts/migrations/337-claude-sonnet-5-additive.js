@@ -10,9 +10,10 @@
  * that record: the reviewer/task model pickers reading it offer the retired
  * sonnet and cannot offer the current one at all.
  *
- * ADDITIVE, deliberately — the opposite policy from 153/206 and from
- * `makeSeededProviderTierMigration`, because this one runs against lists the
- * user curated:
+ * Built on `makeAdditiveProviderInsertMigration` (`_lib.js` family 7b) —
+ * ADDITIVE, deliberately the opposite policy from 153/206 and from
+ * `makeSeededProviderTierMigration` (family 7), because this one runs against
+ * lists the user curated:
  *
  *   - `claude-sonnet-5` is INSERTED right after `claude-sonnet-4-6`, and the
  *     retired id is KEPT. `claude-sonnet-4-6` still resolves for the CLI, so
@@ -27,56 +28,16 @@
  * or a fresh `data.reference` seed already put it there) and on a second run.
  */
 
-import { readProvidersDoc, writeJsonAtomic } from './_lib.js';
-
-const PROVIDERS_REL_PATH = 'data/providers.json';
+import { makeAdditiveProviderInsertMigration } from './_lib.js';
 
 // The four seeded Claude records and the sonnet id each one spells. The Bedrock
 // pair uses the region-qualified form its own environment resolves — inserting a
 // bare `claude-sonnet-5` there would offer an id that record cannot run.
-const TARGETS = [
+export const TARGETS = [
   { id: 'claude-code', retired: 'claude-sonnet-4-6', current: 'claude-sonnet-5' },
   { id: 'claude-code-tui', retired: 'claude-sonnet-4-6', current: 'claude-sonnet-5' },
   { id: 'claude-code-bedrock', retired: 'us.anthropic.claude-sonnet-4-6', current: 'us.anthropic.claude-sonnet-5' },
   { id: 'claude-code-tui-bedrock', retired: 'us.anthropic.claude-sonnet-4-6', current: 'us.anthropic.claude-sonnet-5' },
 ];
 
-export default {
-  async up({ rootDir }) {
-    const doc = await readProvidersDoc({ rootDir });
-    if (!doc.ok) {
-      if (doc.reason === 'no-file') console.log(`📄 ${PROVIDERS_REL_PATH} not present — skipping (fresh install seeds claude-sonnet-5 from data.reference)`);
-      else if (doc.reason === 'unreadable') console.log(`⚠️ ${PROVIDERS_REL_PATH}: invalid JSON, skipping (${doc.err.message})`);
-      else console.log(`⚠️ ${PROVIDERS_REL_PATH}: unexpected shape, skipping`);
-      return { ok: false, reason: doc.reason, updated: 0 };
-    }
-
-    const { config, providers, path: providersPath } = doc;
-    const touched = [];
-
-    for (const { id, retired, current } of TARGETS) {
-      const provider = providers[id];
-      if (!provider || !Array.isArray(provider.models)) continue;
-      const at = provider.models.indexOf(retired);
-      // Nothing to repair unless the retired id is listed AND the current one
-      // isn't: an already-current record (seeded, or bumped by 153) is a no-op,
-      // and a record that never listed the retired tier is not this bug.
-      if (at === -1 || provider.models.includes(current)) continue;
-      provider.models = [
-        ...provider.models.slice(0, at + 1),
-        current,
-        ...provider.models.slice(at + 1),
-      ];
-      touched.push(id);
-    }
-
-    if (touched.length === 0) {
-      console.log(`✅ ${PROVIDERS_REL_PATH}: Claude sonnet tier already current — no change`);
-      return { ok: true, reason: 'already-current', updated: 0 };
-    }
-
-    await writeJsonAtomic(providersPath, config);
-    console.log(`📝 ${PROVIDERS_REL_PATH}: offered claude-sonnet-5 on ${touched.join(', ')}`);
-    return { ok: true, reason: 'updated', updated: touched.length };
-  },
-};
+export default makeAdditiveProviderInsertMigration({ targets: TARGETS, label: 'claude-sonnet-5' });
