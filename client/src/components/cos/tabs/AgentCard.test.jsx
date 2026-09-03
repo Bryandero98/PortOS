@@ -416,3 +416,46 @@ describe('AgentCard missing shell explanation', () => {
     expect(screen.queryByText('No shell')).not.toBeInTheDocument();
   });
 });
+
+// #5994: the goal-fidelity verdict — whether the run built what the task asked
+// for, which no quality reviewer can answer because none of them see the request.
+describe('AgentCard goal fidelity', () => {
+  const withReview = (goalFidelity) => ({ ...agent, result: { ...agent.result, goalFidelity } });
+
+  it('names the missing and unrequested work behind a rethink verdict', () => {
+    render(
+      <MemoryRouter>
+        <AgentCard agent={withReview({
+          verdict: 'rethink',
+          missing: ['the retry backoff'],
+          unrequested: ['an unrelated logging refactor'],
+          evidence: 'no tests were run',
+          model: 'example-model',
+        })} completed />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText(/Does not deliver the objective/)).toBeInTheDocument();
+    expect(screen.getByText('the retry backoff')).toBeInTheDocument();
+    expect(screen.getByText('an unrelated logging refactor')).toBeInTheDocument();
+    expect(screen.getByText('no tests were run')).toBeInTheDocument();
+  });
+
+  it('shows a clean ship verdict, and renders nothing at all for a run the gate never judged', () => {
+    const { unmount } = render(
+      <MemoryRouter>
+        <AgentCard agent={withReview({ verdict: 'ship', missing: [], unrequested: [], evidence: '' })} completed />
+      </MemoryRouter>
+    );
+    expect(screen.getByText(/Delivers the objective/)).toBeInTheDocument();
+    unmount();
+
+    render(
+      <MemoryRouter>
+        <AgentCard agent={agent} completed />
+      </MemoryRouter>
+    );
+    expect(screen.queryByText(/Goal fidelity/)).not.toBeInTheDocument();
+  });
+});
+

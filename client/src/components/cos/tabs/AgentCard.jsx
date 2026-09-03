@@ -23,7 +23,8 @@ import {
   GitPullRequest,
   Sparkles,
   RefreshCw,
-  Copy
+  Copy,
+  Target
 } from 'lucide-react';
 import * as api from '../../../services/api';
 import OutputBlocks from '../OutputBlocks';
@@ -100,6 +101,52 @@ function TranscriptTruncationNotice({ transcript }) {
           ? `Showing the last ${count.toLocaleString()} ${count === 1 ? 'line' : 'lines'} — the full transcript${size} is on disk in the agent's output.txt.`
           : `The tail of this transcript held no readable lines — the full transcript${size} is on disk in the agent's output.txt.`}
       </span>
+    </div>
+  );
+}
+
+// Goal-fidelity verdict (#5994) — did this run build what the task asked for?
+// Distinct from the quality reviewers, which never see the request. Rendered
+// whatever the verdict: a `ship` is the evidence the gate ran, and its absence
+// is what tells the reader the run was never judged against its objective.
+//
+// `missing` / `unrequested` are model-authored text derived from an untrusted
+// diff, so they render as plain list items — never a link, path, or command.
+const GOAL_FIDELITY_TONE = {
+  ship: { border: 'border-port-success/30', text: 'text-port-success', label: 'Delivers the objective' },
+  'fix-first': { border: 'border-port-warning/30', text: 'text-port-warning', label: 'Delivers it, with gaps' },
+  rethink: { border: 'border-port-error/40', text: 'text-port-error', label: 'Does not deliver the objective' }
+};
+
+function GoalFidelityPanel({ review }) {
+  const tone = GOAL_FIDELITY_TONE[review?.verdict];
+  if (!tone) return null;
+  return (
+    <div className={`mt-2 bg-port-bg/50 border rounded p-2.5 ${tone.border}`}>
+      <div className={`text-[11px] flex items-center gap-1 ${tone.text}`}>
+        <Target size={10} aria-hidden="true" />
+        Goal fidelity: {tone.label}
+        <span className="text-gray-500">
+          ({review.verdict}{review.model ? ` · ${review.model}` : ''}{review.diffTruncated ? ' · partial diff' : ''})
+        </span>
+      </div>
+      {review.missing?.length > 0 && (
+        <div className="mt-1.5 text-xs text-gray-400">
+          <span className="text-gray-500">Asked for but missing:</span>
+          <ul className="list-disc list-inside">
+            {review.missing.map((item, i) => <li key={i}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+      {review.unrequested?.length > 0 && (
+        <div className="mt-1.5 text-xs text-gray-400">
+          <span className="text-gray-500">Not asked for:</span>
+          <ul className="list-disc list-inside">
+            {review.unrequested.map((item, i) => <li key={i}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+      {review.evidence && <p className="mt-1.5 text-xs text-gray-400">{review.evidence}</p>}
     </div>
   );
 }
@@ -868,6 +915,8 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             )}
           </div>
         )}
+
+        {agent.result?.goalFidelity && <GoalFidelityPanel review={agent.result.goalFidelity} />}
 
         {completed && (agent.metadata?.taskSummary || agent.metadata?.malwareScan?.reportUrl) && (
           <div className="mt-2 bg-port-bg/50 border border-port-border/50 rounded p-2.5">

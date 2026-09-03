@@ -583,6 +583,26 @@ export const codeReviewSettingsSchema = z.object({
     `${reviewer}Effort`,
     z.preprocess(v => normalizeReviewerEffort(v, reviewer), z.string().optional()),
   ])),
+  // Goal-fidelity gate (#5994) — the second, objective-aware review that runs at
+  // agent completion and asks whether the diff delivers what the task asked for.
+  // Its own block rather than another `<reviewer>*` scalar because it is a
+  // DIFFERENT review with a different question, and the user must be able to run
+  // it on a model other than whatever reviews code quality.
+  //
+  // `backend` is restricted to the local-LLM set: the gate runs inside
+  // `finalizeAgent`, in the server process, and the CLI reviewers are invoked by
+  // the follow-up agent from a prompt with no server-side entry point. `model` /
+  // `effort` go through the same per-reviewer normalizers as the scalars above,
+  // keyed on that backend, so an unusable value clears rather than persisting a
+  // pin no request would carry. All four absent = inherit the quality chain's own
+  // local reviewer (see `resolveGoalFidelityConfig`); `enabled: false` is the
+  // explicit off switch.
+  goalFidelity: z.object({
+    enabled: z.boolean().optional(),
+    backend: z.preprocess(emptyToUndefined, z.enum(LOCAL_LLM_REVIEWERS).optional()),
+    model: z.string().max(MAX_REVIEWER_MODEL_LENGTH).optional(),
+    effort: z.preprocess(emptyToUndefined, z.string().optional()),
+  }).strict().optional(),
 }).strict();
 
 // =============================================================================
