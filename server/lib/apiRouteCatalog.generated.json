@@ -59,6 +59,7 @@
     "/api/games",
     "/api/git",
     "/api/github",
+    "/api/harnesses",
     "/api/health",
     "/api/history",
     "/api/image-clean",
@@ -7475,6 +7476,30 @@
       "mountPath": "/api/github",
       "sources": [
         "server/routes/github.js"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/harnesses",
+      "mountPath": "/api/harnesses",
+      "sources": [
+        "server/routes/harnesses.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/harnesses/action",
+      "mountPath": "/api/harnesses",
+      "sources": [
+        "server/routes/harnesses.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/harnesses/models/refresh",
+      "mountPath": "/api/harnesses",
+      "sources": [
+        "server/routes/harnesses.js"
       ]
     },
     {
@@ -17455,9 +17480,9 @@
     }
   ],
   "stats": {
-    "mounts": 146,
-    "operations": 2162,
-    "declarations": 2170,
-    "sourceFiles": 229
+    "mounts": 147,
+    "operations": 2165,
+    "declarations": 2173,
+    "sourceFiles": 230
   }
 }

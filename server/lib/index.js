@@ -375,6 +375,7 @@ export * from './credentialRegistry.js';
 export * from './usageRange.js';
 export * from './subscriptionSavings.js';
 export * from './providerFamilies.js';
+export * from './harnessOutput.js';
 export * from './providerGateways.js';
 export * from './personaTraitBlend.js';
 export * from './pipelineIssueOrder.js';

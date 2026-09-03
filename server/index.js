@@ -152,6 +152,7 @@ import openclawRoutes from './routes/openclaw.js';
 import sharingRoutes from './routes/sharing.js';
 import roundsRoutes from './routes/rounds.js';
 import midiRuntimeRoutes from './routes/midiRuntime.js';
+import harnessRoutes from './routes/harnesses.js';
 import peerSyncRoutes from './routes/peerSync.js';
 import askRoutes from './routes/ask.js';
 import remoteDesktopRoutes from './routes/remoteDesktop.js';
@@ -410,6 +411,7 @@ app.use('/api/openclaw', openclawRoutes);
 app.use('/api/sharing', sharingRoutes);
 app.use('/api/rounds', roundsRoutes);
 app.use('/api/midi-runtime', midiRuntimeRoutes);
+app.use('/api/harnesses', harnessRoutes);
 app.use('/api/peer-sync', peerSyncRoutes);
 app.use('/api/ask', askRoutes);
 

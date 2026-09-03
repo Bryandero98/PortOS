@@ -37,6 +37,11 @@ export default function RuntimeInstallModal({
   streamMethod = 'GET',
   // Chatty installers keep the rendered log stable by batching lines.
   flushMs = 100,
+  // The footer line once the stream completes. Defaults to "is ready", which is
+  // true of an install — and false of a REMOVAL, where it would sit directly
+  // under a log line saying the runtime was just deleted. A caller whose action
+  // is not an install passes its own.
+  doneText,
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const query = new URLSearchParams({ runtime: runtime ?? '', ...(params || {}) });
@@ -149,7 +154,7 @@ export default function RuntimeInstallModal({
             <>
               <span className="text-xs text-gray-400">
                 {done
-                  ? `${label || runtime} is ready. You can close this window.`
+                  ? (doneText || `${label || runtime} is ready.`) + ' You can close this window.'
                   : description}
               </span>
               <button
