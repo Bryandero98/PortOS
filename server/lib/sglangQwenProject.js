@@ -47,12 +47,15 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 import {
-  PORTOS_ENV_PATH,
   projectDirIsSettled,
   readRecordedProjectDir,
   recordProjectDir,
   resolveRecordedProjectDir,
 } from './recordedProjectDir.js';
+// PORTOS_ENV_PATH is declared by portosEnv.js; recordedProjectDir.js imports it
+// for its own defaults but does not re-export it — and it cannot, because both
+// modules are `export *`'d from lib/index.js and a re-export would collide there.
+import { PORTOS_ENV_PATH } from './portosEnv.js';
 
 /** Operator override for where the compose project was created. */
 export const SGLANG_PROJECT_DIR_ENV = 'SGLANG_QWEN_PROJECT_DIR';

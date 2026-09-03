@@ -215,7 +215,11 @@ resolve_pm2_cmd() {
 
 restore_pm2_apps_on_exit() {
   local status=$?
-  trap - EXIT
+  # Disarm every trap, not just EXIT: a second signal (Ctrl-C twice, an
+  # escalating killer) arriving while the recovery's own `pm2 start` and health
+  # probe are running would otherwise abort it mid-flight and leave the install
+  # headless — exactly the state this function exists to prevent.
+  trap - EXIT TERM INT HUP
   if [ "$PM2_APPS_DOWN" = "1" ]; then
     PM2_APPS_DOWN=0
     resolve_pm2_cmd

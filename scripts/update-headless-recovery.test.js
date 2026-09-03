@@ -94,6 +94,12 @@ if (${stallDelete} && args.startsWith('delete')) {
     writeFileSync(join(bin, shim), `#!/bin/sh\n${npmBody}\n`);
     chmodSync(join(bin, shim), 0o755);
   }
+  // The success case is the only one that runs past trusted-rebuilds, so it
+  // reaches update.sh's ffmpeg step — which on a machine without ffmpeg would
+  // run a real `brew install`, or on Linux CI a passwordless `sudo apt-get
+  // install` that mutates the runner. update.sh only probes `command -v`.
+  writeFileSync(join(bin, 'ffmpeg'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(bin, 'ffmpeg'), 0o755);
   // A pm2 the recovery can still reach after safe_install wipes the local one.
   if (pm2OnPath) {
     writeFileSync(join(bin, 'pm2'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
@@ -262,12 +268,20 @@ describe('update.ps1 headless-install guard', () => {
     expect([...new Set(exits.map(e => e.line))].sort()).toEqual([...SANCTIONED_EXITS].sort());
   });
 
-  it('forces the Resolve-Pm2Command result into an array', () => {
-    // PowerShell unrolls a single-element array into a bare string, and
-    // `$pm2 + @('start', …)` on a string concatenates into one garbage token
-    // instead of an argument list — so the PATH fallback would never start pm2.
+  it('keeps every Resolve-Pm2Command branch a plain array collected by @()', () => {
+    // `return` ENUMERATES an array into the output stream, so a single-element
+    // branch arrives as a bare string and `$pm2 + @('start', …)` concatenates
+    // into one garbage token — the PATH fallback would never start pm2. The
+    // call-site @() fixes that, but only if every branch returns a PLAIN array:
+    // a `,@(…)` wrapper emits the array as ONE stream item and @() nests rather
+    // than flattens it, so $CmdArgs[0] is an object[] instead of the executable.
     expect(ps1.some(line => line.includes('$pm2 = @(Resolve-Pm2Command)'))).toBe(true);
-    expect(ps1.some(line => line.includes("return ,@('pm2')"))).toBe(true);
+
+    const body = ps1.slice(lineOf('function Resolve-Pm2Command'), lineOf('function Restore-Pm2Apps'));
+    const returns = body.map(line => line.trim()).filter(line => line.startsWith('return'));
+    expect(returns.length).toBeGreaterThan(2);
+    expect(returns.filter(line => /return\s*,/.test(line)), 'a ,@() return nests instead of flattening').toEqual([]);
+    expect(returns.every(line => /^return\s+@\(/.test(line))).toBe(true);
   });
 
   it('arms the latch before the delete, not after', () => {

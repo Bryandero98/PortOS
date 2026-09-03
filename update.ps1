@@ -107,10 +107,7 @@ function Resolve-Pm2Command {
         return @('node', (Join-Path $RootDir 'node_modules/pm2/bin/pm2'))
     }
     if (Get-Command pm2 -ErrorAction SilentlyContinue) {
-        # `,` keeps PowerShell from unrolling this single-element array into a
-        # bare string — `$pm2 + @('start', …)` on a string concatenates into one
-        # garbage token instead of building an argument list.
-        return ,@('pm2')
+        return @('pm2')
     }
     $pinned = try { (Get-Content "$RootDir\package.json" -Raw | ConvertFrom-Json).dependencies.pm2 } catch { $null }
     if ($pinned) { return @('npx', '--yes', "pm2@$pinned") }
@@ -121,7 +118,12 @@ function Restore-Pm2Apps {
     if (-not $script:Pm2AppsDown) { return }
     $script:Pm2AppsDown = $false
     try {
-        # @() again at the call site, so no future branch can regress the shape.
+        # @() at the call site is what keeps the shape right: `return` ENUMERATES
+        # an array into the output stream, so a single-element branch would arrive
+        # as a bare string and `$pm2 + @('start', …)` would concatenate into one
+        # garbage token. @() collects the stream back into a flat array. Every
+        # branch must therefore return a PLAIN array — a `,@(…)` wrapper would
+        # emit the array as one item and @() would nest rather than flatten it.
         $pm2 = @(Resolve-Pm2Command)
         Write-SafeHost "⚠️  Update is exiting with PortOS's apps deleted — restarting them so the install isn't left headless." -ForegroundColor Yellow
         Step "restart" "running" "Update failed — restarting PortOS so it isn't left down..."
