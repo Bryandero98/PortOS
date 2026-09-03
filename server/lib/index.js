@@ -271,6 +271,7 @@ export * from './setupScriptRunner.js';
 export * from './hostShutdown.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
+export * from './forkHead.js';
 export * from './ffmpegRenderGuard.js';
 export * from './frameQuality.js';
 export * from './gitArgs.js';
