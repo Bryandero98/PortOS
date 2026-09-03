@@ -869,6 +869,7 @@ curl -X POST http://localhost:5555/api/apps \
 curl -X POST http://localhost:5555/api/runs \
   -H "Content-Type: application/json" \
   -d '{
+    "providerId": "claude-code",
     "prompt": "List all files in the current directory",
     "workspacePath": "/path/to/workspace"
   }'
