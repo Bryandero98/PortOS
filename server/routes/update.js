@@ -235,10 +235,19 @@ router.post('/execute', asyncHandler(async (req, res) => {
         io.emit('portos:update:error', { message: result.errorMessage ?? 'Update failed', step: result.failedStep ?? 'unknown' });
       }
     }
-  }).catch(err => {
+  }).catch(async err => {
+    console.error(`❌ Update launch failed for ${tag}: ${err.message}`);
     if (io) {
       io.emit('portos:update:error', { message: err.message, step: 'unknown' });
     }
+    // A rejection means executeUpdate never reached `recordUpdateResult`, which
+    // is what normally clears the lock on both its resolved outcomes. Without
+    // this release the lock we acquired above stays set until the 30-minute
+    // stale timeout — wedging every later update at 409 UPDATE_IN_PROGRESS and
+    // blocking every CoS agent spawn in the meantime (issue #6036).
+    await updateChecker.setUpdateInProgress(false).catch(releaseErr => {
+      console.error(`❌ Failed to release update lock after launch failure: ${releaseErr.message}`);
+    });
   });
 
   res.json({ started: true, tag });

@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
-import { errorMiddleware } from '../lib/errorHandler.js';
+import { errorMiddleware, errorEvents } from '../lib/errorHandler.js';
 
 // Mock the services the execute route depends on. executeUpdate is fire-and-
 // forget in the route (not awaited), so a resolved stub is enough.
@@ -53,9 +53,22 @@ import { readPersistentMindStateForSafetyCheck } from '../services/cosState.js';
 import { filterLiveAgentIds } from '../services/cosAgentLifecycle.js';
 import updateRoutes from './update.js';
 
+// The execute route streams all progress over `req.app.get('io')`; without one
+// attached, every socket emission in the route is a silent no-op and untestable.
+const mockIo = { emit: vi.fn() };
+
+// Attaching `io` also routes every error response through `errorEvents`, and a
+// Node EventEmitter THROWS the payload when 'error' is emitted with no listener
+// — which would break the error envelope for every non-200 case here. The real
+// server always has a subscriber; this no-op stands in for it.
+const noopErrorListener = () => {};
+beforeAll(() => { errorEvents.on('error', noopErrorListener); });
+afterAll(() => { errorEvents.off('error', noopErrorListener); });
+
 const makeApp = () => {
   const app = express();
   app.use(express.json());
+  app.set('io', mockIo);
   app.use('/api/update', updateRoutes);
   app.use(errorMiddleware);
   return app;
@@ -328,6 +341,127 @@ describe('POST /api/update/execute — active CoS agent gating', () => {
 
     expect(res.status).toBe(200);
     expect(executeUpdate).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/update/execute — lock handling and socket progress', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSpawningTasks.clear();
+    updateChecker.setUpdateInProgress.mockResolvedValue(true);
+    updateChecker.getUpdateStatus.mockResolvedValue(baseStatus());
+    executeUpdate.mockResolvedValue({ success: true, version: '1.27.0' });
+    getActiveAgentIds.mockReturnValue([]);
+    vi.mocked(filterLiveAgentIds).mockImplementation(async (ids) => ids);
+    mockCosState.persistentMind = { queuedMessages: [], activeTurn: null };
+    readPersistentMindStateForSafetyCheck.mockImplementation(async () => ({
+      trusted: true,
+      persistentMind: mockCosState.persistentMind,
+    }));
+  });
+
+  // The atomic check-and-set is the only thing standing between two callers and
+  // two concurrent `update.sh` runs; ignoring its `false` return would let the
+  // second one through.
+  it('409s UPDATE_IN_PROGRESS when the lock is already held', async () => {
+    updateChecker.setUpdateInProgress.mockResolvedValue(false);
+    const res = await request(makeApp()).post('/api/update/execute').send({});
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('UPDATE_IN_PROGRESS');
+    expect(executeUpdate).not.toHaveBeenCalled();
+    // A lost race must not release the lock the winner holds.
+    expect(updateChecker.setUpdateInProgress).not.toHaveBeenCalledWith(false);
+  });
+
+  // The tag is handed to update.sh; anything that isn't a plain semver release
+  // is an option/argument-injection vector and must never reach the lock.
+  it('400s INVALID_TAG for a non-semver release tag, without acquiring the lock', async () => {
+    updateChecker.getUpdateStatus.mockResolvedValue(
+      baseStatus({ latestRelease: { tag: 'v1.27.0; rm -rf /', version: '1.27.0' } })
+    );
+    const res = await request(makeApp()).post('/api/update/execute').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_TAG');
+    expect(updateChecker.setUpdateInProgress).not.toHaveBeenCalled();
+    expect(executeUpdate).not.toHaveBeenCalled();
+  });
+
+  // Regression for issue #6036: executeUpdate rejecting (e.g. spawnDetached
+  // throwing before any child listener is attached) skips recordUpdateResult,
+  // so the route is the only place left that can release the lock. Leaving it
+  // set wedges every later update at 409 and blocks all CoS agent spawns.
+  it('releases the update lock and emits an error when executeUpdate rejects', async () => {
+    executeUpdate.mockRejectedValue(new Error('spawn EACCES'));
+    const res = await request(makeApp()).post('/api/update/execute').send({});
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(updateChecker.setUpdateInProgress).toHaveBeenCalledWith(false);
+    });
+    expect(mockIo.emit).toHaveBeenCalledWith('portos:update:error', {
+      message: 'spawn EACCES',
+      step: 'unknown',
+    });
+  });
+
+  // The response is already sent by then, so the socket is the client's only
+  // channel for the outcome and the version it should now expect.
+  it('emits portos:update:complete with the version the script actually landed on', async () => {
+    executeUpdate.mockResolvedValue({ success: true, version: '1.28.3' });
+    await request(makeApp()).post('/api/update/execute').send({});
+    await vi.waitFor(() => {
+      expect(mockIo.emit).toHaveBeenCalledWith('portos:update:complete', {
+        success: true,
+        newVersion: '1.28.3',
+        versionKnown: true,
+      });
+    });
+  });
+
+  // No marker version: fall back to the triggering tag, but flag it as a guess
+  // so the UI doesn't present it as the confirmed installed version.
+  it('falls back to the triggering tag with versionKnown=false when no version is resolved', async () => {
+    executeUpdate.mockResolvedValue({ success: true });
+    await request(makeApp()).post('/api/update/execute').send({});
+    await vi.waitFor(() => {
+      expect(mockIo.emit).toHaveBeenCalledWith('portos:update:complete', {
+        success: true,
+        newVersion: '1.27.0',
+        versionKnown: false,
+      });
+    });
+  });
+
+  // A resolved failure is a different code path from a rejection and must still
+  // surface the failing step rather than the generic 'unknown'.
+  it('emits portos:update:error with the failed step when executeUpdate resolves unsuccessfully', async () => {
+    executeUpdate.mockResolvedValue({
+      success: false,
+      failedStep: 'install',
+      errorMessage: 'Update failed at step "install" (exit code 1)',
+    });
+    await request(makeApp()).post('/api/update/execute').send({});
+    await vi.waitFor(() => {
+      expect(mockIo.emit).toHaveBeenCalledWith('portos:update:error', {
+        message: 'Update failed at step "install" (exit code 1)',
+        step: 'install',
+      });
+    });
+  });
+
+  // The `emit` callback the route hands executeUpdate is what turns update.sh's
+  // STEP: lines into the client's progress bar.
+  it('forwards executeUpdate progress callbacks as portos:update:step events', async () => {
+    executeUpdate.mockImplementation(async (_tag, emit) => {
+      emit('pull', 'running', 'Pulling latest code...');
+      return { success: true, version: '1.27.0' };
+    });
+    await request(makeApp()).post('/api/update/execute').send({});
+    expect(mockIo.emit).toHaveBeenCalledWith('portos:update:step', {
+      step: 'pull',
+      status: 'running',
+      message: 'Pulling latest code...',
+      timestamp: expect.any(Number),
+    });
   });
 });
 
