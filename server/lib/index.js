@@ -19,6 +19,7 @@
 export * from './appDeployFlags.js';
 export * from './apiContractSchemas.js';
 export * from './asyncApiSpec.js';
+export * from './avatarVariants.js';
 export * as agentValidation from './agentValidation.js';
 export * as agentContextValidation from './agentContextValidation.js';
 export * as appleHealthValidation from './appleHealthValidation.js';
