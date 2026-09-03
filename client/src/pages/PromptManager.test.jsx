@@ -14,6 +14,8 @@ const savePrompt = vi.fn();
 const deletePrompt = vi.fn();
 const createPrompt = vi.fn();
 const getPromptVariables = vi.fn();
+const createPromptVariable = vi.fn();
+const savePromptVariable = vi.fn();
 const deletePromptVariable = vi.fn();
 const getJobSkills = vi.fn(() => Promise.resolve({ skills: [] }));
 const getJobSkill = vi.fn(() => Promise.resolve({}));
@@ -29,8 +31,8 @@ vi.mock('../services/apiPrompts', () => ({
   previewPrompt: vi.fn(),
   getPromptUsage: (...a) => getPromptUsage(...a),
   getPromptVariables: (...a) => getPromptVariables(...a),
-  createPromptVariable: vi.fn(),
-  savePromptVariable: vi.fn(),
+  createPromptVariable: (...a) => createPromptVariable(...a),
+  savePromptVariable: (...a) => savePromptVariable(...a),
   deletePromptVariable: (...a) => deletePromptVariable(...a),
   getJobSkills: (...a) => getJobSkills(...a),
   getJobSkill: (...a) => getJobSkill(...a),
@@ -76,6 +78,8 @@ const currentSearch = () => screen.getByTestId('location-search').textContent;
 // individual suites override only what they assert on.
 beforeEach(() => {
   getPromptVariables.mockReset().mockResolvedValue({ variables: {} });
+  createPromptVariable.mockReset().mockResolvedValue({ success: true });
+  savePromptVariable.mockReset().mockResolvedValue({ success: true });
   deletePromptVariable.mockReset().mockResolvedValue({ success: true });
 });
 
@@ -489,6 +493,149 @@ describe('PromptManager variable deletion', () => {
 
     expect(screen.queryByText('Delete "Tone Guide"?')).toBeNull();
     expect(screen.getByText('Delete "House Style"?')).toBeTruthy();
+  });
+});
+
+// Saving a variable used to deselect it and blank the editor with no toast, so
+// a successful save read as a crash; switching variables threw unsaved edits
+// away silently (#6023).
+describe('PromptManager variable editing', () => {
+  const VARIABLES = {
+    'tone-guide': { name: 'Tone Guide', category: 'style', content: 'stay wry' },
+    'house-style': { name: 'House Style', category: 'style', content: 'oxford comma' },
+  };
+
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getPromptVariables.mockResolvedValue({ variables: VARIABLES });
+    toast.success.mockReset();
+  });
+
+  const contentBox = () => screen.getByPlaceholderText('Variable content...');
+  const saveButton = () => screen.getByRole('button', { name: /^save$/i });
+
+  // Waits on the hydrated CONTENT, not just the heading: the heading renders
+  // from the URL param a commit before the effect fills the form, so keying off
+  // it makes every later assertion a race against an empty editor.
+  const openVariable = async (key = 'tone-guide') => {
+    renderPage(`/prompts?tab=variables&var=${key}`);
+    await screen.findByDisplayValue(VARIABLES[key].content);
+  };
+
+  it('keeps the saved variable open in the editor and confirms with a toast', async () => {
+    await openVariable();
+
+    fireEvent.change(contentBox(), { target: { value: 'stay dry' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Variable "Tone Guide" saved'));
+    expect(savePromptVariable).toHaveBeenCalledWith(
+      'tone-guide', expect.objectContaining({ content: 'stay dry' }), { silent: true },
+    );
+    // The refetch below returns the pre-save fixture; the editor must NOT be
+    // re-hydrated from it, deselected, or blanked.
+    expect(currentSearch()).toContain('var=tone-guide');
+    expect(screen.getByText('Edit: tone-guide')).toBeTruthy();
+    expect(contentBox().value).toBe('stay dry');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('selects the created variable in the URL and confirms with a toast', async () => {
+    // The list only holds the new key after the post-create refetch, which is
+    // what the URL waits for.
+    getPromptVariables
+      .mockResolvedValueOnce({ variables: VARIABLES })
+      .mockResolvedValue({ variables: { ...VARIABLES, 'aside-voice': { name: 'Aside Voice', content: 'wink' } } });
+    renderPage('/prompts?tab=variables');
+    await screen.findByText('Tone Guide');
+
+    fireEvent.change(screen.getByPlaceholderText('variableKey'), { target: { value: 'aside-voice' } });
+    fireEvent.change(contentBox(), { target: { value: 'wink' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Variable "aside-voice" created'));
+    expect(createPromptVariable).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'aside-voice', content: 'wink' }), { silent: true },
+    );
+    await waitFor(() => expect(currentSearch()).toContain('var=aside-voice'));
+    expect(screen.getByText('Edit: aside-voice')).toBeTruthy();
+    expect(contentBox().value).toBe('wink');
+  });
+
+  it('confirms a delete with a toast', async () => {
+    renderPage('/prompts?tab=variables');
+    await screen.findByText('Tone Guide');
+
+    fireEvent.click(screen.getByLabelText('Delete variable Tone Guide'));
+    fireEvent.click(within(screen.getByLabelText('Confirm delete variable Tone Guide'))
+      .getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Variable "Tone Guide" deleted'));
+  });
+
+  it('asks before another variable replaces unsaved edits', async () => {
+    await openVariable();
+    fireEvent.change(contentBox(), { target: { value: 'stay dry' } });
+
+    fireEvent.click(screen.getByText('House Style'));
+
+    // Parked, not switched: the discard question takes over the clicked row.
+    expect(screen.getByText('Discard unsaved changes to "Tone Guide"?')).toBeTruthy();
+    expect(currentSearch()).toContain('var=tone-guide');
+    expect(contentBox().value).toBe('stay dry');
+  });
+
+  it('keeps the edits when the discard prompt is cancelled', async () => {
+    await openVariable();
+    fireEvent.change(contentBox(), { target: { value: 'stay dry' } });
+    fireEvent.click(screen.getByText('House Style'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^keep editing$/i }));
+
+    expect(screen.queryByText('Discard unsaved changes to "Tone Guide"?')).toBeNull();
+    expect(currentSearch()).toContain('var=tone-guide');
+    expect(contentBox().value).toBe('stay dry');
+    expect(screen.getByText('House Style')).toBeTruthy();
+  });
+
+  it('switches to the clicked variable once the discard is confirmed', async () => {
+    await openVariable();
+    fireEvent.change(contentBox(), { target: { value: 'stay dry' } });
+    fireEvent.click(screen.getByText('House Style'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^discard$/i }));
+
+    await screen.findByDisplayValue('oxford comma');
+    expect(currentSearch()).toContain('var=house-style');
+    expect(screen.getByText('Edit: house-style')).toBeTruthy();
+  });
+
+  it('asks before the add button discards an unsaved draft', async () => {
+    await openVariable();
+    fireEvent.change(contentBox(), { target: { value: 'stay dry' } });
+
+    fireEvent.click(screen.getByLabelText('Add variable'));
+
+    expect(screen.getByText('Discard unsaved changes to "Tone Guide"?')).toBeTruthy();
+    expect(currentSearch()).toContain('var=tone-guide');
+
+    fireEvent.click(screen.getByRole('button', { name: /^discard$/i }));
+
+    await screen.findByText('New Variable');
+    expect(currentSearch()).not.toContain('var=');
+    expect(contentBox().value).toBe('');
+  });
+
+  it('does not ask when the edit is undone back to the saved value', async () => {
+    await openVariable();
+    fireEvent.change(contentBox(), { target: { value: 'stay dry' } });
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+
+    fireEvent.change(contentBox(), { target: { value: 'stay wry' } });
+    fireEvent.click(screen.getByText('House Style'));
+
+    expect(screen.queryByText('Discard unsaved changes to "Tone Guide"?')).toBeNull();
+    await waitFor(() => expect(currentSearch()).toContain('var=house-style'));
   });
 });
 
