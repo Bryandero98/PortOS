@@ -28,8 +28,8 @@
  * report their working setup as broken.
  */
 
-import { localRuntimeNamespace, isOpencodeCommand } from './providerModels.js';
-import { opencodeLocalBaseUrl, parseOpencodeConfigContent } from './opencodeConfig.js';
+import { localRuntimeNamespace, isOpencodeCommand, parseOpencodeConfigContent } from './providerModels.js';
+import { opencodeLocalBaseUrl } from './opencodeConfig.js';
 import { PORTS } from './ports.js';
 import { isLocalInstanceHost, isLocalInstanceEndpoint, localEndpointPort } from './localEndpoint.js';
 

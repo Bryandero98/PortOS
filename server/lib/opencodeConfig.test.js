@@ -488,7 +488,9 @@ describe('hardenOpencodeConfigForNoTool', () => {
       'gemma3:27b',
     );
 
-    expect(config.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny' });
+    // The string shorthand denies EVERY permission category, including any
+    // OpenCode adds later; naming three would leave a new one at its default.
+    expect(config.permission).toBe('deny');
     expect(config.tools).toEqual({ '*': false });
     // Per-agent settings override the root block, and OpenCode's built-in
     // `build`/`plan` agents carry tool maps of their own.
@@ -504,6 +506,33 @@ describe('hardenOpencodeConfigForNoTool', () => {
     expect(config.plugin).toEqual([]);
     expect(config.share).toBe('disabled');
     expect(config.autoupdate).toBe(false);
+  });
+
+  // The stage's effort control writes to `agent.build` (OpenCode's default
+  // agent), but this profile runs `--agent plan` — so an uncopied level would
+  // silently leave the gate on the backend default.
+  it('carries the stage generation settings onto the agent it actually runs', () => {
+    const config = harden(
+      { command: 'opencode', ollamaBacked: true, temperature: 0.3, effort: 'high', models: ['gemma3:27b'] },
+      'gemma3:27b',
+    );
+    expect(config.agent.plan.reasoningEffort).toBe('high');
+    expect(config.agent.plan.temperature).toBe(0.3);
+  });
+
+  it('lets a user-declared plan agent keep its own generation settings', () => {
+    const stored = JSON.stringify({ agent: { plan: { reasoningEffort: 'low' } } });
+    const config = harden(
+      {
+        command: 'opencode',
+        ollamaBacked: true,
+        effort: 'high',
+        models: ['gemma3:27b'],
+        envVars: { OPENCODE_CONFIG_CONTENT: stored },
+      },
+      'gemma3:27b',
+    );
+    expect(config.agent.plan.reasoningEffort).toBe('low');
   });
 
   it('leaves the endpoint and the auxiliary-model pin intact', () => {

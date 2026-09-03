@@ -72,6 +72,7 @@ import {
   isOpencodeCommand,
   prefixOpencodeModel,
   localRuntimeNamespace,
+  opencodeProviderIsLocalOnly,
   OPENCODE_PUBLIC_REVIEW_AGENT,
   applyLeanClaudeArgs,
 } from './providerModels.js';
@@ -339,19 +340,31 @@ function opencodeCliArgs(baseArgs, { model, provider }) {
 }
 
 /**
- * An OpenCode wrapper fronting a LOCAL OpenAI-compatible daemon (Ollama,
- * MTPLX, llama.cpp, vLLM, SGLang) — not a hosted gateway.
+ * An OpenCode wrapper this install can actually run the tool-free gate on.
+ * Three conditions, each closing a different way the stage would otherwise be
+ * offered and then fail — or, worse, appear to succeed:
  *
- * The gate stage's enforcement rides in `OPENCODE_CONFIG_CONTENT`, and
- * `cliChildEnv.js` keeps that variable through the public-review env allowlist
- * only when every endpoint it declares is on this machine (a gateway config
- * carries that gateway's cloud API key, which stays stripped). So a
- * gateway-backed wrapper would be offered a stage it could never authenticate —
- * scope the recipe to the namespaces that can actually run it instead.
+ *   - **an Ollama namespace.** `validatePublicReviewModel` can only probe an
+ *     Ollama catalog for the authoritative "no `tools` capability" answer, and
+ *     rejects every other local runtime with `public-review-runtime-unsupported`.
+ *     Offering MTPLX / llama.cpp / vLLM / SGLang here would put a permanently
+ *     blocking choice in the picker. (A hosted gateway is excluded by
+ *     `localRuntimeNamespace` before that.)
+ *   - **only local endpoints.** The enforcement rides in
+ *     `OPENCODE_CONFIG_CONTENT`, which `cliChildEnv.js` keeps through the
+ *     public-review env allowlist under the SAME `opencodeConfigIsLocalOnly`
+ *     rule. A provider carrying `ollamaBacked` but a relocated off-box
+ *     `baseURL` would pass a marker-only check here, then have its hardened
+ *     config stripped there — and OpenCode falls back to the user's own
+ *     `~/.config/opencode`, tools and MCP servers intact, while the gate still
+ *     reports as enforced. Sharing one predicate is what makes that
+ *     unrepresentable.
+ *   - **a spawnable binary**, as for every other vendor.
  */
 const isLocalOpencodeProvider = (provider) => isDirectBinaryProvider(provider)
   && isOpencodeCommand(provider?.command)
-  && Boolean(localRuntimeNamespace(provider));
+  && localRuntimeNamespace(provider) === 'ollama'
+  && opencodeProviderIsLocalOnly(provider);
 
 /**
  * OpenCode is the natural harness for a local Ollama model — but unlike every
@@ -365,8 +378,9 @@ const isLocalOpencodeProvider = (provider) => isDirectBinaryProvider(provider)
  * shape grok's recipe uses), so `run`/`-m` namespacing cannot drift from the
  * normal path. Provider args are deliberately not forwarded: a saved
  * `--agent build` would select the tool-enabled agent. There is no effort flag
- * to add — `opencode run` has none, and a level rides the config's
- * `agent.<name>.reasoningEffort` exactly as it does for an ordinary run.
+ * to add — `opencode run` has none; the level rides
+ * `agent.<name>.reasoningEffort` in the config, which the harden step copies
+ * onto this agent (see `hardenOpencodeConfigForNoTool`).
  */
 function opencodePublicReviewSpawnArgs(provider, { effectiveModel } = {}) {
   return {

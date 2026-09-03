@@ -122,13 +122,52 @@ describe('public-review provider postures', () => {
   });
 
   // The gate's enforcement rides in OPENCODE_CONFIG_CONTENT, which the
-  // public-review env allowlist keeps only for a loopback config — so a wrapper
-  // fronting a hosted gateway must not be offered a stage it cannot
-  // authenticate.
+  // public-review env allowlist keeps only for a config declaring on-box
+  // endpoints — so a wrapper fronting a hosted gateway must not be offered a
+  // stage it cannot authenticate.
   it('withholds the gate from an OpenCode wrapper with no local backend', () => {
     const gateway = { id: 'opencode-openrouter-tui', type: 'tui', command: 'opencode', gatewayBacked: 'openrouter' };
     expect(publicReviewPosturesForProvider(gateway)).toEqual([PUBLIC_REVIEW_ACTIONS_POSTURE]);
     expect(supportsPublicReviewProvider(gateway)).toBe(false);
+  });
+
+  // The marker alone is not enough, and this is the security case, not a tidy-up:
+  // `cliChildEnv.js` strips a config whose endpoint is off-box, and a stripped
+  // config does not harden the child — OpenCode falls back to reading the user's
+  // own ~/.config/opencode with its tools, plugins and MCP servers intact, while
+  // the stage still reports an enforced tool-free gate. Eligibility must use the
+  // same locality rule the allowlist does.
+  it('withholds the gate from an ollama-marked wrapper pointed off-box', () => {
+    const relocated = {
+      ...opencodeOllama,
+      envVars: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          provider: { ollama: { options: { baseURL: 'http://192.0.2.10:11434/v1' } } },
+        }),
+      },
+    };
+    expect(supportsPublicReviewProvider(relocated)).toBe(false);
+    // A config that keeps the daemon on this machine is still eligible.
+    expect(supportsPublicReviewProvider({
+      ...opencodeOllama,
+      envVars: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          provider: { ollama: { options: { baseURL: 'http://127.0.0.1:11434/v1' } } },
+        }),
+      },
+    })).toBe(true);
+  });
+
+  // Every other local runtime is rejected at spawn time by
+  // `validatePublicReviewModel` (`public-review-runtime-unsupported` — only an
+  // Ollama catalog can be probed for the authoritative no-tools answer), so
+  // offering them would put a permanently blocking choice in the picker.
+  it('withholds the gate from local runtimes the model check cannot validate', () => {
+    for (const marker of ['llamaBacked', 'vllmBacked', 'sglangBacked', 'mtplxBacked']) {
+      const provider = { id: `opencode-${marker}`, type: 'tui', command: 'opencode', [marker]: true };
+      expect(supportsPublicReviewProvider(provider), marker).toBe(false);
+      expect(publicReviewPosturesForProvider(provider), marker).toEqual([PUBLIC_REVIEW_ACTIONS_POSTURE]);
+    }
   });
 
   it('builds the OpenCode gate on its read-only agent with a namespaced model and no provider args', () => {

@@ -4,6 +4,7 @@ import { posixPath } from './testHelper.js';
 import { buildCliChildEnv, buildPublicReviewCliEnv, composeProviderEnv } from './cliChildEnv.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE, PUBLIC_REVIEW_EXECUTION_PROFILE } from './agentExecutionProfiles.js';
 import { cliProviderAuthDescriptor } from './processEnv.js';
+import { supportsPublicReviewProvider } from './providerVendors.js';
 import { AGENT_GUARD_BIN } from './agentGuard/index.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
 import { readFileSync } from 'node:fs';
@@ -207,6 +208,36 @@ describe('buildCliChildEnv — public-review profile, OpenCode harness', () => {
     expect(config.permission).toBe('deny'); // the provider's stored value, untouched
     expect(config.provider.ollama.models['qwen2.5:7b'].tool_call).toBe(true);
     expect(config).not.toHaveProperty('tools');
+  });
+
+  // The load-bearing invariant: whatever the vendor row declares eligible for
+  // the gate must keep its hardened config through this allowlist. If the two
+  // sides ever disagree, the stage spawns with the config stripped — OpenCode
+  // then reads the user's own ~/.config/opencode, tools intact, while every
+  // signal still reports an enforced tool-free gate.
+  it('keeps the config for exactly the providers the vendor row makes eligible', () => {
+    const relocated = {
+      ...OLLAMA_OPENCODE,
+      type: 'tui',
+      envVars: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          provider: { ollama: { options: { baseURL: 'http://192.0.2.10:11434/v1' } } },
+        }),
+      },
+    };
+    const eligible = { ...OLLAMA_OPENCODE, type: 'tui' };
+    for (const provider of [eligible, relocated]) {
+      const env = buildCliChildEnv({
+        provider,
+        model: 'qwen2.5:7b',
+        cwd: '/tmp/public-review',
+        safetyProfile: PUBLIC_REVIEW_EXECUTION_PROFILE,
+      });
+      expect(
+        Object.hasOwn(env, 'OPENCODE_CONFIG_CONTENT'),
+        provider === eligible ? 'eligible provider kept its config' : 'off-box provider was stripped',
+      ).toBe(supportsPublicReviewProvider(provider));
+    }
   });
 
   it('strips a config declaring a non-loopback endpoint, key and all', () => {

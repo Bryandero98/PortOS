@@ -22,34 +22,13 @@ import {
   getOpencodeLocalProviderNamespace,
   isOpencodeCommand,
   prefixOpencodeModel,
+  parseOpencodeConfigContent,
   OPENCODE_PUBLIC_REVIEW_AGENT,
 } from './providerModels.js';
 import { PROVIDER_GATEWAYS, PROVIDER_GATEWAY_IDS, gatewayById, isGatewayNamespace } from './providerGateways.js';
 import { isPublicReviewNoToolProfile } from './agentExecutionProfiles.js';
 import { isPlainObject } from './objects.js';
 import { PORTS } from './ports.js';
-
-/**
- * Parse a stored `OPENCODE_CONFIG_CONTENT` value, or null when it is absent or
- * no longer valid JSON (a hand-edited config tells us nothing, so every caller
- * falls back to its own default rather than guessing).
- *
- * Shared because three call sites read the same variable and must agree on what
- * counts as unusable: the merge base below, `localProviderRuntime.js`'s endpoint
- * lookup, and `cliChildEnv.js`'s public-review allowlist.
- *
- * @param {unknown} value
- * @returns {object|null}
- */
-export function parseOpencodeConfigContent(value) {
-  if (typeof value !== 'string' || value === '') return null;
-  try {
-    const parsed = JSON.parse(value);
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
 
 const LLAMA_SERVER_BASE_URL = `http://127.0.0.1:${PORTS.LLAMA_SERVER}/v1`;
 const VLLM_QWEN_BASE_URL = `http://127.0.0.1:${PORTS.VLLM_QWEN}/v1`;
@@ -303,9 +282,17 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
 
 // `'*'` is OpenCode's documented wildcard for a tool map; `deny` is its hard
 // permission refusal (as opposed to `ask`, which in a headless `opencode run`
-// would simply hang). Copied on use — both land in a mutable config.
+// would simply hang).
+//
+// At the ROOT the string shorthand is used rather than the per-action object:
+// it denies EVERY permission category, including any OpenCode adds later, where
+// naming `edit`/`bash`/`webfetch` explicitly would silently leave a new one at
+// its default. The shorthand is the same form the shipped provider records
+// already store (`{"permission":"allow"}`), so it is known-good. Per-agent
+// entries keep the explicit object, which is the shape documented there.
 const DENY_ALL_TOOLS = Object.freeze({ '*': false });
-const DENY_ALL_PERMISSIONS = Object.freeze({ edit: 'deny', bash: 'deny', webfetch: 'deny' });
+const DENY_ALL_PERMISSIONS = 'deny';
+const DENY_ALL_AGENT_PERMISSIONS = Object.freeze({ edit: 'deny', bash: 'deny', webfetch: 'deny' });
 
 const asObject = (value) => (isPlainObject(value) ? value : {});
 
@@ -317,8 +304,8 @@ const asObject = (value) => (isPlainObject(value) ? value : {});
  * so THIS is the vendor's enforced recipe, and `providerVendors.js` pairs it
  * with `run --agent plan`. Four controls, none of them redundant with another:
  *
- *   1. the root `permission` block denies edit/bash/webfetch, covering any
- *      agent the config never names;
+ *   1. the root `permission` denies every category, covering any agent the
+ *      config never names;
  *   2. every agent gets the same denials plus an emptied tool map — per-agent
  *      settings OVERRIDE the root block, and OpenCode's built-in `build` and
  *      `plan` agents carry tool maps of their own, so hardening only the root
@@ -337,14 +324,22 @@ const asObject = (value) => (isPlainObject(value) ? value : {});
  */
 function hardenOpencodeConfigForNoTool(config) {
   if (!isPlainObject(config)) return config;
-  config.permission = { ...DENY_ALL_PERMISSIONS };
+  config.permission = DENY_ALL_PERMISSIONS;
   config.tools = { ...DENY_ALL_TOOLS };
   const agents = asObject(config.agent);
   const agentNames = new Set([...Object.keys(agents), 'build', OPENCODE_PUBLIC_REVIEW_AGENT]);
+  // `buildAgentGeneration` writes the stage's temperature / topP / thinking /
+  // reasoningEffort onto `agent.build` — OpenCode's default agent — but this
+  // profile runs `--agent plan`. Seed the review agent from `build` so the
+  // stage's configured effort actually reaches the model that runs, instead of
+  // silently falling back to the backend default. An explicit `agent.plan` in
+  // the user's own config still wins (it is spread after).
+  const generationSource = asObject(agents.build);
   config.agent = Object.fromEntries([...agentNames].map((name) => [name, {
+    ...(name === OPENCODE_PUBLIC_REVIEW_AGENT ? generationSource : {}),
     ...asObject(agents[name]),
     tools: { ...DENY_ALL_TOOLS },
-    permission: { ...DENY_ALL_PERMISSIONS },
+    permission: { ...DENY_ALL_AGENT_PERMISSIONS },
   }]));
   for (const entry of Object.values(asObject(config.provider))) {
     const models = asObject(entry?.models);

@@ -41,10 +41,14 @@
  */
 
 import { withSpawnCwdEnv } from './spawnCwd.js';
-import { buildOpencodeEnvVars, parseOpencodeConfigContent } from './opencodeConfig.js';
-import { localRuntimeNamespace, isClaudeCommand } from './providerModels.js';
+import { buildOpencodeEnvVars } from './opencodeConfig.js';
+import {
+  localRuntimeNamespace,
+  isClaudeCommand,
+  parseOpencodeConfigContent,
+  opencodeConfigIsLocalOnly,
+} from './providerModels.js';
 import { isLocalInstanceEndpoint } from './localEndpoint.js';
-import { isPlainObject } from './objects.js';
 import { agentGuardEnv } from './agentGuard/index.js';
 import { buildSafeCliBaseEnv } from './processEnv.js';
 import { isPublicReviewNoToolProfile, isPublicReviewRestrictedProfile } from './agentExecutionProfiles.js';
@@ -181,11 +185,12 @@ function localAnthropicCredentialEnv(env) {
  */
 function opencodeLocalConfigEnv(env) {
   const raw = env?.OPENCODE_CONFIG_CONTENT;
-  const declared = parseOpencodeConfigContent(raw)?.provider;
-  const entries = isPlainObject(declared) ? Object.values(declared) : [];
-  const allLocal = entries.length > 0
-    && entries.every((entry) => isLocalInstanceEndpoint(entry?.options?.baseURL));
-  return allLocal ? { OPENCODE_CONFIG_CONTENT: raw } : {};
+  // `requireDeclaration` marks this as the provenance-checking caller: a value
+  // declaring no endpoint is not a config PortOS built for an eligible provider,
+  // so it is dropped with every other inherited env var.
+  return opencodeConfigIsLocalOnly(parseOpencodeConfigContent(raw), { requireDeclaration: true })
+    ? { OPENCODE_CONFIG_CONTENT: raw }
+    : {};
 }
 
 function allowlistEnv(env, keys) {
