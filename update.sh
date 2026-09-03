@@ -253,8 +253,13 @@ trap 'exit 129' HUP
 # The daemon itself is left alone here; whether it also needs an in-place reload
 # is decided in the restart step below, against the freshly installed pm2.
 step "pm2-stop" "running" "Stopping PortOS apps..."
-run node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent || true
+# Arm the latch BEFORE the delete, not after: bash runs a pending signal trap
+# only between statements, so a TERM arriving while `pm2 delete` is still
+# running would otherwise reach the EXIT trap with the latch still 0 and skip
+# the recovery — the exact window the signal traps exist for. Recovering apps
+# that were never deleted is a harmless no-op restart on an already-failing path.
 PM2_APPS_DOWN=1
+run node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent || true
 step "pm2-stop" "done" "Apps stopped"
 log ""
 

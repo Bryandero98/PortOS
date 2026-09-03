@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'child_process';
-import { mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, chmodSync } from 'fs';
+import { mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { makeGitSandbox, destroyGitSandbox, SKIP_HEAVY_INTEGRATION } from '../server/lib/gitTestRepo.js';
@@ -36,11 +36,12 @@ const STUB_SCRIPTS = [
  */
 async function makeSandbox({
   origin = true, failAfterDelete = true, npmShim = 'ok',
-  forceClean = false, pm2OnPath = false, healthy = true
+  forceClean = false, pm2OnPath = false, healthy = true, stallDelete = false
 } = {}) {
   const { scratch, repo } = await makeGitSandbox({ origin, prefix: 'portos-update-guard-' });
   const bin = join(scratch, 'bin');
   const calls = join(scratch, 'pm2-calls.log');
+  const releaseFile = join(scratch, 'pm2-delete-stalled');
 
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(repo, 'scripts'), { recursive: true });
@@ -51,11 +52,22 @@ async function makeSandbox({
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'sandbox', version: '0.0.0' }));
   writeFileSync(join(repo, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
 
-  // Records every pm2 invocation the script makes, in order.
+  // Records every pm2 invocation the script makes, in order. When stallDelete is
+  // set the `delete` call logs and then BLOCKS until the test deletes the release
+  // file, so a signal can be delivered while the delete is still running — the
+  // window a latch armed after the delete would miss.
   writeFileSync(join(repo, 'node_modules', 'pm2', 'package.json'), JSON.stringify({ name: 'pm2', version: '0.0.0' }));
   writeFileSync(
     join(repo, 'node_modules', 'pm2', 'bin', 'pm2'),
-    `require('fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');\n`
+    `const fs = require('fs');
+const args = process.argv.slice(2).join(' ');
+fs.appendFileSync(${JSON.stringify(calls)}, args + '\\n');
+if (${stallDelete} && args.startsWith('delete')) {
+  const release = ${JSON.stringify(releaseFile)};
+  fs.writeFileSync(release, 'stalled');
+  while (fs.existsSync(release)) { try { require('child_process').execFileSync('sleep', ['0.05']); } catch { break; } }
+}
+`
   );
 
   writeFileSync(join(repo, 'scripts', 'trusted-rebuilds.js'), `process.exit(${failAfterDelete ? 1 : 0});\n`);
@@ -88,7 +100,7 @@ async function makeSandbox({
     chmodSync(join(bin, 'pm2'), 0o755);
   }
 
-  return { scratch, repo, bin, calls, forceClean };
+  return { scratch, repo, bin, calls, forceClean, releaseFile };
 }
 
 // The three runs share no state, so they go out concurrently rather than
@@ -106,14 +118,14 @@ function runUpdate(sandbox, { onStart } = {}) {
   });
 }
 
-// Resolves once the sandbox's pm2 log contains a matching call, so a test can
-// act at a precise point in the window instead of guessing at a delay.
-function waitForPm2Call(sandbox, prefix, timeoutMs = 30000) {
+// Resolves once a sentinel appears, so a test can act at a precise point in the
+// window instead of guessing at a delay.
+function waitForFile(path, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const poll = () => {
-      if (pm2Calls(sandbox).some(c => c.startsWith(prefix))) return resolve();
-      if (Date.now() > deadline) return reject(new Error(`timed out waiting for pm2 "${prefix}"`));
+      if (existsSync(path)) return resolve();
+      if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${path}`));
       setTimeout(poll, 25);
     };
     poll();
@@ -187,15 +199,20 @@ describe.skipIf(process.platform === 'win32' || SKIP_HEAVY_INTEGRATION)('update.
     expect(results.pm2Wiped.status).not.toBe(0);
   });
 
-  it('restarts the apps when the update is killed mid-window', async () => {
-    // Without the TERM/INT/HUP traps bash runs NO exit trap for a fatal signal,
-    // so the apps would stay deleted.
-    const box = await makeSandbox({ npmShim: 'slow' });
+  it('restarts the apps when the update is killed during the delete itself', async () => {
+    // Two guards at once: without the TERM/INT/HUP traps bash runs NO exit trap
+    // for a fatal signal, and with the latch armed AFTER the delete the trap
+    // would see it unset — bash only runs a pending trap between statements, so
+    // a signal delivered while `pm2 delete` is still running lands here.
+    const box = await makeSandbox({ stallDelete: true });
     try {
       const result = await runUpdate(box, {
         onStart: (child) => {
-          waitForPm2Call(box, 'delete ecosystem.config.cjs')
-            .then(() => child.kill('SIGTERM'))
+          waitForFile(box.releaseFile)
+            .then(() => {
+              child.kill('SIGTERM');
+              rmSync(box.releaseFile, { force: true });
+            })
             .catch(() => child.kill('SIGKILL'));
         }
       });
@@ -236,13 +253,28 @@ describe('update.ps1 headless-install guard', () => {
   it('routes every fatal exit through the recovery', () => {
     const exits = ps1
       .map((line, i) => ({ line: line.trim(), number: i + 1 }))
-      .filter(({ line }) => /(^|[{;]\s*)exit\b/.test(line) || line.includes('[Environment]::Exit('));
+      .filter(({ line }) => /(^|[{;]\s*)exit\b/i.test(line) || /\[Environment\]::Exit\(/i.test(line));
 
     const offenders = exits.filter(({ line }) => !SANCTIONED_EXITS.includes(line));
     expect(offenders, `exit(s) bypassing Restore-Pm2Apps: ${JSON.stringify(offenders)}`).toEqual([]);
     // ...and both sanctioned exits must still be there, so the guard can't be
     // "satisfied" by deleting the exit inside Stop-UpdateScript.
     expect([...new Set(exits.map(e => e.line))].sort()).toEqual([...SANCTIONED_EXITS].sort());
+  });
+
+  it('forces the Resolve-Pm2Command result into an array', () => {
+    // PowerShell unrolls a single-element array into a bare string, and
+    // `$pm2 + @('start', …)` on a string concatenates into one garbage token
+    // instead of an argument list — so the PATH fallback would never start pm2.
+    expect(ps1.some(line => line.includes('$pm2 = @(Resolve-Pm2Command)'))).toBe(true);
+    expect(ps1.some(line => line.includes("return ,@('pm2')"))).toBe(true);
+  });
+
+  it('arms the latch before the delete, not after', () => {
+    const armed = lineOf('$script:Pm2AppsDown = $true');
+    const deleted = lineOf('pm2 delete ecosystem.config.cjs --silent');
+    expect(armed).toBeGreaterThan(-1);
+    expect(armed).toBeLessThan(deleted);
   });
 
   it('defines the recovery before every call site that depends on it', () => {

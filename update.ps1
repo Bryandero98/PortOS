@@ -104,10 +104,13 @@ $script:Pm2AppsDown = $false
 # back to one on PATH, or to npx, is fine for a recovery.
 function Resolve-Pm2Command {
     if (Test-Path "$RootDir\node_modules\pm2\bin\pm2") {
-        return @('node', './node_modules/pm2/bin/pm2')
+        return @('node', (Join-Path $RootDir 'node_modules/pm2/bin/pm2'))
     }
     if (Get-Command pm2 -ErrorAction SilentlyContinue) {
-        return @('pm2')
+        # `,` keeps PowerShell from unrolling this single-element array into a
+        # bare string — `$pm2 + @('start', …)` on a string concatenates into one
+        # garbage token instead of building an argument list.
+        return ,@('pm2')
     }
     $pinned = try { (Get-Content "$RootDir\package.json" -Raw | ConvertFrom-Json).dependencies.pm2 } catch { $null }
     if ($pinned) { return @('npx', '--yes', "pm2@$pinned") }
@@ -118,16 +121,18 @@ function Restore-Pm2Apps {
     if (-not $script:Pm2AppsDown) { return }
     $script:Pm2AppsDown = $false
     try {
-        $pm2 = Resolve-Pm2Command
+        # @() again at the call site, so no future branch can regress the shape.
+        $pm2 = @(Resolve-Pm2Command)
         Write-SafeHost "⚠️  Update is exiting with PortOS's apps deleted — restarting them so the install isn't left headless." -ForegroundColor Yellow
         Step "restart" "running" "Update failed — restarting PortOS so it isn't left down..."
         # `pm2 start` exiting 0 is not proof the server came back (same reason the
         # verify step below exists) — and this path starts a HALF-INSTALLED tree, so
         # a start that exits 0 and then crash-loops is the likely case here, not the
         # edge case. Never claim a recovery the health probe doesn't confirm.
-        $startArgs = $pm2 + @('start', 'ecosystem.config.cjs')
+        $ecosystem = Join-Path $RootDir 'ecosystem.config.cjs'
+        $startArgs = $pm2 + @('start', $ecosystem)
         Invoke-Logged @startArgs
-        if ($LASTEXITCODE -eq 0) { Invoke-Logged node scripts/verify-server-health.js }
+        if ($LASTEXITCODE -eq 0) { Invoke-Logged node (Join-Path $RootDir 'scripts/verify-server-health.js') }
         if ($LASTEXITCODE -eq 0) {
             $saveArgs = $pm2 + @('save')
             Invoke-Logged @saveArgs
@@ -138,7 +143,7 @@ function Restore-Pm2Apps {
             Write-SafeHost "❌ PortOS is not answering /api/system/health." -ForegroundColor Red
             # Name the pm2 that actually exists — the checkout's copy may be the
             # thing a failed install just deleted, so printing it would be a dead end.
-            Write-SafeHost "    Recover with: $($pm2 -join ' ') start ecosystem.config.cjs" -ForegroundColor Red
+            Write-SafeHost "    Recover with: $($pm2 -join ' ') start $ecosystem" -ForegroundColor Red
         }
     } catch {
         # A throwing recovery must not replace the real update failure, and must
@@ -338,8 +343,10 @@ Write-SafeHost ""
 # The daemon itself is left alone here; whether it also needs an in-place reload
 # is decided in the restart step below, against the freshly installed pm2.
 Step "pm2-stop" "running" "Stopping PortOS apps..."
-Invoke-Logged node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent
+# Arm the latch BEFORE the delete (see update.sh) so an interruption during the
+# delete itself still reaches the recovery.
 $script:Pm2AppsDown = $true
+Invoke-Logged node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent
 $global:LASTEXITCODE = 0
 Step "pm2-stop" "done" "Apps stopped"
 Write-SafeHost ""
