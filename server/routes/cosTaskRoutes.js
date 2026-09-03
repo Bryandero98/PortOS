@@ -44,6 +44,7 @@ const enhanceTaskSchema = z.object({
 // operator action that happened.
 const TASK_CREATE_PAYLOAD_FIELDS = [
   'prompt', 'description', 'context', 'provider', 'model', 'effort', 'app',
+  'orchestrationMode', 'orchestrationProfile',
   'useWorktree', 'openPR', 'prCompletion', 'planOnly', 'reviewLoop', 'reviewers',
   'approvalRequired',
   // The one create field with an open shape (`cosTaskDiagnosticsSchema` is a
@@ -434,6 +435,10 @@ router.put('/tasks/:id', asyncHandler(async (req, res) => {
   if (fields.model !== undefined) updates.model = fields.model;
   if (fields.provider !== undefined) updates.provider = fields.provider;
   if (fields.effort !== undefined) updates.effort = fields.effort;
+  // Orchestrated execution (#5992). `null` is the explicit clear the schema
+  // preserves — the store re-normalizes and drops the key (absent-vs-cleared).
+  if (fields.orchestrationMode !== undefined) updates.orchestrationMode = fields.orchestrationMode;
+  if (fields.orchestrationProfile !== undefined) updates.orchestrationProfile = fields.orchestrationProfile;
   if (fields.temperature !== undefined) updates.temperature = fields.temperature;
   if (fields.thinking !== undefined) updates.thinking = fields.thinking;
   if (fields.app !== undefined) updates.app = fields.app;

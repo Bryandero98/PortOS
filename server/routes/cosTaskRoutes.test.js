@@ -130,6 +130,55 @@ describe('POST /api/cos/tasks — targetInstanceId (#4520)', () => {
   });
 });
 
+describe('CoS task routes — orchestration profiles (#5992)', () => {
+  const PROFILE = { architect: { provider: 'claude-code', model: 'opus', effort: 'xhigh' }, implementer: { model: 'haiku' } };
+
+  it('passes the mode + profile through to addTask', async () => {
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'refactor the resolver', orchestrationMode: 'orchestrated', orchestrationProfile: PROFILE });
+    expect(res.status).toBe(200);
+    expect(cos.addTask).toHaveBeenCalledWith(
+      expect.objectContaining({ orchestrationMode: 'orchestrated', orchestrationProfile: PROFILE }),
+      'user'
+    );
+  });
+
+  it('rejects an unknown role rather than persisting an assignment nothing reads', async () => {
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'x', orchestrationProfile: { saboteur: { model: 'evil' } } });
+    expect(res.status).toBe(400);
+    expect(cos.addTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects an effort rung outside the supported ladder', async () => {
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'x', orchestrationProfile: { architect: { effort: 'galaxy-brain' } } });
+    expect(res.status).toBe(400);
+  });
+
+  it('re-pins and clears the mode on update', async () => {
+    const app = buildApp();
+    const flip = await request(app).put('/api/cos/tasks/task-1').send({ orchestrationMode: 'orchestrated' });
+    expect(flip.status).toBe(200);
+    expect(cos.updateTask.mock.calls[0][1]).toHaveProperty('orchestrationMode', 'orchestrated');
+
+    cos.updateTask.mockClear();
+    const clear = await request(app).put('/api/cos/tasks/task-1').send({ orchestrationMode: '' });
+    expect(clear.status).toBe(200);
+    expect(cos.updateTask.mock.calls[0][1]).toHaveProperty('orchestrationMode', null);
+  });
+
+  it('leaves the pins untouched when the patch omits them', async () => {
+    const res = await request(buildApp()).put('/api/cos/tasks/task-1').send({ description: 'new title' });
+    expect(res.status).toBe(200);
+    expect(cos.updateTask.mock.calls[0][1]).not.toHaveProperty('orchestrationMode');
+    expect(cos.updateTask.mock.calls[0][1]).not.toHaveProperty('orchestrationProfile');
+  });
+});
+
 describe('POST /api/cos/tasks — plan-only tracker gate', () => {
   it('rejects issue-only planning for a non-issue tracker', async () => {
     getAppWorkTracker.mockResolvedValue({ resolved: 'jira' });
