@@ -124,9 +124,11 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
   // Perpetual is orthogonal to the cadence — toggling it never touches `type`,
   // so a Scheduled task keeps its expression and an On-Demand one stays manual.
+  // No local optimistic state to roll back, so this awaits bare like
+  // handleToggleEnabled rather than attaching its own rejection handler.
   const handlePerpetualToggle = async () => {
     setUpdating(true);
-    await onUpdate(taskType, { perpetual: !config.perpetual }).catch(() => {});
+    await onUpdate(taskType, { perpetual: !config.perpetual });
     setUpdating(false);
   };
 

@@ -33,7 +33,10 @@ const BASE_CONFIG = {
   status: {},
 };
 
-function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas', config: extraConfig = {}, setUpdating = () => {} } = {}) {
+// The real `onUpdate` (ScheduleTab's handleUpdateTask) is async, and several
+// handlers here attach a rejection handler to what it returns — so the default
+// mock must resolve a promise, not `undefined`.
+function renderControls({ taskMetadata, onUpdate = vi.fn(async () => {}), taskType = 'feature-ideas', config: extraConfig = {}, setUpdating = () => {} } = {}) {
   render(
     <GlobalConfigControls
       taskType={taskType}
