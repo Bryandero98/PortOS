@@ -879,6 +879,23 @@ export async function spawnDirectly({
       directPrClaimVerified = prClaimWasVerified(finalized?.prVerdict);
       noChangesToShip = finalized?.prVerdict?.noChangesToShip === true;
     } finally {
+      // Advance a staged pipeline exactly as the runner/TUI path does through
+      // runAgentCompletionCleanup. This path only ever ran finalize + worktree
+      // cleanup, so a stage that spawned directly — every public-review stage,
+      // any cli-typed provider — completed without queuing its successor: the
+      // pr-reviewer Eligibility Gate recorded its decision and the pipeline
+      // simply stopped. Before the worktree goes, since a stage precondition
+      // may read it. Lazy import for the same module-cycle reason as
+      // cleanupWorktreeFn; sanctioned try/catch — this is a child 'close'
+      // handler, not a request.
+      if (task?.metadata?.pipeline) {
+        try {
+          const { handlePipelineProgression } = await import('./agentCompletionCleanup.js');
+          await handlePipelineProgression(task, agentId, cleanupSuccess);
+        } catch (err) {
+          console.error(`❌ Pipeline progression failed for ${agentId}: ${err.message}`);
+        }
+      }
       const directPrCompletion = resolvePrCompletion(task.metadata);
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
       const reviewOptions = await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn });

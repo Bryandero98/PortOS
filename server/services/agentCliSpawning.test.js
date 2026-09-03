@@ -56,6 +56,9 @@ vi.mock('./agentFinalization.js', () => ({
   finalizeAgent: vi.fn().mockResolvedValue(undefined),
   releaseAgentLane: vi.fn(),
 }));
+vi.mock('./agentCompletionCleanup.js', () => ({
+  handlePipelineProgression: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('./agentState.js', () => ({
   activeAgents: new Map(),
   userTerminatedAgents: new Set(),
@@ -1141,6 +1144,41 @@ describe('stream error containment', () => {
   // didn't have, and hand its worktree to cleanup, discarding the state a resume
   // needs. The run is abandoned instead, leaving the record `running` for the
   // next boot's orphan sweep to reconcile from the host-shutdown marker.
+  describe('pipeline progression on close', () => {
+    // The runner/TUI completion path advances a staged pipeline through
+    // runAgentCompletionCleanup; this direct path only ran finalize + worktree
+    // cleanup, so every directly-spawned stage (all public-review stages)
+    // completed without queuing its successor.
+    it('advances the pipeline before the worktree is cleaned up', async () => {
+      const { handlePipelineProgression } = await import('./agentCompletionCleanup.js');
+      handlePipelineProgression.mockClear();
+      const order = [];
+      handlePipelineProgression.mockImplementation(async () => { order.push('pipeline'); });
+      minimalArgs.cleanupWorktreeFn.mockImplementation(async () => { order.push('worktree'); });
+      const task = { id: 'task-1', description: 'stage', metadata: { pipeline: { status: 'running', currentStage: 1, stages: [{}, {}, {}] } } };
+
+      const spawnPromise = spawnDirectly({ ...minimalArgs, task });
+      await new Promise((r) => setTimeout(r, 10));
+      fakeProcess.emit('close', 0);
+      await spawnPromise.catch(() => {});
+      await new Promise((r) => setTimeout(r, 30));
+
+      expect(handlePipelineProgression).toHaveBeenCalledWith(task, 'agent-test', true);
+      expect(order).toEqual(['pipeline', 'worktree']);
+    });
+
+    it('does not touch pipeline progression for an ordinary task', async () => {
+      const { handlePipelineProgression } = await import('./agentCompletionCleanup.js');
+      handlePipelineProgression.mockClear();
+      const spawnPromise = spawnDirectly(minimalArgs);
+      await new Promise((r) => setTimeout(r, 10));
+      fakeProcess.emit('close', 0);
+      await spawnPromise.catch(() => {});
+      await new Promise((r) => setTimeout(r, 30));
+      expect(handlePipelineProgression).not.toHaveBeenCalled();
+    });
+  });
+
   describe('host restart (#3202)', () => {
     // The outer beforeEach re-sets implementations but not call history, and the
     // mocks are module-scoped — clear so "was it called" reads only this test.
