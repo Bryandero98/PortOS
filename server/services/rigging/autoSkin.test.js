@@ -122,6 +122,15 @@ describe('rigging publication contract', () => {
     expect(existsSync(paths.stageDir)).toBe(false);
   });
 
+  it('refuses to record a rig whose published pair does not read back', async () => {
+    // The publish itself succeeded, but the pair does not verify — the exact state an
+    // interrupted rig leaves behind. Reporting that as ready would defeat the digest.
+    await expect(run({
+      spawnImpl: publishCleanRig(),
+      verify: async () => ({ ok: false, reason: 'digest-mismatch' }),
+    })).rejects.toMatchObject({ code: 'RIGGING_PUBLISH_UNVERIFIED' });
+  });
+
   it('reports the worker exit when it produced no readable report at all', async () => {
     const spawnImpl = fakeWorker({ code: 3, write: async () => {} });
     await expect(run({ spawnImpl })).rejects.toMatchObject({ code: 'RIGGING_WORKER_FAILED' });

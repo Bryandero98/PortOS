@@ -178,7 +178,7 @@ const rigError = (message, code, extra = {}) => new ServerError(message, { statu
  *
  * @param {{modelId: string, recordDir: string, skeletonHint?: string, overrides?: object,
  *          readiness?: object, python?: string|null, spawnImpl?: Function, rigId?: string,
- *          timeoutMs?: number}} opts
+ *          timeoutMs?: number, verify?: Function}} opts
  * @returns {Promise<{rigId: string, assetPath: string, reportPath: string, sha256: string,
  *   bytes: number, summary: object, report: object}>}
  */
@@ -192,6 +192,7 @@ export async function runAutoSkin({
   spawnImpl,
   rigId = `rig-${randomUUID()}`,
   timeoutMs,
+  verify = readRiggedArtifact,
 }) {
   const ready = readiness ?? await getRiggingReadiness();
   if (!ready.ready) {
@@ -244,6 +245,14 @@ export async function runAutoSkin({
     if (!staged) throw rigError('The rigging worker reported success but exported no mesh.', 'RIGGING_NO_OUTPUT');
 
     const published = await publishRigArtifacts({ paths, report });
+    // Read the pair back through the same reader every consumer uses, before recording
+    // the rig as ready. A publish that does not verify is exactly the interrupted state
+    // this contract exists to make detectable — it must not be reported as a finished
+    // rig just because both moves returned.
+    const verified = await verify({ publishDir: paths.publishDir });
+    if (!verified.ok) {
+      throw rigError(`The rig published but did not verify (${verified.reason}).`, 'RIGGING_PUBLISH_UNVERIFIED');
+    }
     console.log(`🦴 Rigged ${modelId} as ${rigId}: ${gate.metrics.boneCount} bones, `
       + `${gate.metrics.verticesAfterWeld} vertices, ${gate.metrics.nearestBoneCompleted} filled by nearest bone`);
     return {
