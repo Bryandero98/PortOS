@@ -264,8 +264,14 @@ describe('buildTaskInput', () => {
     const result = await buildTaskInput({ app: apps.get(APP.id) });
 
     expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    // The volunteer-claim policy in full (lib/dispatchLabels.js#volunteerClaimLabels):
+    // assignee + `in-progress` in one edit, then the contributor invitations
+    // retired one at a time — the issue is taken, so it must stop advertising
+    // itself, and the claim prompt's handoff leaves exactly this state too.
     expect(ghCalls('issue', 'edit')).toEqual([
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice', '--add-label', 'in-progress'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'good first issue'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'help wanted'],
     ]);
     expect(apps.get(APP.id).issueWatcherState.cursor).toMatch(/^2026-/);
   });
@@ -278,7 +284,7 @@ describe('buildTaskInput', () => {
     const result = await buildTaskInput({ app: apps.get(APP.id) });
 
     expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
-    expect(ghCalls('issue', 'edit')).toHaveLength(1);
+    expect(ghCalls('issue', 'edit')).toHaveLength(3);
   });
 
   it('creates the in-progress label and retries when the repo has never defined it', async () => {
@@ -305,12 +311,33 @@ describe('buildTaskInput', () => {
       '--color', dispatchLabelSpec(IN_PROGRESS_LABEL).color,
       '--description', dispatchLabelSpec(IN_PROGRESS_LABEL).description,
     ]);
-    // Combined edit (rejected) → assignee alone → label alone.
+    // Combined edit (rejected) → assignee alone → label alone → invitations.
     expect(ghCalls('issue', 'edit')).toEqual([
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice', '--add-label', 'in-progress'],
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice'],
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-label', 'in-progress'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'good first issue'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'help wanted'],
     ]);
+  });
+
+  // `--remove-label` errors when the named label is absent, and an issue
+  // carrying neither invitation is the COMMON case — that must never take the
+  // assignment down with it, or cost a cognition run.
+  it('keeps a volunteer assignment when neither contributor label is present to release', async () => {
+    installVolunteerGhMock();
+    interceptGh((args) => {
+      if (args[0] === 'issue' && args[1] === 'edit' && args.includes('--remove-label')) {
+        throw new Error("HTTP 422: 'good first issue' not found");
+      }
+      return undefined;
+    });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
+    expect(ghCalls('issue', 'edit').filter((c) => c.includes('--remove-label'))).toHaveLength(2);
   });
 
   it('keeps a volunteer assignment that succeeded when the in-progress label cannot be applied', async () => {

@@ -34,6 +34,8 @@ import {
   CONTRIBUTOR_LABELS,
   JIRA_CONTRIBUTOR_LABELS,
   formatContributorLabelReleaseCommands,
+  formatVolunteerClaimCommands,
+  volunteerClaimLabels,
   PLANNER_LABEL_COLOR,
   normalizePlannerId,
   resolvePlannerId,
@@ -182,6 +184,50 @@ describe('label specs and CLI formatting', () => {
     expect(formatContributorLabelReleaseCommands('"${NUM}"', { cli: 'glab' })).toEqual([
       `glab issue update "\${NUM}" --unlabel 'good first issue' 2>/dev/null`,
       `glab issue update "\${NUM}" --unlabel 'help wanted' 2>/dev/null`,
+    ]);
+  });
+
+  // ONE policy for a volunteer claim, shared by the deterministic issue-watcher
+  // (which reads the labels) and the claim prompt (which renders the commands).
+  // Before this, the watcher stamped `in-progress` and kept the invitations up
+  // while the prompt did the exact opposite, so whichever path resolved a claim
+  // comment first decided the forge state (#6112).
+  it('states one volunteer-claim policy: in-progress on, invitations off', () => {
+    expect(volunteerClaimLabels()).toEqual({
+      add: [IN_PROGRESS_LABEL],
+      remove: [GOOD_FIRST_ISSUE_LABEL, HELP_WANTED_LABEL],
+    });
+  });
+
+  // A fresh mutation of the frozen CONTRIBUTOR_LABELS would let a caller that
+  // splices its own list corrupt every later caller's policy.
+  it('hands back a mutable copy, never the shared contributor list', () => {
+    const first = volunteerClaimLabels();
+    first.remove.push('bogus');
+    first.add.push('bogus');
+    expect(volunteerClaimLabels()).toEqual({
+      add: [IN_PROGRESS_LABEL],
+      remove: [GOOD_FIRST_ISSUE_LABEL, HELP_WANTED_LABEL],
+    });
+    expect(CONTRIBUTOR_LABELS).toEqual([GOOD_FIRST_ISSUE_LABEL, HELP_WANTED_LABEL]);
+  });
+
+  // The lazy create must precede the add — `--add-label` fails the whole call on
+  // a repo (a fresh fork) that has never defined `in-progress`, which would drop
+  // the marker silently. Add before release so the issue is never momentarily
+  // both un-advertised and unclaimed.
+  it('renders the volunteer-claim handoff as create → add → release', () => {
+    expect(formatVolunteerClaimCommands('"${CANDIDATE}"')).toEqual([
+      `gh label create in-progress --color FFA500 --description 'Claimed and being worked' 2>/dev/null || true`,
+      `gh issue edit "\${CANDIDATE}" --add-label in-progress 2>/dev/null`,
+      `gh issue edit "\${CANDIDATE}" --remove-label 'good first issue' 2>/dev/null`,
+      `gh issue edit "\${CANDIDATE}" --remove-label 'help wanted' 2>/dev/null`,
+    ]);
+    expect(formatVolunteerClaimCommands('"${CANDIDATE}"', { cli: 'glab' })).toEqual([
+      `glab label create --name in-progress --color '#FFA500' --description 'Claimed and being worked' 2>/dev/null || true`,
+      `glab issue update "\${CANDIDATE}" --label in-progress 2>/dev/null`,
+      `glab issue update "\${CANDIDATE}" --unlabel 'good first issue' 2>/dev/null`,
+      `glab issue update "\${CANDIDATE}" --unlabel 'help wanted' 2>/dev/null`,
     ]);
   });
 
