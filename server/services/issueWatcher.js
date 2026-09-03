@@ -34,7 +34,7 @@ import { execGh, ensureForgeReachable } from './github.js';
 import { mergePR, resolveForgeForRepo } from './git.js';
 import { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifications.js';
 import { normalizeEligibilityFacts, runModelAbuseScan } from './modelAbuseGuard.js';
-import { issuePrerequisiteWaived } from '../lib/modelAbuseGuard.js';
+import { issuePrerequisiteWaived, linkedIssueIntentFingerprint } from '../lib/modelAbuseGuard.js';
 
 const IN_PROGRESS_LABEL_SPEC = dispatchLabelSpec(IN_PROGRESS_LABEL);
 
@@ -555,11 +555,11 @@ async function eligibilityFactsStillCurrent(ctx, pr, target) {
   )));
   if (issues.some((issue, index) => issue?.number !== expected.linkedIssueNumbers[index])) return false;
 
-  const openLinkedIssueNumbers = issues
-    .filter((issue) => !issue.pull_request && String(issue.state || '').toLowerCase() === 'open')
-    .map((issue) => issue.number);
-  const openerAssignedIssueNumbers = issues
-    .filter((issue) => !issue.pull_request && String(issue.state || '').toLowerCase() === 'open')
+  const openIssues = issues.filter((issue) => (
+    !issue.pull_request && String(issue.state || '').toLowerCase() === 'open'
+  ));
+  const openLinkedIssueNumbers = openIssues.map((issue) => issue.number);
+  const openerAssignedIssueNumbers = openIssues
     .filter((issue) => Array.isArray(issue.assignees) && issue.assignees.some((assignee) => (
       sameLogin(assignee?.login, authorLogin)
     )))
@@ -570,10 +570,20 @@ async function eligibilityFactsStillCurrent(ctx, pr, target) {
     openerAssignedIssueNumbers,
     issueLookupComplete: true,
   });
-  return sameNumberList(expected.linkedIssueNumbers, actual.linkedIssueNumbers)
-    && sameNumberList(expected.openLinkedIssueNumbers, actual.openLinkedIssueNumbers)
-    && sameNumberList(expected.openerAssignedIssueNumbers, actual.openerAssignedIssueNumbers)
-    && expected.issueLookupComplete === actual.issueLookupComplete;
+  if (!sameNumberList(expected.linkedIssueNumbers, actual.linkedIssueNumbers)
+    || !sameNumberList(expected.openLinkedIssueNumbers, actual.openLinkedIssueNumbers)
+    || !sameNumberList(expected.openerAssignedIssueNumbers, actual.openerAssignedIssueNumbers)
+    || expected.issueLookupComplete !== actual.issueLookupComplete) return false;
+
+  // The gate judged the diff against the issue text as it read at scan time. A
+  // requirement that was rewritten since is a different requirement, so the old
+  // verdict no longer covers it. Facts recorded before intent was screened
+  // carry no fingerprint and keep their previous meaning.
+  if (!expected.intentFingerprint) return true;
+  const currentIntent = linkedIssueIntentFingerprint(openIssues.map((issue) => ({
+    number: issue.number, title: issue.title, body: issue.body,
+  })));
+  return currentIntent === expected.intentFingerprint;
 }
 
 async function readBehindBy(ctx, pr) {

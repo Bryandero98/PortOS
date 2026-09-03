@@ -62,6 +62,7 @@ import {
   MAX_PENDING_APPROVAL_TICKS,
   MAX_PENDING_ISSUE_COMMENT_TICKS,
 } from './issueWatcher.js';
+import { linkedIssueIntentFingerprint } from '../lib/modelAbuseGuard.js';
 import { MAX_PR_REMEDIATION_ATTEMPTS } from '../lib/prHandbackPolicy.js';
 import { IN_PROGRESS_LABEL, dispatchLabelSpec } from '../lib/dispatchLabels.js';
 
@@ -599,6 +600,68 @@ describe('processTaskOutput', () => {
     expect(execGhMock.mock.calls.some(([args]) => (
       args[0] === 'api' && args.some((arg) => String(arg).endsWith('/issues/101'))
     ))).toBe(true);
+  });
+
+  // The gate approved this diff against the issue as it read at scan time. If
+  // that requirement was rewritten since, the review answered a question nobody
+  // is asking any more — so the approval is discarded rather than merged.
+  it('discards an approval whose linked issue was rewritten after the gate judged it', async () => {
+    const issue = {
+      number: 101,
+      state: 'open',
+      title: 'Crash on empty import',
+      body: 'Rewritten after the gate ran.',
+      assignees: [{ login: 'contributor' }],
+    };
+    installDefaultGhMock({ issueDetails: { 101: issue } });
+    mergePrMock.mockResolvedValue({ success: true });
+    const staleIntentMetadata = {
+      issueWatcher: {
+        ...eligibilityMetadata.issueWatcher,
+        pullRequests: [{
+          ...eligibilityMetadata.issueWatcher.pullRequests[0],
+          eligibilityFacts: {
+            ...eligibilityFacts,
+            intentFingerprint: linkedIssueIntentFingerprint([{
+              number: 101, title: 'Crash on empty import', body: 'Importing an empty file throws.',
+            }]),
+          },
+        }],
+      },
+    };
+    const payload = {
+      issueComments: [],
+      pullRequests: [{
+        number: 7, headSha: 'a'.repeat(40), verdict: 'approve', summary: 'No material issues found.', findings: [],
+        rebaseRequired: false, ciPolicy: 'required',
+      }],
+    };
+
+    const result = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload,
+      task: { metadata: staleIntentMetadata },
+      requireEligibilityFacts: true,
+    });
+
+    expect(result).toMatchObject({ reviewed: 0, merged: 0 });
+    expect(mergePrMock).not.toHaveBeenCalled();
+
+    // The same approval against the issue text it was actually judged against
+    // still lands, so the check is the rewrite and not the recheck itself.
+    execGhMock.mockClear();
+    mergePrMock.mockClear();
+    staleIntentMetadata.issueWatcher.pullRequests[0].eligibilityFacts.intentFingerprint =
+      linkedIssueIntentFingerprint([{ number: 101, title: issue.title, body: issue.body }]);
+    const current = await processTaskOutput({
+      appId: APP.id,
+      success: true,
+      payload,
+      task: { metadata: staleIntentMetadata },
+      requireEligibilityFacts: true,
+    });
+    expect(current).toMatchObject({ reviewed: 1, merged: 1 });
   });
 
   it('posts non-blocking findings on an approving review and still merges', async () => {

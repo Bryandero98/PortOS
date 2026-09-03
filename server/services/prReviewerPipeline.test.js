@@ -17,11 +17,14 @@ import {
 const HEAD_SHA = 'a'.repeat(40);
 const CONTENT_FINGERPRINT = 'b'.repeat(64);
 
+const INTENT_FINGERPRINT = 'c'.repeat(64);
+
 const eligibleFacts = {
   linkedIssueNumbers: [101],
   openLinkedIssueNumbers: [101],
   openerAssignedIssueNumbers: [101],
   issueLookupComplete: true,
+  intentFingerprint: INTENT_FINGERPRINT,
 };
 
 function eligibilityTask(overrides = {}) {
@@ -176,6 +179,27 @@ describe('pr-reviewer eligibility output', () => {
     task.metadata.issueWatcher.pullRequests[0].eligibilityFacts = {
       ...eligibleFacts,
       openerAssignedIssueNumbers: [],
+    };
+
+    const result = await processTaskOutput({
+      appId: 'app-example',
+      success: true,
+      payload: decisionPayload(),
+      task,
+    });
+
+    expect(result).toMatchObject({ accepted: true, terminal: true });
+    expect(result.taskMetadata.prReviewerEligibility.eligibleNumbers).toEqual([]);
+    expect(result.taskMetadata.prReviewerEligibility.rejectedNumbers).toEqual([12]);
+  });
+
+  // The gate's whole intent judgment rests on the screened issue text. No
+  // fingerprint means none reached it, so an `eligible` answer was a guess.
+  it('forces a model-positive decision false when no screened issue intent reached the gate', async () => {
+    const task = eligibilityTask();
+    task.metadata.issueWatcher.pullRequests[0].eligibilityFacts = {
+      ...eligibleFacts,
+      intentFingerprint: null,
     };
 
     const result = await processTaskOutput({
