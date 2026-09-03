@@ -27,27 +27,7 @@
  * restart between them.
  */
 
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
-// From the leaf modules, not the `fileUtils.js` aggregate: several route suites
-// replace that whole aggregate with a small literal, and a module-level
-// `PATHS.root` read through it explodes at import time in a suite that never
-// touches this file.
-import { atomicWrite } from './fileCore.js';
-import { PATHS } from './paths.js';
-import { parseEnvContents, upsertEnvLine } from './vllmQwenProvision.js';
-
-/**
- * PortOS's own `.env` — where an auto-detected project directory is recorded.
- *
- * `installRoot`, not `root`: what is recorded here is machine-local runtime state
- * ("where this machine's WSL project lives"), so it belongs to the install and
- * not to whichever checkout loaded the code. A server booted from a CoS agent
- * worktree has no `.env` in its own tree (`lib/paths.js`, #1947), and anchoring
- * to `root` there would write a throwaway file the real install never reads.
- */
-export const PORTOS_ENV_PATH = join(PATHS.installRoot, '.env');
+import { PORTOS_ENV_PATH, readPortosEnvValue, upsertPortosEnvLine } from './portosEnv.js';
 
 /**
  * The project directory PortOS recorded under `envVar`, or `''` when there is
@@ -58,15 +38,13 @@ export const PORTOS_ENV_PATH = join(PATHS.installRoot, '.env');
  * @returns {string}
  */
 export function readRecordedProjectDir(envVar, envPath = PORTOS_ENV_PATH) {
-  let contents = '';
-  try { contents = readFileSync(envPath, 'utf8'); } catch { return ''; }
-  return parseEnvContents(contents).get(envVar) || '';
+  return readPortosEnvValue(envVar, envPath) || '';
 }
 
 /**
  * Remember where a project was found, so nothing has to detect it twice.
  *
- * `upsertEnvLine` rather than an append: a file accumulating one line per
+ * `upsertPortosEnvLine` rather than an append: a file accumulating one line per
  * detection run is a config whose meaning depends on which reader opens it
  * (some take the first mention, some the last). Atomic, because PortOS's `.env`
  * also carries the database password and a half-written truncate is readable by
@@ -77,9 +55,7 @@ export function readRecordedProjectDir(envVar, envPath = PORTOS_ENV_PATH) {
  * @param {string} [envPath]
  */
 export async function recordProjectDir(envVar, dir, envPath = PORTOS_ENV_PATH) {
-  let contents = '';
-  try { contents = readFileSync(envPath, 'utf8'); } catch { /* no .env yet */ }
-  await atomicWrite(envPath, upsertEnvLine(contents, envVar, dir));
+  await upsertPortosEnvLine(envVar, dir, envPath);
 }
 
 /**
