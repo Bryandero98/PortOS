@@ -1568,6 +1568,13 @@ describe('validation.js', () => {
       } })).toBe('--review-with copilot,@Bot');
     });
 
+    it('still emits the copilot flag when a PortOS-only reviewer rides alongside it', () => {
+      // Suppression hands `--review-with` to the host's saved slashdo defaults.
+      // That is right for a bare default copilot (#2507) and wrong here: the user
+      // chose this pair, and only lmstudio's slug is unemittable.
+      expect(buildReviewWithArgs(['lmstudio', 'copilot'])).toBe('--review-with copilot');
+    });
+
     it('emits no flag at all when every configured reviewer is PortOS-only', () => {
       // `--review-with` with an empty value is as fatal to slashdo as an unknown
       // slug; the surrounding prompt still names the reviewers and the Local

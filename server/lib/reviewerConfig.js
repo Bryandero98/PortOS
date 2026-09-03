@@ -1183,10 +1183,11 @@ export function buildReviewWithArgs(reviewers, {
 } = {}) {
   const users = normalizeReviewUsernames(usernames);
   const keyed = resolveKeyedReviewers(reviewers, users.length > 0);
+  const configured = [...keyed, ...users.map(u => `@${u}`)];
   // PortOS-only reviewers are dropped rather than emitted — see the doc comment
   // above and `splitSlashdoReviewerTokens`. The surrounding prompt still names the
   // full reviewer list and the Local Reviewer Procedure that runs them.
-  const combined = splitSlashdoReviewerTokens([...keyed, ...users.map(u => `@${u}`)]).flagTokens;
+  const combined = splitSlashdoReviewerTokens(configured).flagTokens;
   const optSet = optionalReviewerSet(optionalReviewers);
   const maxLookup = reviewerMaxRoundsLookup(reviewerMaxRounds);
   const modelLookup = reviewerModelLookup(reviewerModels);
@@ -1194,7 +1195,14 @@ export function buildReviewWithArgs(reviewers, {
   // The lone-default-copilot suppression only applies when copilot carries NO
   // per-entry suffix — a `copilot~opt` / `copilot~max=2` / `copilot~effort=high` list must still
   // emit the flag to carry that suffix.
-  const isDefaultOnly = combined.length === 1 && combined[0] === DEFAULT_REVIEWER
+  //
+  // Measured against the CONFIGURED list, not the emitted one. Suppressing the
+  // flag hands `--review-with` to the host's saved slashdo defaults, which name
+  // some other reviewer set — right for a run that asked for nothing but the
+  // default copilot, wrong for `[lmstudio, copilot]`, where the user chose this
+  // pair and only lmstudio's slug is unemittable. Reading the filtered list here
+  // would silently swap copilot out for whatever `.slashdo.json` happens to say.
+  const isDefaultOnly = configured.length === 1 && configured[0] === DEFAULT_REVIEWER
     && !optSet.has(DEFAULT_REVIEWER) && maxLookup.get(DEFAULT_REVIEWER) === undefined
     && effortLookup.get(DEFAULT_REVIEWER) === undefined;
   const hasNonCopilot = combined.some(r => !r.startsWith('@') && r !== DEFAULT_REVIEWER);
