@@ -32,6 +32,12 @@ import {
   reviewerModelFlag,
   splitSlashdoReviewerTokens,
   PORTOS_ONLY_REVIEWERS,
+  DEFAULT_REVIEWERS,
+  REVIEW_STOP_MODES,
+  DEFAULT_REVIEW_STOP_MODE,
+  MAX_REVIEW_USERNAMES,
+  MAX_REVIEWER_MAX_ROUNDS,
+  normalizeReviewUsernames,
 } from './reviewerConfig.js';
 // The Zod half of the old cosValidation.js — these cases assert that a reviewer
 // pin survives the schema that persists it, so they need both modules.
@@ -380,7 +386,7 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
 // offered there but rejected here would show the user a pin that silently never
 // persists (and the reverse would hide a tier their CLI accepts), so the mirror is
 // pinned rather than trusted to a "keep in sync" comment.
-describe('client mirror of the reviewer effort ladders', () => {
+describe('client mirror of the reviewer vocabulary', () => {
   it('matches server reviewerEffortLevels for every reviewer', async () => {
     // The dependency-free leaf, NOT `components/cos/constants.js` (which re-exports
     // these but also imports `lucide-react` — absent from the server workspace, so
@@ -402,6 +408,60 @@ describe('client mirror of the reviewer effort ladders', () => {
     const client = await import('../../client/src/lib/reviewerPins.js');
     expect([...client.MODEL_CAPABLE_CLI_REVIEWERS].sort()).toEqual([...MODEL_CAPABLE_CLI_REVIEWERS].sort());
     expect([...client.MODEL_SELECTABLE_REVIEWERS].sort()).toEqual([...MODEL_SELECTABLE_REVIEWERS].sort());
+  });
+
+  // The roster itself. A reviewer added on one side only is the `antigravity`
+  // drift of #3728: the picker offers a reviewer the server's enum rejects (the
+  // save 400s), or the server gains one the user can never select.
+  it('matches the server reviewer roster', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    expect([...client.REVIEWER_VALUES].sort()).toEqual([...REVIEWER_VALUES].sort());
+  });
+
+  // Aliases resolve slugs already stored on tasks (`gemini`, `cursor-agent`). One
+  // dropped client-side turns a saved reviewer into a row the picker can't render.
+  it('matches the server reviewer aliases', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    expect(client.REVIEWER_ALIASES).toEqual(REVIEWER_ALIASES);
+  });
+
+  // Defaults and caps. A cap the input offers above the server's ceiling is
+  // silently dropped on save, which reads to the user as the field not working.
+  it('matches the server defaults and caps', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    expect(client.DEFAULT_REVIEWER).toBe(DEFAULT_REVIEWER);
+    expect(client.DEFAULT_REVIEWERS).toEqual(DEFAULT_REVIEWERS);
+    expect(client.MAX_REVIEWER_MAX_ROUNDS).toBe(MAX_REVIEWER_MAX_ROUNDS);
+    expect(client.MAX_REVIEW_USERNAMES).toBe(MAX_REVIEW_USERNAMES);
+  });
+
+  // Stop modes: the client rows carry UI copy, but their `value`s are the enum
+  // the save is validated against. An extra row 400s the whole task update.
+  it('matches the server review stop modes', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    expect(client.REVIEW_STOP_MODES.map(m => m.value)).toEqual([...REVIEW_STOP_MODES]);
+    expect(client.DEFAULT_REVIEW_STOP_MODE).toBe(DEFAULT_REVIEW_STOP_MODE);
+  });
+
+  // The username pattern and cap are two independent facts, and neither side's
+  // own tests can see a divergence — only running the same inputs through both
+  // normalizers can. The 25 valid entries exercise the cap, the rest the pattern.
+  it('normalizes review usernames identically to the server', async () => {
+    const client = await import('../../client/src/lib/reviewerPins.js');
+    const cases = [
+      ['@octocat'],
+      ['org/team'],
+      ['bad name'],
+      ['-lead'],
+      ['octocat', 'OCTOCAT', '@octocat'],
+      ['a'.repeat(40)],
+      ['', '   ', null, 42, undefined],
+      Array.from({ length: 25 }, (_, i) => `reviewer-${i}`),
+    ];
+    for (const input of cases) {
+      expect(client.normalizeReviewUsernames(input)).toEqual(normalizeReviewUsernames(input));
+    }
+    expect(client.normalizeReviewUsernames('not-an-array')).toEqual(normalizeReviewUsernames('not-an-array'));
   });
 });
 
