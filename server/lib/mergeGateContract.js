@@ -61,30 +61,33 @@ export function summaryStatesLeaveOpen(summary) {
 /**
  * Resolve what a completing run that owed a merge should do next.
  *
+ * The "send at most one nudge" decision is NOT this function's job — it lives
+ * entirely in the caller (`agentTuiSpawning.js`'s `checkMergeGateCompliance`,
+ * which short-circuits before ever calling this a second time this run), so
+ * there is exactly one place that answer can drift out of sync with itself.
+ *
  * - `merged` — the PR landed; finalize normally.
- * - `unreadable` — no PR found, or the forge lookup itself failed; there is
- *   nothing here to act on, so finalize normally and let the post-teardown
- *   audit (`agentRepoStateVerification.js`) be the backstop, as today.
+ * - `no-pr-action` — the forge lookup itself failed (`readable: false`), or it
+ *   succeeded but found nothing actionable for this branch (no PR at all, or
+ *   one that's CLOSED rather than merged). Either way there is nothing here
+ *   to act on: finalize normally and let the post-teardown audit
+ *   (`agentRepoStateVerification.js`) be the backstop, as today.
  * - `leave-open-stated` — the agent said, in its own words, that it is
  *   deliberately leaving the PR open; that is a correct terminal state.
- * - `needs-reprompt` — the PR is open, the summary names no blocker, and no
- *   nudge has gone out yet this run: send exactly one corrective re-prompt.
- * - `reprompt-exhausted` — the nudge already fired once and the PR is STILL
- *   open with no blocker stated; stop nudging and let the audit's recovery
- *   task take over, per the "re-prompt once, not N times" decision.
+ * - `needs-reprompt` — the PR is open and the summary names no blocker: send
+ *   one corrective re-prompt.
  *
  * @param {object} params
  * @param {{prState: string|null, readable: boolean}|null} params.prProbe
  * @param {string|null|undefined} params.summary
- * @param {boolean} params.alreadyReprompted
- * @returns {'merged'|'unreadable'|'leave-open-stated'|'needs-reprompt'|'reprompt-exhausted'}
+ * @returns {'merged'|'no-pr-action'|'leave-open-stated'|'needs-reprompt'}
  */
-export function resolveMergeGateVerdict({ prProbe, summary, alreadyReprompted }) {
-  if (!prProbe || prProbe.readable === false) return 'unreadable';
+export function resolveMergeGateVerdict({ prProbe, summary }) {
+  if (!prProbe || prProbe.readable === false) return 'no-pr-action';
   if (prProbe.prState === 'MERGED') return 'merged';
-  if (prProbe.prState !== 'OPEN') return 'unreadable';
+  if (prProbe.prState !== 'OPEN') return 'no-pr-action';
   if (summaryStatesLeaveOpen(summary)) return 'leave-open-stated';
-  return alreadyReprompted ? 'reprompt-exhausted' : 'needs-reprompt';
+  return 'needs-reprompt';
 }
 
 /**

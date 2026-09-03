@@ -226,7 +226,7 @@ vi.mock('../lib/childProcess.js', async (importOriginal) => {
 });
 
 import { existsSync } from 'fs';
-import { readFile } from 'fs/promises';
+import { readFile, rm } from 'fs/promises';
 import { execFile } from '../lib/childProcess.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
 import { releaseRetryHold } from './agentWorktreeCleanup.js';
@@ -2447,11 +2447,21 @@ describe('spawnTuiAgent runtime', () => {
   describe('merge-gate contract check (#5876)', () => {
     const openPrTask = { id: 'task-1', description: 'ship the fix', metadata: { openPR: true } };
 
+    // Stateful (not a blanket `true`): `watchForFile`'s `detect()` also runs
+    // SYNCHRONOUSLY at watcher-creation time, so if the sentinel already
+    // "existed" when spawnTuiAgent creates its initial watcher, that watcher
+    // self-fires before the test ever drives an explicit trigger — and a
+    // re-prompt's `rm(doneSentinelPath)` needs to actually clear presence for
+    // the re-armed watcher's OWN creation-time check to stay quiet too.
+    // `withSentinel` therefore only wires the mocks; every test flips
+    // `sentinelExists = true` itself, only once its trigger is ready to fire.
+    let sentinelExists = false;
     const withSentinel = (summary) => {
-      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(existsSync).mockImplementation(() => sentinelExists);
       vi.mocked(readFile).mockImplementation(async (p) =>
-        typeof p === 'string' && p.endsWith('.agent-done-agent-1') ? summary : ''
+        (typeof p === 'string' && p.endsWith('.agent-done-agent-1') && sentinelExists) ? summary : ''
       );
+      vi.mocked(rm).mockImplementation(async () => { sentinelExists = false; });
     };
 
     // The merge-gate check adds real await hops (ingestDoneSentinel's readFile,
@@ -2462,7 +2472,9 @@ describe('spawnTuiAgent runtime', () => {
       for (let i = 0; i < 8; i += 1) await flushMicrotasks();
     };
 
-    it('re-prompts exactly once when the PR is open and the summary names no blocker, then finalizes on the next completion even if it is still open', async () => {
+    beforeEach(() => { sentinelExists = false; });
+
+    it('re-prompts exactly once when the PR is open and the summary names no blocker, then finalizes on the RE-ARMED watcher even if still open', async () => {
       vi.mocked(shellService.pasteToSession).mockReturnValue(999);
       vi.mocked(probePrForBranch).mockResolvedValue({
         prState: 'OPEN', prUrl: 'https://example.com/pr/1', prNumber: 1, cli: 'gh', readable: true,
@@ -2470,24 +2482,107 @@ describe('spawnTuiAgent runtime', () => {
       withSentinel('## Summary\nShipped the fix and opened the PR.');
 
       const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
-      await flushMicrotasks();
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
 
+      sentinelExists = true; // the agent writes .agent-done
       await capturedOnExit({ exitCode: 0, killed: false });
       await settle();
 
-      // Round 1: nudged, not finalized.
+      // Round 1: nudged, not finalized. The reprompt path deletes the
+      // sentinel (`rm` flips `sentinelExists` false, see withSentinel) and
+      // arms a brand-new watcher — the original is one-shot and already
+      // closed itself on this same detection.
       expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
       expect(shellService.pasteToSession.mock.calls[0][1]).toContain('still OPEN');
       expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
 
-      // Round 2 (a fresh completion after the nudge): still OPEN, still no
-      // blocker stated — but the cap is one nudge per run, so this finalizes.
+      // Round 2: the agent writes a fresh sentinel (still OPEN, still no
+      // blocker) and the RE-ARMED watcher's fallback poll picks it up —
+      // proving the re-arm itself works, not just a second exit event.
+      sentinelExists = true;
+      // Past the 5000ms poll AND the 50ms settle delay `watchForFile` applies
+      // after a `detect()` — a bare 5000ms advance lands exactly on the poll
+      // tick but not the settle timer it then schedules.
+      await vi.advanceTimersByTimeAsync(5100);
+      await settle();
+      await spawnPromise;
+
+      // One nudge per run: round 2 finalizes instead of nudging again.
+      expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('never nudges a clean exit that carries no real .agent-done summary, even for a run that owed a merge', async () => {
+      // success:true with nothing on disk — an ordinary quit, not the agent
+      // signaling its Merge Gate is done. Must fall straight through to a
+      // normal finalize, never probe the forge or paste into the session.
+      vi.mocked(existsSync).mockReturnValue(false);
+      vi.mocked(readFile).mockResolvedValue('');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
+
+      sentinelExists = true; // the agent writes .agent-done
+      await capturedOnExit({ exitCode: 0, killed: false });
+      await settle();
+      await spawnPromise;
+
+      expect(probePrForBranch).not.toHaveBeenCalled();
+      expect(shellService.pasteToSession).not.toHaveBeenCalled();
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls through to a normal finalize when the session is already gone (resubmit fails)', async () => {
+      // pasteToSession returns nothing → resubmit() reports it couldn't nudge.
+      // `clearAllMocks()` doesn't reset a return value set by an earlier test
+      // (only call history), so this is explicit rather than relying on the
+      // vi.fn() factory default.
+      vi.mocked(shellService.pasteToSession).mockReturnValue(undefined);
+      vi.mocked(probePrForBranch).mockResolvedValue({
+        prState: 'OPEN', prUrl: 'https://example.com/pr/1', prNumber: 1, cli: 'gh', readable: true,
+      });
+      withSentinel('## Summary\nShipped the fix and opened the PR.');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
+
+      sentinelExists = true; // the agent writes .agent-done
       await capturedOnExit({ exitCode: 0, killed: false });
       await settle();
       await spawnPromise;
 
       expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
       expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('replays a finish() trigger dropped while the merge-gate check was deciding, instead of losing it', async () => {
+      vi.mocked(shellService.pasteToSession).mockReturnValue(999);
+      vi.mocked(probePrForBranch).mockResolvedValue({
+        prState: 'OPEN', prUrl: 'https://example.com/pr/1', prNumber: 1, cli: 'gh', readable: true,
+      });
+      withSentinel('## Summary\nShipped the fix and opened the PR.');
+
+      const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
+
+      sentinelExists = true; // the agent writes .agent-done
+      // Two triggers fire back-to-back with no await between them: the first
+      // (a clean exit) starts the merge-gate decision; the second (a kill
+      // signal racing in right after) is dropped by the `finishing` guard
+      // while the first is still deciding. It must be replayed — not lost —
+      // once the first settles on "not finalizing after all", or the run
+      // would sit forever waiting for a nudge into a session that already died.
+      const p1 = capturedOnExit({ exitCode: 0, killed: false });
+      const p2 = capturedOnExit({ exitCode: 1, killed: true });
+      await settle();
+      await Promise.all([p1, p2]);
+      await spawnPromise;
+
+      expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledTimes(1);
+      expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false })
+      );
     });
 
     it('finalizes on the first sentinel with no re-prompt when the PR is already merged', async () => {
@@ -2497,8 +2592,9 @@ describe('spawnTuiAgent runtime', () => {
       withSentinel('## Summary\nMerged the PR.');
 
       const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
-      await flushMicrotasks();
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
 
+      sentinelExists = true; // the agent writes .agent-done
       await capturedOnExit({ exitCode: 0, killed: false });
       await settle();
       await spawnPromise;
@@ -2514,8 +2610,9 @@ describe('spawnTuiAgent runtime', () => {
       withSentinel('## Summary\nA required check is still red after two fix attempts — leaving the PR open for a human.');
 
       const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
-      await flushMicrotasks();
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
 
+      sentinelExists = true; // the agent writes .agent-done
       await capturedOnExit({ exitCode: 0, killed: false });
       await settle();
       await spawnPromise;
@@ -2531,8 +2628,9 @@ describe('spawnTuiAgent runtime', () => {
       withSentinel('## Summary\nShipped the fix and opened the PR.');
 
       const spawnPromise = runSpawn({ task: openPrTask, workspacePath: '/tmp/ws' });
-      await flushMicrotasks();
+      await flushMicrotasks(); // initial watcher arms while quiet — must not self-fire
 
+      sentinelExists = true; // the agent writes .agent-done
       await capturedOnExit({ exitCode: 0, killed: false });
       await settle();
       await spawnPromise;

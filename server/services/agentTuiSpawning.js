@@ -599,6 +599,10 @@ export async function spawnTuiAgent({
   // `finalized` alone isn't enough once the merge-gate check adds awaits
   // before it (#5876).
   let finishing = false;
+  // A finish() call's args, dropped by the `finishing` guard while an earlier
+  // call was still deciding whether to finalize — replayed if that call ends
+  // up NOT finalizing (see finish()'s own comments on both).
+  let pendingFinish = null;
   // Caps the merge-gate re-prompt (#5876) at once per run — a local closure
   // counter is enough: the check only ever runs from this same live process,
   // and a fresh spawn (a real retry) starts a fresh closure with its own flag.
@@ -796,7 +800,7 @@ export async function spawnTuiAgent({
     const branchName = await git.getBranch(cwd).catch(() => null);
     if (!branchName) return false;
     const prProbe = await probePrForBranch(cwd, branchName).catch(() => null);
-    const verdict = resolveMergeGateVerdict({ prProbe, summary, alreadyReprompted: mergeGateReprompted });
+    const verdict = resolveMergeGateVerdict({ prProbe, summary });
     if (verdict !== 'needs-reprompt') return false;
     if (!pasteController?.resubmit({ text: buildMergeGateReprompt(prProbe.prUrl || '<PR_URL>'), label: 'merge-gate contract nudge' })) {
       // Session is already gone — nothing to nudge; fall through to finalize.
@@ -809,8 +813,14 @@ export async function spawnTuiAgent({
     // its first (this) detection.
     sentinelIngested = false;
     if (doneSentinelPath) await rm(doneSentinelPath).catch(() => {});
+    // Armed unconditionally — the sentinel is already gone, so a missing
+    // `activeAgents` entry (an anomaly this code doesn't otherwise expect)
+    // must not also leave the run with no watcher at all. `stopRunMachinery`
+    // reads it back off the map to tear it down at real finalize; if the
+    // entry is missing there too, the watcher self-closes on its next fire.
+    const newWatcher = armSentinelWatcher();
     const agentData = activeAgents.get(agentId);
-    if (agentData) agentData.doneSentinelWatcher = armSentinelWatcher();
+    if (agentData) agentData.doneSentinelWatcher = newWatcher;
     appendLine(`🔁 Merge Gate not finished (PR still OPEN, no blocker stated) — re-prompted the session (1 nudge only)`);
     emitLog('warn', `🔁 Merge-gate contract nudge sent for ${agentId} — PR still OPEN with no stated blocker`, { agentId });
     return true;
@@ -852,7 +862,16 @@ export async function spawnTuiAgent({
     // window synchronously; `finalized` still means "truly done" and is what
     // `pasteController.resubmit()` reads, so it must stay false while a
     // re-prompt is still possible.
-    if (finalized || finishing) return;
+    //
+    // A trigger dropped here while the first call is mid-decision is not
+    // discarded: it's the one call that could carry news the first call
+    // doesn't have (the shell exiting right in this window), so it's replayed
+    // once that call settles on "not finalizing after all" — see below.
+    if (finalized) return;
+    if (finishing) {
+      pendingFinish = { success, exitCode, error, reason };
+      return;
+    }
     finishing = true;
     // PortOS is going down. Whatever path got here — the PTY exiting under
     // TreeKill, a provider-signal failure, a paste that failed because the shell died —
@@ -886,15 +905,27 @@ export async function spawnTuiAgent({
     const sentinelSummary = await ingestDoneSentinel();
 
     // Merge Gate contract check (#5876): only for a run that actually
-    // succeeded — a failed/killed run never reached its own Merge Gate steps,
-    // and re-prompting it would paste a corrective nudge over a dead or
-    // errored session. Returns true (and this call does NOT finalize) exactly
-    // once, when the run owed a merge, the PR is open, and the summary names
-    // no blocker — see mergeGateContract.js for the full decision table.
-    if (success && await checkMergeGateCompliance(sentinelSummary)) {
+    // succeeded AND signaled that success via a real `.agent-done` summary —
+    // an ordinary clean exit with no sentinel (or one with an empty summary)
+    // is not the "the agent believes its Merge Gate is done" signal this
+    // reads; re-prompting THAT would paste into a shell whose TUI child may
+    // already be gone, parking the run on a nudge that can never land.
+    // Returns true (and this call does NOT finalize) exactly once, when the
+    // run owed a merge, the PR is open, and the summary names no blocker —
+    // see mergeGateContract.js for the full decision table.
+    if (success && sentinelSummary !== null && await checkMergeGateCompliance(sentinelSummary)) {
       // Not finalizing — reopen the re-entrancy gate for the next completion
-      // signal the re-prompt is expected to produce.
+      // signal the re-prompt is expected to produce. A trigger that arrived
+      // WHILE this call was deciding (dropped by the `finishing` guard above)
+      // is the only thing that could tell us the session actually died during
+      // that window, so replay it now rather than losing it — otherwise the
+      // run would sit waiting for a nudge with nothing left alive to receive it.
       finishing = false;
+      if (pendingFinish) {
+        const replay = pendingFinish;
+        pendingFinish = null;
+        return finish(replay);
+      }
       return;
     }
 

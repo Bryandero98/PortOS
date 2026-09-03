@@ -49,44 +49,43 @@ describe('resolveMergeGateVerdict', () => {
 
   it('is "merged" when the PR landed', () => {
     expect(resolveMergeGateVerdict({
-      prProbe: { prState: 'MERGED', readable: true }, summary, alreadyReprompted: false,
+      prProbe: { prState: 'MERGED', readable: true }, summary,
     })).toBe('merged');
   });
 
-  it('is "unreadable" when the forge lookup itself failed', () => {
+  it('is "no-pr-action" when the forge lookup itself failed', () => {
     expect(resolveMergeGateVerdict({
-      prProbe: { prState: null, readable: false }, summary, alreadyReprompted: false,
-    })).toBe('unreadable');
+      prProbe: { prState: null, readable: false }, summary,
+    })).toBe('no-pr-action');
   });
 
-  it('is "unreadable" when there is no probe result at all', () => {
-    expect(resolveMergeGateVerdict({ prProbe: null, summary, alreadyReprompted: false })).toBe('unreadable');
+  it('is "no-pr-action" when there is no probe result at all', () => {
+    expect(resolveMergeGateVerdict({ prProbe: null, summary })).toBe('no-pr-action');
   });
 
-  it('is "unreadable" when the forge found no PR for the branch', () => {
+  it('is "no-pr-action" when the forge found no PR for the branch', () => {
     expect(resolveMergeGateVerdict({
-      prProbe: { prState: null, readable: true }, summary, alreadyReprompted: false,
-    })).toBe('unreadable');
+      prProbe: { prState: null, readable: true }, summary,
+    })).toBe('no-pr-action');
+  });
+
+  it('is "no-pr-action" when the PR is closed rather than merged', () => {
+    expect(resolveMergeGateVerdict({
+      prProbe: { prState: 'CLOSED', readable: true }, summary,
+    })).toBe('no-pr-action');
   });
 
   it('is "leave-open-stated" when the PR is open and the summary says so', () => {
     expect(resolveMergeGateVerdict({
       prProbe: { prState: 'OPEN', readable: true },
       summary: 'Leaving the PR open — CI is still red.',
-      alreadyReprompted: false,
     })).toBe('leave-open-stated');
   });
 
-  it('is "needs-reprompt" when the PR is open, no blocker is stated, and no nudge has gone out yet', () => {
+  it('is "needs-reprompt" when the PR is open and no blocker is stated', () => {
     expect(resolveMergeGateVerdict({
-      prProbe: { prState: 'OPEN', readable: true }, summary, alreadyReprompted: false,
+      prProbe: { prState: 'OPEN', readable: true }, summary,
     })).toBe('needs-reprompt');
-  });
-
-  it('is "reprompt-exhausted" when the PR is STILL open after the one allowed nudge', () => {
-    expect(resolveMergeGateVerdict({
-      prProbe: { prState: 'OPEN', readable: true }, summary, alreadyReprompted: true,
-    })).toBe('reprompt-exhausted');
   });
 });
 
