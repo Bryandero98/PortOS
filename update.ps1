@@ -76,6 +76,94 @@ function Invoke-Logged {
     & $cmd @cmdRest >> $UpdateLog 2>&1
 }
 
+# Headless-install guard (mirrors update.sh). From the `pm2-stop` step below
+# until the closing `pm2 start` succeeds, PortOS's PM2 entries are DELETED — the
+# install has no server. Every step in between (npm install, setup-db,
+# migrations, the client build) can fail, and each of those failures exits this
+# script with the apps still deleted and nothing left running to notice: the
+# "update deleted portos-server and it never came back" failure. So restore the
+# apps on the way out instead of leaving the machine headless.
+#
+# This block sits here — above every fatal exit in the script, not beside the
+# delete it guards — because PowerShell's `exit` inside a function terminates the
+# whole script WITHOUT raising a terminating error, bypassing both the trap and
+# any later-defined helper. Safe-Install is defined above the delete and called
+# below it, so a guard defined between them could never catch its exit.
+#
+# Starting the pulled tree after a failed install can crash-loop, but a
+# crash-looping app the user can see beats a silently headless machine — and the
+# recovery only ever runs on a path that was already leaving PortOS down.
+$script:Pm2AppsDown = $false
+
+# Which pm2 the recovery can actually reach. It CANNOT assume this checkout's own
+# copy: Safe-Install wipes root node_modules whenever the pulled update touched
+# root package.json — which every release does, since the version bump lives
+# there — and pm2 is a ROOT dependency. So on the most likely failure of all
+# (both npm install attempts fail) the checkout's pm2 is already gone by the time
+# the recovery runs. Any pm2 CLI can drive the already-running daemon, so falling
+# back to one on PATH, or to npx, is fine for a recovery.
+function Resolve-Pm2Command {
+    if (Test-Path "$RootDir\node_modules\pm2\bin\pm2") {
+        return @('node', './node_modules/pm2/bin/pm2')
+    }
+    if (Get-Command pm2 -ErrorAction SilentlyContinue) {
+        return @('pm2')
+    }
+    $pinned = try { (Get-Content "$RootDir\package.json" -Raw | ConvertFrom-Json).dependencies.pm2 } catch { $null }
+    if ($pinned) { return @('npx', '--yes', "pm2@$pinned") }
+    return @('npx', '--yes', 'pm2')
+}
+
+function Restore-Pm2Apps {
+    if (-not $script:Pm2AppsDown) { return }
+    $script:Pm2AppsDown = $false
+    try {
+        $pm2 = Resolve-Pm2Command
+        Write-SafeHost "⚠️  Update is exiting with PortOS's apps deleted — restarting them so the install isn't left headless." -ForegroundColor Yellow
+        Step "restart" "running" "Update failed — restarting PortOS so it isn't left down..."
+        # `pm2 start` exiting 0 is not proof the server came back (same reason the
+        # verify step below exists) — and this path starts a HALF-INSTALLED tree, so
+        # a start that exits 0 and then crash-loops is the likely case here, not the
+        # edge case. Never claim a recovery the health probe doesn't confirm.
+        $startArgs = $pm2 + @('start', 'ecosystem.config.cjs')
+        Invoke-Logged @startArgs
+        if ($LASTEXITCODE -eq 0) { Invoke-Logged node scripts/verify-server-health.js }
+        if ($LASTEXITCODE -eq 0) {
+            $saveArgs = $pm2 + @('save')
+            Invoke-Logged @saveArgs
+            Step "restart" "warning" "Update failed, but PortOS was restarted"
+            Write-SafeHost "✅ PortOS is answering /api/system/health again after the failed update." -ForegroundColor Green
+        } else {
+            Step "restart" "error" "Update failed and PortOS is DOWN"
+            Write-SafeHost "❌ PortOS is not answering /api/system/health." -ForegroundColor Red
+            # Name the pm2 that actually exists — the checkout's copy may be the
+            # thing a failed install just deleted, so printing it would be a dead end.
+            Write-SafeHost "    Recover with: $($pm2 -join ' ') start ecosystem.config.cjs" -ForegroundColor Red
+        }
+    } catch {
+        # A throwing recovery must not replace the real update failure, and must
+        # not re-enter the trap below.
+        Write-SafeHost "❌ PortOS restart attempt failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Every fatal exit in this script goes through here, so the recovery cannot be
+# forgotten at one of the call sites. Before the delete it is a no-op.
+function Stop-UpdateScript {
+    param([int]$Code = 1)
+    Restore-Pm2Apps
+    # Recovery must never turn a failed update into a reported success.
+    if ($Code -eq 0) { $Code = 1 }
+    exit $Code
+}
+
+# Backstop for a terminating error nobody converted into a Stop-UpdateScript
+# call; `break` rethrows so the script still exits non-zero.
+trap {
+    Restore-Pm2Apps
+    break
+}
+
 Write-SafeHost "===================================" -ForegroundColor Cyan
 Write-SafeHost "  PortOS Update" -ForegroundColor Cyan
 Write-SafeHost "===================================" -ForegroundColor Cyan
@@ -202,7 +290,7 @@ if ($currentBranch -ne "main") {
         Write-SafeHost "⚠️  On branch '$currentBranch' — switching to main for update" -ForegroundColor Yellow
     }
     Invoke-Logged git checkout main
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 }
 # Record main's pre-pull HEAD — captured AFTER any checkout so it's the commit
 # the installed node_modules was built from (main, which the rest of this script
@@ -211,7 +299,7 @@ if ($currentBranch -ne "main") {
 # the update brings is detected even when launched from another branch.
 $prePullSha = git rev-parse HEAD 2>$null
 Invoke-Logged git pull --rebase --autostash
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Step "git-pull" "done" "Latest changes pulled"
 
 # Determine which workspaces' package.json this update touched, so Safe-Install
@@ -239,69 +327,11 @@ Write-SafeHost ""
 # contract, not whichever submodule commit happens to be newest upstream.
 Step "submodules" "running" "Synchronizing and updating submodules..."
 Invoke-Logged git submodule sync --recursive
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Invoke-Logged git submodule update --init --recursive
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Step "submodules" "done" "Submodules updated"
 Write-SafeHost ""
-
-# Headless-install guard (mirrors update.sh). From the `pm2-stop` step below
-# until the closing `pm2 start` succeeds, PortOS's PM2 entries are DELETED — the
-# install has no server. Every step in between (npm install, setup-db,
-# migrations, the client build) can fail, and each of those failures exits this
-# script with the apps still deleted and nothing left running to notice: the
-# "update deleted portos-server and it never came back" failure. So restore the
-# apps on the way out instead of leaving the machine headless.
-#
-# Starting the pulled tree after a failed install can crash-loop, but a
-# crash-looping app the user can see beats a silently headless machine — and the
-# recovery only ever runs on a path that was already leaving PortOS down.
-$script:Pm2AppsDown = $false
-
-function Restore-Pm2Apps {
-    if (-not $script:Pm2AppsDown) { return }
-    $script:Pm2AppsDown = $false
-    try {
-        Write-SafeHost "⚠️  Update is exiting with PortOS's apps deleted — restarting them so the install isn't left headless." -ForegroundColor Yellow
-        Step "restart" "running" "Update failed — restarting PortOS so it isn't left down..."
-        # `pm2 start` exiting 0 is not proof the server came back (same reason the
-        # verify step below exists) — and this path starts a HALF-INSTALLED tree, so
-        # a start that exits 0 and then crash-loops is the likely case here, not the
-        # edge case. Never claim a recovery the health probe doesn't confirm.
-        Invoke-Logged node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs
-        if ($LASTEXITCODE -eq 0) { Invoke-Logged node scripts/verify-server-health.js }
-        if ($LASTEXITCODE -eq 0) {
-            Invoke-Logged node ./node_modules/pm2/bin/pm2 save
-            Step "restart" "warning" "Update failed, but PortOS was restarted"
-            Write-SafeHost "✅ PortOS is answering /api/system/health again after the failed update." -ForegroundColor Green
-        } else {
-            Step "restart" "error" "Update failed and PortOS is DOWN"
-            Write-SafeHost "❌ PortOS is not answering /api/system/health." -ForegroundColor Red
-            Write-SafeHost "    Recover with: node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs" -ForegroundColor Red
-        }
-    } catch {
-        # A throwing recovery must not replace the real update failure, and must
-        # not re-enter the trap below.
-        Write-SafeHost "❌ PortOS restart attempt failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-# Every fatal exit between the delete and the start goes through here, so the
-# recovery cannot be forgotten at one of the ten call sites.
-function Stop-UpdateScript {
-    param([int]$Code = 1)
-    Restore-Pm2Apps
-    # Recovery must never turn a failed update into a reported success.
-    if ($Code -eq 0) { $Code = 1 }
-    exit $Code
-}
-
-# Backstop for a terminating error nobody converted into a Stop-UpdateScript
-# call; `break` rethrows so the script still exits non-zero.
-trap {
-    Restore-Pm2Apps
-    break
-}
 
 # Remove ONLY PortOS's apps from the shared PM2 daemon — never `pm2 kill`, which
 # tears down the daemon and stops EVERY other project's apps on this machine.

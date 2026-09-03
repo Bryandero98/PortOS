@@ -23,14 +23,21 @@ const STUB_SCRIPTS = [
  * for the guard's source text. The rationale for the guard itself lives with it
  * in update.sh.
  *
- * @param {{origin?: boolean, failInstall?: boolean, healthy?: boolean}} options
+ * @param {{origin?: boolean, failAfterDelete?: boolean, npmShim?: string,
+ *   forceClean?: boolean, pm2OnPath?: boolean, healthy?: boolean}} options
  *   origin:false leaves the checkout with no upstream, so the git-pull step
- *   fails before anything is deleted. failInstall fails the first step AFTER
- *   the pm2 delete that does not also wipe node_modules (safe_install's retry
- *   would delete the pm2 shim with it). healthy:false makes the health probe
- *   report the restarted server never came back.
+ *   fails before anything is deleted. failAfterDelete fails the first step AFTER
+ *   the pm2 delete that does not also wipe node_modules. npmShim picks whether
+ *   `npm`/`npx` succeed ('ok'), fail ('fail' — which makes safe_install wipe
+ *   node_modules first) or stall ('slow', so a signal can arrive mid-window).
+ *   forceClean makes safe_install wipe root node_modules regardless of the diff,
+ *   pm2OnPath supplies a fallback pm2 for when that wipe removes the local one,
+ *   and healthy:false makes the health probe report the server never came back.
  */
-async function makeSandbox({ origin = true, failInstall = true, healthy = true } = {}) {
+async function makeSandbox({
+  origin = true, failAfterDelete = true, npmShim = 'ok',
+  forceClean = false, pm2OnPath = false, healthy = true
+} = {}) {
   const { scratch, repo } = await makeGitSandbox({ origin, prefix: 'portos-update-guard-' });
   const bin = join(scratch, 'bin');
   const calls = join(scratch, 'pm2-calls.log');
@@ -51,7 +58,7 @@ async function makeSandbox({ origin = true, failInstall = true, healthy = true }
     `require('fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');\n`
   );
 
-  writeFileSync(join(repo, 'scripts', 'trusted-rebuilds.js'), `process.exit(${failInstall ? 1 : 0});\n`);
+  writeFileSync(join(repo, 'scripts', 'trusted-rebuilds.js'), `process.exit(${failAfterDelete ? 1 : 0});\n`);
   for (const stub of STUB_SCRIPTS) {
     writeFileSync(join(repo, 'scripts', stub), 'process.exit(0);\n');
   }
@@ -70,26 +77,46 @@ async function makeSandbox({ origin = true, failInstall = true, healthy = true }
 
   // update.sh only ever calls these as bare commands, so a PATH shim covers
   // every install and the slash-do refresh without touching the network.
+  const npmBody = { ok: 'exit 0', fail: 'exit 1', slow: 'sleep 2\nexit 0' }[npmShim];
   for (const shim of ['npm', 'npx']) {
-    writeFileSync(join(bin, shim), '#!/bin/sh\nexit 0\n');
+    writeFileSync(join(bin, shim), `#!/bin/sh\n${npmBody}\n`);
     chmodSync(join(bin, shim), 0o755);
   }
+  // A pm2 the recovery can still reach after safe_install wipes the local one.
+  if (pm2OnPath) {
+    writeFileSync(join(bin, 'pm2'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
+    chmodSync(join(bin, 'pm2'), 0o755);
+  }
 
-  return { scratch, repo, bin, calls };
+  return { scratch, repo, bin, calls, forceClean };
 }
 
 // The three runs share no state, so they go out concurrently rather than
 // serializing three full update scripts.
-function runUpdate(sandbox) {
+function runUpdate(sandbox, { onStart } = {}) {
   return new Promise((resolve) => {
-    const child = spawn('bash', [join(sandbox.repo, 'update.sh')], {
-      cwd: sandbox.repo,
-      env: { ...process.env, PATH: `${sandbox.bin}:${process.env.PATH}` }
-    });
+    const env = { ...process.env, PATH: `${sandbox.bin}:${process.env.PATH}` };
+    if (sandbox.forceClean) env.PORTOS_FORCE_CLEAN_WORKSPACES = '.';
+    const child = spawn('bash', [join(sandbox.repo, 'update.sh')], { cwd: sandbox.repo, env });
     let stdout = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', () => {});
     child.on('close', (status) => resolve({ status, stdout }));
+    onStart?.(child);
+  });
+}
+
+// Resolves once the sandbox's pm2 log contains a matching call, so a test can
+// act at a precise point in the window instead of guessing at a delay.
+function waitForPm2Call(sandbox, prefix, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (pm2Calls(sandbox).some(c => c.startsWith(prefix))) return resolve();
+      if (Date.now() > deadline) return reject(new Error(`timed out waiting for pm2 "${prefix}"`));
+      setTimeout(poll, 25);
+    };
+    poll();
   });
 }
 
@@ -102,10 +129,13 @@ describe.skipIf(process.platform === 'win32' || SKIP_HEAVY_INTEGRATION)('update.
 
   beforeAll(async () => {
     const cases = {
-      failed: { failInstall: true },
-      clean: { failInstall: false },
+      failed: {},
+      clean: { failAfterDelete: false },
       preDelete: { origin: false },
-      unhealthy: { failInstall: true, healthy: false }
+      unhealthy: { healthy: false },
+      // The failure the guard's own comment names: both npm installs fail, and
+      // safe_install wiped root node_modules — pm2 included — on the way.
+      pm2Wiped: { npmShim: 'fail', forceClean: true, pm2OnPath: true }
     };
     await Promise.all(Object.entries(cases).map(async ([name, options]) => {
       sandboxes[name] = await makeSandbox(options);
@@ -145,6 +175,40 @@ describe.skipIf(process.platform === 'win32' || SKIP_HEAVY_INTEGRATION)('update.
     expect(results.unhealthy.stdout).not.toContain('STEP:restart:warning:');
   });
 
+  it('restarts through a pm2 the failed install did not delete', () => {
+    // safe_install wipes root node_modules (pm2 is a ROOT dependency) before it
+    // retries, so a recovery hardcoded to ./node_modules/pm2/bin/pm2 would be a
+    // no-op on the most likely failure of all.
+    const calls = pm2Calls(sandboxes.pm2Wiped);
+    const deleteAt = calls.findIndex(c => c.startsWith('delete ecosystem.config.cjs'));
+    const startAt = calls.findIndex(c => c.startsWith('start ecosystem.config.cjs'));
+    expect(deleteAt, `pm2 calls were: ${JSON.stringify(calls)}`).toBeGreaterThan(-1);
+    expect(startAt, `pm2 calls were: ${JSON.stringify(calls)}`).toBeGreaterThan(deleteAt);
+    expect(results.pm2Wiped.status).not.toBe(0);
+  });
+
+  it('restarts the apps when the update is killed mid-window', async () => {
+    // Without the TERM/INT/HUP traps bash runs NO exit trap for a fatal signal,
+    // so the apps would stay deleted.
+    const box = await makeSandbox({ npmShim: 'slow' });
+    try {
+      const result = await runUpdate(box, {
+        onStart: (child) => {
+          waitForPm2Call(box, 'delete ecosystem.config.cjs')
+            .then(() => child.kill('SIGTERM'))
+            .catch(() => child.kill('SIGKILL'));
+        }
+      });
+      const calls = pm2Calls(box);
+      const deleteAt = calls.findIndex(c => c.startsWith('delete ecosystem.config.cjs'));
+      const startAt = calls.findIndex(c => c.startsWith('start ecosystem.config.cjs'));
+      expect(startAt, `pm2 calls were: ${JSON.stringify(calls)}`).toBeGreaterThan(deleteAt);
+      expect(result.status).toBe(143);
+    } finally {
+      await destroyGitSandbox(box.scratch);
+    }
+  }, 120000);
+
   it('does not touch PM2 when the update aborts before the delete', () => {
     expect(results.preDelete.status).not.toBe(0);
     expect(pm2Calls(sandboxes.preDelete)).toEqual([]);
@@ -153,30 +217,39 @@ describe.skipIf(process.platform === 'win32' || SKIP_HEAVY_INTEGRATION)('update.
 
 /**
  * update.ps1 is the Windows half of the same bracket and cannot be executed
- * here, so guard the invariant that makes its recovery reachable: every fatal
- * exit between the pm2 delete and the successful start must route through
- * Stop-UpdateScript. A future step added to that window with a bare `exit`
- * would silently reintroduce the headless failure on Windows only.
+ * here, so guard the invariant that makes its recovery reachable: PowerShell's
+ * `exit` inside a function terminates the whole script WITHOUT raising a
+ * terminating error, bypassing both Stop-UpdateScript and the script-scope trap.
+ * So every fatal exit in the file must route through Stop-UpdateScript. Scanning
+ * the whole file rather than the delete→start line window is the point: the
+ * exit that actually caused this bug lives in Safe-Install, which is DEFINED
+ * above the delete and CALLED below it.
  */
 describe('update.ps1 headless-install guard', () => {
   const ps1 = readFileSync(join(REPO_ROOT, 'update.ps1'), 'utf8').split('\n');
   const lineOf = (needle) => ps1.findIndex(line => line.includes(needle));
 
-  it('routes every fatal exit in the delete→start window through the recovery', () => {
-    const deleteAt = lineOf('$script:Pm2AppsDown = $true');
-    // The latch is cleared in Restore-Pm2Apps too; the LAST clear is the real start.
-    const startedAt = ps1.findLastIndex(line => line.includes('$script:Pm2AppsDown = $false'));
-    expect(deleteAt).toBeGreaterThan(-1);
-    expect(startedAt).toBeGreaterThan(deleteAt);
+  // The only two script-terminating exits that may bypass the recovery: the one
+  // Stop-UpdateScript itself performs (after running it), and the final status.
+  const SANCTIONED_EXITS = ['exit $Code', 'exit $verifyFailed'];
 
-    const rawExits = ps1
-      .slice(deleteAt, startedAt)
-      .map((line, i) => ({ line: line.trim(), number: deleteAt + i + 1 }))
-      .filter(({ line }) => /(^|[{;]\s*)exit\b/.test(line));
-    expect(rawExits, `bare exit(s) skip Restore-Pm2Apps: ${JSON.stringify(rawExits)}`).toEqual([]);
+  it('routes every fatal exit through the recovery', () => {
+    const exits = ps1
+      .map((line, i) => ({ line: line.trim(), number: i + 1 }))
+      .filter(({ line }) => /(^|[{;]\s*)exit\b/.test(line) || line.includes('[Environment]::Exit('));
+
+    const offenders = exits.filter(({ line }) => !SANCTIONED_EXITS.includes(line));
+    expect(offenders, `exit(s) bypassing Restore-Pm2Apps: ${JSON.stringify(offenders)}`).toEqual([]);
+    // ...and both sanctioned exits must still be there, so the guard can't be
+    // "satisfied" by deleting the exit inside Stop-UpdateScript.
+    expect([...new Set(exits.map(e => e.line))].sort()).toEqual([...SANCTIONED_EXITS].sort());
   });
 
-  it('installs the recovery before the delete that makes it necessary', () => {
+  it('defines the recovery before every call site that depends on it', () => {
+    const definedAt = lineOf('function Stop-UpdateScript');
+    expect(definedAt).toBeGreaterThan(-1);
+    const firstCall = ps1.findIndex(line => line.includes('Stop-UpdateScript ') && !line.includes('function '));
+    expect(firstCall).toBeGreaterThan(definedAt);
     expect(lineOf('function Restore-Pm2Apps')).toBeLessThan(lineOf('$script:Pm2AppsDown = $true'));
     expect(lineOf('trap {')).toBeLessThan(lineOf('$script:Pm2AppsDown = $true'));
   });

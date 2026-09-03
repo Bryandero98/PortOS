@@ -186,25 +186,55 @@ log ""
 # recovery only ever runs on a path that was already leaving PortOS down.
 PM2_APPS_DOWN=0
 
+# Which pm2 the recovery can actually reach. It CANNOT assume this checkout's
+# own copy: `safe_install .` wipes root node_modules whenever the pulled update
+# touched root package.json — which every release does, since the version bump
+# lives there — and pm2 is a ROOT dependency. So on the most likely failure of
+# all (both npm install attempts fail: offline, registry 5xx, ENOSPC) the
+# checkout's pm2 is already gone by the time the trap runs, and a hardcoded
+# ./node_modules/pm2/bin/pm2 would make the recovery a no-op exactly when it is
+# needed most. Prefer the local copy, fall back to a pm2 on PATH, then to npx at
+# the version package.json pins. Any pm2 CLI can drive the already-running
+# daemon, so a version difference is fine for a recovery.
+PM2_CMD=()
+resolve_pm2_cmd() {
+  if [ -f "$ROOT_DIR/node_modules/pm2/bin/pm2" ]; then
+    PM2_CMD=(node "$ROOT_DIR/node_modules/pm2/bin/pm2")
+  elif command -v pm2 >/dev/null 2>&1; then
+    PM2_CMD=(pm2)
+  else
+    local pinned
+    pinned=$(node -e 'const d=require("./package.json").dependencies||{}; process.stdout.write(typeof d.pm2 === "string" ? d.pm2 : "")' 2>/dev/null || echo "")
+    if [ -n "$pinned" ]; then
+      PM2_CMD=(npx --yes "pm2@$pinned")
+    else
+      PM2_CMD=(npx --yes pm2)
+    fi
+  fi
+}
+
 restore_pm2_apps_on_exit() {
   local status=$?
   trap - EXIT
   if [ "$PM2_APPS_DOWN" = "1" ]; then
     PM2_APPS_DOWN=0
+    resolve_pm2_cmd
     log "⚠️  Update is exiting (status $status) with PortOS's apps deleted — restarting them so the install isn't left headless."
     step "restart" "running" "Update failed — restarting PortOS so it isn't left down..."
     # `pm2 start` exiting 0 is not proof the server came back (same reason the
     # verify step below exists) — and this path starts a HALF-INSTALLED tree, so
     # a start that exits 0 and then crash-loops is the likely case here, not the
     # edge case. Never claim a recovery the health probe doesn't confirm.
-    if run node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs && run node scripts/verify-server-health.js; then
-      run node ./node_modules/pm2/bin/pm2 save || true
+    if run "${PM2_CMD[@]}" start ecosystem.config.cjs && run node scripts/verify-server-health.js; then
+      run "${PM2_CMD[@]}" save || true
       step "restart" "warning" "Update failed, but PortOS was restarted"
       log "✅ PortOS is answering /api/system/health again after the failed update."
     else
       step "restart" "error" "Update failed and PortOS is DOWN"
       log "❌ PortOS is not answering /api/system/health."
-      log "    Recover with: node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs"
+      # Name the pm2 that actually exists — the checkout's copy may be the thing
+      # a failed install just deleted, so printing it would be a dead-end hint.
+      log "    Recover with: ${PM2_CMD[*]} start ecosystem.config.cjs"
     fi
     # Recovery must never turn a failed update into a reported success.
     if [ "$status" -eq 0 ]; then status=1; fi
