@@ -345,6 +345,129 @@ export const upgradeMiniMaxH3OutputControls = (list) => {
   return upgradeMiniMaxH3DenoisingCount(withGeometry);
 };
 
+// FastMetal 14B ships its MLX DiT TWICE — `mlx_dit.safetensors` at the repo
+// root and an `ema/` copy of the same 14.14 GB tensor. The render path reads
+// only the root one: scripts/generate_fastvideo.py defaults `mlx_checkpoint`
+// to the model root for the fastmetal family and ALWAYS forwards it, so
+// mlx_wan_prompt_to_video.py takes `resolve_mlx_checkpoint`'s explicit branch
+// and loads `mlx_dit.json` + `mlx_dit.safetensors` from that one directory.
+// Nothing on that path names `ema/` — the `ema/*` entries in the entry
+// script's own `allow_patterns` belong to its download helper, which PortOS
+// bypasses by passing an explicit `--model-root`.
+//
+// Enumerating the loaded set therefore drops 14.14 GB from the pull without
+// changing a single byte the render path reads.
+//
+// Listed rather than expressed as an "everything but ema/" exclusion because
+// `repoFiles` is the only narrowing the download path has (see
+// `modelDownloadTargets`), and an explicit list is also what the cache
+// completeness check verifies. `.gitattributes` and `README.md` are omitted:
+// nothing loads them, and a file in this list that upstream later drops would
+// read as an incomplete download.
+const FASTMETAL_14B_REPO_FILES = Object.freeze([
+  'model_index.json',
+  'mlx_dit.json',
+  'mlx_dit.safetensors',
+  'scheduler/scheduler_config.json',
+  'text_encoder/config.json',
+  'text_encoder/model.safetensors.index.json',
+  ...shardFiles('text_encoder', 'model', 5),
+  'tokenizer/special_tokens_map.json',
+  'tokenizer/spiece.model',
+  'tokenizer/tokenizer.json',
+  'tokenizer/tokenizer_config.json',
+  'vae/config.json',
+  'vae/diffusion_pytorch_model.safetensors',
+]);
+
+// The three shipped FastMetal rows quote a download size in their DISPLAY NAME
+// that is only the MLX DiT, while the entries pull a whole-repo snapshot that
+// also carries a bundled T5 text encoder and VAE — so a user reading "~3.5 GB"
+// was handed a 13.4 GB pull (#5871). #5860 corrected `estimatedDownloadGb` in
+// the disclosure panel; the name is the number the user reads BEFORE opening
+// that panel, so it is what these profiles correct.
+//
+// `oldName` / `oldEstimatedDownloadGb` are the exact superseded SHIPPED values:
+// each rewrite fires only when the persisted value still matches one of them, so
+// a user's own rename or hand-tuned estimate survives untouched. Same shape as
+// MINIMAX_H3_OUTPUT_PROFILE's upgrade half — keyed on (id, shipped repo, prior
+// shipped value).
+//
+// `oldEstimatedDownloadGb` carries TWO generations because #5860 shipped no
+// migration: an install that persisted its disclosure before it still reads the
+// DiT-only figure, and one that seeded after reads the whole-snapshot figure the
+// 14B row no longer pulls.
+export const FASTMETAL_DOWNLOAD_SIZE_PROFILES = Object.freeze([
+  Object.freeze({
+    id: 'fastmetal_1_3b_qad',
+    shippedRepo: 'FastVideo/FastMetal-1.3B-QAD',
+    oldName: 'FastMetal 1.3B QAD (~3.5 GB download, 8+ GB RAM, 3-step)',
+    name: 'FastMetal 1.3B QAD (~13.4 GB download, 8+ GB RAM, 3-step)',
+    oldEstimatedDownloadGb: Object.freeze([3.5]),
+    estimatedDownloadGb: 13.4,
+  }),
+  Object.freeze({
+    id: 'fastmetal_5b_qad',
+    shippedRepo: 'FastVideo/FastMetal-5B-QAD',
+    oldName: 'FastMetal 5B QAD (~10 GB download, 16+ GB RAM, 3-step)',
+    name: 'FastMetal 5B QAD (~19.5 GB download, 16+ GB RAM, 3-step)',
+    oldEstimatedDownloadGb: Object.freeze([10.2]),
+    estimatedDownloadGb: 19.5,
+  }),
+  // The 14B repo ships the DiT twice — `mlx_dit.safetensors` and an `ema/` copy
+  // of it, 14.14 GB each — and the entry script loads only the root one, so
+  // `repoFiles` drops the `ema/` half. That makes this row's honest number the
+  // narrowed 27.1 GB pull rather than the 42.3 GB whole snapshot. Every name
+  // here quotes its `estimatedDownloadGb` verbatim — the whole bug was the two
+  // disagreeing, so they are not allowed to round apart.
+  Object.freeze({
+    id: 'fastmetal_14b_qad',
+    shippedRepo: 'FastVideo/FastMetal-14B-QAD',
+    oldName: 'FastMetal 14B QAD (~25 GB download, 36+ GB RAM, 3-step)',
+    name: 'FastMetal 14B QAD (~27.1 GB download, 36+ GB RAM, 3-step)',
+    oldEstimatedDownloadGb: Object.freeze([25.4, 42.3]),
+    estimatedDownloadGb: 27.1,
+    repoFiles: FASTMETAL_14B_REPO_FILES,
+  }),
+]);
+
+const upgradeFastMetalEntry = (entry, profile) => {
+  if (!isPlainObject(entry) || entry.id !== profile.id || entry.repo !== profile.shippedRepo) return entry;
+  let next = entry;
+  // Only the untouched shipped string is rewritten — a user rename is theirs.
+  if (next.name === profile.oldName) next = { ...next, name: profile.name };
+  // The file list is additive and only lands on a row that declares none: an
+  // entry already carrying `repoFiles` has a narrowing its owner chose.
+  if (profile.repoFiles && !Object.hasOwn(next, 'repoFiles')) {
+    next = { ...next, repoFiles: [...profile.repoFiles] };
+  }
+  // A row that persisted its disclosure before this correction keeps a stale
+  // size that would now contradict the name beside it. applyVideoDisclosures
+  // only fills an ABSENT block, so the stale one is corrected here — and only
+  // when it still equals a value PortOS itself shipped.
+  if (isPlainObject(next.disclosure)
+    && profile.oldEstimatedDownloadGb.includes(next.disclosure.estimatedDownloadGb)) {
+    next = {
+      ...next,
+      disclosure: { ...next.disclosure, estimatedDownloadGb: profile.estimatedDownloadGb },
+    };
+  }
+  return next;
+};
+
+/**
+ * Bring the shipped FastMetal rows onto the size their download actually pulls
+ * — in the display name and in any stale persisted disclosure — and narrow the
+ * 14B row off its duplicated `ema/` DiT.
+ *
+ * Load-time twin of migration 336: the registry cache is populated before
+ * migrations execute, so the boot that runs the migration still needs this.
+ */
+export const upgradeFastMetalDownloadSizes = (list) => {
+  if (!Array.isArray(list)) return list;
+  return list.map((entry) => FASTMETAL_DOWNLOAD_SIZE_PROFILES.reduce(upgradeFastMetalEntry, entry));
+};
+
 // Existing installs already persisted the shipped LTX-2.5 row before its A2V
 // duration contract was declared. Backfill only the untouched pinned model and
 // only absent keys: a user-repointed fork or an explicit local override remains
@@ -635,10 +758,12 @@ const DEFAULT_REGISTRY = {
         }],
       },
       // FastVideo FastMetal models — Hao AI Lab's distilled DMD2 Wan models
-      // with affine INT8 quantization on Apple Silicon MLX.
+      // with affine INT8 quantization on Apple Silicon MLX. The download size
+      // in each name is the WHOLE snapshot (bundled T5 text encoder and VAE
+      // included), not the MLX DiT alone — see FASTMETAL_DOWNLOAD_SIZE_PROFILES.
       {
         id: 'fastmetal_1_3b_qad',
-        name: 'FastMetal 1.3B QAD (~3.5 GB download, 8+ GB RAM, 3-step)',
+        name: 'FastMetal 1.3B QAD (~13.4 GB download, 8+ GB RAM, 3-step)',
         repo: 'FastVideo/FastMetal-1.3B-QAD',
         runtime: 'fastvideo',
         supportedModes: ['text'],
@@ -653,7 +778,7 @@ const DEFAULT_REGISTRY = {
       },
       {
         id: 'fastmetal_5b_qad',
-        name: 'FastMetal 5B QAD (~10 GB download, 16+ GB RAM, 3-step)',
+        name: 'FastMetal 5B QAD (~19.5 GB download, 16+ GB RAM, 3-step)',
         repo: 'FastVideo/FastMetal-5B-QAD',
         runtime: 'fastvideo',
         supportedModes: ['text'],
@@ -668,8 +793,10 @@ const DEFAULT_REGISTRY = {
       },
       {
         id: 'fastmetal_14b_qad',
-        name: 'FastMetal 14B QAD (~25 GB download, 36+ GB RAM, 3-step)',
+        name: 'FastMetal 14B QAD (~27.1 GB download, 36+ GB RAM, 3-step)',
         repo: 'FastVideo/FastMetal-14B-QAD',
+        // Drops the duplicated `ema/` DiT the entry script never loads (#5871).
+        repoFiles: [...FASTMETAL_14B_REPO_FILES],
         runtime: 'fastvideo',
         supportedModes: ['text'],
         defaultWidth: 1280,
@@ -1356,9 +1483,9 @@ const normalizeRegistry = (parsed) => {
   // model this install deleted — or a hand-edited typo — is dropped with a
   // warning instead of surfacing a Finish button targeting nothing.
   const videoEntries = (entries, { upgradeLegacyCudaLtx = false } = {}) => {
-    const normalized = backfillRuntime(upgradeLtx25AudioControls(
+    const normalized = backfillRuntime(upgradeFastMetalDownloadSizes(upgradeLtx25AudioControls(
       upgradeMiniMaxH3OutputControls(dropRetiredEntries(entries)),
-    ));
+    )));
     const upgraded = upgradeLegacyCudaLtx
       ? upgradeLtx25CudaMemoryFloor(upgradeLegacyCudaLtxRuntime(normalized))
       : normalized;
