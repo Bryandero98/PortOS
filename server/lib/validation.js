@@ -126,37 +126,6 @@ export const datadogSearchErrorsRequestSchema = z.object({
   }).optional()),
 });
 
-// Reference-repo entry. Each app can list upstream repos it watches for
-// clean-room reimplementation;
-// the `reference-watch` scheduled task fetches each one, finds commits since
-// `lastReviewedSha`, and appends slug-tagged `[ref-watch-…]` checklist items
-// to the app's PLAN.md for `/claim` / `plan-task` to pick up. `notes` is the
-// free-text "what we use from this repo" field — fed into the review prompt
-// so the agent knows which features in our app are load-bearing for the watch.
-export const referenceRepoSchema = z.object({
-  id: z.string().min(1).max(64),
-  name: z.string().min(1).max(120),
-  // Either a clonable URL (https://github.com/owner/repo or scp-style
-  // user@host:owner/repo.git) or a local filesystem path. The service
-  // detects remote URLs by matching `scheme://` or scp-style
-  // `user@host:path` (see isLocalPath in services/referenceRepos.js);
-  // anything else is treated as a local path.
-  repoUrl: z.string().min(1).max(500),
-  branch: z.string().max(120).optional().default('main'),
-  // 40-char hex SHA (case-insensitive), or null (no review yet). Validating
-  // hex here rather than just length means a bogus PATCH like 'g'.repeat(40)
-  // fails fast at the API instead of producing confusing git failures later.
-  lastReviewedSha: z.string().regex(/^[0-9a-f]{40}$/i, 'must be a 40-char hex SHA').nullable().optional(),
-  lastCheckedAt: z.string().datetime().nullable().optional(),
-  notes: z.string().max(4000).optional().default(''),
-  // Last action's outcome — used by the UI to highlight refs needing
-  // attention. 'needs-clone' means the managed clone hasn't been
-  // initialized yet (first run will populate it).
-  status: z.enum(['ok', 'checking', 'error', 'needs-clone']).optional().default('needs-clone'),
-  lastError: z.string().max(2000).nullable().optional(),
-  createdAt: z.string().datetime().optional()
-});
-
 // App schema for registration/update
 // Workspace Context (#902) — the only input is an app id (the apps-registry
 // key, or the fixed 'portos-default' baseline). Mirrors the apps-registry id
@@ -333,6 +302,20 @@ export const appSchema = z.object({
 // fails validation rather than slipping through and producing confusing
 // git failures downstream — matches the project convention used elsewhere
 // in this file.
+// Reference-repo entry. Each app can list upstream repos it watches for
+// clean-room reimplementation; the `reference-watch` scheduled task fetches
+// each one, finds commits since `lastReviewedSha`, and appends slug-tagged
+// `[ref-watch-…]` checklist items to the app's PLAN.md for `/claim` /
+// `plan-task` to pick up. `notes` is the free-text "what we use from this
+// repo" field — fed into the review prompt so the agent knows which features
+// in our app are load-bearing for the watch. `repoUrl` is either a clonable
+// URL (https://github.com/owner/repo or scp-style user@host:owner/repo.git)
+// or a local filesystem path; the service detects remote URLs by matching
+// `scheme://` or scp-style `user@host:path` (see isLocalPath in
+// services/referenceRepos.js) and treats anything else as a local path.
+// The persisted record's server-owned fields (id, status, lastError,
+// lastCheckedAt, lastKnownGoodSnapshot, createdAt) are stamped by
+// services/referenceRepos.js and never accepted from a request body.
 export const referenceRepoCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   repoUrl: z.string().trim().min(1).max(500),
