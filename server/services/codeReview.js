@@ -322,6 +322,39 @@ function adaptiveFence(content) {
   return '`'.repeat(Math.max(3, ...(content.match(/`+/g) || ['']).map((run) => run.length + 1)))
 }
 
+// Ollama translates the OpenAI-compatible `reasoning_effort` field into its
+// own `thinking` parameter, and a model that never implements thinking 400s
+// on the whole request rather than ignoring the field. There is no reliable
+// per-model "supports thinking" capability flag to probe ahead of time, so
+// this remembers which `backend:model` pairs have already 400'd on it — for
+// the life of the process — so a multi-round review loop pays the retry once
+// instead of on every round.
+const thinkingUnsupportedModels = new Map()
+export function __resetThinkingUnsupportedCache() { thinkingUnsupportedModels.clear() }
+
+async function sendChatCompletion(baseUrl, { model, messages, timeoutMs }, effortForRequest) {
+  const body = {
+    model,
+    messages,
+    temperature: 0.2,
+    stream: false,
+    ...(effortForRequest ? { reasoning_effort: effortForRequest } : {}),
+  }
+  const response = await fetchWithTimeout(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, timeoutMs).catch((err) => ({ ok: false, _fetchError: err.message }))
+  if (response._fetchError !== undefined) {
+    return { ok: false, error: `request failed: ${response._fetchError}` }
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    return { ok: false, status: response.status, text }
+  }
+  return { ok: true, response }
+}
+
 async function runToolFreeLocalCompletion({ backend, model, messages, effort, timeoutMs, baseUrl: requestedBaseUrl = null }) {
   if (!isLocalLlmReviewer(backend)) {
     return { ok: false, error: `Unsupported reviewer backend: ${backend}` }
@@ -330,35 +363,34 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
     return { ok: false, error: `No model configured for ${backend} reviewer — set one on the Settings → Code Reviewers page.` }
   }
 
-  const resolvedEffort = normalizeReviewerEffort(effort, backend) || null
+  const cacheKey = `${backend}:${model}`
+  const effortUnsupportedCached = thinkingUnsupportedModels.get(cacheKey) === true
+  let resolvedEffort = effortUnsupportedCached ? null : (normalizeReviewerEffort(effort, backend) || null)
+  let effortUnsupported = effortUnsupportedCached
+
   // Local runtime records are normalized to the OpenAI `/v1` root, while the
   // legacy backend managers return the host root. Keep both forms compatible
   // with the one endpoint suffix below.
   const baseUrl = String(requestedBaseUrl || await BACKEND_BASE_URLS[backend]())
     .replace(/\/+$/, '')
     .replace(/\/v\d+$/i, '')
-  const body = {
-    model,
-    messages,
-    temperature: 0.2,
-    stream: false,
-    ...(resolvedEffort ? { reasoning_effort: resolvedEffort } : {}),
-  }
-  const response = await fetchWithTimeout(`${baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }, timeoutMs).catch((err) => ({ ok: false, _fetchError: err.message }))
 
-  if (response._fetchError !== undefined) {
-    return { ok: false, backend, model, error: `${backend} request failed: ${response._fetchError}` }
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    return { ok: false, backend, model, error: `${backend} API error ${response.status}: ${text.slice(0, 300)}` }
+  let attempt = await sendChatCompletion(baseUrl, { model, messages, timeoutMs }, resolvedEffort)
+
+  if (!attempt.ok && attempt.status === 400 && resolvedEffort && /does not support thinking/i.test(attempt.text || '')) {
+    console.warn(`⚠️ ${backend} model ${model} ignores reasoning_effort — retried without it`)
+    thinkingUnsupportedModels.set(cacheKey, true)
+    resolvedEffort = null
+    effortUnsupported = true
+    attempt = await sendChatCompletion(baseUrl, { model, messages, timeoutMs }, null)
   }
 
-  const data = await readResponseJson(response, { fallback: (raw) => ({ _nonJson: raw }) })
+  if (!attempt.ok) {
+    if (attempt.error) return { ok: false, backend, model, error: `${backend} ${attempt.error}` }
+    return { ok: false, backend, model, error: `${backend} API error ${attempt.status}: ${(attempt.text || '').slice(0, 300)}` }
+  }
+
+  const data = await readResponseJson(attempt.response, { fallback: (raw) => ({ _nonJson: raw }) })
   if (data?._nonJson !== undefined) {
     return { ok: false, backend, model, error: `${backend} returned a non-JSON response: ${data._nonJson.slice(0, 300)}` }
   }
@@ -366,7 +398,14 @@ async function runToolFreeLocalCompletion({ backend, model, messages, effort, ti
   if (!content || typeof content !== 'string') {
     return { ok: false, backend, model, error: `${backend} returned no content.` }
   }
-  return { ok: true, backend, model, effort: resolvedEffort, content: content.trim() }
+  return {
+    ok: true,
+    backend,
+    model,
+    effort: resolvedEffort,
+    ...(effortUnsupported ? { effortUnsupported: true } : {}),
+    content: content.trim(),
+  }
 }
 
 /**
@@ -420,7 +459,14 @@ export async function runLocalCodeReview({ backend, model, diff, effort = null, 
     ],
   })
   if (!result.ok) return result
-  return { ok: true, backend, model, effort: result.effort, findings: result.content }
+  return {
+    ok: true,
+    backend,
+    model,
+    effort: result.effort,
+    ...(result.effortUnsupported ? { effortUnsupported: true } : {}),
+    findings: result.content,
+  }
 }
 
 /**
@@ -495,6 +541,7 @@ export async function runLocalClaimCommentReview({ backend, model, comments, cur
     backend,
     model,
     effort: result.effort,
+    ...(result.effortUnsupported ? { effortUnsupported: true } : {}),
     claimant,
     suspicious: parsed.suspicious,
     reviewedCommentCount: normalizedComments.length,
