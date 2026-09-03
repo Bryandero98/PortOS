@@ -542,9 +542,14 @@ export function parseRemoteHeads(stdout) {
  */
 export async function listRemoteHeads(repoPath) {
   const res = await execGit(['ls-remote', '--heads', RECONCILED_REMOTE], repoPath, { ignoreExitCode: true })
-    .catch(() => null);
+    .catch((err) => ({ error: err.message }));
   if (!res || res.exitCode !== 0) {
-    console.error(`❌ branch-reconcile: git ls-remote ${RECONCILED_REMOTE} failed — remote branch state unknown this cycle`);
+    // One log line serves every caller across every managed app, so it has to
+    // name the repo that went unread and git's own reason — without both, a
+    // network blip, an unauthenticated remote and a repo with no `origin` at
+    // all are one indistinguishable line and the operator has nothing to act on.
+    const why = (res?.error || res?.stderr || '').trim().split('\n')[0] || `exit ${res?.exitCode}`;
+    console.error(`❌ branch-reconcile: git ls-remote ${RECONCILED_REMOTE} failed in ${repoPath} (${why}) — remote branch state unknown this cycle`);
     return null;
   }
   return parseRemoteHeads(res.stdout);
@@ -679,8 +684,9 @@ async function worktreeAgeMs(worktreePath) {
  *   `activeAgentIds` distinguishes a live agent's worktree from an abandoned one (see
  *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
  *   `remoteHeads` is `listRemoteHeads`' answer when the caller already has it;
- *   omitted, this reads it itself, and `null` (unreadable remote) is carried
- *   through as "we could not ask" rather than "the remote is empty".
+ *   omitted, this reads it itself when the repo has an origin, and `null`
+ *   (unreadable remote, or no origin to read) is carried through as "we could
+ *   not ask" rather than "the remote is empty".
  *   `hasOrigin` is `getOriginInfo`'s verdict when the caller already has it (same
  *   rationale); omitted, this reads it itself, so a standalone caller still gets a
  *   truthful answer rather than the fail-closed default.
@@ -705,11 +711,19 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
     ? Boolean(origin?.hasOrigin)
     : Boolean(providedHasOrigin);
 
+  // The remote read is gated on `hasOrigin` for the same reason reconcile's own
+  // two are: a repo with no `origin` has no remote to ask, and probing one
+  // anyway logs a failure every cycle. This gather runs once per managed app in
+  // the read-only leftover-branch detector, and an app's repoPath can be a
+  // directory that was never a clone — `null` there means "could not ask",
+  // which is exactly what an origin-less repo can answer.
   const [branches, worktrees, prsByHeadOrNull, remoteHeads] = await Promise.all([
     getBranches(repoPath),
     listWorktrees(repoPath).catch(() => []),
     getOpenPrsByHead(repoPath, origin),
-    providedRemoteHeads === undefined ? listRemoteHeads(repoPath) : providedRemoteHeads
+    providedRemoteHeads !== undefined ? providedRemoteHeads
+      : hasOrigin ? listRemoteHeads(repoPath)
+      : null
   ]);
   // null = the forge could not be read (see getOpenPrsByHead). Carried onto every
   // input so the classifier can refuse to conclude "no PR" from an unread forge.

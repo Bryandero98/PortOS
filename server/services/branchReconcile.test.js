@@ -470,6 +470,35 @@ describe('gatherBranchState', () => {
     expect(inputs.find((i) => i.branch === 'next/issue-88').openPr).toBeNull();
     expect(execGh).not.toHaveBeenCalled();
   });
+
+  // The read-only leftover-branch detector calls this once per managed app, and
+  // an app's repoPath can be a directory with no origin (a static-site folder,
+  // a checkout whose remote was never added). `origin` is already resolved by
+  // the time the reads fan out, so probing the remote anyway bought nothing and
+  // logged `❌ … git ls-remote origin failed` for that app on every cycle — the
+  // exact per-cycle failure reconcile's own two remote reads are gated to avoid.
+  it('skips the remote probe on a repo with no origin', async () => {
+    getOriginInfo.mockResolvedValue({
+      hasOrigin: false, isGithub: false, host: null, fullName: null
+    });
+    git.getBranches.mockResolvedValue([
+      { name: 'local/only', isDefault: false, current: false, tracking: null, merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([]);
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGit.mockImplementation(async (args) => (args[0] === 'ls-remote'
+      ? { stdout: '', stderr: "fatal: 'origin' does not appear to be a git repository", exitCode: 128 }
+      : { stdout: '', exitCode: 0 }));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const inputs = await gatherBranchState('/repo', { defaultBranch: 'main' });
+    expect(inputs.find((i) => i.branch === 'local/only').hasOrigin).toBe(false);
+    expect(execGit).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['ls-remote']), expect.anything(), expect.anything()
+    );
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
 });
 
 describe('isAbandonedAgentWorktree', () => {
@@ -1541,6 +1570,24 @@ describe('orphaned remote branches', () => {
       expect(res.reported).toEqual([]);
       // Remote-only: the local half must not be touched, there is nothing local.
       expect(git.deleteBranch).toHaveBeenCalledWith('/repo', 'stale/merged', { remote: true });
+    });
+
+    it('names the repo and git\'s own reason when the remote cannot be read', async () => {
+      // One shared log line serves every caller across every managed app, so a
+      // bare "ls-remote failed" tells the operator neither which repo went
+      // unread nor whether it was a network blip or a broken remote.
+      execGit.mockResolvedValue({
+        stdout: '', stderr: 'ssh: Could not resolve hostname github.com', exitCode: 128
+      });
+      git.getBranches.mockResolvedValue([]);
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const res = await reapOrphanedRemotes('/repo', 'main');
+      expect(res.remoteUnavailable).toBe(true);
+      const line = errors.mock.calls.map(([msg]) => String(msg)).find((m) => m.includes('ls-remote'));
+      expect(line).toContain('/repo');
+      expect(line).toContain('Could not resolve hostname');
+      errors.mockRestore();
     });
 
     it('merge-checks the SHA ls-remote reported, not the branch name', async () => {
