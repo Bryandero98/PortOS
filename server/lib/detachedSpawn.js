@@ -645,15 +645,16 @@ export async function reapDetached(controlDir, { graceMs = REAP_GRACE_MS, pollMs
  * new job starts (every dir present then is an orphan from the prior process).
  *
  * @param {string} parentDir - the `.detached` parent (e.g. PATHS.videos/.detached)
+ * @param {object} [opts] - forwarded to reapDetached (graceMs, pollMs)
  * @returns {Promise<{reaped: number, scanned: number}>}
  */
-export async function reapAndCleanDetachedDirs(parentDir) {
+export async function reapAndCleanDetachedDirs(parentDir, opts = {}) {
   const entries = await readdir(parentDir).catch(() => []);
   let reaped = 0;
   for (const name of entries) {
     const dir = join(parentDir, name);
     // eslint-disable-next-line no-await-in-loop
-    const res = await reapDetached(dir).catch(() => ({ reaped: false }));
+    const res = await reapDetached(dir, opts).catch(() => ({ reaped: false }));
     if (res.reaped) reaped += 1;
     // eslint-disable-next-line no-await-in-loop
     await rm(dir, { recursive: true, force: true }).catch(() => {});
