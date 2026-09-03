@@ -394,3 +394,97 @@ describe('GET /api/update/status — activeCosAgents', () => {
     });
   });
 });
+
+describe('POST /api/update/sync-fork', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const forkInfo = (overrides = {}) => ({
+    hasOrigin: true, isGithub: true, isUpstream: false, isFork: true, fullName: 'alice/PortOS',
+    ...overrides,
+  });
+
+  it('200s with the sync result on a valid fork (default branch)', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue(forkInfo());
+    updateChecker.syncFork.mockResolvedValue({
+      synced: true, alreadyUpToDate: false, fullName: 'alice/PortOS', source: 'atomantic/PortOS', mergedBranch: 'main',
+    });
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ synced: true, mergedBranch: 'main' });
+    expect(updateChecker.syncFork).toHaveBeenCalledWith({ branch: undefined, remoteInfo: forkInfo() });
+  });
+
+  it('200s with a custom branch', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue(forkInfo());
+    updateChecker.syncFork.mockResolvedValue({
+      synced: true, alreadyUpToDate: true, fullName: 'alice/PortOS', source: 'atomantic/PortOS', mergedBranch: 'develop',
+    });
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({ branch: 'develop' });
+    expect(res.status).toBe(200);
+    expect(res.body.mergedBranch).toBe('develop');
+    expect(updateChecker.syncFork).toHaveBeenCalledWith({ branch: 'develop', remoteInfo: forkInfo() });
+  });
+
+  it('400 NO_ORIGIN when there is no git origin remote', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue({ hasOrigin: false });
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('NO_ORIGIN');
+    expect(updateChecker.syncFork).not.toHaveBeenCalled();
+  });
+
+  it('400 NOT_GITHUB when the origin is not on GitHub', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue({ hasOrigin: true, isGithub: false });
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('NOT_GITHUB');
+  });
+
+  it('400 ALREADY_UPSTREAM when origin already is the upstream repo', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue({ hasOrigin: true, isGithub: true, isUpstream: true });
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('ALREADY_UPSTREAM');
+  });
+
+  it('400 NOT_A_FORK when origin is a same-named repo that is not actually a fork', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue({
+      hasOrigin: true, isGithub: true, isUpstream: false, isFork: false, fullName: 'alice/some-other-repo',
+    });
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('NOT_A_FORK');
+  });
+
+  it('502 GIT_UNAVAILABLE when getRemoteInfo rejects', async () => {
+    updateChecker.getRemoteInfo.mockRejectedValue(new Error('git not found'));
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('GIT_UNAVAILABLE');
+  });
+
+  it('409 FORK_DIVERGED when syncFork reports a non-fast-forward, with recovery guidance in the message', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue(forkInfo());
+    updateChecker.syncFork.mockRejectedValue(new Error('would not be a fast forward, diverged'));
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('FORK_DIVERGED');
+    expect(res.body.error).toMatch(/--force/);
+  });
+
+  it('502 FORK_SYNC_FAILED when syncFork throws an unrelated error', async () => {
+    updateChecker.getRemoteInfo.mockResolvedValue(forkInfo());
+    updateChecker.syncFork.mockRejectedValue(new Error('gh: command not found'));
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({});
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('FORK_SYNC_FAILED');
+  });
+
+  it('400s a schema violation on a branch name with disallowed characters', async () => {
+    const res = await request(makeApp()).post('/api/update/sync-fork').send({ branch: 'main; rm -rf /' });
+    expect(res.status).toBe(400);
+    expect(updateChecker.getRemoteInfo).not.toHaveBeenCalled();
+  });
+});
