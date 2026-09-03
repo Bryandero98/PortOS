@@ -146,7 +146,7 @@ function Safe-Install {
 
     Pop-Location
     Write-SafeHost "❌ npm install failed for $Label after retry" -ForegroundColor Red
-    exit 1
+    Stop-UpdateScript 1
 }
 
 # Pull latest — always switch to main (detached HEAD or feature branch both
@@ -245,12 +245,71 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Step "submodules" "done" "Submodules updated"
 Write-SafeHost ""
 
+# Headless-install guard (mirrors update.sh). From the `pm2-stop` step below
+# until the closing `pm2 start` succeeds, PortOS's PM2 entries are DELETED — the
+# install has no server. Every step in between (npm install, setup-db,
+# migrations, the client build) can fail, and each of those failures exits this
+# script with the apps still deleted and nothing left running to notice: the
+# "update deleted portos-server and it never came back" failure. So restore the
+# apps on the way out instead of leaving the machine headless.
+#
+# Starting the pulled tree after a failed install can crash-loop, but a
+# crash-looping app the user can see beats a silently headless machine — and the
+# recovery only ever runs on a path that was already leaving PortOS down.
+$script:Pm2AppsDown = $false
+
+function Restore-Pm2Apps {
+    if (-not $script:Pm2AppsDown) { return }
+    $script:Pm2AppsDown = $false
+    try {
+        Write-SafeHost "⚠️  Update is exiting with PortOS's apps deleted — restarting them so the install isn't left headless." -ForegroundColor Yellow
+        Step "restart" "running" "Update failed — restarting PortOS so it isn't left down..."
+        # `pm2 start` exiting 0 is not proof the server came back (same reason the
+        # verify step below exists) — and this path starts a HALF-INSTALLED tree, so
+        # a start that exits 0 and then crash-loops is the likely case here, not the
+        # edge case. Never claim a recovery the health probe doesn't confirm.
+        Invoke-Logged node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs
+        if ($LASTEXITCODE -eq 0) { Invoke-Logged node scripts/verify-server-health.js }
+        if ($LASTEXITCODE -eq 0) {
+            Invoke-Logged node ./node_modules/pm2/bin/pm2 save
+            Step "restart" "warning" "Update failed, but PortOS was restarted"
+            Write-SafeHost "✅ PortOS is answering /api/system/health again after the failed update." -ForegroundColor Green
+        } else {
+            Step "restart" "error" "Update failed and PortOS is DOWN"
+            Write-SafeHost "❌ PortOS is not answering /api/system/health." -ForegroundColor Red
+            Write-SafeHost "    Recover with: node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs" -ForegroundColor Red
+        }
+    } catch {
+        # A throwing recovery must not replace the real update failure, and must
+        # not re-enter the trap below.
+        Write-SafeHost "❌ PortOS restart attempt failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Every fatal exit between the delete and the start goes through here, so the
+# recovery cannot be forgotten at one of the ten call sites.
+function Stop-UpdateScript {
+    param([int]$Code = 1)
+    Restore-Pm2Apps
+    # Recovery must never turn a failed update into a reported success.
+    if ($Code -eq 0) { $Code = 1 }
+    exit $Code
+}
+
+# Backstop for a terminating error nobody converted into a Stop-UpdateScript
+# call; `break` rethrows so the script still exits non-zero.
+trap {
+    Restore-Pm2Apps
+    break
+}
+
 # Remove ONLY PortOS's apps from the shared PM2 daemon — never `pm2 kill`, which
 # tears down the daemon and stops EVERY other project's apps on this machine.
 # The daemon itself is left alone here; whether it also needs an in-place reload
 # is decided in the restart step below, against the freshly installed pm2.
 Step "pm2-stop" "running" "Stopping PortOS apps..."
 Invoke-Logged node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent
+$script:Pm2AppsDown = $true
 $global:LASTEXITCODE = 0
 Step "pm2-stop" "done" "Apps stopped"
 Write-SafeHost ""
@@ -271,14 +330,14 @@ Safe-Install -Dir "autofixer" -Label "autofixer"
 # (vite 8 dropped the esbuild binary dependency that used to be the reason).
 Write-SafeHost "🔧 Rebuilding trusted native dependencies..." -ForegroundColor Yellow
 Invoke-Logged node scripts/trusted-rebuilds.js server
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Write-SafeHost ""
 
 # Verify critical dependencies exist
 if (-not (Test-Path "client/node_modules/vite/bin/vite.js")) {
     Write-SafeHost "❌ Critical dependency missing: client/node_modules/vite" -ForegroundColor Red
     Write-SafeHost "   Try running: npm run install:all"
-    exit 1
+    Stop-UpdateScript 1
 }
 Step "npm-install" "done" "Dependencies installed"
 
@@ -287,11 +346,11 @@ Step "npm-install" "done" "Dependencies installed"
 # `npm run setup` and are idempotent.
 Step "setup" "running" "Running setup..."
 Invoke-Logged node scripts/setup-data.js
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Invoke-Logged node scripts/setup-db.js
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Invoke-Logged node scripts/setup-browser.js
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Invoke-Logged node scripts/setup-ghostty.js
 Step "setup" "done" "Setup complete"
 Write-SafeHost ""
@@ -301,7 +360,7 @@ Write-SafeHost ""
 # failed update; setup-guide owns the shared human-readable next step.
 Step "network-setup" "running" "Checking Tailscale, MagicDNS, and HTTPS..."
 Invoke-Logged node scripts/setup-cert.js
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 $networkSummary = & {
     $ErrorActionPreference = 'Continue'
     & node scripts/setup-guide.js --summary 2>> $UpdateLog
@@ -318,7 +377,7 @@ Step "migrations" "running" "Running data migrations..."
 $migrationsScript = Join-Path $RootDir "scripts\run-migrations.js"
 if (Test-Path $migrationsScript) {
     Invoke-Logged node $migrationsScript
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 }
 Step "migrations" "done" "Migrations complete"
 
@@ -345,7 +404,7 @@ Write-SafeHost ""
 # Build UI assets for production serving
 Step "build" "running" "Building client..."
 Invoke-Logged npm run build
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Stop-UpdateScript $LASTEXITCODE }
 Step "build" "done" "Client built"
 Write-SafeHost ""
 
@@ -353,7 +412,7 @@ Write-SafeHost ""
 $Tag = (Get-Content package.json -Raw | ConvertFrom-Json).version
 if (-not $Tag) {
     Write-SafeHost "❌ Failed to determine package version from package.json" -ForegroundColor Red
-    exit 1
+    Stop-UpdateScript 1
 }
 $completedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $markerObj = @{ version = $Tag; completedAt = $completedAt }
@@ -388,8 +447,9 @@ if ($LASTEXITCODE -ne 0) {
     if (Test-Path "$RootDir\data\update-complete.json") {
         Remove-Item -Force "$RootDir\data\update-complete.json"
     }
-    exit $LASTEXITCODE
+    Stop-UpdateScript $LASTEXITCODE
 }
+$script:Pm2AppsDown = $false
 Invoke-Logged node ./node_modules/pm2/bin/pm2 save
 $global:LASTEXITCODE = 0
 Step "restart" "done" "PortOS started"
