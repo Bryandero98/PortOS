@@ -60,6 +60,7 @@ const FALLBACK_GUARD_PYTHON = IS_WIN
   : join(homedir(), '.portos', 'venv-prompt-guard', 'bin', 'python3');
 const HELPER_SCRIPT = join(PATHS.root, 'scripts', 'run_prompt_guard.py');
 const RUNTIME_PROBE_TIMEOUT_MS = 30_000;
+const STDERR_TAIL_CHARS = 2_000;
 const MAX_SCAN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INSTALL_EVENT_CHARS = 300;
 const MAX_PUBLIC_REVIEW_SNAPSHOT_CHARS = MODEL_ABUSE_GUARD_MAX_INPUT_CHARS * 3;
@@ -317,10 +318,18 @@ function probeScript() {
   return `${imports}; print('{"ready":true}')`;
 }
 
-async function isRuntimeReady(pythonPath) {
+// A benign sentence the helper must classify end to end before the guard
+// reports ready. Importing the packages proves the venv, not the classifier:
+// a helper that loads the model and then dies on the first window (the
+// unbatched-tensor bug that failed every Stage 1 scan on transformers 4.57)
+// passed the import probe and only surfaced as a bare
+// `security-guard-process-failed` at scan time.
+const RUNTIME_CANARY_TEXT = 'The quick brown fox jumps over the lazy dog.';
+
+async function isRuntimeReady(pythonPath, modelDir = null) {
   if (!pythonPath) return false;
-  if (cachedRuntime?.pythonPath === pythonPath && cachedRuntime.ready === true) return true;
-  const ready = await execFileAsync(
+  if (cachedRuntime?.pythonPath === pythonPath && cachedRuntime.modelDir === modelDir && cachedRuntime.ready === true) return true;
+  const importsReady = await execFileAsync(
     pythonPath,
     ['-c', probeScript()],
     safeChildProcessOptions({
@@ -330,8 +339,17 @@ async function isRuntimeReady(pythonPath) {
     }),
   ).then(({ stdout }) => stdout.trim().split(/\r?\n/).pop() === '{"ready":true}')
     .catch(() => false);
-  if (ready) cachedRuntime = { pythonPath, ready: true };
+  const ready = importsReady && (!modelDir || await canaryPasses(pythonPath, modelDir));
+  if (ready) cachedRuntime = { pythonPath, modelDir, ready: true };
   return ready;
+}
+
+async function canaryPasses(pythonPath, modelDir) {
+  const result = await runClassifier({ pythonPath, modelDir, content: RUNTIME_CANARY_TEXT, timeoutMs: RUNTIME_PROBE_TIMEOUT_MS })
+    .catch(() => ({ ok: false }));
+  if (!result.ok) return false;
+  const verdict = normalizeModelAbuseGuardResult(result.parsed, { minBenignScore: MODEL_ABUSE_GUARD_MIN_BENIGN_SCORE });
+  return verdict.ok === true && verdict.safe === true;
 }
 
 /**
@@ -349,7 +367,7 @@ export async function getModelAbuseGuardStatus() {
   const modelCached = Array.isArray(files);
   const venvReady = Boolean(pythonPath);
   const pythonAvailable = Boolean(detectVenvBasePythonSync());
-  const runtimeReady = await isRuntimeReady(pythonPath);
+  const runtimeReady = await isRuntimeReady(pythonPath, modelCached && files[0] ? dirname(files[0]) : null);
   const { stages, ready } = modelAbuseGuardStageReadiness({
     huggingfaceTokenPresent,
     pythonAvailable,
@@ -438,6 +456,7 @@ export function cancelModelAbuseGuardInstall() {
 function runClassifier({ pythonPath, modelDir, content, timeoutMs }) {
   return new Promise((resolve) => {
     let stdout = '';
+    let stderr = '';
     let stderrSize = 0;
     let settled = false;
     let timer = null;
@@ -466,6 +485,9 @@ function runClassifier({ pythonPath, modelDir, content, timeoutMs }) {
     proc.stdout.on('data', appendStdout);
     proc.stderr.on('data', (chunk) => {
       stderrSize += chunk.length;
+      // Keep only a bounded tail: the helper never echoes its input, and the
+      // last line is the `Prompt Guard failed: <reason>` the operator needs.
+      stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_CHARS);
       if (stderrSize > MODEL_ABUSE_GUARD_MAX_OUTPUT_CHARS) {
         proc.kill('SIGTERM');
         finish({ ok: false, code: 'security-guard-output-too-large' });
@@ -476,6 +498,8 @@ function runClassifier({ pythonPath, modelDir, content, timeoutMs }) {
     proc.on('close', (code) => {
       if (settled) return;
       if (code !== 0) {
+        const reason = stderr.trim().split('\n').filter(Boolean).pop() || 'no stderr';
+        console.error(`❌ Prompt Guard helper exited with code ${code}: ${reason.slice(0, 300)}`);
         finish({ ok: false, code: 'security-guard-process-failed' });
         return;
       }
