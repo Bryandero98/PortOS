@@ -37,17 +37,31 @@ export function assertYoutubeUrl(url) {
   }
 }
 
-// jobId -> { clients, lastPayload, process }
+// jobId -> { clients, lastPayload, process, canceled }
 const importJobs = new Map();
 
 export const attachImportSseClient = (jobId, res) => attachSse(importJobs, jobId, res);
 
-/** Cancel an in-flight import. Returns false if the job is unknown or already finished. */
+// The job map is module-private, which left cancelYoutubeImport untestable.
+// Exposing it lets a test register a fake job and actually run the cancel —
+// same rationale as videoDownload.js's __testing export.
+export const __testing = { importJobs };
+
+/**
+ * Cancel an in-flight import. Returns false if the job is unknown or already
+ * cancelled.
+ *
+ * `job.process` is transient — it is null while the job is awaiting setup and
+ * again during post-processing (runYtDlp clears it on exit) — so cancellation
+ * is recorded as a `job.canceled` flag the kickoff re-checks at each phase
+ * boundary, and the child is only signalled when one is actually running.
+ */
 export function cancelYoutubeImport(jobId) {
   const job = importJobs.get(jobId);
-  if (!job || !job.process) return false;
+  if (!job || job.canceled) return false;
+  job.canceled = true;
   const proc = job.process;
-  killWithEscalation(proc, { label: 'yt-dlp import', stillRunning: () => job.process === proc });
+  if (proc) killWithEscalation(proc, { label: 'yt-dlp import', stillRunning: () => job.process === proc });
   return true;
 }
 
@@ -63,12 +77,27 @@ export async function startYoutubeImport(url) {
 
   const jobId = randomUUID();
   const tempPrefix = `portos-ytimport-${jobId}`;
-  const job = { id: jobId, status: 'running', clients: [], process: null };
+  const job = { id: jobId, status: 'running', clients: [], process: null, canceled: false };
   importJobs.set(jobId, job);
   console.log(`📺 YouTube import ${shortId(jobId)} — ${url}`);
 
   (async () => {
+    // Cancel can land in three windows: before the spawn, while yt-dlp runs
+    // (the core reports `canceled`), or during post-processing after the child
+    // has exited. Only the middle one is the core's to detect — `job.process`
+    // is null in the other two, so the flag is what carries them. The guard is
+    // re-run at each phase boundary rather than only after the download, so
+    // adding an await ahead of the spawn can't silently reopen window one.
+    const abortIfCanceled = async (canceled = job.canceled) => {
+      if (!canceled) return false;
+      console.log(`🛑 YouTube import ${shortId(jobId)} cancelled`);
+      broadcastSse(job, { type: 'canceled' });
+      await cleanupYtDlpTemp(tempPrefix);
+      return true;
+    };
+
     try {
+      if (await abortIfCanceled()) return;
       const result = await downloadAudioToTempMp3({
         url, ytDlp, ffmpeg, tempPrefix,
         maxBytes: MUSIC_UPLOAD_MAX_BYTES,
@@ -77,11 +106,10 @@ export async function startYoutubeImport(url) {
         registerProcess: (proc) => { job.process = proc; },
       });
 
-      if (result.outcome === 'canceled') {
-        console.log(`🛑 YouTube import ${shortId(jobId)} cancelled`);
-        broadcastSse(job, { type: 'canceled' });
-        return;
-      }
+      // The core reports `canceled` only for a kill we issued, so the two
+      // signals normally agree — check both so an externally-killed child
+      // still ends as a cancel rather than a failure.
+      if (await abortIfCanceled(job.canceled || result.outcome === 'canceled')) return;
       if (result.outcome === 'failed') {
         throw new Error(result.reason);
       }
