@@ -1,13 +1,13 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { readFile } from 'fs/promises';
-import { tmpdir } from 'os';
 import * as gitService from './git.js';
 import * as pm2Service from './pm2.js';
 import { bufferedSpawnOrThrow } from '../lib/bufferedSpawn.js';
 import { parseCommandArgs, validateCommand } from '../lib/commandSecurity.js';
-import { isDetachedRunning, spawnDetached } from '../lib/detachedSpawn.js';
+import { PATHS } from '../lib/fileUtils.js';
 import { PORTOS_APP_ID } from '../lib/appIdentity.js';
+import { executeUpdate } from './updateExecutor.js';
 import { syncManagedAppFork } from './managedAppRepositories.js';
 
 const CMD_TIMEOUT_MS = 5 * 60 * 1000;
@@ -23,46 +23,6 @@ function runCommand(cmd, args, cwd) {
 
 // Per-app lock to prevent concurrent updates
 const updatingApps = new Set();
-const DASHBOARD_OPEN_SCRIPT = 'scripts/open-ui-in-browser.js';
-const DASHBOARD_OPEN_CONTROL_DIR = join(tmpdir(), 'portos-dashboard-open');
-
-/**
- * Start the post-update dashboard handoff before any PortOS process is
- * restarted. The handoff is deliberately detached through the shared
- * double-fork helper: PM2's tree-kill would otherwise take the helper down
- * with portos-server before it can wait for the browser to return.
- *
- * @param {object} app
- * @returns {Promise<void>}
- */
-async function startDashboardHandoff(app) {
-  if (app.id !== PORTOS_APP_ID) return;
-
-  const scriptPath = join(app.repoPath, DASHBOARD_OPEN_SCRIPT);
-  const alreadyRunning = await isDetachedRunning(DASHBOARD_OPEN_CONTROL_DIR, {
-    executable: process.execPath,
-    args: [scriptPath],
-  }).catch((err) => {
-    // Do not let an unreadable control dir be mistaken for an idle one: the
-    // detached helper clears stale sentinels before launching and could then
-    // race a handoff that is still alive after the previous PM2 restart.
-    console.error(`⚠️ Dashboard auto-open status check failed: ${err.message}`);
-    return true;
-  });
-  if (alreadyRunning) return;
-
-  const handoff = await spawnDetached(
-    process.execPath,
-    [scriptPath],
-    { cwd: app.repoPath, controlDir: DASHBOARD_OPEN_CONTROL_DIR, cleanup: true },
-  ).catch((err) => {
-    console.error(`⚠️ Dashboard auto-open could not start: ${err.message}`);
-    return null;
-  });
-  handoff?.on('error', (err) => {
-    console.error(`⚠️ Dashboard auto-open failed: ${err.message}`);
-  });
-}
 
 /**
  * Run a full update cycle for an app:
@@ -70,10 +30,13 @@ async function startDashboardHandoff(app) {
  * 2. run an explicitly declared app update routine, when one exists
  * 3. restart the app's PM2 processes
  *
- * PortOS owns its comprehensive update.sh/update.ps1 lifecycle separately.
  * A generic managed app must opt in to dependency installs, migrations, or a
  * build: guessing those steps from a package.json can freeze or break apps
  * whose lifecycle does not resemble PortOS.
+ *
+ * PortOS itself is a managed app, and its comprehensive update.sh/update.ps1
+ * lifecycle is delegated to `updateExecutor` — which also owns the restart and
+ * the dashboard handoff for that case. See the app-update step in `_doUpdate`.
  *
  * @param {object} app - The app object (must have repoPath, pm2ProcessNames, pm2Home)
  * @param {function} emit - Callback (step, status, message) for progress updates
@@ -137,7 +100,16 @@ async function _doUpdate(app, emit, { syncFork }) {
   const configuredUpdate = typeof app.updateCommand === 'string' ? app.updateCommand.trim() : '';
   const standardScript = process.platform === 'win32' ? 'update.ps1' : 'update.sh';
   const standardScriptPath = join(dir, standardScript);
-  if (configuredUpdate || pkg?.scripts?.['portos:update'] || existsSync(standardScriptPath)) {
+  const usesStandardScript = !configuredUpdate && !pkg?.scripts?.['portos:update'] && existsSync(standardScriptPath);
+  // PortOS running THIS checkout's own standard update script is the one case
+  // whose update routine deletes the process awaiting it — and the only shape
+  // updateExecutor knows how to launch, since it resolves update.sh from
+  // `PATHS.root` rather than from the app record. Both narrowings matter: a
+  // PortOS record carrying a custom `updateCommand`, or pointing somewhere
+  // other than this checkout, keeps the ordinary attached path rather than
+  // silently running a different script than the one configured.
+  const detachSelfUpdate = app.id === PORTOS_APP_ID && usesStandardScript && dir === PATHS.root;
+  if (configuredUpdate || pkg?.scripts?.['portos:update'] || usesStandardScript) {
     // A configured runtime may be an absolute Bun path, which is trusted app
     // configuration but not a commandSecurity allowlist token. Only free-form
     // registry commands go through that parser; the package-script form is a
@@ -151,15 +123,40 @@ async function _doUpdate(app, emit, { syncFork }) {
           : { valid: true, baseCommand: standardScriptPath, args: [] };
     if (!command.valid) throw new Error(`Update command is not allowed: ${command.error}`);
     emit('app-update', 'running', 'Running the app update routine...');
-    await runCommand(command.baseCommand, command.args, dir);
+    if (detachSelfUpdate) {
+      // PortOS is itself a managed app, so an App Management update reaches
+      // update.sh through THIS path — and the script's own
+      // `pm2 delete ecosystem.config.cjs` step tree-kills portos-server.
+      // PM2 walks PPID, so an attached spawn dies with the server it just
+      // deleted, taking the in-flight `pm2 delete` with it and never reaching
+      // the closing `pm2 start`: the install is left headless, with only the
+      // entries declared after portos-cos still online (#5976).
+      //
+      // updateExecutor already owns the double-fork launch that survives that,
+      // plus the STEP: progress parsing that maps straight onto this emit
+      // contract, the still-running-script guard and recordUpdateResult — so
+      // delegate rather than keeping a second detached-spawn implementation
+      // in sync here. The version is only a logging/fallback label; the true
+      // post-update version comes from the script's completion marker.
+      const version = typeof pkg?.version === 'string' ? pkg.version : 'unknown';
+      const outcome = await executeUpdate(version, emit);
+      if (!outcome.success) {
+        throw new Error(outcome.errorMessage || `PortOS update failed at step "${outcome.failedStep || 'unknown'}"`);
+      }
+    } else {
+      await runCommand(command.baseCommand, command.args, dir);
+    }
     emit('app-update', 'done', 'App update routine complete');
     steps.push({ step: 'app-update', success: true });
   }
 
-  const processNames = app.pm2ProcessNames || [];
+  // update.sh/update.ps1 close with their own `pm2 start ecosystem.config.cjs`
+  // (and their own dashboard handoff), so restarting PortOS on top of the
+  // detached script would be redundant and would race it — the script may not
+  // have finished re-registering the processes we would be restarting.
+  const processNames = detachSelfUpdate ? [] : (app.pm2ProcessNames || []);
   if (processNames.length > 0) {
     emit('restart', 'running', 'Restarting app...');
-    await startDashboardHandoff(app);
     const restartResults = await Promise.all(
       processNames.map(name =>
         pm2Service.restartApp(name, app.pm2Home).then(() => null, e => e)

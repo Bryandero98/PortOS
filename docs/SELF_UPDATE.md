@@ -2,7 +2,7 @@
 
 How PortOS notices a new release and updates itself. PortOS is distributed software — many people run it, and a large share run it from a **personal fork**, so every step here is fork-aware. Breaking that assumption produces silent no-op updates.
 
-Code: `server/services/updateChecker.js`, `server/routes/update.js`, `server/lib/gitRemote.js`, `update.sh` / `update.ps1`, `client/src/components/apps/tabs/UpdateTab.jsx`.
+Code: `server/services/updateChecker.js`, `server/services/updateExecutor.js`, `server/services/appUpdater.js`, `server/routes/update.js`, `server/lib/gitRemote.js`, `server/lib/detachedSpawn.js`, `update.sh` / `update.ps1`, `scripts/verify-server-health.js`, `client/src/components/apps/tabs/UpdateTab.jsx`.
 
 ## Release polling always targets upstream
 
@@ -62,6 +62,20 @@ To prevent that confusion, `POST /api/update/execute` rejects fork runs with **4
 
 - the request body sets `acknowledgeFork: true`, or
 - `lastForkSync.fullName` matches `remoteInfo.fullName` (compared case-insensitively — GitHub owner/repo names are) and is less than 10 minutes old. The service computes this once as `status.forkSyncFresh` from `FORK_SYNC_FRESHNESS_MS`; the route and the UI both read that flag rather than re-implementing the time math.
+
+## Every PortOS update goes through the detached launcher
+
+`update.sh` deletes and restarts every PortOS PM2 entry. PM2's TreeKill walks **PPID**, so a script left attached to `portos-server` is killed by its own `pm2 delete` step — mid-list, before it can run the closing `pm2 start` — and the install is left headless. `spawnDetached`'s double-fork (`server/lib/detachedSpawn.js`) is what reparents the script to init so it survives; `executeUpdate()` in `server/services/updateExecutor.js` is the single launcher that applies it, along with the `STEP:` progress parsing, the still-running-script guard, and `recordUpdateResult()`.
+
+**PortOS is also a managed app**, so an update started from **App Management** reaches `update.sh` through `appUpdater.js` rather than `routes/update.js`. That path delegates to `executeUpdate()` for the PortOS record instead of spawning the script itself — a second detached-spawn implementation would be one more thing to keep in sync, and the attached one it replaced produced exactly the headless failure above (#5976). `appUpdater` also **skips its own `restart` step** for that case: the script runs `pm2 start ecosystem.config.cjs` itself, so restarting on top of it would be redundant and would race the script.
+
+A PortOS record carrying a custom `updateCommand` keeps the ordinary attached path — delegating there would silently run `update.sh` instead of the configured command. Non-PortOS managed apps are unaffected.
+
+## Post-update health verification
+
+`pm2 start` exiting 0 is not proof the server came back, and the process that would notice is the one that did not. Both platform scripts therefore close with a `verify` step that polls `/api/system/health` (`scripts/verify-server-health.js`) until it reports `ok` or the budget — `PORTOS_HEALTH_WAIT_MS`, default 120s — runs out. On failure they spend one more `pm2 start ecosystem.config.cjs` and then log the outcome loudly, with the manual recovery command.
+
+The probe tries the loopback HTTP mirror (`:5553`) first, then the API port over HTTP and HTTPS, because the listening scheme depends on whether a cert is provisioned; `/api/system/health` is in the always-public set, so it works with the optional instance password on. The recovery only fires when the probe fails, so it cannot make a healthy update worse.
 
 ## Syncing a fork
 

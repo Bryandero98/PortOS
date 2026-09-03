@@ -4,25 +4,28 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 const mock = vi.hoisted(() => ({
+  // updateExecutor resolves update.sh from PATHS.root, so the delegation is
+  // gated on the app record pointing at this checkout — point it at the
+  // per-test temp repo instead.
+  paths: { root: '' },
   updateDefaultBranch: vi.fn(),
   spawn: vi.fn(),
-  dashboardOpen: vi.fn(),
-  dashboardRunning: vi.fn(),
-  dashboardHandle: { on: vi.fn() },
+  executeUpdate: vi.fn(),
   restart: vi.fn(),
   syncFork: vi.fn(),
 }));
 
+vi.mock('../lib/fileUtils.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, PATHS: mock.paths };
+});
 vi.mock('./git.js', () => ({ updateDefaultBranch: mock.updateDefaultBranch }));
 vi.mock('./pm2.js', () => ({ restartApp: mock.restart }));
 vi.mock('../lib/bufferedSpawn.js', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, bufferedSpawnOrThrow: mock.spawn };
 });
-vi.mock('../lib/detachedSpawn.js', () => ({
-  isDetachedRunning: mock.dashboardRunning,
-  spawnDetached: mock.dashboardOpen,
-}));
+vi.mock('./updateExecutor.js', () => ({ executeUpdate: mock.executeUpdate }));
 vi.mock('./managedAppRepositories.js', () => ({ syncManagedAppFork: mock.syncFork }));
 
 import { updateApp } from './appUpdater.js';
@@ -33,13 +36,13 @@ describe('managed app updates', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     repo = await mkdtemp(join(tmpdir(), 'portos-app-updater-'));
+    mock.paths.root = repo;
     await mkdir(join(repo, 'client'));
     await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { setup: 'example-setup' } }));
     await writeFile(join(repo, 'client', 'package.json'), JSON.stringify({}));
     mock.updateDefaultBranch.mockResolvedValue({ branch: 'main', output: 'Already up to date' });
     mock.spawn.mockResolvedValue({ stdout: '', stderr: '' });
-    mock.dashboardRunning.mockResolvedValue(false);
-    mock.dashboardOpen.mockResolvedValue(mock.dashboardHandle);
+    mock.executeUpdate.mockResolvedValue({ success: true, version: '9.9.9' });
     mock.restart.mockResolvedValue({ success: true });
     mock.syncFork.mockResolvedValue({
       alreadyUpToDate: false,
@@ -49,10 +52,6 @@ describe('managed app updates', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(mock.dashboardOpen.mock.calls
-      .map(([, , options]) => options?.controlDir)
-      .filter(Boolean)
-      .map((controlDir) => rm(controlDir, { recursive: true, force: true })));
     await rm(repo, { recursive: true, force: true });
   });
 
@@ -94,63 +93,131 @@ describe('managed app updates', () => {
     );
   });
 
-  it('starts the trusted dashboard handoff before restarting PortOS', async () => {
+  it('launches PortOS\'s own update through the detached executor, never the attached spawn', async () => {
+    // PortOS is a managed app, so App Management updates route through here —
+    // and update.sh's `pm2 delete` tree-kills the server that would be this
+    // spawn's PPID parent, taking the script down mid-delete (#5976). The
+    // detached launcher in updateExecutor is what survives it.
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ version: '2.56.0' }));
     const emit = vi.fn();
-    const managed = {
+
+    const result = await updateApp({
       id: 'portos-default',
       name: 'PortOS',
       type: 'express',
       repoPath: repo,
-      pm2ProcessNames: ['portos-server', 'portos-browser'],
-    };
+      pm2ProcessNames: ['portos-server', 'portos-cos', 'portos-browser'],
+    }, emit);
 
-    await updateApp(managed, emit);
-
-    expect(mock.dashboardOpen).toHaveBeenCalledWith(
-      process.execPath,
-      [join(repo, 'scripts/open-ui-in-browser.js')],
-      expect.objectContaining({
-        cwd: repo,
-        cleanup: true,
-        controlDir: expect.stringContaining('portos-dashboard-open'),
-      }),
-    );
-    expect(mock.dashboardRunning).toHaveBeenCalledWith(
-      expect.stringContaining('portos-dashboard-open'),
-      {
-        executable: process.execPath,
-        args: [join(repo, 'scripts/open-ui-in-browser.js')],
-      },
-    );
-    expect(mock.dashboardOpen.mock.invocationCallOrder[0]).toBeLessThan(mock.restart.mock.invocationCallOrder[0]);
+    expect(result.success).toBe(true);
+    expect(mock.executeUpdate).toHaveBeenCalledWith('2.56.0', emit);
+    expect(mock.spawn).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith('app-update', 'done', 'App update routine complete');
   });
 
-  it('does not overwrite an unreadable dashboard handoff control dir', async () => {
+  it('leaves the PM2 restart to update.sh instead of double-restarting PortOS', async () => {
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
     const emit = vi.fn();
-    mock.dashboardRunning.mockRejectedValueOnce(new Error('control dir unavailable'));
-    const managed = {
+
+    const result = await updateApp({
+      id: 'portos-default',
+      name: 'PortOS',
+      type: 'express',
+      repoPath: repo,
+      pm2ProcessNames: ['portos-server', 'portos-cos'],
+    }, emit);
+
+    expect(mock.restart).not.toHaveBeenCalled();
+    expect(result.steps.some((step) => step.step === 'restart')).toBe(false);
+    expect(emit).not.toHaveBeenCalledWith('restart', expect.anything(), expect.anything());
+  });
+
+  it('surfaces a failed PortOS update instead of reporting success', async () => {
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 1\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 1\n');
+    mock.executeUpdate.mockResolvedValue({ success: false, failedStep: 'npm-install', errorMessage: 'Update failed at step "npm-install" (exit code 1)' });
+
+    await expect(updateApp({
       id: 'portos-default',
       name: 'PortOS',
       type: 'express',
       repoPath: repo,
       pm2ProcessNames: ['portos-server'],
-    };
+    }, vi.fn())).rejects.toThrow('Update failed at step "npm-install" (exit code 1)');
+  });
 
-    await updateApp(managed, emit);
+  it('does not delegate when the PortOS record points outside this checkout', async () => {
+    // executeUpdate resolves update.sh from PATHS.root, not from the record —
+    // delegating a record aimed elsewhere would run a different script than the
+    // one the update was configured to run.
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
+    mock.paths.root = join(repo, 'somewhere-else');
 
-    expect(mock.dashboardOpen).not.toHaveBeenCalled();
+    await updateApp({
+      id: 'portos-default',
+      name: 'PortOS',
+      type: 'express',
+      repoPath: repo,
+      pm2ProcessNames: ['portos-server'],
+    }, vi.fn());
+
+    expect(mock.executeUpdate).not.toHaveBeenCalled();
+    expect(mock.spawn).toHaveBeenCalled();
     expect(mock.restart).toHaveBeenCalledWith('portos-server', undefined);
   });
 
-  it('runs an explicit update command before restarting', async () => {
-    const emit = vi.fn();
-    const managed = {
+  it('keeps a non-PortOS app on the attached spawn and its own PM2 restart', async () => {
+    // The detached launcher is PortOS-only — it hard-codes this checkout's
+    // update script, which is not another app's update routine.
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
+
+    await updateApp({
+      id: 'example-managed-app',
+      name: 'Example App',
+      type: 'express',
+      repoPath: repo,
+      pm2ProcessNames: ['example-app'],
+    }, vi.fn());
+
+    expect(mock.executeUpdate).not.toHaveBeenCalled();
+    expect(mock.spawn).toHaveBeenCalled();
+    expect(mock.restart).toHaveBeenCalledWith('example-app', undefined);
+  });
+
+  it('honors a custom update command configured on the PortOS record', async () => {
+    // Delegating here would silently run update.sh instead of what the user
+    // configured, so the explicit command keeps the ordinary attached path.
+    await writeFile(join(repo, 'update.sh'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(repo, 'update.ps1'), 'exit 0\n');
+
+    await updateApp({
       id: 'portos-default',
       name: 'PortOS',
       type: 'express',
       repoPath: repo,
       updateCommand: 'npm run update',
       pm2ProcessNames: ['portos-server'],
+    }, vi.fn());
+
+    expect(mock.executeUpdate).not.toHaveBeenCalled();
+    expect(mock.spawn).toHaveBeenCalledWith('npm', ['run', 'update'], expect.objectContaining({ cwd: repo }));
+    expect(mock.restart).toHaveBeenCalledWith('portos-server', undefined);
+  });
+
+  it('runs an explicit update command before restarting', async () => {
+    const emit = vi.fn();
+    const managed = {
+      id: 'example-managed-app',
+      name: 'Example App',
+      type: 'express',
+      repoPath: repo,
+      updateCommand: 'npm run update',
+      pm2ProcessNames: ['example-app'],
     };
 
     const result = await updateApp(managed, emit);

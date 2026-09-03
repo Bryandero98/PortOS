@@ -358,6 +358,29 @@ run node ./node_modules/pm2/bin/pm2 save || true
 step "restart" "done" "PortOS started"
 log ""
 
+# Defense in depth (#5976): `pm2 start` exiting 0 is not proof the server came
+# back — a half-failed delete/start bracket leaves the install headless, and
+# this script is the only PortOS process still running to notice. Poll
+# /api/system/health, and on failure spend one more `pm2 start` before saying
+# so loudly. A recovery that only fires when the probe fails cannot make a
+# healthy update worse.
+step "verify" "running" "Verifying PortOS came back..."
+if run node scripts/verify-server-health.js; then
+  step "verify" "done" "PortOS is answering /api/system/health"
+else
+  log "⚠️  PortOS did not answer /api/system/health after the restart — re-running pm2 start"
+  run node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs || true
+  if run node scripts/verify-server-health.js; then
+    step "verify" "done" "PortOS recovered after a second pm2 start"
+    log "✅ PortOS recovered after a second pm2 start"
+  else
+    step "verify" "warning" "PortOS is not answering /api/system/health"
+    log "❌ PortOS is STILL not answering /api/system/health."
+    log "    Recover with: node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs"
+  fi
+fi
+log ""
+
 # Open the dashboard in the PortOS-managed browser. Fail-soft — never blocks
 # the update return.
 run node scripts/open-ui-in-browser.js || true
