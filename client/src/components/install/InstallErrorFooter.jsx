@@ -20,7 +20,6 @@ export default function InstallErrorFooter({
   logs,
   surface,
   onClose,
-  closeLabel = 'Close',
 }) {
   return (
     <>
@@ -38,7 +37,7 @@ export default function InstallErrorFooter({
           onClick={onClose}
           className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-port-border text-white hover:bg-port-border/70"
         >
-          {closeLabel}
+          Close
         </button>
       </div>
     </>

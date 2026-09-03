@@ -89,6 +89,21 @@ describe('RuntimeInstallModal failure footer', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it('reads a duplicate-task 409 as already queued, not as a failure', async () => {
+    const duplicate = Object.assign(new Error('A task with this description is already pending'), {
+      code: 'DUPLICATE_TASK',
+      status: 409,
+    });
+    addCosTask.mockRejectedValue(duplicate);
+    renderFailed();
+
+    fireEvent.click(screen.getByRole('button', { name: /queue agent to investigate/i }));
+
+    const queued = await screen.findByRole('button', { name: /agent queued/i });
+    expect(queued.disabled).toBe(true);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it('keeps Close working alongside the new action', () => {
     const onClose = renderFailed();
     expect(screen.getByRole('button', { name: /queue agent to investigate/i })).toBeTruthy();
