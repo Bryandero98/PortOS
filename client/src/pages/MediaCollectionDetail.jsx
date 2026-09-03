@@ -227,11 +227,21 @@ export default function MediaCollectionDetail() {
   const bulkStar = async (starred) => {
     if (selectedItems.length === 0) return;
     setBulkBusy(true);
+    let successCount = 0;
+    let failedCount = 0;
     for (const it of selectedItems) {
-      await updateAnnotation(it.key, { starred });
+      const { ok } = await updateAnnotation(it.key, { starred }, { silent: true });
+      if (ok) successCount++; else failedCount++;
     }
     setBulkBusy(false);
-    toast.success(`${starred ? 'Favorited' : 'Unfavorited'} ${selectedItems.length} item${selectedItems.length === 1 ? '' : 's'}`);
+    const verb = starred ? 'Favorited' : 'Unfavorited';
+    if (failedCount === 0) {
+      toast.success(`${verb} ${successCount} item${successCount === 1 ? '' : 's'}`);
+    } else if (successCount === 0) {
+      toast.error(`Failed to ${starred ? 'favorite' : 'unfavorite'} items`);
+    } else {
+      toast.error(`${verb} ${successCount} item${successCount === 1 ? '' : 's'}; ${failedCount} failed`);
+    }
   };
 
   const bulkRemove = async () => {

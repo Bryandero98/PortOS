@@ -32,11 +32,13 @@ vi.mock('../components/ui/Toast', () => ({
   }),
 }));
 
+const mockUpdateAnnotation = vi.fn();
+
 vi.mock('../hooks/useMediaAnnotations', () => ({
   useMediaAnnotations: () => ({
     annotations: {},
     toggleStar: vi.fn(),
-    updateAnnotation: vi.fn(),
+    updateAnnotation: (...args) => mockUpdateAnnotation(...args),
     getCardProps: () => ({}),
   }),
 }));
@@ -132,6 +134,7 @@ beforeEach(() => {
   mockListMediaCollections.mockResolvedValue([REAL_COLLECTION]);
   mockGetMediaCollection.mockResolvedValue(REAL_COLLECTION);
   mockPullMissingMetadata.mockResolvedValue({ attempted: 1, recovered: 1 });
+  mockUpdateAnnotation.mockResolvedValue({ ok: true, entry: null });
 });
 
 // ── Unsorted view tests ───────────────────────────────────────────────────────
@@ -237,5 +240,71 @@ describe('MediaCollectionDetail — regular collection view', () => {
     renderReal();
     await waitFor(() => screen.getByText('My Collection'));
     expect(screen.queryByRole('button', { name: /pull missing prompts/i })).toBeNull();
+  });
+});
+
+// ── bulkStar (#6018): must not report false success when items fail ──────────
+
+describe('MediaCollectionDetail — bulkStar', () => {
+  const THREE_ITEM_COLLECTION = {
+    ...REAL_COLLECTION,
+    items: [
+      { kind: 'image', ref: IMAGE_A.filename, addedAt: '2024-01-02' },
+      { kind: 'image', ref: IMAGE_B.filename, addedAt: '2024-01-01' },
+      { kind: 'video', ref: VIDEO_C.id, addedAt: '2024-01-03' },
+    ],
+  };
+
+  beforeEach(() => {
+    mockGetMediaCollection.mockResolvedValue(THREE_ITEM_COLLECTION);
+  });
+
+  async function enterSelectModeAndSelectAll(user) {
+    await waitFor(() => screen.getByRole('button', { name: /^select$/i }));
+    await user.click(screen.getByRole('button', { name: /^select$/i }));
+    await user.click(screen.getByRole('button', { name: /select all/i }));
+  }
+
+  it('toasts a single success message when every item succeeds', async () => {
+    mockUpdateAnnotation.mockResolvedValue({ ok: true, entry: null });
+    const user = userEvent.setup();
+    renderReal();
+    await enterSelectModeAndSelectAll(user);
+
+    await user.click(screen.getByRole('button', { name: /^star$/i }));
+
+    await waitFor(() => expect(mockUpdateAnnotation).toHaveBeenCalledTimes(3));
+    expect(mockUpdateAnnotation.mock.calls.every(([, , opts]) => opts?.silent === true)).toBe(true);
+    expect(toast.success).toHaveBeenCalledWith('Favorited 3 items');
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('toasts a single failure message with no success toast when every item fails', async () => {
+    mockUpdateAnnotation.mockResolvedValue({ ok: false, entry: null });
+    const user = userEvent.setup();
+    renderReal();
+    await enterSelectModeAndSelectAll(user);
+
+    await user.click(screen.getByRole('button', { name: /^star$/i }));
+
+    await waitFor(() => expect(mockUpdateAnnotation).toHaveBeenCalledTimes(3));
+    expect(toast.error).toHaveBeenCalledWith('Failed to favorite items');
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('toasts a single consolidated message on partial failure (no contradictory success toast)', async () => {
+    mockUpdateAnnotation
+      .mockResolvedValueOnce({ ok: true, entry: null })
+      .mockResolvedValueOnce({ ok: false, entry: null })
+      .mockResolvedValueOnce({ ok: true, entry: null });
+    const user = userEvent.setup();
+    renderReal();
+    await enterSelectModeAndSelectAll(user);
+
+    await user.click(screen.getByRole('button', { name: /^star$/i }));
+
+    await waitFor(() => expect(mockUpdateAnnotation).toHaveBeenCalledTimes(3));
+    expect(toast.error).toHaveBeenCalledWith('Favorited 2 items; 1 failed');
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
