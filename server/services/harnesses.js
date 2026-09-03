@@ -84,7 +84,13 @@ const latestVersions = createStaleWhileRevalidate({
 export async function getLatestPublishedVersion(packageName, { fresh = false, run = commandOutput } = {}) {
   if (typeof packageName !== 'string' || packageName === '') return null;
   return latestVersions.read(packageName, async () => {
-    const stdout = await run('npm', ['view', packageName, 'version'], { timeoutMs: REGISTRY_TIMEOUT_MS });
+    // `prepareCliSpawn`, like the version and models probes: `npm` is a `.cmd`
+    // shim on Windows and `execFile` under `shell: false` targets the literal
+    // string with no PATHEXT search, so a bare 'npm' never runs there —
+    // `latestVersion` would be permanently null and the staleness detection this
+    // page exists for silently dead.
+    const probe = prepareCliSpawn('npm', ['view', packageName, 'version']);
+    const stdout = await run(probe.command, probe.args, { timeoutMs: REGISTRY_TIMEOUT_MS });
     const version = parseNpmLatestVersion(stdout);
     // THROW, don't cache a null: an unreachable registry is a failure the
     // backoff should pace, not an answer worth remembering for six hours.
@@ -144,6 +150,27 @@ function declaresOwnOpencodeProvider(provider) {
   }
   return Object.keys(parsed?.provider || {}).length > 0;
 }
+
+/**
+ * The `vendor/` namespaces a record's stored model ids already use, or an empty
+ * set when it stores bare ids.
+ *
+ * `opencode models` prints every namespace the local OpenCode is authenticated
+ * for, not just `opencode/*` — so on a box where the user has run
+ * `opencode auth login <vendor>`, an unfiltered refresh would write
+ * `anthropic/*` ids into a record named "OpenCode Zen CLI" whose key field is
+ * `OPENCODE_API_KEY`, and its picker would then offer models that bill a
+ * different account. A refresh updates a record's catalog; it does not widen
+ * what that record is for.
+ *
+ * Empty for a harness whose ids are bare (agy, grok, cursor) — there is no
+ * namespace to hold, so nothing is filtered.
+ */
+const storedNamespaces = (provider) => new Set(
+  (provider?.models || [])
+    .filter((id) => typeof id === 'string' && id.includes('/'))
+    .map((id) => id.slice(0, id.indexOf('/'))),
+);
 
 /**
  * Every provider record this harness's runtime row actually answers for.
@@ -262,13 +289,24 @@ export async function refreshHarnessModels(id, { run = commandOutput, ...probeDe
   const targets = providersForHarness(await providerService.listProviders(), runtime).filter(usesHarnessCatalog);
   const updated = [];
   for (const provider of targets) {
+    // Hold the record's namespace scope (see `storedNamespaces`). A filter that
+    // matched nothing means the harness no longer lists anything this record is
+    // for — skip it rather than blanking a working list on that evidence.
+    const scope = storedNamespaces(provider);
+    const scoped = scope.size === 0
+      ? models
+      : models.filter((id) => scope.has(id.slice(0, id.indexOf('/'))));
+    if (scoped.length === 0) {
+      console.log(`⏭️ ${runtime.label}: ${provider.id} lists no models in its own namespace — left alone`);
+      continue;
+    }
     // A `*-configured-default` sentinel is NOT a model the vendor will ever
     // print — it is the "send no --model, let the CLI use its own default"
     // marker (`resolveCliModel` maps it to null). Dropping it would silently
     // repin an agy/grok wrapper onto a concrete model AND remove the option
     // from the editor's picker, which renders it from this same list. So it
     // survives the rewrite rather than reading as an orphaned id.
-    const next = [...(provider.models || []).filter(isConfiguredDefaultModel), ...models];
+    const next = [...(provider.models || []).filter(isConfiguredDefaultModel), ...scoped];
     // A stored default the harness no longer lists would leave the record
     // pinned to a model its own picker cannot show. Keep it when it survived
     // the refresh, otherwise fall to the first id (sentinel first when there

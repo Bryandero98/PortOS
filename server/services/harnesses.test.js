@@ -14,8 +14,10 @@ const providerService = vi.hoisted(() => ({
 }));
 vi.mock('./providers.js', () => providerService);
 
+import { prepareCliSpawn } from '../lib/bufferedSpawn.js';
 import {
   __resetLatestVersionCache,
+  getLatestPublishedVersion,
   listHarnesses,
   refreshHarnessModels,
   usesHarnessCatalog,
@@ -112,6 +114,30 @@ describe('usesHarnessCatalog', () => {
     })).toBe(true);
     // OpenCode cannot read a broken config either, so it declares nothing.
     expect(usesHarnessCatalog({ command: 'opencode', envVars: { OPENCODE_CONFIG_CONTENT: '{not json' } })).toBe(true);
+  });
+});
+
+describe('getLatestPublishedVersion', () => {
+  // `npm` is a `.cmd` shim on Windows and `execFile` under `shell: false`
+  // targets the literal string with no PATHEXT search, so a bare 'npm' never
+  // runs there — `latestVersion` would be permanently null and the staleness
+  // detection this page exists for silently dead.
+  it('spawns npm through the Windows-safe launcher', async () => {
+    const run = vi.fn(async () => '1.19.0');
+
+    expect(await getLatestPublishedVersion('opencode-ai', { run })).toBe('1.19.0');
+
+    const [command, args] = run.mock.calls[0];
+    expect(prepareCliSpawn('npm', ['view', 'opencode-ai', 'version'])).toEqual({ command, args });
+  });
+
+  // `null` is NOT-KNOWN. Caching it would freeze a transient network blip in
+  // for the full TTL and paint every harness as version-unknown.
+  it('answers null without caching when the registry could not be read', async () => {
+    const run = vi.fn(async () => null);
+
+    expect(await getLatestPublishedVersion('opencode-ai', { run })).toBeNull();
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -224,6 +250,54 @@ describe('refreshHarnessModels', () => {
     expect(patch.models).toEqual(['grok-configured-default', 'grok-4.6', 'grok-4.5']);
     // The pin survives, so the provider keeps sending no `--model` at all.
     expect(patch.defaultModel).toBe('grok-configured-default');
+  });
+
+  // `opencode models` prints every namespace the local OpenCode is signed into,
+  // not just `opencode/*`. Writing an `anthropic/*` id into a record named
+  // "OpenCode Zen CLI" whose key field is OPENCODE_API_KEY would offer the user
+  // a model that bills a different account.
+  it('holds a record to its own namespace scope', async () => {
+    const run = vi.fn(async (command, args) => (args[0] === 'models'
+      ? 'opencode/big-pickle\nanthropic/claude-opus-5\nopencode/mimo-v2.5-free\n'
+      : '1.18.27'));
+    providerService.listProviders.mockResolvedValue([
+      { id: 'opencode-zen-cli', type: 'cli', command: 'opencode', models: ['opencode/stale'], defaultModel: 'opencode/stale' },
+    ]);
+
+    await refreshHarnessModels('opencode', { run, ...found });
+
+    const [, patch] = providerService.updateProvider.mock.calls[0];
+    expect(patch.models).toEqual(['opencode/big-pickle', 'opencode/mimo-v2.5-free']);
+  });
+
+  it('leaves a record alone when nothing in its namespace came back', async () => {
+    // Blanking a working list on "the harness stopped listing your vendor" is
+    // the same bad trade as blanking it on an empty probe.
+    const run = vi.fn(async (command, args) => (args[0] === 'models' ? 'anthropic/claude-opus-5\n' : '1.18.27'));
+    providerService.listProviders.mockResolvedValue([
+      { id: 'opencode-zen-cli', type: 'cli', command: 'opencode', models: ['opencode/stale'], defaultModel: 'opencode/stale' },
+    ]);
+
+    const result = await refreshHarnessModels('opencode', { run, ...found });
+
+    expect(result.ok).toBe(true);
+    expect(result.updated).toEqual([]);
+    expect(providerService.updateProvider).not.toHaveBeenCalled();
+  });
+
+  // A harness whose ids are bare (agy, grok, cursor) has no namespace to hold.
+  it('applies no scope filter to a harness with bare model ids', async () => {
+    const run = vi.fn(async (command, args) => (args[0] === 'models'
+      ? 'Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\n'
+      : '1.1.25'));
+    providerService.listProviders.mockResolvedValue([
+      { id: 'antigravity-cli', type: 'cli', command: 'agy', models: ['gemini-3.7-flash-high'], defaultModel: 'gemini-3.7-flash-high' },
+    ]);
+
+    await refreshHarnessModels('agy', { run, ...found });
+
+    const [, patch] = providerService.updateProvider.mock.calls[0];
+    expect(patch.models).toEqual(['gemini-3.8-flash-high']);
   });
 
   it('refuses an empty probe rather than blanking every picker', async () => {

@@ -220,14 +220,17 @@ async function probeRuntimeStatus(runtime, findCommand, probeCommand) {
   // `.cmd` wrapper on Windows. The filesystem resolver gives us the real
   // executable; prepareCliSpawn then probes that same safe launch shape.
   const versionProbe = resolved ? prepareCliSpawn(resolved, ['--version']) : null;
-  // ONE probe contract: `commandOutput` answers the `--version` banner, or
-  // `null` when the binary could not run. Availability and version come from
-  // that single child — `parseHarnessVersion` already answers `null` for a
-  // banner it cannot read, which is NOT-KNOWN rather than "out of date".
+  // ONE probe contract: `commandOutput` answers the `--version` banner as a
+  // STRING, or `null` when the binary could not run. Availability and version
+  // both come from that single child — `parseHarnessVersion` already answers
+  // `null` for a banner it cannot read, which is NOT-KNOWN rather than "out of
+  // date". Keyed on `typeof === 'string'` rather than `!== null` so anything
+  // outside the contract (an injected probe answering a bare boolean) fails
+  // SAFE as not-installed instead of reporting a `false` as present.
   const probed = versionProbe
     ? await probeCommand(versionProbe.command, versionProbe.args, { timeoutMs: PROBE_TIMEOUT_MS })
     : null;
-  const installed = probed !== null;
+  const installed = typeof probed === 'string';
   const version = parseHarnessVersion(probed);
 
   // Windows-only gap: the script-installed vendors publish a PowerShell

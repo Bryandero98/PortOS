@@ -37,14 +37,19 @@ const ACTION_COPY = {
   install: {
     title: 'Install harness',
     description: 'Installing the CLI and putting it on PortOS\'s PATH…',
+    done: 'Installed.',
   },
   update: {
     title: 'Update harness',
     description: 'Updating the CLI in place. Providers using it keep their settings.',
+    done: 'Update finished.',
   },
   uninstall: {
     title: 'Remove harness',
     description: 'Removing the CLI. Providers that use it will show as needing setup.',
+    // The modal's default footer says "is ready", which would sit directly under
+    // a log line saying the CLI was just deleted.
+    done: 'Removed.',
   },
 };
 
@@ -306,6 +311,7 @@ export default function HarnessesTab() {
         label={pendingAction?.harness?.label}
         title={pendingAction ? ACTION_COPY[pendingAction.action].title : undefined}
         description={pendingAction ? ACTION_COPY[pendingAction.action].description : undefined}
+        doneText={pendingAction ? ACTION_COPY[pendingAction.action].done : undefined}
         installUrlBase="/api/harnesses/action"
         params={pendingAction ? { action: pendingAction.action } : undefined}
         streamMethod="POST"
