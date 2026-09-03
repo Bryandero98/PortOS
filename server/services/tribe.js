@@ -153,8 +153,26 @@ export const personCadenceStatus = cadenceStatus;
 // tribe (external excluded) is overdue or has no touchpoint yet, most-overdue
 // first. `missing` (never contacted) sorts above any dated-overdue person.
 export async function getCareSummary(limit = 5) {
-  const people = await listPeople();
-  const tribe = people.filter((person) => person.ring !== 'external');
+  await ensureReady();
+  // Deliberately NOT listPeople(): this runs on every Dashboard mount and on the
+  // 2-minute proactive-alerts poll, and listPeople() hydrates every column
+  // (notes, next_move, tags/emails/phones arrays) for the whole table just to
+  // date-check a handful of people. Project only what cadenceStatus() reads
+  // (ring, cadence_days, last_contact_on) plus the response fields (id, name,
+  // channel), and push the `external` exclusion into SQL (#6024).
+  const result = await query(
+    `SELECT id, name, ring, cadence_days, last_contact_on, channel
+     FROM tribe_people
+     WHERE deleted = FALSE AND ring <> 'external'`,
+  );
+  const tribe = result.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    ring: row.ring || 'tribe',
+    cadenceDays: row.cadence_days,
+    lastContact: isoDate(row.last_contact_on),
+    channel: row.channel || '',
+  }));
   const overdue = [];
   for (const person of tribe) {
     const status = personCadenceStatus(person);
@@ -206,11 +224,12 @@ export async function listPeople(options = {}) {
     idx++;
   }
 
+  // No touchpoint/memory-link counts here: they cost 2N correlated subqueries
+  // per list, no client view reads them, and `rowToPerson` already defaults both
+  // to 0 when the column is absent. Detail views get them from getPerson() (#6024).
   const result = await query(
-    `SELECT p.*,
-       (SELECT COUNT(*) FROM tribe_touchpoints t WHERE t.person_id = p.id) AS touchpoint_count,
-       (SELECT COUNT(*) FROM tribe_memory_links ml WHERE ml.person_id = p.id) AS linked_memory_count
-     FROM tribe_people p
+    `SELECT *
+     FROM tribe_people
      WHERE ${conditions.join(' AND ')}
      ORDER BY
        CASE ring WHEN 'support' THEN 1 WHEN 'core' THEN 2 WHEN 'tribe' THEN 3 WHEN 'village' THEN 4 WHEN 'external' THEN 5 ELSE 6 END,

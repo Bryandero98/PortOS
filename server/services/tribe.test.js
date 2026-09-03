@@ -12,6 +12,7 @@ vi.mock('../lib/db.js', () => ({
 import { query, withTransaction } from '../lib/db.js';
 import {
   listPeople,
+  getPerson,
   createPerson,
   createTouchpoint,
   normalizeTags,
@@ -138,6 +139,48 @@ describe('tribe service — listPeople query builder', () => {
     query.mockResolvedValue({ rows: [] });
   });
 
+  // The list view renders contact status/tags/energy/next move — never the
+  // touchpoint or memory-link counts — so the per-row correlated counts were
+  // pure overhead (2N index scans per request). getPerson() still carries them.
+  it('does not run correlated touchpoint/memory-link count subqueries', async () => {
+    await listPeople();
+    const [sql] = query.mock.calls[0];
+    expect(sql).not.toContain('COUNT(*)');
+    expect(sql).not.toContain('tribe_touchpoints');
+    expect(sql).not.toContain('tribe_memory_links');
+    expect(sql).toContain('FROM tribe_people');
+  });
+
+  it('keeps the ring-rank, oldest-contact, name ordering', async () => {
+    await listPeople();
+    const [sql] = query.mock.calls[0];
+    expect(sql).toContain("CASE ring WHEN 'support' THEN 1");
+    expect(sql).toContain("COALESCE(last_contact_on, DATE '1900-01-01') ASC");
+    expect(sql).toContain('name ASC');
+  });
+
+  it('maps rows to full person objects with counts defaulted to 0', async () => {
+    query.mockResolvedValue({ rows: [
+      { id: 'p1', name: 'Ada', ring: 'core', cadence_days: 21, tags: ['x'], notes: 'n' },
+    ] });
+    const [person] = await listPeople();
+    expect(person).toMatchObject({ id: 'p1', name: 'Ada', ring: 'core', tags: ['x'], notes: 'n' });
+    expect(person.touchpointCount).toBe(0);
+    expect(person.linkedMemoryCount).toBe(0);
+  });
+
+  it('getPerson still hydrates the touchpoint and memory-link counts', async () => {
+    query.mockResolvedValue({ rows: [
+      { id: 'p1', name: 'Ada', ring: 'core', cadence_days: 21, touchpoint_count: '3', linked_memory_count: '2' },
+    ] });
+    const person = await getPerson('p1');
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toContain('FROM tribe_touchpoints t');
+    expect(sql).toContain('FROM tribe_memory_links ml');
+    expect(params).toEqual(['p1']);
+    expect(person).toMatchObject({ id: 'p1', touchpointCount: 3, linkedMemoryCount: 2 });
+  });
+
   it('filters by ring with a single $1 parameter', async () => {
     await listPeople({ ring: 'core' });
     const [sql, params] = query.mock.calls[0];
@@ -226,27 +269,53 @@ describe('tribe service — getCareSummary', () => {
     query.mockReset();
   });
 
-  // listPeople maps DB rows via rowToPerson, so mock rows use snake_case columns.
+  // The care query projects only the cadence + response columns, so mock rows
+  // carry exactly those snake_case columns and no full person entity.
   const row = (over) => ({
     id: over.id, name: over.name, ring: over.ring,
     cadence_days: over.cadence_days, last_contact_on: over.last_contact_on ?? null,
-    channel: '', tags: [], touchpoint_count: '0', linked_memory_count: '0',
+    channel: '',
   });
 
-  it('excludes external people and sorts missing first, then most-overdue', async () => {
+  it('projects only the cadence columns and excludes external people in SQL', async () => {
+    query.mockResolvedValue({ rows: [] });
+    await getCareSummary();
+    const [sql] = query.mock.calls[0];
+    expect(sql).toContain('SELECT id, name, ring, cadence_days, last_contact_on, channel');
+    expect(sql).toContain("ring <> 'external'");
+    expect(sql).toContain('deleted = FALSE');
+    // Never the full entity, and never the 2N correlated counts (#6024).
+    expect(sql).not.toContain('notes');
+    expect(sql).not.toContain('COUNT(*)');
+  });
+
+  it('sorts missing first, then most-overdue', async () => {
     query.mockResolvedValue({ rows: [
       row({ id: 'a', name: 'Overdue Small', ring: 'support', cadence_days: 7, last_contact_on: daysAgo(10) }), // 3d overdue
       row({ id: 'b', name: 'Never', ring: 'core', cadence_days: 21, last_contact_on: null }),                  // missing
       row({ id: 'c', name: 'Overdue Big', ring: 'core', cadence_days: 21, last_contact_on: daysAgo(60) }),     // 39d overdue
       row({ id: 'd', name: 'Steady', ring: 'village', cadence_days: 90, last_contact_on: daysAgo(1) }),        // steady
-      row({ id: 'e', name: 'Nemesis', ring: 'external', cadence_days: 7, last_contact_on: daysAgo(999) }),     // excluded
     ] });
 
     const summary = await getCareSummary();
     expect(summary.hasPeople).toBe(true);
-    expect(summary.peopleCount).toBe(4); // external excluded
+    expect(summary.peopleCount).toBe(4);
     expect(summary.overdueCount).toBe(3); // missing + 2 overdue
     expect(summary.overdue.map((p) => p.id)).toEqual(['b', 'c', 'a']);
+    // Response shape the dashboard widget + proactive alert consume.
+    expect(Object.keys(summary.overdue[1]).sort()).toEqual(
+      ['channel', 'daysOverdue', 'id', 'lastContact', 'name', 'ring', 'state'],
+    );
+    expect(summary.overdue[1]).toMatchObject({ ring: 'core', state: 'overdue', daysOverdue: 39 });
+  });
+
+  it('renders a Date last_contact_on as an ISO date string', async () => {
+    query.mockResolvedValue({ rows: [
+      { id: 'a', name: 'A', ring: 'core', cadence_days: 21, last_contact_on: new Date('2020-01-02T00:00:00.000Z'), channel: 'sms' },
+    ] });
+    const summary = await getCareSummary();
+    expect(summary.overdue[0].lastContact).toBe('2020-01-02');
+    expect(summary.overdue[0].channel).toBe('sms');
   });
 
   it('respects the limit while still reporting the full overdueCount', async () => {
