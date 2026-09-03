@@ -41,32 +41,44 @@ async function commitFile(dir, name, content, message) {
   await execGit(['commit', '-m', message], dir);
 }
 
+/**
+ * @returns {Promise<{dir: string, safePath: string}>} `dir` is the repo root
+ *   spelled the way git itself reports it — needed for the reaper's own
+ *   `startsWith()` location checks and our path assertions (see below).
+ *   `safePath` is the plain `mkdtemp()` path, still in whatever spelling
+ *   `os.tmpdir()` uses — pass THIS to resetGitSandbox()/resetGitWorktreeSandbox()'s
+ *   `assertTempPath` check, since on Windows it and `dir` can disagree (8.3
+ *   short form `RUNNER~1` vs git's long form `runneradmin`) in a way nothing
+ *   but git itself can bridge.
+ */
 async function initRepo() {
   // realpath-resolve: on macOS mkdtemp returns a /var symlink while
   // `git worktree list` records the canonical /private/var path, which would
   // break the reaper's startsWith() location checks and our path assertions.
-  const created = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-')));
-  await materializeGitRepo(created, { identity: { email: 'test@example.com', name: 'Test' } });
+  const safePath = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-')));
+  await materializeGitRepo(safePath, { identity: { email: 'test@example.com', name: 'Test' } });
   // Adopt git's spelling of the root. `git worktree list` reports paths the way
   // git normalized them, and the reaper's containment check compares those
   // against a root derived from this value — so any disagreement (8.3 short
   // names like C:\\Users\\RUNNER~1, drive-letter case) makes every worktree look
   // like it lives somewhere unmanaged and nothing is reaped.
-  return (await execGit(['rev-parse', '--show-toplevel'], created)).stdout.trim() || created;
+  const dir = (await execGit(['rev-parse', '--show-toplevel'], safePath)).stdout.trim() || safePath;
+  return { dir, safePath };
 }
 
 describe.skipIf(SKIP_HEAVY_INTEGRATION)('isBranchMergedInto', () => {
   let dir;
+  let safePath;
   let initialHead;
   // One real repo for the whole describe, reset in place between tests
   // instead of a fresh mkdtemp + materializeGitRepo (fs.cp) + rm per test
   // (#5902) — the slow part on a Windows filesystem is that copy/delete
   // cycle, not the handful of git commands each test runs.
   beforeAll(async () => {
-    dir = await initRepo();
+    ({ dir, safePath } = await initRepo());
     initialHead = (await execGit(['rev-parse', 'HEAD'], dir)).stdout.trim();
   });
-  beforeEach(async () => { await resetGitSandbox({ repo: dir, initialHead }); });
+  beforeEach(async () => { await resetGitSandbox({ repo: dir, initialHead, assertPath: safePath }); });
   afterAll(async () => { await rm(dir, { recursive: true, force: true }); });
 
   it('detects a normal (--no-ff) merge', async () => {
@@ -129,6 +141,7 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('isBranchMergedInto', () => {
 
 describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
   let dir;
+  let safePath;
   // One root OUTSIDE the repo for the includeUnmanagedTrees cases, torn down
   // alongside the repo so a held tree can't leak out of the run.
   let externalRoot;
@@ -141,11 +154,11 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
   // locked one), wherever it lives, so externalRoot is naturally emptied
   // back out along with dir's own `.claude/worktrees` trees.
   beforeAll(async () => {
-    dir = await initRepo();
+    ({ dir, safePath } = await initRepo());
     externalRoot = realpathSync(await mkdtemp(join(tmpdir(), 'portos-reap-ext-')));
     initialHead = (await execGit(['rev-parse', 'HEAD'], dir)).stdout.trim();
   });
-  beforeEach(async () => { await resetGitWorktreeSandbox(dir, initialHead); });
+  beforeEach(async () => { await resetGitWorktreeSandbox(dir, initialHead, safePath); });
   afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
     await rm(externalRoot, { recursive: true, force: true });

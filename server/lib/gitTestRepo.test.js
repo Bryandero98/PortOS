@@ -132,6 +132,38 @@ describe('resetGitSandbox', () => {
     expect((await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim()).toBe(initialHead);
     expect((await execGit(['branch', '--format=%(refname:short)'], dest)).stdout.trim()).toBe('main');
   });
+
+  it('checks assertPath instead of repo when a caller passes a respelled repo path', async () => {
+    // Simulates a `repo` that's git's own respelling of an mkdtemp() path
+    // (worktreeReap.test.js's initRepo() does this via `rev-parse
+    // --show-toplevel`) — on Windows that spelling can disagree with
+    // os.tmpdir()'s own (8.3 short form vs git's long form), which
+    // assertTempPath's realpath-based check cannot bridge (#6003).
+    const dest = await mkdtemp(join(tmpdir(), 'portos-git-fx-reset-assertpath-'));
+    sandboxes.push(dest);
+    await materializeGitRepo(dest);
+    const initialHead = (await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim();
+    const respelled = (await execGit(['rev-parse', '--show-toplevel'], dest)).stdout.trim();
+
+    // repo=respelled would still resolve to the real directory (git's
+    // respelling is never actually outside tmpdir — this only stands in for
+    // the case where an OS spelling mismatch would make it look that way to
+    // assertTempPath) — the point is that passing assertPath overrides which
+    // string gets checked, without changing which directory git operates on.
+    await resetGitSandbox({ repo: respelled, initialHead, assertPath: dest });
+
+    expect((await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim()).toBe(initialHead);
+  });
+
+  it('rejects an unsafe assertPath even when repo itself is a real temp dir', async () => {
+    const dest = await mkdtemp(join(tmpdir(), 'portos-git-fx-reset-unsafe-'));
+    sandboxes.push(dest);
+    await materializeGitRepo(dest);
+    const initialHead = (await execGit(['rev-parse', 'HEAD'], dest)).stdout.trim();
+
+    await expect(resetGitSandbox({ repo: dest, initialHead, assertPath: '/etc' }))
+      .rejects.toThrow(/refusing to run/);
+  });
 });
 
 describe('resetGitWorktreeSandbox', () => {

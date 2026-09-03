@@ -169,9 +169,19 @@ export async function materializeGitRepo(dest, { identity } = {}) {
  * again. `initialHead` is the sha `repo` was at right after it was built
  * (capture it once with `execGit(['rev-parse', 'HEAD'], repo)` in `beforeAll`,
  * before any test has run).
+ *
+ * `assertPath` (default `repo`) is what gets checked against `os.tmpdir()` —
+ * pass the plain path a caller `mkdtemp()`'d rather than `repo` itself when
+ * `repo` is git's OWN respelling of that same directory (e.g. from
+ * `git rev-parse --show-toplevel`, as `worktreeReap.test.js`'s `initRepo()`
+ * returns). On Windows those can disagree — `%TEMP%` is sometimes the 8.3
+ * short form (`RUNNER~1`) while git always reports the long form
+ * (`runneradmin`) — and `assertTempPath`'s realpath-based canonicalization
+ * does not bridge that gap (nothing does but asking git; see the identical
+ * problem worked around in `worktreeManager.js`'s `listWorktrees()`).
  */
-export async function resetGitSandbox({ scratch, repo, initialHead }) {
-  assertTempPath(repo, 'git sandbox reset');
+export async function resetGitSandbox({ scratch, repo, initialHead, assertPath = repo }) {
+  assertTempPath(assertPath, 'git sandbox reset');
   // A test can delete `repo` itself (simulating a checkout that vanished
   // mid-run) — rebuild it from the template rather than handing every git
   // call below a cwd that no longer exists. The template's own working copy
@@ -217,13 +227,14 @@ export async function resetGitSandbox({ scratch, repo, initialHead }) {
 }
 
 /**
- * Same contract as `resetGitSandbox()`, plus tearing down every real
- * `git worktree add` checkout `repo` has grown since the last reset
- * (including a locked one) — for suites whose tests exercise worktree
- * creation/removal directly rather than just branches and commits.
+ * Same contract as `resetGitSandbox()` — including the `assertPath` override
+ * for a `repo` that's git's own respelling of an `mkdtemp()` path — plus
+ * tearing down every real `git worktree add` checkout `repo` has grown since
+ * the last reset (including a locked one), for suites whose tests exercise
+ * worktree creation/removal directly rather than just branches and commits.
  */
-export async function resetGitWorktreeSandbox(repo, initialHead) {
-  assertTempPath(repo, 'git worktree sandbox reset');
+export async function resetGitWorktreeSandbox(repo, initialHead, assertPath = repo) {
+  assertTempPath(assertPath, 'git worktree sandbox reset');
   // A missing `repo` has no worktrees to list — let resetGitSandbox()'s own
   // rebuild-from-template handle it below instead of handing `worktree list`
   // a cwd that doesn't exist.
@@ -250,7 +261,7 @@ export async function resetGitWorktreeSandbox(repo, initialHead) {
     }
     if (entries.length > 1) await execGit(['worktree', 'prune'], repo, { ignoreExitCode: true });
   }
-  await resetGitSandbox({ repo, initialHead });
+  await resetGitSandbox({ repo, initialHead, assertPath });
 }
 
 export async function destroyGitSandbox(scratch) {
