@@ -367,6 +367,7 @@ export * from './assetProvenance.js';
 export * from './migrationMarker.js';
 export * from './modelPricing.js';
 export * from './navManifest.js';
+export * from './noReplaceMove.js';
 export * from './instanceFeatureRegistry.js';
 export * from './credentialRegistry.js';
 export * from './usageRange.js';
