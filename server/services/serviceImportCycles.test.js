@@ -82,7 +82,6 @@ const KNOWN_CYCLIC_COMPONENTS = [
   // #5918 — the fixer reaches back for the review-comment store accessors.
   { issue: 5918, members: ['pipeline/manuscriptFix.js', 'pipeline/manuscriptReview.js'] },
   // #5919 — the receive path reaches subscription state back through the barrel.
-  { issue: 5919, members: ['sharing/peerSync.js', 'sharing/peerSyncReceive.js'] },
 ];
 
 // A component as one comparable string. Members arrive sorted from
