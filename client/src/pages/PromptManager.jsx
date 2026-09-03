@@ -87,6 +87,35 @@ export default function PromptManager() {
   const [stageTemplate, setStageTemplate] = useState('');
   const [stageConfig, setStageConfig] = useState({});
   const [preview, setPreview] = useState('');
+  // The last template/config the server confirmed (loaded or saved). Kept as
+  // full copies rather than a boolean flag so typing an edit and undoing it
+  // back to the original stops counting as dirty — a stale flag would nag on a
+  // no-op edit. Mirrors the job-skill guard below (#3939).
+  const [savedStageTemplate, setSavedStageTemplate] = useState('');
+  const [savedStageConfig, setSavedStageConfig] = useState({});
+  // The stage the user clicked while holding unsaved edits, awaiting confirmation.
+  const [pendingStage, setPendingStage] = useState(null);
+  // Config is compared by serialization, not identity: every editor control
+  // rebuilds the object with a spread, so `!==` would read as dirty on a
+  // re-render that changed nothing. Every mutation spreads the previous object,
+  // so key order is stable and a newly added key (a timeout override) reads as
+  // the real change it is.
+  const isStageDirty = Boolean(selectedStage)
+    && (stageTemplate !== savedStageTemplate || JSON.stringify(stageConfig) !== JSON.stringify(savedStageConfig));
+  // Names the open stage the way the list row does, so the discard question
+  // quotes the label the user actually clicked rather than its raw key.
+  const openStageLabel = stages[selectedStage]?.name || selectedStage;
+  // `saveStage` resumes after an await holding the values its closure captured
+  // at click time, so it reads the live selection/edits through this ref to tell
+  // "still the same editor" from "the user moved on mid-flight".
+  const stageLiveRef = useRef({ selected: selectedStage, template: stageTemplate, config: stageConfig });
+  stageLiveRef.current = { selected: selectedStage, template: stageTemplate, config: stageConfig };
+  // A clean editor has nothing to discard, so an armed row disarms itself the
+  // moment the edit is undone or saved — leaving the name parked would re-arm
+  // that row out of nowhere the next time the user typed.
+  useEffect(() => {
+    if (!isStageDirty) setPendingStage(null);
+  }, [isStageDirty]);
 
   // Variable editing (selection is URL-driven — see selectedVar above)
   const [varForm, setVarForm] = useState({ key: '', name: '', category: '', content: '' });
@@ -169,7 +198,11 @@ export default function PromptManager() {
   // Fetch the URL-selected stage's template + config. Keyed on selectedStage so
   // a deep link / reload restores the open editor; a cleared param resets it.
   useEffect(() => {
-    if (!selectedStage) { setStageTemplate(''); setStageConfig({}); setPreview(''); return; }
+    if (!selectedStage) {
+      setStageTemplate(''); setStageConfig({}); setPreview('');
+      setSavedStageTemplate(''); setSavedStageConfig({});
+      return;
+    }
     let cancelled = false;
     getPrompt(selectedStage, { silent: true })
       .then(res => {
@@ -188,6 +221,10 @@ export default function PromptManager() {
         const timeout = parseTimeoutMs(res.timeout);
         if (timeout !== null) cfg.timeout = timeout;
         setStageConfig(cfg);
+        // Baseline the freshly loaded values in the same tick as the editor
+        // state, so the dirty check can never see one without the other.
+        setSavedStageTemplate(res.template || '');
+        setSavedStageConfig(cfg);
         setPreview('');
       })
       .catch(() => {});
@@ -196,16 +233,58 @@ export default function PromptManager() {
 
   const saveStage = async () => {
     setSaving(true);
-    const payload = { template: stageTemplate, ...stageConfig };
+    const sentFor = selectedStage;
+    const sentTemplate = stageTemplate;
+    const sentConfig = stageConfig;
+    const payload = { template: sentTemplate, ...sentConfig };
     // Explicitly null provider when in tier mode so server clears any previous value
     if (!payload.provider) payload.provider = null;
-    const ok = await savePrompt(selectedStage, payload, { silent: true })
+    const ok = await savePrompt(sentFor, payload, { silent: true })
       .then(() => true)
       .catch((err) => { toast.error('Failed to save stage: ' + err.message); return false; });
     if (!ok) { setSaving(false); return; }
     setSaving(false);
-    toast.success(`Stage "${stages[selectedStage]?.name || selectedStage}" saved`);
+    toast.success(`Stage "${openStageLabel}" saved`);
+    // Re-baseline only while the same stage is still open: a save that lands
+    // after the user moved on would otherwise stamp the outgoing stage's text
+    // as the incoming one's saved state. Edits typed while the PUT was open
+    // stay dirty, which is correct — the server never saw them.
+    if (sentFor === stageLiveRef.current.selected) {
+      setSavedStageTemplate(sentTemplate);
+      setSavedStageConfig(sentConfig);
+    }
     await loadData();
+  };
+
+  // Switching stages replaces the editor's template and config, so unsaved
+  // edits must be confirmed away first (#6021). The clicked stage parks in
+  // `pendingStage` and an inline confirm row takes over its list slot — no
+  // window.confirm.
+  const requestStage = (name) => {
+    if (name === selectedStage) {
+      // Re-clicking the open stage is how a user backs out of the prompt from
+      // the list side; leaving it armed would strand the row mid-question.
+      setPendingStage(null);
+      return;
+    }
+    if (isStageDirty) {
+      setPendingStage(name);
+      return;
+    }
+    switchStage(name);
+  };
+
+  // Editor state is cleared in the same tick as the selection, not left to the
+  // `selectedStage` effect — otherwise the frame between the two renders the
+  // OUTGOING stage's text and dirty badges under the incoming stage's row.
+  const switchStage = (name) => {
+    setPendingStage(null);
+    setStageTemplate('');
+    setStageConfig({});
+    setSavedStageTemplate('');
+    setSavedStageConfig({});
+    setPreview('');
+    setSelectedStage(name);
   };
 
   const previewStage = async () => {
@@ -285,7 +364,10 @@ export default function PromptManager() {
       template: ''
     });
     toast.success(`Stage "${payload.name || payload.stageName}" created`);
-    setSelectedStage(payload.stageName);
+    // Through `switchStage`, not a bare selection change, so the new stage
+    // opens against a cleared baseline instead of inheriting the previously
+    // open stage's saved template/config.
+    switchStage(payload.stageName);
     await loadData();
   };
 
@@ -606,9 +688,26 @@ export default function PromptManager() {
                     {open && (
                       <div className="space-y-1 pl-2">
                         {groupStages.map(([name, config]) => (
+                          // The dirty check is part of the render condition, not
+                          // just of arming: undoing the edit back to the saved
+                          // values while the row is armed leaves nothing to
+                          // discard, so the question must go.
+                          (pendingStage === name && isStageDirty) ? (
+                            <InlineConfirmRow
+                              key={name}
+                              className="rounded-lg"
+                              question={`Discard unsaved changes to "${openStageLabel}"?`}
+                              confirmText="Discard"
+                              cancelText="Keep editing"
+                              aria-label={`Confirm discarding unsaved changes to ${openStageLabel}`}
+                              autoFocus
+                              onConfirm={() => switchStage(name)}
+                              onCancel={() => setPendingStage(null)}
+                            />
+                          ) : (
                           <button
                             key={name}
-                            onClick={() => setSelectedStage(name)}
+                            onClick={() => requestStage(name)}
                             className={`w-full text-left px-3 py-2 rounded-lg text-sm ${
                               selectedStage === name
                                 ? 'bg-port-accent/20 text-port-accent'
@@ -622,9 +721,15 @@ export default function PromptManager() {
                                   System
                                 </Pill>
                               )}
+                              {selectedStage === name && isStageDirty && (
+                                <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-warning/20 text-port-warning rounded uppercase font-semibold">
+                                  Unsaved
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-gray-500 truncate">{config.description}</div>
                           </button>
+                          )
                         ))}
                       </div>
                     )}
@@ -652,7 +757,12 @@ export default function PromptManager() {
               <>
                 <div className="bg-port-card border border-port-border rounded-xl p-4">
                   <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-medium text-white">{stageConfig.name}</h3>
+                    <div>
+                      <h3 className="text-lg font-medium text-white">{stageConfig.name}</h3>
+                      {isStageDirty && (
+                        <div className="text-xs text-port-warning mt-1">Unsaved changes</div>
+                      )}
+                    </div>
                     <div className="flex gap-2">
                       <button
                         onClick={previewStage}

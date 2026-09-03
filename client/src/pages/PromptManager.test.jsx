@@ -10,8 +10,8 @@ import toast from '../components/ui/Toast';
 const getPrompts = vi.fn();
 const getPrompt = vi.fn();
 const getPromptUsage = vi.fn();
-const deletePrompt = vi.fn();
 const savePrompt = vi.fn();
+const deletePrompt = vi.fn();
 const createPrompt = vi.fn();
 const getPromptVariables = vi.fn();
 const deletePromptVariable = vi.fn();
@@ -893,5 +893,151 @@ describe('PromptManager page header', () => {
     const headings = screen.getAllByRole('heading', { level: 1 });
     expect(headings).toHaveLength(1);
     expect(headings[0]).toHaveAccessibleName('Prompt Manager');
+  });
+});
+
+// Clicking another stage used to overwrite the editor outright, silently
+// discarding whatever template/config edits the user had in flight (#6021).
+// Mirrors the job-skill guard above (#3939).
+describe('PromptManager stage unsaved-edit guard', () => {
+  beforeEach(() => {
+    getPrompts.mockReset().mockResolvedValue({ stages: STAGES, systemStages: SYSTEM_STAGES });
+    getPrompt.mockReset().mockImplementation((name) => Promise.resolve({
+      name: STAGES[name]?.name || name,
+      description: STAGES[name]?.description,
+      template: `${name} template`,
+      variables: [],
+    }));
+    savePrompt.mockReset().mockResolvedValue({ success: true });
+    getPromptUsage.mockReset().mockResolvedValue({
+      isSystemStage: false, usedBy: [], referencedBy: [], canDelete: true,
+    });
+    toast.error.mockReset();
+    toast.success.mockReset();
+  });
+
+  const templateBox = () => screen.getByLabelText('Template');
+
+  // A deep link expands the group holding the open stage, so the sibling row
+  // under test is on screen without any manual disclosure click.
+  const openDirtyEditor = async () => {
+    renderPage('/prompts?stage=pipeline-prose-draft');
+    await screen.findByDisplayValue('pipeline-prose-draft template');
+    fireEvent.change(templateBox(), { target: { value: 'edited by hand' } });
+    await screen.findByText('Unsaved changes');
+  };
+
+  it('marks the stage editor dirty once the template is modified', async () => {
+    renderPage('/prompts?stage=pipeline-prose-draft');
+    await screen.findByDisplayValue('pipeline-prose-draft template');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+    expect(screen.queryByText('Unsaved')).toBeNull();
+
+    fireEvent.change(templateBox(), { target: { value: 'edited by hand' } });
+
+    // Header badge and the list-row badge on the open stage.
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+    expect(screen.getByText('Unsaved')).toBeTruthy();
+  });
+
+  it('marks the editor dirty on a config-only change', async () => {
+    renderPage('/prompts?stage=pipeline-prose-draft');
+    await screen.findByDisplayValue('pipeline-prose-draft template');
+
+    fireEvent.change(screen.getByLabelText('Model tier'), { target: { value: 'quick' } });
+
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+  });
+
+  it('treats an edit reverted to the loaded template as clean again', async () => {
+    await openDirtyEditor();
+
+    fireEvent.change(templateBox(), { target: { value: 'pipeline-prose-draft template' } });
+
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('asks before discarding unsaved edits when another stage is clicked', async () => {
+    await openDirtyEditor();
+
+    fireEvent.click(screen.getByText('Pipeline — Comic Book Script'));
+
+    expect(screen.getByText('Discard unsaved changes to "Pipeline — Prose Draft"?')).toBeTruthy();
+    // Nothing switched yet: the URL, the fetch, and the typed text all hold.
+    expect(currentSearch()).toContain('stage=pipeline-prose-draft');
+    expect(getPrompt).not.toHaveBeenCalledWith('pipeline-comic-script', { silent: true });
+    expect(screen.getByDisplayValue('edited by hand')).toBeTruthy();
+  });
+
+  it('keeps the edits when the discard prompt is cancelled', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('Pipeline — Comic Book Script'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    expect(screen.getByDisplayValue('edited by hand')).toBeTruthy();
+    expect(currentSearch()).toContain('stage=pipeline-prose-draft');
+  });
+
+  it('switches stages after the discard is confirmed', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('Pipeline — Comic Book Script'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => expect(currentSearch()).toContain('stage=pipeline-comic-script'));
+    await screen.findByDisplayValue('pipeline-comic-script template');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('switches without prompting once the edits are saved', async () => {
+    await openDirtyEditor();
+
+    // Exact match: the dirty list row is labelled "… Unsaved", which /save/i
+    // would also match.
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(savePrompt).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText('Unsaved changes')).toBeNull());
+
+    fireEvent.click(screen.getByText('Pipeline — Comic Book Script'));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    await waitFor(() => expect(currentSearch()).toContain('stage=pipeline-comic-script'));
+  });
+
+  it('drops the armed prompt when the edit is undone back to the saved template', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('Pipeline — Comic Book Script'));
+    expect(screen.getByText(/Discard unsaved changes/)).toBeTruthy();
+
+    fireEvent.change(templateBox(), { target: { value: 'pipeline-prose-draft template' } });
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    // The row the question had taken over comes back.
+    expect(screen.getByText('Pipeline — Comic Book Script')).toBeTruthy();
+  });
+
+  it('backs out of the prompt when the already-open stage is re-clicked', async () => {
+    await openDirtyEditor();
+    fireEvent.click(screen.getByText('Pipeline — Comic Book Script'));
+
+    // By role, not text: the editor heading renders the same label.
+    fireEvent.click(screen.getByRole('button', { name: /Pipeline — Prose Draft/ }));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    expect(currentSearch()).toContain('stage=pipeline-prose-draft');
+    expect(screen.getByDisplayValue('edited by hand')).toBeTruthy();
+  });
+
+  it('does not prompt when a clean editor switches stages', async () => {
+    renderPage('/prompts?stage=pipeline-prose-draft');
+    await screen.findByDisplayValue('pipeline-prose-draft template');
+
+    fireEvent.click(await screen.findByText('Pipeline — Comic Book Script'));
+
+    expect(screen.queryByText(/Discard unsaved changes/)).toBeNull();
+    await waitFor(() => expect(currentSearch()).toContain('stage=pipeline-comic-script'));
+    await screen.findByDisplayValue('pipeline-comic-script template');
   });
 });
