@@ -1210,7 +1210,7 @@ export default function Tribe() {
                   type="button"
                   onClick={() => setDuplicatesDismissed(true)}
                   aria-label="Dismiss shared contact info notice"
-                  className="rounded p-1 text-port-warning/70 hover:text-port-warning"
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded text-port-warning/70 hover:text-port-warning"
                 >
                   <X size={14} aria-hidden="true" />
                 </button>
