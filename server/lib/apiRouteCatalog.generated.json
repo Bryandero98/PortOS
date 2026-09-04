@@ -16560,6 +16560,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/video-gen/reactor/token",
+      "mountPath": "/api/video-gen",
+      "sources": [
+        "server/routes/videoGen.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/video-gen/setup/runtime-install",
       "mountPath": "/api/video-gen",
       "sources": [
@@ -17545,8 +17553,8 @@
   ],
   "stats": {
     "mounts": 147,
-    "operations": 2173,
-    "declarations": 2181,
+    "operations": 2174,
+    "declarations": 2182,
     "sourceFiles": 230
   }
 }
