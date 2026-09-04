@@ -17,6 +17,7 @@
  */
 
 import { resolveBibleDescriptor } from './scriptVideoCompiler.js';
+import { escapeRegExp } from './textUtils.js';
 
 export const MAX_CLIP_PROMPT_LENGTH = 800;
 const HARD_CUT_PREFIX = 'Hard cut to';
@@ -24,8 +25,6 @@ const HARD_CUT_PREFIX = 'Hard cut to';
 const BANNED_REFERENTS = ['same', 'still', 'again', 'continues', 'as before'];
 const BANNED_NEGATIVES = ['no', 'without', 'never'];
 const BANNED_OVERLAY_TERMS = ['text', 'caption', 'overlay'];
-
-const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // \b (not a hand-rolled [^a-z0-9] boundary) so "same_text" isn't flagged as containing
 // the standalone word "same" — \w already includes '_', matching how prose reads a word.
