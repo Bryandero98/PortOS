@@ -640,9 +640,20 @@ async function getRuntimeContextLength(selectedModel = null) {
 async function ensureContextWindow(contextLength, selectedModel = null) {
   const target = Number(contextLength) > 0 ? Math.floor(Number(contextLength)) : null
   if (!target) return { applied: false, reason: 'not-configured', contextLength: null }
+
+  // Compose the context-window env ON TOP OF the currently applied launch env
+  // instead of replacing it, so a reload preserves knobs (e.g.
+  // OLLAMA_FLASH_ATTENTION, OLLAMA_KV_CACHE_TYPE) that are not about the window.
+  // `appliedLaunchEnvValues` outlives `appliedLaunchEnv` specifically to answer
+  // "what has PortOS put in front of Ollama that has not been cleared yet", so
+  // an active tuning is preserved even if the daemon was temporarily down.
+  // When a tuning is active mid-sweep, preserving its knobs keeps the sweep's
+  // measurements comparable rather than demoting the daemon to untuned
+  // mid-sweep, while allowing the context window to expand for the harness.
+  const baseEnv = appliedLaunchEnvValues ? { ...appliedLaunchEnvValues } : {}
+  const env = withOllamaContextEnv(baseEnv, target)
+
   if (!(await checkOllamaAvailable(true))) {
-    const baseEnv = appliedLaunchEnv !== null && appliedLaunchEnvValues ? { ...appliedLaunchEnvValues } : {}
-    const env = withOllamaContextEnv(baseEnv, target)
     return { ...(await restartWithEnv(env, { tuning: false })), contextLength: target }
   }
 
@@ -672,15 +683,6 @@ async function ensureContextWindow(contextLength, selectedModel = null) {
   }
 
   console.log(`🪟 Reloading Ollama at a ${target}-token context window (was ${runtime ?? 'unknown'})`)
-
-  // Compose the context-window env ON TOP OF the currently applied launch env
-  // instead of replacing it, so a reload preserves knobs (e.g.
-  // OLLAMA_FLASH_ATTENTION, OLLAMA_KV_CACHE_TYPE) that are not about the window.
-  // When a tuning is active mid-sweep, preserving its knobs keeps the sweep's
-  // measurements comparable rather than demoting the daemon to untuned
-  // mid-sweep, while allowing the context window to expand for the harness.
-  const baseEnv = appliedLaunchEnv !== null && appliedLaunchEnvValues ? { ...appliedLaunchEnvValues } : {}
-  const env = withOllamaContextEnv(baseEnv, target)
 
   // The restart ladder itself — including the rule that a launch-at-login daemon
   // is restarted in place rather than un-registered — lives in `restartWithEnv`.

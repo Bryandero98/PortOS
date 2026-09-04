@@ -1237,6 +1237,29 @@ describe('ollamaManager.restartWithEnv', () => {
     expect(calls).toContain('launchctl setenv OLLAMA_CONTEXT_LENGTH 131072')
   })
 
+  it('preserves an active tuning when ensureContextWindow starts an offline daemon', async () => {
+    const state = { up: false, probesBeforeStop: 0 }
+    stubReachable({ get reachable() { return state.up || state.probesBeforeStop-- > 0 } })
+    const spawn = await stubSpawnRestart(state)
+    const { ensureContextWindow, restartWithEnv } = await loadManager()
+
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+
+    // Daemon goes down
+    state.up = false
+    state.probesBeforeStop = 0
+
+    // Calling ensureContextWindow when the daemon is unreachable should still
+    // preserve the tuning knobs and start the daemon with them
+    const result = await ensureContextWindow(131072)
+    expect(result).toMatchObject({ applied: true, contextLength: 131072 })
+
+    const lastSpawn = spawn.mock.calls[spawn.mock.calls.length - 1]
+    expect(lastSpawn[2].env.OLLAMA_FLASH_ATTENTION).toBe('1')
+    expect(lastSpawn[2].env.OLLAMA_KV_CACHE_TYPE).toBe('q8_0')
+    expect(lastSpawn[2].env.OLLAMA_CONTEXT_LENGTH).toBe('131072')
+  })
+
   // The domain outlives the daemon, so a stopped Ollama is no reason to leave
   // the variables in it — the next login-launched one would inherit them.
   it('unsets exported variables even when Ollama is already down', async () => {
