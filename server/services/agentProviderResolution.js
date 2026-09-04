@@ -168,7 +168,12 @@ async function resolveOrdinaryProviderAndModel(task) {
   // `direct`-mode runs keep the pin → active → fallback chain untouched
   // (`roleAssignment` returns null for every role on one).
   const laneRole = PRIMARY_ORCHESTRATION_ROLE;
-  const lane = roleAssignment(task, laneRole);
+  const roleAssign = roleAssignment(task, laneRole);
+  // Fail-closed applies only to a role that pinned WHERE it runs. A role
+  // carrying nothing but an `effort` rung has expressed no vendor or model
+  // preference to protect, so refusing to substitute for it would strand a run
+  // over a choice the user never made — it keeps the ordinary chain.
+  const lane = roleAssign?.provider || roleAssign?.model ? roleAssign : null;
   const userProviderId = lane?.provider || task.metadata?.provider;
   let userProviderMissing = false;
   if (userProviderId) {
@@ -426,10 +431,10 @@ async function resolveOrdinaryProviderAndModel(task) {
     // happened (#5993): the role this run was dispatched as, the provider it
     // ACTUALLY ran on, and the one substitution — if any — the lane accepted.
     // Absent on a `direct`-mode run, which has no roles to account for.
-    ...(lane ? {
+    ...(roleAssign ? {
       orchestrationLane: {
         role: laneRole,
-        requestedProvider: lane.provider || directProviderId,
+        requestedProvider: roleAssign.provider || directProviderId,
         providerId: provider.id,
         model: selectedModel,
         ...(laneSubstitution ? { substitution: laneSubstitution } : {}),

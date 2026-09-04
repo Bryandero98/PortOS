@@ -657,3 +657,41 @@ describe('resolveAgentProviderAndModel — fail-closed orchestration lanes', () 
     expect(getFallbackProvider).toHaveBeenCalled();
   });
 });
+
+/**
+ * An `effort`-only role assignment pins a reasoning rung, not a vendor — there
+ * is no cross-vendor split for the fail-closed rule to protect, so it must not
+ * strand the run over a choice the user never made.
+ */
+describe('resolveAgentProviderAndModel — effort-only orchestration roles', () => {
+  const effortOnly = {
+    id: 'task-effort',
+    metadata: {
+      orchestrationMode: 'orchestrated',
+      orchestrationProfile: { architect: { effort: 'high' } },
+    },
+  };
+
+  it('keeps the generic fallback chain for a role that pins no provider or model', async () => {
+    const primary = { id: 'p1', type: 'cli' };
+    const fallback = { id: 'p2', type: 'cli', models: ['m-fb'] };
+    getActiveProvider.mockResolvedValue(primary);
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockReturnValue({ message: 'usage-limit', reason: 'limit' });
+    getAllProviders.mockResolvedValue({ providers: [primary, fallback] });
+    getFallbackProvider.mockResolvedValue({ provider: fallback, source: 'system', model: 'm-fb' });
+
+    const r = await resolveAgentProviderAndModel(effortOnly);
+
+    expect(r.ok).toBe(true);
+    expect(r.provider).toBe(fallback);
+    expect(getFallbackProvider).toHaveBeenCalled();
+    // Still accounted for — the run WAS dispatched as the architect role.
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: 'p1',
+      providerId: 'p2',
+      model: 'm-fb',
+    });
+  });
+});
