@@ -15,6 +15,7 @@ import {
   unreachableReviewerIncludes,
 } from './slashdoInvocation.js';
 import { loadSlashdoFile } from './slashdoLoader.js';
+import { requireSlashdoSubmoduleInCi } from './testHelper.js';
 
 describe('isValidSlashdoCommand', () => {
   it('accepts bare command names', () => {
@@ -386,12 +387,7 @@ describe('bundled command context budget', () => {
   it('keeps the better entrypoint small and preserves an eager procedure', async () => {
     const { existsSync } = await import('fs');
     if (!existsSync(new URL('../../lib/slashdo/src/transformer.js', import.meta.url))) {
-      // See slashdoLoader.test.js for why this fails rather than skips in CI
-      // when the submodule was expected: a return here would otherwise turn a
-      // failed "Initialize slashdo submodule" step into a silent pass.
-      if (process.env.CI_EXPECT_SLASHDO_SUBMODULE === 'true') {
-        throw new Error('lib/slashdo submodule is missing but this CI job expected it to be initialized');
-      }
+      requireSlashdoSubmoduleInCi(false);
       return;
     }
     const { loadSlashdoBundle } = await import('./slashdoLoader.js');

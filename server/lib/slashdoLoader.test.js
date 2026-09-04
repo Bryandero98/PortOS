@@ -16,17 +16,11 @@ vi.mock('./fileUtils.js', async importOriginal => {
   } };
 });
 import { loadSlashdoLib, loadSlashdoFile, loadSlashdoBundle, writeResolvedSlashdoBody } from './slashdoLoader.js';
+import { requireSlashdoSubmoduleInCi } from './testHelper.js';
 
 const source = fileURLToPath(new URL('../../lib/slashdo/src', import.meta.url));
 const hasSubmodule = existsSync(join(source, 'transformer.js'));
-// CI sets this (see ci.yml "Initialize slashdo submodule") whenever the
-// selected test plan needs the real bundled renderer — a missing submodule
-// there means the init step failed silently, so this must fail the job
-// rather than quietly falling back to the fixture-only coverage below. A
-// local or intentionally minimal checkout (the flag unset) keeps skipping.
-if (process.env.CI_EXPECT_SLASHDO_SUBMODULE === 'true' && !hasSubmodule) {
-  throw new Error('lib/slashdo submodule is missing but this CI job expected it to be initialized');
-}
+requireSlashdoSubmoduleInCi(hasSubmodule);
 const write = (path, body) => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, body);

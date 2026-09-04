@@ -223,7 +223,26 @@ const SLASHDO_CONTRACT_SOURCE_FILES = [
   'server/lib/slashdoInvocation.js',
 ];
 
-/** Whether this plan's server job needs `lib/slashdo` initialized. */
+/**
+ * Whether this plan's server job needs `lib/slashdo` initialized.
+ *
+ * The `changedFiles` check is currently unreachable from `buildCiTestPlan`
+ * itself: `SLASHDO_GITLINK_PATH` has no recognized extension, so a real
+ * gitlink change already hits the "unclassified changed file" rule and forces
+ * `plan.full = true` first, which the `plan.full` clause above already
+ * covers. It stays as a direct, defense-in-depth check — independent of that
+ * incidental classification — and is what the unit tests below exercise
+ * against a hand-built plan.
+ *
+ * This only catches a literal edit to the two source files, not an indirect
+ * one: a shared dependency of `slashdoLoader.js`/`slashdoInvocation.js`
+ * changing would not set this, even though Vitest's real `related` selection
+ * can still transitively pull the contract tests in — in which case they run
+ * without the submodule and take the documented skip. In practice a
+ * sufficiently shared dependency changing also tends to select enough tests
+ * to exceed MAX_TARGETED_TEST_FILES and force a full plan, which does trigger
+ * this; a narrowly-shared one is the remaining gap.
+ */
 export const needsSlashdoSubmodule = (plan) => Boolean(
   plan.full
   || plan.changedFiles.includes(SLASHDO_GITLINK_PATH)
