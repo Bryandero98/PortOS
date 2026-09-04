@@ -1636,8 +1636,11 @@ export const renderDefaultsSettingsSchema = z.object(
 export const videoGenSettingsSchema = z.object({
   mode: videoModePinSchema,
   defaultModelId: z.preprocess(emptyToNull, z.string().trim().max(64).nullable().optional()),
-  // Default-on macOS GPU-watchdog mitigation for sustained MLX video renders.
-  // Set false for a headless display workflow that manages display power itself.
+  // Opt-in macOS GPU-watchdog mitigation for local MLX video renders (mlx
+  // #3267) — OFF by default, since a render is a short, attended action and
+  // sleeping the screen unasked reads as a crash. Set true to have PortOS
+  // sleep the display for the duration of a render; also settable per-render
+  // (see the `displaySleep` field on POST /api/video-gen).
   displaySleep: z.boolean().optional(),
   // Install-wide acknowledgement of restricted-model license gates, stored as
   // the exact reviewed-license ids (`termsGate.id`). Written through

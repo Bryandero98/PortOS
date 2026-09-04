@@ -73,7 +73,7 @@ import {
   streamVideoRuntimeInstall,
 } from '../services/videoGen/runtimeInstaller.js';
 import { detectSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js';
-import { isDisplaySleepEnabled } from '../services/displayPower.js';
+import { isDisplaySleepEnabled } from '../services/videoGen/displayPower.js';
 
 const router = Router();
 
@@ -286,6 +286,12 @@ const generateBodySchema = z.object({
   ...LOCAL_ONLY_VIDEO_PARAMS,
   audioStartSec: optionalNum(0, 36000, 'audioStartSec'),
   disableAudio: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
+  // Per-render override of the install-wide display-sleep default
+  // (settings.videoGen.displaySleep, opt-in). Absent means "use the install
+  // default" — the local-only branch of submitVideoGenJob only forwards this
+  // when the client actually sent a choice, so an omitted field can never
+  // clobber the settings-level default with a stale false.
+  displaySleep: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
   sourceImageFile: z.string().max(512).optional(),
   // Gallery-pick filename for the FFLF end-frame. The end-frame can also
   // arrive as a multipart `lastImage` upload (handled below) — when both
@@ -477,7 +483,7 @@ router.get('/status', asyncHandler(async (_req, res) => {
     // reject the whole /status response.
     runtime: await resolveRuntimeFingerprint().catch(() => null),
     // Will a render on this install actually sleep the display? macOS-only, and
-    // the user can opt out (settings.videoGen.displaySleep). Paired with each
+    // OFF unless the user opted in (settings.videoGen.displaySleep). Paired with each
     // model's `sleepsDisplayDuringRender`, this is what lets the UI warn BEFORE
     // the screen goes dark — a user who is not warned reads it as a crash and
     // wakes the display, re-introducing the exact GPU-watchdog contention the
@@ -881,7 +887,7 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'prompt', 'negativePrompt', 'modelId',
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
-  'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
+  'tiling', 'disableAudio', 'displaySleep', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
   // Plain enum, no path — safe to echo so a reloading page restores the promise the
   // in-flight render is actually keeping.
   'i2vReferenceMode',
