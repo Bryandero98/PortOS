@@ -1,0 +1,303 @@
+/**
+ * Slotstream weights — the one step of the runtime PortOS did not manage.
+ *
+ * `slotstreamServerManager.js` owns the process (install / start / stop / logs)
+ * and it deliberately refuses to start without a cached checkpoint. Until this
+ * module existed, the only answer it could offer was "place a checkpoint
+ * directory in ~/.slotstream/models yourself" — a hand-assembled 100 GB+
+ * directory, which is a dead end inside an app that manages everything else
+ * about the runtime.
+ *
+ * A download still never happens implicitly. It moves tens of gigabytes and
+ * only ever runs from a button the user pressed that names what it will fetch,
+ * and a START still never fetches anything — this is its own explicit action.
+ *
+ * The transfer is PortOS's own resumable HTTP path (`streamResumableDownload`),
+ * not a Python helper: Slotstream is a single native binary, and requiring an
+ * image-gen venv for a text runtime's weights would be a strange dependency to
+ * take on. Each file lands under the checkpoint directory the cache walk reads,
+ * so a completed download is servable with no restart.
+ */
+
+import { rm, stat } from 'fs/promises';
+import { join } from 'path';
+import { ServerError } from '../lib/errorHandler.js';
+import {
+  assessDownloadPreflight,
+  assertDownloadFits,
+  partialPathFor,
+  siblingDownloadMeta,
+  streamResumableDownload,
+} from '../lib/downloadPreflight.js';
+import { buildHfAuthHeaders, buildHfResolveUrl, fetchHuggingfaceModel } from '../lib/huggingfaceLora.js';
+import {
+  SLOTSTREAM_CATALOG,
+  resolveSlotstreamRepo,
+  selectSlotstreamRepoFiles,
+  slotstreamCatalogEntry,
+  slotstreamModelDirName,
+} from '../lib/slotstreamCatalog.js';
+import { slotstreamCacheDir } from '../lib/slotstreamModels.js';
+import { getHfToken } from './hfToken.js';
+
+export { SLOTSTREAM_CATALOG };
+
+/** Frames are throttled so a fast link can't put one socket emit per chunk on the wire. */
+const PROGRESS_INTERVAL_MS = 250;
+
+/**
+ * A silent connection is never useful — it holds the one download slot while
+ * every later press queues behind it. Generous, because a checkpoint this size
+ * legitimately runs for hours while it IS receiving bytes.
+ */
+const IDLE_STALL_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.SLOTSTREAM_IDLE_STALL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20 * 60 * 1000;
+})();
+
+/** A metadata lookup that only blocks the confirm modal needs its own bound. */
+const METADATA_FETCH_TIMEOUT_MS = 15_000;
+
+/** Downloads in flight, keyed by checkpoint directory. */
+const inFlight = new Map();
+
+const cacheDirFor = (cacheDir) => cacheDir || slotstreamCacheDir();
+
+/** The absolute checkpoint directory a repo occupies in the cache. */
+export const slotstreamModelPath = (repo, { cacheDir } = {}) =>
+  join(cacheDirFor(cacheDir), slotstreamModelDirName(repo));
+
+function requireRepo(model) {
+  const repo = resolveSlotstreamRepo(model);
+  if (!repo) {
+    throw new ServerError(
+      `"${model}" is not a Slotstream checkpoint. Pick one from the catalog, or name a Hugging Face repo as owner/name.`,
+      { status: 400, code: 'SLOTSTREAM_INVALID_MODEL' },
+    );
+  }
+  return repo;
+}
+
+const hfDownloadHttpError = (res) => {
+  if (res.status === 401 || res.status === 403) {
+    throw new ServerError(
+      `Hugging Face rejected the download (${res.status}) — this repo is gated. Accept its license on Hugging Face and add your HF token in Image Gen settings, then retry.`,
+      { status: res.status, code: 'HF_AUTH' },
+    );
+  }
+  throw new ServerError(`Hugging Face download failed: ${res.status} ${res.statusText}`, { status: 502, code: 'HF_DOWNLOAD_FAILED' });
+};
+
+const fileSize = async (path) => stat(path).then((s) => (s.isFile() ? s.size : 0), () => 0);
+
+/**
+ * What this download would transfer, and what is already here.
+ *
+ * `bytesOnDisk` counts both finished files and any `.partial` left by an
+ * interrupted attempt, because both credit against what a resume still has to
+ * move. Reserving the full repo size again would make a nearly-full disk refuse
+ * a resume it can actually complete.
+ */
+async function planRepoDownload({ repo, token, signal, cacheDir }) {
+  const model = await fetchHuggingfaceModel(repo, { token, signal, blobs: true });
+  const siblings = Array.isArray(model?.siblings) ? model.siblings : [];
+  const files = selectSlotstreamRepoFiles(siblings);
+  if (files.length === 0) {
+    throw new ServerError(
+      `Hugging Face repo ${repo} publishes no checkpoint files PortOS can stream (no .safetensors weights).`,
+      { status: 422, code: 'SLOTSTREAM_NO_WEIGHTS' },
+    );
+  }
+
+  const metaByFile = new Map(
+    siblings
+      .filter((row) => typeof row?.rfilename === 'string')
+      .map((row) => [row.rfilename, siblingDownloadMeta(row)]),
+  );
+  const modelDir = slotstreamModelPath(repo, { cacheDir });
+
+  let totalBytes = 0;
+  let bytesOnDisk = 0;
+  const plan = [];
+  for (const file of files) {
+    const meta = metaByFile.get(file) || { bytes: 0, sha256: null };
+    const destPath = join(modelDir, file);
+    const onDisk = (await fileSize(destPath)) || (await fileSize(partialPathFor(destPath)));
+    totalBytes += meta.bytes;
+    bytesOnDisk += Math.min(onDisk, meta.bytes || onDisk);
+    plan.push({ file, destPath, url: buildHfResolveUrl(repo, 'main', file), ...meta });
+  }
+
+  return { modelDir, files: plan, totalBytes, bytesOnDisk };
+}
+
+/**
+ * Size / destination / free-disk numbers for the confirm step. Starts nothing.
+ *
+ * `expectedBytes` is the WHOLE checkpoint (what the user is committing to)
+ * while the verdict is computed on what is actually left to move, so a resume
+ * reads as "Size 123 GB / Still needed 4 GB" rather than being refused on a
+ * disk that can finish it.
+ */
+export async function previewSlotstreamDownload({ model = null, cacheDir } = {}) {
+  const repo = requireRepo(model);
+  const token = await getHfToken();
+  const plan = await planRepoDownload({
+    repo,
+    token,
+    signal: AbortSignal.timeout(METADATA_FETCH_TIMEOUT_MS),
+    cacheDir,
+  });
+  const remaining = Math.max(0, plan.totalBytes - plan.bytesOnDisk);
+  const assessment = await assessDownloadPreflight({ destPath: plan.modelDir, expectedBytes: remaining });
+
+  return {
+    kind: 'slotstream',
+    ...assessment,
+    // The confirm modal reads `expectedBytes` as "Size" and derives "Still
+    // needed" from `requiredBytes`; reporting the remainder as the size would
+    // hide how large the checkpoint actually is.
+    expectedBytes: plan.totalBytes,
+    destPath: plan.modelDir,
+    repo,
+    files: plan.files.length,
+    alreadyDownloaded: plan.totalBytes > 0 && remaining === 0,
+  };
+}
+
+/**
+ * Download one checkpoint into Slotstream's cache.
+ *
+ * Never throws for a transfer failure the caller has already streamed progress
+ * for: the outcome is a value the route reports. An invalid request (unknown
+ * model, a second press while one is running) still throws, because nothing has
+ * been streamed yet.
+ *
+ * @param {{ model?: string|null, cacheDir?: string, onProgress?: (frame: object) => void }} [options]
+ */
+export async function downloadSlotstreamModel({ model = null, cacheDir, onProgress = () => {} } = {}) {
+  const repo = requireRepo(model);
+  const modelDir = slotstreamModelPath(repo, { cacheDir });
+  if (inFlight.has(modelDir)) {
+    throw new ServerError(`${repo} is already downloading`, { status: 409, code: 'SLOTSTREAM_DOWNLOAD_IN_FLIGHT' });
+  }
+  // Claim the slot BEFORE the first await: resolving the repo is a round trip,
+  // and a second press landing inside that window would clear the check above
+  // and start a parallel copy of the same 100 GB+ transfer.
+  const state = { repo, controller: new AbortController(), abortReason: null };
+  inFlight.set(modelDir, state);
+
+  const label = slotstreamCatalogEntry(repo)?.label || repo;
+  let lastEmit = 0;
+  try {
+    const token = await getHfToken();
+    const headers = buildHfAuthHeaders(token);
+    onProgress({ event: 'start', model: repo, message: `Resolving ${repo} on Hugging Face…` });
+    const plan = await planRepoDownload({ repo, token, signal: state.controller.signal, cacheDir });
+    assertDownloadFits(await assessDownloadPreflight({
+      destPath: plan.modelDir,
+      expectedBytes: Math.max(0, plan.totalBytes - plan.bytesOnDisk),
+    }));
+
+    console.log(`⬇️  Slotstream checkpoint download started: ${repo} (${plan.files.length} files, ${plan.totalBytes} bytes)`);
+    onProgress({
+      event: 'progress',
+      model: repo,
+      received: plan.bytesOnDisk,
+      total: plan.totalBytes,
+      message: `Downloading ${label} — ${plan.files.length} files. This is a multi-gigabyte download and can take a while.`,
+    });
+
+    // Bytes finished in EARLIER files of this run, so the bar reports progress
+    // through the whole checkpoint rather than restarting at each file.
+    let completedBytes = plan.bytesOnDisk;
+    for (const entry of plan.files) {
+      const alreadyDone = await fileSize(entry.destPath);
+      if (alreadyDone > 0 && (!entry.bytes || alreadyDone === entry.bytes)) continue;
+      // A finished file of the WRONG length is a truncated leftover from an
+      // attempt that died between the rename and the next file — a resume
+      // would append to nothing, so start that one file over.
+      if (alreadyDone > 0) await rm(entry.destPath, { force: true }).catch(() => {});
+
+      const resumedFrom = await fileSize(partialPathFor(entry.destPath));
+      const { bytes } = await streamResumableDownload({
+        url: entry.url,
+        headers,
+        destPath: entry.destPath,
+        expectedSha256: entry.sha256,
+        signal: state.controller.signal,
+        idleStallTimeoutMs: IDLE_STALL_TIMEOUT_MS,
+        isCancelled: () => state.abortReason === 'cancelled',
+        onIdleStall: () => {
+          state.abortReason = 'stalled';
+          state.controller.abort();
+        },
+        onHttpError: hfDownloadHttpError,
+        onBytes: (received) => {
+          const now = Date.now();
+          if (now - lastEmit < PROGRESS_INTERVAL_MS) return;
+          lastEmit = now;
+          onProgress({
+            event: 'progress',
+            model: repo,
+            received: completedBytes + Math.max(0, received - resumedFrom),
+            total: plan.totalBytes,
+            message: `Downloading ${entry.file}`,
+          });
+        },
+      });
+      completedBytes += Math.max(0, bytes - resumedFrom);
+    }
+
+    console.log(`✅ Slotstream checkpoint ready: ${repo} → ${plan.modelDir}`);
+    onProgress({
+      event: 'complete',
+      model: repo,
+      received: plan.totalBytes,
+      total: plan.totalBytes,
+      message: `${label} downloaded`,
+    });
+    return {
+      success: true,
+      model: slotstreamModelDirName(repo),
+      repo,
+      path: plan.modelDir,
+      files: plan.files.length,
+      sizeBytes: plan.totalBytes,
+    };
+  } catch (err) {
+    const error = state.abortReason ? abortError(state) : err;
+    const event = state.abortReason === 'cancelled' ? 'cancelled' : 'error';
+    console.error(`❌ Slotstream checkpoint download failed for ${repo}: ${error.message}`);
+    onProgress({ event, model: repo, message: error.message });
+    return { success: false, model: repo, error: error.message, code: error.code || null };
+  } finally {
+    inFlight.delete(modelDir);
+  }
+}
+
+function abortError(state) {
+  if (state.abortReason === 'cancelled') {
+    return new ServerError('Download cancelled', { status: 409, code: 'SLOTSTREAM_DOWNLOAD_CANCELLED' });
+  }
+  const minutes = Math.round(IDLE_STALL_TIMEOUT_MS / 60000);
+  return new ServerError(
+    `Download stalled — no bytes received for ${minutes} minute${minutes === 1 ? '' : 's'}; cancelled so another checkpoint can download`,
+    { status: 504, code: 'SLOTSTREAM_DOWNLOAD_STALLED' },
+  );
+}
+
+/** True while a checkpoint download is writing under `path` (or its `.partial`). */
+export function isSlotstreamDownloadInFlight(path) {
+  if (!path || inFlight.size === 0) return false;
+  const target = String(path);
+  for (const modelDir of inFlight.keys()) {
+    if (target === modelDir || target.startsWith(`${modelDir}/`)) return true;
+  }
+  return false;
+}
+
+/** Clears in-flight download bookkeeping (used by test suites). */
+export function _resetSlotstreamDownloadsForTests() {
+  inFlight.clear();
+}

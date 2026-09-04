@@ -172,6 +172,13 @@ export const localLlmSlotstreamStartSchema = z.object({
   model: z.string().trim().max(300).optional().nullable(),
   memoryGb: z.coerce.number().min(6).max(512).optional().nullable(),
 });
+// A checkpoint download. `model` is a curated catalog id (`qwen3-30b-a3b-4bit`)
+// or a Hugging Face repo id — the service resolves which, and refuses anything
+// that is neither. Unlike a start, this one field is never optional: PortOS has
+// no "download whatever" default for a transfer this size.
+export const localLlmSlotstreamDownloadSchema = z.object({
+  model: z.string().trim().min(1).max(200),
+});
 // MTPLX model catalog. `mtplx forge discover` is upstream's own index of
 // MTPLX-branded MTP checkpoints; an empty query means its default listing.
 export const localLlmMtplxSearchSchema = z.object({
@@ -244,6 +251,10 @@ export const localLlmDownloadPreflightSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('mtplx'),
     model: mtplxRepoIdSchema.optional().nullable(),
+  }),
+  z.object({
+    kind: z.literal('slotstream'),
+    model: z.string().trim().min(1).max(200),
   }),
   z.object({
     kind: z.literal('install'),
