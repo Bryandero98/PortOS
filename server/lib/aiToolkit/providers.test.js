@@ -322,9 +322,13 @@ describe('Provider Service', () => {
 
       const codex = await providerService.getProviderById('codex');
       expect(codex.models).toEqual([
-        'gpt-5.6-luna',
-        'gpt-5.6-terra',
+        'gpt-6-astra',
         'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
         'gpt-5.3-codex-spark',
       ]);
       expect(codex.defaultModel).toBe('gpt-5.6-terra');
@@ -353,9 +357,13 @@ describe('Provider Service', () => {
 
       const codexTui = await providerService.getProviderById('codex-tui');
       expect(codexTui.models).toEqual([
-        'gpt-5.6-luna',
-        'gpt-5.6-terra',
+        'gpt-6-astra',
         'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
         'gpt-5.3-codex-spark',
       ]);
       expect(codexTui.defaultModel).toBe('gpt-5.6-terra');
@@ -384,11 +392,52 @@ describe('Provider Service', () => {
       });
 
       const codex = await providerService.getProviderById('codex');
-      expect(codex.models).toEqual([...priorModels, 'gpt-5.3-codex-spark']);
+      expect(codex.models).toEqual([
+        'gpt-6-astra',
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+        'gpt-5.3-codex-spark',
+      ]);
       expect(codex.defaultModel).toBe('gpt-5.6-luna');
       expect(codex.lightModel).toBe('gpt-5.6-sol');
       expect(codex.mediumModel).toBe('gpt-5.6-luna');
       expect(codex.heavyModel).toBe('gpt-5.6-terra');
+    });
+
+    it('widens the 2026-08 seeded Codex catalog to include GPT-6 and GPT-5.4/5.5 models', async () => {
+      const priorModels = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.3-codex-spark'];
+      await writeProvidersFile({
+        activeProvider: 'codex',
+        providers: {
+          codex: {
+            id: 'codex',
+            name: 'Codex CLI',
+            type: 'cli',
+            command: 'codex',
+            models: [...priorModels],
+            defaultModel: 'gpt-5.6-terra',
+            lightModel: 'gpt-5.6-luna',
+            mediumModel: 'gpt-5.6-terra',
+            heavyModel: 'gpt-5.6-sol',
+          },
+        },
+      });
+
+      const codex = await providerService.getProviderById('codex');
+      expect(codex.models).toEqual([
+        'gpt-6-astra',
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+        'gpt-5.3-codex-spark',
+      ]);
     });
 
     it('does not touch non-codex providers', async () => {
@@ -1303,6 +1352,113 @@ describe('Provider Service', () => {
       expect(err).toBeInstanceOf(Error);
       expect(err.message).toMatch(/not supported/i);
       expect(err.status).toBe(400);
+    });
+  });
+
+  describe('Codex model refresh (`codex app-server`)', () => {
+    const writeFakeCodex = async (modelsResponse) => {
+      const path = join(TEST_DATA_DIR, 'fake-codex.js');
+      const script = `#!/usr/bin/env node
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  try {
+    const msg = JSON.parse(line);
+    if (msg.id === 1) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }) + '\\n');
+    } else if (msg.id === 2) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 2, result: ${JSON.stringify(modelsResponse)} }) + '\\n');
+    }
+  } catch {}
+});
+`;
+      await writeFile(path, script);
+      await chmod(path, 0o755);
+      return path;
+    };
+
+    it.skipIf(process.platform === 'win32')('persists the live catalog for a Codex CLI provider', async () => {
+      const fakeCodex = await writeFakeCodex({
+        data: [
+          { id: 'gpt-6-astra' },
+          { id: 'gpt-5.6-sol' },
+          { id: 'hidden-model', hidden: true },
+        ],
+      });
+      const p = await providerService.createProvider({
+        name: 'Codex CLI',
+        type: 'cli',
+        command: fakeCodex,
+        models: ['gpt-5.3-codex-spark'],
+        defaultModel: 'gpt-5.3-codex-spark',
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      expect(updated.models).toEqual(['gpt-6-astra', 'gpt-5.6-sol']);
+    });
+
+    it.skipIf(process.platform === 'win32')('refreshes a Codex TUI provider too', async () => {
+      const fakeCodex = await writeFakeCodex({
+        models: [
+          { id: 'gpt-6-astra' },
+          { id: 'gpt-5.6-terra' },
+        ],
+      });
+      const p = await providerService.createProvider({
+        name: 'Codex TUI',
+        type: 'tui',
+        command: fakeCodex,
+        models: ['gpt-5.3-codex-spark'],
+        defaultModel: 'gpt-5.3-codex-spark',
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated).not.toBeNull();
+      expect(updated.models).toEqual(['gpt-6-astra', 'gpt-5.6-terra']);
+    });
+
+    it.skipIf(process.platform === 'win32')('refreshes a shipped codex-tui repointed at a wrapper command', async () => {
+      const fakeCodex = await writeFakeCodex({
+        data: [{ id: 'gpt-6-astra' }, { id: 'gpt-5.6-sol' }],
+      });
+      const wrapper = join(TEST_DATA_DIR, 'codex-wrap');
+      await writeFile(wrapper, `#!/bin/sh\nexec "${fakeCodex}" "$@"\n`);
+      await chmod(wrapper, 0o755);
+
+      await writeFile(join(TEST_DATA_DIR, 'providers.json'), JSON.stringify({
+        activeProvider: 'codex-tui',
+        providers: {
+          'codex-tui': {
+            id: 'codex-tui', name: 'Codex TUI', type: 'tui',
+            command: wrapper, models: ['gpt-5.3-codex-spark'], defaultModel: 'gpt-5.3-codex-spark',
+          },
+        },
+      }, null, 2));
+
+      const updated = await providerService.refreshProviderModels('codex-tui');
+      expect(updated, 'the id clause on the TUI arm matches').not.toBeNull();
+      expect(updated.models).toEqual(['gpt-6-astra', 'gpt-5.6-sol']);
+    });
+
+    it('reports a failed codex app-server probe as a refresh failure, leaving the stored list intact', async () => {
+      const stored = ['gpt-6-astra', 'gpt-5.6-sol'];
+      const p = await providerService.createProvider({
+        name: 'Codex CLI',
+        type: 'cli',
+        command: '/nonexistent/path/to/codex',
+        models: [...stored],
+        defaultModel: 'gpt-6-astra',
+      });
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = await providerService.refreshProviderModels(p.id).catch(e => e);
+      errSpy.mockRestore();
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/codex app-server' failed/);
+      const after = await providerService.getProviderById(p.id);
+      expect(after.models).toEqual(stored);
     });
   });
 

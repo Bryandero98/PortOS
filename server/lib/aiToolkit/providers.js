@@ -4,7 +4,7 @@ import { join, dirname, delimiter, isAbsolute } from 'path';
 import { atomicWrite } from './internal/atomicWrite.js';
 import { assertSecretEndpoint, evaluateSecretEndpoint } from './endpointGuard.js';
 import { fileURLToPath } from 'url';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import {
   ANTIGRAVITY_CLI_ID,
@@ -182,9 +182,13 @@ const CODEX_MODEL_KEYS = ['defaultModel', 'lightModel', 'mediumModel', 'heavyMod
 // config (rather than the old "use ~/.codex/config.toml" sentinel) so PortOS
 // can pass the user's choice through as `codex --model <id>`.
 const CODEX_MODELS = [
-  'gpt-5.6-luna',
-  'gpt-5.6-terra',
+  'gpt-6-astra',
   'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
   'gpt-5.3-codex-spark',
 ];
 const CODEX_MODEL_DEFAULTS = {
@@ -199,6 +203,13 @@ const PRIOR_CODEX_MODEL_CATALOGS = [
     'gpt-5.6-luna',
     'gpt-5.6-terra',
     'gpt-5.6-sol',
+  ],
+  // Prior 2026-08 catalog before GPT-6 Astra, GPT-5.5, GPT-5.4, GPT-5.4 Mini were added.
+  [
+    'gpt-5.6-luna',
+    'gpt-5.6-terra',
+    'gpt-5.6-sol',
+    'gpt-5.3-codex-spark',
   ],
 ];
 const ANTIGRAVITY_MODEL_KEYS = ['defaultModel', 'lightModel', 'mediumModel', 'heavyModel'];
@@ -1345,6 +1356,101 @@ export function createProviderService(config = {}) {
      */
     async _fetchCursorModels(provider) {
       return await this._execCliModelList(provider, CURSOR_COMMAND, parseCursorModelList);
+    },
+
+    /**
+     * Codex exposes its model catalog through the `codex app-server` JSON-RPC
+     * interface via the `model/list` RPC method.
+     *
+     * Throws on failure or timeout rather than falling back to static seeds,
+     * consistent with _execCliModelList and _fetchOllamaToolCapableModels.
+     */
+    async _fetchCodexModels(provider) {
+      const bin = provider?.command || 'codex';
+      const { command, args } = prepareWindowsSafeSpawn(bin, ['app-server']);
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let child;
+        const settle = (err, result) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try {
+            child?.kill('SIGTERM');
+          } catch {}
+          if (err) reject(err);
+          else resolve(result);
+        };
+
+        const timer = setTimeout(() => {
+          settle(new Error(`'${bin} app-server' timed out waiting for model catalog`));
+        }, 15000);
+        timer.unref?.();
+
+        try {
+          child = spawn(command, args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env, ...provider?.envVars },
+            windowsHide: true,
+          });
+        } catch (err) {
+          settle(new Error(`'${bin} app-server' failed to spawn: ${err?.message || err}`));
+          return;
+        }
+
+        child.on('error', (err) => {
+          settle(new Error(`'${bin} app-server' failed: ${err?.message || err}`));
+        });
+
+        child.stdin?.on('error', () => {});
+
+        child.on('exit', (code, signal) => {
+          settle(new Error(`'${bin} app-server' exited prematurely with code ${code ?? signal}`));
+        });
+
+        let buffer = '';
+        child.stdout?.on('data', (chunk) => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const msg = JSON.parse(trimmed);
+              if (msg.id === 1) {
+                child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) + '\n');
+                child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'model/list', params: {} }) + '\n');
+              } else if (msg.id === 2) {
+                if (msg.error) {
+                  settle(new Error(`'${bin} app-server' model/list error: ${msg.error.message || JSON.stringify(msg.error)}`));
+                  return;
+                }
+                const rawModels = msg.result?.data || msg.result?.models || [];
+                const ids = rawModels
+                  .filter((m) => !m.hidden)
+                  .map((m) => (typeof m === 'string' ? m : m?.id || m?.model))
+                  .filter(Boolean);
+                if (ids.length === 0) {
+                  settle(new Error(`'${bin} app-server' returned no model ids`));
+                  return;
+                }
+                settle(null, [...new Set(ids)]);
+                return;
+              }
+            } catch {}
+          }
+        });
+
+        child.stdin?.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: { clientInfo: { name: 'portos', version: '1.0.0' } },
+          }) + '\n',
+        );
+      });
     },
 
     async _fetchOllamaToolCapableModels(provider) {

@@ -133,3 +133,19 @@ describe('ProviderCard ChatGPT subscription', () => {
     expect(screen.queryByRole('link', { name: 'Open ChatGPT sign-in' })).toBeNull();
   });
 });
+
+describe('ProviderCard model refresh', () => {
+  it('renders the Refresh Models button for a Codex provider with model-list capability', () => {
+    renderCard({
+      id: 'codex',
+      name: 'Codex CLI',
+      type: 'cli',
+      command: 'codex',
+      models: ['gpt-6-astra'],
+      canRefreshModels: true,
+      enabled: true,
+    });
+    expect(screen.getByRole('button', { name: 'Refresh Models' })).toBeInTheDocument();
+  });
+});
+
