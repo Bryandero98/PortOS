@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
+import { mkdir, readFile, readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { getDomainMode } from '../lib/domainAutonomy.js';
 import {
@@ -35,6 +35,8 @@ import {
   resolveScreenshot,
   sanitizeFilename,
   saveImageUpload,
+  unlinkGuarded,
+  writeFileGuarded,
 } from '../lib/fileUtils.js';
 import { isDaemonRunning, loadState, saveState, withStateLock } from './cosState.js';
 import { cosEvents, emitLog } from './cosEvents.js';
@@ -146,7 +148,7 @@ const pendingAttachmentMarkerPath = (attachmentId) => join(
   `${PENDING_ATTACHMENT_MARKER_PREFIX}${attachmentId}`,
 );
 
-const removePendingAttachmentMarker = async (attachmentId) => unlink(pendingAttachmentMarkerPath(attachmentId)).then(
+const removePendingAttachmentMarker = async (attachmentId) => unlinkGuarded(pendingAttachmentMarkerPath(attachmentId)).then(
   () => true,
   (error) => {
     if (error?.code === 'ENOENT') return true;
@@ -158,7 +160,7 @@ const removePendingAttachmentMarker = async (attachmentId) => unlink(pendingAtta
 const removeStoredFilename = async (filename) => {
   const filePath = resolveScreenshot(filename);
   if (!filePath) return true;
-  return unlink(filePath).then(
+  return unlinkGuarded(filePath).then(
     () => true,
     (error) => {
       if (error?.code === 'ENOENT') return true;
@@ -238,7 +240,7 @@ const removeStoredAttachmentFile = async (attachment) => {
   return removeStoredFilename(attachment.filename);
 };
 
-const removeUploadAfterStateFailure = async (filePath, attachmentId) => unlink(filePath).then(
+const removeUploadAfterStateFailure = async (filePath, attachmentId) => unlinkGuarded(filePath).then(
   async () => removePendingAttachmentMarker(attachmentId),
   (error) => {
     if (error?.code !== 'ENOENT') {
@@ -340,7 +342,7 @@ export async function createPersistentMindAttachment({ filename, data } = {}) {
   // write but before the state record is saved, boot/activity cleanup can find
   // and reap the otherwise-unindexed file without ever scanning durable assets.
   await mkdir(PATHS.screenshots, { recursive: true });
-  await writeFile(pendingAttachmentMarkerPath(attachmentId), '', { flag: 'wx' });
+  await writeFileGuarded(pendingAttachmentMarkerPath(attachmentId), '', { flag: 'wx' });
   const saved = await saveImageUpload(PATHS.screenshots, {
     filename: `mind-${attachmentId}-${originalName}`,
     data,

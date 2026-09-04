@@ -17,7 +17,7 @@
  */
 
 import { existsSync } from 'fs';
-import { link, readFile, rename, rm, stat, unlink } from 'fs/promises';
+import { link, readFile, rename, stat } from 'fs/promises';
 import { basename, join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import {
@@ -28,7 +28,7 @@ import {
   siblingDownloadMeta,
   streamResumableDownload,
 } from '../lib/downloadPreflight.js';
-import { atomicWrite, assertSafeFilename, ensureDir, listDirectoryByExtension, sha256File, PATHS } from '../lib/fileUtils.js';
+import { atomicWrite, assertSafeFilename, ensureDir, listDirectoryByExtension, sha256File, PATHS, rmGuarded, unlinkGuarded } from '../lib/fileUtils.js';
 import { verifySafetensorsStructure } from '../lib/hfCache.js';
 import { isPlainObject } from '../lib/objects.js';
 import { readCachedLoraEffectReport } from '../lib/loraEffect.js';
@@ -338,8 +338,8 @@ export const deleteLora = async (filename) => {
       (contents) => contents,
       (err) => (err.code === 'ENOENT' ? null : Promise.reject(err)),
     );
-    if (metadata !== null) await rm(metadataPath);
-    const modelRemovalError = await rm(filePath).then(() => null, (err) => err);
+    if (metadata !== null) await rmGuarded(metadataPath);
+    const modelRemovalError = await rmGuarded(filePath).then(() => null, (err) => err);
     if (modelRemovalError) {
       if (metadata !== null) await atomicWrite(metadataPath, metadata);
       throw modelRemovalError;
@@ -491,7 +491,7 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
   // Reaching here means the stream completed successfully — every branch
   // below either moves or deletes tmpPath outright, never leaves it for a
   // future resume, so the sidecar describing it is equally done.
-  await rm(etagPathFor(destPath), { force: true }).catch(() => {});
+  await rmGuarded(etagPathFor(destPath), { force: true }).catch(() => {});
   if (onProgress) onProgress(lastTick);
   // Atomic no-clobber finalize: `link` is POSIX-atomic and fails with EEXIST
   // when destPath already exists (concurrent install that snuck past our
@@ -501,11 +501,11 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
   // portable option on those platforms.
   const linkErr = await link(tmpPath, destPath).catch((e) => e);
   if (!linkErr) {
-    await unlink(tmpPath).catch(() => {});
+    await unlinkGuarded(tmpPath).catch(() => {});
     return;
   }
   if (linkErr.code === 'EEXIST') {
-    await rm(tmpPath, { force: true }).catch(() => {});
+    await rmGuarded(tmpPath, { force: true }).catch(() => {});
     const basename_ = basename(destPath);
     throw new ServerError(
       `Already installed: ${basename_}. Delete it first or pick a different version.`,
@@ -518,7 +518,7 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
   // late-arriving dest as CIVITAI_ALREADY_INSTALLED, matching the EEXIST
   // path above.
   if (existsSync(destPath)) {
-    await rm(tmpPath, { force: true }).catch(() => {});
+    await rmGuarded(tmpPath, { force: true }).catch(() => {});
     const basename_ = basename(destPath);
     throw new ServerError(
       `Already installed: ${basename_}. Delete it first or pick a different version.`,
@@ -526,7 +526,7 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
     );
   }
   await rename(tmpPath, destPath).catch(async (err) => {
-    await rm(tmpPath, { force: true }).catch(() => {});
+    await rmGuarded(tmpPath, { force: true }).catch(() => {});
     throw err;
   });
 };
@@ -547,7 +547,7 @@ const verifyDownloadedLora = async (destPath, { expectedSha256 = null, source = 
   const st = await stat(destPath).catch(() => null);
   const structural = await verifySafetensorsStructure(destPath, st?.size ?? 0);
   if (!structural.ok) {
-    await rm(destPath, { force: true }).catch(() => {});
+    await rmGuarded(destPath, { force: true }).catch(() => {});
     throw new ServerError(
       `${label} LoRA download is corrupt (${structural.reason}) — the partial file was deleted. Retry the install.`,
       { status: 502, code },
@@ -559,7 +559,7 @@ const verifyDownloadedLora = async (destPath, { expectedSha256 = null, source = 
   if (/^[0-9a-f]{64}$/.test(want)) {
     const actual = await sha256File(destPath).catch(() => null);
     if (actual && actual.toLowerCase() !== want) {
-      await rm(destPath, { force: true }).catch(() => {});
+      await rmGuarded(destPath, { force: true }).catch(() => {});
       throw new ServerError(
         `${label} LoRA failed SHA-256 verification (expected ${want.slice(0, 12)}…, got ${actual.slice(0, 12)}…) — the file was deleted. Retry the install.`,
         { status: 502, code },

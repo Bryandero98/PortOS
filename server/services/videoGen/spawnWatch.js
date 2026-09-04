@@ -2,9 +2,9 @@
 
 import { spawn } from '../../lib/childProcess.js';
 import { watch as fsWatch } from 'fs';
-import { rm, readFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { PATHS } from '../../lib/fileUtils.js';
+import { PATHS, rmGuarded } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
 import { createLineReader } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
@@ -71,7 +71,7 @@ export async function spawnAndWatchVideo({
   if (!heavyClaim.ok) {
     videoJobState.jobs.delete(jobId);
     await cleanupTempFiles({ includeUploads: true });
-    await rm(stepwiseDir, { recursive: true, force: true });
+    await rmGuarded(stepwiseDir, { recursive: true, force: true });
     throw new ServerError(heavyClaim.message, { status: 409, code: 'HEAVY_LOCAL_JOB_BUSY', context: { holder: heavyClaim.holder } });
   }
   const releaseHeavyClaim = () => heavyClaim.release()
@@ -104,7 +104,7 @@ export async function spawnAndWatchVideo({
       try { previewWatcher.close(); } catch { /* already closed */ }
       previewWatcher = null;
     }
-    void rm(stepwiseDir, { recursive: true, force: true });
+    void rmGuarded(stepwiseDir, { recursive: true, force: true });
   };
   const processLatestPreview = async () => {
     if (previewClosed) return;

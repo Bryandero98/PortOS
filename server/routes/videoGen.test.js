@@ -238,8 +238,13 @@ vi.mock('../lib/multipart.js', () => ({
   },
 }));
 
+const fsMock = vi.hoisted(() => ({
+  unlink: vi.fn(async () => {}),
+  copyFile: vi.fn(async () => {}),
+}));
+
 vi.mock('../lib/fileUtils.js', () => ({
-tryReadFile: vi.fn().mockResolvedValue(null),
+  tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: {
     root: '/mock',
     data: '/mock/data',
@@ -251,6 +256,8 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   // Route awaits ensureDir before staging the upload; no-op for tests since
   // we mock copyFile too.
   ensureDir: vi.fn(async () => {}),
+  copyFileGuarded: fsMock.copyFile,
+  unlinkGuarded: fsMock.unlink,
   // The route resolves user-supplied basenames through this helper before
   // handing them to the renderer. Mirror the real helper's basename-strip
   // + dot-segment rejection so the "strips path-traversal" test below
@@ -268,10 +275,10 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(() => true),
 }));
 vi.mock('fs/promises', () => ({
-  unlink: vi.fn(async () => {}),
+  unlink: fsMock.unlink,
   // The route stages multipart uploads to data/uploads/ via copyFile. Stub
   // the copy so tests that simulate req.file don't actually touch disk.
-  copyFile: vi.fn(async () => {}),
+  copyFile: fsMock.copyFile,
 }));
 
 import { copyFile, unlink } from 'fs/promises';

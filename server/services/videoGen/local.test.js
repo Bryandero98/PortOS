@@ -69,12 +69,26 @@ async function waitForStitch() {
   }
 }
 
+const fsPromisesMock = vi.hoisted(() => ({
+  unlink: vi.fn(async () => {}),
+  writeFile: vi.fn(async () => {}),
+  copyFile: vi.fn(async () => {}),
+  rm: vi.fn(async () => {}),
+  readFile: vi.fn(async () => Buffer.from('')),
+  mkdtemp: vi.fn(async (prefix) => `${prefix}mock`),
+  rename: vi.fn(async () => {}),
+}));
+
 vi.mock('../../lib/fileUtils.js', () => ({
-tryReadFile: vi.fn().mockResolvedValue(null),
+  tryReadFile: vi.fn().mockResolvedValue(null),
   ensureDir: vi.fn(async () => {}),
   PATHS: MOCK_PATHS,
   readJSONFile: vi.fn(async () => []),
   atomicWrite: vi.fn(async () => {}),
+  copyFileGuarded: fsPromisesMock.copyFile,
+  writeFileGuarded: fsPromisesMock.writeFile,
+  unlinkGuarded: fsPromisesMock.unlink,
+  rmGuarded: fsPromisesMock.rm,
   // resolveVideoLoras → assertSafeLoraFilename → assertSafeFilename; the
   // filename safety check is unit-tested in loras.test.js, so a no-op here
   // lets the LoRA-arg test focus on the spawn-args plumbing.
@@ -385,17 +399,7 @@ vi.mock('../loraEffectProbe.js', () => ({
   probeLoraEffect: vi.fn(async (filename) => loraEffectState.reportByFilename[filename] || loraEffectState.defaultReport),
 }));
 
-vi.mock('fs/promises', () => ({
-  unlink: vi.fn(async () => {}),
-  writeFile: vi.fn(async () => {}),
-  copyFile: vi.fn(async () => {}),
-  rm: vi.fn(async () => {}),
-  readFile: vi.fn(async () => Buffer.from('')),
-  mkdtemp: vi.fn(async (prefix) => `${prefix}mock`),
-  // Unused by the code under test, but lib/ffmpeg.js imports it and the ffmpeg
-  // mock above pulls the real module in for buildTrimConcatArgs.
-  rename: vi.fn(async () => {}),
-}));
+vi.mock('fs/promises', () => fsPromisesMock);
 
 // Fake EventEmitter-like process that completes immediately with exit code 0.
 // Shared shape for both the child_process spawn mock (ffmpeg/probe) and the
