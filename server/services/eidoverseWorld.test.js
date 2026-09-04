@@ -1,25 +1,12 @@
-import { homedir, hostname, userInfo } from 'node:os';
-import { afterAll, describe, expect, it, vi } from 'vitest';
-import { cleanupTempDataRoots, lazyTempDataRoot, makePathsProxy } from '../lib/mockPathsDataRoot.js';
-
-// `readEidoverseHostDescriptor` reads world config and the local identity off
-// disk. Re-root both at a scratch tree so the descriptor under test is the
-// shipped default rather than whatever this machine happens to hold.
-vi.mock('../lib/fileUtils.js', async (importOriginal) => makePathsProxy(await importOriginal(), {
-  dataRoot: () => lazyTempDataRoot('portos-eidoverse-world-'),
-}));
-
-const {
+import { describe, expect, it } from 'vitest';
+import {
   buildProjectionPlan,
   DEFAULT_EIDOVERSE_PROJECTION_RECIPE,
   projectedJiraTickets,
   projectedStorage,
-  readEidoverseHostDescriptor,
-} = await import('./eidoverseWorld.js');
-const { eidoverseProjectionRecipeSchema } = await import('../lib/validation.js');
-const { EIDOVERSE_META_ENTITY_ID } = await import('../lib/eidoverseWorldDesign.js');
-
-afterAll(cleanupTempDataRoots);
+} from './eidoverseWorld.js';
+import { eidoverseProjectionRecipeSchema } from '../lib/validation.js';
+import { EIDOVERSE_META_ENTITY_ID, EIDOVERSE_WORLD_DESIGN_VERSION } from '../lib/eidoverseWorldDesign.js';
 
 const APP_FALLBACK = DEFAULT_EIDOVERSE_PROJECTION_RECIPE.assetRecipe.slots.app.fallback;
 
@@ -773,7 +760,7 @@ describe('Eidoverse world self-description', () => {
     expect(entity.comp.portos).toMatchObject({
       managedBy: 'portos',
       kind: 'world-meta',
-      designVersion: DEFAULT_EIDOVERSE_PROJECTION_RECIPE.version,
+      designVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
       meta: { title: 'Example Garden', hostId: 'hst_0123456789ab' },
     });
     // No record contents ride along — the payload is identity, not data.
@@ -824,34 +811,5 @@ describe('Eidoverse world self-description', () => {
       verb: 'remove',
       args: { id: EIDOVERSE_META_ENTITY_ID },
     });
-  });
-});
-
-describe('Eidoverse host descriptor', () => {
-  // Anyone who can reach the door reads this payload, so a field naming the
-  // machine, its network, or its operator would leak on every join.
-  it('names the host opaquely and carries no machine, network, or account identity', async () => {
-    const descriptor = await readEidoverseHostDescriptor();
-
-    expect(Object.keys(descriptor).sort()).toEqual(['caps', 'id', 'kind', 'label', 'version']);
-    expect(descriptor.id).toMatch(/^hst_[0-9a-f]{12}$/);
-    expect(descriptor.kind).toBe('portos');
-    expect(descriptor.label).toBe(DEFAULT_EIDOVERSE_PROJECTION_RECIPE.name);
-    expect(descriptor.caps).toEqual({ eido: false });
-    expect(typeof descriptor.version).toBe('string');
-
-    const serialized = JSON.stringify(descriptor);
-    for (const identity of [hostname(), hostname().split('.')[0], homedir(), userInfo().username]) {
-      if (identity) expect(serialized).not.toContain(identity);
-    }
-    expect(serialized).not.toMatch(/\d{1,3}(?:\.\d{1,3}){3}|\.ts\.net|\/Users\/|\/home\//);
-  });
-
-  it('gives the same install the same opaque id on every read', async () => {
-    const [first, second] = await Promise.all([
-      readEidoverseHostDescriptor(),
-      readEidoverseHostDescriptor(),
-    ]);
-    expect(second.id).toBe(first.id);
   });
 });

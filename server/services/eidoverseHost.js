@@ -29,10 +29,13 @@ const forwardedHeaders = (req, protocol, targetHost, targetPort) => ({
 
 const requestPathname = (url) => String(url || '').split('?')[0].replace(/\/+$/, '') || '/';
 
-const writePlainText = (res, status, body) => {
+// Node suppresses the body of a HEAD response itself, so every writer here can
+// pass one unconditionally.
+const writePlainText = (res, status, body, headers = {}) => {
   res.writeHead(status, {
     'content-type': 'text/plain; charset=utf-8',
     'content-length': Buffer.byteLength(body),
+    ...headers,
   });
   res.end(body);
 };
@@ -43,7 +46,7 @@ const writePlainText = (res, status, body) => {
  */
 const serveHostDescriptor = async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
-    writePlainText(res, 405, 'The PortOS host descriptor is read-only.');
+    writePlainText(res, 405, 'The PortOS host descriptor is read-only.', { allow: 'GET, HEAD' });
     return;
   }
   // Deferred import: this bridge is constructed from the always-loaded settings
@@ -66,7 +69,7 @@ const serveHostDescriptor = async (req, res) => {
     'content-length': Buffer.byteLength(body),
     'cache-control': 'no-store',
   });
-  res.end(req.method === 'HEAD' ? undefined : body);
+  res.end(body);
 };
 
 const writeBadGateway = (res) => {

@@ -489,7 +489,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
         // World title and host identity only — never a record, a machine name,
         // an address, or a filesystem path.
         meta: {
-          title: safeText(meta.title, 'PortOS world', 120),
+          title: safeText(meta.title, effectiveRecipe.name, 120),
           hostId: safeText(meta.hostId, '', 64) || null,
         },
       },

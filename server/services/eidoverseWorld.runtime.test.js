@@ -1,3 +1,4 @@
+import { homedir, hostname, userInfo } from 'node:os';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -635,6 +636,44 @@ describe('Eidoverse private-world lifecycle', () => {
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     resolveAppStatuses([]);
+  });
+
+  // Anyone who can reach the Eidoverse door reads this payload, so a field
+  // naming the machine, its network, or its operator would leak on every join.
+  it('names its host opaquely on GET /host, and carries no machine identity', async () => {
+    const descriptor = await world.readEidoverseHostDescriptor();
+
+    expect(Object.keys(descriptor).sort()).toEqual(['caps', 'id', 'kind', 'label', 'version']);
+    expect(descriptor).toMatchObject({
+      id: expect.stringMatching(/^hst_[0-9a-f]{12}$/),
+      kind: 'portos',
+      label: world.DEFAULT_EIDOVERSE_PROJECTION_RECIPE.name,
+      version: expect.any(String),
+      caps: { eido: false },
+    });
+
+    const serialized = JSON.stringify(descriptor);
+    for (const identity of [hostname(), hostname().split('.')[0], homedir(), userInfo().username]) {
+      if (identity) expect(serialized).not.toContain(identity);
+    }
+    expect(serialized).not.toContain(mocks.self.instanceId);
+    expect(serialized).not.toContain(mocks.self.name);
+    expect(serialized).not.toMatch(/\d{1,3}(?:\.\d{1,3}){3}|\.ts\.net|\/Users\/|\/home\//);
+    // Stable across reads: the id is a digest of this install, not a nonce.
+    expect((await world.readEidoverseHostDescriptor()).id).toBe(descriptor.id);
+  });
+
+  // The label is the operator's, not a constant: a renamed world has to reach
+  // the door, or `GET /host` and the world's own meta entity disagree.
+  it('serves the operator-chosen world title as the host descriptor label', async () => {
+    const recipe = structuredClone(world.DEFAULT_EIDOVERSE_PROJECTION_RECIPE);
+    recipe.name = 'Example Systems Garden';
+    const updated = await world.updateEidoverseWorldConfig({ recipe });
+
+    const descriptor = await world.readEidoverseHostDescriptor();
+    expect(descriptor.label).toBe('Example Systems Garden');
+    // The same string the projection hangs on the world's meta entity.
+    expect(updated.design.name).toBe(descriptor.label);
   });
 
   // The world says who hosts it. A live projection has to actually supply that
