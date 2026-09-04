@@ -1,8 +1,22 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createEidoverseHost } from './eidoverseHost.js';
+
+// The bridge reaches the world config through a deferred `await import()`, so
+// the stub stands in for the whole config graph without loading it here.
+const HOST_DESCRIPTOR = Object.freeze({
+  id: 'hst_0123456789ab',
+  kind: 'portos',
+  label: 'Luminous Systems Garden',
+  version: '9.9.9',
+  caps: { eido: false },
+});
+const readEidoverseHostDescriptor = vi.fn(async () => HOST_DESCRIPTOR);
+vi.mock('./eidoverseWorld.js', () => ({
+  readEidoverseHostDescriptor: (...args) => readEidoverseHostDescriptor(...args),
+}));
 
 const bridges = [];
 const upstreamServers = [];
@@ -108,6 +122,58 @@ describe('Eidoverse host bridge', () => {
     client.close();
     await once(client, 'close');
     webSocketClients.pop();
+  });
+
+  it('answers GET /host itself, so the descriptor never reaches the sequencer', async () => {
+    const upstreamRequests = [];
+    const upstreamPort = await listen(createServer((req, res) => {
+      upstreamRequests.push(req.url);
+      res.writeHead(200);
+      res.end('sequencer');
+    }));
+    const bridge = createEidoverseHost({
+      targetPort: upstreamPort,
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      certDir: null,
+    });
+    bridges.push(bridge);
+
+    const host = await bridge.start();
+    const response = await fetch(`http://127.0.0.1:${host.port}/host?probe=1`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    expect(await response.json()).toEqual(HOST_DESCRIPTOR);
+    // A forwarded request would have shown up here; the whole point is that it
+    // does not, so the upstream checkout needs no change to serve this.
+    expect(upstreamRequests).toEqual([]);
+  });
+
+  it('refuses to write through the descriptor path, and reports an unreadable descriptor honestly', async () => {
+    const upstreamRequests = [];
+    const upstreamPort = await listen(createServer((req, res) => {
+      upstreamRequests.push(req.url);
+      res.writeHead(200);
+      res.end('sequencer');
+    }));
+    const bridge = createEidoverseHost({
+      targetPort: upstreamPort,
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      certDir: null,
+    });
+    bridges.push(bridge);
+
+    const host = await bridge.start();
+    const posted = await fetch(`http://127.0.0.1:${host.port}/host`, { method: 'POST' });
+    expect(posted.status).toBe(405);
+
+    readEidoverseHostDescriptor.mockRejectedValueOnce(new Error('config unreadable'));
+    const failed = await fetch(`http://127.0.0.1:${host.port}/host`);
+    expect(failed.status).toBe(503);
+    // Neither the refusal nor the failure may fall through to the sequencer.
+    expect(upstreamRequests).toEqual([]);
   });
 
   // A managed app on PortOS's reserved :5563 bound 127.0.0.1 explicitly while

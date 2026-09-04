@@ -46,6 +46,7 @@ vi.mock('../lib/fileUtils.js', async (importActual) => {
 vi.mock('./instances.js', () => ({
   getSelf: vi.fn(async () => mocks.self),
   ensureSelf: vi.fn(async () => mocks.self),
+  getInstanceId: vi.fn(async () => mocks.self?.instanceId ?? 'unknown-instance'),
   getPeers: vi.fn(async () => []),
 }));
 
@@ -634,6 +635,24 @@ describe('Eidoverse private-world lifecycle', () => {
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     resolveAppStatuses([]);
+  });
+
+  // The world says who hosts it. A live projection has to actually supply that
+  // meta, or the reconciliation sweep deletes the carrier on the next run.
+  it('plants the world meta entity, naming its host opaquely and never by machine', async () => {
+    await world.projectEidoverseWorld();
+
+    const metaComp = mocks.sent.find(({ verb, args }) => (
+      verb === 'comp' && args?.id === 'portos-design-v2-meta' && args?.type === 'portos'
+    ));
+    expect(metaComp?.args.data).toMatchObject({
+      kind: 'world-meta',
+      managedBy: 'portos',
+      designVersion: 2,
+      meta: { title: expect.any(String), hostId: expect.stringMatching(/^hst_[0-9a-f]{12}$/) },
+    });
+    expect(JSON.stringify(metaComp.args.data)).not.toContain(mocks.self.instanceId);
+    expect(JSON.stringify(metaComp.args.data)).not.toContain(mocks.self.name);
   });
 
   it('preflights and locks recipe assets before completing a V2 reconciliation', async () => {

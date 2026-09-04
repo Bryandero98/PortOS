@@ -16,6 +16,11 @@ export const EIDOVERSE_MAX_LIVE_ENTITIES = 48;
 export const EIDOVERSE_LIBRARY_MODEL_ROOT = 'eidoverse/assets/models/';
 export const EIDOVERSE_MANAGED_PREFIX = 'portos-design-v2-';
 export const EIDOVERSE_PROJECTION_PREFIX = `${EIDOVERSE_MANAGED_PREFIX}signal-`;
+// The world's self-description rides on one managed convention entity rather
+// than a world-scope singleton: a `meta` slot on WorldState would be a protocol
+// amendment, while this replays, forks, and degrades gracefully on a host that
+// has never heard of PortOS.
+export const EIDOVERSE_META_ENTITY_ID = `${EIDOVERSE_MANAGED_PREFIX}meta`;
 
 export const EIDOVERSE_SOURCE_KEYS = Object.freeze([
   'apps',
