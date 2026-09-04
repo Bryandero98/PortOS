@@ -669,14 +669,15 @@ export async function startLlamaServer(options = {}) {
   // feature existed — never a rejected launch. `effectiveIdleMinutes` is what
   // actually reached the process, so the status card reports the truth rather
   // than the request.
-  const effectiveIdleMinutes = requestedIdleMinutes > 0 && await supportsSleepIdle(binaryPath)
+  const isPinned = await configuredSleepIdleKeepLoaded();
+  const effectiveIdleMinutes = !isPinned && requestedIdleMinutes > 0 && await supportsSleepIdle(binaryPath)
     ? requestedIdleMinutes
     : 0;
   if (effectiveIdleMinutes > 0) args.push(SLEEP_IDLE_FLAG, String(effectiveIdleMinutes * 60));
 
   lastExitError = null;
   daemon.resetLogs();
-  if (requestedIdleMinutes > 0 && effectiveIdleMinutes === 0) {
+  if (!isPinned && requestedIdleMinutes > 0 && effectiveIdleMinutes === 0) {
     appendLog(`This llama-server build has no ${SLEEP_IDLE_FLAG} — the model stays resident while idle`);
   }
   if (droppedSpecTypes.length > 0) {

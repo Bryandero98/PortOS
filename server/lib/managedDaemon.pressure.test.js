@@ -52,15 +52,37 @@ describe('managedDaemon memory pressure policy', () => {
       expect(result.reason).toBe('memory stats unavailable');
     });
 
-    it('returns shouldRelease: false when free memory is above threshold', () => {
+    it('returns shouldRelease: false when memory is above threshold', () => {
       const result = evaluateMemoryPressurePolicy({
         daemons: [{ name: 'mtplx', lastUsedAt: now - 10_000 }],
         memoryStats: { total: 64 * GB, used: 50 * GB, free: 14 * GB },
-        history: [{ at: now, free: 14 * GB }],
         now,
       });
       expect(result.shouldRelease).toBe(false);
       expect(result.reason).toBe('host memory not under pressure');
+    });
+
+    it('stays under pressure when within dead-band hysteresis window', () => {
+      // Threshold is 4GB, dead-band is 2GB, exit threshold is 6GB
+      // When wasUnderPressure is true, 5GB free is still under pressure
+      const resultInDeadBand = evaluateMemoryPressurePolicy({
+        daemons: [{ name: 'mtplx', lastUsedAt: now - 10_000 }],
+        memoryStats: { total: 64 * GB, used: 59 * GB, free: 5 * GB },
+        history: [{ at: now - 40_000, free: 2 * GB }, { at: now, free: 5 * GB }],
+        options: { wasUnderPressure: true, sustainedDurationMs: 0 },
+        now,
+      });
+      expect(resultInDeadBand.shouldRelease).toBe(true);
+
+      // Above threshold + dead-band (7GB >= 6GB), pressure is relieved
+      const resultAboveDeadBand = evaluateMemoryPressurePolicy({
+        daemons: [{ name: 'mtplx', lastUsedAt: now - 10_000 }],
+        memoryStats: { total: 64 * GB, used: 57 * GB, free: 7 * GB },
+        options: { wasUnderPressure: true },
+        now,
+      });
+      expect(resultAboveDeadBand.shouldRelease).toBe(false);
+      expect(resultAboveDeadBand.reason).toBe('host memory not under pressure');
     });
 
     it('returns shouldRelease: false when within the calm-down window', () => {
@@ -248,6 +270,26 @@ describe('managedDaemon memory pressure policy', () => {
       expect(stopped).toEqual([]);
       expect(stop).not.toHaveBeenCalled();
       expect(daemonReleaseReason('daemon-pinned')).toBeNull();
+    });
+
+    it('fail-safes to pinned when isPinned throws or rejects', async () => {
+      const stop = vi.fn().mockResolvedValue(undefined);
+      registerIdleDaemon({
+        name: 'daemon-flaky-pin',
+        getIdleMs: () => 60 * MINUTE,
+        isPinned: () => Promise.reject(new Error('transient read failure')),
+        stop,
+      });
+
+      const now = Date.now();
+      const stopped = await reapIdleDaemons(now, {
+        memoryStats: { total: 64 * GB, used: 62 * GB, free: 2 * GB },
+        history: [{ at: now - 35_000, free: 2 * GB }, { at: now, free: 2 * GB }],
+        sustainedDurationMs: 30_000,
+      });
+
+      expect(stopped).toEqual([]);
+      expect(stop).not.toHaveBeenCalled();
     });
 
     it('clears releaseReason when markDaemonUsed is called upon server restart', async () => {

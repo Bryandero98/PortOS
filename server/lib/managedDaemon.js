@@ -400,13 +400,21 @@ export function evaluateMemoryPressurePolicy({
   }
 
   const free = memoryStats.free;
-  if (free >= thresholdBytes) {
+  const wasUnderPressure = Boolean(options.wasUnderPressure ?? (lastReleasedAt && (now - lastReleasedAt < calmDownMs * 2)));
+  const exitThresholdBytes = thresholdBytes + deadBandBytes;
+  const isRelieved = wasUnderPressure
+    ? free >= exitThresholdBytes
+    : free >= thresholdBytes;
+
+  if (isRelieved) {
     return {
       shouldRelease: false,
       target: null,
       reason: 'host memory not under pressure',
       free,
       thresholdBytes,
+      exitThresholdBytes,
+      wasUnderPressure,
     };
   }
 
@@ -536,7 +544,7 @@ export async function reapIdleDaemons(now = Date.now(), options = {}) {
 
     const daemonList = [];
     for (const [name, entry] of idleDaemons) {
-      const isPinned = await Promise.resolve(entry.isPinned?.()).catch(() => false);
+      const isPinned = await Promise.resolve(entry.isPinned?.()).catch(() => true);
       const isRunning = entry.isRunning
         ? await Promise.resolve(entry.isRunning()).catch(() => false)
         : true;
