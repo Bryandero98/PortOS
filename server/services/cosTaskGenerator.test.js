@@ -77,6 +77,7 @@ import {
   recordPerpetualTransient,
   buildJiraTicketTask,
   buildClaimWorkTask,
+  resolveAppClaimReviewers,
   buildImprovementDedupSets,
   queueDueInstallWideImprovementTasks,
   normalizeWorkItemRef,
@@ -503,7 +504,7 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // run if the CSV carries it. Both the scheduled path and buildClaimWorkTask
     // feed the cap into the shared claim resolver, which applies task-over-default
     // precedence (unit-tested in reviewerConfig.test.js).
-    expect(GEN_SRC).toContain('reviewerMaxRounds: reviewerMaxRounds ?? metadata.reviewerMaxRounds');
+    expect(GEN_SRC).toContain('reviewerMaxRounds: reviewerMaxRounds ?? metadata?.reviewerMaxRounds');
     expect(GEN_SRC).toContain('resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers)');
     expect(GEN_SRC).not.toContain('resolveReviewerMaxRounds(');
   });
@@ -519,8 +520,8 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // agy model id can carry its effort as a suffix, so a path that resolved the
     // models alone would emit `--model <suffixed> --effort <tier>`, a pair agy
     // rejects, while the other paths emitted the split form.
-    expect(GEN_SRC).toContain('reviewerModels: reviewerModels ?? metadata.reviewerModels');
-    expect(GEN_SRC).toContain('reviewerEfforts: reviewerEfforts ?? metadata.reviewerEfforts');
+    expect(GEN_SRC).toContain('reviewerModels: reviewerModels ?? metadata?.reviewerModels');
+    expect(GEN_SRC).toContain('reviewerEfforts: reviewerEfforts ?? metadata?.reviewerEfforts');
     // The play-button path reads the defaults directly (no task metadata to layer).
     expect(GEN_SRC).toContain('resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers)');
     // No path may resolve one map without the other — or reach past the shared
@@ -603,8 +604,13 @@ describe('claim-work single-source routing', () => {
     // Reviewers layer an explicit per-field option over the configured claim-work
     // metadata, then fall back to the Code Review Defaults — through the claim
     // resolver, which keeps local LLMs and excludes the retired Copilot path.
-    expect(fn).toMatch(/resolveClaimReviewerConfig\(\{\s*\.\.\.metadata,/);
-    expect(fn).toMatch(/reviewers: reviewers !== undefined/);
+    // `claimReviewersFrom` owns that layering for BOTH the builder and the
+    // claim-reviewer lookup route, so the preview the UI shows and the run it
+    // previews can't resolve differently.
+    expect(fn).toMatch(/claimReviewersFrom\(metadata, codeReviewDefaults, \{/);
+    const layering = GEN_SRC.slice(GEN_SRC.indexOf('function claimReviewersFrom('));
+    expect(layering).toMatch(/resolveClaimReviewerConfig\(\{\s*\.\.\.metadata,/);
+    expect(layering).toMatch(/reviewers: reviewers !== undefined/);
     expect(fn).toMatch(/buildLocalReviewerInstructions\(reviewersList/);
     // A direct claim-work prompt customization overrides the tracker body, same
     // as the scheduled router's promptKeyForBody selection.
@@ -1766,5 +1772,61 @@ describe('buildClaimWorkTask reviewer pin', () => {
 
     expect(prompt).not.toContain('--swarm=6');
     expect(taskMetadata.swarmCount).toBeUndefined();
+  });
+});
+
+// The read-only preview behind `GET /api/apps/:id/claim-reviewers`. It shares
+// `claimReviewersFrom` with buildClaimWorkTask on purpose: a preview that
+// resolved differently from the run is the exact defect it exists to close, so
+// these assert the RESOLUTION, not that a mock was called.
+//
+// This file's mocks put the interesting disagreement in place already —
+// claim-work metadata pins `['codex', 'claude']` while the Code Review Defaults
+// say `['ollama']`, which is the #6202 shape.
+describe('resolveAppClaimReviewers', () => {
+  const APP = { id: 'app-1', name: 'App', repoPath: '/repo' };
+
+  it('returns the claim-work override that WINS, and flags it as the source', async () => {
+    const result = await resolveAppClaimReviewers(APP);
+
+    expect(result.reviewers).toEqual(['codex', 'claude']);
+    expect(result.csv).toBe('codex,claude,@alice');
+    // `overridden` is what the UI turns into "clear the override" vs "change the
+    // Code Reviewers panel" — getting it backwards sends the user to a control
+    // that isn't supplying what they're looking at.
+    expect(result.overridden).toBe(true);
+  });
+
+  it('falls through to the Code Review Defaults, unflagged, when claim-work pins no list', async () => {
+    getTaskInterval.mockResolvedValueOnce({ prompt: null, taskMetadata: { issueAuthorFilter: 'owner' } });
+
+    const result = await resolveAppClaimReviewers(APP);
+
+    expect(result.reviewers).toEqual(['ollama']);
+    expect(result.overridden).toBe(false);
+  });
+
+  it('does not call a stop-mode-only task an override — it cannot change the list', async () => {
+    // A claim prompt gets a reviewer CSV, not a slashdo flag string, so
+    // `reviewStopMode` reaches nothing. Reporting it as the source would send the
+    // user to clear an override that is not supplying the reviewers they see.
+    getTaskInterval.mockResolvedValueOnce({ prompt: null, taskMetadata: { reviewStopMode: 'on-clean', reviewerApplies: true } });
+
+    const result = await resolveAppClaimReviewers(APP);
+
+    expect(result.reviewers).toEqual(['ollama']);
+    expect(result.overridden).toBe(false);
+  });
+
+  it('strips copilot, matching the list the claim prompt is actually given', async () => {
+    // claimSafeReviewers: copilot has no CLI, so a claim agent told to review
+    // with it stalls (#2507). The preview must show the post-guard list or it
+    // advertises a reviewer the run silently removes.
+    getTaskInterval.mockResolvedValueOnce({ prompt: null, taskMetadata: { reviewers: ['copilot', 'claude'] } });
+
+    const result = await resolveAppClaimReviewers(APP);
+
+    expect(result.reviewers).toEqual(['claude']);
+    expect(result.overridden).toBe(true);
   });
 });
