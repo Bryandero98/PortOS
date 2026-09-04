@@ -170,12 +170,23 @@ export default function PipelineStageConfig({ taskType, config, providers, provi
           // there let a stage be pinned to a model the daemon no longer serves,
           // and hid one that had just been pulled. Every other provider uses its
           // own catalog, so a cloud CLI stage can pick any model it offers.
-          const stageModels = posture && localBackend
-            ? localModelIds.map(id => ({
-              id,
-              name: id,
-              capabilities: capabilitiesByBackend?.[localBackend]?.[id],
-            }))
+          //
+          // `useLocalModels` reports BOTH "not fetched yet" and "daemon said
+          // nothing" as `[]`, so an empty list is not evidence the daemon serves
+          // no models. The two stages part ways on what to do about that. The
+          // tool-free gate must stay strict: its policy needs a probeable
+          // capability report, and a model with none is not selectable at all,
+          // so an empty list correctly offers nothing. The actions stage has no
+          // such gate, so it falls back to the record's catalog — otherwise a
+          // stopped daemon (or the in-flight window) renders an empty picker and
+          // drops the stage's own saved pin out of the dropdown.
+          const localStageModels = localModelIds.map(id => ({
+            id,
+            name: id,
+            capabilities: capabilitiesByBackend?.[localBackend]?.[id],
+          }));
+          const stageModels = posture && localBackend && (isNoToolStage || localStageModels.length > 0)
+            ? localStageModels
             : effortAwareModelOptions(stageProvider, stage.model);
           const selectionPolicy = posture ? selectionPolicies[posture] : undefined;
           const stageProviderId = stage.providerId || '';

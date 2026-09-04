@@ -78,13 +78,19 @@ async function resolvePublicReviewAgentProvider(task, posture) {
   // `modelPinIsOffered` owns which provider records may invalidate a pin at all
   // — an empty catalog and a local daemon's cached snapshot are both
   // pass-throughs (see its doc comment).
-  const pinRejected = pinnedForThisProvider && !modelPinIsOffered(provider, pinnedModel);
-  // Strip the rejected pin BEFORE model selection. `selectModelForTask` returns
-  // `metadata.model` verbatim as its highest-priority answer, so leaving it in
-  // place handed the CLI the very id just rejected and the warning below
-  // promised a default the run never used.
+  const honorPin = pinnedForThisProvider && modelPinIsOffered(provider, pinnedModel);
+  const pinRejected = pinnedForThisProvider && !honorPin;
+  // Strip a pin that will NOT be honored, BEFORE model selection.
+  // `selectModelForTask` returns `metadata.model` verbatim as its
+  // highest-priority answer, so leaving it on the task defeats both guards
+  // above: a REJECTED pin came straight back while the warning below promised a
+  // default the run never used, and a pin belonging to a DIFFERENT provider
+  // (`pinnedForThisProvider` false, after the posture swap above chose someone
+  // else) was handed to the new provider — the exact cross-vendor leak this
+  // function's header says it prevents. Both are the same "will not be honored"
+  // case, so both strip here.
   const modelSelection = await selectModelForTask(
-    pinRejected ? { ...task, metadata: { ...task.metadata, model: null } } : task,
+    pinnedModel && !honorPin ? { ...task, metadata: { ...task.metadata, model: null } } : task,
     provider,
   );
   if (pinRejected) {
@@ -95,7 +101,7 @@ async function resolvePublicReviewAgentProvider(task, posture) {
       validModels: provider.models,
     });
   }
-  const selectedModel = pinnedForThisProvider && !pinRejected
+  const selectedModel = honorPin
     ? pinnedModel
     : (modelSelection.model || provider.defaultModel || null);
   emitLog('info', `Public-review stage (${posture}) resolved to provider ${provider.id}${selectedModel ? ` model ${selectedModel}` : ''}`, {

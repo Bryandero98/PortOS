@@ -375,11 +375,25 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
     expect(r).toMatchObject({ ok: true, provider: { id: 'codex-cli' } });
   });
 
+  // `selectModelForTask`'s real precedence: `task.metadata.model` wins outright
+  // over everything else. The suite's flat `m-default` default cannot observe a
+  // pin that leaks through it, so the tests below that assert a pin was DROPPED
+  // install this instead — otherwise they pass no matter what the code does.
+  const useRealisticModelSelection = () => selectModelForTask.mockImplementation(async (task, provider) => (
+    task?.metadata?.model
+      ? { model: task.metadata.model, tier: 'user-specified', reason: 'user-preference' }
+      : { model: provider?.defaultModel || 'm-default', tier: 'medium', reason: 'default' }
+  ));
+
   it('keeps a model pin only on the provider it was chosen for', async () => {
+    useRealisticModelSelection();
     getAllProviders.mockResolvedValue({ providers: [CODEX, GROK], activeProvider: null });
     await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-4' })))
       .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'grok-4' });
     // Pinned for a DIFFERENT provider — falls back to that provider's own model.
+    // The posture swap above landed on codex-cli, and grok's model id must not
+    // ride along with it; leaving the pin on the task let `selectModelForTask`
+    // hand it straight back, so the swap silently kept the foreign model.
     await expect(resolveAgentProviderAndModel(gateTask({ provider: 'opencode', model: 'grok-4' })))
       .resolves.toMatchObject({ provider: { id: 'codex-cli' }, selectedModel: 'm-default' });
   });
@@ -408,11 +422,7 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
   // it was "using its default instead". The mock is given the real precedence
   // here on purpose; the flat `m-default` default cannot observe the bug.
   it('does not let model selection hand the rejected pin back', async () => {
-    selectModelForTask.mockImplementation(async (task, provider) => (
-      task?.metadata?.model
-        ? { model: task.metadata.model, tier: 'user-specified', reason: 'user-preference' }
-        : { model: provider?.defaultModel || 'm-default', tier: 'medium', reason: 'default' }
-    ));
+    useRealisticModelSelection();
     const CURATED = { id: 'grok-cli', type: 'cli', command: 'grok', models: ['grok-4'], defaultModel: 'grok-4' };
     getAllProviders.mockResolvedValue({ providers: [CURATED], activeProvider: null });
 
