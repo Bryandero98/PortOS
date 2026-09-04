@@ -3,7 +3,9 @@
  *
  * The gather pass does the forge work that does not need a model: it reads only
  * activity newer than the per-app cursor, assigns explicit volunteer comments
- * on currently-unassigned issues and marks them `in-progress`, finds external
+ * on currently-unassigned issues and writes the shared volunteer-claim markers
+ * (`in-progress` on, contributor invitations off — see `volunteerClaimLabels` in
+ * lib/dispatchLabels.js, which the claim prompt's handoff renders too), finds external
  * PRs without an owner review on their current head, and supplies bounded diffs
  * to one reasoning agent. The output pass validates that agent's structured decisions against fresh forge
  * state before it replies, posts inline reviews, updates stale branches, or
@@ -18,7 +20,7 @@ import {
   detectDeterministicModelAbuseSignals,
   modelAbuseContentFingerprint,
 } from '../lib/modelAbuseGuard.js';
-import { IN_PROGRESS_LABEL, dispatchLabelSpec } from '../lib/dispatchLabels.js';
+import { IN_PROGRESS_LABEL, dispatchLabelSpec, volunteerClaimLabels } from '../lib/dispatchLabels.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import {
   MAX_REVIEW_BODY_CHARS,
@@ -250,8 +252,14 @@ async function getRepositoryIdentity(ctx) {
 }
 
 /**
- * Take an unassigned issue on a volunteer's behalf: set the assignee and stamp
- * `in-progress`.
+ * Take an unassigned issue on a volunteer's behalf, writing the shared
+ * volunteer-claim forge state: set the assignee, stamp `in-progress`, and
+ * retire the contributor invitations.
+ *
+ * The policy itself lives in `volunteerClaimLabels()` (lib/dispatchLabels.js)
+ * because the claim agent's Phase 1 handoff resolves the SAME event — a human
+ * comment asking for an unassigned issue — and must leave the same state, so
+ * which path ran first cannot change the outcome.
  *
  * The assignee is what actually removes the issue from the autonomous claim
  * queue — `perpetualWork.js#isActionableIssue` already rejects any issue held
@@ -259,23 +267,40 @@ async function getRepositoryIdentity(ctx) {
  * the UI: it is what the Issues tab hides on, and it keeps a volunteer-claimed
  * issue reading the same as an agent-claimed one.
  *
- * ONE combined edit is the fast path. `gh issue edit --add-label` fails the
- * WHOLE call when the repo has never defined the label, so the fallback splits
- * it — assign alone (the half that must not be lost on a fork), create the
- * label, then apply it. `--add-assignee` is idempotent, so the retry is safe
- * whether or not the combined attempt got as far as assigning. The label is
- * created without `--force` so an install that recolored it keeps its color.
+ * ONE combined edit is the fast path for assign + add-label. `gh issue edit
+ * --add-label` fails the WHOLE call when the repo has never defined the label,
+ * so the fallback splits it — assign alone (the half that must not be lost on a
+ * fork), create the label, then apply it. `--add-assignee` is idempotent, so the
+ * retry is safe whether or not the combined attempt got as far as assigning. The
+ * label is created without `--force` so an install that recolored it keeps its
+ * color.
  *
- * Returns whether the ASSIGNMENT landed, never whether the label did: a missing
- * label leaves the issue claimable, which a later pass can repair, while a
- * missing assignment means the volunteer's comment still needs an answer and
- * must go on to the reasoning agent.
+ * The invitation release is ALWAYS a separate edit per label, never folded into
+ * the combined call: `--remove-label` fails the whole call when a named label is
+ * absent from the issue, which is the common case (most issues carry neither),
+ * and that failure would take the assignment down with it.
+ *
+ * Returns whether the ASSIGNMENT landed, never whether the labels did: missing
+ * labels leave stale advertising a later pass can repair, while a missing
+ * assignment means the volunteer's comment still needs an answer and must go on
+ * to the reasoning agent.
  */
 async function assignVolunteer(ctx, issueNumber, login) {
   const edit = (...flags) => runGh(['issue', 'edit', String(issueNumber), '--repo', ctx.repoSpec, ...flags], ctx);
+  const { add, remove } = volunteerClaimLabels();
   const assignFlags = ['--add-assignee', login];
-  const labelFlags = ['--add-label', IN_PROGRESS_LABEL];
-  if (await edit(...assignFlags, ...labelFlags).then(() => true, () => false)) return true;
+  const labelFlags = add.flatMap((label) => ['--add-label', label]);
+  // Serialized, not Promise.all: two concurrent edits of the same issue is a
+  // race with no upside. An issue carrying neither invitation is the common
+  // case, and gh reports that absence as an error — never log it as a failure.
+  const releaseInvitations = async () => {
+    for (const label of remove) await edit('--remove-label', label).catch(() => null);
+  };
+
+  if (await edit(...assignFlags, ...labelFlags).then(() => true, () => false)) {
+    await releaseInvitations();
+    return true;
+  }
 
   const assigned = await edit(...assignFlags)
     .then(() => true)
@@ -290,6 +315,7 @@ async function assignVolunteer(ctx, issueNumber, login) {
   await edit(...labelFlags).catch((err) => {
     console.error(`❌ issue-watcher: could not mark issue #${issueNumber} ${IN_PROGRESS_LABEL}: ${err.message}`);
   });
+  await releaseInvitations();
   return true;
 }
 

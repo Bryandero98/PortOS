@@ -373,6 +373,51 @@ export function formatContributorLabelReleaseCommands(issueRef, { cli = 'gh' } =
     : `gh issue edit ${issueRef} --remove-label ${shellQuote(label)} 2>/dev/null`));
 }
 
+/**
+ * The forge state a VOLUNTEER claim writes — one policy, shared by both paths
+ * that observe the same event (a human comment on an unassigned issue saying
+ * they intend to do the work): the issue-watcher's deterministic gather pass
+ * (`issueWatcher.js#assignVolunteer`) and the claim agent's Phase 1 handoff.
+ *
+ * A volunteer claim IS a claim: assignee + `in-progress` + the contributor
+ * invitations retired. `in-progress` is what the Issues tab hides on and what
+ * makes a volunteer-held issue read the same as an agent-held one, and the
+ * invitations are stale the moment somebody takes the work — the same reasoning
+ * `formatContributorLabelReleaseCommands` already encodes for an autonomous
+ * claim. Before this existed the two paths disagreed (the watcher stamped
+ * `in-progress` and left the invitations up; the prompt did the exact opposite),
+ * so which path ran first decided the resulting forge state.
+ *
+ * Returns plain label names, so a programmatic caller (`gh issue edit`, the
+ * GitLab equivalent) and a prompt renderer can share the decision without
+ * sharing a shell dialect. The assignee is NOT here — it is a login, not a
+ * label, and every caller already has it.
+ */
+export function volunteerClaimLabels() {
+  return { add: [IN_PROGRESS_LABEL], remove: [...CONTRIBUTOR_LABELS] };
+}
+
+/**
+ * `volunteerClaimLabels()` rendered as the shell text a claim prompt's handoff
+ * step runs, after it has verified the assignment. Ordered add-then-release so
+ * the issue is never momentarily un-advertised AND unclaimed.
+ *
+ * The `in-progress` add is preceded by its lazy `label create`: `--add-label`
+ * fails the WHOLE call on a repo that has never defined the label, which on a
+ * fresh fork would silently drop the marker. Every command is best-effort — a
+ * handoff whose assignment already landed must not abort on label bookkeeping.
+ *
+ * `issueRef` is inserted verbatim as shell text (e.g. `"${CANDIDATE}"`).
+ */
+export function formatVolunteerClaimCommands(issueRef, { cli = 'gh' } = {}) {
+  const { add } = volunteerClaimLabels();
+  const creates = add.map((label) => formatLabelCreateCommand(label, { cli })).filter(Boolean);
+  const adds = add.map((label) => (cli === 'glab'
+    ? `glab issue update ${issueRef} --label ${shellQuote(label)} 2>/dev/null`
+    : `gh issue edit ${issueRef} --add-label ${shellQuote(label)} 2>/dev/null`));
+  return [...creates, ...adds, ...formatContributorLabelReleaseCommands(issueRef, { cli })];
+}
+
 /** Dispatch hints + contributor labels for one GitHub/GitLab issue. */
 export function forgeIssueLabels({ model, effort, goodFirstIssue, helpWanted, planner } = {}) {
   return [
