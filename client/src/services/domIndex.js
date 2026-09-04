@@ -213,6 +213,11 @@ export const buildIndex = ({ includeText = false } = {}) => {
 
   for (const el of raw) {
     if (elements.length >= MAX_ELEMENTS) break;
+    // A control marked `exclude` never reaches the voice index at all — the
+    // one way to keep something out of it (issue #5907). Checked before
+    // classify/visibility so an excluded control costs nothing else below.
+    const guard = el.getAttribute('data-voice-guard');
+    if (guard === 'exclude') continue;
     const kind = classify(el);
     if (!kind) continue;
     if (!isVisible(el)) continue;
@@ -225,6 +230,10 @@ export const buildIndex = ({ includeText = false } = {}) => {
     el.setAttribute('data-voice-ref', String(ref));
 
     const entry = { ref, kind, label };
+    // Carried onto the entry so the server's confirmation gate can require
+    // confirmation for this control regardless of its label — see
+    // `requiresConfirmation` in confirmGate.js.
+    if (guard === 'confirm') entry.guard = 'confirm';
 
     if (kind === 'tab') {
       if (el.getAttribute('aria-selected') === 'true') entry.active = true;
