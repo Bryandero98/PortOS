@@ -56,6 +56,7 @@ const mocks = vi.hoisted(() => ({
     deleteModel: vi.fn(async (id) => ({ success: true, modelId: id })),
     getLoadedModels: vi.fn(async () => []),
     getLastLoadedModelsError: vi.fn(() => null),
+    getLastInstalledModelsError: vi.fn(() => null),
     getModelsDir: vi.fn(() => '/tmp/portos-ollama-models'),
     getStatus: vi.fn(async () => ({ available: true, baseUrl: 'x', version: '1', modelCount: 0, models: [] })),
     startServer: vi.fn(async () => ({ success: true, running: true })),
@@ -944,5 +945,35 @@ describe('localLlm', () => {
       expect(s.ollama.recommendations.editorial.id).toBe('gemma4:9b');
       expect(s.ollama.recommendations.editorial.ruledOutByMeasurement).toEqual(['qwen3.6:35b']);
     });
+  });
+});
+
+// Both managers cache an EMPTY array on a failed read rather than throwing, so
+// `[]` alone cannot say whether the backend has no models or could not be asked.
+// Callers that fall back to a stored list (the persistent-mind task catalog) and
+// callers that report the failure (the assessment report) both key on `error`.
+describe('listManagedBackendModels', () => {
+  it('reports a read backend with no models as a genuinely empty list', async () => {
+    mocks.ollama.getInstalledModels.mockResolvedValueOnce([]);
+    expect(await svc.listManagedBackendModels('ollama')).toEqual({ models: [], error: null });
+  });
+
+  it('separates an unreadable list from an empty one', async () => {
+    mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([]);
+    mocks.lmstudio.getLastListError.mockReturnValueOnce('LM Studio is unavailable');
+    expect(await svc.listManagedBackendModels('lmstudio'))
+      .toEqual({ models: [], error: 'LM Studio is unavailable' });
+  });
+
+  it('reports a listing that threw outright, with no models', async () => {
+    mocks.ollama.getInstalledModels.mockRejectedValueOnce(new Error('Ollama unreachable'));
+    expect(await svc.listManagedBackendModels('ollama'))
+      .toEqual({ models: null, error: 'Ollama unreachable' });
+  });
+
+  it('refuses an unknown backend rather than answering an empty catalog', async () => {
+    const result = await svc.listManagedBackendModels('not-a-backend');
+    expect(result.models).toBeNull();
+    expect(result.error).toMatch(/unknown backend/);
   });
 });

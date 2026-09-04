@@ -642,6 +642,31 @@ export async function listModels(backend, forceRefresh = false) {
 }
 
 /**
+ * `listModels` plus the sentinel that tells "no models installed" apart from
+ * "the list could not be read".
+ *
+ * Both managers cache an EMPTY array on a failed read rather than throwing, so
+ * `[]` alone is ambiguous — and collapsing an unreadable list into "this
+ * backend has no models" is exactly the failure the sentinel rule in AGENTS.md
+ * forbids. Each manager's own error getter is the authoritative signal, so a
+ * caller that must not treat a transient daemon outage as an empty catalog
+ * reads `error` and falls back to whatever it had before.
+ *
+ * @param {string} backend - 'ollama' | 'lmstudio'
+ * @returns {Promise<{ models: Array|null, error: string|null }>} `models: null`
+ *   means the listing was not readable.
+ */
+export async function listManagedBackendModels(backend, forceRefresh = false) {
+  if (!isBackend(backend)) return { models: null, error: `unknown backend '${backend}'` }
+  const models = await listModels(backend, forceRefresh).catch((err) => ({ error: err?.message || 'model list failed' }))
+  if (!Array.isArray(models)) return { models: null, error: models.error }
+  const error = backend === 'ollama'
+    ? ollamaManager.getLastInstalledModelsError()
+    : lmStudioManager.getLastListError()
+  return { models, error: error || null }
+}
+
+/**
  * Combined status for both backends plus the active marker.
  */
 export async function getStatus() {
