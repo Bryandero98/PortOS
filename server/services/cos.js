@@ -172,7 +172,11 @@ import {
   registerPersistentMindTurnAdapter,
   unregisterPersistentMindTurnAdapter,
 } from './persistentMindSupervisor.js';
-import { createPersistentMindTurnAdapter } from './persistentMindAdapter.js';
+// `./persistentMindAdapter.js` is imported lazily where the daemon registers the
+// adapter, NOT here. It pulls in the whole CoS tool registry — and through it the
+// voice tool surface, ask service and image-gen backends — a graph the daemon only
+// executes once it is actually running, but that a static edge instantiated in
+// every suite importing cos.js for an unrelated helper.
 
 export {
   getPersistentMindState,
@@ -512,6 +516,7 @@ async function runStart() {
   emitLog('info', 'Running initial task evaluation...');
   await evaluateTasks({ initialStartup: true });
   await runHealthCheck();
+  const { createPersistentMindTurnAdapter } = await import('./persistentMindAdapter.js');
   await registerPersistentMindTurnAdapter(createPersistentMindTurnAdapter());
   await initializePersistentMindSupervisor();
 

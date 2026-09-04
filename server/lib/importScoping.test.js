@@ -24,9 +24,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { dirname, join } from 'path';
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { staticImportClosure } from './staticImportGraph.js';
+import { staticImportClosure, staticImportSpecifiers } from './staticImportGraph.js';
 
 const SERVER_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -83,4 +84,161 @@ describe('narrowed imports stay narrow (#6009)', () => {
     expect(reaches('lib/editorial/checkRegistry.js', 'lib/editorial/checks/proseStyle.js')).toBe(true);
     expect(reaches('lib/db/schema/index.js', 'lib/db/schema/catalog.js')).toBe(true);
   });
+});
+
+/**
+ * Deferred imports (#6156).
+ *
+ * The other shape from the AGENTS.md section: not a constant reachable from a
+ * lighter module, but a dependency that only a run/boot path executes. #6009
+ * used it once (`ensureSchemaImpl`); these are the rest of the head of the
+ * distribution — the four heaviest remaining edges were all "imported at module
+ * scope, called only once a run is actually executing".
+ *
+ * Each row is asserted BOTH ways. The negative alone would also pass if someone
+ * deleted the call entirely, which is a different (and probably wrong) change
+ * than the one this row is defending; the positive pins the `await import()`
+ * that has to remain in its place.
+ */
+// [entry, target, why, specifier] — same first three columns as NARROWED above,
+// plus the specifier the call site must still name in its `await import()`.
+const DEFERRED = [
+  ['services/cos.js', 'services/persistentMindAdapter.js',
+    'is registered once at daemon start, but pulls the CoS tool registry, voice tools, ask service and image-gen backends',
+    './persistentMindAdapter.js'],
+  ['services/promptRunner.js', 'services/providerExecutionReadiness.js',
+    'runs readiness only on the TUI execution branch, not when a run is built or classified',
+    './providerExecutionReadiness.js'],
+  ['services/promptRunner.js', 'services/tuiPromptRunner.js',
+    'drags node-pty in through services/shell.js for a branch most promptRunner suites never take',
+    './tuiPromptRunner.js'],
+  ['services/settings.js', 'services/userActions.js',
+    'makes one ledger write reaching the DB layer, from a module nearly every service imports',
+    './userActions.js'],
+  ['services/runner.js', 'services/ollamaAgentContext.js',
+    'needs the daemon manager only for an ollama-backed CLI run; the call was already predicate-gated',
+    './ollamaAgentContext.js'],
+];
+
+describe('deferred imports stay deferred (#6156)', () => {
+  it.each(DEFERRED)('%s no longer statically reaches %s — it %s', (entry, target) => {
+    expect(reaches(entry, target)).toBe(false);
+  });
+
+  it.each(DEFERRED)('%s still lazily imports %s at its call site', (entry, target, why, specifier) => {
+    const src = readFileSync(abs(entry), 'utf-8');
+    expect(
+      src.includes(`import('${specifier}')`),
+      `${entry} no longer contains a dynamic import('${specifier}'). If ${target} is genuinely unused now, delete this row — do not restore a static import.`,
+    ).toBe(true);
+  });
+
+  // Positive control, mirroring the one above: these targets are real modules
+  // with real graphs, so a resolver gap can't be what makes the negatives pass.
+  it('still sees the deferred modules from their own entry points', () => {
+    expect(reaches('services/persistentMindAdapter.js', 'services/cosToolRegistry.js')).toBe(true);
+    expect(reaches('services/tuiPromptRunner.js', 'services/shell.js')).toBe(true);
+  });
+});
+
+/**
+ * The trend metric, as a budget.
+ *
+ * The rows above are exact: each defends one edge. This defends the property
+ * they exist for — that the suite as a whole does not drift back toward
+ * importing what it never runs — and it is the only assertion here that catches
+ * a NEW heavy edge somewhere nobody has thought to add a row for.
+ *
+ * It is a budget, not a high-water mark. It sits ~1.5k above the measured total
+ * so ordinary growth (a new service plus its suite) does not fail it, while the
+ * shape this file exists to catch — one eager edge into a heavy subtree,
+ * multiplied by every suite crossing it — moves the number by thousands.
+ *
+ * If a change pushes past it, first ask whether the new import belongs at module
+ * scope at all. If it does, raise the number in the same commit and say what was
+ * added. When a narrowing drops the total well below it, lower it — a budget
+ * nobody tightens stops measuring anything.
+ *
+ * History, over the test files under `server/` only — the same denominator
+ * #6009 reported, and what `serverTestFiles()` below walks:
+ *   115,519 before #6009 · 96,233 after · 83,439 after #6156.
+ */
+const MAX_STATIC_INSTANTIATIONS = 85000;
+
+const SKIP_DIRS = new Set(['node_modules', 'coverage', 'dist', 'data']);
+const serverTestFiles = (dir = SERVER_DIR, out = []) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+      serverTestFiles(join(dir, entry.name), out);
+    } else if (entry.name.endsWith('.test.js')) {
+      out.push(join(dir, entry.name));
+    }
+  }
+  return out;
+};
+
+/**
+ * `staticImportClosure` re-reads and re-parses every module it walks, so calling
+ * it once per suite re-parses widely-shared modules thousands of times. That is
+ * fine for the handful of single-entry assertions above and far too slow here:
+ * ~1,600 entries took 18s on a CI runner and blew the 10s testTimeout.
+ *
+ * Same walk, with the per-file specifier list memoized across entries. The
+ * agreement test below pins it to the shared implementation so the two cannot
+ * drift into measuring different things.
+ */
+const depsCache = new Map();
+const resolvedDeps = (file) => {
+  const cached = depsCache.get(file);
+  if (cached) return cached;
+  const deps = [...new Set(
+    staticImportSpecifiers(file)
+      .filter((spec) => spec.startsWith('.'))
+      .map((spec) => resolve(dirname(file), spec))
+      .filter((path) => existsSync(path)),
+  )];
+  depsCache.set(file, deps);
+  return deps;
+};
+
+const closureSize = (entry) => {
+  const seen = new Set();
+  const stack = [entry];
+  while (stack.length) {
+    const file = stack.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const dep of resolvedDeps(file)) if (!seen.has(dep)) stack.push(dep);
+  }
+  return seen.size;
+};
+
+describe('server suite import budget (#6156)', () => {
+  it('memoized closure walk agrees with staticImportClosure', () => {
+    // A spread of entry points: two modules this PR touched, one heavy suite,
+    // and a leaf. If the shared parser gains a specifier shape this walk does
+    // not follow (or vice versa), these diverge.
+    for (const sample of ['lib/db.js', 'lib/pipelineValidation.js', 'services/agentManagement.test.js', 'lib/editorial/checkInfra/taxonomy.js']) {
+      expect(closureSize(abs(sample)), sample).toBe(staticImportClosure(abs(sample)).files.size);
+    }
+  });
+
+  // Explicit timeout: this walks every server test file, which is inherently
+  // more work than a unit test and runs on a shared CI runner. The memoized
+  // walk brings it to ~1s locally, but the default 10s leaves no margin for a
+  // slow or contended runner — and a timeout here reads as a budget failure,
+  // which is exactly the wrong diagnosis.
+  it(`stays under ${MAX_STATIC_INSTANTIATIONS.toLocaleString()} static module instantiations`, () => {
+    const files = serverTestFiles();
+    // Guards the walk itself: an empty or tiny list would make the budget pass
+    // vacuously, the same failure mode the positive controls above defend.
+    expect(files.length, 'found almost no test files — the walk above is broken').toBeGreaterThan(1000);
+
+    const total = files.reduce((sum, file) => sum + closureSize(file), 0);
+    expect(
+      total,
+      `Static module instantiations across the server suite rose to ${total.toLocaleString()}. Something added an eager import into a heavy subtree from a widely-reached module — narrow it, defer it with a call-site await import(), or raise the budget deliberately. See the "Import scoping" section of server/AGENTS.md.`,
+    ).toBeLessThanOrEqual(MAX_STATIC_INSTANTIATIONS);
+  }, 60_000);
 });
