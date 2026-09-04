@@ -3622,6 +3622,91 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
       expect(skipped).not.toContain('multi-reviewer-loop');
     });
   });
+
+  // slashdo puts an explicit `--review-with` above every saved or inherited
+  // default (lib/review-config-defaults.md), and PortOS passes `slashdoArgs`
+  // through verbatim — so the flag in the invocation is what the run WILL use.
+  // Pruning the body (or pinning a reviewer) from task metadata instead is how a
+  // prompt requests one reviewer, omits its loop, and names another. #6261.
+  describe('an explicit --review-with in slashdoArgs', () => {
+    const skipArg = () => vi.mocked(loadSlashdoFile).mock.calls.at(-1)[1].skipIncludes;
+
+    it('prunes for the explicit flag, not for the task metadata behind it', async () => {
+      const prompt = await buildAgentPrompt(
+        slashdoTask({ slashdoArgs: '--review-with ollama', reviewers: ['codex'] }),
+        {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      const skipped = skipArg();
+      // The reviewer the run will actually invoke keeps its loop…
+      expect(skipped).not.toContain('ollama-review-loop');
+      // …and the metadata reviewer's is what drops out.
+      expect(skipped).toContain('local-agent-review-loop');
+      // Naming codex here would tell the agent to use a reviewer whose loop was
+      // just pruned away.
+      expect(prompt).not.toContain('--review-with codex');
+    });
+
+    it('preserves an explicit `none` opt-out inherited from Code Review Defaults', async () => {
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({ reviewers: ['codex'] });
+      const prompt = await buildAgentPrompt(
+        slashdoTask({ slashdoArgs: '--review-with none' }), {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(prompt).toContain('--review-with none');
+      // `none` sets REVIEW_AGENTS=[] with no fallback, so no loop is reachable.
+      expect(skipArg()).toEqual(expect.arrayContaining([
+        'copilot-review-loop', 'github-reviewer-loop', 'local-agent-review-loop',
+        'ollama-review-loop', 'multi-reviewer-loop',
+      ]));
+      expect(prompt).not.toContain('--review-with codex');
+    });
+
+    it('states each suffix exactly once — in the invocation, not again as a pin', async () => {
+      const args = '--review-with agy[gemini-3.8-flash]~opt~max=1~effort=medium';
+      const prompt = await buildAgentPrompt(
+        // The metadata names a DIFFERENT loop variant, so a metadata-derived pin
+        // would both prune away agy's loop and add a second set of suffixes.
+        slashdoTask({ slashdoArgs: args, reviewers: ['ollama'], reviewerEfforts: { ollama: 'high' } }),
+        {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(prompt).not.toContain('--review-with ollama');
+      expect(skipArg()).not.toContain('local-agent-review-loop');
+      expect(prompt.split('~effort=').length - 1).toBe(1);
+      expect(prompt.split('~max=').length - 1).toBe(1);
+      expect(prompt.split('~opt').length - 1).toBe(1);
+    });
+
+    it('reads the equals form the same as the spaced one', async () => {
+      const prompt = await buildAgentPrompt(
+        slashdoTask({ slashdoArgs: '--review-with=ollama', reviewers: ['codex'] }),
+        {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(skipArg()).not.toContain('ollama-review-loop');
+      expect(skipArg()).toContain('local-agent-review-loop');
+      expect(prompt).not.toContain('--review-with codex');
+    });
+
+    it('prunes and pins NOTHING when the explicit value cannot be safely read', async () => {
+      vi.mocked(getCodeReviewDefaults).mockResolvedValue({ reviewers: ['codex'] });
+      const prompt = await buildAgentPrompt(
+        // A slug outside the grammar PortOS mirrors: guessing which loop it needs
+        // is how the run loses the one it reaches.
+        slashdoTask({ slashdoArgs: '--review-with some-future-reviewer' }),
+        {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(skipArg()).toEqual([]);
+      expect(prompt).toContain('--review-with some-future-reviewer');
+      expect(prompt).not.toContain('--review-with codex');
+    });
+
+    it('leaves the metadata contract in charge when the args name no reviewer', async () => {
+      const prompt = await buildAgentPrompt(
+        slashdoTask({ slashdoArgs: '--issues 42', reviewers: ['codex'] }),
+        {}, '/r', null, isTruthyMeta,
+        { providerType: 'cli', providerId: 'codex' });
+      expect(prompt).toContain('--review-with codex');
+      expect(skipArg()).toContain('copilot-review-loop');
+    });
+  });
 });
 
 describe('getAppWorkspace — tilde expansion (#3180)', () => {
