@@ -93,10 +93,14 @@ const PROVIDER_SIGNAL_POLL_MS = 5000;
 // The filename is per agent instance — see doneSentinelName in ../lib/agentSentinel.js.
 
 /**
- * Thin wrapper around `shellService.createShellSession` for the agent TUI
- * path. Centralizes the agent-side defaults (kind, label, initialCommand)
- * and pairs the returned session id with its underlying pty process so
- * callers don't have to make a second `getSessionProcess` call inline.
+ * Open the agent TUI's PTY and pair the returned session id with its underlying
+ * pty process, so callers don't have to make a second `getSessionProcess` call
+ * inline. Centralizes the agent-side defaults (kind, label, initialCommand).
+ *
+ * Three shapes, in the order they are checked: the CoS runner's own PTY; a
+ * DIRECT PTY running the provider binary itself (public-content stages only —
+ * see the `restricted` branch); and otherwise an interactive login shell with
+ * the CLI command typed into it.
  *
  * Returns `{ sessionId, ptyProcess, pid }`. When the shell service fails
  * to create the session, `sessionId` is null and the caller is expected
@@ -121,19 +125,15 @@ export async function createAgentTuiSession({
   // A public-content stage's PTY starts from the SAME environment its headless
   // sibling gets — no forge credential, no SSH config, no cloud key, no
   // arbitrary provider var — so it calls the very builder the headless path
-  // uses rather than re-deriving the profile→allowlist mapping here. The result
-  // is a COMPLETE environment, not the delta `createShellSession` normally
-  // takes: the shell service unions a delta onto `buildSafeEnv(process.env)`,
-  // which would restore everything the allowlist just withheld, hence
-  // `envReplace` below.
+  // uses rather than re-deriving the profile→allowlist mapping here.
   //
-  // KNOWN RESIDUAL (tracked separately, see #6159): this path hosts the CLI inside an
-  // interactive login shell, so the operator's own rc file runs before the
-  // provider does and can re-export anything it likes. That is not a hole this
-  // allowlist can close — closing it means spawning the recipe command as the
-  // PTY directly, the way the runner's `/spawn-tui` already does. What the
-  // allowlist DOES close is the server's own process environment, which is
-  // where a newly-added PortOS secret would otherwise appear for free.
+  // The two branches produce DIFFERENT KINDS of value, which is why they route
+  // to different spawn entry points below. `buildCliChildEnv` returns a COMPLETE
+  // environment, so a restricted stage goes to `spawnCommandSession`, which
+  // unions nothing underneath it — and which is also what removes the login
+  // shell, so the operator's rc file can no longer run between this allowlist
+  // and the provider and re-export whatever it likes (#6159). The ordinary
+  // branch is a DELTA: `createShellSession` unions it onto `buildSafeEnv`.
   const env = restricted
     ? buildCliChildEnv({ before: forgeTokenEnv, provider, model, cwd, guard: true, safetyProfile })
     : { ...composeProviderEnv({ before: forgeTokenEnv, provider, model }), ...agentGuardEnv() };
@@ -174,6 +174,36 @@ export async function createAgentTuiSession({
     return session;
   }
 
+  if (restricted) {
+    // Launch the vendor recipe AS the PTY — no hosting shell, so no rc file runs
+    // between the allowlist above and the provider (#6159). Same shape the
+    // runner's `/spawn-tui` uses; `env` is already the COMPLETE environment, and
+    // `spawnCommandSession` unions nothing underneath it.
+    //
+    // The login shell's two handshake affordances go with it. `waitForPromptReady`
+    // probed a shell that no longer exists — the CLI is the first thing to run, so
+    // there is nothing to wait for; the readiness gate opens here, before the
+    // spawn, exactly as the runner branch above opens it, so the TUI's first
+    // bracketed-paste/input-ready bytes are not discarded. `exitWithCommand` was
+    // emulating "the session ends when the CLI ends", which is now simply true:
+    // the PTY's own exit IS the CLI's, carrying its status and any signal
+    // straight to `onExit`.
+    onInitialCommandSent?.();
+    const sessionId = shellService.spawnCommandSession(tuiConfig.command, tuiConfig.args, {
+      cwd,
+      env,
+      kind: 'agent-tui',
+      agentId,
+      label: `${provider.name} ${agentId}`,
+      command: tuiConfig.commandLine,
+      onData,
+      onExit,
+    });
+    if (!sessionId) return { sessionId: null, ptyProcess: null, pid: null };
+    const ptyProcess = shellService.getSessionProcess(sessionId);
+    return { sessionId, ptyProcess, pid: ptyProcess?.pid || null };
+  }
+
   // This shell exists only to host the CoS TUI. `exitWithCommand` makes it
   // follow the TUI's lifetime and preserve the TUI exit status; otherwise the
   // login shell returns to its prompt when the provider exits and the spawner
@@ -210,9 +240,6 @@ export async function createAgentTuiSession({
     // whose real base env is assembled downstream. Only AI agent sessions get
     // the shim; the user's own Shell page does not.
     env,
-    // …except under a public-content posture, where `env` above is not a delta
-    // at all but the complete, allowlisted environment (see its construction).
-    envReplace: restricted,
     onData,
     onExit,
   });
@@ -305,7 +332,7 @@ function createPasteRetryController({
   agentId,
   sessionId,
   pid,
-  useDurableRunner,
+  directLaunch,
   prompt,
   tuiConfig,
   mcpBoot,
@@ -397,11 +424,12 @@ function createPasteRetryController({
     // `^[[200~ …` session. If the shell has no live child, the command is gone:
     // fail loudly with whatever it printed instead of pasting into the shell.
     //
-    // Runner mode has no launch shell — the TUI IS the PTY process — so "does
-    // this pid have a live child?" is the wrong question (claude may have zero
-    // children at paste time) and a TUI exit kills the PTY, firing onExit. Skip
-    // the probe there.
-    if (!useDurableRunner && !(await shellHasLiveChild(pid))) {
+    // A direct launch — runner mode, or a public-content stage spawned as its
+    // own PTY (#6159) — has no launch shell: the TUI IS the PTY process. "Does
+    // this pid have a live child?" is then the wrong question (claude may have
+    // zero children at paste time) and a TUI exit kills the PTY, firing onExit.
+    // Skip the probe there.
+    if (!directLaunch && !(await shellHasLiveChild(pid))) {
       if (isFinalized()) return; // a real onExit may have finalized during the probe await
       await finishStartupFailure(
         'tui-exited-early',
@@ -622,6 +650,17 @@ export async function spawnTuiAgent({
   // gets the same allowlisted environment its headless sibling would.
   safetyProfile = null,
 }) {
+  // Will this run's PTY BE the provider binary, rather than a login shell with
+  // the command typed into it? True for the CoS runner's own PTY and for a
+  // public-content stage, which drops the shell so the operator's rc file can't
+  // run inside its allowlisted environment (#6159). Both cases are settled by
+  // createAgentTuiSession — a restricted stage never reaches the runner (it
+  // throws) — but the handshake below is wired before the spawn, so the same
+  // predicate is resolved here. Two things read it: the input-ready tracker
+  // (nothing toggles shell paste-mode off when there is no shell) and the paste
+  // liveness guard ("does this pid have a live child?" is meaningless when the
+  // pid IS the CLI).
+  const directLaunch = useDurableRunner || isPublicReviewRestrictedProfile(safetyProfile);
   const outputFile = join(agentDir, 'output.txt');
   // Raw PTY bytes spool to disk continuously rather than accumulate in-memory.
   // A chatty TUI (token-tick repaints, status lines) emits hundreds of chunks
@@ -747,11 +786,11 @@ export async function spawnTuiAgent({
   // paste into a startup banner, a trust menu, or a returned shell prompt.
   // agy enables bracketed paste on alt-screen entry, before its composer (and
   // before its trust gate) exists, so it needs the extra composer-footer gate.
-  // The durable runner pty.spawns the TUI directly (no launch shell), so the
-  // tracker must not wait for a shell paste-mode OFF that will never come.
+  // A direct launch pty.spawns the TUI itself (no launch shell), so the tracker
+  // must not wait for a shell paste-mode OFF that will never come.
   const inputReady = createInputReadyTracker({
     ...(isAntigravityCommand(tuiConfig.command) ? { readyTextPattern: AGY_INPUT_READY_PATTERN } : {}),
-    directLaunch: useDurableRunner,
+    directLaunch,
   });
   let trustAccepted = false;
   let autoModeDeclined = false;
@@ -1398,17 +1437,23 @@ export async function spawnTuiAgent({
     // record as a completed run. finish() intercepts that case — see its
     // host-shutdown guard (#3202).
     const code = typeof exitCode === 'number' ? exitCode : killed ? 130 : 0;
-    // A signal-terminated shell reports the wait-status exit code — 0 for a
+    // A signal-terminated process reports the wait-status exit code — 0 for a
     // plain SIGTERM/SIGHUP — so `code === 0` alone cannot mean "finished
     // normally". Treat any signal as an abnormal end. This is the backstop for
     // the case the host-shutdown guard can't cover: a SIGKILL'd or crashed
     // portos-server never runs its shutdown handler, so the flag is never set,
     // yet the agent's PTY still dies with us (#3202).
+    //
+    // The reading holds for BOTH session shapes. A login shell carried its
+    // hosted CLI's status out via the run-then-exit wrapper; a direct PTY
+    // (#6159) simply IS the CLI, so the code and signal are the CLI's own. The
+    // `shell-*` reason codes are what COMPLETION_REASON_ANALYSES registers, so
+    // they stay verbatim — only the prose drops the now-wrong noun.
     const signaled = !!signal;
     const outcome = killed
-      ? { error: 'TUI shell session was killed', reason: 'shell-killed' }
+      ? { error: 'TUI session was killed', reason: 'shell-killed' }
       : signaled
-        ? { error: `TUI shell session was terminated by signal ${signal} — the run was cut short, not completed`, reason: 'shell-signaled' }
+        ? { error: `TUI session was terminated by signal ${signal} — the run was cut short, not completed`, reason: 'shell-signaled' }
         : { error: null, reason: 'shell-exit' };
     await finish({ success: code === 0 && !killed && !signaled, exitCode: code, ...outcome });
   };
@@ -1476,7 +1521,13 @@ export async function spawnTuiAgent({
     // PTY. Distinguish that deterministic configuration failure from a runner
     // outage/refusal so it is blocked with the existing actionable
     // command-not-found guidance rather than retried as a transient rejection.
-    const reason = useDurableRunner && /^Command executable unavailable:/i.test(message)
+    //
+    // A LOCAL direct PTY has the same deterministic failure but reports it
+    // differently: node-pty throws `File not found: <cmd>` rather than opening a
+    // PTY (#6159). The login-shell path never threw here — its shell opened
+    // fine and PRINTED "command not found", which handleData classifies — so
+    // without this the same misconfiguration would be filed as a host problem.
+    const reason = /^Command executable unavailable:/i.test(message) || /file not found/i.test(message)
       ? 'command-not-found'
       : useDurableRunner ? 'spawn-rejected' : 'spawn-error';
     if (useDurableRunner) {
@@ -1614,7 +1665,7 @@ export async function spawnTuiAgent({
     agentId,
     sessionId,
     pid,
-    useDurableRunner,
+    directLaunch,
     prompt,
     tuiConfig,
     mcpBoot,

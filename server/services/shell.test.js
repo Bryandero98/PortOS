@@ -544,6 +544,95 @@ describe('changeSessionDirectory', () => {
   });
 });
 
+describe('spawnCommandSession', () => {
+  it('spawns the command itself as the PTY, so no rc file runs before it (#6159)', () => {
+    // The whole point of this entry point: a public-content review stage's
+    // environment is an allowlist, and an interactive login shell would run the
+    // operator's `.zshrc` between that allowlist and the provider. Asserting
+    // WHICH process the PTY is, is what proves no rc file can execute.
+    const id = shell.spawnCommandSession('claude', ['--permission-mode', 'plan'], {
+      cwd: '/tmp/ws',
+      env: { PATH: '/usr/bin', HOME: '/home/example' },
+      kind: 'agent-tui',
+      agentId: 'agent-1',
+    });
+
+    expect(typeof id).toBe('string');
+    const [spawnedCommand, spawnedArgs] = vi.mocked(defaultSpawn).mock.calls[0];
+    expect(spawnedCommand).toBe('claude');
+    expect(spawnedArgs).toEqual(['--permission-mode', 'plan']);
+    // No shell binary anywhere in the launch, and no shell recorded on the
+    // session (which is what `changeSessionDirectory` reads).
+    expect(spawnedCommand).not.toMatch(/sh$|zsh$|bash$|cmd\.exe$/i);
+    expect(shell.getSession(id).shell).toBeNull();
+  });
+
+  it('hands the child EXACTLY the caller env — buildSafeEnv is not unioned underneath', () => {
+    // createShellSession unions buildSafeEnv(process.env) under its delta. Doing
+    // that here would restore every inherited variable the caller's allowlist
+    // just withheld, which is the regression this guards.
+    process.env.PORTOS_TEST_6159_SECRET = 'must-not-reach-the-child';
+    try {
+      shell.spawnCommandSession('claude', [], {
+        cwd: '/tmp/ws',
+        env: { PATH: '/usr/bin', HOME: '/home/example' },
+      });
+      const { env } = vi.mocked(defaultSpawn).mock.calls[0][2];
+      expect(env.PORTOS_TEST_6159_SECRET).toBeUndefined();
+      expect(env.PATH).toBe('/usr/bin');
+      // PWD is pinned to the spawn cwd for the CLIs that read it (#3193).
+      expect(env.PWD).toBe('/tmp/ws');
+      expect(env.TERM).toBe('xterm-256color');
+    } finally {
+      delete process.env.PORTOS_TEST_6159_SECRET;
+    }
+  });
+
+  it('registers an attachable session whose onData/onExit hooks fire like a shell session’s', () => {
+    const onData = vi.fn();
+    const onExit = vi.fn();
+    const observer = makeSocket('obs-direct');
+    const id = shell.spawnCommandSession('claude', [], {
+      cwd: '/tmp/ws',
+      env: { PATH: '/usr/bin' },
+      kind: 'agent-tui',
+      agentId: 'agent-1',
+      label: 'Local Claude TUI agent-1',
+      command: 'claude',
+      onData,
+      onExit,
+    });
+    shell.attachSession(id, observer);
+
+    ptyInstances[0].emitData('hello');
+    expect(observer.emit).toHaveBeenCalledWith('shell:output', { sessionId: id, data: 'hello' });
+
+    // The CLI's own exit IS the session's exit now — code and signal reach the
+    // hook unchanged, which is what handleExit's success reading depends on.
+    ptyInstances[0].emitExit({ exitCode: 3, signal: null });
+    return flushMicrotasks().then(() => {
+      expect(onData).toHaveBeenCalledWith('hello');
+      expect(onExit).toHaveBeenCalledWith({ exitCode: 3, signal: null });
+      expect(shell.getSession(id)).toBeNull();
+    });
+  });
+
+  it('refuses a cd rather than typing it into the agent', () => {
+    // Same reasoning as an external TUI run: there is no shell reading that line.
+    const id = shell.spawnCommandSession('claude', [], { cwd: '/tmp/ws', env: { PATH: '/usr/bin' } });
+    expect(shell.changeSessionDirectory(id, '/tmp/other')).toBe(false);
+    expect(ptyInstances[0].write).not.toHaveBeenCalled();
+  });
+
+  it('propagates a PTY that will not open instead of collapsing it to null', () => {
+    // node-pty reports a missing executable by throwing; the message is the only
+    // evidence the spawner has for classifying it as command-not-found.
+    spawnImpl = () => { throw new Error('File not found: claude'); };
+    expect(() => shell.spawnCommandSession('claude', [], { cwd: '/tmp/ws', env: {} }))
+      .toThrow(/File not found/);
+  });
+});
+
 describe('initialCommand + exitWithCommand', () => {
   it('wraps the command so the shell exits with it, in that shell\'s dialect', () => {
     // The wrapper is rendered here rather than by the caller because only this
