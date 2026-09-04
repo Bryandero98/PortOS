@@ -2,7 +2,7 @@
 
 How PortOS notices a new release and updates itself. PortOS is distributed software — many people run it, and a large share run it from a **personal fork**, so every step here is fork-aware. Breaking that assumption produces silent no-op updates.
 
-Code: `server/services/updateChecker.js`, `server/services/updateExecutor.js`, `server/services/appUpdater.js`, `server/routes/update.js`, `server/lib/gitRemote.js`, `server/lib/detachedSpawn.js`, `update.sh` / `update.ps1`, `scripts/verify-server-health.js`, `client/src/components/apps/tabs/UpdateTab.jsx`.
+Code: `server/services/updateChecker.js`, `server/services/portosSelfUpdate.js`, `server/services/updateExecutor.js`, `server/services/appUpdater.js`, `server/routes/update.js`, `server/lib/gitRemote.js`, `server/lib/detachedSpawn.js`, `update.sh` / `update.ps1`, `scripts/verify-server-health.js`, `client/src/components/apps/tabs/UpdateTab.jsx`, `client/src/hooks/usePortosRestartWatch.js`, `client/src/hooks/useAppOperation.js`.
 
 ## Release polling always targets upstream
 
@@ -69,9 +69,27 @@ To prevent that confusion, `POST /api/update/execute` rejects fork runs with **4
 
 `update.sh` deletes and restarts every PortOS PM2 entry. PM2's TreeKill walks **PPID**, so a script left attached to `portos-server` is killed by its own `pm2 delete` step — mid-list, before it can run the closing `pm2 start` — and the install is left headless. `spawnDetached`'s double-fork (`server/lib/detachedSpawn.js`) is what reparents the script to init so it survives; `executeUpdate()` in `server/services/updateExecutor.js` is the single launcher that applies it, along with the `STEP:` progress parsing, the still-running-script guard, and `recordUpdateResult()`.
 
-**PortOS is also a managed app**, so an update started from **App Management** reaches `update.sh` through `appUpdater.js` rather than `routes/update.js`. That path delegates to `executeUpdate()` for the PortOS record instead of spawning the script itself — a second detached-spawn implementation would be one more thing to keep in sync, and the attached one it replaced produced exactly the headless failure above (#5976). `appUpdater` also **skips its own `restart` step** for that case: the script runs `pm2 start ecosystem.config.cjs` itself, so restarting on top of it would be redundant and would race the script.
+**PortOS is also a managed app**, so an update started from **App Management**'s Git tab reaches `update.sh` through `appUpdater.js` rather than `routes/update.js`. Both entry points call the same `startPortosSelfUpdate()` (`server/services/portosSelfUpdate.js`), which owns the whole lifecycle: the preflight refusals, the atomic `setUpdateInProgress(true)` lock, the post-lock re-check, and the `executeUpdate()` launch. They differ only in `mode`:
 
-Both entry points take the same atomic `setUpdateInProgress(true)` lock before launching, so they cannot run `update.sh` concurrently — and because that flag is what `subAgentSpawner`, `agentLifecycle` and `persistentMindSupervisor` gate on, holding it also stops a CoS agent from being spawned into a process the script is about to `pm2 delete` (#4124).
+| Surface | Mode | Gate |
+|---|---|---|
+| Update page — "Update Now" | `release` | needs a newer release tag |
+| Update page — "Reconcile Now" | `reconcile` | needs `installState.outOfSync` |
+| App Management — "Update app" | `refresh` | none; the caller has already advanced the checkout onto its origin default branch |
+
+`refresh` exists because App Management moves HEAD before handing off. Gating it on out-of-sync would only re-ask whether the pull it just did happened — and that same pull makes `update.sh`'s own `git pull` a no-op, so the script's commit-diff dependency detection sees nothing. The launcher therefore passes `installState`'s stale workspaces through as `forceCleanWorkspaces` for both non-release modes, which is what keeps deps from surviving the update (#1779).
+
+The socket path runs `checkPortosUpdatePreflight` itself before it pulls — a refusal must land before the checkout moves, and its `code` is what the panel's acknowledge-and-retry buttons key on — then passes `preflightAlreadyRun` so the launcher reads a fresh `getUpdateStatus()` (post-pull, for the stale workspaces) without re-running guards that already answered. The post-lock re-check is authoritative for both callers either way.
+
+Because the lock is taken in one place, the two entry points cannot run `update.sh` concurrently — and because that flag is what `subAgentSpawner`, `agentLifecycle` and `persistentMindSupervisor` gate on, holding it also stops a CoS agent from being spawned into a process the script is about to `pm2 delete` (#4124).
+
+`appUpdater` also **skips its own `restart` step** for that case: the script runs `pm2 start ecosystem.config.cjs` itself, so restarting on top of it would be redundant and would race the script.
+
+### Nothing awaits the script, on either side
+
+`startPortosSelfUpdate()` resolves as soon as the detached script is RUNNING. It cannot report the outcome, because `update.sh` `pm2 delete`s this server partway through and the process awaiting it dies there — an awaited launch simply never runs its own completion code. The Git tab used to await it, which is why it hung: `app:update:complete` never fired, the operation was never cleared, and the row sat on "Stopping PortOS apps..." forever while the update finished fine in the background. So `appUpdater` returns `{ selfUpdateStarted: true }` at the launch, and `server/sockets/apps.js` deliberately **leaves the operation registered** and emits no completion — the map dies with the process, and the remaining `STEP:` frames keep rendering right up to the moment the server goes down.
+
+The client half of that contract is `usePortosRestartWatch` (`client/src/hooks/usePortosRestartWatch.js`). **App Management surfaces do not wire it themselves** — `useAppOperation` owns it and exposes `restarting`, so every caller of `startUpdate` inherits the baseline capture and the restart detection and a new surface cannot regress to the hang by forgetting them. The Update page, which does not go through an app operation, uses the hook directly. It arms on the update stream's `restart` step, on `portos:update:complete`, or on a socket `disconnect` **confirmed unreachable** (a raw disconnect is not proof — PortOS is commonly used remotely over Tailscale, and a network blip fires one too). Once armed it polls `/api/system/health` and reloads on a version change, a down→up dip, or an uptime reset below the pre-update peak — three signals, because a reconcile often lands the same version and its restart can be too fast to sample the down window.
 
 A PortOS record carrying a custom `updateCommand`, or a `repoPath` that is not this checkout, keeps the ordinary attached path — delegating there would silently run `update.sh` instead of the configured command. That decision is logged rather than silent, since the attached path is the one that failed. The `repoPath` comparison resolves symlinks and case-folds on macOS/Windows: `repoPath` is user-editable and not force-synced, so a trailing slash or a different spelling must not be mistaken for a different checkout. Non-PortOS managed apps are unaffected and still get their own PM2 restart from `appUpdater`. The dashboard handoff it starts before that restart is PortOS-only — it opens the PortOS dashboard, so it would be meaningless after another app's update.
 

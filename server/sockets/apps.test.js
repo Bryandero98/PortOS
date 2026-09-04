@@ -34,7 +34,7 @@ import * as appsService from '../services/apps.js';
 import * as appUpdater from '../services/appUpdater.js';
 import * as pm2Standardizer from '../services/pm2Standardizer.js';
 import { logAction } from '../services/history.js';
-import { registerAppHandlers } from '../sockets/apps.js';
+import { __resetAppOperations, registerAppHandlers } from '../sockets/apps.js';
 
 // Two app records pointing at ONE checkout — the case app id alone can't catch.
 const APPS = {
@@ -202,6 +202,63 @@ describe('app socket handlers', () => {
     });
   });
 
+  describe('PortOS self-update handoff', () => {
+    it('keeps the operation live and reports no completion once update.sh owns the restart', async () => {
+      // update.sh pm2-deletes THIS process partway through, so appUpdater
+      // returns as soon as the detached script is launched. Reporting the
+      // operation "complete" here would clear the Git tab's progress row while
+      // the script is still running, and clearing the operation would drop the
+      // remaining STEP: frames on the floor — which is the "Stopping PortOS
+      // apps..." freeze this handoff exists to fix.
+      appUpdater.updateApp.mockResolvedValue({
+        success: true,
+        selfUpdateStarted: true,
+        steps: [{ step: 'git-pull', success: true }, { step: 'app-update', success: true }],
+      });
+      const client = connect(bus);
+
+      await client.fire('app:update', { appId: 'app-a' });
+
+      expect(client.events('app:update:complete')).toHaveLength(0);
+      expect(client.events('app:update:error')).toHaveLength(0);
+      // The launch itself succeeded, so the ledger records it rather than
+      // waiting for a completion that will never arrive.
+      expect(logAction).toHaveBeenCalledWith(
+        'update', 'app-a', 'Example App A',
+        { steps: [{ step: 'git-pull', success: true }, { step: 'app-update', success: true }] },
+        true, null,
+      );
+      expect(client.last('app:operations:active').payload.operations).toMatchObject([
+        { appId: 'app-a', type: 'update' },
+      ]);
+
+      // Nothing ends this operation in production either — the process is
+      // replaced. Without a process boundary the module state would leak into
+      // every later test in the file.
+      __resetAppOperations();
+    });
+
+    it('threads the PortOS preflight acknowledgements into the updater', async () => {
+      // The launcher re-checks the image guard after taking the lock, so an
+      // acknowledgement the user opted into here has to reach it or the retry
+      // refuses again on the very guard they just acknowledged.
+      appUpdater.updateApp.mockResolvedValue({ success: true, steps: [] });
+      const client = connect(bus);
+
+      await client.fire('app:update', {
+        appId: 'app-a',
+        acknowledgeFork: true,
+        acknowledgePersistentMindImageBackup: true,
+      });
+
+      expect(appUpdater.updateApp).toHaveBeenCalledWith(
+        APPS['app-a'],
+        expect.any(Function),
+        { syncFork: false, acknowledgeFork: true, acknowledgePersistentMindImageBackup: true },
+      );
+    });
+  });
+
   describe('failure recovery', () => {
     it('records a failed update in the ledger, broadcasts the change, and clears the operation', async () => {
       appUpdater.updateApp.mockRejectedValue(new Error('git pull failed'));
@@ -209,7 +266,9 @@ describe('app socket handlers', () => {
 
       await client.fire('app:update', { appId: 'app-a' });
 
-      expect(client.last('app:update:error').payload).toEqual({ appId: 'app-a', message: 'git pull failed' });
+      // `code` is always on the envelope — null for a plain failure, set for a
+      // refusal the panel can offer an acknowledgement for.
+      expect(client.last('app:update:error').payload).toEqual({ appId: 'app-a', code: null, message: 'git pull failed' });
       // A thrown update still gets a history row rather than vanishing from it.
       expect(logAction).toHaveBeenCalledWith('update', 'app-a', 'Example App A', { steps: [] }, false, 'git pull failed');
       expect(appsService.notifyAppsChanged).toHaveBeenCalledWith('update', 'app-a');
