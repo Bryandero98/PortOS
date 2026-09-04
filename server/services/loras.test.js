@@ -1022,7 +1022,9 @@ describe('installFromHuggingface', () => {
     expect(sawSignal.aborted).toBe(false);
     controller.abort();
     expect(sawSignal.aborted).toBe(true);
-    await expect(install).rejects.toThrow(/cancel/i);
+    const err = await install.catch((e) => e);
+    expect(err.message).toMatch(/cancel/i);
+    expect(err.code).toBe('LORA_DOWNLOAD_CANCELLED');
   });
 
   it('refuses a second install of the same destination while the first is still downloading', async () => {
