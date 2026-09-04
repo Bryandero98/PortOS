@@ -71,7 +71,9 @@ const editableRemixModel = (models, defaultModelId) => {
  *     wire accepts — kept here rather than in the page so there stays exactly
  *     one builder for what `server/routes/videoGen.js` validates.
  */
-export function useVideoGenForm({ models, modelContext, availableLoras, grokEnabled, remoteSubmissionFields = null }) {
+export function useVideoGenForm({
+  models, modelContext, availableLoras, grokEnabled, falEnabled = false, remoteSubmissionFields = null,
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const incomingSourceImage = searchParams.get('sourceImageFile');
   const incomingAudioFilename = searchParams.get('audioFilename');
@@ -92,6 +94,8 @@ export function useVideoGenForm({ models, modelContext, availableLoras, grokEnab
     extendFromVideoId, setExtendFromVideoId,
     fps, setFps,
     grokDuration, setGrokDuration,
+    falDuration, setFalDuration,
+    falModelId, setFalModelId,
     guidanceScale, setGuidanceScale,
     height, setHeight,
     i2vReferenceMode, setI2vReferenceMode,
@@ -586,7 +590,12 @@ export function useVideoGenForm({ models, modelContext, availableLoras, grokEnab
   // lane reads only prompt/dims/source-image/duration, so its image_to_video
   // always anchors and the promise has to collapse to the default there.
   const isGrok = grokEnabled && backend === 'grok';
-  const referenceModeApplies = mode === 'image' && !isGrok;
+  // fal.ai's queue REST API is usability-gated on a configured API key
+  // (`falEnabled`, mirrored from the server's isVideoModeUsable check), not a
+  // toggle — same short-circuit shape as grok: only prompt/dims/source-image
+  // and a duration reach the provider.
+  const isFal = falEnabled && backend === 'fal';
+  const referenceModeApplies = mode === 'image' && !isGrok && !isFal;
   // The strength the render will actually use, for the slider readout — an
   // untouched slider under Inspire still resolves to the contract's low default
   // rather than the pipeline's 1.0, and the panel must say so.
@@ -870,7 +879,7 @@ export function useVideoGenForm({ models, modelContext, availableLoras, grokEnab
   // clip survives the switch and reappears if the user flips back.
   const handleBackendChange = (id) => {
     setBackend(id);
-    if (id === 'grok' && mode !== 'text' && mode !== 'image') {
+    if ((id === 'grok' || id === 'fal') && mode !== 'text' && mode !== 'image') {
       handleModeChange((sourceImageFile || sourceImageUpload) ? 'image' : 'text');
     }
   };
@@ -1160,6 +1169,12 @@ export function useVideoGenForm({ models, modelContext, availableLoras, grokEnab
       setBackend('grok');
       setMode(p.videoMode === 'image' ? 'image' : 'text');
       if (p.duration) setGrokDuration(p.duration);
+    } else if (p.mode === 'fal') {
+      // fal.ai job: same discriminator shape as grok above.
+      setBackend('fal');
+      setMode(p.videoMode === 'image' ? 'image' : 'text');
+      if (p.duration) setFalDuration(p.duration);
+      if (p.modelId) setFalModelId(p.modelId);
     } else if (p.mode) setMode(p.mode);
     if (p.chunks && p.chunks > 1) setChunks(p.chunks);
     // 0 is a real restored value ("last frame only"), so this can't gate on
@@ -1232,7 +1247,7 @@ export function useVideoGenForm({ models, modelContext, availableLoras, grokEnab
   // Snapshot the current validated state into a wire payload. The submit flow
   // stays pure so all three backend contracts can be tested independently.
   const submissionState = {
-    isGrok, grokDuration, remoteSubmissionFields,
+    isGrok, grokDuration, isFal, falDuration, falModelId, remoteSubmissionFields,
     prompt, negativePrompt, stylePreset, selectedUniverse,
     width, height, mode, sourceImageFile, sourceImageUpload,
     numFrames, fps, steps, guidanceScale, seed,
@@ -1248,8 +1263,10 @@ export function useVideoGenForm({ models, modelContext, availableLoras, grokEnab
 
   return {
     // Backend + mode
-    backend, isGrok, handleBackendChange,
+    backend, isGrok, isFal, handleBackendChange,
     grokDuration, setGrokDuration,
+    falDuration, setFalDuration,
+    falModelId, setFalModelId,
     mode, handleModeChange,
     // Prompt + style
     prompt, setPrompt,

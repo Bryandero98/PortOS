@@ -19,6 +19,7 @@ import {
   fableLoomVideoCapabilities,
 } from '../fableLoom/visualConditioning.js';
 import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
+import { VIDEO_GEN_MODE } from './modes.js';
 import { enqueueJob } from '../mediaJobQueue/index.js';
 import {
   cleanupMultipartTemp,
@@ -115,7 +116,9 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
   if (body.fableLoom) {
     const conditioningModel = backend === IMAGE_GEN_MODE.GROK
       ? { id: 'grok-video', supportedModes: ['image'] }
-      : prepared.effectiveModel;
+      : backend === VIDEO_GEN_MODE.FAL
+        ? { id: 'fal-video', supportedModes: ['text', 'image'] }
+        : prepared.effectiveModel;
     const compiled = await compileFableLoomVisualRequest({
       tag: body.fableLoom,
       kind: 'video',
@@ -184,6 +187,33 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
       filename: `${jobId}.mp4`,
       model: 'grok',
       mode: 'grok',
+      status,
+      position,
+    };
+  }
+
+  if (backend === VIDEO_GEN_MODE.FAL) {
+    const { sourceImagePath, uploadedTempPath } = prepared;
+    const { jobId, position, status } = await enqueue({
+      mode: VIDEO_GEN_MODE.FAL,
+      videoMode: sourceImagePath ? 'image' : 'text',
+      modelId: body.falModelId,
+      aspectRatio: body.visualConditioning?.render?.parameters?.aspectRatio,
+      prompt: body.prompt,
+      negativePrompt: body.negativePrompt || '',
+      duration: body.falDuration,
+      sourceImagePath,
+      uploadedTempPath,
+      ...(body.musicVideo ? { musicVideo: body.musicVideo } : {}),
+      ...(body.fableLoom ? { fableLoom: body.fableLoom } : {}),
+      ...(body.visualConditioning ? { visualConditioning: body.visualConditioning } : {}),
+    });
+    return {
+      jobId,
+      generationId: jobId,
+      filename: `${jobId}.mp4`,
+      model: 'fal',
+      mode: 'fal',
       status,
       position,
     };

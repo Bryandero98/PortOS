@@ -22,10 +22,10 @@ describe('generation mode alphabets', () => {
     ].every(Object.isFrozen)).toBe(true);
   });
 
-  it('keeps the video backend alphabet in the image discriminator namespace', () => {
-    expect(VIDEO_GEN_MODE).toEqual({ LOCAL: IMAGE_GEN_MODE.LOCAL, GROK: IMAGE_GEN_MODE.GROK });
-    expect(VIDEO_GEN_MODES).toEqual(['local', 'grok']);
-    expect(CLOUD_VIDEO_GEN_MODES).toEqual(['grok']);
+  it('keeps the video backend alphabet in the image discriminator namespace, plus fal as a video-only extra', () => {
+    expect(VIDEO_GEN_MODE).toEqual({ LOCAL: IMAGE_GEN_MODE.LOCAL, GROK: IMAGE_GEN_MODE.GROK, FAL: 'fal' });
+    expect(VIDEO_GEN_MODES).toEqual(['local', 'grok', 'fal']);
+    expect(CLOUD_VIDEO_GEN_MODES).toEqual(['grok', 'fal']);
     expect([VIDEO_GEN_MODE, VIDEO_GEN_MODES, CLOUD_VIDEO_GEN_MODES].every(Object.isFrozen)).toBe(true);
   });
 });

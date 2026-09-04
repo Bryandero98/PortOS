@@ -469,6 +469,12 @@ function resolveVideoBackend(settings, render, recordedConditioning = null) {
       code: 'GROK_VIDEO_DISABLED',
     });
   }
+  if (requested === VIDEO_GEN_MODE.FAL && mode !== VIDEO_GEN_MODE.FAL) {
+    throw new ServerError('No fal.ai API key configured — set it in Settings → Video Gen first', {
+      status: 400,
+      code: 'FAL_VIDEO_DISABLED',
+    });
+  }
   return mode;
 }
 
@@ -606,7 +612,9 @@ async function prepareVideoJob(run, asset) {
     backend,
     model: backend === VIDEO_GEN_MODE.LOCAL
       ? model
-      : { id: 'grok-video', supportedModes: ['image'] },
+      : backend === VIDEO_GEN_MODE.FAL
+        ? { id: 'fal-video', supportedModes: ['text', 'image'] }
+        : { id: 'grok-video', supportedModes: ['image'] },
   });
   const requestedSourceImagePath = imageInputForNode(run, asset);
   const conditioned = await conditionRequest(run, asset, 'video', capability, requestedSourceImagePath);
@@ -647,6 +655,25 @@ async function prepareVideoJob(run, asset) {
         sourceImagePath,
         mode: videoMode,
         ...replayParameters,
+        visualConditioning: conditioned?.visualConditioning || null,
+        fableLoom: productionTag(run, asset),
+      },
+    };
+  }
+
+  if (backend === VIDEO_GEN_MODE.FAL) {
+    return {
+      kind: 'video',
+      provider: backend,
+      modelId: recordedConditioning?.capability?.modelId || null,
+      modelRevision: capability.modelRevision || null,
+      params: {
+        mode: VIDEO_GEN_MODE.FAL,
+        videoMode: sourceImagePath ? 'image' : 'text',
+        prompt: conditioned?.prompt || asset.prompt,
+        negativePrompt: conditioned?.negativePrompt || '',
+        ...replayParameters,
+        sourceImagePath,
         visualConditioning: conditioned?.visualConditioning || null,
         fableLoom: productionTag(run, asset),
       },

@@ -112,6 +112,10 @@ export function ImageGenTab() {
   // (defaultModelId) survive the settings PUT's wholesale slice replace.
   const [videoGenMode, setVideoGenMode] = useState('');
   const [videoGenDisplaySleep, setVideoGenDisplaySleep] = useState(true);
+  // fal.ai queue REST API key (#6213) — usability-gated on this being set
+  // (settings, or the FAL_KEY env var server-side). No enabled toggle: the
+  // key's presence IS the opt-in, same shape as loras.js's Civitai key.
+  const [falApiKey, setFalApiKey] = useState('');
   const videoGenSliceRef = useRef({});
   const [sdapiUrl, setSdapiUrl] = useState('');
   const [pythonPath, setPythonPath] = useState('');
@@ -177,6 +181,7 @@ export function ImageGenTab() {
     renderDefaultsJson: '{}',
     videoGenMode: '',
     videoGenDisplaySleep: true,
+    falApiKey: '',
   });
 
   const [status, setStatus] = useState(null);
@@ -249,6 +254,7 @@ export function ImageGenTab() {
         const vg = (s?.videoGen && typeof s.videoGen === 'object') ? s.videoGen : {};
         const vgMode = normalizeRenderPinValue(vg.mode) || '';
         const vgDisplaySleep = vg.displaySleep !== false;
+        const vgFalApiKey = vg.fal?.apiKey || '';
         const m = ig.mode || IMAGE_GEN_MODE.EXTERNAL;
         const url = normalizeUrl(ig.external?.sdapiUrl || ig.sdapiUrl);
         const py = ig.local?.pythonPath || '';
@@ -284,6 +290,7 @@ export function ImageGenTab() {
         setRenderDefaults(rd);
         setVideoGenMode(vgMode);
         setVideoGenDisplaySleep(vgDisplaySleep);
+        setFalApiKey(vgFalApiKey);
         videoGenSliceRef.current = vg;
         setSdapiUrl(url);
         setPythonPath(py);
@@ -312,6 +319,7 @@ export function ImageGenTab() {
           renderDefaultsJson: JSON.stringify(rd),
           videoGenMode: vgMode,
           videoGenDisplaySleep: vgDisplaySleep,
+          falApiKey: vgFalApiKey,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
@@ -403,7 +411,8 @@ export function ImageGenTab() {
     || denoiseByMode.external !== saved.denoiseByMode.external
     || JSON.stringify(renderDefaults) !== saved.renderDefaultsJson
     || videoGenMode !== saved.videoGenMode
-    || videoGenDisplaySleep !== saved.videoGenDisplaySleep;
+    || videoGenDisplaySleep !== saved.videoGenDisplaySleep
+    || falApiKey !== saved.falApiKey;
 
   const handleSave = async () => {
     setSaving(true);
@@ -448,7 +457,12 @@ export function ImageGenTab() {
       ),
       // Install-wide video pin (#3231 Phase 4). Spread over the loaded slice so
       // sibling keys (defaultModelId) survive the wholesale slice replace.
-      videoGen: { ...videoGenSliceRef.current, mode: videoGenMode || null, displaySleep: videoGenDisplaySleep },
+      videoGen: {
+        ...videoGenSliceRef.current,
+        mode: videoGenMode || null,
+        displaySleep: videoGenDisplaySleep,
+        fal: { ...videoGenSliceRef.current.fal, apiKey: falApiKey.trim() },
+      },
     };
     try {
       await updateSettings(patch, { silent: true });
@@ -466,6 +480,7 @@ export function ImageGenTab() {
         renderDefaultsJson: JSON.stringify(patch.renderDefaults),
         videoGenMode,
         videoGenDisplaySleep,
+        falApiKey: falApiKey.trim(),
       });
       // Reflect the pruned no-op entries back into the editor state so the
       // dirty check compares like against like after a save.
@@ -770,6 +785,20 @@ export function ImageGenTab() {
             <span className="block text-xs text-gray-500 mt-0.5">Keeps the system awake while reducing WindowServer GPU contention on affected Apple silicon. Turn off only when another headless workflow manages display power.</span>
           </span>
         </label>
+        <FormField
+          label={<>fal.ai API key<span className="block text-xs text-gray-500 mt-0.5">Enables the fal.ai queue video backend on the Video Gen page and in FableLoom. Get a key at fal.ai/dashboard/keys, or set the FAL_KEY environment variable instead.</span></>}
+          labelClassName="text-sm text-gray-300"
+        >
+          <input
+            id="fal-api-key"
+            type="password"
+            autoComplete="off"
+            value={falApiKey}
+            onChange={(e) => setFalApiKey(e.target.value)}
+            placeholder="fal-key-..."
+            className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+          />
+        </FormField>
         <div className="space-y-3">
           {RENDER_TARGET_OPTIONS.map(({ id, label, video }) => {
             const entry = renderDefaults[id] || {};

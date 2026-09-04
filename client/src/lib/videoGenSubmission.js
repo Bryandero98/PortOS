@@ -34,7 +34,7 @@ export function envelopVideoPrompt(text, {
 }
 
 export function buildVideoGenSubmission({
-  isGrok, grokDuration, remoteSubmissionFields,
+  isGrok, grokDuration, isFal, falDuration, falModelId, remoteSubmissionFields,
   prompt, negativePrompt, stylePreset, selectedUniverse,
   width, height, mode, sourceImageFile, sourceImageUpload,
   numFrames, fps, steps, guidanceScale, seed,
@@ -63,6 +63,21 @@ export function buildVideoGenSubmission({
       prompt: composed.prompt,
       negativePrompt: composed.negativePrompt,
       grokDuration,
+      width: clampImageEdge(width, VIDEO_EDGE_BOUNDS),
+      height: clampImageEdge(height, VIDEO_EDGE_BOUNDS),
+      mode: mode === 'image' ? 'image' : 'text',
+      sourceImageFile: mode === 'image' ? (sourceImageFile || '') : '',
+      sourceImage: mode === 'image' ? (sourceImageUpload || '') : '',
+    };
+  }
+
+  if (isFal) {
+    return {
+      backend: 'fal',
+      prompt: composed.prompt,
+      negativePrompt: composed.negativePrompt,
+      falDuration,
+      falModelId: falModelId || undefined,
       width: clampImageEdge(width, VIDEO_EDGE_BOUNDS),
       height: clampImageEdge(height, VIDEO_EDGE_BOUNDS),
       mode: mode === 'image' ? 'image' : 'text',
