@@ -61,6 +61,24 @@ import { isPublicReviewNoToolProfile, isPublicReviewRestrictedProfile } from './
 // provider.envVars still wins below.
 const CLAUDE_LOCAL_MAX_OUTPUT_TOKENS = '65536';
 
+// Claude Code cancels a request whose first byte has not arrived within 300s
+// (`API_TIMEOUT_MS` is the override) and paints `API error · Retrying in 0s ·
+// attempt 1/10`. Against a LOCAL daemon that ceiling is shorter than the
+// PREFILL: a public-review Stage 3 prompt inlines the whole screened envelope
+// and routinely runs to ~100K tokens (#6117), which a model server on this box
+// chews through in tens of minutes, not seconds. Every attempt was therefore
+// cancelled mid-prefill — the daemon logged `500 | 6m0s | POST /v1/messages` —
+// and the retry re-sent the same prompt, so a healthy run looked frozen at
+// attempt 1/10 forever while never emitting a token.
+//
+// `localPromptBudget.js` already predicts that prefill for the run card; this is
+// the harness half of the same fact. The ceiling exists to bound a retry storm,
+// not to budget a healthy run: a request that never answers still ends, because
+// the child prints nothing and the run's own supervision reaps it. Cloud Claude
+// answers in seconds and keeps the stock 300s. A value in provider.envVars still
+// wins below.
+const CLAUDE_LOCAL_API_TIMEOUT_MS = '3600000';
+
 /**
  * True for a Claude Code harness talking to a local OpenAI/Anthropic-compatible
  * daemon — `claude-ollama` and `claude-sglang` today, plus any renamed or
@@ -78,10 +96,27 @@ function isLocalBackedClaude(provider) {
   return !!localRuntimeNamespace(provider) && isClaudeCommand(provider?.command);
 }
 
+/**
+ * Every knob `claudeLocalEnvDefaults` composes for a local-backed Claude
+ * harness.
+ *
+ * Named once because the two public-review allowlists below have to let all of
+ * them through, and an allowlist that carries the wrapper's ENDPOINT but not its
+ * TUNING is the worst of both: the stage reaches the local daemon and then runs
+ * it on Claude Code's cloud-shaped ceilings. That is how Stage 3 — the stage
+ * carrying the ~100K-token review envelope — sat behind a 300s first-byte
+ * timeout it could never meet. Keep in lockstep with `claudeLocalEnvDefaults`;
+ * `cliChildEnv.test.js` fails when a knob it emits is missing from either list.
+ */
+const CLAUDE_LOCAL_TUNING_ENV_KEYS = [
+  'CLAUDE_CODE_MAX_OUTPUT_TOKENS', 'API_TIMEOUT_MS', 'MAX_THINKING_TOKENS',
+];
+
 function claudeLocalEnvDefaults(provider) {
   if (!isLocalBackedClaude(provider)) return {};
   return {
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: CLAUDE_LOCAL_MAX_OUTPUT_TOKENS,
+    API_TIMEOUT_MS: CLAUDE_LOCAL_API_TIMEOUT_MS,
     // Claude Code omits the Anthropic-compatible `thinking` field when this is
     // zero, which Ollama maps to Qwen's non-thinking mode. Do not set a value
     // when enabled: Claude retains its normal adaptive budget.
@@ -160,7 +195,7 @@ const PUBLIC_REVIEW_ENV_KEYS = new Set([
   'SystemRoot', 'SystemDrive', 'ComSpec', 'PATHEXT', 'USERPROFILE', 'APPDATA',
   'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'HOMEDRIVE', 'HOMEPATH',
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_SMALL_FAST_MODEL',
-  'CLAUDE_CODE_MAX_OUTPUT_TOKENS', 'MAX_THINKING_TOKENS',
+  ...CLAUDE_LOCAL_TUNING_ENV_KEYS,
 ]);
 
 // A Claude CLI pointed at a LOCAL Anthropic-compatible runtime (the Ollama and
@@ -235,6 +270,10 @@ const PUBLIC_REVIEW_ACTIONS_ENV_KEYS = new Set([
   // The local Claude wrappers are eligible for this stage too; without the
   // endpoint they would talk to the cloud (or, with `--bare`, to nothing).
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_SMALL_FAST_MODEL',
+  // ...and the tuning composed for that wrapper, for the reason spelled out on
+  // the constant. These are numeric harness knobs carrying no credential, so
+  // keeping them widens no boundary this list exists to hold.
+  ...CLAUDE_LOCAL_TUNING_ENV_KEYS,
 ]);
 
 export function buildPublicReviewActionsCliEnv(env = {}) {
