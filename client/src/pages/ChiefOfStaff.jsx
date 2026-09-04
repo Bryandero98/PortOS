@@ -1237,7 +1237,7 @@ export default function ChiefOfStaff() {
         {activeTab === 'schedule' && (
           <div role="tabpanel" id="tabpanel-schedule" aria-labelledby="tab-schedule">
             <Suspense fallback={<TabLoadFallback label="schedule" />}>
-              <ScheduleTab apps={apps} providers={providers} activeProviderId={activeProviderId} providersLoaded={providersLoaded} />
+              <ScheduleTab apps={apps} providers={providers} activeProviderId={activeProviderId} providersLoaded={providersLoaded} daemonRunning={status?.running} />
             </Suspense>
           </div>
         )}
