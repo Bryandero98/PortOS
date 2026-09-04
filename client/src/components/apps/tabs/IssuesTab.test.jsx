@@ -140,11 +140,11 @@ describe('IssuesTab', () => {
     await renderTab();
 
     await screen.findByText('Crash on save');
-    // Titled, so the bare digit is never the only thing a screen reader gets —
-    // and so the assertion can't collide with the issue number or a label count.
-    expect(screen.getByTitle('3 comments')).toHaveTextContent('3');
-    expect(screen.getByTitle('1 comment')).toHaveTextContent('1');
-    expect(screen.queryByTitle('0 comments')).not.toBeInTheDocument();
+    // Spelled out rather than a bare digit beside an icon, so the count reads
+    // the same to a screen reader as its `opened by …` / `updated …` siblings.
+    expect(screen.getByText(/3 comments/)).toBeInTheDocument();
+    expect(screen.getByText(/1 comment$/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 comment/)).not.toBeInTheDocument();
   });
 
   it('keeps the description collapsed until the user expands it', async () => {
