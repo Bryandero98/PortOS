@@ -97,12 +97,17 @@ describe('CoreCoSAvatar', () => {
 
   it('holds a single static frame when the user prefers reduced motion', () => {
     reduceMotion = true;
-    render(<CoreCoSAvatar state="thinking" />);
+    const { rerender } = render(<CoreCoSAvatar state="thinking" />);
     const initialFrames = drawCalls.length;
     tick(16);
     // The loop drew its one frame and did not schedule another.
     expect(drawCalls.length).toBe(initialFrames + 1);
     expect(rafCallbacks).toHaveLength(0);
     expect(drawCalls.at(-1).pulse).toBe(0);
+
+    // With no loop running, a state change still repaints once in its color.
+    rerender(<CoreCoSAvatar state="coding" />);
+    expect(rafCallbacks).toHaveLength(0);
+    expect(drawCalls.at(-1).edgeRgb).toEqual(rgbOf(AGENT_STATES.coding.color));
   });
 });

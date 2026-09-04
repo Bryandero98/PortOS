@@ -144,6 +144,12 @@ export default function CoreCoSAvatar({ state = 'sleeping', speaking = false, ba
     };
   }, [paletteRef, reduceMotion]);
 
+  // Under reduced motion the loop is halted, so a state change (new edge color)
+  // has to ask for its one frame explicitly.
+  useEffect(() => {
+    if (reduceMotion) drawRef.current?.();
+  }, [state, speaking, reduceMotion]);
+
   return (
     <CoSAvatarFrame label="Core assembly avatar. Drag to rotate." background={background}>
       <div ref={wrapRef} className="absolute inset-0">
