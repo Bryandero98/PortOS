@@ -52,6 +52,7 @@ const VIDEO_RENDER_BACKENDS = [
   { id: 'local', label: 'Local', icon: Cpu },
   { id: 'grok', label: 'Grok', icon: Cloud },
   { id: 'fal', label: 'fal.ai', icon: Cloud },
+  { id: 'reactor', label: 'Reactor.inc', icon: Cloud },
 ];
 
 const modelOptions = (models, selected) => {

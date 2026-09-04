@@ -34,7 +34,8 @@ export function envelopVideoPrompt(text, {
 }
 
 export function buildVideoGenSubmission({
-  isGrok, grokDuration, isFal, falDuration, falModelId, remoteSubmissionFields,
+  isGrok, grokDuration, isFal, falDuration, falModelId,
+  isReactor, reactorClipId, reactorSeconds, reactorSeed, remoteSubmissionFields,
   prompt, negativePrompt, stylePreset, selectedUniverse,
   width, height, mode, sourceImageFile, sourceImageUpload,
   numFrames, fps, steps, guidanceScale, seed,
@@ -80,6 +81,26 @@ export function buildVideoGenSubmission({
       falModelId: falModelId || undefined,
       width: clampImageEdge(width, VIDEO_EDGE_BOUNDS),
       height: clampImageEdge(height, VIDEO_EDGE_BOUNDS),
+      mode: mode === 'image' ? 'image' : 'text',
+      sourceImageFile: mode === 'image' ? (sourceImageFile || '') : '',
+      sourceImage: mode === 'image' ? (sourceImageUpload || '') : '',
+    };
+  }
+
+  if (isReactor) {
+    return {
+      backend: 'reactor',
+      prompt: composed.prompt,
+      negativePrompt: composed.negativePrompt,
+      reactorClipId: reactorClipId || undefined,
+      reactorSeconds: reactorSeconds || undefined,
+      // Unlike falDuration/falModelId, a seed of 0 is a real, meaningful
+      // value — `|| undefined` would silently drop it (the reactor route
+      // and reactor.js's own buildRequestBody already preserve 0 correctly,
+      // so only the client-side send needs the nullish check).
+      reactorSeed: reactorSeed === '' || reactorSeed === null || reactorSeed === undefined ? undefined : reactorSeed,
+      // No width/height: unlike grok/fal, reactor.js reads no dimension
+      // field — submitJob's reactor lane never forwards them.
       mode: mode === 'image' ? 'image' : 'text',
       sourceImageFile: mode === 'image' ? (sourceImageFile || '') : '',
       sourceImage: mode === 'image' ? (sourceImageUpload || '') : '',

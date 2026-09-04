@@ -118,7 +118,9 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
       ? { id: 'grok-video', supportedModes: ['image'] }
       : backend === VIDEO_GEN_MODE.FAL
         ? { id: 'fal-video', supportedModes: ['text', 'image'] }
-        : prepared.effectiveModel;
+        : backend === VIDEO_GEN_MODE.REACTOR
+          ? { id: 'reactor-video', supportedModes: ['text', 'image'] }
+          : prepared.effectiveModel;
     const compiled = await compileFableLoomVisualRequest({
       tag: body.fableLoom,
       kind: 'video',
@@ -216,6 +218,33 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
       filename: `${jobId}.mp4`,
       model: 'fal',
       mode: 'fal',
+      status,
+      position,
+    };
+  }
+
+  if (backend === VIDEO_GEN_MODE.REACTOR) {
+    const { sourceImagePath, uploadedTempPath } = prepared;
+    const { jobId, position, status } = await enqueue({
+      mode: VIDEO_GEN_MODE.REACTOR,
+      videoMode: sourceImagePath ? 'image' : 'text',
+      prompt: body.prompt,
+      negativePrompt: body.negativePrompt || '',
+      continueFromClipId: body.reactorClipId,
+      seconds: body.reactorSeconds,
+      seed: body.reactorSeed,
+      sourceImagePath,
+      uploadedTempPath,
+      ...(body.musicVideo ? { musicVideo: body.musicVideo } : {}),
+      ...(body.fableLoom ? { fableLoom: body.fableLoom } : {}),
+      ...(body.visualConditioning ? { visualConditioning: body.visualConditioning } : {}),
+    });
+    return {
+      jobId,
+      generationId: jobId,
+      filename: `${jobId}.mp4`,
+      model: 'reactor',
+      mode: 'reactor',
       status,
       position,
     };

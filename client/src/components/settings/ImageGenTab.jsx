@@ -116,6 +116,8 @@ export function ImageGenTab() {
   // (settings, or the FAL_KEY env var server-side). No enabled toggle: the
   // key's presence IS the opt-in, same shape as loras.js's Civitai key.
   const [falApiKey, setFalApiKey] = useState('');
+  // reactor.inc fast-h3 API key (#6214) — same usability-gate shape as fal above.
+  const [reactorApiKey, setReactorApiKey] = useState('');
   const videoGenSliceRef = useRef({});
   const [sdapiUrl, setSdapiUrl] = useState('');
   const [pythonPath, setPythonPath] = useState('');
@@ -182,6 +184,7 @@ export function ImageGenTab() {
     videoGenMode: '',
     videoGenDisplaySleep: true,
     falApiKey: '',
+    reactorApiKey: '',
   });
 
   const [status, setStatus] = useState(null);
@@ -255,6 +258,7 @@ export function ImageGenTab() {
         const vgMode = normalizeRenderPinValue(vg.mode) || '';
         const vgDisplaySleep = vg.displaySleep !== false;
         const vgFalApiKey = vg.fal?.apiKey || '';
+        const vgReactorApiKey = vg.reactor?.apiKey || '';
         const m = ig.mode || IMAGE_GEN_MODE.EXTERNAL;
         const url = normalizeUrl(ig.external?.sdapiUrl || ig.sdapiUrl);
         const py = ig.local?.pythonPath || '';
@@ -291,6 +295,7 @@ export function ImageGenTab() {
         setVideoGenMode(vgMode);
         setVideoGenDisplaySleep(vgDisplaySleep);
         setFalApiKey(vgFalApiKey);
+        setReactorApiKey(vgReactorApiKey);
         videoGenSliceRef.current = vg;
         setSdapiUrl(url);
         setPythonPath(py);
@@ -320,6 +325,7 @@ export function ImageGenTab() {
           videoGenMode: vgMode,
           videoGenDisplaySleep: vgDisplaySleep,
           falApiKey: vgFalApiKey,
+          reactorApiKey: vgReactorApiKey,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
@@ -412,7 +418,8 @@ export function ImageGenTab() {
     || JSON.stringify(renderDefaults) !== saved.renderDefaultsJson
     || videoGenMode !== saved.videoGenMode
     || videoGenDisplaySleep !== saved.videoGenDisplaySleep
-    || falApiKey !== saved.falApiKey;
+    || falApiKey !== saved.falApiKey
+    || reactorApiKey !== saved.reactorApiKey;
 
   const handleSave = async () => {
     setSaving(true);
@@ -462,6 +469,7 @@ export function ImageGenTab() {
         mode: videoGenMode || null,
         displaySleep: videoGenDisplaySleep,
         fal: { ...videoGenSliceRef.current.fal, apiKey: falApiKey.trim() || undefined },
+        reactor: { ...videoGenSliceRef.current.reactor, apiKey: reactorApiKey.trim() || undefined },
       },
     };
     try {
@@ -481,6 +489,7 @@ export function ImageGenTab() {
         videoGenMode,
         videoGenDisplaySleep,
         falApiKey: falApiKey.trim(),
+        reactorApiKey: reactorApiKey.trim(),
       });
       // Reflect the pruned no-op entries back into the editor state so the
       // dirty check compares like against like after a save.
@@ -796,6 +805,20 @@ export function ImageGenTab() {
             value={falApiKey}
             onChange={(e) => setFalApiKey(e.target.value)}
             placeholder="fal-key-..."
+            className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+          />
+        </FormField>
+        <FormField
+          label={<>reactor.inc API key<span className="block text-xs text-gray-500 mt-0.5">Enables the reactor.inc fast-h3 video backend on the Video Gen page and in FableLoom, or set the REACTOR_API_KEY environment variable instead.</span></>}
+          labelClassName="text-sm text-gray-300"
+        >
+          <input
+            id="reactor-api-key"
+            type="password"
+            autoComplete="off"
+            value={reactorApiKey}
+            onChange={(e) => setReactorApiKey(e.target.value)}
+            placeholder="reactor-key-..."
             className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
           />
         </FormField>

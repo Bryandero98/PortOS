@@ -1649,6 +1649,11 @@ export const videoGenSettingsSchema = z.object({
   fal: z.object({
     apiKey: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().max(200).optional()),
   }).optional(),
+  // reactor.inc fast-h3 provider (#6214) — same settings-wins-over-env
+  // precedence as `fal` above.
+  reactor: z.object({
+    apiKey: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().max(200).optional()),
+  }).optional(),
 });
 
 // POST /api/video-gen/model-terms — record (or withdraw) the acknowledgement of
