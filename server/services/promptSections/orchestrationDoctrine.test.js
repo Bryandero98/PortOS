@@ -62,7 +62,7 @@ describe('fail-closed lane doctrine (#5993)', () => {
       implementer: { provider: 'p-cheap', fallbackProvider: 'p-cheap-2', fallbackModel: 'm-cheap-2' },
     }));
     expect(section).toContain('the lane may use `p-cheap-2` with model `m-cheap-2` — and nothing else');
-    expect(section).not.toContain('the run STOPS — no other provider is substituted for this lane.\n- **implementer**');
+    expect(section.split('\n').find(l => l.startsWith('- **implementer**'))).not.toContain('STOPS');
   });
 
   it('says nothing about substitution for a role that pins nothing', () => {

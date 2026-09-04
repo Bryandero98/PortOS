@@ -118,6 +118,7 @@ import {
 } from './cosTaskStore.js';
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, registerPauseReleaseAdapter, __resetPauseReleaseAdapter } from '../lib/taskPauseHold.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/cosValidation.js';
+import { ORCHESTRATION_LANE_BLOCKED_CATEGORY } from '../lib/taskBlockCategories.js';
 
 const USER_FILE = join('/root', 'TASKS.md');
 const COS_FILE = join('/root', 'COS-TASKS.md');
@@ -1728,6 +1729,24 @@ describe('cosTaskStore — stale failure-artifact reaper (#2619)', () => {
       const after = await getUserTasks();
       expect(after.tasks.find(t => t.id === 'task-fresh').status).toBe('blocked');
       expect(after.tasks.find(t => t.id === 'task-stop').status).toBe('blocked');
+    });
+
+    // A fail-closed orchestration lane (#5993) stops the run ON PURPOSE and waits
+    // on a user config fix. Retiring it to `completed` after 14 days would convert
+    // that deliberate loud stop into the silent success the whole feature exists
+    // to prevent — so it is exempt like the other user-decision blocks.
+    it('leaves a refused orchestration lane for the user however long it sits', async () => {
+      await addTask({ description: 'lane blocked', id: 'task-lane-old', priority: 'LOW' }, 'user', { now: NOW });
+      await updateTask('task-lane-old', {
+        status: 'blocked',
+        metadata: { blockedCategory: ORCHESTRATION_LANE_BLOCKED_CATEGORY, blockedAt: daysAgo(90) },
+      }, 'user', { now: NOW });
+      const res = await sweepResolvedFailureTasks({ now: NOW });
+      expect(res.reaped).toBe(0);
+      const after = await getUserTasks();
+      const task = after.tasks.find(t => t.id === 'task-lane-old');
+      expect(task.status).toBe('blocked');
+      expect(task.metadata.resolution).toBeUndefined();
     });
 
     it('flips an investigation whose originating task has completed', async () => {

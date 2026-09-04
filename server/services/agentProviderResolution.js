@@ -18,7 +18,7 @@ import { getActiveProvider, getAllProviders, getProviderById } from './providers
 import { isProviderAvailable, getFallbackProvider, getProviderStatus } from './providerStatus.js';
 import { selectModelForRole, selectModelForTask } from './agentModelSelection.js';
 import { modelPinIsOffered } from '../lib/localProviderRuntime.js';
-import { PRIMARY_ORCHESTRATION_ROLE, roleAssignment } from '../lib/orchestrationProfile.js';
+import { PRIMARY_ORCHESTRATION_ROLE, isOrchestratedTask, roleAssignment } from '../lib/orchestrationProfile.js';
 import { publicReviewPostureForTask, resolvePublicReviewProvider } from './publicReviewProviderSelection.js';
 
 /**
@@ -397,7 +397,16 @@ async function resolveOrdinaryProviderAndModel(task) {
   const providerSwapped = userProviderMissing || provider.id !== directProviderId;
   const pinnedProviderId = userProviderId || directProviderId;
   const isUserPin = modelSelection.tier === 'user-specified' && !fallbackModelPin;
-  const isUserPinnedModel = isUserPin && !providerSwapped;
+  // A lane's own `fallbackModel` is as explicit as `metadata.model` — the user
+  // named THIS model FOR THIS alternate (#5993). The `models` list is a
+  // convenience enumeration the pass-through CLIs don't enforce, and whose alias
+  // forms already disagree across records (see the note below), so downgrading
+  // the pin to the alternate's default here would silently run the lane on a
+  // model nobody chose — the model-axis substitution the `no-model` refusal
+  // above exists to close, arriving one branch later.
+  const isLaneAlternateModel = Boolean(laneSubstitution)
+    && fallbackModelPin != null && fallbackModelPin === lane?.fallbackModel;
+  const isUserPinnedModel = (isUserPin && !providerSwapped) || isLaneAlternateModel;
   if (isUserPin && providerSwapped && !(provider.models || []).includes(selectedModel)) {
     // Handled here rather than left to the list check below, which can't fire at
     // all for a fallback provider that enumerates no `models`.
@@ -450,11 +459,14 @@ async function resolveOrdinaryProviderAndModel(task) {
     // What the run ledger records so `/cos/runs` can show the tier split really
     // happened (#5993): the role this run was dispatched as, the provider it
     // ACTUALLY ran on, and the one substitution — if any — the lane accepted.
-    // Absent on a `direct`-mode run, which has no roles to account for.
-    ...(roleAssign ? {
+    // Gated on the RUN being orchestrated, not on this role being pinned: a
+    // profile that pins only the cheap implementer/reviewer lanes and leaves the
+    // architect on the run default is a normal config, and it is exactly the run
+    // whose tier split is worth showing. Absent on a `direct`-mode run.
+    ...(isOrchestratedTask(task) ? {
       orchestrationLane: {
         role: laneRole,
-        requestedProvider: roleAssign.provider || directProviderId,
+        requestedProvider: roleAssign?.provider || directProviderId,
         providerId: provider.id,
         model: selectedModel,
         ...(laneSubstitution ? { substitution: laneSubstitution } : {}),

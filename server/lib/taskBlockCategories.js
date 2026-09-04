@@ -60,12 +60,25 @@ export const PAUSED_BLOCKED_CATEGORIES = new Set([
  * categories stay reapable — they revive themselves in minutes, so one still
  * sitting there after 14 days IS stale.)
  */
+/**
+ * A fail-closed orchestration lane refused to substitute providers (#5993). Its
+ * own exported name because `agentLifecycle.js` stamps it and the sweep below
+ * exempts it — two string literals that must never drift apart.
+ */
+export const ORCHESTRATION_LANE_BLOCKED_CATEGORY = 'orchestration-lane-unavailable';
+
 export const USER_DECISION_BLOCKED_CATEGORIES = new Set([
   'user-terminated',      // user explicitly stopped the agent
   AGENT_PAUSED_CATEGORY,  // user paused; resumable on demand
   'challenge-escalation', // parked awaiting the user's arbitration
   'app-unresolved',
-  'workspace-invalid'
+  'workspace-invalid',
+  // Waiting on the same kind of fix as the two above: authenticate the lane's
+  // provider, pick another model for the role, or give it a fallbackProvider.
+  // Without the exemption the failure sweep retires it to `completed` with an
+  // `auto-expired` marker after 14 days — turning the loud, deliberate stop into
+  // exactly the silent success the fail-closed lane exists to prevent.
+  ORCHESTRATION_LANE_BLOCKED_CATEGORY
 ]);
 
 /**

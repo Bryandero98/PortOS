@@ -762,8 +762,13 @@ describe('resolveAgentProviderAndModel — what a same-role alternate must satis
     expect(r.orchestrationLane.substitution.to).toBe('p-cheap-2');
   });
 
+  // The alternate enumerates a DIFFERENT model on purpose: a provider's `models`
+  // list is a convenience enumeration the pass-through CLIs never enforce, so
+  // letting it downgrade the user's configured fallbackModel to the alternate's
+  // own default would re-open the model-axis substitution on the one path that
+  // is allowed to swap providers at all.
   it('carries a model-pinned lane onto its alternate using the configured fallbackModel', async () => {
-    const alternate = { id: 'p-cheap-2', type: 'cli', models: ['alt-m'], defaultModel: 'alt-default' };
+    const alternate = { id: 'p-cheap-2', type: 'cli', models: ['something-else'], defaultModel: 'alt-default' };
     getProviderById.mockImplementation(async (id) => (
       id === 'p-cheap' ? { id, type: 'cli', defaultModel: 'm-cheap' } : alternate
     ));
@@ -779,5 +784,34 @@ describe('resolveAgentProviderAndModel — what a same-role alternate must satis
     expect(r.ok).toBe(true);
     // Never the alternate's own default — that is the substitution this closes.
     expect(r.selectedModel).toBe('alt-m');
+  });
+});
+
+/**
+ * The run ledger's tier accounting keys off the RUN being orchestrated, not off
+ * the architect happening to be pinned — a profile that pins only the cheap
+ * implementer/reviewer lanes is a normal config, and its split is the one most
+ * worth showing.
+ */
+describe('resolveAgentProviderAndModel — orchestration accounting coverage', () => {
+  it('accounts for an orchestrated run whose profile pins no architect', async () => {
+    const provider = { id: 'p-active', type: 'cli', models: ['m-default'] };
+    getActiveProvider.mockResolvedValue(provider);
+
+    const r = await resolveAgentProviderAndModel({
+      id: 'task-no-architect',
+      metadata: {
+        orchestrationMode: 'orchestrated',
+        orchestrationProfile: { implementer: { provider: 'p-cheap' }, reviewer: { provider: 'p-cheap' } },
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: 'p-active',
+      providerId: 'p-active',
+      model: 'm-default',
+    });
   });
 });

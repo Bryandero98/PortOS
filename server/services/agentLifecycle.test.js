@@ -635,7 +635,11 @@ describe('runAgentSpawn source — permanent provider-config failure blocks the 
     const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
     const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
     expect(body, 'reads the structured lane detail').toMatch(/const lane = resolution\.orchestrationLane/);
-    expect(body, 'has its own block category').toMatch(/'orchestration-lane-unavailable'/);
+    // The category is referenced through the shared constant, not re-typed: the
+    // failure sweep exempts the same value, and two literals would drift.
+    expect(body, 'has its own block category').toMatch(/ORCHESTRATION_LANE_BLOCKED_CATEGORY/);
+    expect(AGENT_LIFECYCLE_SRC, 'takes the category from the shared module')
+      .toMatch(/import \{ ORCHESTRATION_LANE_BLOCKED_CATEGORY \} from '\.\.\/lib\/taskBlockCategories\.js';/);
     expect(body, 'carries the detail onto the task').toMatch(/orchestrationLane: lane/);
     expect(body, 'records the refusal in the ledger').toMatch(/kind: 'run\.lane-refused'/);
   });
