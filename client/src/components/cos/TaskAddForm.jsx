@@ -24,6 +24,26 @@ import { safeReadJsonStorage, safeReadStorage, safeRemoveStorage, safeWriteJsonS
 const TASK_DESCRIPTION_DRAFT_KEY = 'portos-cos-task-description-draft';
 const INVALID_DRAFT = Symbol('invalid task description draft');
 
+// ReviewerPicker's onChange patch keys, mapped to their addCosTask payload
+// names — only `stopMode` differs (→ `reviewStopMode`). Only keys present in
+// `reviewOverrides` (i.e. actually touched by the user) go on the wire; see
+// the submit payload below and #6219.
+const REVIEW_PICKER_TO_PAYLOAD_KEY = {
+  reviewers: 'reviewers',
+  usernames: 'usernames',
+  optionalReviewers: 'optionalReviewers',
+  reviewerMaxRounds: 'reviewerMaxRounds',
+  reviewerModels: 'reviewerModels',
+  reviewerEfforts: 'reviewerEfforts',
+  stopMode: 'reviewStopMode',
+  reviewerApplies: 'reviewerApplies',
+};
+const reviewOverridePayload = (reviewOverrides) => Object.fromEntries(
+  Object.entries(REVIEW_PICKER_TO_PAYLOAD_KEY)
+    .filter(([pickerKey]) => reviewOverrides[pickerKey] !== undefined)
+    .map(([pickerKey, payloadKey]) => [payloadKey, reviewOverrides[pickerKey]])
+);
+
 const readTaskDescriptionDraft = (defaultApp) => {
   const raw = safeReadStorage(TASK_DESCRIPTION_DRAFT_KEY);
   if (raw === null) return { description: '', app: defaultApp };
@@ -577,16 +597,7 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
       // actually touched (reviewOverrides) go on the wire — an untouched field
       // stays absent so the task keeps inheriting future Code Review Defaults
       // changes instead of freezing today's values in on create (#6219).
-      ...(!planOnly && openPR && prCompletion === 'review-then-merge' ? {
-        ...(reviewOverrides.reviewers !== undefined ? { reviewers: reviewOverrides.reviewers } : {}),
-        ...(reviewOverrides.usernames !== undefined ? { usernames: reviewOverrides.usernames } : {}),
-        ...(reviewOverrides.optionalReviewers !== undefined ? { optionalReviewers: reviewOverrides.optionalReviewers } : {}),
-        ...(reviewOverrides.reviewerMaxRounds !== undefined ? { reviewerMaxRounds: reviewOverrides.reviewerMaxRounds } : {}),
-        ...(reviewOverrides.reviewerModels !== undefined ? { reviewerModels: reviewOverrides.reviewerModels } : {}),
-        ...(reviewOverrides.reviewerEfforts !== undefined ? { reviewerEfforts: reviewOverrides.reviewerEfforts } : {}),
-        ...(reviewOverrides.stopMode !== undefined ? { reviewStopMode: reviewOverrides.stopMode } : {}),
-        ...(reviewOverrides.reviewerApplies !== undefined ? { reviewerApplies: reviewOverrides.reviewerApplies } : {}),
-      } : {}),
+      ...(!planOnly && openPR && prCompletion === 'review-then-merge' ? reviewOverridePayload(reviewOverrides) : {}),
       screenshots: screenshots.length > 0 ? screenshots.map(s => s.path) : undefined,
       attachments: attachments.length > 0 ? attachments.map(a => ({
         filename: a.filename,
