@@ -47,6 +47,9 @@ import { publicReviewProviderBlock, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { detectVenvBasePythonSync, createVenv, installPackages } from '../lib/pythonSetup.js';
 import { safeChildProcessOptions } from '../lib/processEnv.js';
+// Declared in lib/ so `classifyWorktreeDirt` can subtract this scratch without
+// importing this module's provider/runtime graph — see agentScratchPaths.js.
+import { PUBLIC_REVIEW_INPUT_FILENAME, PUBLIC_REVIEW_PATCH_DIRNAME } from '../lib/agentScratchPaths.js';
 import { downloadHfRepo } from './hfDownload.js';
 import { getHfToken } from './hfToken.js';
 import { listModels } from './localLlm.js';
@@ -68,8 +71,6 @@ const MAX_SCAN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INSTALL_EVENT_CHARS = 300;
 const MAX_PUBLIC_REVIEW_SNAPSHOT_CHARS = MODEL_ABUSE_GUARD_MAX_INPUT_CHARS * 3;
 const PUBLIC_REVIEW_INPUT_DIR = join(PATHS.cos, 'public-review-inputs');
-export const PUBLIC_REVIEW_INPUT_FILENAME = 'PORTOS_PUBLIC_REVIEW_INPUT.json';
-export const PUBLIC_REVIEW_PATCH_DIRNAME = '.portos-public-review';
 export const PUBLIC_REVIEW_PATCH_MANIFEST_FILENAME = 'PORTOS_PUBLIC_REVIEW_PATCHES.json';
 
 let cachedRuntime = null;

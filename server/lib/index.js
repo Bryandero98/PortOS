@@ -260,6 +260,7 @@ export * from './persistentMindTrajectory.js';
 export * from './persistentMindProfile.js';
 export * from './persistentMindPrompt.js';
 export * from './persistentMindPublic.js';
+export * from './agentScratchPaths.js';
 export * from './agentSentinel.js';
 export * from './bareUrl.js';
 export * from './bashResolver.js';
