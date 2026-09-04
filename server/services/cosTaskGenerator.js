@@ -503,10 +503,10 @@ export async function buildClaimWorkTask(app, {
 }
 
 /**
- * Resolve the reviewer prompt pieces for the claim flow exactly as
- * buildClaimWorkTask does (including local-LLM reviewers). Mirrors the
- * scheduled claim-work resolution so the JIRA play button honors the user's
- * reviewer choice.
+ * Resolve the reviewer prompt pieces for the claim flow as buildClaimWorkTask
+ * does on its default (no-explicit-option) path (including local-LLM
+ * reviewers). Mirrors the scheduled claim-work resolution so the JIRA play
+ * button honors the user's reviewer choice.
  *
  * Returns each piece separately because they travel differently: `csv` fills the
  * template's `{reviewers}` placeholder, `effortBlock` is appended prose (the
