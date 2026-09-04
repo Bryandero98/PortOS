@@ -19,6 +19,7 @@ import { antigravityBaseModels, effortLevelsForProvider, filterSelectableModels 
 import { PR_COMPLETIONS } from '../lib/prDisposition.js';
 import { sha256Text } from '../lib/fileUtils.js';
 import { MANAGED_ASSESSMENT_BACKENDS, localRuntimeKind } from '../lib/localProviderRuntime.js';
+import { PORTOS_APP_ID } from '../lib/appIdentity.js';
 import { resolveAppWorkTracker } from '../lib/workTracker.js';
 import { getActiveApps, getAppWorkTracker } from './apps.js';
 import { loadState } from './cosState.js';
@@ -159,6 +160,9 @@ const appCatalogEntry = async (app) => {
     id: app.id,
     name: String(app.name || app.id).slice(0, 100),
     planOnly: ISSUE_TRACKERS.has(tracker?.resolved),
+    // Only the baseline entry carries the flag, so the prompt catalog stays
+    // small and the mind has one unambiguous answer to "which repo is mine".
+    ...(app.id === PORTOS_APP_ID ? { self: true } : {}),
   };
 };
 
@@ -291,6 +295,15 @@ Use 'requiredValidation' only when the task's acceptance criteria require those
 workspace checks before queueing. Supported checks are 'dependencies',
 'engines', 'submodules', 'forge', and 'reviewers'. An omitted or empty list
 keeps absent dependencies advisory, which is appropriate for docs-only work.
+
+Choosing the app: pick the repository that will hold the change, not the subject
+the work is about. PortOS owns every integration it ships — the connector,
+projection, routes, UI, and settings for another app all live in the PortOS repo,
+whose catalog entry, when you are granted it, is marked 'self: true'. Target
+another app's repo only when the change must land in that repo's own source. When
+PortOS work looks like it needs something another project does not expose yet,
+still target PortOS: the task can establish from PortOS's own integration what is
+genuinely missing there before anyone proposes a change to that project.
 
 Configured choices (ids are authoritative; do not invent ids):
 ${JSON.stringify(promptCatalog)}
