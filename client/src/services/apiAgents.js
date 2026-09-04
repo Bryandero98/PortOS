@@ -163,6 +163,21 @@ export const resolveCosTaskChallenge = (id, body, options = {}) => request(`/cos
 });
 export const forceCosEvaluate = (options = {}) => request('/cos/evaluate', { method: 'POST', ...options });
 export const forceSpawnTask = (taskId, options = {}) => request(`/cos/tasks/${taskId}/spawn`, { method: 'POST', ...options });
+export const getOrchestrationProfiles = (options) => request('/settings/orchestration-profiles', options);
+export const saveOrchestrationProfile = (profile, options = {}) => request('/settings/orchestration-profiles', {
+  method: 'POST',
+  body: JSON.stringify(profile),
+  ...options,
+});
+export const updateOrchestrationProfile = (id, updates, options = {}) => request(`/settings/orchestration-profiles/${encodeURIComponent(id)}`, {
+  method: 'PUT',
+  body: JSON.stringify(updates),
+  ...options,
+});
+export const deleteOrchestrationProfile = (id, options = {}) => request(`/settings/orchestration-profiles/${encodeURIComponent(id)}`, {
+  method: 'DELETE',
+  ...options,
+});
 export const getCosHealth = () => request('/cos/health');
 export const forceHealthCheck = (options = {}) => request('/cos/health/check', { method: 'POST', ...options });
 export const getCosAgents = (options) => request('/cos/agents', options);

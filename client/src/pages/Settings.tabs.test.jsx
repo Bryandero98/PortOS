@@ -68,3 +68,10 @@ describe('Settings — Credentials tab', () => {
     expect(screen.queryByTestId('general-tab')).toBeNull();
   });
 });
+
+describe('Settings — Orchestration tab', () => {
+  it('is listed in the settings sub-nav', () => {
+    const tab = TABS.find(t => t.id === 'orchestration');
+    expect(tab?.to).toBe('/settings/orchestration');
+  });
+});

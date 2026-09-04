@@ -14457,6 +14457,38 @@
     },
     {
       "method": "GET",
+      "path": "/api/settings/orchestration-profiles",
+      "mountPath": "/api/settings",
+      "sources": [
+        "server/routes/settings.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/settings/orchestration-profiles",
+      "mountPath": "/api/settings",
+      "sources": [
+        "server/routes/settings.js"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/settings/orchestration-profiles/:id",
+      "mountPath": "/api/settings",
+      "sources": [
+        "server/routes/settings.js"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/settings/orchestration-profiles/:id",
+      "mountPath": "/api/settings",
+      "sources": [
+        "server/routes/settings.js"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/sharing/buckets",
       "mountPath": "/api/sharing",
       "sources": [
@@ -17578,8 +17610,8 @@
   ],
   "stats": {
     "mounts": 148,
-    "operations": 2177,
-    "declarations": 2185,
+    "operations": 2181,
+    "declarations": 2189,
     "sourceFiles": 231
   }
 }

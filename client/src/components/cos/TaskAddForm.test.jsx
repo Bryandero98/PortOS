@@ -12,7 +12,8 @@ const api = vi.hoisted(() => ({
   getAppWorkTracker: vi.fn(),
   getAppRepositorySources: vi.fn(),
   applyCosTaskTemplate: vi.fn(),
-  addCosTask: vi.fn()
+  addCosTask: vi.fn(),
+  getOrchestrationProfiles: vi.fn(),
 }));
 
 // useAssignableInstances reads the instance registry straight off apiSystem, so
@@ -50,6 +51,7 @@ describe('TaskAddForm responsive layout', () => {
       },
     });
     api.applyCosTaskTemplate.mockResolvedValue({ success: true });
+    api.getOrchestrationProfiles.mockResolvedValue({ profiles: [] });
     apiSystem.getAssignableInstances.mockResolvedValue({ instances: [] });
   });
 
@@ -655,6 +657,65 @@ describe('TaskAddForm worktree/PR defaults', () => {
         expect.objectContaining({ description: 'Line 1\nLine 2' }),
         expect.anything()
       ));
+    });
+  });
+
+  describe('orchestration mode and profile picker', () => {
+    it('switches to orchestrated mode and passes orchestration profile on submit', async () => {
+      const user = userEvent.setup();
+      const onTaskAdded = vi.fn();
+      api.getOrchestrationProfiles.mockResolvedValue({
+        profiles: [
+          {
+            id: 'heavy-planner',
+            name: 'Heavy Planner',
+            profile: {
+              architect: { provider: 'anthropic', model: 'claude-3-opus', effort: 'high' },
+              implementer: { provider: 'anthropic', model: 'claude-3-5-sonnet', effort: 'medium' },
+            },
+          },
+        ],
+      });
+      api.addCosTask.mockResolvedValue({ id: 'task-orch', description: 'Orchestrated task', status: 'pending', metadata: {} });
+
+      render(
+        <TaskAddForm
+          providers={[
+            { id: 'anthropic', name: 'Anthropic', enabled: true, models: ['claude-3-opus', 'claude-3-5-sonnet'] },
+          ]}
+          apps={[{ id: 'app-1', name: 'PortOS' }]}
+          onTaskAdded={onTaskAdded}
+        />
+      );
+      await act(async () => {});
+
+      // Click "Orchestrated" mode button
+      const orchBtn = screen.getByRole('button', { name: /Orchestrated/i });
+      await user.click(orchBtn);
+
+      // Select "Heavy Planner" profile
+      const profileSelect = screen.getByLabelText(/Profile:/i);
+      await user.selectOptions(profileSelect, 'heavy-planner');
+
+      const desc = screen.getByPlaceholderText('Task description *');
+      await user.type(desc, 'Orchestrated task');
+
+      const submitBtn = screen.getByRole('button', { name: 'Add' });
+      await user.click(submitBtn);
+
+      await waitFor(() => {
+        expect(api.addCosTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            description: 'Orchestrated task',
+            orchestrationMode: 'orchestrated',
+            orchestrationProfile: expect.objectContaining({
+              architect: expect.objectContaining({ provider: 'anthropic', model: 'claude-3-opus', effort: 'high' }),
+              implementer: expect.objectContaining({ provider: 'anthropic', model: 'claude-3-5-sonnet', effort: 'medium' }),
+            }),
+          }),
+          expect.anything()
+        );
+      });
     });
   });
 });

@@ -21,6 +21,13 @@ import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../l
 import { PORTOS_APP_ID } from '../../lib/appIdentity';
 import { safeReadJsonStorage, safeReadStorage, safeRemoveStorage, safeWriteJsonStorage } from '../../lib/safeStorage';
 
+const ORCHESTRATION_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const ORCHESTRATION_ROLES_META = [
+  { key: 'architect', label: 'Architect', hint: 'Planning & spec authoring' },
+  { key: 'implementer', label: 'Implementer', hint: 'Spec execution' },
+  { key: 'reviewer', label: 'Reviewer', hint: 'Spec verification' },
+];
+
 const TASK_DESCRIPTION_DRAFT_KEY = 'portos-cos-task-description-draft';
 const INVALID_DRAFT = Symbol('invalid task description draft');
 
@@ -121,6 +128,66 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
   // Bare slashdo command a quick-template pinned (`plan-task`), never a rendered
   // `/do:x` string — see server/lib/slashdoInvocation.js for why.
   const [slashdoCommand, setSlashdoCommand] = useState('');
+  const [orchestrationMode, setOrchestrationMode] = useState('direct');
+  const [orchestrationProfiles, setOrchestrationProfiles] = useState([]);
+  const [selectedProfileId, setSelectedProfileId] = useState('');
+  const [orchestrationProfile, setOrchestrationProfile] = useState({
+    architect: { provider: '', model: '', effort: '' },
+    implementer: { provider: '', model: '', effort: '' },
+    reviewer: { provider: '', model: '', effort: '' },
+  });
+
+  useEffect(() => {
+    api.getOrchestrationProfiles?.({ silent: true })
+      ?.then((res) => {
+        const list = Array.isArray(res) ? res : res?.profiles || [];
+        setOrchestrationProfiles(list);
+      })
+      ?.catch(() => {});
+  }, []);
+
+  const handleSelectOrchestrationProfile = (profileId) => {
+    setSelectedProfileId(profileId);
+    if (!profileId) return;
+    const found = orchestrationProfiles.find((p) => p.id === profileId);
+    if (found?.profile) {
+      setOrchestrationProfile({
+        architect: {
+          provider: found.profile.architect?.provider || '',
+          model: found.profile.architect?.model || '',
+          effort: found.profile.architect?.effort || '',
+        },
+        implementer: {
+          provider: found.profile.implementer?.provider || '',
+          model: found.profile.implementer?.model || '',
+          effort: found.profile.implementer?.effort || '',
+        },
+        reviewer: {
+          provider: found.profile.reviewer?.provider || '',
+          model: found.profile.reviewer?.model || '',
+          effort: found.profile.reviewer?.effort || '',
+        },
+      });
+    }
+  };
+
+  const updateOrchestrationRoleField = (roleKey, field, val) => {
+    setOrchestrationProfile((prev) => {
+      const roleData = prev[roleKey] || {};
+      let updatedRole = { ...roleData, [field]: val };
+      if (field === 'provider') {
+        updatedRole.model = '';
+        updatedRole.effort = '';
+      } else if (field === 'model') {
+        const prov = providers?.find((p) => p.id === roleData.provider);
+        updatedRole.effort = effortSurvivingModel(prov, val, roleData.effort);
+      }
+      return {
+        ...prev,
+        [roleKey]: updatedRole,
+      };
+    });
+  };
   // Resolved model lists for the reviewer table's Model column. Owned here (not by
   // ReviewerPicker) so the picker stays fetch-free — see its `modelOptions` prop.
   const reviewerModelOptions = useReviewerModelOptions();
@@ -573,6 +640,8 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
       model: newTask.model || undefined,
       provider: newTask.provider || undefined,
       effort: newTask.effort || undefined,
+      orchestrationMode: orchestrationMode === 'orchestrated' ? 'orchestrated' : undefined,
+      orchestrationProfile: orchestrationMode === 'orchestrated' ? orchestrationProfile : undefined,
       temperature: newTask.temperature === '' ? undefined : Number(newTask.temperature),
       thinking: newTask.thinking === '' ? undefined : newTask.thinking === 'true',
       app: newTask.app || undefined,
@@ -970,58 +1039,164 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
             </>
           )}
         </div>
-        <div className="flex flex-col sm:flex-row gap-3">
-          <div className="sm:w-40">
-            <label htmlFor="task-provider" className="sr-only">AI provider</label>
-            <select
-              id="task-provider"
-              value={newTask.provider}
-              onChange={e => setNewTask(t => ({ ...t, provider: e.target.value, model: '', effort: '', temperature: '', thinking: '' }))}
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
-              disabled={!providersLoaded}
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-port-border/40">
+          <div className="flex items-center gap-1.5 text-xs text-gray-400">
+            <span>Execution:</span>
+            <button
+              type="button"
+              onClick={() => setOrchestrationMode('direct')}
+              className={`px-2.5 py-1 rounded text-xs transition-colors ${
+                orchestrationMode === 'direct'
+                  ? 'bg-port-accent text-white font-medium'
+                  : 'bg-port-border/40 text-gray-400 hover:text-white'
+              }`}
             >
-              {providersLoaded
-                ? <option value="">Auto (default)</option>
-                : <option value="">Loading providers…</option>}
-              {providersLoaded && enabledProviders.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+              Direct
+            </button>
+            <button
+              type="button"
+              onClick={() => setOrchestrationMode('orchestrated')}
+              className={`px-2.5 py-1 rounded text-xs transition-colors ${
+                orchestrationMode === 'orchestrated'
+                  ? 'bg-port-accent text-white font-medium'
+                  : 'bg-port-border/40 text-gray-400 hover:text-white'
+              }`}
+            >
+              Orchestrated
+            </button>
           </div>
-          {availableModels.length > 0 ? (
-            <div className="flex-1">
-              <label htmlFor="task-model" className="sr-only">AI model</label>
+          {orchestrationMode === 'orchestrated' && (
+            <div className="flex items-center gap-2">
+              <label htmlFor="orchestration-profile-select" className="text-xs text-gray-400">
+                Profile:
+              </label>
               <select
-                id="task-model"
-                value={newTask.model}
-                onChange={e => setNewTask(t => ({
-                  ...t,
-                  model: e.target.value,
-                  // A model with no effort tiers hides the select below — clear the
-                  // value with it rather than submitting a level the UI stopped showing.
-                  effort: effortSurvivingModel(selectedProvider, e.target.value, t.effort),
-                }))}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+                id="orchestration-profile-select"
+                value={selectedProfileId}
+                onChange={(e) => handleSelectOrchestrationProfile(e.target.value)}
+                className="px-2 py-1 bg-port-bg border border-port-border rounded text-xs text-white"
               >
-                <option value="">Select model...</option>
-                {availableModels.map(m => (
-                  <option key={m} value={m}>{m.replace('claude-', '').replace(/-\d+$/, '')}</option>
+                <option value="">Custom Profile</option>
+                {orchestrationProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
             </div>
-          ) : selectedProvider ? (
-            <div className="flex-1 px-3 py-2 min-h-[44px] bg-port-bg border border-port-border rounded-lg text-xs text-gray-400 flex items-center">
-              {providerModelNote}
-            </div>
-          ) : null}
-          <EffortSelect
-            provider={selectedProvider}
-            model={effectiveModelFor(selectedProvider, newTask.model)}
-            value={newTask.effort}
-            onChange={effort => setNewTask(t => ({ ...t, effort }))}
-            className="sm:w-40 w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
-          />
+          )}
         </div>
+
+        {orchestrationMode === 'orchestrated' ? (
+          <div className="space-y-3 bg-port-bg/40 border border-port-border/60 rounded-xl p-3">
+            <div className="grid grid-cols-1 gap-2.5">
+              {ORCHESTRATION_ROLES_META.map(({ key, label, hint }) => {
+                const roleData = orchestrationProfile[key] || {};
+                const selectedProv = providers?.find((p) => p.id === roleData.provider);
+                const models = selectedProv ? effortAwareModelOptions(selectedProv, roleData.model) : [];
+
+                return (
+                  <div key={key} className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs">
+                    <div className="sm:w-28 flex-shrink-0">
+                      <span className="font-medium text-white">{label}</span>
+                      <span className="block text-[10px] text-gray-400 truncate">{hint}</span>
+                    </div>
+
+                    <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <select
+                        aria-label={`${label} provider`}
+                        value={roleData.provider || ''}
+                        onChange={(e) => updateOrchestrationRoleField(key, 'provider', e.target.value)}
+                        className="px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-xs"
+                      >
+                        <option value="">Auto / Default</option>
+                        {enabledProviders.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        aria-label={`${label} model`}
+                        value={roleData.model || ''}
+                        disabled={!selectedProv || models.length === 0}
+                        onChange={(e) => updateOrchestrationRoleField(key, 'model', e.target.value)}
+                        className="px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-xs disabled:opacity-50"
+                      >
+                        <option value="">Default Model</option>
+                        {models.map((m) => (
+                          <option key={m} value={m}>{m.replace('claude-', '').replace(/-\d+$/, '')}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        aria-label={`${label} effort`}
+                        value={roleData.effort || ''}
+                        onChange={(e) => updateOrchestrationRoleField(key, 'effort', e.target.value)}
+                        className="px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-xs"
+                      >
+                        <option value="">Default Effort</option>
+                        {ORCHESTRATION_EFFORTS.map((eff) => (
+                          <option key={eff} value={eff}>{eff}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="sm:w-40">
+              <label htmlFor="task-provider" className="sr-only">AI provider</label>
+              <select
+                id="task-provider"
+                value={newTask.provider}
+                onChange={e => setNewTask(t => ({ ...t, provider: e.target.value, model: '', effort: '', temperature: '', thinking: '' }))}
+                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+                disabled={!providersLoaded}
+              >
+                {providersLoaded
+                  ? <option value="">Auto (default)</option>
+                  : <option value="">Loading providers…</option>}
+                {providersLoaded && enabledProviders.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            {availableModels.length > 0 ? (
+              <div className="flex-1">
+                <label htmlFor="task-model" className="sr-only">AI model</label>
+                <select
+                  id="task-model"
+                  value={newTask.model}
+                  onChange={e => setNewTask(t => ({
+                    ...t,
+                    model: e.target.value,
+                    // A model with no effort tiers hides the select below — clear the
+                    // value with it rather than submitting a level the UI stopped showing.
+                    effort: effortSurvivingModel(selectedProvider, e.target.value, t.effort),
+                  }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+                >
+                  <option value="">Select model...</option>
+                  {availableModels.map(m => (
+                    <option key={m} value={m}>{m.replace('claude-', '').replace(/-\d+$/, '')}</option>
+                  ))}
+                </select>
+              </div>
+            ) : selectedProvider ? (
+              <div className="flex-1 px-3 py-2 min-h-[44px] bg-port-bg border border-port-border rounded-lg text-xs text-gray-400 flex items-center">
+                {providerModelNote}
+              </div>
+            ) : null}
+            <EffortSelect
+              provider={selectedProvider}
+              model={effectiveModelFor(selectedProvider, newTask.model)}
+              value={newTask.effort}
+              onChange={effort => setNewTask(t => ({ ...t, effort }))}
+              className="sm:w-40 w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+            />
+          </div>
+        )}
         {isOpencodeLocalProvider(selectedProvider) && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* OrcaRouter fronts cloud models that own their own reasoning

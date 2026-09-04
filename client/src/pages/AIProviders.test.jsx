@@ -20,6 +20,9 @@ const api = vi.hoisted(() => ({
   getSampleProviders: vi.fn(),
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
+  getOrchestrationProfiles: vi.fn().mockResolvedValue({ profiles: [] }),
+  createRun: vi.fn().mockResolvedValue({ runId: 'run-1' }),
+  stopRun: vi.fn().mockResolvedValue({}),
 }));
 
 const localModels = vi.hoisted(() => ({ value: { ctxById: {}, installed: { ollama: null, lmstudio: null } } }));
@@ -1738,5 +1741,80 @@ describe('vLLM-backed TUI provider', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     await screen.findByDisplayValue('opencode');
     expect(screen.queryByLabelText('API Key')).toBeNull();
+  });
+});
+
+describe('AIProviders orchestration profiles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getOrchestrationProfiles.mockResolvedValue({
+      profiles: [
+        {
+          id: 'deep-research',
+          name: 'Deep Research',
+          description: 'o3-mini planner + sonnet coder',
+          profile: {
+            architect: { provider: 'codex', model: 'o3-mini', effort: 'high' },
+            implementer: { provider: 'anthropic', model: 'claude-3-5-sonnet', effort: 'medium' },
+          },
+        },
+      ],
+    });
+    api.createRun.mockResolvedValue({ runId: 'run-123' });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+  });
+
+  it('renders orchestration profiles link in the more actions menu', async () => {
+    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
+    renderPage();
+
+    await openHeaderMenu();
+    const link = await screen.findByRole('menuitem', { name: 'Orchestration profiles' });
+    expect(link).toHaveAttribute('href', '/settings/orchestration');
+  });
+
+  it('allows selecting an orchestration profile in the run panel and renders role chips', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'prov-1', name: 'Prov 1', type: 'api', enabled: true, hardwareUnavailable: false }],
+      activeProvider: 'prov-1',
+    });
+    renderPage();
+
+    // Open runner panel
+    const runBtn = await screen.findByRole('button', { name: 'Run Prompt' });
+    fireEvent.click(runBtn);
+
+    // Profile selector should be available
+    const profileSelect = await screen.findByLabelText('Orchestration profile');
+    expect(profileSelect).toBeInTheDocument();
+    fireEvent.change(profileSelect, { target: { value: 'deep-research' } });
+
+    // Role chips should appear
+    expect(await screen.findByText('o3-mini planner + sonnet coder')).toBeInTheDocument();
+    expect(screen.getByText('architect:')).toBeInTheDocument();
+    expect(screen.getByText('o3-mini')).toBeInTheDocument();
+    expect(screen.getByText('(high)')).toBeInTheDocument();
+
+    // Fill prompt and execute
+    const promptInput = screen.getByLabelText('Prompt');
+    fireEvent.change(promptInput, { target: { value: 'Test run with orchestration' } });
+
+    const executeBtn = screen.getByRole('button', { name: 'Execute' });
+    fireEvent.click(executeBtn);
+
+    await waitFor(() => {
+      expect(api.createRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 'prov-1',
+          prompt: 'Test run with orchestration',
+          orchestrationProfileId: 'deep-research',
+        }),
+        expect.anything()
+      );
+    });
   });
 });

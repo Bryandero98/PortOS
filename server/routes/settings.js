@@ -20,7 +20,7 @@ import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
 import { EFFORT_LEVELS } from '../lib/providerModels.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, hideFirstRunCardSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, instanceFeatureSettingsSchema, instanceFeatureIdSchema, instanceFeatureUpdateSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, usageApiBilledInstanceIdsSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, hideFirstRunCardSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, instanceFeatureSettingsSchema, instanceFeatureIdSchema, instanceFeatureUpdateSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, usageApiBilledInstanceIdsSchema, namedOrchestrationProfileSchema, orchestrationProfilesSettingsSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -219,8 +219,40 @@ router.put('/ai-assignments/:id', asyncHandler(async (req, res) => {
   res.json(await updateAiAssignment(req.params.id, payload));
 }));
 
+// GET /api/settings/orchestration-profiles
+router.get('/orchestration-profiles', asyncHandler(async (_req, res) => {
+  const { getOrchestrationProfiles } = await import('../services/orchestrationProfiles.js');
+  res.json(await getOrchestrationProfiles());
+}));
+
+// POST /api/settings/orchestration-profiles
+router.post('/orchestration-profiles', asyncHandler(async (req, res) => {
+  const { saveOrchestrationProfile } = await import('../services/orchestrationProfiles.js');
+  const payload = validateRequest(namedOrchestrationProfileSchema, req.body || {});
+  const saved = await saveOrchestrationProfile(payload);
+  res.status(201).json(saved);
+}));
+
+// PUT /api/settings/orchestration-profiles/:id
+router.put('/orchestration-profiles/:id', asyncHandler(async (req, res) => {
+  const { updateOrchestrationProfile } = await import('../services/orchestrationProfiles.js');
+  const payload = validateRequest(namedOrchestrationProfileSchema.partial(), req.body || {});
+  const updated = await updateOrchestrationProfile(req.params.id, payload);
+  res.json(updated);
+}));
+
+// DELETE /api/settings/orchestration-profiles/:id
+router.delete('/orchestration-profiles/:id', asyncHandler(async (req, res) => {
+  const { deleteOrchestrationProfile } = await import('../services/orchestrationProfiles.js');
+  const result = await deleteOrchestrationProfile(req.params.id);
+  res.json(result);
+}));
+
 // PUT /api/settings
 router.put('/', asyncHandler(async (req, res) => {
+  if (req.body?.orchestrationProfiles !== undefined) {
+    validateRequest(orchestrationProfilesSettingsSchema, req.body.orchestrationProfiles);
+  }
   // Settings is a polymorphic store but the backup sub-object has a known
   // schema. Validate that slice when it's present so a malformed Backup-tab
   // save doesn't reach disk (the runtime guards downstream are belt-and-

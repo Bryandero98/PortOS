@@ -161,7 +161,7 @@ describe('deferred imports stay deferred (#6156)', () => {
  *
  * History, over the test files under `server/` only — the same denominator
  * #6009 reported, and what `serverTestFiles()` below walks:
- *   115,519 before #6009 · 96,233 after · 83,439 after #6156.
+ *   115,519 before #6009 · 96,233 after · 83,439 after #6156 · 85,105 after #5992 (orchestration profiles service & routes).
  */
 const MAX_STATIC_INSTANTIATIONS = 86500;
 

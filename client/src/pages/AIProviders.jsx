@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { Bot, Gauge, Network, Package } from 'lucide-react';
+import { Bot, Cpu, Gauge, Network, Package } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
@@ -96,6 +96,8 @@ export default function AIProviders() {
   const [showRunPanel, setShowRunPanel] = useState(false);
   const [runPrompt, setRunPrompt] = useState('');
   const [selectedWorkspace, setSelectedWorkspace] = useState('');
+  const [orchestrationProfiles, setOrchestrationProfiles] = useState([]);
+  const [selectedProfileId, setSelectedProfileId] = useState('');
   const [apps, setApps] = useState([]);
   const [activeRun, setActiveRun] = useState(null);
   const [runOutput, setRunOutput] = useState('');
@@ -244,13 +246,14 @@ export default function AIProviders() {
     setLoading(true);
     setLoadError(false);
     let providersFailed = false;
-    const [providersData, appsData, statusData] = await Promise.all([
+    const [providersData, appsData, statusData, orchestrationProfilesData] = await Promise.all([
       api.getProviders().catch(() => {
         providersFailed = true;
         return null;
       }),
       api.getApps().catch(() => []),
       api.getProviderStatuses().catch(() => ({ providers: {} })),
+      api.getOrchestrationProfiles?.({ silent: true }).catch(() => ({ profiles: [] })),
     ]);
     if (providersFailed || !providersData) {
       setLoadError(true);
@@ -268,6 +271,10 @@ export default function AIProviders() {
     }
     setApps(appsData);
     setStatuses(statusData.providers || {});
+    const profList = Array.isArray(orchestrationProfilesData)
+      ? orchestrationProfilesData
+      : orchestrationProfilesData?.profiles || [];
+    setOrchestrationProfiles(profList);
     setLoading(false);
   };
 
@@ -468,7 +475,8 @@ export default function AIProviders() {
       providerId: activeProviderId,
       prompt: runPrompt,
       workspacePath: workspace?.repoPath,
-      workspaceName: workspace?.name
+      workspaceName: workspace?.name,
+      orchestrationProfileId: selectedProfileId || undefined,
     }, { silent: true }).catch(err => ({ error: err.message }));
 
     if (result.error) {
@@ -665,6 +673,7 @@ export default function AIProviders() {
   // stays one row tall on a 360px viewport and the first provider card is
   // reachable without scrolling (issue #5653).
   const secondaryActions = [
+    { id: 'orchestration-profiles', label: 'Orchestration profiles', icon: Cpu, to: '/settings/orchestration' },
     { id: 'compare-models', label: 'Compare local models', icon: Gauge, to: '/models/performance' },
     { id: 'fleet-setup', label: 'Fleet setup', icon: Network, to: '/ai/fleet' },
     {
@@ -832,6 +841,18 @@ export default function AIProviders() {
             </select>
 
             <select
+              aria-label="Orchestration profile"
+              value={selectedProfileId}
+              onChange={(e) => setSelectedProfileId(e.target.value)}
+              className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white w-full sm:w-auto"
+            >
+              <option value="">No profile (direct)</option>
+              {orchestrationProfiles.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+
+            <select
               aria-label="Workspace"
               value={selectedWorkspace}
               onChange={(e) => setSelectedWorkspace(e.target.value)}
@@ -843,6 +864,31 @@ export default function AIProviders() {
               ))}
             </select>
           </div>
+
+          {(() => {
+            const selectedProf = orchestrationProfiles.find(p => p.id === selectedProfileId);
+            if (!selectedProf) return null;
+            return (
+              <div className="text-xs text-gray-300 bg-port-bg/60 border border-port-border/80 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5 text-port-accent" />
+                    {selectedProf.name}
+                  </span>
+                  {selectedProf.description && <span className="text-gray-400">{selectedProf.description}</span>}
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {Object.entries(selectedProf.profile || {}).map(([role, cfg]) => (
+                    <span key={role} className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-port-card border border-port-border text-gray-200">
+                      <span className="font-semibold text-port-accent capitalize">{role}:</span>
+                      <span>{cfg?.model || cfg?.provider || 'default'}</span>
+                      {cfg?.effort && <span className="text-amber-400 text-[10px]">({cfg.effort})</span>}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           <textarea
             aria-label="Prompt"

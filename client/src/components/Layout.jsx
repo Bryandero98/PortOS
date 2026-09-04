@@ -305,6 +305,7 @@ export const NAV_PRESENTATION = {
   '/settings/general': { icon: Settings },
   '/settings/mortalloom': { icon: Activity },
   '/openclaw': { icon: MessagesSquare },
+  '/settings/orchestration': { icon: Cpu },
   '/prompts': { icon: FileText },
   '/ai': { icon: Bot },
   '/settings/security': { icon: Lock },
