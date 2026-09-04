@@ -77,6 +77,16 @@ Headings read `--port-heading-tracking` and `--port-heading-glow` (h1–h3) plus
 
 Black ICE Terminal (both modes) uses `scanlines`; Kestrel Neon uses all five, and Kestrel Dawn `scanlines` + `grid-floor`.
 
+## Surface & control tokens
+
+The same "tokens over per-theme selector blocks" pattern covers the shared card/focus/nav/code rules — with one twist: `border-color` and `box-shadow` are properties a component can also set for its own reasons (a card's "selected"/"error" border class, an accent button's interactive shadow), so a theme's override has to keep winning against those *without* also winning for every theme that never opted in. Where that matters, the token-driven rule stays scoped to the exact theme(s) that use it (`html:is([data-port-theme="…"], …) …`) rather than becoming unconditional — same values-not-selectors win, without a specificity regression.
+
+`--port-card-surface-image` / `--port-card-surface-size` (a card's `background-image`/`background-size`, both a no-op by default) are safe to share unconditionally. `--port-card-border-color` / `--port-card-border-alpha` (a card's border, `rgb(var(--port-card-border-color) / var(--port-card-border-alpha))`) are read by a rule scoped to the themes that override them (Lumen Glass, Lumen Glass Day, Black ICE Terminal both modes, Kestrel both modes — Lumen Glass Day's wider `bg-port-card/NN` coverage beyond `.bg-port-card`/`/50` is its own separate selector, predating this rule).
+
+`--port-focus-shadow` is the generic `button:focus-visible`/`a:focus-visible`/`[role="button"]`/`[tabindex="0"]` rule's default box-shadow and is never overridden per theme. Lumen Glass, Lumen Glass Day, and Kestrel Neon's stronger glow is a *different* token, `--port-focus-glow` (`none` by default, read only by their own theme-scoped `:is(input, textarea, select):focus, button:focus-visible, a:focus-visible` rule) — reusing `--port-focus-shadow` there would leak the glow onto `[role="button"]`/`[tabindex="0"]` elements the original per-theme rule never touched, and unscoping it entirely would lose to `.bg-port-accent`'s interactive shadow on an accent-colored button (a `.bg-port-accent` class carries higher specificity than the bare `button:focus-visible` rule).
+
+`--port-nav-active-rule` (the active sidebar link's `border-left`) and `--port-nav-active-glow` (its `text-shadow`, defaulted to `inherit` rather than `none` since `text-shadow` is naturally inherited — Black ICE's body-wide glow reaches the active link through that) are shared unconditionally; `border-left` and `text-shadow` aren't properties any component sets on that element today. `--port-code-glow` (a `text-shadow` on `pre`/`code`/`textarea`/`input`, `none` by default) is likewise unconditional. `caret-color: rgb(var(--port-accent))` on that same selector is unconditional too — every theme gets an accent-colored text cursor, not just Kestrel.
+
 ## New Feature Checklist
 
 Before merging UI work:
