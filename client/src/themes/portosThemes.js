@@ -455,6 +455,9 @@ export const THEMES = {
       '--port-font-ui': "'GeistPixelSquare', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
       '--port-font-display': "'GeistPixelGrid', 'SFMono-Regular', Consolas, monospace",
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+      // The shared heading rule sets text-shadow explicitly, so restate the
+      // body glow here or headings would lose what they used to inherit.
+      '--port-heading-glow': '0 0 12px rgb(var(--port-accent) / 0.08)',
       '--port-shadow-card': '0 0 0 1px rgb(var(--port-border) / 0.18), 0 0 26px rgb(var(--port-accent) / 0.08)',
       '--port-shadow-elevated': '0 0 0 1px rgb(var(--port-border) / 0.3), 0 0 48px rgb(var(--port-accent) / 0.16), 0 18px 60px rgb(0 0 0 / 0.62)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.45), 0 0 20px rgb(var(--port-accent) / 0.22)',
@@ -540,6 +543,7 @@ export const THEMES = {
       '--port-font-ui': "'GeistPixelSquare', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
       '--port-font-display': "'GeistPixelGrid', 'SFMono-Regular', Consolas, monospace",
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+      '--port-heading-glow': '0 0 8px rgb(var(--port-accent) / 0.04)',
       '--port-shadow-card': '0 0 0 1px rgb(var(--port-border) / 0.18), 0 4px 14px -6px rgb(40 60 30 / 0.18)',
       '--port-shadow-elevated': '0 0 0 1px rgb(var(--port-border) / 0.28), 0 12px 36px -10px rgb(40 60 30 / 0.22)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.5)',

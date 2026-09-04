@@ -38,7 +38,10 @@ export default function useCanvasDprSize(wrapRef, canvasRef, height, drawRef) {
       }
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawRef.current();
+      // A caller that installs its draw in a LATER effect (the Core Assembly
+      // avatar's rAF loop) has nothing to paint yet on the mount resize; its
+      // own loop paints the first frame a tick later.
+      drawRef.current?.();
     };
     resize();
     const ro = new ResizeObserver(resize);

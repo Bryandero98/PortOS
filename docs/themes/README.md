@@ -73,7 +73,7 @@ Full-screen effects are shared primitives, not per-theme CSS. A theme lists the 
 
 ## Typography tokens
 
-Headings read `--port-heading-tracking` and `--port-heading-glow` (h1–h3) plus `--port-title-tracking` and `--port-title-transform` (h1 only), all defaulted to neutral in `:root`, so a theme sets its title treatment in the manifest instead of a selector block — Kestrel's uppercase, tracked, glowing titles are four tokens. The `glitch` effect rests on `--port-heading-glow`, so listing it never changes a theme's resting title look.
+Headings read `--port-heading-tracking` and `--port-heading-glow` (h1–h3) plus `--port-title-tracking` and `--port-title-transform` (h1 only), defaulted to `0` / `none` in `:root`, so a theme sets its title treatment in the manifest instead of a selector block. Because the shared rule now sets `text-shadow` explicitly, a theme whose `body` carries a glow must restate it in `--port-heading-glow` for headings to keep it (Black ICE does) — Kestrel's uppercase, tracked, glowing titles are four tokens. The `glitch` effect rests on `--port-heading-glow`, so listing it never changes a theme's resting title look.
 
 Black ICE Terminal (both modes) uses `scanlines`; Kestrel Neon uses all five, and Kestrel Dawn `scanlines` + `grid-floor`.
 

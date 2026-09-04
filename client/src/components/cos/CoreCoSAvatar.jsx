@@ -29,9 +29,10 @@ const STATE_MOTION = {
 
 // Edge color per state, parsed once — the draw loop must not re-parse hex
 // every frame for one of seven values.
+const FALLBACK_EDGE_RGB = [0, 240, 255];
 const STATE_EDGE_RGB = Object.fromEntries(Object.entries(AGENT_STATES).map(([state, { color }]) => {
-  const { r, g, b } = parseColor(color);
-  return [state, [r, g, b]];
+  const parsed = parseColor(color);
+  return [state, parsed ? [parsed.r, parsed.g, parsed.b] : FALLBACK_EDGE_RGB];
 }));
 
 const FALLBACK_NODE_RGB = [255, 43, 214];

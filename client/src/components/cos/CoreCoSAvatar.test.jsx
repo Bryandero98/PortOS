@@ -80,6 +80,21 @@ describe('CoreCoSAvatar', () => {
     expect(cancelAnimationFrame.mock.calls.length).toBe(cancelsBefore);
   });
 
+  // The DPR hook resizes on mount BEFORE the avatar's own effect installs its
+  // draw function. happy-dom's 0×0 layout skips that resize, so this stubs a
+  // real box — the shipped layout gives the frame an 8rem × 5/6 tile.
+  it('mounts in a sized layout, sizes the bitmap to the device pixel ratio, and paints', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(200);
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(240);
+    vi.stubGlobal('devicePixelRatio', 2);
+    expect(() => render(<CoreCoSAvatar state="planning" />)).not.toThrow();
+    const canvas = screen.getByTestId('core-avatar-canvas');
+    expect([canvas.width, canvas.height]).toEqual([400, 480]);
+    tick(0);
+    const frame = drawCalls.at(-1);
+    expect([frame.width, frame.height]).toEqual([200, 240]);
+  });
+
   it('holds a single static frame when the user prefers reduced motion', () => {
     reduceMotion = true;
     render(<CoreCoSAvatar state="thinking" />);
