@@ -54,6 +54,7 @@ import ModelDisclosure from '../components/videoGen/ModelDisclosure';
 import ModelRepairBanner from '../components/videoGen/ModelRepairBanner';
 import RenderStatusCard from '../components/videoGen/RenderStatusCard';
 import VideoGenGallery from '../components/videoGen/VideoGenGallery';
+import EpisodeComposer from '../components/videoGen/EpisodeComposer';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
@@ -90,7 +91,9 @@ import {
   getSettings,
   getVideoGenRuntimeStatus,
   listLorasFull,
+  getLoom,
 } from '../services/api';
+import { loomEpisodeToDraftScenes } from '../lib/episodeSceneImport.js';
 import LoraPicker from '../components/imageGen/LoraPicker';
 import { VIDEO_RESOLUTIONS, resolutionOptionsForModel } from '../lib/videoGenResolutions';
 import { GROK_VIDEO_DURATIONS } from '../lib/grokVideoClip.js';
@@ -119,6 +122,30 @@ export default function VideoGen() {
     // Local/Grok backend switch appears/disappears without a reload.
     refreshGrokEnabled();
   };
+
+  // Episode Composer (#6228) — multi-scene continuous-video authoring, opened
+  // either directly or as a FableLoom entry point carrying loomId/episodeId
+  // (LoomSettingsDrawer's "Open Episode Composer" link).
+  const episodeOpen = searchParams.get('episode') === '1';
+  const episodeLoomId = searchParams.get('loomId');
+  const episodeEpisodeId = searchParams.get('episodeId');
+  const openEpisodeComposer = () => setSearchParams(prev => { const n = new URLSearchParams(prev); n.set('episode', '1'); return n; });
+  const closeEpisodeComposer = () => setSearchParams(prev => {
+    const n = new URLSearchParams(prev);
+    n.delete('episode'); n.delete('loomId'); n.delete('episodeId');
+    return n;
+  });
+  const [episodeImportScenes, setEpisodeImportScenes] = useState(null);
+  useEffect(() => {
+    if (!episodeOpen || !episodeLoomId || !episodeEpisodeId) return;
+    getLoom(episodeLoomId, { silent: true }).then((loom) => {
+      const episode = loom?.episodes?.find((e) => e.id === episodeEpisodeId);
+      const draftScenes = loomEpisodeToDraftScenes(episode, { format: loom?.format });
+      if (draftScenes.length) setEpisodeImportScenes(draftScenes);
+    }).catch(() => {});
+    // Only re-run when a fresh loom/episode is targeted, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episodeOpen, episodeLoomId, episodeEpisodeId]);
 
   // `/status` owns connectivity ONLY. It shells out to python on every call
   // (~1-2s), so nothing the form needs to render may wait on it.
@@ -889,6 +916,14 @@ export default function VideoGen() {
           </button>
           <button
             type="button"
+            onClick={openEpisodeComposer}
+            className="flex items-center gap-1.5 px-2 py-1 text-gray-300 hover:text-white border border-port-border rounded hover:bg-port-border/50"
+            title="Compose a multi-scene continuous-video episode"
+          >
+            <Film className="w-3.5 h-3.5" /> Episode
+          </button>
+          <button
+            type="button"
             onClick={openSettings}
             className="flex items-center gap-1.5 px-2 py-1 text-gray-300 hover:text-white border border-port-border rounded hover:bg-port-border/50"
             title="Video Gen settings"
@@ -1650,6 +1685,10 @@ export default function VideoGen() {
 
       <Drawer open={settingsOpen} onClose={closeSettings} title="Media Generation Settings" size="lg">
         <ImageGenTab />
+      </Drawer>
+
+      <Drawer open={episodeOpen} onClose={closeEpisodeComposer} title="Episode Composer" size="xl" closeOnBackdrop={false}>
+        {episodeOpen && <EpisodeComposer initialScenes={episodeImportScenes} onQueued={refreshHistory} />}
       </Drawer>
 
       <RuntimeInstallModal

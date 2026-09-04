@@ -78,6 +78,7 @@ export * from './apiCreativeCommission.js';
 export * from './apiFableLoom.js';
 export * from './apiGames.js';
 export * from './apiMusicVideo.js';
+export * from './apiContinuousVideo.js';
 export * from './apiSprites.js';
 export * from './apiShell.js';
 export * from './apiMoodBoard.js';

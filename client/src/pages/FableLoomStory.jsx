@@ -761,6 +761,7 @@ export default function FableLoomStory({ view = 'graph' }) {
         universe={linkedUniverse}
         onLoomUpdate={setLoom}
         onRewritten={handleRewritten}
+        episodeId={seriesPlanOpen ? null : episodeId}
       />
 
       {episode && (

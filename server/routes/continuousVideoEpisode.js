@@ -61,14 +61,33 @@ const compilerOptionsSchema = z.object({
   frameGrid: z.enum(['uniform', '17n+5']).optional(),
 });
 
-const submitBodySchema = z.object({
+const previewBodySchema = z.object({
   scenes: z.array(sceneSchema).min(1).max(200),
   bible: bibleSchema,
   framings: z.array(z.string().max(200).nullable()).max(2000).optional(),
-  backend: z.enum(CONTINUOUS_VIDEO_BACKENDS).optional(),
-  renderOptions: renderOptionsSchema.optional(),
   compilerOptions: compilerOptionsSchema.optional(),
 });
+
+const submitBodySchema = previewBodySchema.extend({
+  backend: z.enum(CONTINUOUS_VIDEO_BACKENDS).optional(),
+  renderOptions: renderOptionsSchema.optional(),
+});
+
+// Compose+lint without submitting anything — the Episode Composer UI calls
+// this on every scene edit to render a live beat/lint preview before the
+// user queues generation. Never touches a backend or settings.
+router.post('/lint', asyncHandler(async (req, res) => {
+  const parsed = previewBodySchema.safeParse(req.body || {});
+  if (!parsed.success) failValidation(parsed);
+  const {
+    scenes, bible, framings, compilerOptions,
+  } = parsed.data;
+  const clips = composeEpisodeClips({
+    scenes, bible, framings, compilerOptions,
+  });
+  const lint = lintClips(clips, { bible });
+  res.json({ clips, lint });
+}));
 
 router.post('/', asyncHandler(async (req, res) => {
   const parsed = submitBodySchema.safeParse(req.body || {});

@@ -76,6 +76,34 @@ describe('continuousVideoEpisode routes', () => {
     });
   });
 
+  describe('POST /lint', () => {
+    it('composes and lints without starting generation', async () => {
+      lintClips.mockReturnValue({ pass: false, results: [{ index: 0, pass: false, reasons: ['banned term'] }] });
+      const r = await request(app).post('/api/continuous-video/lint').send({ scenes, bible });
+      expect(r.status).toBe(200);
+      expect(r.body.lint.pass).toBe(false);
+      expect(r.body.clips).toEqual([{ prompt: 'A quiet street.', cutType: 'fresh' }]);
+      expect(continuousVideo.generateContinuousVideoEpisode).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request missing scenes/bible', async () => {
+      const r = await request(app).post('/api/continuous-video/lint').send({});
+      expect(r.status).toBe(400);
+      expect(continuousVideo.composeEpisodeClips).not.toHaveBeenCalled();
+    });
+
+    it('does not accept backend/renderOptions — only compose+lint fields', async () => {
+      const r = await request(app).post('/api/continuous-video/lint').send({
+        scenes, bible, backend: 'reactor', renderOptions: { modelId: 'ltx2' },
+      });
+      expect(r.status).toBe(200);
+      // composeEpisodeClips is only ever called with the compose-relevant fields.
+      const call = continuousVideo.composeEpisodeClips.mock.calls[0][0];
+      expect(call).not.toHaveProperty('backend');
+      expect(call).not.toHaveProperty('renderOptions');
+    });
+  });
+
   describe('GET /:jobId/events', () => {
     it('404s when the job is not found', async () => {
       const r = await request(app).get('/api/continuous-video/missing/events');
