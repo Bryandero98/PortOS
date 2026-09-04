@@ -9,6 +9,7 @@ import {
   canTypeSlashCommands,
   resolveOwnsPrWorkflow,
   isValidSlashdoCommand,
+  parseExplicitReviewWith,
   resolveSlashdoInvocation,
   resolveSlashdoStyle,
   slashdoSkillName,
@@ -393,5 +394,59 @@ describe('bundled command context budget', () => {
     expect(Object.keys(bundle.files).length).toBeGreaterThan(0);
     expect(bundle.body.length).toBeLessThan(eager.length / 4);
     expect(eager).not.toMatch(/^!read /m);
+  });
+});
+
+// slashdo's `--review-with` grammar is the one thing PortOS re-parses rather than
+// owns, and the whole point of the parser is that anything it can't read falls
+// through to "prune and pin nothing". A prompt-level test can't cheaply pin that
+// matrix — and a mis-read entry is invisible there, since the wrong answer is a
+// well-formed prompt naming the wrong reviewer.
+describe('parseExplicitReviewWith', () => {
+  it('reads no flag as no explicit selection', () => {
+    expect(parseExplicitReviewWith('--issues 42')).toBeNull();
+    expect(parseExplicitReviewWith('')).toBeNull();
+    expect(parseExplicitReviewWith(undefined)).toBeNull();
+    // A different flag that merely shares the prefix is not ours to read.
+    expect(parseExplicitReviewWith('--review-with-nothing x')).toBeNull();
+  });
+
+  it.each([
+    ['spaced form', '--review-with ollama', ['ollama'], []],
+    ['equals form', '--review-with=codex,claude', ['codex', 'claude'], []],
+    ['slashdo agy slug and its aliases', '--review-with agy,gemini,antigravity', ['antigravity'], []],
+    ['cursor-agent alias', '--review-with cursor-agent', ['cursor'], []],
+    ['suffixes and a model bracket', '--review-with agy[gemini-3.8-flash]~opt~max=1~effort=medium', ['antigravity'], []],
+    ['a quoted model id containing spaces', '--review-with "agy[Gemini 3.5 Flash (High)]~opt"', ['antigravity'], []],
+    ['a @login, bot suffix included', '--review-with codex,@review-bot[bot]', ['codex'], ['review-bot[bot]']],
+    ['repeats that agree', '--review-with codex --review-with codex', ['codex'], []],
+  ])('resolves %s', (_label, args, reviewers, usernames) => {
+    expect(parseExplicitReviewWith(args)).toEqual({ explicit: true, none: false, reviewers, usernames });
+  });
+
+  it.each(['--review-with none', '--review-with NONE', '--review-with=none'])('reads %s as the opt-out tombstone', (args) => {
+    expect(parseExplicitReviewWith(args)).toEqual({ explicit: true, none: true, reviewers: [], usernames: [] });
+  });
+
+  it.each([
+    ['a missing value', '--review-with'],
+    ['the next flag where the value should be', '--review-with --merge'],
+    ['a shell expansion we cannot see through', '--review-with $REVIEWER'],
+    ['an unterminated quote', '--review-with "codex'],
+    ['an unterminated model bracket', '--review-with codex[a --merge'],
+    ['a slug slashdo has no counterpart for', '--review-with lmstudio'],
+    ['a slug outside the grammar entirely', '--review-with some-future-reviewer'],
+    ['a bracket on a reviewer that takes none', '--review-with copilot[x]'],
+    ['an unknown per-entry suffix', '--review-with codex~bogus'],
+    ['a repeated per-entry suffix', '--review-with codex~max=1~max=2'],
+    ['a non-integer round cap', '--review-with codex~max=two'],
+    ['an effort outside the ladder', '--review-with codex~effort=turbo'],
+    ['the tombstone mixed with real slugs', '--review-with none,codex'],
+    ['repeats that disagree', '--review-with codex --review-with claude'],
+    ['a malformed login', '--review-with @-nope'],
+  ])('refuses to guess at %s', (_label, args) => {
+    expect(parseExplicitReviewWith(args)).toEqual({
+      explicit: true, unresolved: true, reviewers: [], usernames: [],
+    });
   });
 });
