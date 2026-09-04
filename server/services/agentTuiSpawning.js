@@ -236,8 +236,8 @@ export function buildTuiSpawnConfig(provider, model, {
   // generic assembly below — that path forwards `provider.args` and applies
   // `applyCommandDefaults`, either of which can hand a contributor-controlled
   // review a saved `--dangerously-skip-permissions`. `tui: true` tells the
-  // recipe to drop only its headless output flags and keep every enforcement
-  // flag. Fail closed when the pairing declares no attachable recipe: the
+  // recipe to drop only the flags that require `--print` and keep every
+  // enforcement flag. Fail closed when the pairing declares no attachable recipe: the
   // caller is supposed to have asked `supportsTuiPublicReviewPosture` first, so
   // reaching this is a routing bug and must not silently open a PTY whose
   // posture is decorative.
