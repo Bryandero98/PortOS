@@ -21,7 +21,13 @@ import { listUserActions } from './userActions.js';
 
 export const LEFTOVER_BRANCH_LOOKBACK_DAYS = 14;
 export const LEFTOVER_BRANCH_CACHE_TTL_MS = 60_000;
-/** Branch names carried per app so the banner can name a few without unbounded payload growth. */
+/**
+ * Branch names carried per app so the banner can name a few without unbounded
+ * payload growth. They reach the local UI only — `formatLeftoverBranchSnippet`
+ * below stays counts-only on purpose, so a branch name (which can carry a
+ * private project or issue title) never rides into an agent prompt and out into
+ * a filed issue.
+ */
 export const LEFTOVER_BRANCH_SAMPLE_LIMIT = 6;
 
 let leftoverCache = { at: 0, findings: null };

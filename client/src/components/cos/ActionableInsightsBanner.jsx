@@ -113,16 +113,18 @@ export default function ActionableInsightsBanner({ insights, onTaskUnblocked, on
   const [dismissed, setDismissed] = useState([]);
   const [expanded, setExpanded] = useState({});
   const [approvingTaskId, setApprovingTaskId] = useState(null);
-  const [reconcilingAppId, setReconcilingAppId] = useState(null);
-  const [queuedAppIds, setQueuedAppIds] = useState([]);
+  // Per-app, not one id: several apps can be queued from the same card, and a
+  // single in-flight id would clear the first app's finish over a second app's
+  // still-pending request and re-enable its button mid-flight.
+  const [reconcileState, setReconcileState] = useState({});
   const navigate = useNavigate();
 
   // The insight only clears once branch-reconcile has actually RUN, so the card
   // outlives the request — the button has to say it already went out, or the
   // operator queues the same app again on every glance.
   const reconcileButton = (app) => (
-    reconcilingAppId === app.appId ? { label: 'Queuing…', disabled: true }
-      : queuedAppIds.includes(app.appId) ? { label: 'Queued', disabled: true }
+    reconcileState[app.appId] === 'queuing' ? { label: 'Queuing…', disabled: true }
+      : reconcileState[app.appId] === 'queued' ? { label: 'Queued', disabled: true }
         : { label: 'Run Now', disabled: false }
   );
 
@@ -169,14 +171,17 @@ export default function ActionableInsightsBanner({ insights, onTaskUnblocked, on
   };
 
   const handleRunReconcile = async (app) => {
-    setReconcilingAppId(app.appId);
+    setReconcileState(prev => ({ ...prev, [app.appId]: 'queuing' }));
     const result = await api.triggerCosOnDemandTask('branch-reconcile', app.appId, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });
-    setReconcilingAppId(null);
-    if (!result?.success) return;
-    setQueuedAppIds(prev => [...prev, app.appId]);
+    if (!result?.success) {
+      // Back to Run Now — a rejected request left nothing queued to wait on.
+      setReconcileState(prev => ({ ...prev, [app.appId]: undefined }));
+      return;
+    }
+    setReconcileState(prev => ({ ...prev, [app.appId]: 'queued' }));
     toast.success(`Queued branch-reconcile for ${app.appName}`);
   };
 
