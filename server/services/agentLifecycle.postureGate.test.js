@@ -147,7 +147,7 @@ vi.mock('./modelAbuseGuard.js', () => ({
 
 import { spawnAgentForTask } from './agentLifecycle.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
-import { materializePublicReviewInput, readPublicReviewInputSnapshot } from './modelAbuseGuard.js';
+import { materializePublicReviewInput, materializePublicReviewPatches, readPublicReviewInputSnapshot } from './modelAbuseGuard.js';
 import { removeWorktree } from './worktreeManager.js';
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { buildAgentPrompt } from './agentPromptBuilder.js';
@@ -187,6 +187,9 @@ function reachDispatch() {
     worktreeInfo: null,
   });
   vi.mocked(materializePublicReviewInput).mockResolvedValue(true);
+  // The actions stage also materializes the read-only patch files; without this
+  // its dispatch cases block on `public-review-input-missing` before routing.
+  vi.mocked(materializePublicReviewPatches).mockResolvedValue(true);
   vi.mocked(readPublicReviewInputSnapshot).mockResolvedValue({ pullRequests: [] });
   vi.mocked(buildAgentPrompt).mockResolvedValue('review the cleared input');
   vi.mocked(createAgentRun).mockResolvedValue({ runId: 'run-1' });
@@ -293,6 +296,94 @@ describe('public-review posture gate — spawn behavior (#5866)', () => {
 
     await spawnAgentForTask({
       id: 'task-public-review-tui',
+      metadata: {
+        executionProfile: 'public-review-gate',
+        pipeline: { securityScan: { completed: true, status: 'passed', safePrCount: 1 } },
+      },
+    });
+
+    expect(postureBlockWrites()).toEqual([]);
+    expect(spawnDirectly).toHaveBeenCalledTimes(1);
+    expect(buildTuiSpawnConfig).not.toHaveBeenCalled();
+    expect(spawnTuiAgent).not.toHaveBeenCalled();
+  });
+
+  // #6062 — Stage 3 is the longest-running, least predictable stage (it applies
+  // a patch and runs the repo's tests), so it is the one an operator wants to
+  // attach to and steer. It gets a PTY when its provider is a TUI record whose
+  // vendor declares an attachable recipe.
+  it('spawns the sandboxed-actions stage as a PTY when its TUI provider has an attachable recipe', async () => {
+    const { buildTuiSpawnConfig, spawnTuiAgent } = await import('./agentTuiSpawning.js');
+    vi.mocked(buildTuiSpawnConfig).mockReturnValue({ command: 'claude', args: [], commandLine: 'claude' });
+    reachDispatch();
+
+    await spawnAgentForTask({
+      id: 'task-public-review-actions-tui',
+      metadata: {
+        executionProfile: 'public-review-actions',
+        issueWatcher: { pullRequests: [{ number: 42 }] },
+        pipeline: {
+          securityScan: { completed: true, status: 'passed', safePrCount: 1 },
+          eligibility: { complete: true, eligibleNumbers: [42] },
+        },
+      },
+    });
+
+    expect(postureBlockWrites()).toEqual([]);
+    expect(spawnDirectly).not.toHaveBeenCalled();
+    expect(spawnTuiAgent).toHaveBeenCalledTimes(1);
+    // The posture must reach BOTH the argv builder (so the vendor recipe, not
+    // the generic assembly, decides the flags) and the session (so the PTY
+    // child gets the same allowlisted env its headless sibling would).
+    expect(buildTuiSpawnConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'claude-code-tui' }),
+      'sonnet',
+      expect.objectContaining({ safetyProfile: 'public-review-actions' }),
+    );
+    expect(spawnTuiAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ safetyProfile: 'public-review-actions' }),
+    );
+  });
+
+  // The narrow half of the same rule. A vendor whose actions recipe has not been
+  // reviewed for a PTY emits headless argv (`exec`, `--print`, `run`) that a PTY
+  // can neither prompt nor enforce, so it stays headless rather than opening a
+  // session whose posture is decorative.
+  it('keeps the sandboxed-actions stage headless on a TUI provider with no attachable recipe', async () => {
+    const { buildTuiSpawnConfig, spawnTuiAgent } = await import('./agentTuiSpawning.js');
+    vi.mocked(resolveAgentProviderAndModel).mockResolvedValue({
+      ok: true, provider: { id: 'codex-tui', type: 'tui', command: 'codex', envVars: {} },
+      selectedModel: 'gpt-5.6', modelSelection: {},
+    });
+    reachDispatch();
+
+    await spawnAgentForTask({
+      id: 'task-public-review-actions-codex',
+      metadata: {
+        executionProfile: 'public-review-actions',
+        issueWatcher: { pullRequests: [{ number: 42 }] },
+        pipeline: {
+          securityScan: { completed: true, status: 'passed', safePrCount: 1 },
+          eligibility: { complete: true, eligibleNumbers: [42] },
+        },
+      },
+    });
+
+    expect(postureBlockWrites()).toEqual([]);
+    expect(spawnDirectly).toHaveBeenCalledTimes(1);
+    expect(buildTuiSpawnConfig).not.toHaveBeenCalled();
+    expect(spawnTuiAgent).not.toHaveBeenCalled();
+  });
+
+  // The other exclusion, and the one that is a security posture rather than a
+  // capability gap: an interactive session for a reasoner with no tools buys
+  // nothing and widens the boundary for free.
+  it('keeps a no-tool stage headless even on a provider whose actions recipe is attachable', async () => {
+    const { buildTuiSpawnConfig, spawnTuiAgent } = await import('./agentTuiSpawning.js');
+    reachDispatch();
+
+    await spawnAgentForTask({
+      id: 'task-public-review-no-tool-claude',
       metadata: {
         executionProfile: 'public-review-gate',
         pipeline: { securityScan: { completed: true, status: 'passed', safePrCount: 1 } },

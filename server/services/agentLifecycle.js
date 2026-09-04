@@ -63,7 +63,7 @@ import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { dropUnsupportedOllamaThinking } from './ollamaAgentContext.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
-import { publicReviewProviderBlock, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
+import { publicReviewProviderBlock, publicReviewPostureForProfile, supportsTuiPublicReviewActionsProvider, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { formatPublicReviewInputPrompt } from '../lib/modelAbuseGuard.js';
 import { materializePublicReviewInput, materializePublicReviewPatches, readPublicReviewInputSnapshot, validatePublicReviewModel } from './modelAbuseGuard.js';
@@ -438,12 +438,23 @@ async function runAgentSpawn(task) {
     const publicReviewActions = executionProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
     const publicReview = Boolean(publicReviewPosture);
     const isTui = isTuiProvider(provider);
-    // A public-content stage never runs as an interactive session: a TUI
-    // provider record is spawned headless through its vendor's enforced
-    // recipe (the same binary as its CLI sibling) — the recipe that makes it
-    // eligible in `providerVendors.js` — so the user's enabled TUI providers
-    // are legal stage choices without opening a PTY.
-    const spawnHeadless = publicReview || !isTui;
+    // Stage 3 (`sandboxed-actions`) is the longest-running and least
+    // predictable stage in the pr-reviewer pipeline — it applies a screened
+    // patch and runs the repo's tests — so it is the one an operator actually
+    // wants to attach to and steer. It may run as an interactive session when
+    // its configured provider is a TUI record AND that vendor declares an
+    // attachable recipe (`tui: true`), which keeps every enforcement flag and
+    // drops only the headless output flags.
+    //
+    // Everything else stays headless. The `no-tool` postures (Stage 1's
+    // security scan, Stage 2's eligibility gate) are excluded by design: an
+    // interactive session for a reasoner with no tools buys nothing and widens
+    // the boundary for free. A TUI record whose vendor has no attachable
+    // recipe also stays headless — its ordinary recipe emits `--print`/`exec`
+    // argv that a PTY can neither prompt nor enforce.
+    const publicReviewTui = publicReviewActions && isTui
+      && supportsTuiPublicReviewActionsProvider(provider);
+    const spawnHeadless = !isTui || (publicReview && !publicReviewTui);
     if (publicReview) {
       const scanBlock = publicReviewScanBlock(task);
       if (scanBlock) {
@@ -811,9 +822,10 @@ async function runAgentSpawn(task) {
       // The public-review posture this run executes under (null for an ordinary
       // task). Projected beside `executionMode` because the UI cannot otherwise
       // explain why the card has no "Open Shell" link: a public-review stage is
-      // forced headless (`spawnHeadless = publicReview || !isTui` above) even
-      // when the user configured it onto a TUI provider, so without this the
-      // card is indistinguishable from an agent whose PTY failed to attach.
+      // forced headless (`spawnHeadless` above) unless it is the sandboxed-
+      // actions stage on a TUI provider whose vendor declares an attachable
+      // recipe, so without this the card is indistinguishable from an agent
+      // whose PTY failed to attach.
       publicReviewPosture,
       taskAnalysisType: task.metadata?.analysisType || null,
       taskReviewType: task.metadata?.reviewType || null,
@@ -981,7 +993,7 @@ async function runAgentSpawn(task) {
     const maxConcurrentThreads = cloudSwarmThreadCapacity(runProvider, task.metadata?.swarmCount);
     const safetyProfile = publicReview ? executionProfile : null;
     const cliConfig = !spawnHeadless
-      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads })
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile })
       : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
@@ -1021,6 +1033,7 @@ async function runAgentSpawn(task) {
         isTruthyMetaFn: isTruthyMeta,
         leanMode,
         useDurableRunner: dispatchUseRunner,
+        safetyProfile,
       });
     }
     if (dispatchUseRunner) {

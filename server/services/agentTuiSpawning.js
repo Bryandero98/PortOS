@@ -67,9 +67,10 @@ import {
   isPasteConfirmed,
   SUBMIT_KEY,
 } from '../lib/tuiHandshake.js';
-import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
+import { buildVendorSpawnConfig, injectTuiModelAndEffort, supportsTuiPublicReviewPosture } from '../lib/providerVendors.js';
+import { isPublicReviewRestrictedProfile, publicReviewPostureForProfile } from '../lib/agentExecutionProfiles.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
-import { composeProviderEnv } from '../lib/cliChildEnv.js';
+import { buildCliChildEnv, composeProviderEnv } from '../lib/cliChildEnv.js';
 import { cliProviderAuthDescriptor } from '../lib/processEnv.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
@@ -111,12 +112,41 @@ export async function createAgentTuiSession({
   forgeTokenEnv = {},
   doneSentinelPath = null,
   useDurableRunner = false,
+  safetyProfile = null,
   onData,
   onExit,
   onInitialCommandSent,
 }) {
-  const env = { ...composeProviderEnv({ before: forgeTokenEnv, provider, model }), ...agentGuardEnv() };
+  const restricted = isPublicReviewRestrictedProfile(safetyProfile);
+  // A public-content stage's PTY starts from the SAME environment its headless
+  // sibling gets — no forge credential, no SSH config, no cloud key, no
+  // arbitrary provider var — so it calls the very builder the headless path
+  // uses rather than re-deriving the profile→allowlist mapping here. The result
+  // is a COMPLETE environment, not the delta `createShellSession` normally
+  // takes: the shell service unions a delta onto `buildSafeEnv(process.env)`,
+  // which would restore everything the allowlist just withheld, hence
+  // `envReplace` below.
+  //
+  // KNOWN RESIDUAL (tracked separately, see #6159): this path hosts the CLI inside an
+  // interactive login shell, so the operator's own rc file runs before the
+  // provider does and can re-export anything it likes. That is not a hole this
+  // allowlist can close — closing it means spawning the recipe command as the
+  // PTY directly, the way the runner's `/spawn-tui` already does. What the
+  // allowlist DOES close is the server's own process environment, which is
+  // where a newly-added PortOS secret would otherwise appear for free.
+  const env = restricted
+    ? buildCliChildEnv({ before: forgeTokenEnv, provider, model, cwd, guard: true, safetyProfile })
+    : { ...composeProviderEnv({ before: forgeTokenEnv, provider, model }), ...agentGuardEnv() };
   if (useDurableRunner) {
+    // The CoS runner is a shared long-lived process and builds its own child
+    // env from ITS ambient environment (`/spawn-tui` → `buildCliChildEnv`
+    // without a profile), so a public-content stage routed through it would
+    // silently lose the allowlist resolved above. `agentLifecycle.js` forces
+    // every such stage direct-only (`dispatchUseRunner`); fail closed here so
+    // that stays true by construction rather than by remembering it.
+    if (restricted) {
+      throw new Error(`Public-content stage cannot spawn via the CoS runner (profile '${safetyProfile}')`);
+    }
     // The runner launches the TUI command directly (there is no intermediate
     // login-shell readiness probe), so output can arrive before the spawn HTTP
     // response. Open the readiness gate before handing off to avoid discarding
@@ -180,6 +210,9 @@ export async function createAgentTuiSession({
     // whose real base env is assembled downstream. Only AI agent sessions get
     // the shim; the user's own Shell page does not.
     env,
+    // …except under a public-content posture, where `env` above is not a delta
+    // at all but the complete, allowlisted environment (see its construction).
+    envReplace: restricted,
     onData,
     onExit,
   });
@@ -196,8 +229,38 @@ export function buildTuiSpawnConfig(provider, model, {
   systemPromptFile = null,
   effort = null,
   maxConcurrentThreads = null,
+  safetyProfile = null,
   shell = resolveInteractiveShell(),
 } = {}) {
+  // A public-content stage's argv is the vendor's maintained recipe, never the
+  // generic assembly below — that path forwards `provider.args` and applies
+  // `applyCommandDefaults`, either of which can hand a contributor-controlled
+  // review a saved `--dangerously-skip-permissions`. `tui: true` tells the
+  // recipe to drop only its headless output flags and keep every enforcement
+  // flag. Fail closed when the pairing declares no attachable recipe: the
+  // caller is supposed to have asked `supportsTuiPublicReviewPosture` first, so
+  // reaching this is a routing bug and must not silently open a PTY whose
+  // posture is decorative.
+  const posture = publicReviewPostureForProfile(safetyProfile);
+  if (posture) {
+    if (!supportsTuiPublicReviewPosture(provider, posture)) {
+      throw new Error(`Provider '${provider?.id || provider?.command || 'unknown'}' cannot run an attachable ${posture} session`);
+    }
+    const recipe = buildVendorSpawnConfig(provider, {
+      effectiveModel: model,
+      effort,
+      maxConcurrentThreads,
+      systemPromptFile,
+      safetyProfile,
+      tui: true,
+    });
+    return {
+      command: recipe.command,
+      args: recipe.args,
+      commandLine: formatShellCommandLine(recipe.command, recipe.args, shell),
+      promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS,
+    };
+  }
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   // Model+effort injection (including the antigravity-validates-the-pair special
@@ -554,6 +617,10 @@ export async function spawnTuiAgent({
   isTruthyMetaFn,
   leanMode = false,
   useDurableRunner = false,
+  // The public-content execution profile this run enforces (null for an
+  // ordinary agent task). Threaded through to the session so the PTY child
+  // gets the same allowlisted environment its headless sibling would.
+  safetyProfile = null,
 }) {
   const outputFile = join(agentDir, 'output.txt');
   // Raw PTY bytes spool to disk continuously rather than accumulate in-memory.
@@ -1349,8 +1416,10 @@ export async function spawnTuiAgent({
   // Repo-owner-pinned GH_TOKEN for the agent's own `gh pr create` (see
   // resolveForgeTokenEnv). Resolved here since createAgentTuiSession is sync.
   // Skip when the provider supplies its own GH_TOKEN/GITHUB_TOKEN so its explicit
-  // credential wins.
-  const forgeTokenEnv = providerSuppliesGithubToken(provider)
+  // credential wins — and skip for a public-content stage, which must never hold
+  // a forge credential (the allowlist in createAgentTuiSession strips it anyway;
+  // not resolving it means it is never read out of the keychain to begin with).
+  const forgeTokenEnv = providerSuppliesGithubToken(provider) || isPublicReviewRestrictedProfile(safetyProfile)
     ? {}
     : await git.resolveForgeTokenEnv(cwd);
 
@@ -1395,6 +1464,7 @@ export async function spawnTuiAgent({
       forgeTokenEnv,
       doneSentinelPath,
       useDurableRunner,
+      safetyProfile,
       onData: handleData,
       onExit: handleExit,
       onInitialCommandSent: () => { commandInjected = true; },

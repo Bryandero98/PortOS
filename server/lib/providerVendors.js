@@ -143,11 +143,13 @@ function defaultSpawnArgs(cliArgsFn, fallbackCommand) {
 }
 
 /**
- * A provider record that names a local binary PortOS can spawn headless. A
- * public-review stage never runs interactively: a TUI record of the same
- * vendor (`codex-tui`, `grok-tui`, …) is spawned through the vendor's headless
- * recipe exactly like its CLI sibling, so the user's enabled TUI providers are
- * legal stage choices. API/custom providers have no binary and no recipe.
+ * A provider record that names a local binary PortOS can spawn. A TUI record of
+ * a vendor (`codex-tui`, `grok-tui`, …) is spawned through that vendor's
+ * headless public-review recipe exactly like its CLI sibling, so the user's
+ * enabled TUI providers are legal stage choices. The one exception is a recipe
+ * marked `tui: true` (see `supportsTuiPublicReviewPosture`), which the
+ * sandboxed-actions stage may run as an attachable session so an operator can
+ * watch and steer it. API/custom providers have no binary and no recipe.
  */
 const isDirectBinaryProvider = (provider) => provider?.type === PROVIDER_TYPES.CLI || provider?.type === PROVIDER_TYPES.TUI;
 
@@ -642,6 +644,17 @@ const CLAUDE = {
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: claudePublicReviewSpawnArgsFor(CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS),
       matchProvider: matchClaudeBinary,
+      // The only posture/vendor pairing that may run as an ATTACHABLE session.
+      // `claudePublicReviewArgs` drops only the headless output flags for
+      // `tui: true`; every enforcement flag above (`--permission-mode
+      // acceptEdits`, the `--settings` sandbox JSON, `--disallowedTools`, and
+      // the shared no-MCP/no-chrome/no-slash-command set) is still emitted, so
+      // an operator who drops into the PTY inherits the same boundary the
+      // headless run had. Nothing inside the session can widen it: the only
+      // lever that lifts Claude Code's filesystem protection is
+      // `sandbox.filesystem.disabled`, which this recipe never emits, and
+      // `--disable-slash-commands` removes the in-session settings surface.
+      tui: true,
     },
   },
 };
@@ -709,8 +722,11 @@ export function inferTuiCommand(id) {
 
 /**
  * `applyCommandDefaults` (tuiHandshake.js): interactive-session flag dispatch.
- * Public-review stages never reach this — they always spawn headless through
- * `buildVendorSpawnConfig`, which is where a posture is enforced.
+ * Public-review stages never reach this — headless OR attachable, their argv
+ * comes from `buildVendorSpawnConfig`, which is where a posture is enforced.
+ * (That is load-bearing for the attachable case: `ensureAntigravityTuiArgs` and
+ * friends append `--dangerously-skip-permissions`-class defaults, which would
+ * undo the recipe.)
  */
 export function applyCommandDefaults(command, args) {
   const vendor = PROVIDER_VENDORS.find((v) => v.tuiArgs && v.matchCommand(command));
@@ -752,6 +768,18 @@ export function buildVendorSpawnConfig(provider, ctx) {
   const posture = publicReviewPostureForProfile(ctx?.safetyProfile);
   if (posture) {
     const recipe = publicReviewRecipe(provider, posture);
+    // An interactive spawn has no headless fallback tier: the ordinary
+    // `spawnArgs` of a vendor without a TUI-capable recipe emits that vendor's
+    // HEADLESS argv (`--print`, `exec`, `run`), which in a PTY neither accepts
+    // a pasted prompt nor enforces anything. Fail closed rather than open a
+    // session whose posture is decorative. Callers decide TUI-vs-headless from
+    // `supportsTuiPublicReviewPosture`, so reaching this is a routing bug.
+    if (ctx?.tui) {
+      if (!recipe?.tui) {
+        throw new Error(`Provider '${providerLabel(provider)}' has no attachable ${posture} public-review recipe`);
+      }
+      return recipe.spawnArgs(provider, ctx);
+    }
     if (recipe) return recipe.spawnArgs(provider, ctx);
     // See supportsPublicReviewPosture for why the actions stage may fall
     // through to the vendor's ordinary headless recipe and the gate may not.
@@ -771,8 +799,9 @@ export function buildVendorSpawnConfig(provider, ctx) {
  *
  * API/custom providers have no maintained recipe: a generic read-only prompt
  * is not enforcement, so they fail closed. A TUI record IS eligible — the
- * stage spawns its binary headless through the vendor's enforced recipe, never
- * as an interactive session (see `isDirectBinaryProvider`).
+ * stage spawns its binary through the vendor's enforced recipe, headless unless
+ * that recipe is also marked `tui: true` (see `isDirectBinaryProvider` and
+ * `supportsTuiPublicReviewPosture`).
  */
 export function publicReviewPosturesForProvider(provider) {
   return PUBLIC_REVIEW_POSTURES.filter((posture) => supportsPublicReviewPosture(provider, posture));
@@ -848,6 +877,30 @@ export function supportsPublicReviewProvider(provider) {
 /** Whether a provider can run the sandboxed final public-review stage. */
 export function supportsPublicReviewActionsProvider(provider) {
   return supportsPublicReviewPosture(provider, PUBLIC_REVIEW_ACTIONS_POSTURE);
+}
+
+/**
+ * Whether `provider` may run a `posture` stage as an ATTACHABLE PTY session
+ * rather than headless.
+ *
+ * Deliberately much narrower than `supportsPublicReviewPosture`: that one lets
+ * the actions stage fall through to a vendor's ordinary headless recipe when it
+ * declares none, which is fine for a `--print` child and useless in a PTY. An
+ * interactive session requires a recipe that has been reviewed for it and says
+ * so with `tui: true` — the recipe still owns the argv (`spawnArgs(provider,
+ * { ...ctx, tui: true })`), it just drops the headless output flags.
+ *
+ * `no-tool` is structurally excluded: an interactive session for a reasoner
+ * with no tools buys nothing and widens the boundary for free, so no row
+ * declares it and this returns false for that posture by construction.
+ */
+export function supportsTuiPublicReviewPosture(provider, posture) {
+  return isDirectBinaryProvider(provider) && Boolean(publicReviewRecipe(provider, posture)?.tui);
+}
+
+/** Whether the sandboxed final public-review stage can attach a PTY here. */
+export function supportsTuiPublicReviewActionsProvider(provider) {
+  return supportsTuiPublicReviewPosture(provider, PUBLIC_REVIEW_ACTIONS_POSTURE);
 }
 
 /**
