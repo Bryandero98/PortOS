@@ -428,6 +428,11 @@ export function evaluateMemoryPressurePolicy({
   }
 
   if (sustainedDurationMs > 0) {
+    // Track "under pressure" against the same bar isRelieved just used above —
+    // when wasUnderPressure, that's the higher exit threshold, not the base
+    // threshold — otherwise samples sitting in the dead-band (below exitThresholdBytes
+    // but above thresholdBytes) never count as sustained and eviction starves.
+    const activeThresholdBytes = wasUnderPressure ? exitThresholdBytes : thresholdBytes;
     const validSamples = (history || [])
       .map((s) => ({
         at: s.at ?? s.timestamp ?? s.time ?? now,
@@ -438,7 +443,7 @@ export function evaluateMemoryPressurePolicy({
 
     let earliestUnderPressureAt = null;
     for (let i = validSamples.length - 1; i >= 0; i--) {
-      if (validSamples[i].free < thresholdBytes) {
+      if (validSamples[i].free < activeThresholdBytes) {
         earliestUnderPressureAt = validSamples[i].at;
       } else {
         break;
@@ -501,8 +506,19 @@ export async function reapIdleDaemons(now = Date.now(), options = {}) {
 
   // 1. Normal idle timeout pass
   for (const [name, entry] of idleDaemons) {
-    const isPinned = await Promise.resolve(entry.isPinned?.()).catch(() => false);
+    // Fail-safe to pinned on a transient read error, matching the pressure-aware
+    // pass below — assuming "not pinned" here would risk stopping a keepLoaded
+    // daemon on a flaky settings read.
+    const isPinned = await Promise.resolve(entry.isPinned?.()).catch(() => true);
     if (isPinned) continue; // Pinned servers are exempt
+
+    // Already stopped (by the pressure-aware pass, or externally) — skip so this
+    // pass doesn't overwrite its release reason and doesn't preempt the
+    // pressure-aware pass below via the early return once its idle window re-elapses.
+    const isRunning = entry.isRunning
+      ? await Promise.resolve(entry.isRunning()).catch(() => true)
+      : true;
+    if (!isRunning) continue;
 
     // Resolved per sweep, so lowering the window in Settings applies to the very
     // next beat rather than to the next server restart.

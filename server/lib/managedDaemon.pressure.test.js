@@ -85,6 +85,26 @@ describe('managedDaemon memory pressure policy', () => {
       expect(resultAboveDeadBand.reason).toBe('host memory not under pressure');
     });
 
+    it('treats dead-band samples as sustained pressure when wasUnderPressure', () => {
+      // Threshold 4GB, dead-band 2GB, exit threshold 6GB. Free has held at 5GB —
+      // inside the dead-band (below the exit threshold, above the base threshold)
+      // — for well over the default 30s sustained window while wasUnderPressure.
+      const deadBandHistory = [
+        { at: now - 40_000, free: 5 * GB },
+        { at: now - 20_000, free: 5 * GB },
+        { at: now, free: 5 * GB },
+      ];
+      const result = evaluateMemoryPressurePolicy({
+        daemons: [{ name: 'mtplx', lastUsedAt: now - 10_000 }],
+        memoryStats: { total: 64 * GB, used: 59 * GB, free: 5 * GB },
+        history: deadBandHistory,
+        options: { wasUnderPressure: true },
+        now,
+      });
+      expect(result.shouldRelease).toBe(true);
+      expect(result.reason).toBe('host memory pressure');
+    });
+
     it('returns shouldRelease: false when within the calm-down window', () => {
       const result = evaluateMemoryPressurePolicy({
         daemons: [{ name: 'mtplx', lastUsedAt: now - 10_000 }],
@@ -290,6 +310,42 @@ describe('managedDaemon memory pressure policy', () => {
 
       expect(stopped).toEqual([]);
       expect(stop).not.toHaveBeenCalled();
+    });
+
+    it('idle-timeout pass skips an already-stopped daemon instead of re-stopping it', async () => {
+      let running = true;
+      const stop = vi.fn().mockImplementation(() => {
+        running = false;
+        return Promise.resolve();
+      });
+      registerIdleDaemon({
+        name: 'daemon-already-stopped',
+        getIdleMs: () => 5 * MINUTE,
+        isRunning: () => running,
+        stop,
+      });
+
+      const now1 = Date.now();
+      // Idle window (5m) hasn't elapsed since registration, so this falls through
+      // to the pressure-aware pass, which stops it and records why.
+      const stoppedByPressure = await reapIdleDaemons(now1, {
+        memoryStats: { total: 64 * GB, used: 62 * GB, free: 2 * GB },
+        history: [{ at: now1 - 40_000, free: 2 * GB }, { at: now1, free: 2 * GB }],
+        sustainedDurationMs: 30_000,
+      });
+      expect(stoppedByPressure).toEqual(['daemon-already-stopped']);
+      expect(stop).toHaveBeenCalledTimes(1);
+      const pressureReason = daemonReleaseReason('daemon-already-stopped');
+      expect(pressureReason).toContain('host memory pressure');
+
+      // The pressure stop reset lastUsedAt to now1 — advance past the idle
+      // window without the daemon ever restarting.
+      const now2 = now1 + 6 * MINUTE;
+      const stoppedByIdle = await reapIdleDaemons(now2, { memoryStats: false });
+
+      expect(stoppedByIdle).toEqual([]);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(daemonReleaseReason('daemon-already-stopped')).toBe(pressureReason);
     });
 
     it('clears releaseReason when markDaemonUsed is called upon server restart', async () => {
