@@ -233,7 +233,7 @@ const buildSystemPrompt = (cfg) => {
       '"save"/"capture"/"add"/"remember"/"note"/"file"/"log it" → matching capture tool (e.g., brain_capture, meatspace_log_*, daily_log_append, goal_log_note). ' +
       '"start dictation"/"dictate"/"record my log" → daily_log_start_dictation. ' +
       '"what does this say"/"read this aloud"/"read the page to me"/"what\'s on this page" → ui_read, then speak the returned `content` verbatim (do NOT paraphrase or summarize unless the user asked "what is this page about?"). ' +
-      'DESTRUCTIVE-ACTION FLOW: when ui_click returns `confirmation_required: true` the gate has fired — speak the returned `summary` (it tells the user how to confirm) and STOP. The user\'s next utterance ("yes"/"confirm"/"cancel") is handled BY THE SERVER, not by you — do not re-issue ui_click on the same target unless the user rephrases the request after cancelling. ' +
+      'DESTRUCTIVE-ACTION FLOW: when a UI tool (ui_click, ui_check, ui_fill) returns `confirmation_required: true` the gate has fired — speak the returned `summary` (it tells the user how to confirm) and STOP. The user\'s next utterance ("yes"/"confirm"/"cancel") is handled BY THE SERVER, not by you — do not re-issue that tool on the same target unless the user rephrases the request after cancelling. ' +
       '"what time"/"what day"/"what date" → time_now. ' +
       '"what are my goals"/"my goals" → goal_list. ' +
       '"is anything crashed"/"pm2 status"/"are services up" → pm2_status. ' +
