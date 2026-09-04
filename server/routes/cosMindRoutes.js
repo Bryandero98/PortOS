@@ -228,7 +228,9 @@ router.get('/mind/tools', asyncHandler(async (_req, res) => {
       granted: !allowed || allowed.has(app.id),
     }));
   }
+  const { getCosToolCatalog } = await import('../services/cosToolRegistry.js');
   res.json({
+    semanticTools: getCosToolCatalog({ scope: 'mind', capabilities }).tools,
     schemaVersion: PERSISTENT_MIND_CAPABILITIES_SCHEMA_VERSION,
     capabilities,
     boundaries: PERSISTENT_MIND_TOOL_BOUNDARIES,

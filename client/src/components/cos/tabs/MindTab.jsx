@@ -771,6 +771,16 @@ export default function MindTab() {
             <MindStateButton icon={Cpu} label="Settings" value={runtime?.inference?.active ? 'Running now' : runtime?.inference?.residency?.status === 'loaded' ? 'Loaded in memory' : 'Not running'} detail={runtime?.inference?.model || mind?.profile?.model || 'Not configured'} onClick={() => openPanel('settings')} />
           </div>
 
+          <section aria-label="Mind environment" className="rounded-2xl border border-port-border bg-port-card p-3 text-xs text-port-text-muted">
+            <p className="font-medium text-port-text">Eidoverse · {visibility?.orientation?.eidoverse?.status || 'Unknown'}</p>
+            <p className="mt-1">World building {mind?.capabilities?.manageEidoverse ? 'enabled' : 'off'} · Release {visibility?.orientation?.release?.version || 'unknown'}</p>
+            <div className="mt-2 flex flex-wrap gap-3">
+              <Link to="/eidoverse" className="text-port-accent hover:underline">Open world</Link>
+              <button type="button" onClick={() => openPanel('tools')} className="text-port-accent hover:underline">World permissions</button>
+              <button type="button" onClick={() => openPanel('context')} className="text-port-accent hover:underline">Environment details</button>
+            </div>
+          </section>
+
           {(runtimeError || visibilityError) && <p className="rounded-xl border border-port-warning/40 bg-port-warning/10 p-3 text-xs text-port-warning">Some live status is delayed. The last successful snapshot remains visible.</p>}
         </aside>
       </div>

@@ -5,7 +5,7 @@
  * headless CLI providers are stable service transports; TUI providers remain
  * supported for compatibility, but their terminal startup/scrape lifecycle is
  * exposed to the UI as the least reliable choice. Provider fallback is off:
- * the configured model is part of this mind's identity.
+ * the configured model is the user's explicit inference choice.
  */
 
 import { z } from 'zod';

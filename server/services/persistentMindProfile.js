@@ -2,8 +2,8 @@
  * Resolve the persistent mind's pinned text-reasoning profile.
  *
  * This deliberately has no fallback path. A mind waking on a different
- * provider/model than the one the user selected is a different identity, not
- * a recovery. It also does not start a model, fetch a catalog, or generate
+ * provider/model than the one the user selected would violate their inference
+ * choice. Identity and memory remain independent of that selection. It also does not start a model, fetch a catalog, or generate
  * text: it only reads the already-configured provider and status services.
  */
 
