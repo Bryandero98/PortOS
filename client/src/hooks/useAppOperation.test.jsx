@@ -96,6 +96,22 @@ describe('useAppOperation — PortOS self-update handoff', () => {
     expect(socketHandlers.has('portos:update:step')).toBe(false);
   });
 
+  it('ignores a PortOS restart frame on a surface scoped to another app', () => {
+    // `app:update:step` is a BROADCAST, so a PortOS update running elsewhere
+    // still reaches this surface's step handler. Arming off it would reload a
+    // page that is watching an entirely different app's update.
+    const { result } = renderHook(() => useAppOperation({ appId: 'example-managed-app' }));
+
+    act(() => {
+      socketHandlers.get('app:update:step')({
+        appId: PORTOS_APP_ID, step: 'restart', status: 'running', message: 'Starting PortOS...',
+      });
+    });
+
+    expect(result.current.restarting).toBe(false);
+    expect(mockToast.loading).not.toHaveBeenCalled();
+  });
+
   it('does not seed a baseline for a non-PortOS update', () => {
     const { result } = renderHook(() => useAppOperation({ appId: 'example-managed-app' }));
 

@@ -115,8 +115,11 @@ export function useAppOperation({ onComplete, appId: scopeAppId } = {}) {
 
     const onStep = (data) => {
       // The last frame that can reach us from a PortOS self-update: the script's
-      // own `pm2 delete` kills this server moments later.
-      if (data?.appId === PORTOS_APP_ID && data.status !== 'error'
+      // own `pm2 delete` kills this server moments later. Gated on `watchable`
+      // for the same reason the subscriptions are — `app:update:step` is a
+      // broadcast, so without it a surface scoped to some OTHER app would arm
+      // the watch (and reload the page) off a PortOS update it has no part in.
+      if (watchable && data?.appId === PORTOS_APP_ID && data.status !== 'error'
         && (data.step === 'restart' || data.step === 'restarting')) arm();
       patch(data, current => ({ ...current, steps: mergeStep(current.steps, data) }));
     };
@@ -178,7 +181,7 @@ export function useAppOperation({ onComplete, appId: scopeAppId } = {}) {
       socket.off('app:standardize:complete', onDone);
       socket.off('connect', requestActive);
     };
-  }, [arm, scopeAppId, drop]);
+  }, [arm, watchable, scopeAppId, drop]);
 
   const start = useCallback((type, appId, appName, options = {}) => {
     clearTimeout(clearTimersRef.current[appId]);
