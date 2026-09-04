@@ -45,7 +45,7 @@ const TOAST_ID = 'portos-update-restart';
  * @param {boolean} [options.active] - an update this surface launched is in flight
  * @param {() => void} [options.onRestart] - the restart was detected; stop treating the update as in-flight
  * @param {(detail: {message: string|null}) => void} [options.onFailure] - the update reported failure instead
- * @returns {{polling: boolean, captureBaseline: (currentVersion?: string|null) => Promise<void>, arm: () => void}}
+ * @returns {{polling: boolean, captureBaseline: (currentVersion?: string|null) => Promise<void>, arm: (opts?: {healthDown?: boolean}) => void}}
  */
 export function usePortosRestartWatch({ enabled = true, active = false, onRestart, onFailure } = {}) {
   const [polling, setPolling] = useState(false);
@@ -75,12 +75,20 @@ export function usePortosRestartWatch({ enabled = true, active = false, onRestar
   // start polling." `activeRef` is cleared SYNCHRONOUSLY (not just via the
   // syncing effect, which only runs after the next commit) so a 'disconnect'
   // arriving in the same tick right after this can't read a stale `true`.
-  const arm = useCallback(() => {
+  // `healthDown` carries an already-CONFIRMED down observation into the poll.
+  // The disconnect path proves the server is unreachable before it arms, and on
+  // a same-version reconcile with no baseline (a page that adopted an update it
+  // did not start) that proof is the only restart evidence there is. Today the
+  // poll re-establishes it anyway, because `useAutoRefetch` fires once
+  // immediately on enable while the server is still down — but that makes this
+  // hook's correctness depend on another hook's `immediate` default. Carrying
+  // the observation forward costs nothing and severs that link.
+  const arm = useCallback(({ healthDown = false } = {}) => {
     if (pollingRef.current) return;
     activeRef.current = false;
     pollingRef.current = true;
     attemptsRef.current = 0;
-    healthWentDownRef.current = false;
+    healthWentDownRef.current = healthDown;
     setPolling(true);
     toast.loading('PortOS is restarting...', { id: TOAST_ID, duration: Infinity });
     callbacksRef.current.onRestart?.();
@@ -126,7 +134,7 @@ export function usePortosRestartWatch({ enabled = true, active = false, onRestar
         // right alongside (and ahead of) the intended "restarting" toast on the
         // exact real-disconnect case this confirmation exists for.
         const ok = await api.checkHealth({ silent: true }).catch(() => null);
-        if (!ok && activeRef.current && mountedRef.current) arm();
+        if (!ok && activeRef.current && mountedRef.current) arm({ healthDown: true });
       }, DISCONNECT_CONFIRM_MS);
     };
 

@@ -50,7 +50,13 @@ describe('startPortosSelfUpdate — refresh mode', () => {
     mockSpawningTasks.clear();
     updateChecker.setUpdateInProgress.mockResolvedValue(true);
     updateChecker.getUpdateStatus.mockResolvedValue(inSyncStatus());
-    executeUpdate.mockResolvedValue({ success: true, version: '1.26.0' });
+    // Signal the launch the way the real executeUpdate does — the launcher holds
+    // its return until the spawn, so a mock that never signals is a mock of a
+    // launch that never happened.
+    executeUpdate.mockImplementation(async (_tag, _emit, opts) => {
+      opts?.onLaunched?.();
+      return { success: true, version: '1.26.0' };
+    });
   });
 
   it('runs on an in-sync install, where a reconcile would refuse', async () => {
@@ -92,7 +98,7 @@ describe('startPortosSelfUpdate — refresh mode', () => {
     expect(executeUpdate).toHaveBeenCalledWith(
       'v1.26.0',
       expect.any(Function),
-      { forceCleanWorkspaces: ['.', 'client'] },
+      expect.objectContaining({ forceCleanWorkspaces: ['.', 'client'] }),
     );
   });
 
@@ -101,7 +107,8 @@ describe('startPortosSelfUpdate — refresh mode', () => {
     // the launcher has to feed both sinks — otherwise the Git tab's progress
     // row stays empty for the whole update.
     const onStep = vi.fn();
-    executeUpdate.mockImplementation(async (_tag, emit) => {
+    executeUpdate.mockImplementation(async (_tag, emit, opts) => {
+      opts?.onLaunched?.();
       emit('pm2-stop', 'running', 'Stopping PortOS apps...');
       return { success: true, version: '1.26.0' };
     });
@@ -116,13 +123,57 @@ describe('startPortosSelfUpdate — refresh mode', () => {
     }));
   });
 
+  it('refuses rather than reporting a start when a prior script is still running', async () => {
+    // executeUpdate's still-running guard RESOLVES `success: false` without ever
+    // spawning. Returning `started: true` for that leaves App Management's
+    // operation registered forever (its handler skips cleanup on a real
+    // handoff), so every later update is refused as a duplicate while the UI
+    // waits for a restart that is not coming.
+    executeUpdate.mockResolvedValue({
+      success: false, failedStep: 'starting',
+      errorMessage: 'A previous update script is still running',
+    });
+
+    await expect(startPortosSelfUpdate({ io, mode: 'refresh' }))
+      .rejects.toThrow(/still running/i);
+  });
+
+  it('reports a launch that threw, instead of claiming the script started', async () => {
+    executeUpdate.mockRejectedValue(new Error('spawn EACCES'));
+
+    await expect(startPortosSelfUpdate({ io, mode: 'refresh' }))
+      .rejects.toThrow('spawn EACCES');
+  });
+
+  it('resolves once the script is spawned, without waiting for it to finish', async () => {
+    // The whole point: update.sh outlives this process, so the launcher must
+    // return at the spawn. A promise that only settles when the script is done
+    // would never resolve here — the pm2 delete kills the awaiting process.
+    let finish;
+    executeUpdate.mockImplementation((_tag, _emit, { onLaunched }) => {
+      onLaunched();
+      return new Promise((resolve) => { finish = resolve; });
+    });
+
+    await expect(startPortosSelfUpdate({ io, mode: 'refresh' }))
+      .resolves.toEqual({ started: true, tag: 'v1.26.0' });
+    expect(finish).toBeTypeOf('function');
+    // A LATER failure is the fire-and-forget handler's business, not a rejection
+    // out of a call that already returned — re-throwing it would be an unhandled
+    // rejection, which is fatal on Node >= 15.
+    finish({ success: false, failedStep: 'build', errorMessage: 'build failed' });
+    await vi.waitFor(() => expect(io.emit).toHaveBeenCalledWith(
+      'portos:update:error', expect.objectContaining({ step: 'build' }),
+    ));
+  });
+
   it('releases the update lock when the launch itself rejects', async () => {
     // executeUpdate clears the flag through recordUpdateResult on both of its
     // RESOLVED outcomes; a rejection reports none, and the stuck flag then
     // wedges every later update and every CoS agent spawn (#6036).
     executeUpdate.mockRejectedValue(new Error('spawn EACCES'));
 
-    await startPortosSelfUpdate({ io, mode: 'refresh' });
+    await startPortosSelfUpdate({ io, mode: 'refresh' }).catch(() => {});
 
     await vi.waitFor(() => expect(updateChecker.setUpdateInProgress).toHaveBeenCalledWith(false));
     expect(io.emit).toHaveBeenCalledWith('portos:update:error', expect.objectContaining({
