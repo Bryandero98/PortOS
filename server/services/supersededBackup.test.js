@@ -90,8 +90,12 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('backupSupersededBranch', () => {
     await execGit(['am', join(result.dir, 'commits.patch')], replay);
     await execGit(['apply', join(result.dir, 'worktree.diff')], replay);
 
-    expect(await readFile(join(replay, 'shipped.txt'), 'utf8')).toBe('committed on the branch\n');
-    expect(await readFile(join(replay, 'initial.txt'), 'utf8')).toBe('edited but never committed\n');
+    // Normalize the RECEIVED text, never the expectation: git checks files out
+    // with CRLF on Windows (core.autocrlf), so the bytes on disk legitimately
+    // differ from what the test wrote while the restored CONTENT is identical.
+    const lf = async (path) => (await readFile(path, 'utf8')).replace(/\r\n/g, '\n');
+    expect(await lf(join(replay, 'shipped.txt'))).toBe('committed on the branch\n');
+    expect(await lf(join(replay, 'initial.txt'))).toBe('edited but never committed\n');
   });
 
   // The reap deletes on this function RESOLVING, so every way the copy can come
