@@ -1195,6 +1195,25 @@ describe('cosTaskStore.updateTask', () => {
     expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
   });
 
+  // Same CONFIG-pause shape (#5993): the user authenticates the lane's provider
+  // and revives the task. Stripping the pointer here would restart the revived
+  // task clean and orphan its predecessor's worktree — and before this block
+  // category existed, that same condition left the task pending with its pointer
+  // intact, so losing it would be a NEW way to abandon work.
+  it('keeps the resume pointer through a refused orchestration lane', async () => {
+    await addTask({ description: 'lane', id: 'task-lane-ptr' }, 'user');
+    await updateTask('task-lane-ptr', {
+      metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
+    }, 'user');
+    const blocked = await updateTask('task-lane-ptr', {
+      status: 'blocked',
+      metadata: { blockedCategory: ORCHESTRATION_LANE_BLOCKED_CATEGORY }
+    }, 'user');
+    expect(blocked.metadata.existingBranch).toBe('cos/b');
+    expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
+    expect(blocked.metadata.resumedFromAgentId).toBe('agent-x');
+  });
+
   // An `existingBranch` with no `resumedFromAgentId` beside it was never written
   // by the resume mechanism — it is the task's OWN configuration. A merge
   // follow-up is the producer: it exists to land the PR on that branch. Stripping

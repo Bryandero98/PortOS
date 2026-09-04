@@ -196,17 +196,26 @@ async function resolveOrdinaryProviderAndModel(task) {
     }
   }
   if (!provider) provider = await getActiveProvider();
-  // A lane that pins only a MODEL inherits the active provider — so when there
-  // is no active provider it is the LANE that has nowhere to run, and it says so
-  // in the lane's own shape. Falling through to the generic
-  // "No active AI provider configured" below would lose the role, leaving the
-  // client with nothing to name.
-  if (lane && !provider) {
+  // A lane that pins only a MODEL inherits whatever provider the task resolves
+  // to — so both ways that inheritance can fail are the LANE failing, and both
+  // say so in the lane's own shape rather than falling through.
+  //
+  // `userProviderMissing` is the one that bites: the `else` above continues on
+  // the active provider, which makes `providerSwapped` true below, which drops
+  // the lane's pinned model to that provider's default. That is the silent
+  // model-axis substitution the `no-model` refusal and the alternate's
+  // pass-through exemption exist to close, arriving on a path with no block, no
+  // `orchestrationLane`, and nothing naming the role. The other is simpler: no
+  // active provider at all, where the generic "No active AI provider configured"
+  // below would lose the role and leave the client nothing to name.
+  if (lane && (!provider || userProviderMissing)) {
     return laneUnavailable({
       role: laneRole,
-      requestedProvider: null,
+      requestedProvider: userProviderMissing ? userProviderId : null,
       requestedModel: lane.model || null,
-      reason: 'no active AI provider is configured for it to inherit',
+      reason: userProviderMissing
+        ? 'the provider pinned for this task is not configured on this install'
+        : 'no active AI provider is configured for it to inherit',
     });
   }
 

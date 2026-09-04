@@ -815,3 +815,51 @@ describe('resolveAgentProviderAndModel — orchestration accounting coverage', (
     });
   });
 });
+
+/**
+ * Both ways a model-only lane's provider inheritance can fail. The
+ * missing-task-pin case is the sharp one: it used to continue on the active
+ * provider, which counts as a provider swap and drops the lane's model to that
+ * provider's default — a silent substitution with no block and nothing naming
+ * the role.
+ */
+describe('resolveAgentProviderAndModel — a model-only lane with nothing to inherit', () => {
+  const modelOnly = {
+    id: 'task-model-only',
+    metadata: {
+      provider: 'p-gone',
+      orchestrationMode: 'orchestrated',
+      orchestrationProfile: { architect: { model: 'm-cheap' } },
+    },
+  };
+
+  it('refuses when the task-level provider pin names a missing record', async () => {
+    getProviderById.mockResolvedValue(null);
+    getActiveProvider.mockResolvedValue({ id: 'p-active', type: 'cli', models: ['m-active'], defaultModel: 'm-active' });
+    selectModelForTask.mockResolvedValue({ model: 'm-cheap', tier: 'user-specified', reason: 'orchestration-role-architect' });
+
+    const r = await resolveAgentProviderAndModel(modelOnly);
+
+    expect(r.ok).toBe(false);
+    expect(r.permanent).toBe(true);
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: 'p-gone',
+      requestedModel: 'm-cheap',
+      reason: 'the provider pinned for this task is not configured on this install',
+    });
+  });
+
+  it('still refuses when there is no active provider to inherit at all', async () => {
+    getActiveProvider.mockResolvedValue(null);
+
+    const r = await resolveAgentProviderAndModel({
+      ...modelOnly,
+      metadata: { ...modelOnly.metadata, provider: undefined },
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.orchestrationLane.requestedProvider).toBeNull();
+    expect(r.orchestrationLane.reason).toContain('no active AI provider');
+  });
+});
