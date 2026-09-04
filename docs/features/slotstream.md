@@ -187,7 +187,7 @@ it just is not in the dump a reboot replays.
 | `POST /slotstream/install` | Download and extract the Apple Silicon binary. |
 | `POST /slotstream/models/download` | Fetch one catalog (or `owner/name`) checkpoint into the cache; streams byte progress on the `slotstream:download` socket event. |
 
-`POST /api/local-llm/download` also accepts `{ kind: 'slotstream', model }` to
+`POST /api/local-llm/download-preflight` also accepts `{ kind: 'slotstream', model }` to
 preview a checkpoint download's size and free-disk verdict before the confirm
 step commits to it.
 
