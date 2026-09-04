@@ -11,24 +11,22 @@ import { getSettings, updateSettings } from '../services/apiSystem.js';
 
 const STORAGE_KEY = 'portos-theme';
 
-// Custom properties the last applyTheme() wrote. A theme only declares the
-// tokens it uses (the optional --port-fx-* effect tokens especially), and an
-// inline property on <html> outlives a theme switch — so without clearing
-// these, Kestrel Neon's multiply-blend scanlines would still tint Classic
-// Midnight after the user switched away.
-let appliedVars = new Set();
-
 const applyTheme = (id) => {
   const theme = getTheme(id);
   const style = document.documentElement.style;
   const vars = { ...theme.colors, ...theme.tokens };
-  for (const prop of appliedVars) {
-    if (!(prop in vars)) style.removeProperty(prop);
+  // A theme only declares the tokens it uses (the optional --port-fx-* effect
+  // tokens especially), and an inline property on <html> outlives a theme
+  // switch — so drop every --port-* the next theme does not declare, or Kestrel
+  // Neon's multiply-blend scanlines would still tint Classic Midnight after the
+  // user switched away. Read off the DOM rather than remembered, so it also
+  // clears what an earlier bundle left behind.
+  for (const prop of Array.from(style)) {
+    if (prop.startsWith('--port-') && !(prop in vars)) style.removeProperty(prop);
   }
   for (const [prop, value] of Object.entries(vars)) {
     style.setProperty(prop, value);
   }
-  appliedVars = new Set(Object.keys(vars));
   const root = document.documentElement;
   root.dataset.portTheme = theme.id;
   root.dataset.portThemeFamily = theme.family;

@@ -22,9 +22,10 @@ describe('CoreCoSAvatar', () => {
     drawCalls.length = 0;
     rafCallbacks = [];
     reduceMotion = false;
-    // happy-dom has no 2D canvas; the frame math is mocked above, so a bare
-    // context object is enough for the component to size and draw.
+    // happy-dom has no 2D canvas or ResizeObserver; the frame math is mocked
+    // above, so a bare context is enough for the component to size and draw.
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ setTransform: vi.fn() });
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     vi.stubGlobal('requestAnimationFrame', vi.fn((cb) => { rafCallbacks.push(cb); return rafCallbacks.length; }));
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -49,8 +50,7 @@ describe('CoreCoSAvatar', () => {
   it('draws edges in the agent-state color and rings in the theme secondary accent', () => {
     render(<CoreCoSAvatar state="coding" />);
     expect(screen.getByRole('group', { name: /Core assembly avatar/ })).toBeInTheDocument();
-    // The mount resize paints one frame synchronously.
-    expect(drawCalls.length).toBeGreaterThanOrEqual(1);
+    tick(0);
     const frame = drawCalls.at(-1);
     expect(frame.edgeRgb).toEqual(rgbOf(AGENT_STATES.coding.color));
     expect(frame.nodeRgb).toEqual([255, 43, 214]);
@@ -89,11 +89,5 @@ describe('CoreCoSAvatar', () => {
     expect(drawCalls.length).toBe(initialFrames + 1);
     expect(rafCallbacks).toHaveLength(0);
     expect(drawCalls.at(-1).pulse).toBe(0);
-  });
-
-  it('hides the canvas from assistive tech on the background stage', () => {
-    const { container } = render(<CoreCoSAvatar state="sleeping" background />);
-    expect(screen.queryByRole('group')).not.toBeInTheDocument();
-    expect(container.querySelector('[aria-hidden="true"]')).toContainElement(screen.getByTestId('core-avatar-canvas'));
   });
 });

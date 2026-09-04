@@ -83,6 +83,16 @@ const REQUIRED_TOKEN_VARS = [
   '--port-motion-slow',
 ];
 
+// --port-fx-* token prefix → the effect(s) that read it.
+const FX_TOKEN_OWNERS = [
+  ['--port-fx-scanline-', ['scanlines']],
+  ['--port-fx-overlay-', ['scanlines', 'vignette']],
+  ['--port-fx-vignette-', ['vignette']],
+  ['--port-fx-sweep-', ['sweep']],
+  ['--port-fx-grid-floor-', ['grid-floor']],
+  ['--port-fx-glitch-', ['glitch']],
+];
+
 const REQUIRED_DOC_SECTIONS = [
   '## Intent',
   '## Integration Rules',
@@ -124,8 +134,18 @@ async function main() {
     assert(theme.accent?.startsWith('#'), `${id} needs a hex accent`);
     assert(Array.isArray(theme.swatches) && theme.swatches.length >= 4, `${id} needs at least four swatches`);
 
-    for (const effect of theme.effects ?? []) {
+    const effects = theme.effects ?? [];
+    for (const effect of effects) {
       assert(THEME_EFFECTS.includes(effect), `${id} lists unknown effect ${effect}`);
+    }
+    // A --port-fx-* token tunes exactly one effect (the overlay tokens tune the
+    // two overlay effects); declaring one for an effect the theme does not list
+    // would silently paint nothing.
+    for (const token of Object.keys(theme.tokens ?? {})) {
+      const owner = FX_TOKEN_OWNERS.find(([prefix]) => token.startsWith(prefix));
+      if (!token.startsWith('--port-fx-')) continue;
+      assert(owner, `${id} declares ${token}, which no effect reads`);
+      assert(owner[1].some((effect) => effects.includes(effect)), `${id} declares ${token} without listing ${owner[1].join(' or ')}`);
     }
 
     assert(isPlainObject(theme.colors), `${id} colors must be a plain object`);

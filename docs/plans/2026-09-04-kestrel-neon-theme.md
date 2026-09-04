@@ -34,16 +34,23 @@ a theme lists effects in its manifest (`effects: [...]`, registry
 `THEME_EFFECTS`); `useTheme` publishes them as `data-port-theme-effects` on
 `<html>`; each effect is one block keyed on
 `html[data-port-theme-effects~="<name>"]` and parameterized by `--port-fx-*`
-tokens defaulted in `:root`. The three overlay effects (scanlines, vignette,
-sweep) share one `body::after` and compose as a single background list;
-unlisted effects resolve to a transparent layer. `grid-floor` lives on
-`#root::before` because `body::before` is the token-driven backdrop and a
-background image cannot be tilted. `glitch` animates `h1`. Every animation is
-off under `prefers-reduced-motion`. Black ICE Terminal's scanlines moved onto
-the shared layer with identical values, so it renders as before.
+tokens defaulted in `:root`. Everything paints on a dedicated
+`<div class="port-fx-layer">` rendered by `main.jsx`, so a theme's own
+`body::before/::after` rules (Lumen Glass Day's drift) can never collide with
+it: `::before` is the below-content slot (`grid-floor`), `::after` the static
+overlay (`scanlines` + `vignette` composed in one background list, unlisted
+effects transparent), and a `.port-fx-sweep` child is the moving band. The
+sweep and the floor animate `transform` only, so they stay on the compositor
+instead of repainting a blended full-screen layer every frame. `glitch`
+animates `h1` and rests on the new `--port-heading-glow` token (with
+`--port-heading-tracking`, `--port-title-tracking`, `--port-title-transform`,
+heading treatment is now a manifest concern, not a selector block). Every
+animation is off under `prefers-reduced-motion`. Black ICE Terminal's
+scanlines moved onto the shared layer with identical values, so it renders as
+before.
 
-**`applyTheme` clears stale tokens**: it remembers the properties it set and
-removes any the next theme does not declare (`useTheme.test.jsx` pins both the
+**`applyTheme` clears stale tokens**: it walks the inline `--port-*`
+properties on `<html>` and removes any the next theme does not declare (`useTheme.test.jsx` pins both the
 effects attribute and the clearing).
 
 **Core Assembly avatar** (`client/src/components/cos/CoreCoSAvatar.jsx`,
@@ -51,8 +58,11 @@ style id `core`): a plain 2D canvas, so it needs no WebGL and skips
 `CoSCanvasGuard`. Geometry and the frame renderer are pure
 (`client/src/lib/wireframeCore.js`). Edges take the agent-state color (the
 intentional 7-way `AGENT_STATES` enum); rings and vertices follow
-`--port-accent-2`, re-resolved on theme switch through the same
-`data-port-theme` mutation signal `useCanvasRollPalette` watches. Spin and glow
+`--port-accent-2`, re-resolved on theme switch through `useCanvasRollPalette`
+(which now takes the resolver as an argument) and sized through
+`useCanvasDprSize` (which now follows the container height); reduced motion
+comes from the new shared `usePrefersReducedMotion` hook, which BrainGraph
+also adopted. Spin and glow
 scale per state, `speaking` bursts both, drag rotates, and reduced motion holds
 one static frame. It is theme-independent: pick it under any theme.
 

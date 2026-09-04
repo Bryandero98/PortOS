@@ -21,10 +21,10 @@ afterEach(() => {
 });
 
 describe('useTheme applies the manifest to <html>', () => {
-  const withEffects = Object.values(THEMES).find((t) => t.effects?.length);
-  const withoutEffects = Object.values(THEMES).find((t) => !t.effects?.length);
-  // A token only the effects theme declares — it must not survive the switch.
-  const privateToken = Object.keys(withEffects.tokens).find((k) => !(k in withoutEffects.tokens));
+  const withEffects = THEMES['kestrel-neon'];
+  const withoutEffects = THEMES[DEFAULT_THEME_ID];
+  // Declared only by the effects theme — it must not survive the switch.
+  const privateToken = '--port-fx-overlay-blend';
 
   it('publishes the effects list and clears it again for a theme with none', () => {
     const { result } = renderHook(() => useTheme());
@@ -36,7 +36,8 @@ describe('useTheme applies the manifest to <html>', () => {
   });
 
   it('removes custom properties the next theme does not declare', () => {
-    expect(privateToken).toBeTruthy();
+    expect(privateToken in withEffects.tokens).toBe(true);
+    expect(privateToken in withoutEffects.tokens).toBe(false);
     const { result } = renderHook(() => useTheme());
     act(() => result.current.setTheme(withEffects.id));
     expect(document.documentElement.style.getPropertyValue(privateToken)).not.toBe('');

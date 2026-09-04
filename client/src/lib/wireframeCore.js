@@ -99,6 +99,7 @@ export function drawWireframeCore(ctx, {
   ctx.setLineDash([]);
 
   // Edges, depth-shaded: near edges are brighter, thicker, and glow.
+  ctx.shadowColor = rgba(edgeRgb, 0.8);
   for (const [a, b] of ICOSAHEDRON_EDGES) {
     const pa = proj[a];
     const pb = proj[b];
@@ -107,7 +108,6 @@ export function drawWireframeCore(ctx, {
     const alpha = 0.35 + 0.55 * (1 - (depth + 1) / 2);
     ctx.strokeStyle = rgba(edgeRgb, alpha);
     ctx.lineWidth = near ? 1.4 : 0.7;
-    ctx.shadowColor = rgba(edgeRgb, 0.8);
     ctx.shadowBlur = near ? 6 + pulse * 6 : 0;
     ctx.beginPath();
     ctx.moveTo(pa[0], pa[1]);

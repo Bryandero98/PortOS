@@ -28,16 +28,9 @@ const DEFAULT_ACCENT2 = {
   '--port-accent-2-text': '216 180 254',
 };
 
-// Optional full-screen effects a theme composes by listing them in `effects`.
-// Each is a shared CSS block in index.css keyed on
-// html[data-port-theme-effects~="<name>"] and parameterized by --port-fx-*
-// tokens (defaults in index.css :root), so a new theme picks effects and tunes
-// their colors without adding selectors of its own.
-//   scanlines  — CRT line overlay above the app (body::after)
-//   vignette   — darkened viewport edges on that same overlay
-//   sweep      — a phosphor band drifting down the overlay
-//   grid-floor — a perspective grid receding under the page (#root::before)
-//   glitch     — periodic chromatic split on page titles (h1)
+// Full-screen effects a theme composes by listing them in `effects`; each is
+// a shared block in index.css ("Theme effects layer") tuned by --port-fx-*
+// tokens. Catalogue and tokens: docs/themes/README.md, "Effects".
 export const THEME_EFFECTS = Object.freeze(['scanlines', 'vignette', 'sweep', 'grid-floor', 'glitch']);
 
 const baseMotionTokens = {
@@ -52,6 +45,37 @@ const classicShapeTokens = {
   '--port-radius-lg': '0.5rem',
   '--port-radius-xl': '0.75rem',
   '--port-radius-pill': '9999px',
+};
+
+// Kestrel Neon / Kestrel Dawn share their shell: monospaced everywhere, square
+// corners, uppercase tracked titles. The day entry differs only in color,
+// shadow, and effect tuning.
+const kestrelShellTokens = {
+  '--port-motion-fast': '90ms',
+  '--port-motion-medium': '160ms',
+  '--port-motion-slow': '300ms',
+  '--port-radius-sm': '0',
+  '--port-radius-md': '0.125rem',
+  '--port-radius-lg': '0.25rem',
+  '--port-radius-xl': '0.375rem',
+  '--port-radius-pill': '0.25rem',
+  '--port-bg-alpha': '1',
+  '--port-border-alpha': '0.3',
+  '--port-sidebar-alpha': '0.96',
+  '--port-panel-padding-scale': '0.92',
+  '--port-font-ui': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
+  '--port-font-display': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace",
+  '--port-font-mono': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
+  '--port-heading-tracking': '0.06em',
+  '--port-title-tracking': '0.14em',
+  '--port-title-transform': 'uppercase',
+  '--port-border-style': 'solid',
+  '--port-body-size': 'cover, cover',
+  '--port-body-overlay-opacity': '1',
+  '--port-app-backdrop': 'transparent',
+  '--port-control-border': 'rgb(var(--port-border) / 0.3)',
+  '--port-fx-scanline-period': '3px',
+  '--port-fx-overlay-blend': 'multiply',
 };
 
 export const THEMES = {
@@ -455,10 +479,6 @@ export const THEMES = {
       '--port-chart-3': '255 214 10',
       '--port-chart-4': '0 194 255',
       '--port-chart-grid': '0 245 160',
-      '--port-fx-scanline-color': 'rgb(255 255 255 / 0.025)',
-      '--port-fx-scanline-period': '5px',
-      '--port-fx-overlay-blend': 'screen',
-      '--port-fx-overlay-opacity': '0.22',
     },
   },
 
@@ -545,7 +565,6 @@ export const THEMES = {
       '--port-chart-4': '8 100 134',
       '--port-chart-grid': '8 108 67',
       '--port-fx-scanline-color': 'rgb(10 60 30 / 0.04)',
-      '--port-fx-scanline-period': '5px',
       '--port-fx-overlay-blend': 'multiply',
       '--port-fx-overlay-opacity': '0.4',
     },
@@ -755,39 +774,21 @@ export const THEMES = {
       '--port-focus-ring': '0 240 255',
     },
     tokens: {
-      '--port-motion-fast': '90ms',
-      '--port-motion-medium': '160ms',
-      '--port-motion-slow': '300ms',
-      '--port-radius-sm': '0',
-      '--port-radius-md': '0.125rem',
-      '--port-radius-lg': '0.25rem',
-      '--port-radius-xl': '0.375rem',
-      '--port-radius-pill': '0.25rem',
-      '--port-bg-alpha': '1',
+      ...kestrelShellTokens,
       '--port-card-alpha': '0.92',
       '--port-card-min-alpha': '0.88',
-      '--port-border-alpha': '0.3',
-      '--port-sidebar-alpha': '0.96',
       '--port-overlay-alpha': '0.8',
-      '--port-panel-padding-scale': '0.92',
-      '--port-font-ui': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
-      '--port-font-display': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace",
-      '--port-font-mono': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
+      '--port-heading-glow': '0 0 12px rgb(var(--port-accent) / 0.5)',
       '--port-shadow-card': '0 0 0 1px rgb(var(--port-accent-2) / 0.14), 0 0 34px rgb(var(--port-accent-2) / 0.08), inset 0 0 48px rgb(0 0 0 / 0.45)',
       '--port-shadow-elevated': '0 0 0 1px rgb(var(--port-accent) / 0.28), 0 0 44px rgb(var(--port-accent) / 0.14), 0 18px 60px rgb(0 0 0 / 0.7)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.45), 0 0 18px rgb(var(--port-accent) / 0.22)',
       '--port-backdrop-filter': 'blur(6px)',
-      '--port-border-style': 'solid',
       '--port-body-gradient': 'radial-gradient(ellipse at 50% 0%, rgb(16 20 42) 0%, rgb(5 6 10) 60%)',
       '--port-body-texture': 'radial-gradient(ellipse at 50% 100%, rgb(var(--port-accent-2) / 0.08) 0%, transparent 55%)',
-      '--port-body-size': 'cover, cover',
-      '--port-body-overlay-opacity': '1',
-      '--port-app-backdrop': 'transparent',
       '--port-sidebar-bg': 'rgb(10 12 22 / 0.94)',
       '--port-input-bg': 'rgb(3 4 8 / 0.8)',
       '--port-control-bg': 'rgb(14 18 36 / 0.94)',
       '--port-control-bg-hover': 'rgb(22 30 56 / 0.98)',
-      '--port-control-border': 'rgb(var(--port-border) / 0.3)',
       '--port-active-bg': 'linear-gradient(90deg, rgb(var(--port-accent) / 0.16), rgb(var(--port-accent-2) / 0.1))',
       '--port-hover-bg': 'rgb(var(--port-accent) / 0.08)',
       '--port-terminal-bg': 'rgb(3 4 8)',
@@ -798,17 +799,10 @@ export const THEMES = {
       '--port-chart-4': '92 255 138',
       '--port-chart-grid': '0 240 255',
       '--port-fx-scanline-color': 'rgb(0 0 0 / 0.18)',
-      '--port-fx-scanline-period': '3px',
-      '--port-fx-overlay-blend': 'multiply',
       '--port-fx-overlay-opacity': '0.8',
-      '--port-fx-vignette-color': 'rgb(0 0 0 / 0.55)',
-      '--port-fx-sweep-color': 'rgb(var(--port-accent) / 0.07)',
-      '--port-fx-sweep-duration': '7s',
       '--port-fx-grid-floor-x': 'rgb(var(--port-accent-2) / 0.32)',
       '--port-fx-grid-floor-y': 'rgb(var(--port-accent) / 0.32)',
       '--port-fx-grid-floor-opacity': '0.7',
-      '--port-fx-grid-floor-duration': '3s',
-      '--port-fx-glitch-period': '9s',
     },
   },
 
@@ -852,39 +846,20 @@ export const THEMES = {
       '--port-focus-ring': '14 124 140',
     },
     tokens: {
-      '--port-motion-fast': '90ms',
-      '--port-motion-medium': '160ms',
-      '--port-motion-slow': '300ms',
-      '--port-radius-sm': '0',
-      '--port-radius-md': '0.125rem',
-      '--port-radius-lg': '0.25rem',
-      '--port-radius-xl': '0.375rem',
-      '--port-radius-pill': '0.25rem',
-      '--port-bg-alpha': '1',
+      ...kestrelShellTokens,
       '--port-card-alpha': '1',
       '--port-card-min-alpha': '1',
-      '--port-border-alpha': '0.3',
-      '--port-sidebar-alpha': '0.96',
       '--port-overlay-alpha': '0.66',
-      '--port-panel-padding-scale': '0.92',
-      '--port-font-ui': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
-      '--port-font-display': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace",
-      '--port-font-mono': "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
       '--port-shadow-card': '0 0 0 1px rgb(var(--port-accent-2) / 0.12), 0 8px 24px -10px rgb(14 124 140 / 0.18)',
       '--port-shadow-elevated': '0 0 0 1px rgb(var(--port-accent) / 0.24), 0 22px 54px -16px rgb(14 124 140 / 0.28)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.5), 0 0 14px rgb(var(--port-accent) / 0.14)',
       '--port-backdrop-filter': 'none',
-      '--port-border-style': 'solid',
       '--port-body-gradient': 'radial-gradient(ellipse at 50% 0%, rgb(255 255 255) 0%, rgb(234 236 246) 60%)',
       '--port-body-texture': 'radial-gradient(ellipse at 50% 100%, rgb(var(--port-accent-2) / 0.07) 0%, transparent 55%)',
-      '--port-body-size': 'cover, cover',
-      '--port-body-overlay-opacity': '1',
-      '--port-app-backdrop': 'transparent',
       '--port-sidebar-bg': 'rgb(255 255 255 / 0.9)',
       '--port-input-bg': 'rgb(255 255 255 / 0.92)',
       '--port-control-bg': 'rgb(244 246 252 / 0.96)',
       '--port-control-bg-hover': 'rgb(228 232 246 / 0.98)',
-      '--port-control-border': 'rgb(var(--port-border) / 0.3)',
       '--port-active-bg': 'linear-gradient(90deg, rgb(var(--port-accent) / 0.14), rgb(var(--port-accent-2) / 0.08))',
       '--port-hover-bg': 'rgb(var(--port-accent) / 0.07)',
       '--port-terminal-bg': 'rgb(246 247 252)',
@@ -895,8 +870,6 @@ export const THEMES = {
       '--port-chart-4': '21 128 61',
       '--port-chart-grid': '14 124 140',
       '--port-fx-scanline-color': 'rgb(var(--port-accent) / 0.05)',
-      '--port-fx-scanline-period': '3px',
-      '--port-fx-overlay-blend': 'multiply',
       '--port-fx-overlay-opacity': '0.6',
       '--port-fx-grid-floor-x': 'rgb(var(--port-accent-2) / 0.2)',
       '--port-fx-grid-floor-y': 'rgb(var(--port-accent) / 0.22)',
