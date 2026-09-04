@@ -78,6 +78,7 @@ export * as catalogUniverseTags from './catalogUniverseTags.js';
 export * from './canonPrompt.js';
 export * from './comicScriptParser.js';
 export * from './composeStyledPrompt.js';
+export * from './scriptVideoCompiler.js';
 export * from './creativeDirectorPresets.js';
 export * from './creativeLatitude.js';
 // Namespaced: the editorial-check registry (#1284) lives in the editorial/
