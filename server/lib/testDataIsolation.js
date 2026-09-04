@@ -56,8 +56,8 @@
  * `aiToolkit/AGENTS.md`).
  */
 
-import { existsSync } from 'fs';
-import { basename, dirname, join, resolve } from 'path';
+import { existsSync, lstatSync, readlinkSync } from 'fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { resolveCodeRootForModule, resolveInstallRoot } from './dataRoot.js';
 import { canonicalizePath, isPathAtOrInsideDir } from './pathContainment.js';
 import { isTestRunner } from './runtimeEnv.js';
@@ -90,16 +90,59 @@ function canonicalDir(dir) {
   return resolved;
 }
 
+/** The link's target if `path` is a symlink, else null. Never throws. */
+function readLinkTarget(path) {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return null;
+    return readlinkSync(path);
+  } catch {
+    return null;
+  }
+}
+
+// Bound on how many symlink hops to follow. Deep chains do not occur in a test
+// fixture; the cap just keeps a cyclic link from spinning.
+const MAX_LINK_HOPS = 8;
+
 /**
- * Canonicalize a write target: resolve symlinked ANCESTORS, but never follow a
- * symlinked final component. That matches what the write actually does —
- * `atomicWrite` replaces a symlink with a regular file rather than following it
- * (see its header), so the bytes land at the link's own location.
+ * Where a follow-the-link write would actually land, or null when `abs` is not
+ * a symlink. Resolved through `canonicalizePath` rather than `realpathSync` so
+ * a DANGLING link still reports its target — a fixture link pointing at a file
+ * the real tree has not created yet is exactly the case that would otherwise
+ * slip through, because `realpathSync` throws ENOENT on it.
  */
-const canonicalTarget = (target) => {
+function followLinks(abs) {
+  let current = abs;
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
+    const link = readLinkTarget(current);
+    if (!link) return hop === 0 ? null : current;
+    current = canonicalizePath(isAbsolute(link) ? link : join(dirname(current), link));
+  }
+  return current;
+}
+
+/**
+ * A write target has TWO possible landing sites, and the guard must refuse if
+ * either is in the real tree, because the primitives disagree about symlinks:
+ *
+ *  - `atomicWrite` REPLACES a symlinked destination with a regular file rather
+ *    than following it (see its header), so the bytes land at the link's own
+ *    location — ancestors resolved, final component not.
+ *  - `writeFile` / `appendFile` / `copyFile` FOLLOW a symlinked destination, so
+ *    the bytes land wherever the link points.
+ *
+ * Checking only the first spelling would let a fixture symlink inside a temp
+ * root point at `data/provider-quotas.json` and write straight through — the
+ * exact #6171 leak this guard exists to stop.
+ */
+const canonicalTargets = (target) => {
   const abs = resolve(target);
   const parent = dirname(abs);
-  return parent === abs ? abs : join(canonicalDir(parent), basename(abs));
+  const viaAncestors = parent === abs ? abs : join(canonicalDir(parent), basename(abs));
+  // Only does work when the destination IS a symlink; an ordinary first write
+  // costs one lstat and nothing more.
+  const followed = followLinks(abs);
+  return followed && followed !== viaAncestors ? [viaAncestors, followed] : [viaAncestors];
 };
 
 /**
@@ -109,14 +152,16 @@ const canonicalTarget = (target) => {
  * case-folding on case-insensitive filesystems — a hand-rolled `relative()`
  * test would read `…/Data/x.json` on macOS as outside the root it is in fact
  * inside. Relative paths and `..` climbs are resolved first, so neither can
- * walk in sideways.
+ * walk in sideways, and a symlinked destination is judged at BOTH the locations
+ * a write could land on (see `canonicalTargets`).
  *
  * @param {string} target - path to test
  * @returns {boolean}
  */
 export function isInsideRealDataRoot(target) {
   if (typeof target !== 'string' || target === '') return false;
-  return isPathAtOrInsideDir(realDataRoot(), canonicalTarget(target));
+  const root = realDataRoot();
+  return canonicalTargets(target).some((candidate) => isPathAtOrInsideDir(root, candidate));
 }
 
 /**

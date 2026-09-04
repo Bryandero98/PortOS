@@ -81,7 +81,13 @@ const SELF = relative(REPO_ROOT, fileURLToPath(import.meta.url)).split(sep).join
 //     premise is the live install: it enumerates the user's own screenshots to
 //     feed a real vision model, and skips itself when the directory is absent.
 // A future false positive belongs here too — with a sentence saying why it's safe.
+//   - testDataIsolation.test.js is the RUNTIME guard's own contract test. It has
+//     to name the real root — proving the guard refuses a write there is the
+//     whole point — and it can never write into it: every assertion about a real
+//     path asserts that the call REJECTS, and the one case that writes bytes
+//     targets a temp root. (#6176)
 const ALLOWED = new Set([
+  'server/lib/testDataIsolation.test.js',
   'server/services/creativeDirectorPrompts.test.js',
   'server/services/visionTest.integration.test.js',
 ]);

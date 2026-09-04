@@ -15,12 +15,13 @@
  */
 
 import { describe, it, expect, vi, afterEach, afterAll } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join, relative, sep } from 'path';
 import { appendFileGuarded, atomicWrite, copyFileGuarded, ensureDir, writeFileGuarded } from './fileCore.js';
 import { appendJSONLine } from './jsonIo.js';
 import { assertNotNewRealDataDir, assertNotRealDataWrite, isInsideRealDataRoot } from './testDataIsolation.js';
+import { isPathAtOrInsideDir } from './pathContainment.js';
 import { isTestRunner } from './runtimeEnv.js';
 import { PATHS } from './paths.js';
 
@@ -64,12 +65,45 @@ describe('isInsideRealDataRoot', () => {
   });
 
   it('catches a `..` climb back into the real tree', () => {
-    expect(isInsideRealDataRoot(join(REAL_DATA, 'brain', '..', '..', 'data', 'sneaky.json'))).toBe(true);
+    // Concatenated, NOT join()'d: `path.join` normalizes its arguments, so a
+    // join()-built path arrives already collapsed and the case would pass even
+    // if the function dropped its own `resolve()`.
+    expect(isInsideRealDataRoot(`${REAL_DATA}/brain/../../data/sneaky.json`)).toBe(true);
+  });
+
+  it('catches a relative path that resolves into the real tree', () => {
+    const rel = relative(process.cwd(), join(REAL_DATA, 'relative.json'));
+    expect(isAbsolute(rel)).toBe(false);
+    expect(isInsideRealDataRoot(rel)).toBe(true);
+  });
+
+  it('follows a symlinked destination — the write lands where the link points', () => {
+    // writeFile/appendFile/copyFile follow a symlinked final component, so a
+    // fixture link inside a temp root can reach live data even though the link
+    // itself sits outside. atomicWrite replaces the link instead, which is why
+    // BOTH landing sites are checked.
+    const link = join(tempRoot, 'looks-safe.json');
+    symlinkSync(join(REAL_DATA, 'provider-quotas.json'), link);
+    expect(isInsideRealDataRoot(link)).toBe(true);
+    rmSync(link, { force: true });
   });
 
   it('is not fooled by a non-string or empty target', () => {
     expect(isInsideRealDataRoot(undefined)).toBe(false);
     expect(isInsideRealDataRoot('')).toBe(false);
+  });
+});
+
+describe('isPathAtOrInsideDir (the containment primitive behind it)', () => {
+  it('treats a filesystem root as containing its children', () => {
+    // `root + sep` is '//' for '/', so a naive anchor matched nothing at all —
+    // harmless for today's `<install>/data` root, wrong for the next caller.
+    expect(isPathAtOrInsideDir(sep, join(sep, 'etc'))).toBe(true);
+    expect(isPathAtOrInsideDir(sep, sep)).toBe(true);
+  });
+
+  it('still rejects a sibling that merely shares the prefix', () => {
+    expect(isPathAtOrInsideDir('/data/uploads', '/data/uploads-evil/x')).toBe(false);
   });
 });
 

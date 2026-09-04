@@ -41,7 +41,10 @@ export function isPathAtOrInsideDir(dir, candidatePath) {
   const fold = (p) => (CASE_INSENSITIVE_FS ? p.toLowerCase() : p);
   const root = fold(resolvePath(dir));
   const target = fold(resolvePath(candidatePath));
-  return target === root || target.startsWith(root + PATH_SEP);
+  // A filesystem or drive root ALREADY ends in the separator ('/', 'C:\\'), so
+  // appending one would anchor on '//' and report nothing as inside it.
+  const prefix = root.endsWith(PATH_SEP) ? root : root + PATH_SEP;
+  return target === root || target.startsWith(prefix);
 }
 
 /**
