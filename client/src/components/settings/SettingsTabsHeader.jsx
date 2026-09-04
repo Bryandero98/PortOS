@@ -20,6 +20,7 @@ export const TABS = [
   { id: 'general', label: 'General', to: '/settings/general' },
   { id: 'mortalloom', label: 'MortalLoom', to: '/settings/mortalloom', feature: 'health' },
   { id: 'openclaw', label: 'OpenClaw', to: '/openclaw', feature: 'openclaw' },
+  { id: 'orchestration', label: 'Orchestration', to: '/settings/orchestration' },
   { id: 'prompts', label: 'Prompts', to: '/prompts' },
   { id: 'providers', label: 'Providers', to: '/ai' },
   { id: 'security', label: 'Security', to: '/settings/security' },
