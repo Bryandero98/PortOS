@@ -100,7 +100,7 @@ const createScriptedChild = ({ signal } = {}) => {
       child.stdout.emit('data', Buffer.from(`${JSON.stringify(frame)}\n`));
     }
   };
-  child.exit = (code = 0) => child.emit('close', code, null);
+  child.exit = (code = 0, signal = null) => child.emit('close', code, signal);
   signal?.addEventListener('abort', () => {
     child.kill('SIGTERM');
     process.nextTick(() => {
@@ -150,7 +150,7 @@ const drainJobRecord = async (jobId, { timeout = 5_000 } = {}) => {
     return parsed;
   }, { timeout, interval: 20 });
 
-  let previous = null;
+  let previous = await readFile(jobRecordPath(jobId), 'utf8');
   await vi.waitFor(async () => {
     const bytes = await readFile(jobRecordPath(jobId), 'utf8');
     const prior = previous;
@@ -245,17 +245,26 @@ describe('fineTuning', () => {
     expect((await getFineTuningJobStatus(startRes.jobId, PROFILE.id)).status).toBe('cancelled');
   });
 
-  it('records a non-zero exit as failed with its exit code', async () => {
+  it('reports an abnormal exit by its code, or by the signal that killed it', async () => {
     queryMock.mockResolvedValue({ rows: [{ data: PROFILE }] });
     await seedSourceAudio();
     const scripted = useScriptedRunner();
 
-    const { jobId } = await startFineTuningJob({ profileId: PROFILE.id, epochs: 2 });
+    const exited = await startFineTuningJob({ profileId: PROFILE.id, epochs: 2 });
     scripted().exit(3);
+    expect(await drainJobRecord(exited.jobId)).toMatchObject({
+      status: 'failed',
+      error: 'Process exited with code 3',
+    });
 
-    const record = await drainJobRecord(jobId);
-    expect(record.status).toBe('failed');
-    expect(record.error).toBe('Process exited with code 3');
+    // A killed child reports a null code; "exited with code null" tells the
+    // operator nothing about an OOM reap partway through a long run.
+    const killed = await startFineTuningJob({ profileId: PROFILE.id, epochs: 2 });
+    scripted().exit(null, 'SIGKILL');
+    expect(await drainJobRecord(killed.jobId)).toMatchObject({
+      status: 'failed',
+      error: 'Process terminated by signal SIGKILL',
+    });
   });
 
   it('persists a job.json sidecar beside the checkpoints when the run finishes', async () => {

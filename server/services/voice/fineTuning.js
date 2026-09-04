@@ -288,11 +288,15 @@ export async function startFineTuningJob({
     finalizeJob(jobState);
   };
 
-  child.on('close', (code) => {
+  child.on('close', (code, signal) => {
     if (code === 0) return settle({ status: 'completed', progress: 100 });
-    settle(abortController.signal.aborted
-      ? CANCELLED_OUTCOME
-      : { status: 'failed', error: `Process exited with code ${code}` });
+    if (abortController.signal.aborted) return settle(CANCELLED_OUTCOME);
+    // A killed child reports a null code — an OOM reap during a long training
+    // run is the likely cause, so name the signal rather than "code null".
+    settle({
+      status: 'failed',
+      error: code === null ? `Process terminated by signal ${signal}` : `Process exited with code ${code}`,
+    });
   });
 
   child.on('error', (err) => {
