@@ -90,6 +90,36 @@ describe('Settings routes — operator-action actor (#5594)', () => {
   });
 });
 
+describe('Settings routes — untrusted-content policy', () => {
+  beforeEach(() => { store = {}; vi.clearAllMocks(); });
+  it('ships classifier-required defaults and persists source-specific constraints', async () => {
+    const defaults = await request(buildApp()).get('/api/settings');
+    expect(defaults.body.untrustedContent.defaults).toMatchObject({ classifierMode: 'required', minBenignScore: 0.9 });
+    const policy = { defaults: { classifierMode: 'required' }, sources: { signal: { providerId: 'local-api', model: 'example-model', maxInputChars: 5000 }, 'github-issue': { classifierMode: 'optional' } } };
+    const saved = await request(buildApp()).put('/api/settings').send({ untrustedContent: policy });
+    expect(saved.status).toBe(200);
+    expect(store.untrustedContent).toEqual(policy);
+    const read = await request(buildApp()).get('/api/settings');
+    expect(read.body.untrustedContent.sources).toEqual(policy.sources);
+  });
+  it('rejects invalid or weakening policy shapes before replacing the saved settings', async () => {
+    store = { untrustedContent: { defaults: { classifierMode: 'required' } } };
+    const previous = structuredClone(store);
+    for (const patch of [
+      { defaults: { classifierMode: 'off' } },
+      { sources: { signal: { maxInputChars: 999999999 } } },
+      { sources: { email: { providerId: {} } } },
+      { defaults: { minBenignScore: 0.1 } },
+      { sources: { unknown: {} } },
+    ]) {
+      const result = await request(buildApp()).put('/api/settings').send({ untrustedContent: patch });
+      expect(result.status).toBe(400);
+      expect(store).toEqual(previous);
+    }
+    expect(updateSettingsWith).not.toHaveBeenCalled();
+  });
+});
+
 describe('Settings routes — apiAccess slice', () => {
   beforeEach(() => {
     store = {};

@@ -10,7 +10,6 @@ import { isAuditTaskType, defaultFileIssuesFor } from '../lib/auditCatalog.js';
 import { MODEL_ABUSE_GUARD_ID } from '../lib/modelAbuseGuard.js';
 import {
   PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
-  PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
 } from '../lib/agentExecutionProfiles.js';
 import { INTERVAL_TYPES } from './taskScheduleConstants.js';
 
@@ -209,7 +208,7 @@ export const INSTALL_WIDE_TASK_TYPES = new Set(['repo-sync', 'user-action-review
 // alongside the install-wide registry gives both the on-demand request gate
 // and the global generator one target-scope contract; neither has to infer
 // scope from a task name or from which generator happened to receive a call.
-export const MANAGED_APP_TARGET_TASK_TYPES = new Set(['pr-reviewer']);
+export const MANAGED_APP_TARGET_TASK_TYPES = new Set(['pr-reviewer', 'issue-watcher', 'pr-watcher', 'issue-reconcile']);
 
 export function requiresManagedAppTarget(taskType) {
   return MANAGED_APP_TARGET_TASK_TYPES.has(taskType);
@@ -244,7 +243,7 @@ export const createPrReviewerDefaultStages = () => ([
     executionProfile: PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
   },
   {
-    name: 'Code Review & Actions',
+    name: 'Code Review & Validated Actions',
     role: 'actions',
     promptKey: 'pr-reviewer-review',
     readOnly: true,
@@ -255,7 +254,7 @@ export const createPrReviewerDefaultStages = () => ([
     discardWorktree: true,
     noCodeOutput: true,
     managed: true,
-    executionProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    executionProfile: PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
   },
 ]);
 
@@ -440,18 +439,12 @@ export const DEFAULT_TASK_INTERVALS = {
   'react-lifecycle':   { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   'observability':     { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
   'copy':                { type: INTERVAL_TYPES.ON_DEMAND, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: true, useWorktree: false, openPR: false } },
-  // pr-watcher polls for newly-opened PRs, so it runs on a short custom
-  // interval rather than the loose rotation/daily cadence. 30 min keeps the
-  // gh polling cheap while still reacting to a PR within one cycle. Default
-  // gate is `prAuthorFilter: 'any'` (react to every PR); the operator narrows
-  // it to 'self' or 'others' in the schedule UI. `readOnly: false` so a
-  // customized prompt can make changes if the operator wants — the shipped
-  // default prompt only reviews + comments.
-  'pr-watcher':          { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 1800000, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { prAuthorFilter: 'any', readOnly: false } },
-  // issue-watcher uses deterministic GitHub reads/mutations around a bounded
-  // reasoning-only review pass. On-demand by default: a manual Run is explicit
-  // consent to replies, assignments, reviews, branch updates, and merges.
-  'issue-watcher':       { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 1800000, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: false, discardWorktree: true } },
+  // Trusted remediation is separate from external intake. Legacy author
+  // filter settings cannot widen this lane into untrusted contributor PRs.
+  'pr-watcher':          { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 1800000, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { prAuthorFilter: 'trusted', readOnly: false } },
+  // External issue intake uses screening, a direct tool-free text API, and
+  // validated actions. No general CoS agent or checkout is provisioned.
+  'issue-watcher':       { type: INTERVAL_TYPES.ON_DEMAND, intervalMs: 1800000, enabled: true, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, readOnly: true, worktreeChangesExpected: false } },
   // plan-feature files a plan, not code — tracker-filing posture mirrors
   // reference-watch: writable (a file-based tracker commits checklist items), no
   // managed worktree, no PR. On-demand by default; when scheduled, weekly (not
@@ -498,7 +491,8 @@ export const MANAGED_AGENT_OPTIONS = {
   // Programmatic-I/O review task: the model only returns structured judgment;
   // deterministic hooks own every GitHub mutation. Keep its worktree throwaway
   // even when a global/per-app metadata override tries to make it writable.
-  'issue-watcher': ['useWorktree', 'openPR', 'discardWorktree'],
+  'issue-watcher': ['useWorktree', 'openPR', 'readOnly', 'worktreeChangesExpected'],
+  'pr-watcher': ['prAuthorFilter'],
   // The non-committing coordinators (NON_COMMITTING_COORDINATOR_METADATA above) all
   // run in the app's LIVE checkout and ship no code, so a CoS-managed worktree is at
   // best unused and at worst harmful — branch-reconcile needs to see the sibling
@@ -601,14 +595,14 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'claim-work': "Ship the next work item from the app's configured tracker (PLAN.md, GitHub/GitLab issues, or JIRA), routed automatically",
   'accessibility': 'Accessibility audit — file issues or implement fixes',
   'branch-reconcile': "Finish this machine's in-flight local branches: clean up merged ones, open PRs, resolve conflicts, drive review, auto-merge when green",
-  'issue-reconcile': "Heal zombie issues (open + in-progress but their PR already merged with no live claim — close + file a scoped follow-up or release the claim) and auto-unblock: remove the `blocked` label once every issue named in its `Blocked by #N` line has closed",
+  'issue-reconcile': "Remediate trusted operator and collaborator issues: heal zombies (open + in-progress but their PR already merged with no live claim — close + file a scoped follow-up or release the claim) and auto-unblock: remove the `blocked` label once every issue named in its `Blocked by #N` line has closed",
   'dependency-updates': 'Land or resolve open Dependabot/Renovate PRs, then update the dependencies they missed',
   'release-check': 'Check for release readiness',
   'error-handling': 'Failure-path audit — file issues or implement fixes',
   'typing': 'TypeScript types — file issues or implement fixes',
-  'pr-reviewer': 'Screen contributor PRs, gate eligibility, then review and act on approved changes',
-  'pr-watcher': 'Run a custom prompt on PRs newly opened against the default branch',
-  'issue-watcher': 'Watch external issues and PRs: assign volunteers, review changes, and apply deterministic GitHub actions around one reasoning pass',
+  'pr-reviewer': 'Watch external contributor PRs: screen content, gate eligibility, and validate review actions',
+  'pr-watcher': 'Remediate operator and collaborator PRs using screened activity; verify tests and reviews before merging',
+  'issue-watcher': 'Triage external issues and comments through screening, tool-free analysis, and deterministic replies or volunteer assignment',
   'code-reviewer-a': 'Review the codebase and triage/implement findings (independent provider/model instance A)',
   'code-reviewer-b': 'Review the codebase and triage/implement findings (independent provider/model instance B)',
   'do-replan': 'Audit and prune PLAN.md after merges and branch cleanup so it reflects what actually shipped',
@@ -646,11 +640,11 @@ export function getTaskTypeDescription(taskType) {
 export const TASK_TYPE_PROMPT_INFO = Object.freeze({
   'pr-reviewer': Object.freeze({
     mode: 'runtime-generated',
-    description: 'Runs a model-abuse screen, a tool-free eligibility gate, and an optional action-capable code review; only the final stage may drive the deterministic GitHub workflow.'
+    description: 'Runs a model-abuse screen, a tool-free eligibility gate, and an optional tool-free code review; the server validates every requested GitHub action.'
   }),
   'issue-watcher': Object.freeze({
     mode: 'runtime-generated',
-    description: 'Generated for each run after deterministic GitHub gathering. The reasoning agent receives bounded, untrusted issue/PR data and has no tools.'
+    description: 'Three enforced server phases: screen external issue activity, analyze it through a text-only API with no tools or private context, then validate current content before replies or assignments. Configure the source policy in Models → LLMs → Abuse Guard.'
   }),
   'layered-intelligence': Object.freeze({
     mode: 'runtime-generated',

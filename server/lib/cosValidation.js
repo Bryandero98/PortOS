@@ -788,7 +788,7 @@ const ALLOWED_TASK_METADATA_KEYS = [
 // user (the PortOS operator / their automation); 'others' = everyone else;
 // 'any' = no gate. Kept here so both the sanitizer and the prWatcher service
 // agree on the vocabulary.
-export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
+export const PR_AUTHOR_FILTERS = ['trusted', 'any', 'self', 'others'];
 
 // claim-issue author-gate values. 'self' = only claim issues YOU filed (the
 // gh/glab-authenticated `@me` account — the slashdo `/do:next --self` security

@@ -2579,7 +2579,8 @@ export async function resolveTaskInputHook(app, taskType, taskSchedule, { ignore
   const { getTaskInputHook } = await import('./taskTypeHooks.js');
   const inputHook = await getTaskInputHook(taskType);
   if (!inputHook) return { skip: false, hookPrompt: null, hookOverride: {}, hookMetadata: null };
-  const input = await inputHook({ app, taskType, ignoreTaskId }).catch((err) => {
+  const interval = taskType === 'issue-watcher' ? await taskSchedule.getTaskInterval(taskType) : undefined;
+  const input = await inputHook({ app, taskType, ignoreTaskId, ...(interval ? { interval } : {}) }).catch((err) => {
     emitLog('warn', `buildTaskInput hook failed for ${taskType}/${app.name}: ${err.message}`, { appId: app.id, analysisType: taskType });
     return { skip: { reason: 'input-hook-error' } };
   });

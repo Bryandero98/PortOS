@@ -24,6 +24,7 @@
  */
 
 import { execGh, ensureForgeReachable } from './github.js';
+import { createGithubActorTrust } from './forgeActorTrust.js';
 import { execGlab, execGlabJson } from './gitlab.js';
 import { resolveAppForgeTarget, resolveRepoForgeTarget } from '../lib/workTracker.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
@@ -73,7 +74,7 @@ export function parseBlockingIssueNumbers(body) {
  * "skip this cycle", never as "no blocked issues" or "every blocker is open".
  * @returns {Promise<{ blocked: object[], stateByNumber: Map<number,string> }|null>}
  */
-async function getGithubBlockedState(repoSpec, apiHost) {
+async function getGithubBlockedState(repoSpec, apiHost, fullName) {
   const forge = await ensureForgeReachable('blocked-issue-reconcile', { hostname: apiHost });
   if (!forge.ok) return null;
 
@@ -85,7 +86,7 @@ async function getGithubBlockedState(repoSpec, apiHost) {
   const [blockedRaw, allRaw] = await Promise.all([
     ghList(['issue', 'list', '--repo', repoSpec, '--state', 'open',
       '--label', BLOCKED_LABEL, '--limit', String(GH_LIST_LIMIT),
-      '--json', 'number,title,body,url'], 'gh issue list --label blocked'),
+      '--json', 'number,title,body,url,author'], 'gh issue list --label blocked'),
     ghList(['issue', 'list', '--repo', repoSpec, '--state', 'all',
       '--limit', String(GH_ALL_STATE_LIMIT), '--json', 'number,state'], 'gh issue list --state all'),
   ]);
@@ -97,12 +98,17 @@ async function getGithubBlockedState(repoSpec, apiHost) {
   const all = safeJSONParse(allRaw, null);
   if (!Array.isArray(all)) return null;
 
+  const trust = await createGithubActorTrust({ runGh: execGh, host: apiHost, repoFullName: fullName });
+  const trustedBlocked = [];
+  for (const issue of blocked) {
+    if (await trust.isTrusted(issue.author?.login)) trustedBlocked.push(issue);
+  }
   const stateByNumber = new Map();
   for (const issue of all) {
     if (Number.isInteger(issue?.number)) stateByNumber.set(issue.number, normalizeIssueState(issue.state));
   }
   return {
-    blocked: blocked.map((i) => ({ number: i.number, title: i.title || '', url: i.url || '', body: i.body || '' })),
+    blocked: trustedBlocked.map((i) => ({ number: i.number, title: i.title || '', url: i.url || '', body: i.body || '' })),
     stateByNumber,
   };
 }
@@ -171,7 +177,7 @@ export async function gatherBlockedIssueState(repoPath, { app = null } = {}) {
   if (!target) return null;
 
   let state = null;
-  if (target.forge === 'github') state = await getGithubBlockedState(target.repoSpec, target.apiHost);
+  if (target.forge === 'github') state = await getGithubBlockedState(target.repoSpec, target.apiHost, target.fullName);
   else if (target.forge === 'gitlab') state = await getGitlabBlockedState(repoPath);
   if (!state) return null;
 
