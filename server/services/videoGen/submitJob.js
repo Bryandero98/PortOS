@@ -201,6 +201,8 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
       aspectRatio: body.visualConditioning?.render?.parameters?.aspectRatio,
       prompt: body.prompt,
       negativePrompt: body.negativePrompt || '',
+      width: body.width,
+      height: body.height,
       duration: body.falDuration,
       sourceImagePath,
       uploadedTempPath,

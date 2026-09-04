@@ -45,7 +45,7 @@ import { trainingEvents } from '../loraTraining/events.js';
 import { audioGenEvents } from '../audioGen/events.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
-import { VIDEO_GEN_MODE } from '../../lib/generationModes.js';
+import { VIDEO_GEN_MODE, CLOUD_VIDEO_GEN_MODES } from '../../lib/generationModes.js';
 import { REMOTE_MEDIA_MODULES, isRemoteMediaJob } from './remoteMediaJob.js';
 import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 
@@ -58,7 +58,7 @@ import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 // renders combined).
 const isCloudImageJob = (j) =>
   (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
-  || (j.kind === 'video' && (j.params?.mode === IMAGE_GEN_MODE.GROK || j.params?.mode === VIDEO_GEN_MODE.FAL));
+  || (j.kind === 'video' && CLOUD_VIDEO_GEN_MODES.includes(j.params?.mode));
 
 // The federated-kind map and its predicate live in ./remoteMediaJob.js so light
 // consumers (sanitizeJob, route handlers) can ask "is this routed?" without
@@ -197,7 +197,7 @@ async function resolveLiveParams(job, safeParams) {
   // mflux training runs in the same venv as local image renders, so the
   // live settings pythonPath wins there too. flux2 training resolves its
   // own venv (resolveFlux2Python) inside runTraining — skip it here.
-  const usesLocalPython = (job.kind === 'video' && job.params?.mode !== IMAGE_GEN_MODE.GROK && job.params?.mode !== VIDEO_GEN_MODE.FAL)
+  const usesLocalPython = (job.kind === 'video' && !CLOUD_VIDEO_GEN_MODES.includes(job.params?.mode))
     || (job.kind === 'image' && !CLOUD_IMAGE_GEN_MODES.includes(job.params?.mode))
     || (job.kind === 'training' && job.params?.runtime === 'mflux');
   if (!usesLocalPython) return;

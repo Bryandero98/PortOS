@@ -28,6 +28,14 @@ import { videoGenEvents } from './events.js';
 import { finalizeGeneratedVideo } from './generateVideoHelpers.js';
 import { mutateVideoHistory } from './history.js';
 import { getSettings } from '../settings.js';
+import { nearestAspectRatio } from '../imageGen/modes.js';
+
+// fal.ai's aspect_ratio set for the minimax hailuo-02 models this provider
+// targets — matches the free-tool automation's FAL_ASPECT_RATIOS
+// (services/fableLoom/falVideoAutomation.js) so both fal.ai paths agree on
+// what the backend actually accepts.
+export const FAL_ASPECT_RATIOS = Object.freeze(['16:9', '9:16', '1:1']);
+export const deriveAspectRatio = (width, height) => nearestAspectRatio(width, height, FAL_ASPECT_RATIOS);
 
 export const FAL_QUEUE_BASE = 'https://queue.fal.run';
 
@@ -146,7 +154,7 @@ async function fetchFalResult({ responseUrl, apiKey }) {
 
 export async function generateVideo({
   apiKey: providedApiKey, settings, modelId: requestedModelId,
-  prompt = '', negativePrompt, duration, aspectRatio,
+  prompt = '', negativePrompt, duration, aspectRatio, width, height,
   sourceImagePath = null, jobId: providedJobId = null,
 }) {
   await ensureDir(PATHS.videos);
@@ -170,6 +178,10 @@ export async function generateVideo({
   const jobId = providedJobId || randomUUID();
   const filename = `${jobId}.mp4`;
   const outputPath = join(PATHS.videos, filename);
+  // An explicit aspectRatio always wins (e.g. FableLoom's visualConditioning
+  // render parameters); otherwise derive the nearest fal-supported ratio from
+  // the request's width/height, same as grok's deriveAspectRatio.
+  const effectiveAspectRatio = FAL_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : deriveAspectRatio(width, height);
 
   const meta = {
     id: jobId,
@@ -177,7 +189,7 @@ export async function generateVideo({
     negativePrompt: negativePrompt || '',
     modelId: `fal:${modelId}`,
     ...(duration ? { duration } : {}),
-    ...(aspectRatio ? { aspectRatio } : {}),
+    ...(effectiveAspectRatio ? { aspectRatio: effectiveAspectRatio } : {}),
     filename,
     createdAt: new Date().toISOString(),
     mode: sourceImagePath ? 'image' : 'text',
@@ -190,7 +202,7 @@ export async function generateVideo({
   activeJobs.set(jobId, { ...meta, generationId: jobId, totalSteps: 1, step: 0, progress: 0 });
   broadcastSse(job, { type: 'status', message: 'Submitting to fal.ai…' });
 
-  runFalVideo(job, jobId, { apiKey, modelId, prompt, duration, aspectRatio, sourceImagePath, outputPath, filename, meta })
+  runFalVideo(job, jobId, { apiKey, modelId, prompt, duration, aspectRatio: effectiveAspectRatio, sourceImagePath, outputPath, filename, meta })
     .catch((err) => {
       console.log(`❌ fal video run failed [${jobId.slice(0, 8)}]: ${err?.message}`);
     });

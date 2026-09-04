@@ -75,6 +75,18 @@ describe('videoGen/fal — resolveFalApiKey', () => {
   });
 });
 
+describe('videoGen/fal — deriveAspectRatio', () => {
+  it('maps width/height to the nearest fal-supported ratio', () => {
+    expect(fal.deriveAspectRatio(1920, 1080)).toBe('16:9');
+    expect(fal.deriveAspectRatio(1080, 1920)).toBe('9:16');
+    expect(fal.deriveAspectRatio(1024, 1024)).toBe('1:1');
+  });
+
+  it('returns null for absent/invalid dimensions', () => {
+    expect(fal.deriveAspectRatio(undefined, undefined)).toBeNull();
+  });
+});
+
 describe('videoGen/fal — _internals.buildRequestBody', () => {
   it('includes only the fields that were actually supplied', () => {
     expect(fal._internals.buildRequestBody({ prompt: ' a fox running ' })).toEqual({ prompt: 'a fox running' });
@@ -128,6 +140,29 @@ describe('videoGen/fal — generateVideo', () => {
 
     expect(history[0].id).toBe(job.jobId);
     expect(history[0].modelId).toBe('fal:fal-ai/x');
+    vi.unstubAllGlobals();
+  });
+
+  it('derives aspect_ratio from width/height when none is supplied explicitly', async () => {
+    const fetchMock = vi.fn(async (url, opts) => {
+      if (url === 'https://queue.fal.run/fal-ai/x') {
+        expect(JSON.parse(opts.body)).toEqual({ prompt: 'portrait clip', aspect_ratio: '9:16' });
+        return jsonResponse({ request_id: 'r2', status_url: 'https://queue.fal.run/fal-ai/x/requests/r2/status', response_url: 'https://queue.fal.run/fal-ai/x/requests/r2' });
+      }
+      if (url === 'https://queue.fal.run/fal-ai/x/requests/r2/status') return jsonResponse({ status: 'COMPLETED' });
+      if (url === 'https://queue.fal.run/fal-ai/x/requests/r2') return jsonResponse({ video: { url: 'https://cdn.fal.ai/out.mp4' } });
+      if (url === 'https://cdn.fal.ai/out.mp4') {
+        return { ok: true, status: 200, arrayBuffer: async () => Uint8Array.from(Buffer.from('bytes')).buffer };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fal.generateVideo({
+      apiKey: 'test-key', modelId: 'fal-ai/x', prompt: 'portrait clip', width: 1080, height: 1920,
+    });
+    for (let i = 0; i < 50 && fetchMock.mock.calls.length < 1; i += 1) await flush();
+    expect(fetchMock).toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 

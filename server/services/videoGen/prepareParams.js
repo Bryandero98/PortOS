@@ -773,7 +773,9 @@ async function resolvePreparedParams({
     }
     return {
       backend,
-      fal: settings.videoGen?.fal || {},
+      // No CLI-config sibling to grok's `grok` field: fal.js re-resolves the
+      // API key from live settings itself (see its generateVideo comment) so
+      // the secret never rides through job.params/media-jobs.json.
       effectiveModel: { id: 'fal', supportedModes: ['text', 'image'] },
       sourceImagePath,
       uploadedTempPath,

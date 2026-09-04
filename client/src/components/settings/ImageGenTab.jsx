@@ -461,7 +461,7 @@ export function ImageGenTab() {
         ...videoGenSliceRef.current,
         mode: videoGenMode || null,
         displaySleep: videoGenDisplaySleep,
-        fal: { ...videoGenSliceRef.current.fal, apiKey: falApiKey.trim() },
+        fal: { ...videoGenSliceRef.current.fal, apiKey: falApiKey.trim() || undefined },
       },
     };
     try {
