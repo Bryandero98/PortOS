@@ -71,7 +71,7 @@ export const RENDER_TARGET_OPTIONS = Object.freeze([
 // Client mirror of the server's VIDEO_GEN_MODES (services/videoGen/modes.js) —
 // the backend alphabet for the video pin controls above and the install-wide
 // `settings.videoGen.mode` pin.
-export const VIDEO_RENDER_MODES = Object.freeze(['local', 'grok']);
+export const VIDEO_RENDER_MODES = Object.freeze(['local', 'grok', 'fal']);
 
 // Client mirror of the server's normalizeRenderPinValue
 // (server/lib/renderTargets.js) — THE one render-pin normalization rule: trim;
@@ -94,6 +94,7 @@ export const MODE_LABELS = Object.freeze({
   [IMAGE_GEN_MODE.GROK]: 'Grok',
   [IMAGE_GEN_MODE.AGY]: 'Agy',
   [IMAGE_GEN_MODE.EXTERNAL]: 'External',
+  fal: 'fal.ai',
 });
 
 // Client mirror of the server's CLOUD_IMAGE_GEN_MODES (imageGen/modes.js) —

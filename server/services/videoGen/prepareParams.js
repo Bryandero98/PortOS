@@ -50,7 +50,7 @@ import {
 import { getSettings } from '../settings.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
-import { VIDEO_GEN_MODE, resolveVideoMode } from './modes.js';
+import { VIDEO_GEN_MODE, resolveVideoMode, isVideoModeUsable } from './modes.js';
 import { isDefaultI2vReferenceMode } from '../../lib/videoReferenceModes.js';
 import {
   listVideoModels,
@@ -350,7 +350,7 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
   // shared with services/videoGen/local.js so the route and worker stay
   // in sync.
   const runtimeBringsOwnVenv = effectiveModel && BYOV_VIDEO_RUNTIMES.has(effectiveModel.runtime);
-  if (!pythonPath && !runtimeBringsOwnVenv && backend !== 'grok') {
+  if (!pythonPath && !runtimeBringsOwnVenv && backend !== VIDEO_GEN_MODE.GROK && backend !== VIDEO_GEN_MODE.FAL) {
     await cleanupMultipartTemp(uploads);
     throw new ServerError(
       'Local video generation is not configured (settings.imageGen.local.pythonPath is missing).',
@@ -472,10 +472,10 @@ async function resolvePreparedParams({
     // plain grok render with the reference clip silently dropped. The client's
     // mode bar snaps grok back to text/image, but reject explicitly so a direct
     // caller gets an error instead of a wrong-looking clip.
-    if (body.backend === 'grok') {
+    if (body.backend === VIDEO_GEN_MODE.GROK || body.backend === VIDEO_GEN_MODE.FAL) {
       await cleanupStaged();
       throw new ServerError(
-        `${icSpec.label} mode runs on the local ltx2 runtime — it isn't available on the Grok backend.`,
+        `${icSpec.label} mode runs on the local ltx2 runtime — it isn't available on the ${body.backend} backend.`,
         { status: 400, code: 'IC_LORA_REQUIRES_LOCAL_BACKEND' },
       );
     }
@@ -753,6 +753,30 @@ async function resolvePreparedParams({
       backend,
       grok,
       effectiveModel: { id: 'grok', supportedModes: ['text', 'image'] },
+      sourceImagePath,
+      uploadedTempPath,
+      discardSourceImage,
+      cleanupStaged,
+    };
+  }
+
+  // fal.ai short-circuit (#6213): mirrors the grok branch above — the queue
+  // REST provider reads only prompt/dims/source-image/duration, so every
+  // local-runtime knob past this point is irrelevant to it.
+  if (backend === VIDEO_GEN_MODE.FAL) {
+    if (!isVideoModeUsable(settings, VIDEO_GEN_MODE.FAL)) {
+      await cleanupStaged();
+      throw new ServerError(
+        'No fal.ai API key configured — set it in Settings → Video Gen (or the FAL_KEY env var) first',
+        { status: 400, code: 'FAL_NOT_CONFIGURED' },
+      );
+    }
+    return {
+      backend,
+      // No CLI-config sibling to grok's `grok` field: fal.js re-resolves the
+      // API key from live settings itself (see its generateVideo comment) so
+      // the secret never rides through job.params/media-jobs.json.
+      effectiveModel: { id: 'fal', supportedModes: ['text', 'image'] },
       sourceImagePath,
       uploadedTempPath,
       discardSourceImage,

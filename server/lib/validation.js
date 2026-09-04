@@ -1644,6 +1644,11 @@ export const videoGenSettingsSchema = z.object({
   // POST /api/video-gen/model-terms; typed here so a Settings save can't put
   // junk where the render gate reads authorization from.
   acceptedModelTerms: z.array(z.string().trim().min(1).max(128)).max(50).optional(),
+  // fal.ai queue REST provider (#6213) — settings-stored key wins over the
+  // FAL_KEY env var (same precedence as loras.js's Civitai key).
+  fal: z.object({
+    apiKey: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().max(200).optional()),
+  }).optional(),
 });
 
 // POST /api/video-gen/model-terms — record (or withdraw) the acknowledgement of

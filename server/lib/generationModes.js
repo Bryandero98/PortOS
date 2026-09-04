@@ -33,10 +33,13 @@ export const QUEUEABLE_IMAGE_MODES = Object.freeze([
 
 // Video deliberately shares the image backend discriminator namespace. Local
 // video's text/image/fflf modes are a separate semantic value carried elsewhere.
+// FAL has no image-gen counterpart (issue #6213 is video-only), so it is a
+// video-only literal rather than a re-export of an IMAGE_GEN_MODE entry.
 export const VIDEO_GEN_MODE = Object.freeze({
   LOCAL: IMAGE_GEN_MODE.LOCAL,
   GROK: IMAGE_GEN_MODE.GROK,
+  FAL: 'fal',
 });
 
 export const VIDEO_GEN_MODES = Object.freeze(Object.values(VIDEO_GEN_MODE));
-export const CLOUD_VIDEO_GEN_MODES = Object.freeze([VIDEO_GEN_MODE.GROK]);
+export const CLOUD_VIDEO_GEN_MODES = Object.freeze([VIDEO_GEN_MODE.GROK, VIDEO_GEN_MODE.FAL]);

@@ -134,13 +134,19 @@ export default function VideoGen() {
   // user enabled Grok in Settings → Image Gen (one toggle covers image +
   // video). 'local' keeps every existing flow untouched.
   const [grokEnabled, setGrokEnabled] = useState(false);
+  // fal.ai queue REST video backend (#6213) — surfaced only when an API key is
+  // configured (Settings → Video Gen, or the FAL_KEY env var).
+  const [falEnabled, setFalEnabled] = useState(false);
   // The jobId of the render this tab's Generate button currently owns —
   // threaded into cancelVideoGen so cancellation is job-scoped.
   const activeJobIdRef = useRef(null);
   const models = useMemo(() => modelContext?.models || [], [modelContext]);
   const refreshGrokEnabled = useCallback(() => {
     getSettings({ silent: true })
-      .then((sv) => setGrokEnabled(sv?.imageGen?.grok?.enabled === true))
+      .then((sv) => {
+        setGrokEnabled(sv?.imageGen?.grok?.enabled === true);
+        setFalEnabled(Boolean(sv?.videoGen?.fal?.apiKey));
+      })
       .catch(() => {});
   }, []);
   useEffect(() => { refreshGrokEnabled(); }, [refreshGrokEnabled]);
@@ -157,7 +163,8 @@ export default function VideoGen() {
   // Every field the form submits, plus the payload builder both submit paths
   // share. See client/src/hooks/useVideoGenForm.js.
   const {
-    backend, isGrok, handleBackendChange, grokDuration, setGrokDuration,
+    backend, isGrok, isFal, handleBackendChange, grokDuration, setGrokDuration,
+    falDuration, setFalDuration, falModelId, setFalModelId,
     mode, handleModeChange,
     prompt, setPrompt, envelopedPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset,
     selectedUniverse, setSelectedUniverse, remixModelFallback,
@@ -192,7 +199,7 @@ export default function VideoGen() {
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({
-    models, modelContext, availableLoras, grokEnabled,
+    models, modelContext, availableLoras, grokEnabled, falEnabled,
     remoteSubmissionFields: remoteTarget.isRemote ? remoteTarget.submissionFields : null,
   });
 
@@ -216,6 +223,7 @@ export default function VideoGen() {
     const model = remoteTarget.model;
     const present = [
       ['the Grok backend', isGrok],
+      ['the fal.ai backend', isFal],
       // Each remaining pipeline semantic has its own input listed below, but the
       // mode can be set before that input is filled — so gate the mode too
       // rather than letting an a2v render reach the peer as plain text-to-video.
@@ -242,7 +250,7 @@ export default function VideoGen() {
       return `${model?.modelName || 'The selected peer model'} renders only from a source image — add a start frame, or pick a text-to-video model.`;
     }
     return null;
-  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, isGrok, mode, sourceImageFile, sourceImageUpload,
+  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, isGrok, isFal, mode, sourceImageFile, sourceImageUpload,
     lastImageFile, lastImageUpload, keyframesActive, extendFromVideoId, audioFile, icReferenceFile,
     icReferenceVideoId, icReferenceImageFiles, selectedLoras, chunks]);
   // One reading for the Generate button, the enqueue guard and the caption.
@@ -606,14 +614,14 @@ export default function VideoGen() {
     startEncoderWhenIdle(option && !option.builtIn ? textEncoderDownloadId(id) : null);
   }, [setTextEncoderId, textEncoderOptions, startEncoderWhenIdle]);
   const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
-  const modelWeightsBlocked = !isGrok
+  const modelWeightsBlocked = !isGrok && !isFal
     && (statusLoading || !modelId || !currentModel || modelDownload.loading
       || modelStatus === null || modelStatus?.cached === false);
-  const textEncoderWeightsBlocked = !isGrok && usesSharedTextEncoder
+  const textEncoderWeightsBlocked = !isGrok && !isFal && usesSharedTextEncoder
     && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
-  const icWeightsBlocked = !isGrok && icModeActive
+  const icWeightsBlocked = !isGrok && !isFal && icModeActive
     && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
-  const textEncoderOptionBlocked = !isGrok && !!textEncoderOptionDownloadId
+  const textEncoderOptionBlocked = !isGrok && !isFal && !!textEncoderOptionDownloadId
     && (modelDownload.loading || textEncoderOptionStatus === null || textEncoderOptionStatus?.cached === false);
   const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked
     || textEncoderOptionBlocked || icWeightsBlocked;
@@ -686,7 +694,7 @@ export default function VideoGen() {
   // actually apply it (macOS, and the user hasn't opted out).
   const rendersSleepDisplay = !!status?.displaySleepOnRender
     && !!currentModel?.sleepsDisplayDuringRender
-    && !remoteTarget.isRemote && !isGrok;
+    && !remoteTarget.isRemote && !isGrok && !isFal;
 
   // Run a single payload through the SSE pipeline. Returns a promise that
   // resolves when the job completes (or rejects on error / cancel). The
@@ -836,7 +844,7 @@ export default function VideoGen() {
   // will actually run on.
   const canEnqueue = prompt.trim() && (remoteTarget.isRemote
     ? remoteBlocked === null
-    : (isGrok || (!notConnected && !extendModeBlocked
+    : (isGrok || isFal || (!notConnected && !extendModeBlocked
       && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
       && !weightsGateBlocked && !keyframesBlocked)));
 
@@ -911,12 +919,16 @@ export default function VideoGen() {
       })()}
 
       {/* Backend switch — shown only when the user enabled Grok in Settings →
-          Image Gen. Grok's image_to_video supports text (image-first) and
-          image modes only, so switching to it snaps an unsupported mode back
-          to the nearest one. */}
-      {grokEnabled && (
+          Image Gen and/or configured a fal.ai API key. Both cloud backends'
+          image-to-video only supports text (image-first) and image modes, so
+          switching to either snaps an unsupported mode back to the nearest one. */}
+      {(grokEnabled || falEnabled) && (
         <div className="bg-port-card border border-port-border rounded-xl p-1 flex gap-1" role="group" aria-label="Video generation backend">
-          {[{ id: 'local', label: 'Local' }, { id: 'grok', label: 'Grok' }].map(({ id, label }) => (
+          {[
+            { id: 'local', label: 'Local' },
+            ...(grokEnabled ? [{ id: 'grok', label: 'Grok' }] : []),
+            ...(falEnabled ? [{ id: 'fal', label: 'fal.ai' }] : []),
+          ].map(({ id, label }) => (
             <button
               key={id}
               type="button"
@@ -925,7 +937,11 @@ export default function VideoGen() {
               className={`flex-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 backend === id ? 'bg-port-accent text-white shadow' : 'text-gray-400 hover:text-white hover:bg-port-border/40'
               }`}
-              title={id === 'grok' ? 'Render via the Grok Build CLI (image_gen → image_to_video). Counts against your Grok plan.' : 'Render on this machine with the local runtimes.'}
+              title={id === 'grok'
+                ? 'Render via the Grok Build CLI (image_gen → image_to_video). Counts against your Grok plan.'
+                : id === 'fal'
+                  ? 'Render via the fal.ai queue API. Counts against your fal.ai balance.'
+                  : 'Render on this machine with the local runtimes.'}
             >
               {label}
             </button>
@@ -939,7 +955,7 @@ export default function VideoGen() {
           WAI-ARIA Tabs, since the mode-specific inputs aren't structured as
           tabpanels and we don't implement roving-tabindex/arrow-key focus. */}
       <div className="bg-port-card border border-port-border rounded-xl p-1 flex flex-wrap gap-1" role="group" aria-label="Video generation mode">
-        {(isGrok ? MODES.filter((m) => m.id === 'text' || m.id === 'image') : MODES).map(({ id, label, icon: Icon, desc }) => {
+        {((isGrok || isFal) ? MODES.filter((m) => m.id === 'text' || m.id === 'image') : MODES).map(({ id, label, icon: Icon, desc }) => {
           const active = mode === id;
           return (
             <button
@@ -963,7 +979,7 @@ export default function VideoGen() {
 
       <form onSubmit={handleGenerate} className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
-          {!isGrok && byovRuntimeMissing && (
+          {!isGrok && !isFal && byovRuntimeMissing && (
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
                 <strong className="font-semibold">{byovStatus.label}</strong> {byovStatus.upgradeAvailable ? 'has an update available.' : "isn't installed yet."}
@@ -1064,10 +1080,10 @@ export default function VideoGen() {
               <AutoSizeTextarea
                 value={negativePrompt}
                 onChange={(e) => setNegativePrompt(e.target.value)}
-                disabled={!isGrok && currentModel?.supportsNegativePrompt === false}
+                disabled={!isGrok && !isFal && currentModel?.supportsNegativePrompt === false}
                 rows={3}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 min-h-[80px]"
-                placeholder={!isGrok && currentModel?.supportsNegativePrompt === false
+                placeholder={!isGrok && !isFal && currentModel?.supportsNegativePrompt === false
                   ? 'This CFG-distilled model does not use a negative prompt.'
                   : 'What to avoid...'}
               />
@@ -1251,6 +1267,32 @@ export default function VideoGen() {
                 <code className="text-gray-400"> image_to_video </code> tool. Model, frames, and seed are chosen by Grok; renders count against your Grok plan.
               </p>
             </div>
+          ) : isFal ? (
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="fal.ai model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+                <input
+                  type="text"
+                  value={falModelId}
+                  onChange={(e) => setFalModelId(e.target.value)}
+                  placeholder="fal-ai/minimax/hailuo-02/standard/text-to-video"
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                />
+              </FormField>
+              <FormField label="Clip length (sec)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={falDuration}
+                  onChange={(e) => setFalDuration(e.target.value)}
+                  placeholder="model default"
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                />
+              </FormField>
+              <p className="col-span-2 text-[11px] text-gray-500 leading-snug">
+                Renders on fal.ai's queue API — leave the model blank to use PortOS's default (text-to-video, or image-to-video in Image mode). Counts against your fal.ai balance.
+              </p>
+            </div>
           ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {/* The peer advertises its own models; the local list would name
@@ -1400,11 +1442,11 @@ export default function VideoGen() {
           <ModelDisclosure
             backend={backend}
             backendDisclosures={status?.backendDisclosures}
-            model={isGrok ? null : currentModel}
+            model={(isGrok || isFal) ? null : currentModel}
             systemMemoryGb={modelContext?.systemMemoryGb}
           />
 
-          {!isGrok && (
+          {!isGrok && !isFal && (
             <AdvancedParamsPanel
               mode={mode}
               currentModel={currentModel}

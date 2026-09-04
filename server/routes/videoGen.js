@@ -243,18 +243,26 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
 });
 
 const generateBodySchema = z.object({
-  // Render backend: the local runtimes (default) or the Grok Build CLI's
-  // image-first image_to_video flow (#2859 phase 2). Grok ignores the
-  // local-only knobs below; it reads prompt/negativePrompt, width/height
-  // (mapped to an aspect ratio), sourceImageFile/sourceImage, and
-  // grokDuration.
-  backend: z.enum(['local', 'grok']).optional(),
+  // Render backend: the local runtimes (default), the Grok Build CLI's
+  // image-first image_to_video flow (#2859 phase 2), or fal.ai's queue REST
+  // API (#6213). Grok and fal both ignore the local-only knobs below; they
+  // read prompt/negativePrompt, width/height (mapped to an aspect ratio),
+  // sourceImageFile/sourceImage, and their own duration field.
+  backend: z.enum(['local', 'grok', 'fal']).optional(),
   // Grok image_to_video clip length in seconds — the shared schema (see
   // lib/grokVideoClip.js for which lengths grok actually delivers). Multipart
   // bodies arrive as strings, so coerce first.
   grokDuration: z.preprocess(
     (v) => (v == null || v === '' ? undefined : Number(v)),
     grokVideoDurationSchema.optional(),
+  ),
+  // fal.ai model id (e.g. 'fal-ai/minimax/hailuo-02/standard/text-to-video')
+  // and clip duration in seconds — loosely validated since fal's own model
+  // catalog, not PortOS, owns the set of valid ids/durations per model.
+  falModelId: z.string().min(1).max(200).optional(),
+  falDuration: z.preprocess(
+    (v) => (v == null || v === '' ? undefined : Number(v)),
+    optionalNum(1, 60, 'falDuration'),
   ),
   prompt: z.string().min(1).max(8000),
   negativePrompt: z.string().max(8000).optional(),
