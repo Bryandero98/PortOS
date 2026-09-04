@@ -24,6 +24,7 @@ import { usePortosRestartWatch } from './usePortosRestartWatch';
 // contract this file pins, so importing them would let a change to the source
 // silently move the assertions with it.
 const POLL_MS = 2000;
+const DISCONNECT_CONFIRM_MS = 1500;
 const DOWN_WAIT_MS = 60 * 1000;
 const RECOVERY_TIMEOUT_MS = 30 * 60 * 1000;
 const TOAST_ID = 'portos-update-restart';
@@ -126,6 +127,35 @@ describe('usePortosRestartWatch', () => {
       expect(mockToast.success).toHaveBeenCalledWith('Install reconciled — reloading', { id: TOAST_ID });
     });
 
+    it('carries a confirmed-down observation into the poll as restart evidence', async () => {
+      // `arm({ healthDown: true })` exists so the hook does not depend on
+      // `useAutoRefetch`'s `immediate: true` default to re-observe the down
+      // window. Here health is UP and unchanged on every tick and there is no
+      // baseline, so the carried observation is the only proof a restart
+      // happened — the page adopted an update it did not start.
+      const { result } = mountWatch();
+      mockCheckHealth.mockResolvedValue({ version: '2.24.0', uptime: 900 });
+      await act(async () => { result.current.arm({ healthDown: true }); });
+      await act(async () => {});
+
+      expect(result.current.polling).toBe(false);
+      expect(mockToast.success).toHaveBeenCalledWith('Install reconciled — reloading', { id: TOAST_ID });
+    });
+
+    it('prefers the caller-supplied version over what health reports', async () => {
+      // `UpdateTab` passes the version it already rendered. Health answering
+      // with something else at baseline time must not overwrite it, or the
+      // version-change comparison is made against the wrong "before".
+      const { result } = mountWatch();
+      mockCheckHealth.mockResolvedValue({ version: '2.99.0', uptime: 120 });
+      await act(async () => { await result.current.captureBaseline('2.24.0'); });
+      await act(async () => { result.current.arm(); });
+      await act(async () => {});
+
+      expect(result.current.polling).toBe(false);
+      expect(mockToast.success).toHaveBeenCalledWith('Updated to v2.99.0', { id: TOAST_ID });
+    });
+
     it('does not read a within-slack uptime wobble as a restart', async () => {
       // 2s below the peak — inside UPTIME_DROP_SLACK_S, i.e. clock jitter.
       const { result } = mountWatch();
@@ -160,7 +190,7 @@ describe('usePortosRestartWatch', () => {
       // The #6169 regression: a flat 60s ceiling measured phase 2 with phase
       // 1's ruler, so every real update timed out mid-`npm install`.
       const { result } = mountWatch();
-      await armWith(result, { after: null, armOpts: { healthDown: true } });
+      await armWith(result, { after: null });
 
       await tick(DOWN_WAIT_MS * 5);
       expect(result.current.polling).toBe(true);
@@ -208,6 +238,83 @@ describe('usePortosRestartWatch', () => {
 
       expect(mockToast.success).toHaveBeenCalledWith('Updated to v2.25.0', { id: TOAST_ID });
       expect(mockToast.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('arming from the update stream', () => {
+    // No production caller arms by hand: `UpdateTab` and `useAppOperation` both
+    // pass `active` and let these handlers decide.
+    const mountActive = async () => {
+      const view = renderHook(() => usePortosRestartWatch({ active: true }));
+      await act(async () => {});
+      return view;
+    };
+
+    const fireDisconnect = async () => {
+      await act(async () => { socketHandlers.get('disconnect')(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(DISCONNECT_CONFIRM_MS); });
+    };
+
+    it('arms once a disconnect is confirmed unreachable', async () => {
+      const { result } = await mountActive();
+      mockCheckHealth.mockResolvedValue(null);
+
+      await fireDisconnect();
+
+      expect(result.current.polling).toBe(true);
+      expect(mockToast.loading).toHaveBeenCalledWith(
+        'PortOS is restarting...', expect.objectContaining({ id: TOAST_ID }),
+      );
+    });
+
+    it('ignores a disconnect that leaves the server reachable', async () => {
+      // PortOS is commonly used remotely over Tailscale, where a blip during
+      // git-pull fires 'disconnect' on a very-much-alive server. Arming there
+      // would park a bogus "restarting" toast and then fail the update with
+      // "PortOS never went down" on every network hiccup.
+      const { result } = await mountActive();
+      mockCheckHealth.mockResolvedValue(UP);
+
+      await fireDisconnect();
+
+      expect(result.current.polling).toBe(false);
+      expect(mockToast.loading).not.toHaveBeenCalled();
+    });
+
+    it('arms on the restarting step but not on a failed one', async () => {
+      const { result } = await mountActive();
+
+      await act(async () => { socketHandlers.get('portos:update:step')({ step: 'restarting', status: 'error' }); });
+      expect(result.current.polling).toBe(false);
+
+      await act(async () => { socketHandlers.get('portos:update:step')({ step: 'restarting' }); });
+      await act(async () => {});
+      expect(result.current.polling).toBe(true);
+    });
+
+    it('reports a completion that reports failure instead of arming', async () => {
+      const onFailure = vi.fn();
+      const { result } = renderHook(() => usePortosRestartWatch({ active: true, onFailure }));
+      await act(async () => {});
+
+      await act(async () => { socketHandlers.get('portos:update:complete')({ success: false }); });
+
+      expect(onFailure).toHaveBeenCalledWith({ message: null });
+      expect(result.current.polling).toBe(false);
+    });
+
+    it('ignores update events for an update this surface did not launch', async () => {
+      // `active: false` — another tab's update, or one already reconciled here.
+      const { result } = renderHook(() => usePortosRestartWatch({ active: false }));
+      await act(async () => {});
+      mockCheckHealth.mockResolvedValue(null);
+
+      await act(async () => { socketHandlers.get('portos:update:step')({ step: 'restarting' }); });
+      await act(async () => { socketHandlers.get('portos:update:complete')({ success: true }); });
+      await fireDisconnect();
+
+      expect(result.current.polling).toBe(false);
+      expect(mockToast.loading).not.toHaveBeenCalled();
     });
   });
 
