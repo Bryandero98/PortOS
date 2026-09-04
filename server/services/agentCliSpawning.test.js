@@ -995,6 +995,21 @@ describe('stream error containment', () => {
       expect(emittedLines().some((line) => line.trim() === '')).toBe(false);
     });
 
+    it('drops the claude CLI SDK unrecognized-model telemetry line from the surfaced tail', async () => {
+      const spawnPromise = spawnDirectly(textArgs());
+      await new Promise((r) => setTimeout(r, 10));
+
+      fakeProcess.stderr.emit('data', Buffer.from(
+        '[claude-code:unrecognized_model] {"model":"gemma3:27b","query_source":"sdk"}\n'
+      ));
+      await new Promise((r) => setTimeout(r, 30));
+
+      fakeProcess.emit('close', 0);
+      await spawnPromise.catch(() => {});
+
+      expect(emittedLines().join('')).not.toMatch(/unrecognized_model/);
+    });
+
     it('still records a colors-only chunk as run output — it is proof the child is alive', async () => {
       // Counting the DECOLORED length would report zero bytes and file a run that
       // was steadily redrawing its progress line as having produced nothing.

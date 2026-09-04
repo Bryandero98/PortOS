@@ -133,6 +133,7 @@ export * from './agentExecutionProfiles.js';
 export * from './localEndpoint.js';
 export * from './cliProviderArgs.js';
 export * from './cliProviderRun.js';
+export * from './cliStderrNoise.js';
 export * from './codex.js';
 export * from './codexAccount.js';
 export * from './codexTurn.js';
