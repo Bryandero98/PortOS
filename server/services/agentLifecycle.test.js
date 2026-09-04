@@ -612,19 +612,50 @@ describe('runAgentSpawn source — app-review marker release (issue #989)', () =
 // re-dispatch. Without a block, the task stays pending and silently re-fails
 // forever. Pin that the permanent branch flips the task to blocked BEFORE the
 // lease is released, so a federated peer can't be clobbered.
+// Wide enough to cover the whole `if (!resolution.ok)` arm — its comments carry
+// the reasoning for the ordering these tests pin, so the window has to include
+// them rather than being trimmed to the statements.
+const RESOLUTION_FAILURE_WINDOW = 4000;
+
 describe('runAgentSpawn source — permanent provider-config failure blocks the task', () => {
   it('the resolution-failure path blocks a permanent failure with a provider-config reason', () => {
     const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
     expect(idx, 'resolution call must exist').toBeGreaterThan(-1);
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + 2000);
+    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
     expect(body, 'gates the block on resolution.permanent').toMatch(/if\s*\(resolution\.permanent\)/);
     expect(body, 'flips the task to blocked').toMatch(/status:\s*'blocked'/);
-    expect(body, 'tags the block category').toMatch(/blockedCategory:\s*'provider-config'/);
+    expect(body, 'tags the block category').toMatch(/blockedCategory:[^\n]*'provider-config'/);
+  });
+
+  // A configured orchestration lane that refuses to substitute providers (#5993)
+  // is a DISTINCT terminal outcome: same block, its own category and structured
+  // detail, so the client can name the role and provider instead of showing a
+  // generic provider-config failure.
+  it('tags a refused orchestration lane with its own category and detail', () => {
+    const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
+    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
+    expect(body, 'reads the structured lane detail').toMatch(/const lane = resolution\.orchestrationLane/);
+    // The category is referenced through the shared constant, not re-typed: the
+    // failure sweep exempts the same value, and two literals would drift.
+    expect(body, 'has its own block category').toMatch(/ORCHESTRATION_LANE_BLOCKED_CATEGORY/);
+    expect(AGENT_LIFECYCLE_SRC, 'takes the category from the shared module')
+      .toMatch(/import \{ ORCHESTRATION_LANE_BLOCKED_CATEGORY \} from '\.\.\/lib\/taskBlockCategories\.js';/);
+    expect(body, 'carries the detail onto the task').toMatch(/orchestrationLane: lane/);
+    expect(body, 'records the refusal in the ledger').toMatch(/kind: 'run\.lane-refused'/);
+  });
+
+  it('records the lane refusal BEFORE cleanup, so the reason survives a failing cleanup', () => {
+    const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
+    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
+    const ledgerIdx = body.indexOf("kind: 'run.lane-refused'");
+    const cleanupIdx = body.indexOf('await cleanupOnError(resolution.error)');
+    expect(ledgerIdx, 'ledger append must exist').toBeGreaterThan(-1);
+    expect(ledgerIdx, 'ledger append must precede cleanup').toBeLessThan(cleanupIdx);
   });
 
   it('blocks BEFORE releasing the lease so a federated peer cannot be clobbered', () => {
     const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + 2000);
+    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
     const permanentIdx = body.indexOf('if (resolution.permanent)');
     const cleanupIdx = body.indexOf('await cleanupOnError(resolution.error)');
     expect(permanentIdx, 'permanent block must exist').toBeGreaterThan(-1);

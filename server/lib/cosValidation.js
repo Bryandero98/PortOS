@@ -136,7 +136,26 @@ const orchestrationRoleSchema = z.object({
   // Per-role reasoning effort. The architect's own rung for its planning pass;
   // for the implementer it is the DEFAULT a spec's `REASONING:` line overrides.
   effort: z.enum(EFFORT_LEVELS).optional(),
-}).strict();
+  // The role's SAME-ROLE alternate (#5993) — the only provider swap a configured
+  // lane accepts. Without one, an unavailable lane stops the run rather than
+  // walking the run-level fallback chain back onto the architect's provider.
+  fallbackProvider: z.string().trim().min(1).max(120).optional(),
+  fallbackModel: z.string().trim().min(1).max(300).optional(),
+}).strict().superRefine((role, ctx) => {
+  // Reject here what `normalizeRoleAssignment` would silently drop, and what the
+  // resolver would refuse at spawn time. Accepting them returns 200 for a profile
+  // that is permanently inert (or that stops every run the first time its provider
+  // blinks), and the user finds out only when a task blocks days later.
+  if (role.fallbackProvider && !role.provider && !role.model) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fallbackProvider'], message: 'fallbackProvider needs a provider or model pin on the same role to be an alternate to' });
+  }
+  if (role.fallbackModel && !role.fallbackProvider) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fallbackModel'], message: 'fallbackModel needs a fallbackProvider on the same role' });
+  }
+  if (role.model && role.fallbackProvider && !role.fallbackModel) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fallbackModel'], message: 'a role pinning a model must name the fallbackModel its fallbackProvider runs it as' });
+  }
+});
 
 export const orchestrationProfileSchema = z.object(
   Object.fromEntries(ORCHESTRATION_ROLES.map(role => [role, orchestrationRoleSchema.optional()]))

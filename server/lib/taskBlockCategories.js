@@ -18,6 +18,14 @@
 import { AGENT_PAUSED_CATEGORY } from './taskPauseHold.js';
 
 /**
+ * A fail-closed orchestration lane refused to substitute providers (#5993). Its
+ * own exported name because three places key on it — `agentLifecycle.js` stamps
+ * it, and BOTH sets below list it — which is exactly the literal drift this
+ * module exists to prevent.
+ */
+export const ORCHESTRATION_LANE_BLOCKED_CATEGORY = 'orchestration-lane-unavailable';
+
+/**
  * Pauses a TIMER clears, not a person: the task carries a `cooldownUntil` and the
  * cooldown sweeper (`unblockExpiredCooldowns`, cosTaskGenerator.js) flips it back
  * to `pending` once that stamp passes.
@@ -46,7 +54,16 @@ export const TIMED_COOLDOWN_BLOCKED_CATEGORIES = new Set([
 export const PAUSED_BLOCKED_CATEGORIES = new Set([
   ...TIMED_COOLDOWN_BLOCKED_CATEGORIES,
   'app-unresolved',    // the task's app has no usable Repository Path
-  'workspace-invalid'  // the resolved workspace isn't a usable directory
+  'workspace-invalid', // the resolved workspace isn't a usable directory
+  // A fail-closed lane is a CONFIG pause of the same shape: the user authenticates
+  // the provider (or gives the role a fallbackProvider) and revives the task. It
+  // is not TIMED, so no cooldown sweeper picks it up. Listing it here is what
+  // keeps the resume pointer — without it a lane that blocked on a merely
+  // rate-limited provider would strip `existingBranch` / `resumeWorktreePath`,
+  // and the revived task would restart clean and orphan its predecessor's
+  // worktree. Before fail-closed that case stayed `pending` with its pointer
+  // intact, so omitting it here would be a NEW way to abandon work.
+  ORCHESTRATION_LANE_BLOCKED_CATEGORY
 ]);
 
 /**
@@ -65,7 +82,13 @@ export const USER_DECISION_BLOCKED_CATEGORIES = new Set([
   AGENT_PAUSED_CATEGORY,  // user paused; resumable on demand
   'challenge-escalation', // parked awaiting the user's arbitration
   'app-unresolved',
-  'workspace-invalid'
+  'workspace-invalid',
+  // Waiting on the same kind of fix as the workspace blocks above: authenticate
+  // the lane's provider, pick another model for the role, or give it a
+  // fallbackProvider. Without the exemption the failure sweep retires it to
+  // `completed` with an `auto-expired` marker after 14 days — turning the loud,
+  // deliberate stop into exactly the silent success the lane exists to prevent.
+  ORCHESTRATION_LANE_BLOCKED_CATEGORY
 ]);
 
 /**
