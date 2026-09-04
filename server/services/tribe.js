@@ -206,6 +206,53 @@ export async function getCareSummary(limit = 5) {
   };
 }
 
+/**
+ * Identifiers (emails/phones) held by more than one tracked person, using the SAME
+ * normalization the matcher uses — so a case-only email variant or a formatting-only
+ * phone variant collides here exactly as it would during identity matching.
+ *
+ * Pure and non-blocking by design (#5908): `tribe_people` has no uniqueness on
+ * `emails[]`/`phones[]`, and nothing checks across rows, so two people can end up
+ * sharing one. When that happens, `buildPersonMatchIndex` (`lib/tribeMatch.js`) keeps
+ * whichever person it sees first — and `listPeople`'s sort key includes
+ * `last_contact_on`, which routine auto-logging advances, so a shared identifier can
+ * silently re-target from one person to the other on a later sync. This is a report
+ * only: it never merges, writes, or blocks a save.
+ *
+ * @param {Array<{id: string, name: string, emails?: string[], phones?: string[]}>} people
+ *   Already-loaded, non-deleted people — `listPeople()` already filters `deleted = FALSE`.
+ */
+export function findDuplicateTribeIdentifiers(people) {
+  const collect = (getRaw, normalize) => {
+    const owners = new Map(); // normalized identifier -> [{id, name}]
+    for (const person of people || []) {
+      // One hit per person per identifier — a person listing the same email twice in
+      // different casings must not count as two "owners" of it.
+      const seen = new Set();
+      for (const raw of getRaw(person) || []) {
+        const key = normalize(raw);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        if (!owners.has(key)) owners.set(key, []);
+        owners.get(key).push({ id: person.id, name: person.name });
+      }
+    }
+    return [...owners.entries()]
+      .filter(([, owned]) => owned.length > 1)
+      .map(([identifier, owned]) => ({ identifier, people: owned }));
+  };
+  return {
+    emails: collect((p) => p.emails, normalizeIdentifier),
+    phones: collect((p) => p.phones, normalizePhone),
+  };
+}
+
+/** DB-backed wrapper for the route: loads every tracked person and runs the pure
+ * detector above. */
+export async function checkDuplicateTribeIdentifiers() {
+  return findDuplicateTribeIdentifiers(await listPeople());
+}
+
 export async function listPeople(options = {}) {
   await ensureReady();
   const conditions = ['deleted = FALSE'];
