@@ -111,6 +111,19 @@ describe('lintClipPrompt', () => {
     const clip = { ...passingContinueClip };
     expect(lintClipPrompt(clip, { bible, maxLength: 10 }).pass).toBe(false);
   });
+
+  it('never throws on malformed clip fields — returns a failing result instead', () => {
+    expect(() => lintClipPrompt({ prompt: null, cutType: 'continue', framing: 42, references: 'not-an-array' }, { bible })).not.toThrow();
+    const { pass } = lintClipPrompt({ prompt: null, cutType: 'continue', framing: 42, references: 'not-an-array' }, { bible });
+    expect(pass).toBe(false);
+    expect(() => lintClipPrompt(null, { bible })).not.toThrow();
+    expect(() => lintClipPrompt(undefined, { bible })).not.toThrow();
+  });
+
+  it('does not flag a banned term abutting an underscore as a standalone word', () => {
+    const clip = { ...passingContinueClip, prompt: `${passingContinueClip.prompt} same_frame_id logged.` };
+    expect(lintClipPrompt(clip, { bible }).pass).toBe(true);
+  });
 });
 
 describe('lintClips', () => {
@@ -136,5 +149,11 @@ describe('lintClips', () => {
     expect(pass).toBe(false);
     expect(results[0].pass).toBe(true);
     expect(results[1].pass).toBe(false);
+  });
+
+  it('never throws on a non-array clips argument', () => {
+    expect(() => lintClips(null, { bible })).not.toThrow();
+    expect(() => lintClips(undefined, { bible })).not.toThrow();
+    expect(lintClips(null, { bible })).toEqual({ pass: true, results: [] });
   });
 });

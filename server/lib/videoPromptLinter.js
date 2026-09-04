@@ -19,14 +19,24 @@
 import { resolveBibleDescriptor } from './scriptVideoCompiler.js';
 
 export const MAX_CLIP_PROMPT_LENGTH = 800;
+const HARD_CUT_PREFIX = 'Hard cut to';
 
 const BANNED_REFERENTS = ['same', 'still', 'again', 'continues', 'as before'];
 const BANNED_NEGATIVES = ['no', 'without', 'never'];
 const BANNED_OVERLAY_TERMS = ['text', 'caption', 'overlay'];
 
-const wordBoundaryRegex = (phrase) => new RegExp(`(?:^|[^a-z0-9])${phrase.replace(/\s+/g, '\\s+')}(?:$|[^a-z0-9])`, 'i');
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const findBannedTerms = (prompt, terms) => terms.filter((term) => wordBoundaryRegex(term).test(prompt));
+// \b (not a hand-rolled [^a-z0-9] boundary) so "same_text" isn't flagged as containing
+// the standalone word "same" — \w already includes '_', matching how prose reads a word.
+const bannedTermPattern = (term) => ({ term, regex: new RegExp(`\\b${escapeRegExp(term).replace(/\s+/g, '\\s+')}\\b`, 'i') });
+const BANNED_REFERENT_PATTERNS = BANNED_REFERENTS.map(bannedTermPattern);
+const BANNED_NEGATIVE_PATTERNS = BANNED_NEGATIVES.map(bannedTermPattern);
+const BANNED_OVERLAY_PATTERNS = BANNED_OVERLAY_TERMS.map(bannedTermPattern);
+
+const findBannedTerms = (prompt, patterns) => patterns.filter(({ regex }) => regex.test(prompt)).map(({ term }) => term);
+
+const asString = (value) => (typeof value === 'string' ? value : '');
 
 /**
  * Lint a single clip prompt against every rule.
@@ -43,17 +53,21 @@ const findBannedTerms = (prompt, terms) => terms.filter((term) => wordBoundaryRe
  * @returns {{pass: boolean, reasons: string[]}}
  */
 export function lintClipPrompt(clip, { bible, maxLength = MAX_CLIP_PROMPT_LENGTH } = {}) {
-  const { prompt = '', cutType, framing, previousFraming, references = [] } = clip || {};
+  const prompt = asString(clip?.prompt);
+  const { cutType } = clip || {};
+  const framing = asString(clip?.framing).trim() || null;
+  const previousFraming = asString(clip?.previousFraming).trim() || null;
+  const references = Array.isArray(clip?.references) ? clip.references : [];
   const reasons = [];
 
   if (cutType === 'continue') {
-    const opener = framing ? `Hard cut to ${framing}:` : null;
+    const opener = framing ? `${HARD_CUT_PREFIX} ${framing}:` : null;
     if (!opener || !prompt.trimStart().startsWith(opener)) {
       reasons.push(opener
         ? `missing hard-cut opener "${opener}"`
         : 'missing hard-cut opener: clip.framing was not provided');
     }
-    if (framing && previousFraming && framing.trim().toLowerCase() === previousFraming.trim().toLowerCase()) {
+    if (framing && previousFraming && framing.toLowerCase() === previousFraming.toLowerCase()) {
       reasons.push(`framing "${framing}" repeats the preceding clip's framing — a continuing clip needs a distinct camera framing/angle`);
     }
   }
@@ -67,13 +81,13 @@ export function lintClipPrompt(clip, { bible, maxLength = MAX_CLIP_PROMPT_LENGTH
     }
   }
 
-  for (const term of findBannedTerms(prompt, BANNED_REFERENTS)) {
+  for (const term of findBannedTerms(prompt, BANNED_REFERENT_PATTERNS)) {
     reasons.push(`banned cross-clip referent "${term}" — describe what is visible in THIS clip instead of referring back to a previous one`);
   }
-  for (const term of findBannedTerms(prompt, BANNED_NEGATIVES)) {
+  for (const term of findBannedTerms(prompt, BANNED_NEGATIVE_PATTERNS)) {
     reasons.push(`banned negative construction "${term}" — video models tend to render negated content instead of omitting it`);
   }
-  for (const term of findBannedTerms(prompt, BANNED_OVERLAY_TERMS)) {
+  for (const term of findBannedTerms(prompt, BANNED_OVERLAY_PATTERNS)) {
     reasons.push(`banned UI overlay language "${term}" — video models tend to render literal on-screen text/captions from this`);
   }
 
