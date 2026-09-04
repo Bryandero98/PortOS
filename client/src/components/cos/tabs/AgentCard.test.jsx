@@ -408,6 +408,21 @@ describe('AgentCard missing shell explanation', () => {
     expect(screen.queryByText('No shell')).not.toBeInTheDocument();
   });
 
+  it('stays silent on an attachable public-review run that has not registered its session yet', () => {
+    // The startup window an attachable Stage 3 now passes through: `executionMode`
+    // is already 'tui' but `tuiSessionId` has not landed. Gating on the session id
+    // alone made the card assert the stage runs headless for those seconds, then
+    // swap the claim for an "Open Shell" link — a false diagnostic, and a worse
+    // one if the PTY is merely slow to attach.
+    renderCard(running({
+      publicReviewPosture: 'sandboxed-actions',
+      executionMode: 'tui',
+      phase: 'initializing',
+    }));
+
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
+  });
+
   it('stays silent on a TUI run that has not registered its session yet', () => {
     // `executionMode` is stamped at registration but `tuiSessionId` only lands
     // once the PTY attaches, so every healthy TUI spawn passes through this

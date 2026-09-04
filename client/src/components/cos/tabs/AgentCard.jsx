@@ -383,7 +383,17 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
   // vendor declares an attachable recipe. An ordinary headless CLI agent gets no
   // chip — nobody expected a shell there, and one on every card would be the
   // noise this exists to remove.
-  const noShellReason = !agent.metadata?.tuiSessionId && agent.metadata?.publicReviewPosture
+  //
+  // `executionMode` is the authority on which way the run actually spawned, and
+  // it is stamped at registration while `tuiSessionId` only lands once the PTY
+  // attaches. An ATTACHABLE public-review stage therefore passes through a
+  // window where the session id is still null — without this second condition
+  // the card would spend that window asserting the stage runs headless, then
+  // silently swap the claim for an "Open Shell" link (same reason the ordinary
+  // TUI case is excluded below).
+  const noShellReason = !agent.metadata?.tuiSessionId
+    && agent.metadata?.executionMode !== 'tui'
+    && agent.metadata?.publicReviewPosture
     ? 'No shell: this public-review stage runs headless — either it is a tool-free reasoning stage, or its provider has no attachable sandbox recipe — so the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
     : null;
 
