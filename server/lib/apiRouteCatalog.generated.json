@@ -35,6 +35,7 @@
     "/api/commands",
     "/api/conflict-journal",
     "/api/contacts",
+    "/api/continuous-video",
     "/api/cos",
     "/api/cos/gsd",
     "/api/creative-commission",
@@ -3492,6 +3493,22 @@
       "mountPath": "/api/contacts",
       "sources": [
         "server/routes/contacts.js"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/continuous-video",
+      "mountPath": "/api/continuous-video",
+      "sources": [
+        "server/routes/continuousVideoEpisode.js"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/continuous-video/:jobId/events",
+      "mountPath": "/api/continuous-video",
+      "sources": [
+        "server/routes/continuousVideoEpisode.js"
       ]
     },
     {
@@ -17552,9 +17569,9 @@
     }
   ],
   "stats": {
-    "mounts": 147,
-    "operations": 2174,
-    "declarations": 2182,
-    "sourceFiles": 230
+    "mounts": 148,
+    "operations": 2176,
+    "declarations": 2184,
+    "sourceFiles": 231
   }
 }
