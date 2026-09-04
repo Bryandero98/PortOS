@@ -99,14 +99,7 @@ export const AGENT_RUN_EVENT_KINDS = Object.freeze([
   // `endTime` that no exit ever produced, and nothing would say where it came
   // from. Adding this kind is not an envelope shape change — older builds fold
   // unknown kinds as no-ops — so AGENT_RUN_EVENT_SCHEMA_VERSION stays at 1.
-  'run.reconciled',
-  // A configured orchestration lane refused to substitute providers and stopped
-  // the run before it spawned (#5993). Its own kind because the durable record
-  // this ledger annotates does NOT exist for it — no run directory is created —
-  // so without this line the only trace of a fail-closed lane is a blocked task,
-  // and "the cheap tier was down" is indistinguishable from every other block.
-  // Carries no runId (there is no run); keyed by agentId via `runEventKey`.
-  'run.lane-refused'
+  'run.reconciled'
 ]);
 
 /** All writeable kinds in the shared machine-local ledger. */
@@ -515,9 +508,8 @@ export function projectRunStates(events) {
  * Every non-terminal arm below is guarded by this: the ledger is read in append
  * order, but a late-arriving annotation (a stop request that raced the exit, a
  * reconnect logged after the process was already reaped) must not resurrect a
- * finished run as `running`. Only `run.finalized` and `run.lane-refused` may set
- * a terminal status — the second because a refused lane never spawned a process,
- * so no finalize will ever arrive for it (#5993) — and once set it stays.
+ * finished run as `running`. `run.finalized` is the only arm that may set a
+ * terminal status, so once set it stays.
  */
 const isTerminal = (state) => state.status === 'completed' || state.status === 'failed';
 
@@ -542,24 +534,6 @@ const canObserveRunning = (state) => !isTerminal(state) && !state.paused;
 function applyKind(state, event) {
   const data = event.data ?? {};
   switch (event.kind) {
-    case 'run.lane-refused':
-      // Terminal, and the ONLY arm besides `run.finalized` allowed to say so:
-      // a refused lane never spawned a process, so no exit will ever arrive to
-      // finalize it, and leaving the projection `unknown` would read as "still
-      // being figured out" for a run that is definitively over. Guarded like
-      // every other arm so it can never overwrite a real verdict.
-      if (!isTerminal(state)) {
-        state.status = 'failed';
-        state.success = false;
-      }
-      state.endedAt = state.endedAt ?? event.at;
-      state.laneRefused = {
-        role: typeof data.role === 'string' ? data.role : null,
-        requestedProvider: typeof data.requestedProvider === 'string' ? data.requestedProvider : null,
-        requestedModel: typeof data.requestedModel === 'string' ? data.requestedModel : null,
-        reason: typeof data.reason === 'string' ? data.reason : null,
-      };
-      break;
     case 'run.spawned':
       // Guarded like every other non-terminal arm. A spawn should never follow a
       // finalize for the same run, but the ledger is a stream several
@@ -570,10 +544,6 @@ function applyKind(state, event) {
       state.startedAt = state.startedAt ?? event.at;
       if (typeof data.providerId === 'string') state.providerId = data.providerId;
       if (typeof data.model === 'string') state.model = data.model;
-      // The tier this run actually ran as, plus the same-role alternate it fell
-      // to, if any — so a diagnostic can show the split the user configured.
-      if (typeof data.orchestrationRole === 'string') state.orchestrationRole = data.orchestrationRole;
-      if (typeof data.laneSubstitutedFrom === 'string') state.laneSubstitutedFrom = data.laneSubstitutedFrom;
       break;
     case 'run.runner-recovered':
       // A survivor is still running — recovery is an annotation on a live run,

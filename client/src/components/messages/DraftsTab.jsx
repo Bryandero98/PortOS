@@ -125,6 +125,7 @@ export default function DraftsTab({ accounts }) {
                     onClick={() => handleSend(draft.id)}
                     className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-400 hover:text-port-accent transition-colors"
                     title="Send" aria-label="Send"
+                    data-voice-guard="confirm"
                   >
                     <Send size={16} />
                   </button>

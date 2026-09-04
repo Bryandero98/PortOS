@@ -3,12 +3,11 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PATHS } from '../lib/fileUtils.js';
+import { PUBLIC_REVIEW_INPUT_FILENAME, PUBLIC_REVIEW_PATCH_DIRNAME } from '../lib/agentScratchPaths.js';
 import {
   materializePublicReviewInput,
   materializePublicReviewPatches,
   writePublicReviewInputSnapshot,
-  PUBLIC_REVIEW_INPUT_FILENAME,
-  PUBLIC_REVIEW_PATCH_DIRNAME,
   PUBLIC_REVIEW_PATCH_MANIFEST_FILENAME,
 } from './modelAbuseGuard.js';
 

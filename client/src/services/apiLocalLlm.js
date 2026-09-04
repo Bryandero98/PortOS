@@ -110,6 +110,15 @@ export const installSlotstream = () =>
 export const downloadSlotstreamModel = (model) =>
   request('/local-llm/slotstream/models/download', { method: 'POST', body: JSON.stringify({ model }) });
 
+// Stop the named checkpoint's download. The bytes already moved are kept, so a
+// later download resumes rather than restarting.
+export const cancelSlotstreamModelDownload = (model, options) =>
+  request('/local-llm/slotstream/models/download/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ model }),
+    ...options,
+  });
+
 // MTPLX model catalog — search, download, and remove MTP checkpoints in-app.
 // `mtplx forge discover` is upstream's index of MTPLX-branded models, which is
 // exactly the set `mtplx serve` can run; an empty query returns its default list.

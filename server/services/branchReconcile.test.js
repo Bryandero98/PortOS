@@ -19,22 +19,28 @@ vi.mock('./git.js', () => ({
 vi.mock('../lib/execGit.js', () => ({
   execGit: vi.fn(async () => ({ stdout: '', exitCode: 0 }))
 }));
-vi.mock('./worktreeManager.js', () => ({
-  listWorktrees: vi.fn(async () => []),
-  forceRemoveWorktreeDir: vi.fn(async () => {}),
-  reapMergedWorktrees: vi.fn(async () => ({ reaped: [], skipped: [] })),
-  // Real pure classifier semantics: empty porcelain = clean, and every non-empty
-  // line is a real change path (the suite never feeds it lockfile churn). The
-  // paths matter — gatherDivergence intersects them with the default branch's
-  // changes to find work that may have been superseded.
-  classifyWorktreeDirt: vi.fn((p) => {
-    const lines = (p || '').split('\n').map((l) => l.trim()).filter(Boolean);
-    return {
-      hasRealChanges: lines.length > 0,
-      realChangePaths: lines.map((l) => l.replace(/^\s*\S+\s+/, ''))
-    };
-  }),
-}));
+vi.mock('./worktreeManager.js', async () => {
+  const { AGENT_SCRATCH_PATHS, matchesScratchRoot } = await import('../lib/agentScratchPaths.js');
+  return {
+    listWorktrees: vi.fn(async () => []),
+    forceRemoveWorktreeDir: vi.fn(async () => {}),
+    reapMergedWorktrees: vi.fn(async () => ({ reaped: [], skipped: [] })),
+    // Real pure classifier semantics: empty porcelain = clean, and every non-empty
+    // line is a real change path (the suite never feeds it lockfile churn) EXCEPT
+    // PortOS's own runtime scratch, which the real classifier subtracts for every
+    // caller. Mocking that away would hide the case this suite exists to cover.
+    // The paths matter — gatherDivergence intersects them with the default
+    // branch's changes to find work that may have been superseded.
+    classifyWorktreeDirt: vi.fn((p) => {
+      const paths = (p || '').split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => l.replace(/^\s*\S+\s+/, ''))
+        .filter((path) => !matchesScratchRoot(path, AGENT_SCRATCH_PATHS));
+      return { hasRealChanges: paths.length > 0, realChangePaths: paths };
+    }),
+  };
+});
 // Worktree age drives the claim windows (STALE_CLAIM_IDLE_MS / SHIPPED_CLAIM_IDLE_MS),
 // and gatherBranchState reads it via stat(). Default to "ancient" so tests that
 // don't care about age behave as before; set worktreeMtimeMs to pin a specific age.
@@ -63,6 +69,15 @@ vi.mock('../lib/fileUtils.js', () => ({
     && candidate.startsWith(`${dir}/`),
   tryReadFile: (...args) => tryReadFileMock(...args),
   atomicWrite: vi.fn(async () => {})
+}));
+
+const backupSupersededBranchMock = vi.fn(async (_repoPath, branch) => ({
+  dir: `/repo/data/cos/abandoned-worktree-backups/${branch.branch.replace(/\//g, '-')}`,
+  manifest: 'manifest.json',
+  untracked: []
+}));
+vi.mock('./supersededBackup.js', () => ({
+  backupSupersededBranch: (...args) => backupSupersededBranchMock(...args)
 }));
 
 import {
@@ -97,6 +112,11 @@ beforeEach(() => {
   wt.reapMergedWorktrees.mockResolvedValue({ reaped: [], skipped: [] });
   execGit.mockResolvedValue({ stdout: '', exitCode: 0 });
   tryReadFileMock.mockResolvedValue(null);
+  backupSupersededBranchMock.mockImplementation(async (_repoPath, branch) => ({
+    dir: `/repo/data/cos/abandoned-worktree-backups/${branch.branch.replace(/\//g, '-')}`,
+    manifest: 'manifest.json',
+    untracked: []
+  }));
 });
 
 describe('classifyBranch', () => {
@@ -1077,16 +1097,144 @@ describe('reconcile — cached SUPERSEDED verdicts (#3842)', () => {
     }]
   });
 
-  it('drops a branch with a fresh cached verdict out of the actionable set', async () => {
+  it('reaps a branch with a fresh cached verdict, after backing it up', async () => {
     setupAbandoned();
     tryReadFileMock.mockResolvedValue(ledger());
 
     const res = await reconcile('/repo', { activeAgentIds: new Set() });
     expect(res.inFlight).toEqual([]);
-    expect(res.superseded.map((s) => s.branch)).toEqual([BRANCH]);
-    // Left completely alone — the whole point is that merging it would regress main.
+    // Reported under its own key, NOT `cleaned` — a superseded branch's work is
+    // not on the default branch — and gone from the prompt's superseded block.
+    expect(res.reapedSuperseded).toEqual([BRANCH]);
+    expect(res.cleaned).not.toContain(BRANCH);
+    expect(res.superseded).toEqual([]);
+    expect(backupSupersededBranchMock).toHaveBeenCalledTimes(1);
+    expect(wt.forceRemoveWorktreeDir).toHaveBeenCalledWith('/repo', WORKTREE, expect.anything());
+    expect(git.deleteBranch).toHaveBeenCalledWith('/repo', BRANCH, { local: true });
+  });
+
+  it('backs up before it deletes anything', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+    const order = [];
+    backupSupersededBranchMock.mockImplementation(async () => {
+      order.push('backup');
+      return { dir: '/backups/x', manifest: 'manifest.json', untracked: [] };
+    });
+    wt.forceRemoveWorktreeDir.mockImplementation(async () => { order.push('remove'); });
+    git.deleteBranch.mockImplementation(async () => { order.push('delete'); return { results: { local: 'deleted' } }; });
+
+    await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(order[0]).toBe('backup');
+  });
+
+  // No recoverable copy, no delete. The verdict is not what makes this safe.
+  it('does not reap when the backup fails', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+    backupSupersededBranchMock.mockRejectedValue(new Error('disk full'));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
     expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
     expect(git.deleteBranch).not.toHaveBeenCalled();
+    expect(res.superseded.map((b) => b.branch)).toEqual([BRANCH]);
+    expect(res.skipped).toContainEqual({ branch: BRANCH, reason: 'backup-failed: disk full' });
+  });
+
+  // "Superseded" must never become a way around the worktree protection gate —
+  // it is the same gate cleanupMerged applies. A recent /claim tree is the case
+  // that reaches it: the branch is clean and un-pushed (NEEDS_PR), so nothing
+  // upstream of the reaper holds it back.
+  it('holds the reap while a claim worktree is still inside its idle window', async () => {
+    const CLAIM = 'claim/issue-5769';
+    const CLAIM_TREE = '/repo/data/cos/worktrees/claim-issue-5769';
+    git.getBranches.mockResolvedValue([
+      { name: CLAIM, isDefault: false, current: false, tracking: null, merged: false }
+    ]);
+    wt.listWorktrees.mockResolvedValue([{ path: CLAIM_TREE, branch: `refs/heads/${CLAIM}` }]);
+    git.isBranchMergedInto.mockResolvedValue(false);
+    execGit.mockImplementation(async (args) => {
+      const [cmd] = args;
+      if (cmd === 'rev-parse') return { stdout: 'aaaaaaa\n', exitCode: 0 };
+      if (cmd === 'merge-base' && args[1] === '--is-ancestor') return { stdout: '', exitCode: 0 };
+      if (cmd === 'merge-base') return { stdout: 'base000\n', exitCode: 0 };
+      if (cmd === 'diff') return { stdout: 'server/services/thing.js\n', exitCode: 0 };
+      if (cmd === 'rev-list') return { stdout: '600\t3\n', exitCode: 0 };
+      return { stdout: '', exitCode: 0 };  // clean worktree
+    });
+    worktreeMtimeMs = Date.now();  // claimed minutes ago, not abandoned
+    tryReadFileMock.mockResolvedValue(JSON.stringify({
+      version: 1,
+      entries: [{
+        branch: CLAIM, repoPath: '/repo', verdict: 'SUPERSEDED', tip: 'aaaaaaa',
+        dirtyPaths: [], collisionPaths: ['server/services/thing.js'], replacedBy: ['ffffff1']
+      }]
+    }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+    expect(backupSupersededBranchMock).not.toHaveBeenCalled();
+    // Still reported, so a held-back reap is visible rather than silent.
+    expect(res.superseded.map((b) => b.branch)).toEqual([CLAIM]);
+    expect(res.skipped.find((sk) => sk.branch === CLAIM)?.reason).toBeTruthy();
+  });
+
+  // `cleanupMerged` means "delete branches whose work is already on main". This
+  // deletes branches whose work is NOT, so it gets its own switch for a caller
+  // (repoSync) whose toggle never meant that.
+  it('is refusable on its own, without turning off merged cleanup', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { reapSuperseded: false, activeAgentIds: new Set() });
+    expect(backupSupersededBranchMock).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+    expect(res.reapedSuperseded).toEqual([]);
+    expect(res.skipped).toContainEqual({ branch: BRANCH, reason: 'reap-superseded-disabled' });
+  });
+
+  it('reports but never reaps with cleanup disabled', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+
+    const res = await reconcile('/repo', { cleanup: false, activeAgentIds: new Set() });
+    expect(backupSupersededBranchMock).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+    expect(res.skipped).toContainEqual({ branch: BRANCH, reason: 'reap-superseded-disabled' });
+    expect(res.superseded.map((b) => b.branch)).toEqual([BRANCH]);
+  });
+
+  // Cross-version: this install's ledger predates classifyWorktreeDirt subtracting
+  // PortOS's own runtime scratch, so its recorded dirtyPaths list it while the live
+  // side no longer does. Both the partition and the reap must subtract it — a raw
+  // compare in either one strands the branch it was written to retire.
+  it('reaps a verdict recorded before the scratch subtraction shipped', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({
+      dirtyPaths: ['server/services/thing.js', 'PORTOS_PUBLIC_REVIEW_INPUT.json']
+    }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.reapedSuperseded).toEqual([BRANCH]);
+    expect(res.skipped).not.toContainEqual(
+      expect.objectContaining({ branch: BRANCH, reason: 'verdict-does-not-match-branch' })
+    );
+  });
+
+  it('holds a branch whose verdict names a genuinely different change set', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+    // Freshness passed on the gathered entry, but the entry handed to the reap
+    // disagrees with its own verdict — the contract check a direct caller needs.
+    const { reapSupersededBranches } = await import('./branchReconcile.js');
+    const out = await reapSupersededBranches('/repo', 'main', [{
+      branch: BRANCH, tip: 'aaaaaaa', worktreePath: WORKTREE, dirtyPaths: ['other.js'],
+      verdict: { tip: 'aaaaaaa', dirtyPaths: ['server/services/thing.js'] }
+    }], { activeAgentIds: new Set() });
+    expect(out.reaped).toEqual([]);
+    expect(out.skipped).toEqual([{ branch: BRANCH, reason: 'verdict-does-not-match-branch' }]);
+    expect(backupSupersededBranchMock).not.toHaveBeenCalled();
   });
 
   it('re-analyzes when the branch tip moved', async () => {
@@ -1142,6 +1290,51 @@ describe('reconcile — cached SUPERSEDED verdicts (#3842)', () => {
     const res = await reconcile('/repo', { activeAgentIds: new Set() });
     expect(res.inFlight.map((i) => i.branch)).toEqual([BRANCH]);
     expect(res.superseded).toEqual([]);
+  });
+});
+
+// PortOS materializes the public-review bundle INTO the worktree it hands a
+// reviewer model, and nothing ever commits it. Counted as uncommitted work, a
+// worktree holding only that read as ABANDONED_WIP forever: cleanupMerged
+// refused to delete a dirty tree, and every pass instead spent a coordinator run
+// that came back "no real work product, a human should discard it".
+describe('reconcile — a worktree holding only PortOS runtime scratch', () => {
+  const BRANCH = 'cos/app-improve-pr-reviewer-x/agent-985a8c77';
+  const WORKTREE = '/repo/data/cos/worktrees/agent-985a8c77';
+
+  const setup = (porcelain) => {
+    git.getBranches.mockResolvedValue([
+      { name: BRANCH, isDefault: false, current: false, tracking: null, merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([{ path: WORKTREE, branch: `refs/heads/${BRANCH}` }]);
+    git.isBranchMergedInto.mockResolvedValue(true);
+    execGit.mockImplementation(async (args) => {
+      if (args[0] === 'rev-list') return { stdout: '114\t0\n', exitCode: 0 };
+      if (args[0] === 'status') return { stdout: porcelain, exitCode: 0 };
+      return { stdout: '', exitCode: 0 };
+    });
+  };
+
+  it('reaps it instead of dispatching an agent to look at it', async () => {
+    setup('?? PORTOS_PUBLIC_REVIEW_INPUT.json\n?? .portos-public-review/\n');
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.inFlight).toEqual([]);
+    expect(res.cleaned).toContain(BRANCH);
+    expect(wt.forceRemoveWorktreeDir).toHaveBeenCalledWith('/repo', WORKTREE, expect.anything());
+    expect(git.deleteBranch).toHaveBeenCalledWith('/repo', BRANCH, { local: true });
+  });
+
+  it('still holds a worktree carrying one real change alongside the scratch', async () => {
+    setup('?? PORTOS_PUBLIC_REVIEW_INPUT.json\n M server/services/thing.js\n');
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+    expect(git.deleteBranch).not.toHaveBeenCalled();
+    // The real change makes it ABANDONED_WIP — dispatched to an agent, not reaped —
+    // and the scratch is subtracted from the change set the agent is pointed at.
+    expect(res.inFlight.map((b) => b.branch)).toEqual([BRANCH]);
+    expect(res.inFlight[0].dirtyPaths).toEqual(['server/services/thing.js']);
   });
 });
 

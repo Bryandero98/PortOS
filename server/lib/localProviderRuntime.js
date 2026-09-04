@@ -187,7 +187,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // Dedicated loopback port — never 11434, which is a PortOS-managed Ollama.
     defaultBaseUrl: `http://127.0.0.1:${PORTS.SLOTSTREAM}/v1`,
     manageUrl: '/models/llms',
-    docsUrl: 'https://github.com/carloslfu/slotstream',
+    docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/slotstream.md',
     modelsHint: 'A start never fetches weights — add a checkpoint on Models → LLMs, then start Slotstream there.',
     servesOneModel: true,
     standbyWhenStopped: true,
