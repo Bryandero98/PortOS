@@ -675,13 +675,38 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               reviewerApplies={config.taskMetadata?.reviewerApplies !== undefined
                 ? (config.taskMetadata?.reviewerApplies === true || config.taskMetadata?.reviewerApplies === 'true')
                 : reviewDefaults.reviewerApplies}
+              // The same fallback the props above were seeded from. The picker
+              // omits whatever still equals it, so touching one control no
+              // longer freezes the rest into a permanent task override (#6208).
+              defaults={{
+                reviewers: reviewDefaults.reviewers,
+                usernames: reviewDefaults.usernames,
+                optionalReviewers: reviewDefaults.optionalReviewers,
+                reviewerMaxRounds: reviewDefaults.reviewerMaxRounds,
+                reviewerModels: seededPins.models,
+                reviewerEfforts: seededPins.efforts,
+                stopMode: reviewDefaults.stopMode,
+                reviewerApplies: reviewDefaults.reviewerApplies,
+              }}
               disabled={updating}
-              onChange={({ reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, stopMode, reviewerApplies }) => {
+              onChange={(patch) => {
+                // The picker emits only what differs from `defaults` above, so
+                // rebuild the reviewer slice from scratch: strip every override
+                // key (a key that reverted to the default must be DELETED, not
+                // left pinning its old value), then re-apply what arrived.
                 // Drop the legacy single `reviewer` key so storage converges on `reviewers`.
                 const { reviewer: _reviewer, ...rest } = config.taskMetadata || {};
-                onUpdate(taskType, {
-                  taskMetadata: { ...rest, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, reviewStopMode: stopMode, reviewerApplies }
-                });
+                for (const key of REVIEW_CONFIG_KEYS) delete rest[key];
+                const taskMetadata = { ...rest };
+                if (patch.reviewers !== undefined) taskMetadata.reviewers = patch.reviewers;
+                if (patch.usernames !== undefined) taskMetadata.usernames = patch.usernames;
+                if (patch.optionalReviewers !== undefined) taskMetadata.optionalReviewers = patch.optionalReviewers;
+                if (patch.reviewerMaxRounds !== undefined) taskMetadata.reviewerMaxRounds = patch.reviewerMaxRounds;
+                if (patch.reviewerModels !== undefined) taskMetadata.reviewerModels = patch.reviewerModels;
+                if (patch.reviewerEfforts !== undefined) taskMetadata.reviewerEfforts = patch.reviewerEfforts;
+                if (patch.stopMode !== undefined) taskMetadata.reviewStopMode = patch.stopMode;
+                if (patch.reviewerApplies !== undefined) taskMetadata.reviewerApplies = patch.reviewerApplies;
+                onUpdate(taskType, { taskMetadata });
               }}
             />
           </div>
