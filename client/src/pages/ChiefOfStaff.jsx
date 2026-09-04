@@ -922,7 +922,7 @@ export default function ChiefOfStaff() {
           {desktopPanelCollapsed ? (
             <div className="hidden lg:block overflow-hidden min-w-0" />
           ) : (
-            <div className="hidden lg:block relative">
+            <div className="hidden lg:block relative min-w-0 w-full max-w-full lg:w-[320px] lg:max-w-[320px]">
               <button
                 onClick={toggleDesktopPanel}
                 className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center absolute top-2 right-2 z-10 p-1.5 text-gray-500 hover:text-white transition-colors rounded-md hover:bg-white/5"
@@ -1002,7 +1002,7 @@ export default function ChiefOfStaff() {
           </div>
         </>
       ) : (
-        <div className="relative flex flex-col border-b lg:border-b-0 lg:border-r border-port-accent-2/20 bg-gradient-to-b from-port-card/80 to-port-card/40 shrink-0 w-full max-w-full overflow-x-hidden lg:h-full lg:overflow-y-auto scrollbar-hide">
+        <div className="relative flex flex-col border-b lg:border-b-0 lg:border-r border-port-accent-2/20 bg-gradient-to-b from-port-card/80 to-port-card/40 shrink-0 w-full max-w-full min-w-0 lg:w-[320px] lg:max-w-[320px] overflow-x-hidden lg:h-full lg:overflow-y-auto scrollbar-hide">
           {/* Desktop Collapse Button */}
           <button
             onClick={toggleDesktopPanel}
@@ -1043,7 +1043,7 @@ export default function ChiefOfStaff() {
           {/* Collapsible Content */}
           <div
             id="cos-agent-panel"
-            className={`${agentPanelCollapsed ? 'hidden' : 'flex'} lg:flex min-w-0 relative overflow-hidden ${hasCanvasAvatar ? 'flex-none min-h-[180px] sm:min-h-[190px] md:min-h-[190px] lg:min-h-dvh-cap lg:[--dvh-cap:460px] lg:[--dvh-inset:1rem] xl:[--dvh-cap:620px]' : 'flex-1'}`}
+            className={`${agentPanelCollapsed ? 'hidden' : 'flex'} lg:flex min-w-0 w-full max-w-full relative overflow-hidden ${hasCanvasAvatar ? 'flex-none min-h-[180px] sm:min-h-[190px] md:min-h-[190px] lg:min-h-dvh-cap lg:[--dvh-cap:460px] lg:[--dvh-inset:1rem] xl:[--dvh-cap:620px]' : 'flex-1'}`}
           >
             {/* Background Effects */}
             <div
@@ -1069,7 +1069,13 @@ export default function ChiefOfStaff() {
             )}
 
             {/* Avatar UI overlays the full-width canvas stage for 3D styles. */}
-            <div className={`${hasCanvasAvatar ? 'absolute inset-y-0 left-0 w-[46%] lg:relative lg:inset-auto lg:w-full lg:flex-none lg:min-h-full p-2 sm:p-3 lg:px-4 lg:py-6' : 'relative flex-1 min-w-0 lg:flex-none lg:min-h-full p-2 lg:px-4 lg:py-6'} min-w-0 flex flex-col items-center z-10`}>
+            <div
+              className={`${
+                hasCanvasAvatar
+                  ? 'absolute inset-y-0 left-0 w-[46%] p-2 sm:p-3'
+                  : 'relative flex-1 w-full p-2'
+              } min-w-0 lg:relative lg:inset-auto lg:w-full lg:max-w-full lg:flex-none lg:min-h-full lg:px-4 lg:py-6 flex flex-col items-center z-10`}
+            >
               <div className="hidden lg:block text-sm font-semibold tracking-widest uppercase text-port-text-muted mb-1 font-mono">
                 Digital Assistant
               </div>
@@ -1095,12 +1101,12 @@ export default function ChiefOfStaff() {
               </div>
 
               {/* Desktop Stats Grid - integrated into CoS sidebar (matches mobile compressed layout) */}
-              <div className="hidden lg:grid grid-cols-2 gap-1.5 w-full mt-3 relative z-10">
+              <div className="hidden lg:grid grid-cols-2 gap-1.5 w-full min-w-0 mt-3 relative z-10">
                 {statsGridCards}
               </div>
 
               {status?.running && (
-                <div className="hidden lg:flex flex-1 min-h-0 w-full flex-col">
+                <div className="hidden lg:flex flex-1 min-h-0 w-full min-w-0 flex-col">
                   <EventLog logs={eventLogs} />
                 </div>
               )}

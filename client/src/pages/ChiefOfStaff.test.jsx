@@ -917,3 +917,30 @@ describe('Rigged avatar style', () => {
     expect(avatar).toHaveAttribute('data-covered', '');
   });
 });
+
+describe('CoS agent panel layout sizing', () => {
+  it('constrains panel container width with w-full and min-w-0 for non-canvas avatar styles', async () => {
+    api.getCosStatus.mockResolvedValue({
+      running: true,
+      config: { ...config, avatarStyle: 'svg' },
+      stats: { tasksCompleted: 5 },
+    });
+    await renderSettledAt('tasks');
+
+    const panel = document.getElementById('cos-agent-panel');
+    expect(panel).toBeInTheDocument();
+    expect(panel?.className).toContain('w-full');
+    expect(panel?.className).toContain('max-w-full');
+    expect(panel?.className).toContain('min-w-0');
+
+    // Inner container holding the avatar, title, and desktop stats grid
+    // must retain lg:w-full and min-w-0 when hasCanvasAvatar is false,
+    // preventing child content like EventLog or StatCards from expanding
+    // beyond the 320px rail.
+    const title = screen.getByRole('heading', { level: 1, name: 'Chief of Staff' });
+    const innerContainer = title.parentElement;
+    expect(innerContainer?.className).toContain('lg:w-full');
+    expect(innerContainer?.className).toContain('min-w-0');
+  });
+});
+
