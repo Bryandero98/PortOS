@@ -194,7 +194,7 @@ Local AI model acceleration, multi-machine peer federation, storage classificati
 
 | Surface / Area | Route(s) | Key Capabilities & Workflows | Related Guides |
 |---|---|---|---|
-| **Local LLM Runtimes** | `/models/llms` | Management of local model servers: Ollama, LM Studio, vLLM, SGLang, and llama.cpp / llama-server. | [Claude on Ollama](./claude-ollama.md) |
+| **Local LLM Runtimes** | `/models/llms` | Management of local model servers: Ollama, LM Studio, vLLM, SGLang, llama.cpp / llama-server, MTPLX, and Slotstream (SSD-streaming MoE for checkpoints larger than RAM). | [Claude on Ollama](./claude-ollama.md), [MTPLX](./mtplx.md), [Slotstream](./slotstream.md) |
 | **Speculative Decoding** | `/models/llms` | Accelerated token generation using DSpark, DFlash 2, and MTPLX speculative drafting pairs. | [DFlash2 & DSpark](./dflash2.md), [MTPLX](./mtplx.md), [RTX 3090 vLLM](./qwen38-rtx3090.md), [SGLang Qwen](./sglang-qwen38.md) |
 | **Embeddings Management** | `/models/embeddings` | Local text embedding models (Nomic, Ollama) and pgvector semantic index configuration. | [STORAGE.md](../STORAGE.md) |
 | **LoRAs & Model Training** | `/models/loras`, `/models/training` | LoRA adapter discovery, Civitai downloads, image captioning, and local FLUX LoRA training dataset management. | — |

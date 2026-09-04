@@ -18,6 +18,7 @@ const SHIPPED_REFRESHABLE = [
   'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
   'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
   'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
+  'slotstream',
   'opencode-llama-tui',
   'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama', 'opencode-ollama-tui',
   'opencode-orcarouter', 'opencode-orcarouter-tui', 'orcarouter',
