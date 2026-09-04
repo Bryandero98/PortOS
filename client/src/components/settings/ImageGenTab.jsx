@@ -111,7 +111,7 @@ export function ImageGenTab() {
   // never rendered, only round-tripped at save time so sibling keys
   // (defaultModelId) survive the settings PUT's wholesale slice replace.
   const [videoGenMode, setVideoGenMode] = useState('');
-  const [videoGenDisplaySleep, setVideoGenDisplaySleep] = useState(true);
+  const [videoGenDisplaySleep, setVideoGenDisplaySleep] = useState(false);
   // fal.ai queue REST API key (#6213) — usability-gated on this being set
   // (settings, or the FAL_KEY env var server-side). No enabled toggle: the
   // key's presence IS the opt-in, same shape as loras.js's Civitai key.
@@ -182,7 +182,7 @@ export function ImageGenTab() {
     denoiseByMode: { external: false, local: false, codex: false, grok: false, agy: false },
     renderDefaultsJson: '{}',
     videoGenMode: '',
-    videoGenDisplaySleep: true,
+    videoGenDisplaySleep: false,
     falApiKey: '',
     reactorApiKey: '',
   });
@@ -256,7 +256,7 @@ export function ImageGenTab() {
         // ('auto'/blank → '', i.e. no pin) for the select.
         const vg = (s?.videoGen && typeof s.videoGen === 'object') ? s.videoGen : {};
         const vgMode = normalizeRenderPinValue(vg.mode) || '';
-        const vgDisplaySleep = vg.displaySleep !== false;
+        const vgDisplaySleep = vg.displaySleep === true;
         const vgFalApiKey = vg.fal?.apiKey || '';
         const vgReactorApiKey = vg.reactor?.apiKey || '';
         const m = ig.mode || IMAGE_GEN_MODE.EXTERNAL;
@@ -791,7 +791,7 @@ export function ImageGenTab() {
           />
           <span>
             <span className="block font-medium text-white">Sleep display during local MLX video renders</span>
-            <span className="block text-xs text-gray-500 mt-0.5">Keeps the system awake while reducing WindowServer GPU contention on affected Apple silicon. Turn off only when another headless workflow manages display power.</span>
+            <span className="block text-xs text-gray-500 mt-0.5">Off by default. Keeps the system awake while putting the screen to sleep, which reduces WindowServer GPU contention on affected Apple silicon. Turn on only if you hit the GPU-watchdog crash during a render — this is also settable per-render on the Video Gen page.</span>
           </span>
         </label>
         <FormField

@@ -70,10 +70,16 @@ const editableRemixModel = (models, defaultModelId) => {
  *     `buildGeneratePayload()` emit the text-to-video-only shape the federated
  *     wire accepts — kept here rather than in the page so there stays exactly
  *     one builder for what `server/routes/videoGen.js` validates.
+ *   - `displaySleepEnabled` — the page's effective choice (settings default,
+ *     overridable per render) for whether a local MLX render should sleep the
+ *     display. `buildGeneratePayload()` only attaches it when the SELECTED
+ *     MODEL actually has the mitigation (`currentModel.sleepsDisplayDuringRender`),
+ *     so the page doesn't need its own copy of that gate to build the payload —
+ *     only to decide whether to show the control at all.
  */
 export function useVideoGenForm({
   models, modelContext, availableLoras, grokEnabled, falEnabled = false, reactorEnabled = false,
-  remoteSubmissionFields = null,
+  remoteSubmissionFields = null, displaySleepEnabled = false,
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const incomingSourceImage = searchParams.get('sourceImageFile');
@@ -1264,6 +1270,7 @@ export function useVideoGenForm({
   const submissionState = {
     isGrok, grokDuration, isFal, falDuration, falModelId,
     isReactor, reactorClipId, reactorSeconds, reactorSeed, remoteSubmissionFields,
+    displaySleepEnabled,
     prompt, negativePrompt, stylePreset, selectedUniverse,
     width, height, mode, sourceImageFile, sourceImageUpload,
     numFrames, fps, steps, guidanceScale, seed,

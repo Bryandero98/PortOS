@@ -76,7 +76,7 @@ vi.mock('../services/videoGen/runtimes.js', async (importOriginal) => ({
   resolveByovRuntimeLoraCapable: vi.fn(async (runtime) => runtime === 'minimax_h3' && loraCapability.capable),
 }));
 
-vi.mock('../services/displayPower.js', () => ({
+vi.mock('../services/videoGen/displayPower.js', () => ({
   isDisplaySleepEnabled: vi.fn(() => false),
 }));
 
@@ -426,7 +426,7 @@ describe('videoGen routes', () => {
     // macOS-only, so a live call returns false on every other runner and the
     // assertions would pass against a hardcoded false — pinning nothing.
     it('reports whether a render will sleep the display, and passes the videoGen slice', async () => {
-      const { isDisplaySleepEnabled } = await import('../services/displayPower.js');
+      const { isDisplaySleepEnabled } = await import('../services/videoGen/displayPower.js');
       const { getSettings } = await import('../services/settings.js');
 
       isDisplaySleepEnabled.mockReturnValueOnce(true);

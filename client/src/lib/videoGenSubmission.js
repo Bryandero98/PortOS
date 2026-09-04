@@ -36,6 +36,7 @@ export function envelopVideoPrompt(text, {
 export function buildVideoGenSubmission({
   isGrok, grokDuration, isFal, falDuration, falModelId,
   isReactor, reactorClipId, reactorSeconds, reactorSeed, remoteSubmissionFields,
+  displaySleepEnabled,
   prompt, negativePrompt, stylePreset, selectedUniverse,
   width, height, mode, sourceImageFile, sourceImageUpload,
   numFrames, fps, steps, guidanceScale, seed,
@@ -154,6 +155,11 @@ export function buildVideoGenSubmission({
       ? undefined
       : draftDecode,
     disableAudio: effectiveDisableAudio ? 'true' : 'false',
+    // Only meaningful on a runtime the GPU-watchdog mitigation applies to —
+    // absent otherwise so an unrelated model's render never carries a stale
+    // choice. The grok/fal/reactor/remote branches above already returned, so
+    // reaching here already means none of those apply.
+    ...(currentModel?.sleepsDisplayDuringRender ? { displaySleep: displaySleepEnabled ? 'true' : 'false' } : {}),
     mode,
     imageStrength: imageStrength || '',
     i2vReferenceMode: isDefaultI2vReferenceMode(i2vReferenceMode) ? '' : i2vReferenceMode,

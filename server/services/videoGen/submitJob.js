@@ -279,6 +279,11 @@ const submitValidatedVideoGenJob = async (body, uploads) => {
     ...(isDefaultSpeedProfile(body.speedProfileId) ? {} : { speedProfileId: body.speedProfileId }),
     ...(isFullDecode(body.draftDecode) ? {} : { draftDecode: body.draftDecode }),
     disableAudio: body.disableAudio === true || body.disableAudio === 'true',
+    // Absent means "use the settings.videoGen.displaySleep default" — only
+    // forward it when the form actually sent an explicit choice.
+    ...(body.displaySleep !== undefined
+      ? { displaySleep: body.displaySleep === true || body.displaySleep === 'true' }
+      : {}),
     sourceImagePath,
     audioFilePath,
     audioStartSec: body.audioStartSec,

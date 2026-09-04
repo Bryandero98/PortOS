@@ -32,7 +32,7 @@ import {
   invalidateByovReadyCache,
   pickDeathFingerprint,
 } from './runtimes.js';
-import { sleepDisplay, wakeDisplay } from '../displayPower.js';
+import { isDisplaySleepEnabled, sleepDisplayForVideo, wakeDisplayForVideo } from './displayPower.js';
 import { loadHistory, mutateVideoHistory } from './history.js';
 import { estimateRenderMs } from './eta.js';
 import { videoJobState } from './jobState.js';
@@ -195,7 +195,7 @@ export async function spawnAndWatchVideo({
     // from the Apple menu. `-w` makes caffeinate self-exit when our pid does, so
     // no manual cleanup is needed and a server crash mid-render still releases
     // the assertion. macOS-only — `caffeinate` is a darwin binary.
-    const sleepDisplayForRender = runtimeUsesMlx(model.runtime) && videoGenSettings?.displaySleep !== false;
+    const sleepDisplayForRender = runtimeUsesMlx(model.runtime) && isDisplaySleepEnabled(videoGenSettings);
     let displaySlept = false;
     if (process.platform === 'darwin' && proc.pid) {
       // MLX renders must keep the system awake but let the display sleep: `-d`
@@ -203,7 +203,7 @@ export async function spawnAndWatchVideo({
       // watchdog. Other runtimes keep their existing display-awake behavior.
       const caffeineArgs = sleepDisplayForRender ? ['-is', '-w', String(proc.pid)] : ['-dis', '-w', String(proc.pid)];
       spawn('caffeinate', caffeineArgs, { stdio: 'ignore', detached: false }).on('error', () => {});
-      displaySlept = sleepDisplayForRender && sleepDisplay(videoGenSettings, 'Video generation');
+      displaySlept = sleepDisplayForRender && sleepDisplayForVideo(videoGenSettings, 'Video generation');
     }
     // Guards the ONE terminal run of this child's teardown, across BOTH terminal
     // paths ('error' and 'close'). The caller may have to replay a terminal
@@ -225,7 +225,7 @@ export async function spawnAndWatchVideo({
       broadcastSse(job, { type: 'error', error: reason });
       videoGenEvents.emit('failed', { generationId: jobId, error: reason });
       videoJobState.activeProcess = null;
-      if (displaySlept) wakeDisplay(videoGenSettings, 'Video generation');
+      if (displaySlept) wakeDisplayForVideo(videoGenSettings, 'Video generation');
       void releaseHeavyClaim();
       // Spawn failed, so proc.on('close') will never fire — clean up every
       // temp file we own here, including the multipart upload, otherwise
@@ -391,7 +391,7 @@ export async function spawnAndWatchVideo({
       } finally {
         // A prompt-encode relaunch returns before this finalizer, deliberately
         // leaving the display asleep while its replacement owns the GPU.
-        if (displaySlept) wakeDisplay(videoGenSettings, 'Video generation');
+        if (displaySlept) wakeDisplayForVideo(videoGenSettings, 'Video generation');
         closeJobAfterDelay(videoJobState.jobs, jobId);
       }
     };

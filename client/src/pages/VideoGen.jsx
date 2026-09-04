@@ -196,6 +196,13 @@ export default function VideoGen() {
   // outright — the clip is rendered there and imported back — so it feeds the
   // payload builder rather than sitting beside it.
   const remoteTarget = useFederatedMediaTarget('video');
+  // `null` = no per-render override yet — follow the install default
+  // (settings.videoGen.displaySleep, /status-reported so it can't drift from
+  // the server's own opt-in read). Set once the user touches the checkbox
+  // below. Computed before the form hook call because it feeds
+  // buildGeneratePayload() the same way `remoteSubmissionFields` does.
+  const [displaySleepOverride, setDisplaySleepOverride] = useState(null);
+  const displaySleepEnabled = displaySleepOverride ?? !!status?.displaySleepOnRender;
   // Every field the form submits, plus the payload builder both submit paths
   // share. See client/src/hooks/useVideoGenForm.js.
   const {
@@ -238,6 +245,7 @@ export default function VideoGen() {
   } = useVideoGenForm({
     models, modelContext, availableLoras, grokEnabled, falEnabled, reactorEnabled,
     remoteSubmissionFields: remoteTarget.isRemote ? remoteTarget.submissionFields : null,
+    displaySleepEnabled,
   });
 
   // Conditioning the selected peer model cannot take. The server refuses a job
@@ -297,6 +305,15 @@ export default function VideoGen() {
     : null;
   const localResolutionOptions = resolutionOptionsForModel(currentModel);
   const localResolutionBounds = videoEdgeBoundsForModel(currentModel);
+
+  // Can THIS render put the display to sleep at all? The model says whether
+  // its runtime needs the mitigation (mlx only); the other clauses rule out
+  // backends the mitigation never applies to. UI-only: buildGeneratePayload()
+  // decides independently (from currentModel alone) whether to attach the
+  // choice, since its grok/fal/reactor/remote branches already return first.
+  const canSleepDisplay = !!currentModel?.sleepsDisplayDuringRender
+    && !remoteTarget.isRemote && !isGrok && !isFal && !isReactor;
+  const rendersSleepDisplay = canSleepDisplay && displaySleepEnabled;
 
   // Every gallery-image slot on this page (both frame panels, each multi-keyframe
   // row, each IC-LoRA reference row) opens the SAME GalleryImagePicker modal the
@@ -554,6 +571,9 @@ export default function VideoGen() {
       // attachJobEvents runs.
       if (runTokenRef.current > 0 || eventSourceRef.current) return;
       applyResumedParams(job.params || {});
+      // The form hook doesn't own this page-level toggle — restore it directly
+      // so a reload mid-render shows the choice that render is actually keeping.
+      if (job.params?.displaySleep !== undefined) setDisplaySleepOverride(!!job.params.displaySleep);
       setGenerating(true);
       setPhase(job.status === 'queued' ? 'queued' : null);
       // The worker's own start time, so a reload keeps a truthful elapsed clock
@@ -725,14 +745,6 @@ export default function VideoGen() {
     && dismissedIcIntegrityKey !== icIntegrityKey && !modelDownload.downloading;
 
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
-
-  // Will this render put the display to sleep? Both halves are server-owned so
-  // the warning can't drift from the behaviour: the model says whether its
-  // runtime needs the mitigation, and /status says whether this install will
-  // actually apply it (macOS, and the user hasn't opted out).
-  const rendersSleepDisplay = !!status?.displaySleepOnRender
-    && !!currentModel?.sleepsDisplayDuringRender
-    && !remoteTarget.isRemote && !isGrok && !isFal && !isReactor;
 
   // Run a single payload through the SSE pipeline. Returns a promise that
   // resolves when the job completes (or rejects on error / cancel). The
@@ -1612,6 +1624,30 @@ export default function VideoGen() {
             )}
           </div>
 
+          {/* Visible per-render control rather than a settings-only default (off by
+              default — see ImageGenTab's videoGenDisplaySleep) — a GPU-watchdog
+              crash on this model is rare enough that most renders shouldn't pay for
+              the mitigation, but the option needs to be one click away right here. */}
+          {canSleepDisplay && (
+            <label htmlFor="video-gen-display-sleep" className="flex items-start gap-2 text-xs text-gray-400 cursor-pointer">
+              <input
+                id="video-gen-display-sleep"
+                type="checkbox"
+                checked={displaySleepEnabled}
+                onChange={(e) => setDisplaySleepOverride(e.target.checked)}
+                disabled={generating}
+                className="mt-0.5 accent-port-accent"
+              />
+              <span>
+                Sleep display during this render
+                <span className="block text-[11px] text-gray-500">
+                  Reduces WindowServer GPU contention on affected Apple silicon. Change the install-wide
+                  default under Settings &rarr; Media Generation.
+                </span>
+              </span>
+            </label>
+          )}
+
           {/* Said BEFORE the button is pressed, not after the screen is already
               dark. A user who first learns about the sleep by watching their
               display go black reads it as a crash and wakes it — which puts
@@ -1621,9 +1657,9 @@ export default function VideoGen() {
             <p className="flex items-start gap-1.5 text-[11px] text-port-warning">
               <MonitorOff className="w-3.5 h-3.5 mt-px shrink-0" />
               <span>
-                This model renders with your display asleep. The screen will go dark shortly
-                after you start — that is expected, and waking it can crash the render. Disable it
-                under Settings &rarr; Media Generation if you would rather keep the screen on.
+                This render will put your display to sleep. The screen will go dark shortly
+                after you start — that is expected, and waking it can crash the render. Uncheck
+                the option above if you would rather keep the screen on.
               </span>
             </p>
           )}
