@@ -1691,9 +1691,15 @@ export const localLlmSettingsSchema = z.object({
   // release the model, which is what every install did before this setting
   // existed and stays the default. Capped at a day: a longer window is
   // indistinguishable from "never" and is far likelier a units mix-up.
-  llama: z.object({ idleMinutes: z.number().int().min(0).max(1440).optional() }).strict().optional(),
+  llama: z.object({
+    idleMinutes: z.number().int().min(0).max(1440).optional(),
+    keepLoaded: z.boolean().optional(),
+    pinned: z.boolean().optional(),
+  }).strict().optional(),
   mtplx: z.object({
     idleMinutes: z.number().int().min(0).max(1440).optional(),
+    keepLoaded: z.boolean().optional(),
+    pinned: z.boolean().optional(),
     // The launch line a lazy start replays. MTPLX has no Start button any more —
     // the first request that needs it brings it up — so the checkpoint and port
     // the user chose have to outlive the process, or an on-demand start would
@@ -1706,6 +1712,8 @@ export const localLlmSettingsSchema = z.object({
   }).strict().optional(),
   slotstream: z.object({
     idleMinutes: z.number().int().min(0).max(1440).optional(),
+    keepLoaded: z.boolean().optional(),
+    pinned: z.boolean().optional(),
     launch: z.object({
       model: z.string().trim().max(300).nullable().optional(),
       port: z.number().int().min(1).max(65535).optional(),

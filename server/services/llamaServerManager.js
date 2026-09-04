@@ -61,6 +61,7 @@ const SLEEP_IDLE_FLAG = '--sleep-idle-seconds';
 const sleepIdleSupport = new Map();
 // See `configuredSleepIdleMinutes`. Only `_resetLlamaServerStateForTests` writes it.
 let sleepIdleMinutesOverride = null;
+let sleepIdleKeepLoadedOverride = null;
 // Which package manager PortOS drives for llama.cpp. Only the test seam writes
 // it, so both the Homebrew and the winget path stay coverable from either OS.
 let platformOverride = null;
@@ -335,6 +336,12 @@ async function configuredSleepIdleMinutes() {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
 
+async function configuredSleepIdleKeepLoaded() {
+  if (sleepIdleKeepLoadedOverride !== null) return sleepIdleKeepLoadedOverride;
+  const settings = await import('./settings.js').then((m) => m.getSettings()).catch(() => null);
+  return Boolean(settings?.localLlm?.llama?.keepLoaded ?? settings?.localLlm?.llama?.pinned);
+}
+
 /**
  * Fails the start request when a GGUF the launch line names is not on disk.
  */
@@ -476,6 +483,7 @@ export async function getLlamaServerStatus() {
     // process actually got is `config.sleepIdleMinutes` — they differ until the
     // next start, because this is a launch flag.
     idleMinutes: await configuredSleepIdleMinutes(),
+    keepLoaded: await configuredSleepIdleKeepLoaded(),
   };
 }
 
@@ -1559,11 +1567,13 @@ export function _resetLlamaServerStateForTests({
   relaunchPollDelay,
   pm2ReadRetryDelay,
   sleepIdleMinutes = 0,
+  sleepIdleKeepLoaded = null,
   platform = null,
 } = {}) {
   sleepIdleSupport.clear();
   // Pinned rather than read from disk — see `configuredSleepIdleMinutes`.
   sleepIdleMinutesOverride = sleepIdleMinutes;
+  sleepIdleKeepLoadedOverride = sleepIdleKeepLoaded;
   // `null` = use the real host platform, which is what every suite that is not
   // specifically exercising the other package manager's path wants.
   platformOverride = platform;
@@ -1577,4 +1587,8 @@ export function _resetLlamaServerStateForTests({
   relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : RELAUNCH_READY_TIMEOUT_MS;
   relaunchPollDelayMs = Number.isFinite(relaunchPollDelay) ? relaunchPollDelay : RELAUNCH_POLL_DELAY_MS;
   pm2ReadRetryDelayMs = Number.isFinite(pm2ReadRetryDelay) ? pm2ReadRetryDelay : PM2_READ_RETRY_DELAY_MS;
+}
+
+export function _setLlamaKeepLoadedOverrideForTests(val) {
+  sleepIdleKeepLoadedOverride = val;
 }
