@@ -35,8 +35,12 @@ const MIND_PANEL_TABS = [
   { id: 'settings', label: 'Settings', icon: Settings2 },
 ];
 
+// Bookkeeping the conversation does not need. `mind.summary` is the rollup that
+// compacts older trajectory into context — it recaps the mind's own history, so
+// rendering it as a bubble makes every wake open with a wall of recap. It stays
+// reachable through the Activity toggle and the event detail panel.
 const ACTIVITY_KINDS = new Set([
-  'mind.wake', 'mind.model.request', 'mind.model.result', 'mind.turn.completed',
+  'mind.wake', 'mind.model.request', 'mind.model.result', 'mind.turn.completed', 'mind.summary',
 ]);
 
 const EVENT_LABELS = {

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     defaultModel: 'gpt-5', models: ['gpt-5', 'gpt-5-mini', 'gpt-5.6-sol', 'gpt-5.6-luna'],
   }],
   existing: null,
+  cosTasks: [],
   addTask: vi.fn(),
   getTaskById: vi.fn(),
   getAppWorkTracker: vi.fn(),
@@ -25,6 +26,8 @@ vi.mock('./apps.js', () => ({
 vi.mock('./cosState.js', () => ({ loadState: vi.fn(async () => mocks.root) }));
 vi.mock('./cosTaskStore.js', () => ({
   addTask: (...args) => mocks.addTask(...args),
+  firstLine: (value) => (value || '').split('\n').map((line) => line.trim()).find(Boolean) || '',
+  getCosTasks: vi.fn(async () => ({ tasks: mocks.cosTasks })),
   getTaskById: (...args) => mocks.getTaskById(...args),
 }));
 vi.mock('./providers.js', () => ({ listProviders: vi.fn(async () => mocks.providers) }));
@@ -46,6 +49,7 @@ const {
   buildPersistentMindTaskCapabilityPrompt,
   executePersistentMindTaskRequests,
   readPersistentMindTaskCatalog,
+  readPersistentMindTaskInventory,
 } = await import('./persistentMindTaskCapability.js');
 
 const taskRequest = (overrides = {}) => ({
@@ -69,6 +73,7 @@ beforeEach(() => {
     defaultModel: 'gpt-5', models: ['gpt-5', 'gpt-5-mini', 'gpt-5.6-sol', 'gpt-5.6-luna'],
   }];
   mocks.existing = null;
+  mocks.cosTasks = [];
   mocks.getAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
   mocks.resolveAppWorkTracker.mockResolvedValue({ resolved: 'plan' });
   mocks.getTaskById.mockImplementation(async () => mocks.existing);
@@ -256,6 +261,46 @@ describe('persistent mind CoS-task capability', () => {
     expect(prompt.length).toBeLessThan(20_000);
     expect(prompt).toContain('app-0');
     expect(prompt).toContain('provider-0');
+  });
+
+  it('shows the mind what the CoS queue already holds, newest first, including completed work', async () => {
+    mocks.cosTasks = [
+      {
+        id: 'sys-mind-older',
+        status: 'completed',
+        description: 'Unify the tool-calling interface\nsecond line ignored',
+        metadata: { app: 'portos', updatedAt: '2026-09-01T00:00:00.000Z' },
+      },
+      {
+        id: 'sys-newer',
+        status: 'in_progress',
+        description: 'Fix the npm engine mismatch',
+        metadata: { app: 'portos', updatedAt: '2026-09-03T00:00:00.000Z' },
+      },
+    ];
+
+    const inventory = await readPersistentMindTaskInventory();
+    expect(inventory).toEqual([
+      { id: 'sys-newer', status: 'in_progress', description: 'Fix the npm engine mismatch', appId: 'portos', queuedByMind: false },
+      { id: 'sys-mind-older', status: 'completed', description: 'Unify the tool-calling interface', appId: 'portos', queuedByMind: true },
+    ]);
+
+    const prompt = buildPersistentMindTaskCapabilityPrompt({ enabled: true, catalog: await readPersistentMindTaskCatalog(), inventory });
+    expect(prompt).toContain('Unify the tool-calling interface');
+    expect(prompt).toContain('do not re-queue it');
+  });
+
+  it('bounds a long CoS queue before it enters the reasoning prompt', async () => {
+    const inventory = Array.from({ length: 200 }, (_, index) => ({
+      id: `sys-mind-${index}`,
+      status: 'completed',
+      description: 'D'.repeat(160),
+      appId: 'portos',
+      queuedByMind: true,
+    }));
+    const prompt = buildPersistentMindTaskCapabilityPrompt({ enabled: true, catalog: { apps: [], providers: [] }, inventory });
+    expect(prompt.length).toBeLessThan(20_000);
+    expect(prompt).toContain('sys-mind-0');
   });
 
   it('reuses tracker resolution for repeated catalog reads', async () => {
