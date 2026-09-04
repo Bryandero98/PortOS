@@ -57,8 +57,12 @@ const actionsStageNote = (eligibleProviders) => {
 export default function PipelineStageConfig({ taskType, config, providers, providersLoaded = true, onUpdate, updating, setUpdating }) {
   const stages = pipelineStages(config);
   const needsSecurityModelPolicy = taskType === 'pr-reviewer';
+  // Every public-review stage — not just the tool-free gate — resolves a local
+  // provider's models from the daemon, so the fetch follows the postures rather
+  // than the task type.
+  const hasPublicReviewStage = stages.some((stage) => stagePublicReviewPosture(stage));
   const { ollama, lmstudio, capabilitiesByBackend, loading: localModelsLoading } = useLocalModels({
-    enabled: needsSecurityModelPolicy,
+    enabled: needsSecurityModelPolicy || hasPublicReviewStage,
   });
   // One policy per posture. The provider half is server-derived; the model half
   // adds the authoritative no-tool capability check only for a local runtime,
@@ -160,15 +164,29 @@ export default function PipelineStageConfig({ taskType, config, providers, provi
           const localBackend = localBackendForProvider(stageProvider);
           const localModelIds = localBackend === 'ollama' ? ollama : localBackend === 'lmstudio' ? lmstudio : [];
           // A LOCAL provider's installed-model list is the source of truth (its
-          // stored catalog is stale, and only an installed model has a probeable
-          // capability report). Every other provider uses its own catalog, so a
-          // cloud CLI stage can pick any model that provider offers.
-          const stageModels = isNoToolStage && localBackend
-            ? localModelIds.map(id => ({
-              id,
-              name: id,
-              capabilities: capabilitiesByBackend?.[localBackend]?.[id],
-            }))
+          // stored catalog is a cached snapshot, and only an installed model has
+          // a probeable capability report). That holds for the sandboxed actions
+          // stage as much as the tool-free gate — offering the stale catalog
+          // there let a stage be pinned to a model the daemon no longer serves,
+          // and hid one that had just been pulled. Every other provider uses its
+          // own catalog, so a cloud CLI stage can pick any model it offers.
+          //
+          // `useLocalModels` reports BOTH "not fetched yet" and "daemon said
+          // nothing" as `[]`, so an empty list is not evidence the daemon serves
+          // no models. The two stages part ways on what to do about that. The
+          // tool-free gate must stay strict: its policy needs a probeable
+          // capability report, and a model with none is not selectable at all,
+          // so an empty list correctly offers nothing. The actions stage has no
+          // such gate, so it falls back to the record's catalog — otherwise a
+          // stopped daemon (or the in-flight window) renders an empty picker and
+          // drops the stage's own saved pin out of the dropdown.
+          const localStageModels = localModelIds.map(id => ({
+            id,
+            name: id,
+            capabilities: capabilitiesByBackend?.[localBackend]?.[id],
+          }));
+          const stageModels = posture && localBackend && (isNoToolStage || localStageModels.length > 0)
+            ? localStageModels
             : effortAwareModelOptions(stageProvider, stage.model);
           const selectionPolicy = posture ? selectionPolicies[posture] : undefined;
           const stageProviderId = stage.providerId || '';
@@ -241,7 +259,12 @@ export default function PipelineStageConfig({ taskType, config, providers, provi
               )}
               {isActionsStage && eligibleProviders?.length > 0 && (
                 <p className="text-xs text-gray-500 mt-2">
-                  {actionsStageNote(eligibleProviders)}
+                  {/* On a local provider this stage's model list comes from the
+                      daemon too, so say so while it loads rather than leaving an
+                      empty dropdown with a note that reads as if it were ready. */}
+                  {localBackend && localModelsLoading
+                    ? 'Loading installed local models…'
+                    : actionsStageNote(eligibleProviders)}
                 </p>
               )}
             </div>
