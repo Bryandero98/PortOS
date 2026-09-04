@@ -65,8 +65,9 @@ describe('buildCliChildEnv — layering', () => {
     expect(declaredModels(env).sort()).toEqual(['llama3.1:8b', 'qwen2.5:7b']);
     // Non-conflicting provider vars survive.
     expect(env.API_KEY).toBe('from-provider');
-    // The stored base is merged, not clobbered.
-    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).permission).toBe('deny');
+    // The stored base is merged, not clobbered — the string shorthand expands
+    // so the unattended interactive-gate denials can ride alongside it.
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).permission['*']).toBe('deny');
   });
 
   it('declares the MTPLX models map for a marked OpenCode provider', () => {
@@ -205,7 +206,7 @@ describe('buildCliChildEnv — public-review profile, OpenCode harness', () => {
   it('leaves the ordinary (non-public-review) OpenCode config tool-enabled', () => {
     const env = buildCliChildEnv({ provider: OLLAMA_OPENCODE, model: 'qwen2.5:7b', cwd: '/tmp/work' });
     const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
-    expect(config.permission).toBe('deny'); // the provider's stored value, untouched
+    expect(config.permission['*']).toBe('deny'); // the provider's stored value, untouched
     expect(config.provider.ollama.models['qwen2.5:7b'].tool_call).toBe(true);
     expect(config).not.toHaveProperty('tools');
   });

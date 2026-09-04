@@ -356,6 +356,64 @@ describe('buildTaskInput', () => {
     expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
   });
 
+  // A carried-over pending comment is the only way an issue that is no longer
+  // open reaches the reasoning agent: the gather query is state=open, but the
+  // pending queue is only drained by a decision. The output pass refuses to act
+  // on a closed issue, so such an entry could only be re-prompted every run
+  // until it timed out and raised a false "needs attention" alarm.
+  it('drops a carried-over comment whose issue has closed since it was gathered', async () => {
+    apps.set(APP.id, {
+      ...APP,
+      issueWatcherState: {
+        cursor: '2026-08-29T00:00:00.000Z',
+        pendingIssueComments: [{
+          issueNumber: 6072,
+          issueTitle: 'Already resolved',
+          issueBody: 'done',
+          commentId: 4242,
+          commentAuthor: 'alice',
+          commentBody: 'What do you think?',
+          commentUrl: 'https://github.com/o/r/issues/6072#issuecomment-4242',
+          claimRequest: false,
+          claimAssignable: false,
+        }],
+      },
+    });
+    installDefaultGhMock({ pr: null, issueDetails: { 6072: { number: 6072, state: 'closed', title: 'Already resolved' } } });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
+  });
+
+  // An unreachable forge is not evidence that an issue closed — losing the
+  // comment would silently drop a real question from a contributor.
+  it('keeps a carried-over comment when the issue re-read fails', async () => {
+    const pending = {
+      issueNumber: 6072,
+      issueTitle: 'Still open',
+      issueBody: 'body',
+      commentId: 4242,
+      commentAuthor: 'alice',
+      commentBody: 'What do you think?',
+      commentUrl: 'https://github.com/o/r/issues/6072#issuecomment-4242',
+      claimRequest: false,
+      claimAssignable: false,
+    };
+    apps.set(APP.id, { ...APP, issueWatcherState: { cursor: '2026-08-29T00:00:00.000Z', pendingIssueComments: [pending] } });
+    installDefaultGhMock({ pr: null });
+    interceptGh((args) => {
+      if (args[0] === 'api' && args.includes('repos/o/r/issues/6072')) throw new Error('HTTP 503');
+      return undefined;
+    });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result.prompt).toContain('Issue #6072: Still open');
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([{ ...pending, ticks: 0 }]);
+  });
+
   it('continues to cognition when an explicit volunteer cannot be assigned', async () => {
     installVolunteerGhMock();
     interceptGh((args) => {
