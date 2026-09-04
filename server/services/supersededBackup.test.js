@@ -67,7 +67,10 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('backupSupersededBranch', () => {
     // of an abandoned worktree, and a copy needs no tooling to read back.
     expect(await readFile(join(result.dir, 'untracked', 'notes', 'draft.md'), 'utf8'))
       .toBe('# untracked draft\n');
-    expect(result.untracked).toContain(join('notes', 'draft.md'));
+    // git reports paths POSIX-separated on every platform, and the manifest keeps
+    // them that way so a backup written on one machine reads on another. Assert the
+    // literal rather than join(), which would expect 'notes\\draft.md' on Windows.
+    expect(result.untracked).toContain('notes/draft.md');
 
     const manifest = JSON.parse(await readFile(result.manifest, 'utf8'));
     expect(manifest).toMatchObject({ branch: BRANCH, repoPath: repo, tip, worktreePath: worktree });
