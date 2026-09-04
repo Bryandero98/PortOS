@@ -87,6 +87,13 @@ const WINDOWS_RISK_RULES = [
   /^server\/services\/(?:shell|pm2|appBuilder)\b/,
   /^server\/services\/agentTuiSpawning(?:\.test)?\.js$/,
   /^server\/services\/autonomousJobs\/execution\.shellSpawn/,
+  // The voice fine-tuning service spawns a real Python trainer and settles the
+  // job from its `close`/`error` events, so its assertions are the child-process
+  // contract, not platform-independent logic. Nothing here was Windows-tagged,
+  // so the shard only saw it on a full-matrix run — which is where it failed,
+  // with an interpreter-startup budget mistaken for a state-machine defect
+  // (#6268).
+  /^server\/services\/voice\/fineTuning(?:\.test)?\.js$/,
   /^server\/routes\/apps\//,
   /^server\/routes\/scaffoldVite\.js$/,
 ];
@@ -138,6 +145,7 @@ export const WINDOWS_CONTRACT_TESTS = [
   'server/services/agentTuiSpawning.test.js',
   'server/services/agentImportCycles.test.js',
   'server/services/twinImportCycles.test.js',
+  'server/services/voice/fineTuning.test.js',
 ];
 
 // Contract guards that run on EVERY plan, whatever the impact scope selects.
