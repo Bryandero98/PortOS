@@ -17,15 +17,10 @@
  * bare command name in `metadata.slashdoCommand` and this module resolves the
  * concrete invocation when the prompt is built.
  *
- * Skill-style hosts (and any provider we can't positively identify) get the
- * command's markdown body inlined into the prompt instead — the provider-agnostic
- * fallback that works even when that environment has no slashdo install at all.
- *
- * Those bodies are large (38KB–317KB expanded), so two size controls apply
- * (#3110): unreachable reviewer variants are pruned out of the body
- * (`unreachableReviewerIncludes`), and whatever is still over
- * `SLASHDO_INLINE_BUDGET_CHARS` is handed to file-tool hosts as a path to a
- * resolved copy on disk rather than pasted (`buildSlashdoSection`'s `bodyPath`).
+ * Every host receives the bundled procedure independently of a global install.
+ * File-tool hosts read an entrypoint and phase-specific supporting files; API
+ * providers receive a self-contained body. Explicitly pinned reviewer choices
+ * prune unreachable variants before either form is rendered.
  */
 import { isClaudeProvider, isOpencodeProvider } from './providerModels.js';
 import { inferTuiCommand } from './providerVendors.js';
@@ -41,35 +36,16 @@ export const SLASHDO_NAMESPACE = 'do';
  * the agent needs no extra file read. Over it, a host with file tools gets a
  * pointer at a resolved copy on disk instead (see `buildSlashdoSection`).
  *
- * 24,000 chars ≈ 6k tokens. Every current bundled command is far over it even
- * after pruning (`review` measures 258,260 chars raw, 198,997 pruned to one
- * reviewer, 112,269 with every reviewer include dropped), which is the intent:
- * the budget exists so a future SMALL command still inlines. The budget-pin test
- * in `slashdoInvocation.test.js` asserts this against the measured sizes, so a
- * slashdo release that shrinks a command can't silently flip it back to inlining
- * without someone noticing.
+ * 24,000 chars is approximately 6k tokens. Deferred bundles are always staged
+ * because their relative references need a filesystem base, even when the
+ * entrypoint is under this limit. Small self-contained commands stay inline.
  */
 export const SLASHDO_INLINE_BUDGET_CHARS = 24000;
 
 /**
- * slashdo lib includes that are REVIEWER VARIANTS — one loop per reviewer kind,
- * all five pasted into `review` / `better` / `pr` / `release` / `depfree` though
- * a given run drives exactly one. Pruning the unreachable ones is where the real
- * prompt saving is — pruning to a single CLI reviewer measured -23% on `review`,
- * -27% on `pr`, -28% on `depfree`; the file pointer is the backstop for the rest.
- *
- * Keyed by the PortOS reviewer slug (`REVIEWER_VALUES` in `reviewerConfig.js`) so
- * the keep-set derives from already-resolved run settings. `copilot` and the
- * arbitrary-`@login` loop are GitHub-side; `claude`/`codex`/`antigravity`/`grok`/`cursor`
- * all share slashdo's one local-agent loop; `ollama`/`lmstudio` are the
- * local-model loop.
- *
- * `multi-reviewer-loop` is the ORCHESTRATION WRAPPER, not a per-reviewer variant:
- * slashdo's commands hand off to it for any non-empty reviewer list, and its own
- * spec says `{REVIEW_AGENTS}` "may contain a single entry". So it is listed here
- * (it is prunable in principle — a run with no reviewers at all doesn't reach it)
- * but `unreachableReviewerIncludes` never drops it once a reviewer resolves.
- * Pruning it for a lone reviewer left the inner loop with nothing to dispatch it.
+ * Reviewer-specific libraries that can be omitted once the run's reviewers are
+ * pinned. CLI reviewers share localAgent; local-model reviewers share localModel.
+ * Keep the multi-reviewer dispatcher for every non-empty list, even one reviewer.
  */
 export const SLASHDO_REVIEWER_INCLUDES = Object.freeze({
   copilot: 'copilot-review-loop',
@@ -384,7 +360,7 @@ export function resolveSlashdoInvocation({
  * @returns {string}
  */
 export function oversizedBodyPointer(bodyPath, body) {
-  return `The full procedure is on disk at \`${bodyPath}\` (${Math.round(body.length / 1000)}KB) — too large to paste here. READ THAT FILE before you start and follow it exactly rather than improvising. It is long: read it in sections as you need them, and do not assume a step you have not read.`;
+  return `The procedure entrypoint is on disk at \`${bodyPath}\` (${Math.round(body.length / 1000)}KB). READ THAT FILE before you start. Follow its phase order and required reads; read long procedures in sections as needed.`;
 }
 
 /**
@@ -392,25 +368,13 @@ export function oversizedBodyPointer(bodyPath, body) {
  * caller loads `body` (via `loadSlashdoFile`) and passes it in, so this module
  * stays side-effect free.
  *
- * The body is inlined for EVERY style, not just `skill`. PortOS bundles slashdo
- * as a submodule and only exposes it as slash commands through the repo-local
- * `.claude/commands/do/` symlinks — which exist in the PortOS checkout, not in
- * the managed-app workspaces most CoS tasks run in, and only for Claude Code.
- * So a typed invocation is a shortcut for hosts that happen to have slashdo
- * installed, never the thing the prompt depends on. Same posture as every other
- * slashdo consumer here (`loadSlashdoCommand`, the `/do:rpr` and review-loop
- * inlining), which is why the submodule exists at all: no global install required.
+ * The procedure accompanies every invocation style: managed apps need no global
+ * slashdo install or PortOS project-command symlinks.
  *
- * **Over-budget bodies become a pointer (#3110).** When `bodyPath` names a
- * resolved copy on disk and the body exceeds `SLASHDO_INLINE_BUDGET_CHARS`, the
- * section emits the path instead of the text and the agent reads it on demand.
- * This is NOT a token saving by itself — an agent that follows the whole
- * procedure pays the same tokens through `Read`. It is worth doing because a host
- * that can invoke slashdo natively, or that only needs part of the procedure,
- * skips the cost entirely; the prompt-size win comes from pruning unreachable
- * reviewer variants BEFORE this check (`unreachableReviewerIncludes`).
- * `bodyPath` is only ever passed for a host with file tools — an HTTP `api`
- * provider has none, so it always inlines.
+ * A staged body always renders as a pointer, including a short entrypoint with
+ * deferred references. Supporting files resolve relative to that entrypoint.
+ * `bodyPath` is only passed for hosts with file tools; API providers inline an
+ * eager, self-contained body.
  *
  * **`reviewWith` is mandatory whenever the body was pruned.** A pruned body has
  * only the reviewer loop(s) the caller pruned FOR; if the run then resolved some
@@ -471,8 +435,9 @@ export function buildSlashdoSection(resolved, body = null, {
   if (reviewerEffortNote) {
     lines.push('', reviewerEffortNote);
   }
-  if (body && bodyPath && body.length > SLASHDO_INLINE_BUDGET_CHARS) {
-    lines.push('', oversizedBodyPointer(bodyPath, body));
+  if (body && bodyPath) {
+    lines.push('', oversizedBodyPointer(bodyPath, body),
+      'Resolve each supporting-file path relative to the file containing that reference. Read each required reference only when its phase or condition applies; do not preload the bundle.');
   } else if (body) {
     lines.push(
       '',

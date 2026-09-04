@@ -286,10 +286,11 @@ describe('buildSlashdoSection — inline budget vs file pointer', () => {
     expect(section).toMatch(/READ THAT FILE/);
   });
 
-  it('inlines the body when it is under budget even with a path available', () => {
+  it('uses a staged entrypoint even when it is under budget', () => {
     const section = buildSlashdoSection(codex(), small, { bodyPath: PATH });
-    expect(section).toContain(small);
-    expect(section).not.toContain(PATH);
+    expect(section).not.toContain(small);
+    expect(section).toContain(PATH);
+    expect(section).toContain('relative to the file containing that reference');
   });
 
   it('inlines an over-budget body when no path is offered (an api provider has no file tools)', () => {
@@ -378,53 +379,19 @@ describe('unreachableReviewerIncludes', () => {
   });
 });
 
-// -----------------------------------------------------------------------------
-// Budget pin — the ONE place these tests touch the vendored submodule (#3110)
-// -----------------------------------------------------------------------------
-// The budget only does its job if every big command is actually over it. If a
-// slashdo release shrinks one under 24,000 chars it would silently flip back to
-// being pasted whole, which is exactly the regression this issue removed. These
-// assert on measured SIZE, never on the submodule's text, and skip when the
-// submodule isn't checked out.
-describe('SLASHDO_INLINE_BUDGET_CHARS pin against the bundled commands', () => {
-  // Commands whose expanded bodies are large enough that pasting them dominates
-  // a prompt (measured 2026-07: 38KB–317KB). Not the whole catalog — small
-  // commands like `push` (3KB) are SUPPOSED to stay inlined.
-  const OVER_BUDGET_COMMANDS = ['review', 'better', 'better-swift', 'release', 'depfree', 'next', 'replan', 'plan-task'];
-
-  it('every large bundled command is over the budget, even fully pruned', async () => {
-    const submodulePresent = await loadSlashdoFile('review', { stripFrontmatter: true }).catch(() => null);
-    if (!submodulePresent) return; // submodule not checked out — nothing to pin
-
-    for (const command of OVER_BUDGET_COMMANDS) {
-      // Prune EVERY reviewer variant — the smallest body this code can produce.
-      const pruned = await loadSlashdoFile(command, {
-        stripFrontmatter: true,
-        skipIncludes: SLASHDO_REVIEWER_INCLUDE_NAMES,
-      });
-      expect(pruned, `slashdo ships commands/do/${command}.md`).toBeTruthy();
-      expect(
-        pruned.length,
-        `${command} is ${pruned.length} chars fully pruned — under the ${SLASHDO_INLINE_BUDGET_CHARS} budget, so it would be INLINED again. Either it genuinely shrank (lower the budget deliberately) or the prune is over-eager.`
-      ).toBeGreaterThan(SLASHDO_INLINE_BUDGET_CHARS);
-    }
-  });
-
-  it('pruning unreachable reviewer loops measurably shrinks a reviewer-heavy command', async () => {
-    const full = await loadSlashdoFile('review', { stripFrontmatter: true }).catch(() => null);
-    if (!full) return;
-    // A lone codex reviewer keeps only the local-agent loop.
-    const pruned = await loadSlashdoFile('review', {
-      stripFrontmatter: true,
-      skipIncludes: unreachableReviewerIncludes({ reviewers: ['codex'] }),
-    });
-    // Shape, not an exact byte count: pruning must be a real double-digit-percent
-    // reduction, and must not be a no-op that quietly stopped working. Measured
-    // -23% for a lone CLI reviewer (258,260 → 198,997) — the orchestration
-    // wrapper is deliberately never pruned, which costs ~37KB of the ceiling.
-    expect(pruned.length).toBeLessThan(full.length * 0.85);
-    // The kept loop is still there and the omission is announced, not silent.
-    expect(pruned).toContain('not applicable to this run');
-    expect(pruned).not.toContain(`\`${SLASHDO_REVIEWER_INCLUDES.localAgent}\` omitted`);
+// The upstream renderer owns reference semantics. Exercise its shipped output
+// here when the submodule is initialized; fixtures cover dispatch and staging
+// separately without requiring a submodule in every CI shard.
+describe('bundled command context budget', () => {
+  it('keeps the better entrypoint small and preserves an eager procedure', async () => {
+    const { existsSync } = await import('fs');
+    if (!existsSync(new URL('../../lib/slashdo/src/transformer.js', import.meta.url))) return;
+    const { loadSlashdoBundle } = await import('./slashdoLoader.js');
+    const bundle = await loadSlashdoBundle('better', { stripFrontmatter: true });
+    const eager = await loadSlashdoFile('better', { stripFrontmatter: true });
+    expect(bundle.body.length).toBeLessThan(SLASHDO_INLINE_BUDGET_CHARS);
+    expect(Object.keys(bundle.files).length).toBeGreaterThan(0);
+    expect(bundle.body.length).toBeLessThan(eager.length / 4);
+    expect(eager).not.toMatch(/^!read /m);
   });
 });

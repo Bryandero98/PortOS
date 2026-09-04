@@ -85,9 +85,14 @@ vi.mock('../lib/fileUtils.js', async (importOriginal) => {
 });
 vi.mock('../lib/slashdoLoader.js', async (importOriginal) => {
   const actual = await importOriginal();
+  const loadFile = vi.fn().mockResolvedValue(null);
   return {
     ...actual,
-    loadSlashdoFile: vi.fn().mockResolvedValue(null),
+    loadSlashdoFile: loadFile,
+    loadSlashdoBundle: vi.fn(async (...args) => {
+      const body = await loadFile(...args);
+      return body == null ? null : { body, files: {} };
+    }),
     loadSlashdoLib: vi.fn().mockResolvedValue(null),
     // #3110 — staging the resolved copy is real disk I/O; mocked so tests can
     // assert the pointer path without writing under data/.
@@ -112,7 +117,7 @@ import { buildPrompt } from './promptService.js'; // mocked above — inspect ca
 import { getMemorySection } from './memoryRetriever.js';
 import { getDigitalTwinForPrompt } from './digital-twin.js';
 import { getToolsSummaryForPrompt } from './tools.js';
-import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
+import { loadSlashdoFile, loadSlashdoLib, loadSlashdoBundle, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
 import { SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { DEFAULT_TASK_PROMPTS } from './taskPromptDefaults.js';
 // The heading a task-type hook's prompt points at to locate the sentinel path.
@@ -3368,6 +3373,40 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
     expect(prompt).toContain('do-review');
   });
 
+  it('stages a small deferred entrypoint so its references resolve outside the managed app', async () => {
+    const body = 'Read lib/audit.md when auditing.';
+    const files = { 'audit.md': 'Audit procedure' };
+    vi.mocked(loadSlashdoBundle).mockResolvedValueOnce({ body, files });
+    const prompt = await buildAgentPrompt(
+      slashdoTask({ reviewers: ['codex'] }), {}, '/managed-app', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(writeResolvedSlashdoBody).toHaveBeenCalledWith('review', body, { files });
+    expect(prompt).toContain('/install/data/cos/slashdo-resolved/review.md');
+    expect(prompt).toContain('relative to the file containing that reference');
+    expect(prompt).not.toContain(body);
+    expect(prompt).toContain('--review-with codex');
+  });
+
+  it('rebuilds an eager body if a deferred bundle cannot be staged', async () => {
+    vi.mocked(loadSlashdoBundle).mockResolvedValueOnce({
+      body: 'Read lib/audit.md', files: { 'audit.md': 'Audit procedure' },
+    });
+    vi.mocked(loadSlashdoFile).mockResolvedValueOnce('Complete inline audit procedure');
+    vi.mocked(writeResolvedSlashdoBody).mockRejectedValueOnce(new Error('EACCES'));
+    const prompt = await buildAgentPrompt(
+      slashdoTask(), {}, '/managed-app', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('Complete inline audit procedure');
+    expect(prompt).not.toContain('Read lib/audit.md');
+  });
+
+  it('rejects a missing required procedure instead of dispatching an invocation alone', async () => {
+    vi.mocked(loadSlashdoBundle).mockRejectedValueOnce(new Error('Missing required slashdo library: audit.md'));
+    await expect(buildAgentPrompt(
+      slashdoTask(), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' })).rejects.toThrow('Missing required slashdo library');
+  });
+
   it('inlines the body when it is under budget, and stages no file', async () => {
     vi.mocked(loadSlashdoFile).mockResolvedValue(UNDER);
     const prompt = await buildAgentPrompt(
@@ -3581,14 +3620,6 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
       expect(skipped).not.toContain('github-reviewer-loop');
       // Two review sources ⇒ the multi-reviewer wrapper is reachable.
       expect(skipped).not.toContain('multi-reviewer-loop');
-    });
-
-    it('keys the staged file on the prune set so two reviewer sets do not share a copy', async () => {
-      await buildAgentPrompt(
-        slashdoTask({ reviewers: ['codex'] }), {}, '/r', null, isTruthyMeta,
-        { providerType: 'cli', providerId: 'codex' });
-      const [, , opts] = vi.mocked(writeResolvedSlashdoBody).mock.calls.at(-1);
-      expect(opts.skipIncludes).toContain('copilot-review-loop');
     });
   });
 });

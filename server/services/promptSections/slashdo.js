@@ -2,7 +2,7 @@
  * Slashdo invocation expansion for agent prompts.
  */
 
-import { loadSlashdoFile, writeResolvedSlashdoBody } from '../../lib/slashdoLoader.js';
+import { loadSlashdoFile, loadSlashdoBundle, writeResolvedSlashdoBody } from '../../lib/slashdoLoader.js';
 import { resolveSlashdoInvocation, buildSlashdoSection, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../../lib/slashdoInvocation.js';
 import { DEFAULT_REVIEWER, resolveReviewerConfig, buildReviewerEffortNote, buildReviewersCsv } from '../../lib/validation.js';
 
@@ -19,20 +19,9 @@ import { DEFAULT_REVIEWER, resolveReviewerConfig, buildReviewerEffortNote, build
  * slash commands via the repo-local `.claude/commands/do/` symlinks, which don't
  * exist in the managed-app workspaces most CoS tasks run in.
  *
- * **Size control (#3110).** Expanded bodies run 38KB–317KB. Two independent
- * reductions apply, in this order:
- *
- * 1. **Prune unreachable reviewer variants.** `review`/`better`/`pr` each paste
- *    all five of slashdo's reviewer loops though one run drives one of them.
- *    Pruning to a single CLI reviewer measured -23% on `review` (258,260 →
- *    198,997 chars), -27% on `pr`, and -28% on `depfree`. (slashdo's
- *    orchestration wrapper is never pruned — it dispatches even a single-entry
- *    reviewer list — which is ~37KB of the theoretical ceiling.)
- * 2. **Point at a resolved copy on disk when still over budget** — but only for a
- *    host with file tools (`cli`/`tui`; an HTTP `api` provider has none and
- *    inlines with a warning). On its own this is roughly token-NEUTRAL for an
- *    agent that reads the whole procedure; it pays off when the host can invoke
- *    slashdo natively or needs only part of the body.
+ * File-tool hosts receive slashdo's deferred bundle: an entrypoint and supporting
+ * files read only at the relevant phase. API providers receive an eager body.
+ * Oversized bodies without references still use the existing file pointer.
  *
  * Pruning is only sound if the run then uses the reviewers we pruned FOR, so the
  * section emits an explicit `--review-with` pin alongside a pruned body —
@@ -121,18 +110,23 @@ export async function applySlashdoInvocation(task, {
     ? []
     : unreachableReviewerIncludes({ reviewers: resolvedReviewers, usernames: resolvedUsernames });
 
-  const body = await loadSlashdoFile(command, { stripFrontmatter: true, skipIncludes }).catch(() => null);
+  const options = { stripFrontmatter: true, skipIncludes };
+  const bundle = hasFileTools ? await loadSlashdoBundle(command, options) : null;
+  let body = hasFileTools ? bundle?.body : await loadSlashdoFile(command, options);
   if (!body) console.log(`⚠️ Slashdo command body unavailable, sending invocation only: ${command}`);
+  const hasDeferredFiles = !!bundle && Object.keys(bundle.files).length > 0;
   const overBudget = !!body && body.length > SLASHDO_INLINE_BUDGET_CHARS;
-  // An HTTP `api` provider can't read a file, so an over-budget body is pasted
-  // whole. Surface the cost rather than paying it silently.
   if (overBudget && !hasFileTools) {
     console.warn(`⚠️ Inlining ${Math.round(body.length / 1000)}KB slashdo body for API provider (no file tools): ${command}`);
   }
-  // Only spend the write when the pointer will actually be used.
-  const bodyPath = (overBudget && hasFileTools)
-    ? await writeResolvedSlashdoBody(command, body, { skipIncludes }).catch((err) => {
+  // Even a tiny entrypoint needs a stable filesystem base for relative reads.
+  // If staging fails, reload eagerly; inlining the deferred body would strand
+  // its required references in the managed app's unrelated working directory.
+  const bodyPath = (hasFileTools && (overBudget || hasDeferredFiles))
+    ? await writeResolvedSlashdoBody(command, body, { files: bundle.files }).catch(async (err) => {
         console.warn(`⚠️ Could not stage slashdo body for ${command}, inlining instead: ${err.message}`);
+        body = await loadSlashdoFile(command, options);
+        if (!body) throw new Error(`Slashdo fallback body unavailable: ${command}`);
         return null;
       })
     : null;
