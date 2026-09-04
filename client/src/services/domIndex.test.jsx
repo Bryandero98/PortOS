@@ -90,3 +90,44 @@ describe('domIndex buildIndex — data-voice-guard', () => {
     expect(save.guard).toBeUndefined();
   });
 });
+
+// The annotation resolves from the nearest annotated ancestor so a container
+// covers everything inside it — annotating each descendant by hand would miss
+// whichever control gets added next.
+describe('domIndex buildIndex — data-voice-guard on a container', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <main>
+        <div data-voice-guard="exclude">
+          <button>Widget stop</button>
+        </div>
+        <div data-voice-guard="confirm">
+          <button>Publish</button>
+          <div data-voice-guard="exclude"><button>Nested opt-out</button></div>
+        </div>
+        <button>Save</button>
+      </main>
+    `;
+    makeVisible();
+  });
+
+  it('excludes every control inside an exclude-marked container', () => {
+    const idx = buildIndex();
+    expect(idx.elements.some((e) => e.label === 'Widget stop')).toBe(false);
+  });
+
+  it('carries guard: "confirm" onto a control inside a confirm-marked container', () => {
+    const idx = buildIndex();
+    expect(idx.elements.find((e) => e.label === 'Publish').guard).toBe('confirm');
+  });
+
+  it('lets a nested annotation win over its ancestor', () => {
+    const idx = buildIndex();
+    expect(idx.elements.some((e) => e.label === 'Nested opt-out')).toBe(false);
+  });
+
+  it('leaves a control outside every annotated container unguarded', () => {
+    const idx = buildIndex();
+    expect(idx.elements.find((e) => e.label === 'Save').guard).toBeUndefined();
+  });
+});

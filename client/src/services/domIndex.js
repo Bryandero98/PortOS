@@ -213,10 +213,13 @@ export const buildIndex = ({ includeText = false } = {}) => {
 
   for (const el of raw) {
     if (elements.length >= MAX_ELEMENTS) break;
-    // A control marked `exclude` never reaches the voice index at all — the
-    // one way to keep something out of it (issue #5907). Checked before
-    // classify/visibility so an excluded control costs nothing else below.
-    const guard = el.getAttribute('data-voice-guard');
+    // `data-voice-guard` resolves from the nearest annotated ancestor, not
+    // just the element itself, so marking a container covers every control
+    // inside it (issue #5907) — otherwise excluding a widget would mean
+    // annotating each of its buttons and missing the next one added. A
+    // control marked `exclude` never reaches the voice index at all; checked
+    // before classify/visibility so it costs nothing else below.
+    const guard = el.closest('[data-voice-guard]')?.getAttribute('data-voice-guard');
     if (guard === 'exclude') continue;
     const kind = classify(el);
     if (!kind) continue;
