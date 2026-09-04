@@ -295,10 +295,10 @@ keeps absent dependencies advisory, which is appropriate for docs-only work.
 Configured choices (ids are authoritative; do not invent ids):
 ${JSON.stringify(promptCatalog)}
 
-Recent CoS queue (newest first; 'completed' work already shipped, so do not re-queue it):
+Recent CoS queue (newest first; a 'completed' entry already ran, so do not re-queue it):
 ${JSON.stringify(boundedPromptInventory(inventory))}
 
-Use taskRequests only for specific, non-duplicate work. Before requesting a task, check the recent queue above and the trajectory: if the same work is already pending, in progress, or completed, say so instead of queueing it again. Put the complete agent instructions in prompt and a concise queue label in description. In your conversational message describe the request as pending; do not claim the task was created or completed because the capability outcome is recorded only after inference.`;
+Use taskRequests only for specific, non-duplicate work. Before requesting a task, check the recent queue above and the trajectory: if the same work is already there in any state, say so instead of queueing it again. Put the complete agent instructions in prompt and a concise queue label in description. In your conversational message describe the request as pending; do not claim the task was created or completed because the capability outcome is recorded only after inference.`;
 }
 
 const wakeIdentity = (wake, turnId) => (
