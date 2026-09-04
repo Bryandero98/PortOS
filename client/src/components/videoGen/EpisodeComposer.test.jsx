@@ -87,4 +87,15 @@ describe('EpisodeComposer', () => {
     act(() => lastEventSource().emit({ type: 'complete', result: { jobId: 'job-1' } }));
     expect(await screen.findByText(/Compose another episode/i)).toBeTruthy();
   });
+
+  it('applies a FableLoom import that arrives after mount (async loom fetch)', async () => {
+    lintContinuousVideoEpisode.mockResolvedValue(PASSING_PREVIEW);
+    // VideoGen mounts EpisodeComposer before its getLoom() fetch resolves —
+    // initialScenes starts null/undefined and updates on a later render.
+    const { rerender } = render(<EpisodeComposer initialScenes={null} />);
+    expect(screen.queryByDisplayValue('Imported scene')).toBeNull();
+
+    rerender(<EpisodeComposer initialScenes={[{ sceneId: 's1', location: '', lines: [{ type: 'action', text: 'Imported scene' }] }]} />);
+    expect(await screen.findByDisplayValue('Imported scene')).toBeTruthy();
+  });
 });

@@ -130,11 +130,16 @@ export default function VideoGen() {
   const episodeLoomId = searchParams.get('loomId');
   const episodeEpisodeId = searchParams.get('episodeId');
   const openEpisodeComposer = () => setSearchParams(prev => { const n = new URLSearchParams(prev); n.set('episode', '1'); return n; });
-  const closeEpisodeComposer = () => setSearchParams(prev => {
-    const n = new URLSearchParams(prev);
-    n.delete('episode'); n.delete('loomId'); n.delete('episodeId');
-    return n;
-  });
+  const closeEpisodeComposer = () => {
+    setSearchParams(prev => {
+      const n = new URLSearchParams(prev);
+      n.delete('episode'); n.delete('loomId'); n.delete('episodeId');
+      return n;
+    });
+    // The composer unmounts on close (conditional render below) — clear the
+    // import so a later open with no loomId/episodeId doesn't inherit it.
+    setEpisodeImportScenes(null);
+  };
   const [episodeImportScenes, setEpisodeImportScenes] = useState(null);
   useEffect(() => {
     if (!episodeOpen || !episodeLoomId || !episodeEpisodeId) return;

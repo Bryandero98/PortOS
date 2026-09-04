@@ -4,7 +4,7 @@
 // prose/teleplay text is free-form — this is a lossy starting draft the
 // Episode Composer always leaves user-editable, not a round-trip parser.
 
-const CUE_RE = /^[A-Z][A-Z0-9 .,'()-]{1,60}$/;
+const CUE_RE = /^[A-Z][A-Z0-9 .,'()-]{1,59}$/; // total length capped at 60 (matches looksLikeCue's guard)
 
 /** True for a short all-caps line that reads as a teleplay character cue. */
 const looksLikeCue = (line) => {

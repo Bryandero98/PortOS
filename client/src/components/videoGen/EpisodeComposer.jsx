@@ -64,30 +64,32 @@ function buildBible(styleDescriptor, castEntries, locationEntries) {
   return bible;
 }
 
-function BibleEntryEditor({ label, entries, onChange, idPlaceholder }) {
+function BibleEntryEditor({ label, entries, onChange, idPlaceholder, busy }) {
+  // `key` is a stable React identity separate from `id` (the editable bible
+  // key) — entries need identity before the user has typed a real id.
   const update = (i, patch) => onChange(entries.map((e, idx) => (idx === i ? { ...e, ...patch } : e)));
   const remove = (i) => onChange(entries.filter((_, idx) => idx !== i));
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-medium text-gray-400">{label}</span>
-        <button type="button" onClick={() => onChange([...entries, { id: uuidv4(), descriptor: '' }])} className="inline-flex items-center gap-1 text-[11px] text-port-accent hover:underline">
+        <button type="button" disabled={busy} onClick={() => onChange([...entries, { key: uuidv4(), id: '', descriptor: '' }])} className="inline-flex items-center gap-1 text-[11px] text-port-accent hover:underline disabled:opacity-50">
           <Plus className="w-3 h-3" /> Add
         </button>
       </div>
       {entries.map((entry, i) => (
-        <div key={entry.id} className="flex gap-1.5 items-start">
+        <div key={entry.key} className="flex gap-1.5 items-start">
           <input
-            type="text" value={entry.id} onChange={(e) => update(i, { id: e.target.value })}
+            type="text" value={entry.id} disabled={busy} onChange={(e) => update(i, { id: e.target.value })}
             placeholder={idPlaceholder} aria-label={`${label} id`}
-            className="w-28 shrink-0 bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent"
+            className="w-28 shrink-0 bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
           />
           <input
-            type="text" value={entry.descriptor} onChange={(e) => update(i, { descriptor: e.target.value })}
+            type="text" value={entry.descriptor} disabled={busy} onChange={(e) => update(i, { descriptor: e.target.value })}
             placeholder="byte-stable visual descriptor" aria-label={`${label} descriptor`}
-            className="flex-1 bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent"
+            className="flex-1 bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
           />
-          <button type="button" onClick={() => remove(i)} aria-label={`Remove ${label} entry`} className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error">
+          <button type="button" onClick={() => remove(i)} disabled={busy} aria-label={`Remove ${label} entry`} className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error disabled:opacity-50">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -197,11 +199,13 @@ function ClipPreviewCard({ clip, result, framing, onFramingChange, busy }) {
   );
 }
 
+const scenesFromImport = (imported) => imported.map((s) => ({
+  key: uuidv4(), sceneId: s.sceneId || uuidv4(), location: s.location || '',
+  lines: s.lines.map((l) => ({ key: uuidv4(), type: l.type, speaker: l.speaker || '', voice: l.voice || '', text: l.text || '' })),
+}));
+
 export default function EpisodeComposer({ initialScenes, onQueued }) {
-  const [scenes, setScenes] = useState(() => (initialScenes?.length ? initialScenes.map((s) => ({
-    key: uuidv4(), sceneId: s.sceneId || uuidv4(), location: s.location || '',
-    lines: s.lines.map((l) => ({ key: uuidv4(), type: l.type, speaker: l.speaker || '', voice: l.voice || '', text: l.text || '' })),
-  })) : [emptyScene()]));
+  const [scenes, setScenes] = useState(() => (initialScenes?.length ? scenesFromImport(initialScenes) : [emptyScene()]));
   const [styleDescriptor, setStyleDescriptor] = useState('');
   const [castEntries, setCastEntries] = useState([]);
   const [locationEntries, setLocationEntries] = useState([]);
@@ -211,6 +215,18 @@ export default function EpisodeComposer({ initialScenes, onQueued }) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [queuedJobId, setQueuedJobId] = useState(null);
   const debounceRef = useRef(null);
+  const previewRequestRef = useRef(0);
+
+  // `initialScenes` starts null and arrives later once VideoGen's FableLoom
+  // import fetch resolves (EpisodeComposer is already mounted by then, so the
+  // lazy useState initializer above never sees it) — apply it the one time it
+  // transitions from empty to populated, without clobbering user edits after.
+  const importAppliedRef = useRef(!!initialScenes?.length);
+  useEffect(() => {
+    if (importAppliedRef.current || !initialScenes?.length) return;
+    importAppliedRef.current = true;
+    setScenes(scenesFromImport(initialScenes));
+  }, [initialScenes]);
 
   const bible = useMemo(() => buildBible(styleDescriptor, castEntries, locationEntries), [styleDescriptor, castEntries, locationEntries]);
   const sanitizedScenes = useMemo(() => sanitizeScenesForRequest(scenes), [scenes]);
@@ -226,10 +242,14 @@ export default function EpisodeComposer({ initialScenes, onQueued }) {
     if (queuedJobId) return undefined;
     if (!hasContent) { setPreview(null); setPreviewLoading(false); return undefined; }
     setPreviewLoading(true);
+    const requestId = (previewRequestRef.current += 1);
     debounceRef.current = setTimeout(async () => {
       const result = await lintContinuousVideoEpisode({
         scenes: sanitizedScenes, bible, framings: framingsArrayFor(preview?.clips, framings),
       }).catch(() => null);
+      // A newer edit may have started a later request while this one was in
+      // flight — a slower earlier response must not overwrite it.
+      if (requestId !== previewRequestRef.current) return;
       setPreview(result);
       setPreviewLoading(false);
     }, PREVIEW_DEBOUNCE_MS);
@@ -255,7 +275,12 @@ export default function EpisodeComposer({ initialScenes, onQueued }) {
     setQueuedJobId(result.jobId);
   }, { errorMessage: 'Failed to queue episode' });
 
-  const canQueue = hasContent && preview?.lint?.pass === true && !queuing && !queuedJobId;
+  // `!previewLoading` matters: without it, editing a passing draft into a
+  // failing one leaves the OLD passing preview (and its stale `preview.clips`)
+  // queueable until the new lint resolves — Queue would fire against
+  // in-flight-stale scenes and the server would 422 on a lint the UI never
+  // showed as failing.
+  const canQueue = hasContent && !previewLoading && preview?.lint?.pass === true && !queuing && !queuedJobId;
 
   const resetForNewEpisode = () => {
     setQueuedJobId(null);
@@ -279,8 +304,8 @@ export default function EpisodeComposer({ initialScenes, onQueued }) {
         />
       </div>
 
-      <BibleEntryEditor label="Cast" entries={castEntries} onChange={setCastEntries} idPlaceholder="mara" />
-      <BibleEntryEditor label="Locations" entries={locationEntries} onChange={setLocationEntries} idPlaceholder="cell-block" />
+      <BibleEntryEditor label="Cast" entries={castEntries} onChange={setCastEntries} idPlaceholder="mara" busy={busy} />
+      <BibleEntryEditor label="Locations" entries={locationEntries} onChange={setLocationEntries} idPlaceholder="cell-block" busy={busy} />
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
