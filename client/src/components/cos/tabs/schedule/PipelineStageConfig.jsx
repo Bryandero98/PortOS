@@ -57,8 +57,12 @@ const actionsStageNote = (eligibleProviders) => {
 export default function PipelineStageConfig({ taskType, config, providers, providersLoaded = true, onUpdate, updating, setUpdating }) {
   const stages = pipelineStages(config);
   const needsSecurityModelPolicy = taskType === 'pr-reviewer';
+  // Every public-review stage — not just the tool-free gate — resolves a local
+  // provider's models from the daemon, so the fetch follows the postures rather
+  // than the task type.
+  const hasPublicReviewStage = stages.some((stage) => stagePublicReviewPosture(stage));
   const { ollama, lmstudio, capabilitiesByBackend, loading: localModelsLoading } = useLocalModels({
-    enabled: needsSecurityModelPolicy,
+    enabled: needsSecurityModelPolicy || hasPublicReviewStage,
   });
   // One policy per posture. The provider half is server-derived; the model half
   // adds the authoritative no-tool capability check only for a local runtime,
@@ -160,10 +164,13 @@ export default function PipelineStageConfig({ taskType, config, providers, provi
           const localBackend = localBackendForProvider(stageProvider);
           const localModelIds = localBackend === 'ollama' ? ollama : localBackend === 'lmstudio' ? lmstudio : [];
           // A LOCAL provider's installed-model list is the source of truth (its
-          // stored catalog is stale, and only an installed model has a probeable
-          // capability report). Every other provider uses its own catalog, so a
-          // cloud CLI stage can pick any model that provider offers.
-          const stageModels = isNoToolStage && localBackend
+          // stored catalog is a cached snapshot, and only an installed model has
+          // a probeable capability report). That holds for the sandboxed actions
+          // stage as much as the tool-free gate — offering the stale catalog
+          // there let a stage be pinned to a model the daemon no longer serves,
+          // and hid one that had just been pulled. Every other provider uses its
+          // own catalog, so a cloud CLI stage can pick any model it offers.
+          const stageModels = posture && localBackend
             ? localModelIds.map(id => ({
               id,
               name: id,

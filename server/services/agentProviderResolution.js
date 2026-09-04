@@ -17,6 +17,7 @@ import { emitLog } from './cosEvents.js';
 import { getActiveProvider, getAllProviders, getProviderById } from './providers.js';
 import { isProviderAvailable, getFallbackProvider, getProviderStatus } from './providerStatus.js';
 import { selectModelForRole, selectModelForTask } from './agentModelSelection.js';
+import { modelPinIsOffered } from '../lib/localProviderRuntime.js';
 import { PRIMARY_ORCHESTRATION_ROLE, roleAssignment } from '../lib/orchestrationProfile.js';
 import { publicReviewPostureForTask, resolvePublicReviewProvider } from './publicReviewProviderSelection.js';
 
@@ -71,22 +72,29 @@ async function resolvePublicReviewAgentProvider(task, posture) {
   // and a retired id reaches the CLI as a model it cannot serve, so the stage
   // spawns, produces no output, and is retried. The ordinary path guards this
   // at its list check; `cliProviderRun.js#resolveCliProviderAndModel` does too.
-  const modelSelection = await selectModelForTask(task, provider);
   const pinnedModel = task.metadata?.model;
   const pinnedForThisProvider = Boolean(pinnedModel) && task.metadata?.provider === provider.id;
-  // A provider that enumerates NO models is a pass-through (any id is its
-  // caller's to choose), so only a non-empty list can invalidate a pin.
-  const offeredModels = Array.isArray(provider.models) ? provider.models : [];
-  const pinIsOffered = offeredModels.length === 0 || offeredModels.includes(pinnedModel);
-  if (pinnedForThisProvider && !pinIsOffered) {
+  // `modelPinIsOffered` owns which provider records may invalidate a pin at all
+  // — an empty catalog and a local daemon's cached snapshot are both
+  // pass-throughs (see its doc comment).
+  const pinRejected = pinnedForThisProvider && !modelPinIsOffered(provider, pinnedModel);
+  // Strip the rejected pin BEFORE model selection. `selectModelForTask` returns
+  // `metadata.model` verbatim as its highest-priority answer, so leaving it in
+  // place handed the CLI the very id just rejected and the warning below
+  // promised a default the run never used.
+  const modelSelection = await selectModelForTask(
+    pinRejected ? { ...task, metadata: { ...task.metadata, model: null } } : task,
+    provider,
+  );
+  if (pinRejected) {
     emitLog('warn', `Public-review stage model "${pinnedModel}" is not offered by provider "${provider.id}" — using its default instead`, {
       taskId: task.id,
       requestedModel: pinnedModel,
       providerId: provider.id,
-      validModels: offeredModels,
+      validModels: provider.models,
     });
   }
-  const selectedModel = pinnedForThisProvider && pinIsOffered
+  const selectedModel = pinnedForThisProvider && !pinRejected
     ? pinnedModel
     : (modelSelection.model || provider.defaultModel || null);
   emitLog('info', `Public-review stage (${posture}) resolved to provider ${provider.id}${selectedModel ? ` model ${selectedModel}` : ''}`, {

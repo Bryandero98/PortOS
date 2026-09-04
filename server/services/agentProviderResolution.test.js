@@ -401,6 +401,40 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
       .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'm-default' });
   });
 
+  // The drop above has to survive model selection, which is where it used to
+  // be undone: `selectModelForTask` answers `metadata.model` verbatim as its
+  // highest-priority tier, so a resolution that left the rejected pin on the
+  // task got the same id back and spawned the CLI with it — while logging that
+  // it was "using its default instead". The mock is given the real precedence
+  // here on purpose; the flat `m-default` default cannot observe the bug.
+  it('does not let model selection hand the rejected pin back', async () => {
+    selectModelForTask.mockImplementation(async (task, provider) => (
+      task?.metadata?.model
+        ? { model: task.metadata.model, tier: 'user-specified', reason: 'user-preference' }
+        : { model: provider?.defaultModel || 'm-default', tier: 'medium', reason: 'default' }
+    ));
+    const CURATED = { id: 'grok-cli', type: 'cli', command: 'grok', models: ['grok-4'], defaultModel: 'grok-4' };
+    getAllProviders.mockResolvedValue({ providers: [CURATED], activeProvider: null });
+
+    const r = await resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-3-retired' }));
+    expect(r.selectedModel).toBe('grok-4');
+  });
+
+  // A LOCAL runtime's `models` array is a cached snapshot of what the daemon
+  // had; the daemon itself is the authority, and the stage picker offers what
+  // it reports. Judging the pin against the snapshot rejected a model that was
+  // installed and serving — the live pr-reviewer gate logged "not offered by
+  // provider" for a freshly pulled Ollama model on every dispatch.
+  it('honors a model pin on a local-runtime provider whose cached list omits it', async () => {
+    const LOCAL = {
+      id: 'grok-ollama', type: 'cli', command: 'grok', ollamaBacked: true,
+      models: ['qwen3-coder:30b'], defaultModel: 'qwen3-coder:30b',
+    };
+    getAllProviders.mockResolvedValue({ providers: [LOCAL], activeProvider: null });
+    await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-ollama', model: 'gemma3:27b' })))
+      .resolves.toMatchObject({ provider: { id: 'grok-ollama' }, selectedModel: 'gemma3:27b' });
+  });
+
   // A provider that enumerates no models is a pass-through, so the pin stands.
   it('honors a model pin on a provider that enumerates no models', async () => {
     getAllProviders.mockResolvedValue({ providers: [GROK], activeProvider: null });

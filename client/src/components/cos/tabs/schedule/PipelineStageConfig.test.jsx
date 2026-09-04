@@ -223,4 +223,41 @@ describe('PipelineStageConfig — posture-driven eligibility', () => {
     expect(note.textContent).toContain("OS-sandboxed by the vendor's own recipe: Codex TUI.");
     expect(note.textContent).toContain('isolated by the disposable worktree only: OpenCode TUI.');
   });
+
+  // A local runtime's daemon is the authority on what it serves; the provider
+  // record's `models` array is a cached snapshot. The tool-free gate already
+  // read the daemon, but the sandboxed actions stage read the snapshot — so a
+  // stage on a local provider could only be pinned to models that had since
+  // been removed, and never to one just pulled.
+  it('offers the installed local models for a local-backed ACTIONS stage', () => {
+    const localProvider = {
+      id: 'opencode-ollama-tui',
+      name: 'OpenCode Ollama TUI',
+      type: 'tui',
+      command: 'opencode',
+      models: ['stale-cached-model'],
+      publicReviewPostures: ['no-tool', 'sandboxed-actions'],
+      publicReviewEnforcedPostures: ['no-tool'],
+    };
+    render(
+      <MemoryRouter>
+        <PipelineStageConfig
+          taskType="pr-reviewer"
+          config={{ taskMetadata: { pipeline: { stages: [
+            profiledStages[0],
+            profiledStages[1],
+            { ...profiledStages[2], providerId: 'opencode-ollama-tui', model: 'tool-model' },
+          ] } } }}
+          providers={[localProvider]}
+          onUpdate={vi.fn().mockResolvedValue(undefined)}
+          updating={false}
+          setUpdating={() => {}}
+        />
+      </MemoryRouter>,
+    );
+
+    const modelSelects = screen.getAllByLabelText('Model');
+    // The daemon's installed models, NOT the record's `stale-cached-model`.
+    expect([...modelSelects[1].options].map((o) => o.value)).toEqual(['', 'safe-model', 'tool-model']);
+  });
 });
