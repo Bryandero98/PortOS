@@ -76,12 +76,12 @@ beforeEach(() => {
 });
 
 describe('executeUpdate', () => {
-  // Windows goes through spawnDetached too, with `windowsDetached` set. The
-  // plain `spawn(..., { detached: true })` this replaced meant
-  // DETACHED_PROCESS, which denies powershell a console — update.ps1 exited 0
-  // within ~100ms without running a line, and pm2's `taskkill /T` would have
-  // killed an attached one mid-update anyway (#6169).
-  it('launches powershell through spawnDetached with windowsDetached on win32', async () => {
+  // Windows goes through spawnDetached too — its supervisor launcher is what
+  // makes update.ps1 survive. The plain `spawn(..., { detached: true })` this
+  // replaced meant DETACHED_PROCESS, which denies powershell a console:
+  // update.ps1 exited 0 within ~100ms without running a line, and pm2's
+  // `taskkill /T` would have killed an attached one mid-update anyway (#6169).
+  it('launches powershell through spawnDetached on win32', async () => {
     // Re-pin over the file-level linux default; the file-level afterEach still
     // restores the pristine descriptor, so a failure here can't leak win32.
     pinPlatform('win32');
@@ -97,7 +97,7 @@ describe('executeUpdate', () => {
     expect(spawnDetached).toHaveBeenCalledWith(
       'powershell',
       expect.arrayContaining(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']),
-      expect.objectContaining({ windowsDetached: true })
+      expect.objectContaining({ controlDir: expect.stringContaining('update-detached') })
     );
     // The still-running guard covers Windows too now that the script survives there.
     expect(isDetachedRunning).toHaveBeenCalledWith(
