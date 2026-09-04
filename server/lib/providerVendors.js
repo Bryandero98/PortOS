@@ -405,7 +405,11 @@ function opencodePublicReviewSpawnArgs(provider, { effectiveModel } = {}) {
  * agent is pinned on the argv and provider args are not forwarded (same rule as
  * `buildTuiSpawnConfig`): a saved `--agent plan` would hand the session to a
  * human nobody has to be. Permissions are the config's, on both paths — every
- * tool allowed, the interactive gates denied (`buildOpencodeEnvVars`).
+ * tool allowed, the interactive gates denied (`buildOpencodeEnvVars`) — for as
+ * long as `OPENCODE_CONFIG_CONTENT` survives the actions env allowlist, i.e. a
+ * local-only endpoint (`cliChildEnv.js`); a gateway-backed wrapper runs on the
+ * operator's own `~/.config/opencode` instead, exactly as its headless run
+ * already did.
  *
  * The row supplies ONLY this builder: a headless actions run keeps falling
  * through to the ordinary `run` argv, and with no headless `spawnArgs` the row
