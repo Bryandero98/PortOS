@@ -17,6 +17,7 @@
 // PROVIDER_VENDORS registry (#3618), consumed by every dispatch site that
 // used to duplicate its own vendor if-chain.
 import { inferTuiCommand, applyCommandDefaults, injectTuiModelAndEffort } from './providerVendors.js';
+import { detectTuiRetryBanner, describeTuiRetryStall } from './aiToolkit/errorDetection.js';
 
 // ─── Paste handshake constants ────────────────────────────────────────────
 
@@ -1071,6 +1072,194 @@ export function createOomNudgeGate() {
       armed = null;
       attempts += 1;
       return attempts;
+    },
+  };
+}
+
+// How long one request's retry sequence may span before the run is failed over.
+//
+// Long enough that Claude Code's own retry ladder for a transient cloud fault
+// (ten attempts, seconds of backoff each) always finishes inside it — that
+// ladder either recovers or ends in a terminal gutter line the idle reaper
+// handles — and short enough that a request the provider can never answer is
+// not left to burn a lane for the run's whole 3h ceiling. The gate also demands
+// the banner ADVANCE at least twice (attempt N → N+2): a single sighting is
+// often chrome that recovered a second later, and one advance can be a fault
+// that cleared on the next try, but a third attempt of the same request ten
+// minutes on is a request this provider is not going to answer.
+export const RETRY_STALL_MS = 10 * 60 * 1000;
+export const RETRY_STALL_MIN_ADVANCES = 2;
+// Carry-over kept across chunks so a banner split by a PTY chunk boundary still
+// matches. Spans the longest banner (`Retrying in 999s · attempt 10/10`) plus
+// the cursor-positioning residue stripping leaves around it.
+const RETRY_STALL_CARRY_CAP = 96;
+
+/**
+ * State machine for "the TUI keeps retrying the same request and it never
+ * answers" — see TUI_RETRY_BANNER_PATTERN in aiToolkit/errorDetection.js for
+ * the 2026-09-04 incident it exists for.
+ *
+ * Feed it every ANSI-stripped chunk after the prompt is in via
+ * `observe(strippedText, nowMs)`; poll `takeStall(nowMs)` on whatever timer the
+ * consumer already runs. It tracks one EPISODE at a time — the retry sequence
+ * of a single request, recognised by its attempt counter climbing. A counter
+ * that goes back down is the next request's ladder (Claude Code numbers each
+ * request's retries from 1), and a banner more than RETRY_STALL_MS after the
+ * last one is a new episode too, so a run that hit a blip, recovered, and did
+ * an hour of work before the next blip is never judged across both.
+ *
+ * The verdict is decided AT A SIGHTING, never by the clock alone: a ladder
+ * that climbed to attempt 10 in two minutes and then succeeded must not turn
+ * into a stall ten quiet minutes later. Only a banner painted RETRY_STALL_MS
+ * or more after the episode began — the provider failing this request yet
+ * again — counts. It is handed back once (the episode is cleared with it), so
+ * a consumer acting on it fails over exactly once.
+ *
+ * @returns {{ observe: (strippedText: string, nowMs: number) => void,
+ *             takeStall: (nowMs: number) => object|null }}
+ */
+export function createRetryStallGate() {
+  let episode = null; // { firstSeenAt, lastSeenAt, firstAttempt, lastAttempt }
+  let verdict = null;
+  let tail = '';
+  return {
+    observe(strippedText, nowMs) {
+      if (typeof strippedText !== 'string' || !strippedText) return;
+      const window = tail + strippedText;
+      const banner = detectTuiRetryBanner(window);
+      // Consume through the match so the carry-over cannot re-sight the same
+      // banner on the next chunk; without one, keep only the cap.
+      tail = (banner ? window.slice(banner.endIndex) : window).slice(-RETRY_STALL_CARRY_CAP);
+      if (!banner) return;
+      const isNewEpisode = !episode
+        || banner.attempt < episode.lastAttempt
+        || nowMs - episode.lastSeenAt > RETRY_STALL_MS;
+      if (isNewEpisode) {
+        episode = { firstSeenAt: nowMs, lastSeenAt: nowMs, firstAttempt: banner.attempt, lastAttempt: banner.attempt };
+        return;
+      }
+      episode.lastSeenAt = nowMs;
+      episode.lastAttempt = banner.attempt;
+      const spanMs = nowMs - episode.firstSeenAt;
+      if (episode.lastAttempt - episode.firstAttempt < RETRY_STALL_MIN_ADVANCES || spanMs < RETRY_STALL_MS) return;
+      verdict = describeTuiRetryStall({ attempts: episode.lastAttempt - episode.firstAttempt + 1, spanMs });
+      episode = null;
+    },
+    // The stall analysis to fail over with, once, or null.
+    takeStall() {
+      const analysis = verdict;
+      verdict = null;
+      return analysis;
+    },
+  };
+}
+
+// Claude Code's tool-permission dialog, as the ANSI-stripped screen renders it
+// (spaces between cursor-positioned glyphs can vanish, hence `\s*`):
+//
+//   Read(/data.reference/providers.json)
+//   Do you want to proceed?
+//   ❯ 1. Yes
+//     2. Yes, allow reading from /data.reference during this session
+//     3. No
+//   Esc to cancel · Tab to amend
+//
+// It paints whenever a tool call falls outside what the launch posture
+// pre-approved — under the hardened public-review recipe (`--permission-mode
+// acceptEdits` + sandbox) that is any read or write outside the worktree, which
+// a local model reaches for the moment it hallucinates an absolute path
+// (agent-e057cca7, 2026-09-04: `Read(/data.reference/providers.json)` sat
+// unanswered for 30+ minutes while the spinner kept the idle reaper happy).
+// Nobody is at the keyboard, and the posture already decided the answer: an
+// unattended run never widens its own scope, so the dialog is DECLINED. "No" is
+// always the last numbered option, but its number varies with the tool (a
+// two-option dialog for some, three for most), so it is read off the screen.
+export const TUI_TOOL_PERMISSION_PROMPT_PATTERN = /do\s*you\s*want\s*to\s*proceed\?/i;
+const TUI_TOOL_PERMISSION_NO_OPTION_PATTERN = /(\d+)\.\s*No\b/i;
+const TUI_TOOL_PERMISSION_CALL_PATTERN = /([A-Z][A-Za-z]*\([^\n]{0,300}?\))\s*do\s*you\s*want\s*to\s*proceed\?/i;
+// How much screen after the question the option list may span before it is
+// judged not painted yet.
+const TUI_TOOL_PERMISSION_OPTIONS_SPAN = 600;
+
+/**
+ * The tool-permission dialog on screen, or null. Null also while the question
+ * has painted but the option list has not — the consumer waits for the next
+ * repaint rather than guessing which key declines.
+ *
+ * @returns {{ noOption: number, toolCall: string|null }|null}
+ */
+export function detectToolPermissionPrompt(strippedText) {
+  if (typeof strippedText !== 'string' || !strippedText) return null;
+  const question = TUI_TOOL_PERMISSION_PROMPT_PATTERN.exec(strippedText);
+  if (!question) return null;
+  const options = strippedText.slice(question.index, question.index + TUI_TOOL_PERMISSION_OPTIONS_SPAN);
+  const no = TUI_TOOL_PERMISSION_NO_OPTION_PATTERN.exec(options);
+  if (!no) return null;
+  const lead = strippedText.slice(Math.max(0, question.index - 400), question.index + question[0].length);
+  const call = TUI_TOOL_PERMISSION_CALL_PATTERN.exec(lead);
+  return { noOption: Number(no[1]), toolCall: call ? call[1].replace(/\s+/g, ' ') : null };
+}
+
+// A declined dialog keeps repainting for a few chunks and the keystrokes take a
+// moment to land; sightings this close to a decline are the same dialog.
+export const TOOL_PERMISSION_REPAINT_COOLDOWN_MS = 15000;
+// Declining a tool call ends the assistant turn in current Claude Code builds
+// ("What should Claude do instead?"), so the session then needs a message to
+// carry on. Sent once the session has been SILENT this long after a decline —
+// the same provider-agnostic silence test the OOM nudge uses — so a build that
+// instead hands the model a rejection and lets it continue is left alone.
+export const TOOL_PERMISSION_NUDGE_SETTLE_MS = 25000;
+// A decline whose session never went quiet inside this window continued on its
+// own; drop the pending nudge rather than fire it into a later quiet stretch.
+export const TOOL_PERMISSION_NUDGE_ARM_WINDOW_MS = 120000;
+// A model that keeps reaching outside its scope after this many declines is not
+// going to finish inside it; the caller fails the run rather than looping.
+export const TOOL_PERMISSION_DECLINE_MAX = 8;
+export const TOOL_PERMISSION_NUDGE_TEXT = 'That tool call reached outside this run\'s allowed scope, so it was declined. Nobody is watching this session and no permission can be granted. Everything you need is inside your worktree and your prompt; continue using paths under the worktree only, and write the completion sentinel when you are done.';
+
+/**
+ * State machine for "decline every tool-permission dialog, then get the
+ * session moving again". Feed it every ANSI-stripped chunk after the prompt is
+ * in via `observe(strippedText, nowMs)`: it returns the dialog to decline
+ * (`{ noOption, toolCall, count }`) exactly once per dialog, `'exhausted'` when
+ * the decline budget is spent, or null. Poll `takeNudge(nowMs, lastOutputAtMs)`
+ * on the consumer's existing timer; it returns the decline number a nudge is
+ * due for, or 0.
+ *
+ * Carries a screen tail across chunks so a dialog split by a PTY chunk
+ * boundary still matches; the tail is dropped after a decline so the same
+ * dialog cannot be re-sighted from the carry-over.
+ *
+ * @returns {{ observe: (strippedText: string, nowMs: number) => object|'exhausted'|null,
+ *             takeNudge: (nowMs: number, lastOutputAtMs: number) => number }}
+ */
+export function createToolPermissionGate() {
+  let tail = '';
+  let declines = 0;
+  let lastDeclineAt = null;
+  let pendingNudge = null; // { declinedAt, count }
+  return {
+    observe(strippedText, nowMs) {
+      if (typeof strippedText !== 'string' || !strippedText) return null;
+      const window = (tail + strippedText).slice(-1024);
+      tail = window;
+      if (lastDeclineAt !== null && nowMs - lastDeclineAt < TOOL_PERMISSION_REPAINT_COOLDOWN_MS) return null;
+      const dialog = detectToolPermissionPrompt(window);
+      if (!dialog) return null;
+      tail = '';
+      lastDeclineAt = nowMs;
+      if (declines >= TOOL_PERMISSION_DECLINE_MAX) return 'exhausted';
+      declines += 1;
+      pendingNudge = { declinedAt: nowMs, count: declines };
+      return { ...dialog, count: declines };
+    },
+    takeNudge(nowMs, lastOutputAtMs) {
+      if (!pendingNudge) return 0;
+      if (nowMs - pendingNudge.declinedAt > TOOL_PERMISSION_NUDGE_ARM_WINDOW_MS) { pendingNudge = null; return 0; }
+      if (nowMs - lastOutputAtMs < TOOL_PERMISSION_NUDGE_SETTLE_MS) return 0;
+      const { count } = pendingNudge;
+      pendingNudge = null;
+      return count;
     },
   };
 }

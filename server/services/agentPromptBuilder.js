@@ -130,18 +130,25 @@ function pipelineContextLines(pipelineCtx) {
     `Previous stage: "${pipelineCtx.stages[pipelineCtx.currentStage - 1]?.name}"`,
     '',
   ];
-  if (pipelineCtx.previousStageAgentId) {
+  const rawPreviousOutput = typeof pipelineCtx.previousStageOutput === 'string'
+    ? pipelineCtx.previousStageOutput.trim()
+    : '';
+  const previousOutput = rawPreviousOutput.slice(0, 12_000).replace(/~+/g, "'");
+  const truncated = rawPreviousOutput.length > previousOutput.length;
+  if (!pipelineCtx.previousStageAgentId) {
+    lines.push('The previous stage completed as a direct preflight; its summary is included below.');
+  } else if (previousOutput && !truncated) {
+    // The whole output is inlined below, so the file pointer would only send
+    // the agent OUTSIDE its worktree — which, under a sandboxed permission
+    // posture, is a tool-permission dialog nobody is present to answer.
+    lines.push("The previous stage's complete output is inlined below; there is nothing further to read from disk.");
+  } else {
     lines.push(
       "Read the previous stage's output from:",
       `\`${join(AGENTS_DIR, pipelineCtx.previousStageAgentId, 'output.txt')}\``,
     );
-  } else {
-    lines.push('The previous stage completed as a direct preflight; its summary is included below.');
   }
 
-  const previousOutput = typeof pipelineCtx.previousStageOutput === 'string'
-    ? pipelineCtx.previousStageOutput.trim().slice(0, 12_000).replace(/~+/g, "'")
-    : '';
   if (previousOutput) {
     lines.push(
       '',
