@@ -18,6 +18,7 @@ import {
   MessageSquare,
   ExternalLink,
   Terminal,
+  Hourglass,
   Send,
   GitBranch,
   GitPullRequest,
@@ -385,6 +386,23 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
     ? 'No shell: a public-review stage always runs headless, even when you configure it onto a TUI provider — the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
     : null;
 
+  // Why this run can be silent for minutes and still be perfectly healthy: its
+  // prompt is large and its model server is on this machine, so the whole
+  // prefill happens before the child emits its first line (#6117). Only shown
+  // when the server actually stamped a long-prefill budget — an absent stamp is
+  // "no estimate" (a cloud run, or a pre-upgrade record), never "instant".
+  const prefillBudget = agent.metadata?.localPromptBudget?.longPrefill
+    && Number.isFinite(agent.metadata.localPromptBudget.prefillMs)
+    ? agent.metadata.localPromptBudget
+    : null;
+  const prefillLabel = prefillBudget ? formatDurationMs(prefillBudget.prefillMs) : null;
+  const prefillReason = prefillBudget
+    ? `Large prompt (~${(prefillBudget.promptTokens ?? 0).toLocaleString()} tokens) on a local model server — expect roughly ${prefillLabel} of silent prefill before the first line of output. The run is working, not wedged.${
+      prefillBudget.expectedDurationMs
+        ? ` Its duration estimate was raised to ~${formatDurationMs(prefillBudget.expectedDurationMs)} to cover it.`
+        : ''}`
+    : null;
+
   // Extract recent tool activity (last few tool lines) for live display
   const recentActivity = useMemo(() => {
     if (inactive || output.length === 0) return [];
@@ -679,6 +697,15 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             >
               <Terminal size={10} aria-hidden="true" className="shrink-0" />
               <span>No shell</span>
+            </span>
+          )}
+          {!inactive && prefillReason && (
+            <span
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-port-warning/20 text-port-warning whitespace-nowrap"
+              title={prefillReason}
+            >
+              <Hourglass size={10} aria-hidden="true" className="shrink-0" />
+              <span>Long prefill ~{prefillLabel}</span>
             </span>
           )}
           {!remote && (
