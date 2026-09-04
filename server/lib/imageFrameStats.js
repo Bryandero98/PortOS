@@ -32,6 +32,8 @@
  */
 
 import sharp from 'sharp';
+import { createHash } from 'crypto';
+import { createBoundedStateMap } from './boundedStateMap.js';
 
 // Per-channel stdev, in 8-bit levels, under which a channel counts as flat.
 // A genuinely flat fill reports exactly 0. Half of one 0-255 level is below
@@ -83,12 +85,59 @@ export const DEGENERATE_FRAME_REASONS = [
 const result = (ok, reason, perChannel = null) => ({ ok, reason, perChannel });
 
 /**
+ * Content-addressed verdict memo (issue #6004).
+ *
+ * The verdict is a pure function of the encoded bytes, and `sharp().stats()` is
+ * a full decode plus a greyscale-histogram entropy pass — ~4 ms even for a 40x40
+ * frame, because the cost is libvips pipeline setup rather than pixel count.
+ * Sprite compiles re-probe the SAME bytes constantly: an eight-direction walk
+ * set re-verifies all 48 frames on every (idempotent) recompile, and a set whose
+ * directions share frame images probes each identical image eight times. Keying
+ * on the sha256 of the buffer makes the repeat probes free while keeping the
+ * verdict byte-exact.
+ *
+ * Buffers ONLY. A path string is not content — the file behind it can change
+ * between calls, so a path-keyed entry would answer for bytes it never saw.
+ * Hashing is worth it on a miss too: sha256 runs at GB/s, an order of magnitude
+ * under the decode it guards.
+ *
+ * `null` (could-not-measure) verdicts are cached the same way: undecodable bytes
+ * stay undecodable, and re-warning once per unique bad buffer is the signal —
+ * re-warning per call is noise.
+ */
+const verdictCache = createBoundedStateMap({ maxSize: 2000, ttlMs: 60 * 60 * 1000 });
+
+// Callers never mutate a verdict today; hand out a copy anyway so a cached entry
+// can't become shared mutable state the day one does.
+const copyVerdict = ({ ok, reason, perChannel }) => ({
+  ok,
+  reason,
+  perChannel: perChannel ? perChannel.map((channel) => ({ ...channel })) : null,
+});
+
+/** Test seam: drop every memoized verdict. */
+export const __resetFrameStatsCache = () => verdictCache.clear();
+
+/**
  * Classify a decoded image as having content or being degenerate.
  *
  * @param {Buffer|string} input  encoded image bytes (or a path sharp can open)
  * @returns {Promise<{ ok: boolean|null, reason: string|null, perChannel: Array<{ mean: number, stdev: number, min: number, max: number }>|null }>}
  */
 export async function describeFrameStats(input) {
+  const cacheKey = Buffer.isBuffer(input) && input.length
+    ? createHash('sha256').update(input).digest('hex')
+    : null;
+  if (cacheKey) {
+    const memo = verdictCache.get(cacheKey);
+    if (memo) return copyVerdict(memo);
+  }
+  const verdict = await measureFrameStats(input);
+  if (cacheKey) verdictCache.set(cacheKey, verdict);
+  return copyVerdict(verdict);
+}
+
+async function measureFrameStats(input) {
   // One sharp instance per read — `metadata()` and `stats()` both consume the
   // pipeline, so sharing an instance between them is not safe.
   // Most callers run outside the Express request lifecycle (child-process
