@@ -256,6 +256,48 @@ describe('spawnDetached', () => {
     }
   });
 
+  // The `windowsDetached` launcher is real powershell, so it can only be
+  // exercised on a Windows host — pinning the platform elsewhere would just
+  // fail to find the binary. Regression for #6169: the plain
+  // `spawn(..., { detached: true })` this replaced meant DETACHED_PROCESS,
+  // which denies a console host any console, so the job exited 0 in ~100ms
+  // having produced no output and run no part of the script. Asserting real
+  // streamed output plus the job's own exit code is what catches that.
+  it.runIf(!IS_POSIX)('windowsDetached runs the job and streams its output through the control dir', async () => {
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached(
+      process.execPath,
+      // The spaced/quoted argv entry pins the Windows command-line quoting the
+      // supervisor needs: .NET Framework's ProcessStartInfo takes one flat
+      // argument STRING, so a mis-quoted path would silently split.
+      ['-e', 'process.stdout.write(process.argv[1] + "\\n"); process.exit(3);', 'a b "c"'],
+      { controlDir, windowsDetached: true }
+    );
+    const getOut = collect(handle.stdout);
+    expect(handle.pid).toBeGreaterThan(0);
+    const { code, signal } = await onClose(handle);
+    expect(code).toBe(3);
+    expect(signal).toBeNull();
+    expect(getOut()).toBe('a b "c"\n');
+  });
+
+  it.runIf(!IS_POSIX)('windowsDetached identifies a live job by its executable', async () => {
+    const controlDir = await tmpControlDir();
+    const marker = join(controlDir, 'go');
+    const handle = await spawnDetached(
+      process.execPath,
+      ['-e', 'const {existsSync}=require("fs");const t=setInterval(()=>{if(existsSync(process.argv[1])){clearInterval(t);process.exit(0);}},5);', marker],
+      { controlDir, windowsDetached: true }
+    );
+    const closed = onClose(handle);
+    expect(await isDetachedRunning(controlDir, { executable: process.execPath })).toBe(true);
+    // A PID some unrelated process inherited must not keep the control dir
+    // blocked — that would wedge every later update at "already running".
+    expect(await isDetachedRunning(controlDir, { executable: 'notepad' })).toBe(false);
+    await writeFile(marker, '1');
+    await closed;
+  });
+
   // A child that runs until a marker file appears, then exits with a code and
   // NO signal — the shape `taskkill /T /F` produces on Windows, where the kill
   // happens out of band so libuv records no exit_signal. Driven by `node -e`

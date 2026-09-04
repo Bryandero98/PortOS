@@ -6,7 +6,21 @@ import { useAutoRefetch } from './useAutoRefetch';
 import useMounted from './useMounted';
 
 const POLL_MS = 2000;
-const MAX_ATTEMPTS = 30;
+// The watch has two phases with wildly different budgets, so one flat ceiling is
+// wrong for both. Until the server is seen DOWN the update has not reached
+// `pm2-stop` — or the launch failed outright — and a stall there should be
+// reported quickly rather than parked under an indefinite "restarting" toast.
+// Once it IS down, the poll has to outlast the window it stays down: `pm2-stop`
+// through the client build is npm install + setup + migrations + build, minutes
+// on a warm tree and tens of them on a cold `node_modules`. The old flat 60s
+// budget was the second phase measured with the first phase's ruler, so every
+// real update timed out while it was still going fine in the background (#6169).
+//
+// Budgets are wall clock, not attempt counts: `useAutoRefetch` skips its tick
+// while the tab is hidden, so counting attempts would silently stretch the
+// ceiling by however long PortOS sat in a background tab.
+const DOWN_WAIT_MS = 60 * 1000;
+const RECOVERY_TIMEOUT_MS = 30 * 60 * 1000;
 // A raw 'disconnect' is not proof the update tore the process down — PortOS is
 // commonly used remotely over Tailscale, and a network blip during the early
 // steps (git-pull/submodules, while the server is very much alive) fires one
@@ -52,7 +66,7 @@ export function usePortosRestartWatch({ enabled = true, active = false, onRestar
   const mountedRef = useMounted();
   const activeRef = useRef(active);
   const pollingRef = useRef(false);
-  const attemptsRef = useRef(0);
+  const pollStartedAtRef = useRef(0);
   const preUpdateVersionRef = useRef(null);
   // Whether health went down during this poll cycle — a down→up transition is
   // what proves a same-version reconcile actually restarted.
@@ -87,7 +101,7 @@ export function usePortosRestartWatch({ enabled = true, active = false, onRestar
     if (pollingRef.current) return;
     activeRef.current = false;
     pollingRef.current = true;
-    attemptsRef.current = 0;
+    pollStartedAtRef.current = Date.now();
     healthWentDownRef.current = healthDown;
     setPolling(true);
     toast.loading('PortOS is restarting...', { id: TOAST_ID, duration: Infinity });
@@ -152,7 +166,6 @@ export function usePortosRestartWatch({ enabled = true, active = false, onRestar
   }, [arm, enabled, mountedRef, stopPolling]);
 
   const pollHealth = useCallback(async () => {
-    attemptsRef.current += 1;
     // silent: true — the server being unreachable is the EXPECTED state for most
     // of this poll (that's the down→up transition it watches for), not an error;
     // the generic toast would spam "Server unreachable" every 2s throughout the
@@ -188,9 +201,14 @@ export function usePortosRestartWatch({ enabled = true, active = false, onRestar
     if (ok && typeof ok.uptime === 'number' && ok.uptime > maxUptimeRef.current) {
       maxUptimeRef.current = ok.uptime;
     }
-    if (attemptsRef.current >= MAX_ATTEMPTS) {
+    // Checked LAST, so a tick arriving after a long hidden-tab gap still gets
+    // to recognize a finished restart above before the budget applies.
+    const budget = healthWentDownRef.current ? RECOVERY_TIMEOUT_MS : DOWN_WAIT_MS;
+    if (Date.now() - pollStartedAtRef.current >= budget) {
       stopPolling();
-      toast.error('Restart timed out — try reloading manually', { id: TOAST_ID });
+      toast.error(healthWentDownRef.current
+        ? 'Restart timed out — try reloading manually'
+        : 'PortOS never went down — the update may not have started', { id: TOAST_ID });
     }
   }, [stopPolling]);
 

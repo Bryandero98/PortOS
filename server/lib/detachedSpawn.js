@@ -52,6 +52,7 @@ import { promisify } from 'util';
 import { killProcessTree } from './bufferedSpawn.js';
 import { ensureDir, sleep } from './fileUtils.js';
 import { safeChildProcessOptions } from './processEnv.js';
+import { quoteForShell } from './shellCd.js';
 import { withSpawnCwdEnv } from './spawnCwd.js';
 
 const execFileAsync = promisify(execFile);
@@ -112,6 +113,108 @@ d="$1"; shift
   printf '%s' "$?" > "$d/exit"
 } &
 `;
+
+// ─── Windows equivalent of the double-fork ───────────────────────────────────
+//
+// Windows has no `sh` and no reparent-to-init, but pm2 kills an app there with
+// `taskkill /pid <app> /T /F`, which walks the SAME parent→child tree the POSIX
+// launcher escapes — so a plain child of portos-server dies with it exactly as
+// it does on POSIX. The escape is a launcher that exits immediately, leaving
+// the supervisor with a dead parent and therefore outside the server's tree:
+//
+//   server ──spawn──▶ launcher powershell   (exits in ~200ms)
+//                          │ Process.Start
+//                          ▼
+//                     supervisor powershell  (parent already gone, so
+//                          │                  `taskkill /T` from the server
+//                          ▼                  never reaches it)
+//                       job process
+//
+// The supervisor redirects the job's stdout/stderr into the control dir and
+// records its pid and exit status there, so the shared tailer below streams a
+// Windows job exactly as it streams a POSIX one.
+//
+// Reading the job spec from `job.json` (rather than interpolating it into the
+// script) keeps paths with spaces, quotes, or `$` out of PowerShell's parser.
+// `$null = $p.Handle` caches the process handle BEFORE the wait: without it
+// `Start-Process -PassThru` hands back an object whose `ExitCode` reads back
+// empty once the process is gone, and the tailer would never see a status.
+const WINDOWS_SUPERVISOR = `$dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+try {
+  $ErrorActionPreference = 'Stop'
+  $job = Get-Content -LiteralPath (Join-Path $dir 'job.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $params = @{
+    FilePath               = $job.bin
+    RedirectStandardOutput = (Join-Path $dir 'stdout.log')
+    RedirectStandardError  = (Join-Path $dir 'stderr.log')
+    WindowStyle            = 'Hidden'
+    PassThru               = $true
+  }
+  if ($job.arguments) { $params.ArgumentList = $job.arguments }
+  if ($job.cwd) { $params.WorkingDirectory = $job.cwd }
+  $p = Start-Process @params
+  $null = $p.Handle
+  [System.IO.File]::WriteAllText((Join-Path $dir 'pid'), "$($p.Id)")
+  $p.WaitForExit()
+  [System.IO.File]::WriteAllText((Join-Path $dir 'exit'), "$($p.ExitCode)")
+} catch {
+  [System.IO.File]::WriteAllText((Join-Path $dir 'stderr.log'), $_.Exception.ToString())
+  [System.IO.File]::WriteAllText((Join-Path $dir 'exit'), '1')
+}
+`;
+
+// Quote one argv entry for a Windows command line (CommandLineToArgvW rules).
+// Windows PowerShell 5.1 runs on .NET Framework, whose ProcessStartInfo has
+// only the flat `Arguments` string — no `ArgumentList` — so a single correctly
+// quoted string is the only faithful way to carry an argv containing spaces.
+const quoteWindowsArg = (arg) => {
+  const s = String(arg);
+  if (s.length > 0 && !/[\s"]/.test(s)) return s;
+  // Backslashes are literal EXCEPT in the run immediately before a quote (the
+  // embedded ones and the closing one), where each must be doubled.
+  return `"${s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1')}"`;
+};
+
+/**
+ * Write the control dir's job spec + supervisor script and launch the
+ * short-lived launcher that starts the supervisor outside our process tree.
+ * The supervisor is started with an explicit `CreateNoWindow`, not through
+ * `Start-Process`, so this hop out of the console-less PM2 fork can never
+ * trigger Windows' default-terminal handoff — see docs/WINDOWS_CONSOLE.md.
+ * (The supervisor's own `Start-Process` of the job redirects to files, which
+ * already forces `UseShellExecute = false`.)
+ */
+async function launchWindowsSupervisor({ controlDir, bin, args, env, cwd }) {
+  const supervisorPath = join(controlDir, 'supervisor.ps1');
+  // Independent files — write them together rather than serializing two
+  // round-trips in front of every launch.
+  await Promise.all([
+    writeFile(join(controlDir, 'job.json'), JSON.stringify({
+      bin,
+      arguments: args.map(quoteWindowsArg).join(' '),
+      cwd: cwd || null,
+    }), 'utf8'),
+    writeFile(supervisorPath, WINDOWS_SUPERVISOR, 'utf8'),
+  ]);
+  const supervisorArgs = `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${quoteWindowsArg(supervisorPath)}`;
+  const startSupervisor = [
+    '$psi = New-Object System.Diagnostics.ProcessStartInfo;',
+    "$psi.FileName = 'powershell';",
+    `$psi.Arguments = ${quoteForShell(supervisorArgs, 'powershell')};`,
+    '$psi.UseShellExecute = $false;',
+    '$psi.CreateNoWindow = $true;',
+    '[void][System.Diagnostics.Process]::Start($psi)',
+  ].join(' ');
+  return spawn('powershell', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', startSupervisor,
+  ], {
+    // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193). The supervisor
+    // and the job both inherit this environment.
+    env: withSpawnCwdEnv(env ?? process.env, cwd),
+    cwd,
+    stdio: 'ignore',
+  });
+}
 
 /**
  * Build the log-tailer for a spawnDetached control dir. Holds a persistent fd
@@ -183,7 +286,10 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
     let code = null;
     let signal = null;
     if (Number.isFinite(status)) {
-      if (status > 128 && SIGNAL_BY_NUMBER[status - 128]) signal = SIGNAL_BY_NUMBER[status - 128];
+      // 128+signum is a POSIX `wait` convention. On Windows the supervisor
+      // records the raw ExitCode, where values above 128 are ordinary statuses
+      // (0xC0000005 & friends), so decoding one as a signal would invent it.
+      if (process.platform !== 'win32' && status > 128 && SIGNAL_BY_NUMBER[status - 128]) signal = SIGNAL_BY_NUMBER[status - 128];
       else code = status;
     } else {
       code = 1; // exit file missing/garbled — treat as generic failure
@@ -236,21 +342,30 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
  *   group-leader wrapper and every runtime child terminate together. The job is
  *   responsible for establishing its own process group before spawning children.
  *   POSIX-only — the win32 fallback's `kill` always tree-kills, group or not.
+ * @param {boolean} [opts.windowsDetached] - on Windows, launch through the
+ *   supervisor above so the job survives pm2's `taskkill /T` instead of taking
+ *   the plain-spawn fallback. Opt-in because the fallback hands back a real
+ *   ChildProcess whose `kill` tree-kills the job's own descendants; the
+ *   supervisor path can only signal the job's PID. Pass it when outliving a
+ *   pm2 restart is the point (the self-update script) rather than cancellation.
  * @returns {Promise<object>} ChildProcess-like handle (resolves once the PID is known)
  */
 export async function spawnDetached(bin, args = [], {
   env, cwd, controlDir, pollMs = DEFAULT_POLL_MS, cleanup = false, killProcessGroup = false,
+  windowsDetached = false,
 } = {}) {
   if (!controlDir) throw new Error('spawnDetached requires a controlDir');
 
-  // Windows has no POSIX `sh` for the double-fork, and pm2's process management
-  // there is taskkill-based rather than the PPID-walk this works around. Fall
-  // back to a normal child process: a real ChildProcess already satisfies the
-  // handle contract (pid / stdout / stderr / on('close',code,signal) / kill /
-  // exitCode / signalCode), so callers are unaffected. Surviving a pm2 restart
-  // is a POSIX-only guarantee; Windows keeps its prior spawn semantics apart
-  // from `kill`, which is replaced with a tree-kill below.
-  if (process.platform === 'win32') {
+  const isWindows = process.platform === 'win32';
+
+  // Windows has no POSIX `sh` for the double-fork, so unless the caller opted
+  // into the supervisor launcher above it falls back to a normal child process:
+  // a real ChildProcess already satisfies the handle contract (pid / stdout /
+  // stderr / on('close',code,signal) / kill / exitCode / signalCode), so
+  // callers are unaffected. Surviving a pm2 restart is then not a guarantee;
+  // Windows keeps its prior spawn semantics apart from `kill`, which is
+  // replaced with a tree-kill below.
+  if (isWindows && !windowsDetached) {
     const child = spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     // A bare `child.kill()` terminates ONLY the runner. Windows has no process
     // group for the POSIX `-pid` trick `killProcessGroup` relies on, so whatever
@@ -354,21 +469,28 @@ export async function spawnDetached(bin, args = [], {
   // Launch the double-fork. `detached` gives the outer sh its own session;
   // `stdio: 'ignore'` because all job output is redirected to files by the
   // launcher; `.unref()` so the server never waits on the (instantly-exiting)
-  // outer sh.
-  const launcher = spawn('sh', ['-c', LAUNCHER, 'sh', controlDir, bin, ...args], {
-    // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193).
-    env: withSpawnCwdEnv(env ?? process.env, cwd),
-    cwd,
-    detached: true,
-    stdio: 'ignore',
-  });
+  // outer sh. Windows takes the supervisor launcher instead — see its header
+  // block above for why `detached` cannot appear on that arm.
   // The outer sh exits in ~1ms; a spawn error (e.g. no `sh`) is the only real
   // launcher failure. Capture it so the deferred kickoff below surfaces it as
   // the handle's 'error' AFTER the caller has attached listeners — emitting it
-  // synchronously here could throw as an unhandled 'error'.
+  // synchronously here could throw as an unhandled 'error'. The Windows path
+  // writes two control files before it spawns, so it can fail with a rejection
+  // too; route that into the same slot rather than letting it reject
+  // spawnDetached, for the reason ensureControlDir above spells out.
   let launcherSpawnError = null;
-  launcher.on('error', (err) => { launcherSpawnError = err; });
-  launcher.unref();
+  const launcher = isWindows
+    ? await launchWindowsSupervisor({ controlDir, bin, args, env, cwd })
+      .catch((err) => { launcherSpawnError = err; return null; })
+    : spawn('sh', ['-c', LAUNCHER, 'sh', controlDir, bin, ...args], {
+      // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193).
+      env: withSpawnCwdEnv(env ?? process.env, cwd),
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+    });
+  launcher?.on('error', (err) => { launcherSpawnError = err; });
+  launcher?.unref();
 
   // Tail the on-disk log files and watch for the supervisor's exit sentinel,
   // streaming new bytes as stdout/stderr 'data' and emitting 'close' on exit.
@@ -490,9 +612,12 @@ export async function isReattachable(controlDir) {
  * @returns {Promise<object|null>} ChildProcess-like handle, or null if not reattachable
  */
 export async function reattachDetached(controlDir, { pollMs = DEFAULT_POLL_MS, cleanup = false } = {}) {
-  // Detached survival is a POSIX-only guarantee (see spawnDetached's win32
-  // fallback) — there is never a reparented orphan to re-attach to on Windows.
-  if (process.platform === 'win32') return null;
+  // No platform gate: whether there is a survivor to re-attach to is a fact
+  // about the CONTROL DIR, and the pid/exit probe below already answers it.
+  // spawnDetached's win32 plain-spawn fallback writes neither file, so its
+  // callers get the same `null` they got from an explicit platform check —
+  // while a `windowsDetached` job, which does leave a live control dir, is no
+  // longer told there is nothing there.
   const pidRaw = await readFile(join(controlDir, 'pid'), 'utf8').catch(() => '');
   const pid = Number.parseInt(pidRaw, 10);
   if (!Number.isFinite(pid) || pid <= 0) return null;
@@ -562,7 +687,30 @@ const processCommandMatches = (command, { executable, args }) => {
   return actualArgs === args.map(String).join(' ');
 };
 
+// Windows has no cheap argv probe — `tasklist` reports only the image name —
+// so identity there is the executable alone. That is all this guard needs: it
+// exists to stop a stale PID file whose number some unrelated process inherited
+// from blocking the control dir forever.
+//
+// One `tasklist` SPAWN per call, and it enumerates the whole process table
+// before applying the filter (~100-300ms). Fine for the one-per-launch probes
+// that reach it today; a fan-out or polled caller must instead take a single
+// `tasklist /FO CSV /NH` snapshot and match every PID against it.
+const processMatchesWin32 = async (pid, { executable }) => {
+  const { stdout } = await execFileAsync(
+    'tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], safeChildProcessOptions({ timeout: 5000 })
+  );
+  // No match prints an unquoted `INFO: No tasks are running …` banner instead
+  // of a CSV row, and tasklist exits 0 either way — so a missing quoted first
+  // field IS the not-running answer.
+  const image = stdout.trim().match(/^"([^"]*)"/)?.[1];
+  if (!image) return false;
+  const normalize = (value) => basename(value).toLowerCase().replace(/\.exe$/, '');
+  return normalize(image) === normalize(executable);
+};
+
 const processMatches = async (pid, expectedProcess) => {
+  if (process.platform === 'win32') return processMatchesWin32(pid, expectedProcess);
   const { stdout } = await execFileAsync(
     'ps', ['-ww', '-p', String(pid), '-o', 'command='], safeChildProcessOptions({ timeout: 5000 })
   ).catch((err) => {
