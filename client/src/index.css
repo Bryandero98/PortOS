@@ -138,6 +138,11 @@
   --port-card-surface-image: none;
   --port-card-surface-size: auto;
   --port-focus-shadow: 0 0 0 4px rgb(var(--port-focus-ring) / 0.2);
+  /* Only read by the theme-scoped focus rule below (Lumen Glass, Lumen Glass
+     Day, Kestrel Neon) — deliberately separate from --port-focus-shadow so a
+     theme's stronger glow can't leak onto the [role="button"]/[tabindex="0"]
+     elements the generic rule also covers. */
+  --port-focus-glow: none;
   --port-nav-active-rule: none;
   /* `inherit`, not `none` — `text-shadow` is naturally inherited, and Black
      ICE's body-wide glow used to reach this element through that inheritance.
@@ -1647,11 +1652,15 @@ a:focus-visible,
    `.bg-port-accent`'s `box-shadow: var(--port-shadow-interactive)`, so an
    accent-colored button would lose its focus glow to the interactive shadow.
    Restoring the original per-theme selector shape (specificity, not the
-   values) keeps these three themes' stronger glow winning, same as before. */
+   values) keeps these three themes' stronger glow winning, same as before.
+   A DIFFERENT token than the generic rule's `--port-focus-shadow` on purpose
+   — that rule also covers `[role="button"]`/`[tabindex="0"]`, which this
+   selector (matching the original) never did, so reusing the same token
+   would leak the stronger glow onto elements it was never meant to reach. */
 html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="kestrel-neon"]) :is(input, textarea, select):focus,
 html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="kestrel-neon"]) button:focus-visible,
 html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="kestrel-neon"]) a:focus-visible {
-  box-shadow: var(--port-focus-shadow);
+  box-shadow: var(--port-focus-glow);
 }
 
 /* DRY pointer cursor for interactive elements. Tailwind v4 dropped the
