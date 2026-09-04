@@ -6,7 +6,6 @@
  */
 
 import pg from 'pg';
-import { buildUpgradeDdl, buildCatalogDdl } from './db/schema/index.js';
 
 const { Pool } = pg;
 
@@ -359,6 +358,18 @@ export async function ensureSchema() {
 }
 
 async function ensureSchemaImpl() {
+  // The DDL composer is imported lazily, not at module load. `db.js` is reached
+  // by ~400 server test files through pgFileFacade.js, and eagerly importing
+  // ./db/schema/index.js pulled its 17 per-domain DDL modules into every one of
+  // those import graphs — ~7k module instantiations per suite run, for
+  // statement arrays only this function ever reads (#6009). Resolved BEFORE the
+  // advisory lock below, so no other booting process waits on a module load,
+  // and once per boot inside a path already awaiting Postgres, so it costs
+  // nothing at runtime. vi.mock('./db/schema/index.js') still intercepts it —
+  // the mock registry covers dynamic imports too, which is what
+  // lib/db.test.js's bad-DDL injection relies on.
+  const { buildUpgradeDdl, buildCatalogDdl } = await import('./db/schema/index.js');
+
   // ⚠️ Boot CREATE INDEX lock window. Every `CREATE INDEX IF NOT EXISTS` below
   // (and in the catalogDDL block, incl. the HNSW vector index on catalog_scraps)
   // runs as a plain, non-CONCURRENT build. The FIRST time an index materializes
