@@ -71,7 +71,8 @@ async function resolvePublicReviewAgentProvider(task, posture) {
   // enough: a stage pin outlives edits to that provider's own `models` list,
   // and a retired id reaches the CLI as a model it cannot serve, so the stage
   // spawns, produces no output, and is retried. The ordinary path guards this
-  // at its list check; `cliProviderRun.js#resolveCliProviderAndModel` does too.
+  // at its list check, by a different rule (it exempts any user pin outright).
+  // Three other sites still hand-roll a raw `models.includes` — see #6151.
   const pinnedModel = task.metadata?.model;
   const pinnedForThisProvider = Boolean(pinnedModel) && task.metadata?.provider === provider.id;
   // `modelPinIsOffered` owns which provider records may invalidate a pin at all

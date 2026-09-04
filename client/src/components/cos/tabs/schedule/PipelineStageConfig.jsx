@@ -248,7 +248,12 @@ export default function PipelineStageConfig({ taskType, config, providers, provi
               )}
               {isActionsStage && eligibleProviders?.length > 0 && (
                 <p className="text-xs text-gray-500 mt-2">
-                  {actionsStageNote(eligibleProviders)}
+                  {/* On a local provider this stage's model list comes from the
+                      daemon too, so say so while it loads rather than leaving an
+                      empty dropdown with a note that reads as if it were ready. */}
+                  {localBackend && localModelsLoading
+                    ? 'Loading installed local models…'
+                    : actionsStageNote(eligibleProviders)}
                 </p>
               )}
             </div>
