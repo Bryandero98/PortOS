@@ -988,25 +988,76 @@ describe('installFromHuggingface', () => {
     expect(ticks[ticks.length - 1]).toEqual({ received: 10, total: 0 });
   });
 
-  it('forwards an AbortSignal to the download fetch so an SSE disconnect can cancel it', async () => {
+  it('lets an external AbortSignal cancel the in-flight weights download so an SSE disconnect stops it', async () => {
+    // The download claims a slot keyed on destPath and downloads through the
+    // SLOT's own AbortController (so a stall/cancel gets the same typed error
+    // regardless of who triggered it) — an external `signal` (the route's
+    // res.on('close') controller) is wired to cancel THROUGH the slot rather
+    // than being handed to fetch directly. Prove the wiring by aborting mid-
+    // transfer and asserting the actual weights fetch's signal aborts too.
     const controller = new AbortController();
     let sawSignal;
     const fetchImpl = async (url, opts) => {
       if (url.startsWith('https://huggingface.co/api/models/')) return mockJsonResponse(HF_MODEL);
       if (url.includes('/resolve/main/pytorch_lora_weights.safetensors')) {
         sawSignal = opts?.signal;
-        const stream = new ReadableStream({ start(c) { c.enqueue(new Uint8Array(validSafetensors())); c.close(); } });
-        return { ok: true, status: 200, body: stream };
+        // Never closes on its own: this stream only ends when the abort
+        // listener below errors it, mirroring how real fetch aborts an
+        // in-flight response body when its signal fires.
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array(validSafetensors().slice(0, 8)));
+            sawSignal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true });
+          },
+        });
+        return { ok: true, status: 200, body: stream, headers: new Map([['content-length', String(validSafetensors().length)]]) };
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
-    await lorasService.installFromHuggingface(
+    const install = lorasService.installFromHuggingface(
       { url: 'https://huggingface.co/fal/ltx2.3-audio-reactive-lora', token: 'hf_test' },
       { fetchImpl, signal: controller.signal },
     );
-    // The controller's signal must reach the actual weights download (not just
-    // the metadata fetch) — that's the transfer a disconnect needs to cancel.
-    expect(sawSignal).toBe(controller.signal);
+    await vi.waitFor(() => expect(sawSignal).toBeDefined());
+    expect(sawSignal.aborted).toBe(false);
+    controller.abort();
+    expect(sawSignal.aborted).toBe(true);
+    const err = await install.catch((e) => e);
+    expect(err.message).toMatch(/cancel/i);
+    expect(err.code).toBe('LORA_DOWNLOAD_CANCELLED');
+  });
+
+  it('refuses a second install of the same destination while the first is still downloading', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const full = validSafetensors();
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://huggingface.co/api/models/')) return mockJsonResponse(HF_MODEL);
+      if (url.includes('/resolve/main/pytorch_lora_weights.safetensors')) {
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array(full.slice(0, 8)));
+            gate.then(() => { c.enqueue(new Uint8Array(full.slice(8))); c.close(); });
+          },
+        });
+        return { ok: true, status: 200, body: stream, headers: new Map([['content-length', String(full.length)]]) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    const first = lorasService.installFromHuggingface(
+      { url: 'https://huggingface.co/fal/ltx2.3-audio-reactive-lora', token: 'hf_test' },
+      { fetchImpl },
+    );
+    const destPath = join(tmpLoras, 'lora-fal-ltx2.3-audio-reactive-lora-hf.safetensors');
+    await vi.waitFor(() => expect(existsSync(`${destPath}.partial`)).toBe(true));
+    const err = await lorasService.installFromHuggingface(
+      { url: 'https://huggingface.co/fal/ltx2.3-audio-reactive-lora', token: 'hf_test' },
+      { fetchImpl },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('LORA_DOWNLOAD_IN_FLIGHT');
+    release();
+    await first;
   });
 
   it('installs a Flux.2 Klein 9B collection as flux2 and picks the klein9b file', async () => {
@@ -1110,6 +1161,56 @@ describe('installFromHuggingface', () => {
     ).catch((e) => e);
     expect(err.code).toBe('HF_LORA_CORRUPT');
     expect(existsSync(join(tmpLoras, 'lora-fal-ltx2.3-audio-reactive-lora-hf.safetensors'))).toBe(false);
+  });
+});
+
+// #6190: loras.js is the third `streamResumableDownload` caller to register a
+// slot — the orphaned-partial GC sweeps PATHS.loras but, before this, couldn't
+// see a live LoRA download's `.partial` because loras.js claimed no slot.
+describe('loras.js download-slot registration with the orphaned-partial GC', () => {
+  const HF_MODEL = {
+    id: 'fal/ltx2.3-audio-reactive-lora',
+    tags: ['ltxv', 'lora'],
+    cardData: { base_model: 'Lightricks/LTX-2.3', instance_prompt: 'audio reactive' },
+    siblings: [
+      { rfilename: 'README.md' },
+      { rfilename: 'pytorch_lora_weights.safetensors' },
+    ],
+  };
+  const ANCIENT = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  it('protects a live LoRA download from the sweep even once its .partial is aged past the gate', async () => {
+    const { sweepOrphanedDownloadPartials } = await import('./orphanedPartialGc.js');
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://huggingface.co/api/models/')) return mockJsonResponse(HF_MODEL);
+      if (url.includes('/resolve/main/pytorch_lora_weights.safetensors')) {
+        const full = validSafetensors();
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array(full.slice(0, 8)));
+            gate.then(() => { c.enqueue(new Uint8Array(full.slice(8))); c.close(); });
+          },
+        });
+        return { ok: true, status: 200, body: stream, headers: new Map([['content-length', String(full.length)]]) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    const install = lorasService.installFromHuggingface(
+      { url: 'https://huggingface.co/fal/ltx2.3-audio-reactive-lora', token: 'hf_test' },
+      { fetchImpl },
+    );
+    const partialPath = join(tmpLoras, 'lora-fal-ltx2.3-audio-reactive-lora-hf.safetensors.partial');
+    await vi.waitFor(() => expect(existsSync(partialPath)).toBe(true));
+    const fs = await import('fs/promises');
+    await fs.utimes(partialPath, ANCIENT, ANCIENT);
+
+    expect(await sweepOrphanedDownloadPartials({ dirs: [tmpLoras] })).toMatchObject({ deleted: 0, keptProtected: 1 });
+    expect(existsSync(partialPath)).toBe(true);
+
+    release();
+    await install;
   });
 });
 
