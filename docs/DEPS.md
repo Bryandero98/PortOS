@@ -74,8 +74,8 @@ Before removing a Tier 3 candidate, run a transitive-dep check (`npm ls <pkg>`).
 | `tailwindcss` | 1 | KEEP | styling | |
 | `@vitejs/plugin-react` | 1 | KEEP | build | |
 | `vite` | 1 | KEEP | build | |
-| `vitest` | 1 | KEEP | client test runner | jsdom environment |
-| `jsdom` | 1 | KEEP | test DOM | Paired with vitest |
+| `vitest` | 1 | KEEP | client test runner | happy-dom environment |
+| `happy-dom` | 1 | KEEP | test DOM | Paired with vitest. Replaced `jsdom` in #6144 — same suite, ~65% less time in `environment` |
 | `@testing-library/jest-dom` | 1 | KEEP | test matchers | |
 | `@testing-library/dom` | 1 | KEEP | DOM test utilities | Foundation for the client Testing Library stack |
 | `@testing-library/react` | 1 | KEEP | component tests | |
