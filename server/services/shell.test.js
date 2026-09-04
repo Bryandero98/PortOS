@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { dirname } from 'path';
+import { basename, dirname } from 'path';
 
 let ptyInstances = [];
 let spawnImpl;
@@ -631,6 +631,22 @@ describe('spawnCommandSession', () => {
     const id = shell.spawnCommandSession(REAL_BIN, [], { cwd: '/tmp/ws', env: { PATH: REAL_BIN_DIR } });
     expect(shell.changeSessionDirectory(id, '/tmp/other')).toBe(false);
     expect(ptyInstances[0].write).not.toHaveBeenCalled();
+  });
+
+  it('launches the RESOLVED path, not the bare name it was given', () => {
+    // The pre-flight's resolution has to be the one that launches. Handing the
+    // bare name onward lets prepareCliSpawn re-resolve under different rules —
+    // on Windows it does not unquote a PATH entry, map an empty one to cwd,
+    // resolve a relative one, or search all of PATHEXT — so a name the guard
+    // just accepted can fall through to a bare extensionless command that
+    // ConPTY cannot launch: a blank PTY and a bare exit-1, which is the exact
+    // failure the pre-flight exists to prevent. The CoS runner's /spawn-tui
+    // feeds prepareCliSpawn its resolved `executable` for the same reason.
+    shell.spawnCommandSession(basename(REAL_BIN), [], {
+      cwd: '/tmp/ws',
+      env: { PATH: REAL_BIN_DIR },
+    });
+    expect(vi.mocked(defaultSpawn).mock.calls[0][0]).toBe(REAL_BIN);
   });
 
   it('resolves the command against the CHILD PATH before spawning, and names it when missing', () => {

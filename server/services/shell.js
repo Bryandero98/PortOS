@@ -459,15 +459,24 @@ export function spawnCommandSession(command, args = [], options = {}) {
   // provider's own bin dir. Same pre-flight `tuiPromptRunner` and the CoS
   // runner's `/spawn-tui` do; `basename` keeps the resolved path, which can
   // embed the local account name, out of the message.
-  if (!findCommandOnPath(command, { env: childEnv, cwd })) {
+  const executable = findCommandOnPath(command, { env: childEnv, cwd });
+  if (!executable) {
     throw new Error(`Command executable unavailable: ${basename(command)} is not on the PATH for this session. Install it or update the configured command.`);
   }
-  // Windows resolves a bare name to its `.cmd`/`.bat` shim and must launch it
-  // through cmd.exe (never the user's shell — that wrapper runs no profile);
-  // on POSIX both steps are no-ops and the binary is spawned directly. Same
-  // helper the CoS runner's /spawn-tui uses, so the two direct-PTY paths can't
-  // drift on escaping.
-  const { command: ptyCommand, args: ptyArgs } = prepareCliSpawn(command, args, childEnv);
+  // Launch the path the pre-flight actually RESOLVED, not the bare name — the
+  // CoS runner's /spawn-tui does the same, and for the same reason. The two
+  // resolvers do not agree on Windows: `findCommandOnPath` unquotes a PATH
+  // entry, maps an empty one to cwd, resolves relative entries, and searches
+  // all of PATHEXT, while `prepareCliSpawn`'s own lookup does none of that. Re-
+  // resolving the bare name could therefore fall through to a bare
+  // extensionless `claude`, which ConPTY cannot launch — a blank PTY and a bare
+  // exit-1, the exact failure this pre-flight exists to prevent.
+  //
+  // prepareCliSpawn still runs: a resolved `.cmd`/`.bat` shim must launch
+  // through cmd.exe (never the user's shell — that wrapper runs no profile),
+  // and it owns the shared argument-escaping contract. On POSIX it is a no-op
+  // and the binary is spawned directly.
+  const { command: ptyCommand, args: ptyArgs } = prepareCliSpawn(executable, args, childEnv);
 
   console.log(`🐚 Creating command session ${sessionId.slice(0, 8)} (${basename(command)})`);
   const ptyProcess = pty.spawn(ptyCommand, ptyArgs, {
