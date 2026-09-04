@@ -1,10 +1,9 @@
 /** Multi-chunk local-video orchestration. */
 
-import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
-import { PATHS } from '../../lib/fileUtils.js';
+import { PATHS, unlinkGuarded } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { probeFrameCount, trimVideoFromFrame } from '../../lib/ffmpeg.js';
 import {
@@ -300,7 +299,7 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
   // long chain doesn't leave a trail of clips in tmpdir. Best-effort and
   // fire-and-forget: a leftover temp file must never fail a finished render.
   const cleanupContextClips = () => {
-    for (const p of contextClipPaths) unlink(p).catch(() => {});
+    for (const p of contextClipPaths) unlinkGuarded(p).catch(() => {});
     contextClipPaths.length = 0;
   };
   const finishOk = (payload) => {
