@@ -39,6 +39,7 @@
  */
 import { ANTIGRAVITY_TUI_ID, isAntigravityCommand } from './antigravity.js';
 import { CURSOR_TUI_ID, isCursorCommand } from './cursor.js';
+import { CODEX_TUI_ID, isCodexCommand } from './codex.js';
 import { isOllamaBackedProvider, ollamaBaseFromProvider } from './ollamaBacked.js';
 import { isGatewayBackedProvider } from './gateways.js';
 
@@ -115,6 +116,13 @@ export const MODEL_FETCHERS = [
     cliMatch: (p) => isCursorCommand(p?.command),
     tuiMatch: (p) => p?.id === CURSOR_TUI_ID || isCursorCommand(p?.command),
     fetch: '_fetchCursorModels',
+  },
+  {
+    key: 'codex',
+    cliMatch: (p) => isCodexCommand(p?.command),
+    cliNameMatch: (p) => displayName(p).includes('codex'),
+    tuiMatch: (p) => p?.id === CODEX_TUI_ID || isCodexCommand(p?.command),
+    fetch: '_fetchCodexModels',
   },
   {
     key: 'claude',

@@ -121,7 +121,7 @@ export const EFFORT_LEVELS = Object.freeze([...new Set([
   ...CURSOR_EFFORT_LEVELS,
 ])]);
 
-const CODEX_ULTRA_MODELS = new Set(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra']);
+const CODEX_ULTRA_MODELS = new Set(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra']);
 
 const codexEffortLevelsForModel = (model) => CODEX_ULTRA_MODELS.has(String(model || '').trim().toLowerCase())
   ? CODEX_ULTRA_EFFORT_LEVELS
