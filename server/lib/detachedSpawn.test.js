@@ -360,10 +360,11 @@ describe('spawnDetached', () => {
   // real Windows checkout, which has no guaranteed POSIX shell.
   //
   // The handle is built by whichever launcher the HOST has; only `kill`'s
-  // dispatch is platform-dependent, so each test pins win32 around the cancel
-  // and holds the pin until 'close' (the tailer decodes the exit status
-  // per-platform too). On a Windows host the pin is a no-op and these run
-  // against the real supervisor handle end to end.
+  // dispatch is platform-dependent. So each test spawns FIRST — pinning before
+  // the spawn would send a Linux runner at the supervisor's real powershell,
+  // which it has none of — then pins win32 and holds the pin through 'close',
+  // which decodes the exit status per-platform too. On a Windows host the pin
+  // is a no-op and these run against the real supervisor handle end to end.
   const spawnMarkerJob = async (exitCode = 1, opts = {}) => {
     const controlDir = await tmpControlDir();
     const marker = join(controlDir, 'go');
@@ -376,10 +377,10 @@ describe('spawnDetached', () => {
   };
 
   it('win32 kill() tree-kills by pid so the runner\'s children die with it', async () => {
+    const { handle, terminate } = await spawnMarkerJob();
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       expect(handle.kill('SIGKILL')).toBe(true);
       expect(handle.killed).toBe(true);
@@ -402,10 +403,10 @@ describe('spawnDetached', () => {
   });
 
   it('win32 maps killProcessGroup onto the same tree-kill (no process groups there)', async () => {
+    const { handle, terminate } = await spawnMarkerJob(1, { killProcessGroup: true });
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnMarkerJob(1, { killProcessGroup: true });
       const closed = onClose(handle);
       expect(handle.kill('SIGTERM')).toBe(true);
       const [target, , opts, isWin32] = killProcessTree.mock.calls[0];
@@ -423,10 +424,10 @@ describe('spawnDetached', () => {
   });
 
   it('win32 reports the requested signal on close (taskkill kills out of band)', async () => {
+    const { handle, terminate } = await spawnMarkerJob();
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       handle.kill('SIGKILL');
       // The stubbed tree-kill didn't terminate anything; let the job exit the
@@ -445,10 +446,10 @@ describe('spawnDetached', () => {
   });
 
   it('win32 leaves a clean exit alone when a cancel races completion', async () => {
+    const { handle, terminate } = await spawnMarkerJob(0);
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnMarkerJob(0);
       const closed = onClose(handle);
       handle.kill('SIGTERM');
       await terminate();
@@ -461,9 +462,9 @@ describe('spawnDetached', () => {
   });
 
   it('win32 stamps a numeric signal as its NAME on close', async () => {
+    const { handle, terminate } = await spawnMarkerJob();
     const restorePlatform = pinPlatform('win32');
     try {
-      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       // kill() accepts a number; ChildProcess reports names, so a raw 9 would
       // break every `signal === 'SIGKILL'` comparison downstream.
@@ -479,9 +480,9 @@ describe('spawnDetached', () => {
   });
 
   it('win32 refuses to tree-kill a job that already exited', async () => {
+    const { handle, terminate } = await spawnMarkerJob();
     const restorePlatform = pinPlatform('win32');
     try {
-      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       await terminate();
       await closed;
@@ -499,10 +500,10 @@ describe('spawnDetached', () => {
   });
 
   it('win32 treats signal 0 as an existence probe, not a kill', async () => {
+    const { handle, terminate } = await spawnMarkerJob();
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       expect(handle.kill(0)).toBe(true);
       expect(killProcessTree).not.toHaveBeenCalled();
@@ -517,10 +518,10 @@ describe('spawnDetached', () => {
   });
 
   it('win32 rejects an unknown signal instead of force-killing the tree', async () => {
+    const { handle, terminate } = await spawnMarkerJob();
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       // ChildProcess.kill() throws ERR_UNKNOWN_SIGNAL on a typo'd name; the
       // handle must not turn that into a silent whole-tree force-kill.
