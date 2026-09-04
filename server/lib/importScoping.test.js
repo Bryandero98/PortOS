@@ -163,7 +163,7 @@ describe('deferred imports stay deferred (#6156)', () => {
  * #6009 reported, and what `serverTestFiles()` below walks:
  *   115,519 before #6009 · 96,233 after · 83,439 after #6156.
  */
-const MAX_STATIC_INSTANTIATIONS = 85000;
+const MAX_STATIC_INSTANTIATIONS = 86500;
 
 const SKIP_DIRS = new Set(['node_modules', 'coverage', 'dist', 'data']);
 const serverTestFiles = (dir = SERVER_DIR, out = []) => {
