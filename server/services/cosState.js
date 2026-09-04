@@ -153,7 +153,10 @@ function parseStateFile(content) {
  * recovery path so a recovered config is normalized identically.
  */
 function mergeStoredConfig(storedConfig) {
-  const persistedConfig = { ...(storedConfig || {}) };
+  // `isPlainObject` before the spread, not `|| {}`: spreading a string yields
+  // one key per character, so a `"config": "…"` in a hand-edited state file
+  // would merge character indices over DEFAULT_CONFIG instead of being ignored.
+  const persistedConfig = isPlainObject(storedConfig) ? { ...storedConfig } : {};
 
   // Migrate legacy split flags before merging defaults — DEFAULT_CONFIG.improvementEnabled = true
   // would otherwise shadow a v1 file that only set selfImprovementEnabled/appImprovementEnabled.
@@ -342,7 +345,7 @@ export async function readAgentsStateForSafetyCheck() {
   const agents = state?.agents;
   return {
     trusted,
-    agents: trusted && agents && typeof agents === 'object' && !Array.isArray(agents) ? agents : null,
+    agents: trusted && isPlainObject(agents) ? agents : null,
   };
 }
 
