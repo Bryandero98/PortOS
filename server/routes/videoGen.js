@@ -43,6 +43,7 @@ import {
 } from '../services/videoGen/local.js';
 import { cleanupMultipartTemp } from '../services/videoGen/prepareParams.js';
 import { submitVideoGenJob } from '../services/videoGen/submitJob.js';
+import { resolveReactorApiKey, mintReactorToken } from '../services/videoGen/reactor.js';
 import { VIDEO_GEN_LOCAL_ONLY_FIELDS } from '../services/videoGen/requestFields.js';
 import { attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
@@ -244,11 +245,12 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
 
 const generateBodySchema = z.object({
   // Render backend: the local runtimes (default), the Grok Build CLI's
-  // image-first image_to_video flow (#2859 phase 2), or fal.ai's queue REST
-  // API (#6213). Grok and fal both ignore the local-only knobs below; they
-  // read prompt/negativePrompt, width/height (mapped to an aspect ratio),
-  // sourceImageFile/sourceImage, and their own duration field.
-  backend: z.enum(['local', 'grok', 'fal']).optional(),
+  // image-first image_to_video flow (#2859 phase 2), fal.ai's queue REST API
+  // (#6213), or reactor.inc's fast-h3 API (#6214). Grok, fal, and reactor all
+  // ignore the local-only knobs below; they read prompt/negativePrompt,
+  // width/height (mapped to an aspect ratio), sourceImageFile/sourceImage,
+  // and their own duration field.
+  backend: z.enum(['local', 'grok', 'fal', 'reactor']).optional(),
   // Grok image_to_video clip length in seconds — the shared schema (see
   // lib/grokVideoClip.js for which lengths grok actually delivers). Multipart
   // bodies arrive as strings, so coerce first.
@@ -263,6 +265,18 @@ const generateBodySchema = z.object({
   falDuration: z.preprocess(
     (v) => (v == null || v === '' ? undefined : Number(v)),
     optionalNum(1, 60, 'falDuration'),
+  ),
+  // reactor.inc fast-h3 (#6214): the clip id to chain from
+  // (continue_from_clip_id — frame-accurate continuation, unlike fal/grok
+  // which start a fresh render each time) and clip length in seconds.
+  reactorClipId: z.string().min(1).max(200).optional(),
+  reactorSeconds: z.preprocess(
+    (v) => (v == null || v === '' ? undefined : Number(v)),
+    optionalNum(1, 60, 'reactorSeconds'),
+  ),
+  reactorSeed: z.preprocess(
+    (v) => (v == null || v === '' ? undefined : Number(v)),
+    optionalNum(0, 2 ** 32 - 1, 'reactorSeed'),
   ),
   prompt: z.string().min(1).max(8000),
   negativePrompt: z.string().max(8000).optional(),
@@ -503,6 +517,18 @@ router.post('/model-terms', asyncHandler(async (req, res) => {
     return { ...current, videoGen: { ...(current.videoGen || {}), acceptedModelTerms: updated } };
   });
   res.json({ accepted: acceptedVideoModelTerms(next) });
+}));
+
+// Mints a short-lived reactor.inc session JWT scoped to `reactor/fast-h3`
+// (#6214) — the raw REACTOR_API_KEY never reaches the client. Load-bearing
+// security pattern: never cached, and the scope/session bound is set by
+// reactor.js#mintReactorToken, not by the caller.
+router.get('/reactor/token', asyncHandler(async (_req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  const settings = await getSettings();
+  const apiKey = resolveReactorApiKey(settings);
+  const { jwt, expiresAt } = await mintReactorToken(apiKey);
+  res.json({ jwt, expires_at: expiresAt });
 }));
 
 // `installed` here means "fully ready to render" — both the venv binary
@@ -874,6 +900,10 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   // 'grok' discriminator for them) and the clip duration — both plain
   // values, safe to echo for the reloading page's form restore.
   'videoMode', 'duration',
+  // reactor.inc jobs (#6214): the clip to chain from and the clip length —
+  // both plain scalars (no filesystem path), safe to echo for the reloading
+  // page's form restore. `seed` above already covers reactor's seed field.
+  'continueFromClipId', 'seconds',
   // loras are { filename, scale } basenames (no server filesystem paths), so
   // they're safe to echo back for the resuming picker to repopulate.
   'loras',

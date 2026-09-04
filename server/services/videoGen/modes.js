@@ -47,6 +47,11 @@ export function isVideoModeUsable(settings, mode) {
   if (mode === VIDEO_GEN_MODE.FAL) {
     return Boolean((settings?.videoGen?.fal?.apiKey || '').trim() || (process.env.FAL_KEY || '').trim());
   }
+  // reactor.inc is likewise a metered REST API — usability gated on a
+  // configured API key (settings or REACTOR_API_KEY env), same shape as fal.
+  if (mode === VIDEO_GEN_MODE.REACTOR) {
+    return Boolean((settings?.videoGen?.reactor?.apiKey || '').trim() || (process.env.REACTOR_API_KEY || '').trim());
+  }
   return mode === VIDEO_GEN_MODE.LOCAL;
 }
 

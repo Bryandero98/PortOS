@@ -163,6 +163,7 @@ function getGenModuleForJob(job) {
   if (isRemoteMediaJob(job)) return REMOTE_MEDIA_MODULES[job.kind]();
   if (job.kind === 'video' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../videoGen/grok.js');
   if (job.kind === 'video' && job.params?.mode === VIDEO_GEN_MODE.FAL) return import('../videoGen/fal.js');
+  if (job.kind === 'video' && job.params?.mode === VIDEO_GEN_MODE.REACTOR) return import('../videoGen/reactor.js');
   if (job.kind === 'video') return import('../videoGen/local.js');
   if (job.kind === 'training') return import('../loraTraining/index.js');
   if (job.kind === 'audio') return import('../audioGen/local.js');

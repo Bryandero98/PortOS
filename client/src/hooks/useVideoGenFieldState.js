@@ -23,6 +23,9 @@ export function useVideoGenFieldState({
   const [grokDuration, setGrokDuration] = useState(GROK_VIDEO_DEFAULT_DURATION);
   const [falDuration, setFalDuration] = useState('');
   const [falModelId, setFalModelId] = useState('');
+  const [reactorClipId, setReactorClipId] = useState('');
+  const [reactorSeconds, setReactorSeconds] = useState('');
+  const [reactorSeed, setReactorSeed] = useState('');
   const [mode, setMode] = useState(incomingAudioFilename ? 'a2v' : (incomingSourceImage ? 'image' : 'text'));
   const [prompt, setPrompt] = useState(incomingPrompt || '');
   const [negativePrompt, setNegativePrompt] = useState(incomingNegativePrompt || '');
@@ -86,6 +89,9 @@ export function useVideoGenFieldState({
     grokDuration, setGrokDuration,
     falDuration, setFalDuration,
     falModelId, setFalModelId,
+    reactorClipId, setReactorClipId,
+    reactorSeconds, setReactorSeconds,
+    reactorSeed, setReactorSeed,
     guidanceScale, setGuidanceScale,
     height, setHeight,
     i2vReferenceMode, setI2vReferenceMode,

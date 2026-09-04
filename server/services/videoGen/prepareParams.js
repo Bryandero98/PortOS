@@ -350,7 +350,8 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
   // shared with services/videoGen/local.js so the route and worker stay
   // in sync.
   const runtimeBringsOwnVenv = effectiveModel && BYOV_VIDEO_RUNTIMES.has(effectiveModel.runtime);
-  if (!pythonPath && !runtimeBringsOwnVenv && backend !== VIDEO_GEN_MODE.GROK && backend !== VIDEO_GEN_MODE.FAL) {
+  if (!pythonPath && !runtimeBringsOwnVenv
+    && backend !== VIDEO_GEN_MODE.GROK && backend !== VIDEO_GEN_MODE.FAL && backend !== VIDEO_GEN_MODE.REACTOR) {
     await cleanupMultipartTemp(uploads);
     throw new ServerError(
       'Local video generation is not configured (settings.imageGen.local.pythonPath is missing).',
@@ -472,7 +473,7 @@ async function resolvePreparedParams({
     // plain grok render with the reference clip silently dropped. The client's
     // mode bar snaps grok back to text/image, but reject explicitly so a direct
     // caller gets an error instead of a wrong-looking clip.
-    if (body.backend === VIDEO_GEN_MODE.GROK || body.backend === VIDEO_GEN_MODE.FAL) {
+    if (body.backend === VIDEO_GEN_MODE.GROK || body.backend === VIDEO_GEN_MODE.FAL || body.backend === VIDEO_GEN_MODE.REACTOR) {
       await cleanupStaged();
       throw new ServerError(
         `${icSpec.label} mode runs on the local ltx2 runtime — it isn't available on the ${body.backend} backend.`,
@@ -777,6 +778,30 @@ async function resolvePreparedParams({
       // API key from live settings itself (see its generateVideo comment) so
       // the secret never rides through job.params/media-jobs.json.
       effectiveModel: { id: 'fal', supportedModes: ['text', 'image'] },
+      sourceImagePath,
+      uploadedTempPath,
+      discardSourceImage,
+      cleanupStaged,
+    };
+  }
+
+  // reactor.inc short-circuit (#6214): mirrors the fal branch above — the
+  // fast-h3 API reads only prompt/source-image/continue_from_clip_id/seconds,
+  // so every local-runtime knob past this point is irrelevant to it.
+  if (backend === VIDEO_GEN_MODE.REACTOR) {
+    if (!isVideoModeUsable(settings, VIDEO_GEN_MODE.REACTOR)) {
+      await cleanupStaged();
+      throw new ServerError(
+        'No reactor.inc API key configured — set it in Settings → Video Gen (or the REACTOR_API_KEY env var) first',
+        { status: 400, code: 'REACTOR_NOT_CONFIGURED' },
+      );
+    }
+    return {
+      backend,
+      // No CLI-config sibling to grok's `grok` field: reactor.js re-resolves
+      // the API key from live settings itself (see its generateVideo
+      // comment) so the secret never rides through job.params/media-jobs.json.
+      effectiveModel: { id: 'reactor', supportedModes: ['text', 'image'] },
       sourceImagePath,
       uploadedTempPath,
       discardSourceImage,

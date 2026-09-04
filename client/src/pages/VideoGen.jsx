@@ -137,6 +137,9 @@ export default function VideoGen() {
   // fal.ai queue REST video backend (#6213) — surfaced only when an API key is
   // configured (Settings → Video Gen, or the FAL_KEY env var).
   const [falEnabled, setFalEnabled] = useState(false);
+  // reactor.inc fast-h3 video backend (#6214) — same usability gate shape as
+  // fal.ai above.
+  const [reactorEnabled, setReactorEnabled] = useState(false);
   // The jobId of the render this tab's Generate button currently owns —
   // threaded into cancelVideoGen so cancellation is job-scoped.
   const activeJobIdRef = useRef(null);
@@ -146,6 +149,7 @@ export default function VideoGen() {
       .then((sv) => {
         setGrokEnabled(sv?.imageGen?.grok?.enabled === true);
         setFalEnabled(Boolean(sv?.videoGen?.fal?.apiKey));
+        setReactorEnabled(Boolean(sv?.videoGen?.reactor?.apiKey));
       })
       .catch(() => {});
   }, []);
@@ -163,8 +167,9 @@ export default function VideoGen() {
   // Every field the form submits, plus the payload builder both submit paths
   // share. See client/src/hooks/useVideoGenForm.js.
   const {
-    backend, isGrok, isFal, handleBackendChange, grokDuration, setGrokDuration,
+    backend, isGrok, isFal, isReactor, handleBackendChange, grokDuration, setGrokDuration,
     falDuration, setFalDuration, falModelId, setFalModelId,
+    reactorClipId, setReactorClipId, reactorSeconds, setReactorSeconds, reactorSeed, setReactorSeed,
     mode, handleModeChange,
     prompt, setPrompt, envelopedPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset,
     selectedUniverse, setSelectedUniverse, remixModelFallback,
@@ -199,7 +204,7 @@ export default function VideoGen() {
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
   } = useVideoGenForm({
-    models, modelContext, availableLoras, grokEnabled, falEnabled,
+    models, modelContext, availableLoras, grokEnabled, falEnabled, reactorEnabled,
     remoteSubmissionFields: remoteTarget.isRemote ? remoteTarget.submissionFields : null,
   });
 
@@ -224,6 +229,7 @@ export default function VideoGen() {
     const present = [
       ['the Grok backend', isGrok],
       ['the fal.ai backend', isFal],
+      ['the reactor.inc backend', isReactor],
       // Each remaining pipeline semantic has its own input listed below, but the
       // mode can be set before that input is filled — so gate the mode too
       // rather than letting an a2v render reach the peer as plain text-to-video.
@@ -250,7 +256,7 @@ export default function VideoGen() {
       return `${model?.modelName || 'The selected peer model'} renders only from a source image — add a start frame, or pick a text-to-video model.`;
     }
     return null;
-  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, isGrok, isFal, mode, sourceImageFile, sourceImageUpload,
+  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, isGrok, isFal, isReactor, mode, sourceImageFile, sourceImageUpload,
     lastImageFile, lastImageUpload, keyframesActive, extendFromVideoId, audioFile, icReferenceFile,
     icReferenceVideoId, icReferenceImageFiles, selectedLoras, chunks]);
   // One reading for the Generate button, the enqueue guard and the caption.
@@ -614,14 +620,14 @@ export default function VideoGen() {
     startEncoderWhenIdle(option && !option.builtIn ? textEncoderDownloadId(id) : null);
   }, [setTextEncoderId, textEncoderOptions, startEncoderWhenIdle]);
   const icWeightStatus = icSpec ? modelDownload.getStatus(icSpec.mode) : null;
-  const modelWeightsBlocked = !isGrok && !isFal
+  const modelWeightsBlocked = !isGrok && !isFal && !isReactor
     && (statusLoading || !modelId || !currentModel || modelDownload.loading
       || modelStatus === null || modelStatus?.cached === false);
-  const textEncoderWeightsBlocked = !isGrok && !isFal && usesSharedTextEncoder
+  const textEncoderWeightsBlocked = !isGrok && !isFal && !isReactor && usesSharedTextEncoder
     && (modelDownload.loading || textEncoderStatus === null || textEncoderStatus?.cached === false);
-  const icWeightsBlocked = !isGrok && !isFal && icModeActive
+  const icWeightsBlocked = !isGrok && !isFal && !isReactor && icModeActive
     && (modelDownload.loading || icWeightStatus === null || icWeightStatus?.cached === false);
-  const textEncoderOptionBlocked = !isGrok && !isFal && !!textEncoderOptionDownloadId
+  const textEncoderOptionBlocked = !isGrok && !isFal && !isReactor && !!textEncoderOptionDownloadId
     && (modelDownload.loading || textEncoderOptionStatus === null || textEncoderOptionStatus?.cached === false);
   const weightsGateBlocked = modelWeightsBlocked || textEncoderWeightsBlocked
     || textEncoderOptionBlocked || icWeightsBlocked;
@@ -694,7 +700,7 @@ export default function VideoGen() {
   // actually apply it (macOS, and the user hasn't opted out).
   const rendersSleepDisplay = !!status?.displaySleepOnRender
     && !!currentModel?.sleepsDisplayDuringRender
-    && !remoteTarget.isRemote && !isGrok && !isFal;
+    && !remoteTarget.isRemote && !isGrok && !isFal && !isReactor;
 
   // Run a single payload through the SSE pipeline. Returns a promise that
   // resolves when the job completes (or rejects on error / cancel). The
@@ -844,7 +850,7 @@ export default function VideoGen() {
   // will actually run on.
   const canEnqueue = prompt.trim() && (remoteTarget.isRemote
     ? remoteBlocked === null
-    : (isGrok || isFal || (!notConnected && !extendModeBlocked
+    : (isGrok || isFal || isReactor || (!notConnected && !extendModeBlocked
       && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
       && !weightsGateBlocked && !keyframesBlocked)));
 
@@ -919,15 +925,17 @@ export default function VideoGen() {
       })()}
 
       {/* Backend switch — shown only when the user enabled Grok in Settings →
-          Image Gen and/or configured a fal.ai API key. Both cloud backends'
-          image-to-video only supports text (image-first) and image modes, so
-          switching to either snaps an unsupported mode back to the nearest one. */}
-      {(grokEnabled || falEnabled) && (
+          Image Gen and/or configured a fal.ai or reactor.inc API key. Every
+          cloud backend's image-to-video only supports text (image-first) and
+          image modes, so switching to one snaps an unsupported mode back to
+          the nearest one. */}
+      {(grokEnabled || falEnabled || reactorEnabled) && (
         <div className="bg-port-card border border-port-border rounded-xl p-1 flex gap-1" role="group" aria-label="Video generation backend">
           {[
             { id: 'local', label: 'Local' },
             ...(grokEnabled ? [{ id: 'grok', label: 'Grok' }] : []),
             ...(falEnabled ? [{ id: 'fal', label: 'fal.ai' }] : []),
+            ...(reactorEnabled ? [{ id: 'reactor', label: 'Reactor.inc' }] : []),
           ].map(({ id, label }) => (
             <button
               key={id}
@@ -941,7 +949,9 @@ export default function VideoGen() {
                 ? 'Render via the Grok Build CLI (image_gen → image_to_video). Counts against your Grok plan.'
                 : id === 'fal'
                   ? 'Render via the fal.ai queue API. Counts against your fal.ai balance.'
-                  : 'Render on this machine with the local runtimes.'}
+                  : id === 'reactor'
+                    ? 'Render via the reactor.inc fast-h3 API. Counts against your reactor.inc balance.'
+                    : 'Render on this machine with the local runtimes.'}
             >
               {label}
             </button>
@@ -955,7 +965,7 @@ export default function VideoGen() {
           WAI-ARIA Tabs, since the mode-specific inputs aren't structured as
           tabpanels and we don't implement roving-tabindex/arrow-key focus. */}
       <div className="bg-port-card border border-port-border rounded-xl p-1 flex flex-wrap gap-1" role="group" aria-label="Video generation mode">
-        {((isGrok || isFal) ? MODES.filter((m) => m.id === 'text' || m.id === 'image') : MODES).map(({ id, label, icon: Icon, desc }) => {
+        {((isGrok || isFal || isReactor) ? MODES.filter((m) => m.id === 'text' || m.id === 'image') : MODES).map(({ id, label, icon: Icon, desc }) => {
           const active = mode === id;
           return (
             <button
@@ -979,7 +989,7 @@ export default function VideoGen() {
 
       <form onSubmit={handleGenerate} className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
-          {!isGrok && !isFal && byovRuntimeMissing && (
+          {!isGrok && !isFal && !isReactor && byovRuntimeMissing && (
             <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
                 <strong className="font-semibold">{byovStatus.label}</strong> {byovStatus.upgradeAvailable ? 'has an update available.' : "isn't installed yet."}
@@ -1080,10 +1090,10 @@ export default function VideoGen() {
               <AutoSizeTextarea
                 value={negativePrompt}
                 onChange={(e) => setNegativePrompt(e.target.value)}
-                disabled={!isGrok && !isFal && currentModel?.supportsNegativePrompt === false}
+                disabled={!isGrok && !isFal && !isReactor && currentModel?.supportsNegativePrompt === false}
                 rows={3}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50 min-h-[80px]"
-                placeholder={!isGrok && !isFal && currentModel?.supportsNegativePrompt === false
+                placeholder={!isGrok && !isFal && !isReactor && currentModel?.supportsNegativePrompt === false
                   ? 'This CFG-distilled model does not use a negative prompt.'
                   : 'What to avoid...'}
               />
@@ -1293,6 +1303,42 @@ export default function VideoGen() {
                 Renders on fal.ai's queue API — leave the model blank to use PortOS's default (text-to-video, or image-to-video in Image mode). Counts against your fal.ai balance.
               </p>
             </div>
+          ) : isReactor ? (
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="Continue from clip" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+                <input
+                  type="text"
+                  value={reactorClipId}
+                  onChange={(e) => setReactorClipId(e.target.value)}
+                  placeholder="clip id (optional)"
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                />
+              </FormField>
+              <FormField label="Clip length (sec)" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={reactorSeconds}
+                  onChange={(e) => setReactorSeconds(e.target.value)}
+                  placeholder="model default"
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                />
+              </FormField>
+              <FormField label="Seed" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+                <input
+                  type="number"
+                  min={0}
+                  value={reactorSeed}
+                  onChange={(e) => setReactorSeed(e.target.value)}
+                  placeholder="random"
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                />
+              </FormField>
+              <p className="col-span-2 text-[11px] text-gray-500 leading-snug">
+                Renders on reactor.inc's fast-h3 API — near-realtime with native frame-accurate chaining via "Continue from clip". Counts against your reactor.inc balance.
+              </p>
+            </div>
           ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {/* The peer advertises its own models; the local list would name
@@ -1442,11 +1488,11 @@ export default function VideoGen() {
           <ModelDisclosure
             backend={backend}
             backendDisclosures={status?.backendDisclosures}
-            model={(isGrok || isFal) ? null : currentModel}
+            model={(isGrok || isFal || isReactor) ? null : currentModel}
             systemMemoryGb={modelContext?.systemMemoryGb}
           />
 
-          {!isGrok && !isFal && (
+          {!isGrok && !isFal && !isReactor && (
             <AdvancedParamsPanel
               mode={mode}
               currentModel={currentModel}
