@@ -207,6 +207,30 @@ const DOCUMENTATION_RULES = [
   /\.(?:md|mdx|png|jpe?g|gif|webp|svg|ico)$/i,
 ];
 
+// The bundled slashdo submodule (see AGENTS.md "Slashdo Commands") ships no
+// source into the tree the planner scans — `git diff` reports only the gitlink
+// pointer at this path, never the files inside it — so it can't be detected the
+// way an ordinary source change is. The two contract suites below exercise the
+// real bundled renderer and only mean anything with the submodule checked out,
+// so CI initializes it (see ci.yml) exactly when one of them is set to run.
+export const SLASHDO_GITLINK_PATH = 'lib/slashdo';
+export const SLASHDO_CONTRACT_TEST_FILES = [
+  'server/lib/slashdoLoader.test.js',
+  'server/lib/slashdoInvocation.test.js',
+];
+const SLASHDO_CONTRACT_SOURCE_FILES = [
+  'server/lib/slashdoLoader.js',
+  'server/lib/slashdoInvocation.js',
+];
+
+/** Whether this plan's server job needs `lib/slashdo` initialized. */
+export const needsSlashdoSubmodule = (plan) => Boolean(
+  plan.full
+  || plan.changedFiles.includes(SLASHDO_GITLINK_PATH)
+  || plan.server.files.some((path) => SLASHDO_CONTRACT_TEST_FILES.includes(path))
+  || plan.server.sources.some((path) => SLASHDO_CONTRACT_SOURCE_FILES.includes(path))
+);
+
 const RUNNER_ROOTS = {
   server: [
     'server/',
@@ -603,6 +627,7 @@ export function buildCiTestPlan(changedFiles, {
 /** The derived fields every plan carries: per-suite reasons and shard matrices. */
 const finishPlan = (plan, options) => ({
   ...plan,
+  slashdo: needsSlashdoSubmodule(plan),
   suiteReasons: suiteReasonsFor(plan, options),
   shards: {
     server: shardIndexes(plan.server.mode, FULL_SUITE_SHARDS.server),
@@ -659,6 +684,7 @@ export function emitGitHubPlan(plan) {
     lint_files: JSON.stringify(plan.lint.files),
     build: plan.build,
     smoke: plan.smoke,
+    slashdo: plan.slashdo,
     windows: plan.windows,
     windows_mode: plan.windowsMode,
     windows_files: JSON.stringify(plan.windowsFiles),
