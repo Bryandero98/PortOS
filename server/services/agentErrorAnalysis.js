@@ -951,6 +951,16 @@ export const COMPLETION_REASON_ANALYSES = {
     message: 'Agent session was terminated by a signal',
     suggestedFix: 'The TUI session was killed rather than exiting on its own — usually a PortOS restart taking its child processes down. The task resumes from the preserved worktree; no agent-side fix is needed.'
   },
+  // The TUI spawner declined TOOL_PERMISSION_DECLINE_MAX permission dialogs
+  // (createToolPermissionGate) and the model was still reaching outside the
+  // run's scope. Registered so the post-mortem does not fall through to the
+  // transcript keyword sweep — which would scrape the dialog chrome itself.
+  'permission-prompt-loop': {
+    category: 'timeout',
+    actionable: false,
+    message: 'Agent kept asking for tool permissions an unattended run cannot grant',
+    suggestedFix: 'Every permission dialog was declined and the model kept reaching outside the run\'s allowed scope (paths outside the worktree, tools the posture forbids). A fallback provider retries the task; if it recurs, pin the stage to a stronger model or remove the outside-path references from its prompt.'
+  },
   'command-not-found': {
     category: 'spawn-error',
     actionable: true,

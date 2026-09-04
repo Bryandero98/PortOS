@@ -2332,7 +2332,7 @@ describe('buildLightContextPrompt', () => {
           stages: [{ name: 'scan' }, { name: 'gate' }, { name: 'review' }],
         }}
       }), '/r', null, isTruthyMeta);
-      expect(inlined).toMatch(/complete output is inlined below/);
+      expect(inlined).toMatch(/hand-off is inlined below in full/);
       expect(inlined).not.toMatch(/output\.txt/);
       expect(inlined).toMatch(/"eligibleNumbers":\[6223\]/);
 

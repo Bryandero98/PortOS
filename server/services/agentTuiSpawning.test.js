@@ -1825,7 +1825,21 @@ describe('spawnTuiAgent runtime', () => {
   // model asked to Read an absolute path outside the worktree, and the dialog
   // sat unanswered for the rest of the run.
   it('declines a tool-permission dialog and nudges the session once it goes quiet', async () => {
-    await driveAgyToSubmittedPrompt();
+    // A claude session: the dialog is Claude Code chrome, and the spawner only
+    // watches claude sessions for it.
+    runSpawn({ tuiConfig: claudeTuiConfig });
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from(`${PASTE_OFF}Claude Code v2.1.260\n`));
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from(PASTE_ON));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(400);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+    await capturedOnData(Buffer.from('do the thing\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushMicrotasks();
     vi.mocked(shellService.writeToSession).mockClear();
     vi.mocked(shellService.pasteToSession).mockClear();
 

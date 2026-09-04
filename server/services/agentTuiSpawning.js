@@ -1435,7 +1435,14 @@ export async function spawnTuiAgent({
       // provider-signal timer, on its own poll, like the other gates.
       if (promptSubmittedAt) retryStallGate.observe(stripped, now);
 
-      const permissionDialog = promptSubmittedAt ? toolPermissionGate.observe(stripped, now) : null;
+      // The permission dialog is Claude Code chrome. Watching another vendor's
+      // session for it would only ever match an ECHO — a Codex or agy agent
+      // investigating a stalled run cats its raw.txt straight into this stream
+      // — and answer a dialog that is not there with keystrokes into a working
+      // composer.
+      const permissionDialog = promptSubmittedAt && isClaudeCommand(tuiConfig.command)
+        ? toolPermissionGate.observe(stripped, now)
+        : null;
       if (permissionDialog === 'exhausted') {
         await finish({
           success: false,

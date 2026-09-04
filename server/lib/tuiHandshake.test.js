@@ -1741,23 +1741,45 @@ describe('tool-permission dialog (agent-e057cca7)', () => {
       expect(gate.takeNudge(late + OOM_NUDGE_SETTLE_MS, late)).toBe(0);
     });
 
-    it('reports exhaustion once TOOL_PERMISSION_DECLINE_MAX nudges have been spent', () => {
+    it('reports exhaustion after TOOL_PERMISSION_DECLINE_MAX declines, nudged or not', () => {
+      // A build that hands the model a rejection and lets it continue never
+      // goes quiet, so no nudge ever fires — the declines alone must cap it.
       const gate = createToolPermissionGate();
       let now = 0;
       for (let i = 1; i <= TOOL_PERMISSION_DECLINE_MAX; i += 1) {
         now += TOOL_PERMISSION_REPAINT_COOLDOWN_MS + 1;
         expect(gate.observe(READ_DIALOG, now)).toMatchObject({ count: i });
-        // The decline ends the turn, the session goes quiet, the nudge fires.
-        expect(gate.takeNudge(now + OOM_NUDGE_SETTLE_MS, now)).toBe(i);
-        now += OOM_NUDGE_SETTLE_MS;
       }
       now += TOOL_PERMISSION_REPAINT_COOLDOWN_MS + 1;
       expect(gate.observe(TWO_OPTION_DIALOG, now)).toBe('exhausted');
+    });
+
+    it('still sees a different dialog painted inside the repaint cooldown', () => {
+      const gate = createToolPermissionGate();
+      expect(gate.observe(READ_DIALOG, 0)).toMatchObject({ count: 1 });
+      // The model's very next call is also out of scope: its dialog lands
+      // seconds after the decline and is never repainted afterwards.
+      expect(gate.observe(TWO_OPTION_DIALOG, 3000)).toBeNull();
+      expect(gate.observe('\n', TOOL_PERMISSION_REPAINT_COOLDOWN_MS + 1000)).toMatchObject({ noOption: 2, count: 2 });
     });
   });
 });
 
 describe('createOomNudgeGate', () => {
+  it('re-arms from a box that outlasted its window, once the repaint stops', () => {
+    // The OOM box repaints past the arm window (the session never went quiet),
+    // then finally does: the expired arm must be replaceable by a sighting
+    // AFTER the cooldown, so a sighting while armed must not refresh it.
+    const gate = createOomNudgeGate();
+    const analysis = { message: 'oom' };
+    expect(gate.arm(analysis, 0)).toBe('armed');
+    expect(gate.arm(analysis, 60_000)).toBeNull();
+    expect(gate.takeNudge(OOM_NUDGE_ARM_WINDOW_MS + 5_000, OOM_NUDGE_ARM_WINDOW_MS + 4_000)).toBe(0);
+    expect(gate.arm(analysis, OOM_NUDGE_COOLDOWN_MS + 10_000)).toBe('armed');
+    const quietAt = OOM_NUDGE_COOLDOWN_MS + 10_000;
+    expect(gate.takeNudge(quietAt + OOM_NUDGE_SETTLE_MS, quietAt)).toBe(1);
+  });
+
   const analysis = { category: 'resource-exhausted', message: 'Local inference runtime ran out of GPU memory' };
 
   it('nudges only once the session has actually gone quiet', () => {

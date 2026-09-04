@@ -1080,12 +1080,13 @@ export function createSilenceNudgeGate({ cooldownMs, settleMs, armWindowMs, maxA
   return {
     inCooldown: (nowMs) => lastArmedAt !== null && nowMs - lastArmedAt < cooldownMs,
     arm(nowMs) {
+      // A sighting while a nudge is already pending is the same condition
+      // still on screen: it neither restarts the window (a box that repaints
+      // forever must still expire it) nor refreshes the cooldown (or a repaint
+      // outlasting the window could never re-arm once it stops).
+      if (armedAt !== null) return null;
       if (lastArmedAt !== null && nowMs - lastArmedAt < cooldownMs) return null;
       lastArmedAt = nowMs;
-      // A sighting while a nudge is already pending is the same condition
-      // still on screen: it refreshes the cooldown (above) but never restarts
-      // the window, or a box that repaints forever would never expire it.
-      if (armedAt !== null) return null;
       // Budget spent: this is a genuinely NEW sighting (it cleared the cooldown)
       // after the nudges already bought the run more than one recovery. Hand the
       // verdict back rather than arming a window nobody will act on.
@@ -1239,8 +1240,9 @@ export const TOOL_PERMISSION_REPAINT_COOLDOWN_MS = 15000;
 // carry on. It rides the OOM nudge's silence policy (OOM_NUDGE_SETTLE_MS /
 // OOM_NUDGE_ARM_WINDOW_MS): sent only once the session has gone quiet, so a
 // build that instead hands the model a rejection and lets it continue is left
-// alone. A model still reaching outside its scope after this many nudges is not
-// going to finish inside it; the caller fails the run rather than looping.
+// alone. A model still reaching outside its scope after this many DECLINES —
+// whether or not each one needed a nudge — is not going to finish inside it;
+// the caller fails the run rather than looping until the max-runtime ceiling.
 export const TOOL_PERMISSION_DECLINE_MAX = 8;
 export const TOOL_PERMISSION_NUDGE_TEXT = 'That tool call reached outside this run\'s allowed scope, so it was declined. Nobody is watching this session and no permission can be granted. Everything you need is inside your worktree and your prompt; continue using paths under the worktree only, and write the completion sentinel when you are done.';
 
@@ -1249,10 +1251,14 @@ export const TOOL_PERMISSION_NUDGE_TEXT = 'That tool call reached outside this r
  * the dialog detector with a carry-over tail, on top of createSilenceNudgeGate.
  * Feed it every ANSI-stripped chunk after the prompt is in via
  * `observe(strippedText, nowMs)`: it returns the dialog to decline
- * (`{ noOption, toolCall, count }`) exactly once per dialog, `'exhausted'` when
- * the nudge budget is spent, or null. Poll `takeNudge(nowMs, lastOutputAtMs)`
- * on the consumer's existing timer. The tail is dropped after a decline so the
- * same dialog cannot be re-sighted from the carry-over.
+ * (`{ noOption, toolCall, count }`) once per dialog, `'exhausted'` once
+ * TOOL_PERMISSION_DECLINE_MAX dialogs have been declined, or null. Poll
+ * `takeNudge(nowMs, lastOutputAtMs)` on the consumer's existing timer. The
+ * tail is dropped after a decline so that dialog cannot be re-sighted from the
+ * carry-over, but keeps accumulating through the repaint cooldown: a DIFFERENT
+ * dialog painted seconds after a decline (the model's very next call is also
+ * out of scope) must still be seen once the cooldown lifts, or the session
+ * hangs on it exactly as it did before this gate existed.
  *
  * @returns {{ observe: (strippedText: string, nowMs: number) => object|'exhausted'|null,
  *             takeNudge: (nowMs: number, lastOutputAtMs: number) => number }}
@@ -1262,19 +1268,26 @@ export function createToolPermissionGate() {
     cooldownMs: TOOL_PERMISSION_REPAINT_COOLDOWN_MS,
     settleMs: OOM_NUDGE_SETTLE_MS,
     armWindowMs: OOM_NUDGE_ARM_WINDOW_MS,
-    maxAttempts: TOOL_PERMISSION_DECLINE_MAX,
+    // The budget is counted in declines (below), not nudges: a build that lets
+    // the model continue after a rejection never goes quiet, so a nudge budget
+    // would never be spent while the declines climbed forever.
+    maxAttempts: Infinity,
   });
   let tail = '';
   let declines = 0;
   return {
     observe(strippedText, nowMs) {
-      if (typeof strippedText !== 'string' || !strippedText || nudge.inCooldown(nowMs)) return null;
+      if (typeof strippedText !== 'string' || !strippedText) return null;
       tail = (tail + strippedText).slice(-1024);
+      if (nudge.inCooldown(nowMs)) return null;
       const dialog = detectToolPermissionPrompt(tail);
       if (!dialog) return null;
       tail = '';
-      if (nudge.arm(nowMs) === 'exhausted') return 'exhausted';
+      if (declines >= TOOL_PERMISSION_DECLINE_MAX) return 'exhausted';
       declines += 1;
+      // A null here means a nudge is already pending from the previous decline;
+      // it will fire on the same silence and covers this one too.
+      nudge.arm(nowMs);
       return { ...dialog, count: declines };
     },
     takeNudge: nudge.takeNudge,

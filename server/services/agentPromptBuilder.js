@@ -145,8 +145,8 @@ function pipelineContextLines(pipelineCtx) {
     // sandboxed permission posture, is a tool-permission dialog nobody is
     // present to answer.
     lines.push(clipped
-      ? `The previous stage's output is inlined below, clipped to its first ${PREVIOUS_STAGE_OUTPUT_INLINE_CAP} characters.`
-      : "The previous stage's complete output is inlined below; there is nothing further to read from disk.");
+      ? `The previous stage's hand-off is inlined below, clipped to its first ${PREVIOUS_STAGE_OUTPUT_INLINE_CAP} characters.`
+      : "The previous stage's hand-off is inlined below in full; there is nothing further to read from disk.");
   } else {
     lines.push(
       "Read the previous stage's output from:",
