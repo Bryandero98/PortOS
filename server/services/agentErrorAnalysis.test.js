@@ -473,6 +473,35 @@ describe('resolveFailedTaskDecision', () => {
 
   });
 
+  // #6124: an empty pr-reviewer stage burned MAX_TASK_RETRIES spawns and then
+  // regenerated, because "the agent wrote nothing" was classified as an ordinary
+  // retryable failure. A permanent failure re-fails identically, so it blocks now.
+  describe('permanent failures', () => {
+    const noOutput = {
+      actionable: false,
+      permanent: true,
+      category: 'stage-produced-no-output',
+      message: 'The pr-reviewer eligibility stage agent finished without writing any parseable output',
+    };
+
+    it('blocks on the FIRST failure and files no investigation task', () => {
+      const decision = resolveFailedTaskDecision(task(), noOutput, { agentId: 'agent-z', now: HOLD_NOW });
+      expect(decision.status).toBe('blocked');
+      expect(decision.investigationAnalysis).toBeNull();
+      expect(decision.metadataUpdates.failureCount).toBe(1);
+      expect(decision.metadataUpdates.blockedCategory).toBe('stage-produced-no-output');
+      expect(decision.metadataUpdates.blockedReason).toBe(noOutput.message);
+      // No retry hold: there is no retry to release.
+      expect(decision.metadataUpdates.retryPendingCleanup).toBeUndefined();
+    });
+
+    it('outranks the actionable branch so no investigation agent is spawned either', () => {
+      const decision = resolveFailedTaskDecision(task(), { ...noOutput, actionable: true });
+      expect(decision.status).toBe('blocked');
+      expect(decision.investigationAnalysis).toBeNull();
+    });
+  });
+
   describe('non-actionable errors with retry tracking', () => {
     // NOT `pending` (#3373): the retry is HELD non-spawnable — `in_progress` plus
     // the hold marker — until `releaseRetryHold` writes its resume pointer.

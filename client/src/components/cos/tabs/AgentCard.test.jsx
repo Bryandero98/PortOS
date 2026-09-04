@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { typeSettled } from '../../../test/settledInput';
@@ -384,14 +384,43 @@ describe('AgentCard missing shell explanation', () => {
   );
 
   it('says why a public-review stage has no shell instead of leaving the card silent', () => {
-    // These stages are forced headless even on a TUI provider, so the "Open
+    // A tool-free stage — or an actions stage on a provider with no attachable
+    // sandbox recipe — runs headless even on a TUI provider, so the "Open
     // Shell" link never appears. Silence made a slow run look wedged with
     // nowhere to look.
     renderCard(running({ publicReviewPosture: 'sandboxed-actions', executionMode: 'direct' }));
 
     expect(screen.queryByText('Open Shell')).not.toBeInTheDocument();
     expect(screen.getByText('No shell')).toBeInTheDocument();
-    expect(screen.getByTitle(/public-review stage always runs headless/)).toBeInTheDocument();
+    expect(screen.getByTitle(/this public-review stage runs headless/)).toBeInTheDocument();
+  });
+
+  it('keeps the shell link on an attachable sandboxed-actions run', () => {
+    // Stage 3 on a TUI provider whose vendor declares an attachable recipe DOES
+    // get a PTY (#6062) — the chip above must not fire on it, or the card would
+    // claim there is no shell while linking to one.
+    renderCard(running({
+      publicReviewPosture: 'sandboxed-actions',
+      executionMode: 'tui',
+      tuiSessionId: 'sess-6062',
+    }));
+
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
+  });
+
+  it('stays silent on an attachable public-review run that has not registered its session yet', () => {
+    // The startup window an attachable Stage 3 now passes through: `executionMode`
+    // is already 'tui' but `tuiSessionId` has not landed. Gating on the session id
+    // alone made the card assert the stage runs headless for those seconds, then
+    // swap the claim for an "Open Shell" link — a false diagnostic, and a worse
+    // one if the PTY is merely slow to attach.
+    renderCard(running({
+      publicReviewPosture: 'sandboxed-actions',
+      executionMode: 'tui',
+      phase: 'initializing',
+    }));
+
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
   });
 
   it('stays silent on a TUI run that has not registered its session yet', () => {
@@ -414,6 +443,41 @@ describe('AgentCard missing shell explanation', () => {
 
     expect(screen.getByText('Open Shell')).toBeInTheDocument();
     expect(screen.queryByText('No shell')).not.toBeInTheDocument();
+  });
+
+  // #6117: a ~100K-token public-review envelope aimed at a model server on this
+  // box spends minutes in prefill before the child emits its first line. The
+  // card showed a running agent with no output and no reason for it.
+  it('explains a long silent prefill and names the raised run estimate', () => {
+    renderCard(running({
+      executionMode: 'direct',
+      localPromptBudget: {
+        endpoint: 'localhost:18020',
+        promptTokens: 100_000,
+        prefillMs: 9 * 60_000,
+        baseDurationMs: 13 * 60_000,
+        expectedDurationMs: 22 * 60_000,
+        longPrefill: true,
+      },
+    }));
+
+    expect(screen.getByText(/Long prefill/)).toBeInTheDocument();
+    expect(screen.getByTitle(/100,000 tokens/)).toBeInTheDocument();
+    expect(screen.getByTitle(/duration estimate was raised/)).toBeInTheDocument();
+  });
+
+  it('stays silent when the prefill is short or the run is not on a local endpoint', () => {
+    // An absent budget is "no estimate" (a cloud run, or a record written before
+    // the stamp existed) — never "instant". Neither may render the chip.
+    renderCard(running({
+      executionMode: 'direct',
+      localPromptBudget: { endpoint: 'localhost:11434', promptTokens: 2_000, prefillMs: 16_667, longPrefill: false },
+    }));
+    expect(screen.queryByText(/Long prefill/)).not.toBeInTheDocument();
+
+    cleanup();
+    renderCard(running({ executionMode: 'direct' }));
+    expect(screen.queryByText(/Long prefill/)).not.toBeInTheDocument();
   });
 });
 

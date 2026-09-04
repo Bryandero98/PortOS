@@ -739,8 +739,9 @@ describe('runAgentSpawn source — instance provenance + claim ordering (#1563)'
   });
 
   it('projects the public-review posture so the UI can explain the missing shell link', () => {
-    // `spawnHeadless = publicReview || !isTui` forces a public-review stage
-    // headless even on a TUI provider, so its card never gets an "Open Shell"
+    // `spawnHeadless` forces a public-review stage headless even on a TUI
+    // provider — unless it is the sandboxed-actions stage on a vendor with an
+    // attachable recipe (#6062) — so its card usually gets no "Open Shell"
     // link. Without this projection the card cannot tell that apart from a PTY
     // that failed to attach, and the run reads as wedged.
     const registerIdx = RUN_SPAWN_BODY.indexOf('registerAgent(agentId, task.id, {');
@@ -866,5 +867,39 @@ describe('runAgentSpawn source — taskType normalization + claim-miss guard (is
     const body = RUN_SPAWN_BODY.slice(warnIdx, warnIdx + 400);
     expect(body).toMatch(/emitLog\('warn'/);
     expect(body).toContain('updateResult.error');
+  });
+});
+
+// #6117: a public-review Stage 3 dispatch inlines the whole screened envelope —
+// ~100K tokens — and a model server on this box spends minutes prefilling it
+// before the child emits a line. Nothing compared the assembled prompt against
+// the endpoint it was aimed at, so the run's duration estimate carried none of
+// that cost and the card was indistinguishable from a wedged run. The budget has
+// no behavioral seam inside runAgentSpawn, so pin the two orderings that make it
+// correct.
+describe('runAgentSpawn source — local prompt/prefill budget (#6117)', () => {
+  it('measures the FULLY assembled prompt, after the public-review envelope is appended', () => {
+    // Measuring `basePrompt` would miss the envelope, which IS the ~100K tokens.
+    const promptIdx = RUN_SPAWN_BODY.indexOf('formatPublicReviewInputPrompt(publicReviewPromptData)');
+    const planIdx = RUN_SPAWN_BODY.indexOf('planLocalPromptBudget({');
+    expect(promptIdx, 'the public-review envelope must still be appended to the prompt').toBeGreaterThan(-1);
+    expect(planIdx, '`planLocalPromptBudget({` must exist inside runAgentSpawn').toBeGreaterThan(-1);
+    expect(promptIdx, 'the budget must be planned AFTER the envelope is appended').toBeLessThan(planIdx);
+  });
+
+  it('only asks the question for an endpoint on this machine, and never refuses the dispatch', () => {
+    // A cloud provider prefills in seconds and must take no async hop; and the
+    // decision on this issue was explicitly to RAISE the estimate rather than
+    // block a provider the user deliberately configured.
+    expect(RUN_SPAWN_BODY).toMatch(/const\s+localEndpoint\s*=\s*localEndpointOfProvider\(provider\)\s*;/);
+    expect(RUN_SPAWN_BODY).toMatch(/localEndpoint\s*\r?\n?\s*\?\s*planLocalPromptBudget\(\{/);
+    expect(RUN_SPAWN_BODY, 'the budget must never turn into a blocked task')
+      .not.toMatch(/localPromptBudget[\s\S]{0,200}blockedReason/);
+  });
+
+  it('stamps the budget onto the agent record so the card can explain the silence', () => {
+    const registerIdx = AGENT_LIFECYCLE_SRC.indexOf('registerAgent(agentId, task.id, {');
+    const metaSlice = AGENT_LIFECYCLE_SRC.slice(registerIdx, AGENT_LIFECYCLE_SRC.indexOf('\n  });', registerIdx));
+    expect(metaSlice).toMatch(/\blocalPromptBudget,/);
   });
 });

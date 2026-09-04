@@ -34,6 +34,11 @@ const VALID_PROMPT_TABS = ['stages', 'variables', 'job-skills'];
 // when the fetch settles.
 const PAGE_SUBTITLE = 'Customize AI prompts for backend operations';
 
+// Every editable field of a prompt variable, so the dirty check and the blank
+// form can't drift apart when a field is added.
+const VAR_FORM_FIELDS = ['key', 'name', 'category', 'content'];
+const BLANK_VAR_FORM = Object.freeze({ key: '', name: '', category: '', content: '' });
+
 export default function PromptManager() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get('tab');
@@ -118,7 +123,37 @@ export default function PromptManager() {
   }, [isStageDirty]);
 
   // Variable editing (selection is URL-driven — see selectedVar above)
-  const [varForm, setVarForm] = useState({ key: '', name: '', category: '', content: '' });
+  const [varForm, setVarForm] = useState(BLANK_VAR_FORM);
+  // The last form the server confirmed (loaded or saved). Kept as a full copy
+  // rather than a boolean flag so typing an edit and undoing it back to the
+  // original stops counting as dirty. Mirrors the stage/job-skill guards.
+  const [savedVarForm, setSavedVarForm] = useState(BLANK_VAR_FORM);
+  // The variable slot the user asked to open while holding unsaved edits,
+  // awaiting confirmation: `{ key }`, where a null key is the blank "+" form.
+  // An object rather than a bare key so "new variable" is a real pending value
+  // instead of colliding with "nothing pending".
+  const [pendingVar, setPendingVar] = useState(null);
+  // Create mode counts too: a typed-but-unsaved draft is exactly the work the
+  // "+" button and a list click would otherwise throw away, so the baseline is
+  // the blank form rather than a `selectedVar` gate.
+  const isVarDirty = VAR_FORM_FIELDS.some((f) => varForm[f] !== savedVarForm[f]);
+  // Names the open editor the way its list row does, so the discard question
+  // quotes the label the user is actually looking at — the list still shows the
+  // stored name while an unsaved rename sits in the form. A create-mode draft
+  // has no row yet, so it falls back to its typed key.
+  const openVarLabel = selectedVar
+    ? (variables[selectedVar]?.name || selectedVar)
+    : (varForm.name || varForm.key || 'New Variable');
+  // `saveVariable` resumes after an await holding the values its closure
+  // captured at click time, so it reads the live selection through this ref to
+  // tell "still the same editor" from "the user moved on mid-flight".
+  const varLiveRef = useRef(selectedVar);
+  varLiveRef.current = selectedVar;
+  // A clean editor has nothing to discard, so an armed row disarms itself the
+  // moment the edit is undone or saved.
+  useEffect(() => {
+    if (!isVarDirty) setPendingVar(null);
+  }, [isVarDirty]);
 
   // Stage creation
   const [creatingStage, setCreatingStage] = useState(false);
@@ -304,43 +339,89 @@ export default function PromptManager() {
   useEffect(() => {
     if (!selectedVar) {
       varHydratedRef.current = null;
-      setVarForm({ key: '', name: '', category: '', content: '' });
+      setVarForm(BLANK_VAR_FORM);
+      setSavedVarForm(BLANK_VAR_FORM);
       return;
     }
     if (variables[selectedVar] && varHydratedRef.current !== selectedVar) {
       const v = variables[selectedVar];
-      setVarForm({ key: selectedVar, name: v.name || '', category: v.category || '', content: v.content || '' });
+      const loaded = { key: selectedVar, name: v.name || '', category: v.category || '', content: v.content || '' };
+      setVarForm(loaded);
+      // Baselined in the same tick as the editor state, so the dirty check can
+      // never see one without the other.
+      setSavedVarForm(loaded);
       varHydratedRef.current = selectedVar;
     }
   }, [selectedVar, variables]);
 
+  // Saving an existing variable used to deselect it and blank the editor, which
+  // read as a crash rather than a success (#6023). The editor now stays open on
+  // what was just saved, and a create adopts the new key as the selection.
   const saveVariable = async () => {
     setSaving(true);
-    const ok = await (selectedVar
-      ? savePromptVariable(selectedVar, varForm, { silent: true })
-      : createPromptVariable(varForm, { silent: true }))
+    const sentFor = selectedVar;
+    const sentForm = varForm;
+    const ok = await (sentFor
+      ? savePromptVariable(sentFor, sentForm, { silent: true })
+      : createPromptVariable(sentForm, { silent: true }))
       .then(() => true)
       .catch((err) => { toast.error('Failed to save variable: ' + err.message); return false; });
     if (!ok) { setSaving(false); return; }
     setSaving(false);
-    setSelectedVar(null);
-    setVarForm({ key: '', name: '', category: '', content: '' });
+    const label = sentForm.name || sentForm.key;
+    toast.success(`Variable "${label}" ${sentFor ? 'saved' : 'created'}`);
+    // Re-baseline only while the same editor is still open: a save that lands
+    // after the user moved on would otherwise stamp the outgoing variable's
+    // text as the incoming one's saved state. Edits typed while the request was
+    // open stay dirty, which is correct — the server never saw them.
+    if (sentFor === varLiveRef.current) {
+      setSavedVarForm(sentForm);
+      // Claim the hydration slot ahead of the refresh, so neither the reload
+      // nor the selection change re-hydrates over what the user is looking at.
+      if (!sentFor) varHydratedRef.current = sentForm.key;
+    }
     await loadData();
+    // The URL adopts a newly created key only once the refreshed list holds it,
+    // or the editor flashes its "variable could not be found" panel on the way.
+    if (!sentFor && varLiveRef.current === null) setSelectedVar(sentForm.key);
   };
 
   const deleteVariable = async (key) => {
+    const label = variables[key]?.name || key;
     const ok = await deletePromptVariable(key, { silent: true })
       .then(() => true)
       .catch((err) => { toast.error('Failed to delete variable: ' + err.message); return false; });
     if (!ok) return;
-    if (selectedVar === key) setSelectedVar(null);
+    toast.success(`Variable "${label}" deleted`);
+    if (selectedVar === key) switchVariable(null);
     await loadData();
   };
 
-  const newVariable = () => {
-    setSelectedVar(null);
-    setVarForm({ key: '', name: '', category: '', content: '' });
+  // Opening another variable (or the blank "+" form) replaces the editor, so
+  // unsaved edits must be confirmed away first (#6023). The requested slot
+  // parks in `pendingVar` and an inline confirm row takes over its place in the
+  // list — no window.confirm.
+  const requestVariable = (key) => {
+    // Re-clicking the open variable is how a user backs out of the prompt from
+    // the list side; leaving it armed would strand the row mid-question. The
+    // "+" (null key) is exempt: in create mode it still resets the draft.
+    if (key !== null && key === selectedVar) { setPendingVar(null); return; }
+    if (isVarDirty) { cancelVarDelete(); setPendingVar({ key }); return; }
+    switchVariable(key);
   };
+
+  // Editor state is cleared in the same tick as the selection, not left to the
+  // `selectedVar` effect — otherwise the frame between the two renders the
+  // OUTGOING variable's text and dirty badge under the incoming variable's row.
+  const switchVariable = (key) => {
+    setPendingVar(null);
+    varHydratedRef.current = null;
+    setVarForm(BLANK_VAR_FORM);
+    setSavedVarForm(BLANK_VAR_FORM);
+    setSelectedVar(key);
+  };
+
+  const newVariable = () => requestVariable(null);
 
   const createStage = async () => {
     setSaving(true);
@@ -901,8 +982,36 @@ export default function PromptManager() {
               </button>
             </div>
             <div className="space-y-1">
+              {/* The "+" has no list row of its own, so its discard question
+                  takes the top of the list. The dirty check is part of the
+                  render condition, not just of arming: undoing the edit while
+                  the row is armed leaves nothing to discard. */}
+              {pendingVar && pendingVar.key === null && isVarDirty && (
+                <InlineConfirmRow
+                  className="rounded-lg"
+                  question={`Discard unsaved changes to "${openVarLabel}"?`}
+                  confirmText="Discard"
+                  cancelText="Keep editing"
+                  aria-label={`Confirm discarding unsaved changes to ${openVarLabel}`}
+                  autoFocus
+                  onConfirm={() => switchVariable(null)}
+                  onCancel={() => setPendingVar(null)}
+                />
+              )}
               {Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => (
-                isConfirmingVar(key) ? (
+                (pendingVar && pendingVar.key === key && isVarDirty) ? (
+                  <InlineConfirmRow
+                    key={key}
+                    className="rounded-lg"
+                    question={`Discard unsaved changes to "${openVarLabel}"?`}
+                    confirmText="Discard"
+                    cancelText="Keep editing"
+                    aria-label={`Confirm discarding unsaved changes to ${openVarLabel}`}
+                    autoFocus
+                    onConfirm={() => switchVariable(key)}
+                    onCancel={() => setPendingVar(null)}
+                  />
+                ) : isConfirmingVar(key) ? (
                   <InlineConfirmRow
                     key={key}
                     className="rounded-lg"
@@ -923,14 +1032,21 @@ export default function PromptManager() {
                     }`}
                   >
                     <button
-                      onClick={() => setSelectedVar(key)}
+                      onClick={() => requestVariable(key)}
                       className="flex-1 text-left"
                     >
-                      <div className="font-medium">{v.name || key}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium truncate">{v.name || key}</span>
+                        {selectedVar === key && isVarDirty && (
+                          <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-port-warning/20 text-port-warning rounded uppercase font-semibold">
+                            Unsaved
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-gray-500">{v.category || 'uncategorized'}</div>
                     </button>
                     <button
-                      onClick={() => requestVarDelete(key)}
+                      onClick={() => { setPendingVar(null); requestVarDelete(key); }}
                       aria-label={`Delete variable ${v.name || key}`}
                       className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 text-gray-500 hover:text-port-error"
                     >
@@ -947,16 +1063,21 @@ export default function PromptManager() {
             {selectedVar && !variables[selectedVar] ? (
               <div className="bg-port-card border border-port-border rounded-xl p-12 text-center text-gray-500">
                 That variable could not be found — it may have been deleted.{' '}
-                <button onClick={() => setSelectedVar(null)} className="text-port-accent hover:underline">
+                <button onClick={() => switchVariable(null)} className="text-port-accent hover:underline">
                   New variable
                 </button>
               </div>
             ) : (
             <div className="bg-port-card border border-port-border rounded-xl p-4">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium text-white">
-                  {selectedVar ? `Edit: ${selectedVar}` : 'New Variable'}
-                </h3>
+                <div>
+                  <h3 className="text-lg font-medium text-white">
+                    {selectedVar ? `Edit: ${selectedVar}` : 'New Variable'}
+                  </h3>
+                  {isVarDirty && (
+                    <div className="text-xs text-port-warning mt-1">Unsaved changes</div>
+                  )}
+                </div>
                 <button
                   onClick={saveVariable}
                   disabled={saving || !varForm.key || !varForm.content}

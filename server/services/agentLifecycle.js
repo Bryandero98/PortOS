@@ -63,7 +63,7 @@ import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
 import { dropUnsupportedOllamaThinking } from './ollamaAgentContext.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
-import { publicReviewProviderBlock, publicReviewPostureForProfile, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
+import { publicReviewProviderBlock, publicReviewPostureForProfile, supportsTuiPublicReviewActionsProvider, PUBLIC_REVIEW_NO_TOOL_POSTURE } from '../lib/providerVendors.js';
 import { PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE } from '../lib/agentExecutionProfiles.js';
 import { formatPublicReviewInputPrompt } from '../lib/modelAbuseGuard.js';
 import { materializePublicReviewInput, materializePublicReviewPatches, readPublicReviewInputSnapshot, validatePublicReviewModel } from './modelAbuseGuard.js';
@@ -81,7 +81,8 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 // Imported for use here only; the pass-through re-exports that used to sit
 // below them were retired with the `subAgentSpawner.js` barrel (#3450).
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
-import { cloudSwarmThreadCapacity, providerBaseUrl } from './cosLocalEndpointSlots.js';
+import { cloudSwarmThreadCapacity, localEndpointOfProvider, providerBaseUrl } from './cosLocalEndpointSlots.js';
+import { describeLocalPromptBudget, planLocalPromptBudget } from '../lib/localPromptBudget.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 // `releaseRetryHold` is imported STATICALLY here (the TUI/direct-CLI spawners
 // reach for it via `await import()` only because they sit BELOW this module and
@@ -437,12 +438,23 @@ async function runAgentSpawn(task) {
     const publicReviewActions = executionProfile === PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE;
     const publicReview = Boolean(publicReviewPosture);
     const isTui = isTuiProvider(provider);
-    // A public-content stage never runs as an interactive session: a TUI
-    // provider record is spawned headless through its vendor's enforced
-    // recipe (the same binary as its CLI sibling) — the recipe that makes it
-    // eligible in `providerVendors.js` — so the user's enabled TUI providers
-    // are legal stage choices without opening a PTY.
-    const spawnHeadless = publicReview || !isTui;
+    // Stage 3 (`sandboxed-actions`) is the longest-running and least
+    // predictable stage in the pr-reviewer pipeline — it applies a screened
+    // patch and runs the repo's tests — so it is the one an operator actually
+    // wants to attach to and steer. It may run as an interactive session when
+    // its configured provider is a TUI record AND that vendor declares an
+    // attachable recipe (`tui: true`), which keeps every enforcement flag and
+    // drops only the headless output flags.
+    //
+    // Everything else stays headless. The `no-tool` postures (Stage 1's
+    // security scan, Stage 2's eligibility gate) are excluded by design: an
+    // interactive session for a reasoner with no tools buys nothing and widens
+    // the boundary for free. A TUI record whose vendor has no attachable
+    // recipe also stays headless — its ordinary recipe emits `--print`/`exec`
+    // argv that a PTY can neither prompt nor enforce.
+    const publicReviewTui = publicReviewActions && isTui
+      && supportsTuiPublicReviewActionsProvider(provider);
+    const spawnHeadless = !isTui || (publicReview && !publicReviewTui);
     if (publicReview) {
       const scanBlock = publicReviewScanBlock(task);
       if (scanBlock) {
@@ -649,6 +661,44 @@ async function runAgentSpawn(task) {
       : basePrompt;
     const systemPrompt = typeof promptResult === 'string' ? null : promptResult.systemPrompt;
 
+    // What this prompt costs to PREFILL on a model server running on this box
+    // (#6117). A public-review stage inlines the whole screened envelope — ~100K
+    // tokens is ordinary — and a local endpoint spends minutes on that before it
+    // can emit a single line. Nothing else in the dispatch path compares the
+    // assembled prompt against the throughput of the endpoint it is aimed at, so
+    // the run's duration estimate was the review's estimate with none of the
+    // prefill in it, and the card was indistinguishable from a wedged run.
+    //
+    // The dispatch is NEVER refused here: the user chose this provider, and the
+    // window the prompt has to fit is the model's own context window — a
+    // separate condition the provider reports for itself. All we do is raise the
+    // estimate and say so.
+    //
+    // Cloud runs take no async hop at all: `localEndpointOfProvider` answers null
+    // for anything not on this machine, and `planLocalPromptBudget` is skipped.
+    const localEndpoint = localEndpointOfProvider(provider);
+    const localPromptBudget = localEndpoint
+      ? planLocalPromptBudget({
+        prompt,
+        endpoint: localEndpoint,
+        // The learned per-task-type average — the estimate being raised. A
+        // dynamic import for the same reason the workspace snapshot above uses
+        // one: it keeps the task-learning graph out of this hot module's load
+        // path, and a failed read means "nothing learned", not "zero".
+        baseDurationMs: await import('./taskLearning.js')
+          .then((tl) => tl.getTaskDurationEstimate(task.description))
+          .then((estimate) => estimate?.estimatedDurationMs ?? null)
+          .catch(() => null),
+      })
+      : null;
+    if (localPromptBudget?.longPrefill) {
+      emitLog('info', `🐢 Agent ${agentId} ${describeLocalPromptBudget(localPromptBudget)}`, {
+        agentId,
+        taskId: task.id,
+        promptTokens: localPromptBudget.promptTokens,
+      });
+    }
+
     // Create agent directory
     const agentDir = join(AGENTS_DIR, agentId);
     if (!existsSync(agentDir)) {
@@ -729,6 +779,11 @@ async function runAgentSpawn(task) {
       // slot key: a slot key is null for a cloud provider, and stamping null
       // would re-open the mid-run-edit hole this exists to close.
       providerEndpoint: providerBaseUrl(provider),
+      // What this run's prompt costs to prefill on a LOCAL endpoint, and the
+      // duration estimate raised by it (#6117). `null` for a cloud provider and
+      // for a run with nothing assembled to measure — the card must read that as
+      // "no estimate", never as a small one, so it stays absent rather than 0.
+      localPromptBudget,
       leanMode,
       // Whether THIS run's prompt told the agent to push, open, review, and merge
       // its own PR. Persisted rather than re-derived at cleanup time: the two
@@ -767,9 +822,10 @@ async function runAgentSpawn(task) {
       // The public-review posture this run executes under (null for an ordinary
       // task). Projected beside `executionMode` because the UI cannot otherwise
       // explain why the card has no "Open Shell" link: a public-review stage is
-      // forced headless (`spawnHeadless = publicReview || !isTui` above) even
-      // when the user configured it onto a TUI provider, so without this the
-      // card is indistinguishable from an agent whose PTY failed to attach.
+      // forced headless (`spawnHeadless` above) unless it is the sandboxed-
+      // actions stage on a TUI provider whose vendor declares an attachable
+      // recipe, so without this the card is indistinguishable from an agent
+      // whose PTY failed to attach.
       publicReviewPosture,
       taskAnalysisType: task.metadata?.analysisType || null,
       taskReviewType: task.metadata?.reviewType || null,
@@ -937,7 +993,7 @@ async function runAgentSpawn(task) {
     const maxConcurrentThreads = cloudSwarmThreadCapacity(runProvider, task.metadata?.swarmCount);
     const safetyProfile = publicReview ? executionProfile : null;
     const cliConfig = !spawnHeadless
-      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads })
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile })
       : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort, maxConcurrentThreads, safetyProfile });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
@@ -977,6 +1033,7 @@ async function runAgentSpawn(task) {
         isTruthyMetaFn: isTruthyMeta,
         leanMode,
         useDurableRunner: dispatchUseRunner,
+        safetyProfile,
       });
     }
     if (dispatchUseRunner) {

@@ -131,6 +131,22 @@ describe('IssuesTab', () => {
     expect(chip.className).toContain('text-gray-300');
   });
 
+  it('shows a comment count only for issues that have comments', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      { ...ISSUE, number: 42, title: 'Crash on save', commentCount: 3 },
+      { ...ISSUE, number: 43, title: 'Add CSV export', commentCount: 1 },
+      { ...ISSUE, number: 44, title: 'Untouched', commentCount: 0 },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    // Spelled out rather than a bare digit beside an icon, so the count reads
+    // the same to a screen reader as its `opened by …` / `updated …` siblings.
+    expect(screen.getByText(/3 comments/)).toBeInTheDocument();
+    expect(screen.getByText(/1 comment$/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 comment/)).not.toBeInTheDocument();
+  });
+
   it('keeps the description collapsed until the user expands it', async () => {
     await renderTab();
 

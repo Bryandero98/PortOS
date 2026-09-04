@@ -13,7 +13,8 @@ import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { createImmediateFallbackSignalDetector, ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { killProcessTree, resolveWindowsExecutable, prepareWindowsSafeSpawn, guardChildStdin, deliverChildStdin } from '../lib/bufferedSpawn.js';
 import { isHostShuttingDown } from '../lib/hostShutdown.js';
-import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
+// `./ollamaAgentContext.js` (and the ollama daemon manager behind it) is imported
+// lazily inside the predicate-gated branch below, NOT here — see that call site.
 import { isOllamaBackedProvider } from './providers.js';
 import {
   setAIToolkitInstance,
@@ -384,9 +385,12 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, sc
   // hold the daemon at the provider's configured window (or warn) first. See
   // services/ollamaAgentContext.js.
   // Gated on the predicate here (not just inside the helper) so a cloud-provider
-  // run — the overwhelmingly common case — takes no async hop at all.
+  // run — the overwhelmingly common case — takes no async hop at all, and the
+  // import sits INSIDE that gate so it never instantiates the daemon manager's
+  // subtree either. ~160 suites reach runner.js and none of them run ollama.
   const ollamaContext = isOllamaBackedProvider(provider)
-    ? await ensureOllamaAgentContext(provider, { model: provider.defaultModel ?? null })
+    ? await import('./ollamaAgentContext.js')
+      .then(({ ensureOllamaAgentContext }) => ensureOllamaAgentContext(provider, { model: provider.defaultModel ?? null }))
     : null;
   if (ollamaContext?.warning) onData?.(`${ollamaContext.warning}\n`);
 

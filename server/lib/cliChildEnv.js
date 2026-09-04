@@ -120,6 +120,18 @@ function claudeLocalEnvDefaults(provider) {
  * @returns {object} a fresh object holding only these layers
  */
 export function composeProviderEnv({ before = null, provider = null, model = null, extra = null, safetyProfile = null } = {}) {
+  // `authOnly` marks an identity-only view of a provider — `cliProviderAuthDescriptor`'s
+  // `{ id, command, <local marker> }`, with no `envVars`, `models`, `defaultModel`,
+  // or `thinking`. It exists so the CoS runner can keep that provider's ambient
+  // auth allowlist (`buildSafeCliBaseEnv`, which still receives it); it is NOT a
+  // record to generate env from. Every generator below sits ABOVE `before` in
+  // layer order, so running one on a partial view overwrites the complete value
+  // PortOS already composed and POSTed. That is how a runner-owned OpenCode
+  // agent lost its declared-models map: rebuilt empty from the descriptor,
+  // `--model ollama/<id>` stopped resolving, and OpenCode silently fell back to
+  // the first model in its own catalog (a hosted OpenCode Zen model) instead of
+  // the local model the run was dispatched with.
+  if (provider?.authOnly) return { ...(before || {}), ...(extra || {}) };
   return {
     ...(before || {}),
     ...claudeLocalEnvDefaults(provider),

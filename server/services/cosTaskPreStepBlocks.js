@@ -531,7 +531,7 @@ export async function resolveRepoSyncBlock(app, taskType, metadata) {
  */
 export async function resolveIssueReconcileBlock(app, taskType, metadata, taskSchedule) {
   if (taskType !== 'issue-reconcile') return { skip: false, block: '' };
-  const { reconcile, zombieSignature, formatZombiesForPrompt } = await import('./issueReconcile.js');
+  const { reconcile, releaseAbandonedClaims, zombieSignature, formatZombiesForPrompt } = await import('./issueReconcile.js');
   const autoClose = metadata.autoClose !== false;
   // Routing mirrors resolveAppWorkTracker: JIRA is NEVER auto-selected from the
   // git host — it needs explicit per-app config.
@@ -549,6 +549,19 @@ export async function resolveIssueReconcileBlock(app, taskType, metadata, taskSc
   });
   // null = unsupported remote OR transient failure → skip WITHOUT parking.
   if (!result) return { skip: true };
+  // An abandoned volunteer claim needs no model to resolve — release it here and
+  // now, before the zombie gate, so the `in-progress` marker the claim prompt and
+  // the issue-watcher stamp always has a releaser (issue #6112). Failures are
+  // logged inside and simply retried next pass.
+  const releasedCount = await releaseAbandonedClaims(result.abandoned, {
+    forge: result.forge, repoSpec: result.repoSpec, fullName: result.fullName,
+  }).catch((err) => {
+    emitLog('warn', `issue-reconcile could not release abandoned claims for ${app.name}: ${err.message}`, { appId: app.id });
+    return 0;
+  });
+  if (releasedCount) {
+    emitLog('info', `🔓 issue-reconcile ${app.name}: released ${releasedCount} abandoned claim(s) back to the queue`, { appId: app.id, analysisType: taskType });
+  }
   if (result.stalled.length) {
     // In-progress issues with NO merged PR and NO live claim — a different stuck
     // state issue-reconcile deliberately does NOT auto-heal. Surface them.

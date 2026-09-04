@@ -1006,12 +1006,28 @@ export async function finalizeAgent({
     task.metadata = { ...task.metadata, ...hookMetadata };
   }
   const hookRejected = !terminatedByUser && hookResult?.ran && hookOutcome?.accepted === false;
-  if (hookRejected && success) {
+  // A PERMANENT hook rejection (#6124) — the stage produced no parseable output
+  // at all — re-fails identically on every retry, so it blocks instead of
+  // burning MAX_TASK_RETRIES spawns and (for a pipeline whose generator keys its
+  // dedup on a live task) re-generating behind them. Honoured only when the run
+  // named no other cause: an exit-0 run, or a failure whose category is the
+  // `unknown` that an empty run produces. A run that failed for a NAMED reason
+  // (rate-limit, auth-error, a killed provider) keeps its ordinary retries —
+  // that output is missing because the environment misbehaved, not because the
+  // stage can never produce one.
+  const causeNamed = !success && errorAnalysis?.category && errorAnalysis.category !== 'unknown';
+  const hookPermanent = hookRejected && hookOutcome?.permanent === true && !causeNamed;
+  // When the run had already failed, `taskUpdate` holds its retry decision. Only
+  // escalate a decision that is still retrying — a task this run already blocked
+  // is terminal, and re-resolving it would file a second investigation task.
+  const escalatePermanent = hookPermanent && !success && taskUpdate?.status !== 'blocked';
+  if (hookRejected && (success || escalatePermanent)) {
     success = false;
     errorAnalysis = {
       category: hookOutcome.reason || 'output-hook-rejected',
       message: hookOutcome.message || 'The scheduled task output was rejected by its validation hook',
       actionable: false,
+      ...(hookPermanent && { permanent: true }),
       origin: 'task-output-hook',
     };
     taskUpdate = await resolveFailedTaskUpdate(task, errorAnalysis, agentId);

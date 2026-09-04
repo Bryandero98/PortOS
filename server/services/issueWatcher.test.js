@@ -264,8 +264,14 @@ describe('buildTaskInput', () => {
     const result = await buildTaskInput({ app: apps.get(APP.id) });
 
     expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    // The volunteer-claim policy in full (lib/dispatchLabels.js#volunteerClaimLabels):
+    // assignee + `in-progress` in one edit, then the contributor invitations
+    // retired one at a time — the issue is taken, so it must stop advertising
+    // itself, and the claim prompt's handoff leaves exactly this state too.
     expect(ghCalls('issue', 'edit')).toEqual([
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice', '--add-label', 'in-progress'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'good first issue'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'help wanted'],
     ]);
     expect(apps.get(APP.id).issueWatcherState.cursor).toMatch(/^2026-/);
   });
@@ -278,7 +284,7 @@ describe('buildTaskInput', () => {
     const result = await buildTaskInput({ app: apps.get(APP.id) });
 
     expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
-    expect(ghCalls('issue', 'edit')).toHaveLength(1);
+    expect(ghCalls('issue', 'edit')).toHaveLength(3);
   });
 
   it('creates the in-progress label and retries when the repo has never defined it', async () => {
@@ -305,12 +311,33 @@ describe('buildTaskInput', () => {
       '--color', dispatchLabelSpec(IN_PROGRESS_LABEL).color,
       '--description', dispatchLabelSpec(IN_PROGRESS_LABEL).description,
     ]);
-    // Combined edit (rejected) → assignee alone → label alone.
+    // Combined edit (rejected) → assignee alone → label alone → invitations.
     expect(ghCalls('issue', 'edit')).toEqual([
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice', '--add-label', 'in-progress'],
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-assignee', 'alice'],
       ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--add-label', 'in-progress'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'good first issue'],
+      ['issue', 'edit', '12', '--repo', 'github.com/o/r', '--remove-label', 'help wanted'],
     ]);
+  });
+
+  // `--remove-label` errors when the named label is absent, and an issue
+  // carrying neither invitation is the COMMON case — that must never take the
+  // assignment down with it, or cost a cognition run.
+  it('keeps a volunteer assignment when neither contributor label is present to release', async () => {
+    installVolunteerGhMock();
+    interceptGh((args) => {
+      if (args[0] === 'issue' && args[1] === 'edit' && args.includes('--remove-label')) {
+        throw new Error("HTTP 422: 'good first issue' not found");
+      }
+      return undefined;
+    });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
+    expect(ghCalls('issue', 'edit').filter((c) => c.includes('--remove-label'))).toHaveLength(2);
   });
 
   it('keeps a volunteer assignment that succeeded when the in-progress label cannot be applied', async () => {
@@ -327,6 +354,64 @@ describe('buildTaskInput', () => {
     // the reasoning agent — a lost label must not re-spend a cognition run.
     expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
     expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
+  });
+
+  // A carried-over pending comment is the only way an issue that is no longer
+  // open reaches the reasoning agent: the gather query is state=open, but the
+  // pending queue is only drained by a decision. The output pass refuses to act
+  // on a closed issue, so such an entry could only be re-prompted every run
+  // until it timed out and raised a false "needs attention" alarm.
+  it('drops a carried-over comment whose issue has closed since it was gathered', async () => {
+    apps.set(APP.id, {
+      ...APP,
+      issueWatcherState: {
+        cursor: '2026-08-29T00:00:00.000Z',
+        pendingIssueComments: [{
+          issueNumber: 6072,
+          issueTitle: 'Already resolved',
+          issueBody: 'done',
+          commentId: 4242,
+          commentAuthor: 'alice',
+          commentBody: 'What do you think?',
+          commentUrl: 'https://github.com/o/r/issues/6072#issuecomment-4242',
+          claimRequest: false,
+          claimAssignable: false,
+        }],
+      },
+    });
+    installDefaultGhMock({ pr: null, issueDetails: { 6072: { number: 6072, state: 'closed', title: 'Already resolved' } } });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result).toEqual({ skip: { reason: 'no-cognitive-activity' } });
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([]);
+  });
+
+  // An unreachable forge is not evidence that an issue closed — losing the
+  // comment would silently drop a real question from a contributor.
+  it('keeps a carried-over comment when the issue re-read fails', async () => {
+    const pending = {
+      issueNumber: 6072,
+      issueTitle: 'Still open',
+      issueBody: 'body',
+      commentId: 4242,
+      commentAuthor: 'alice',
+      commentBody: 'What do you think?',
+      commentUrl: 'https://github.com/o/r/issues/6072#issuecomment-4242',
+      claimRequest: false,
+      claimAssignable: false,
+    };
+    apps.set(APP.id, { ...APP, issueWatcherState: { cursor: '2026-08-29T00:00:00.000Z', pendingIssueComments: [pending] } });
+    installDefaultGhMock({ pr: null });
+    interceptGh((args) => {
+      if (args[0] === 'api' && args.includes('repos/o/r/issues/6072')) throw new Error('HTTP 503');
+      return undefined;
+    });
+
+    const result = await buildTaskInput({ app: apps.get(APP.id) });
+
+    expect(result.prompt).toContain('Issue #6072: Still open');
+    expect(apps.get(APP.id).issueWatcherState.pendingIssueComments).toEqual([{ ...pending, ticks: 0 }]);
   });
 
   it('continues to cognition when an explicit volunteer cannot be assigned', async () => {
