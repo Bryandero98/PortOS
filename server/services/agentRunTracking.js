@@ -25,12 +25,8 @@ const RUNS_DIR = PATHS.runs;
  * @param {{ id: string, name: string, defaultModel?: string }} options.provider
  * @param {string} options.workspacePath
  * @param {string} [options.appName] - Defaults to 'portos'.
- * @param {{ role: string, requestedProvider?: string, providerId: string, model?: string,
- *           substitution?: { role: string, from: string, to: string, reason?: string } }}
- *   [options.orchestrationLane] - The tier this run was dispatched as, when the
- *   task runs under an orchestration profile (#5993). Absent for `direct` runs.
  */
-export async function createAgentRun({ agentId, task, model, provider, workspacePath, appName, orchestrationLane = null }) {
+export async function createAgentRun({ agentId, task, model, provider, workspacePath, appName }) {
   const runId = uuidv4();
   const runDir = join(RUNS_DIR, runId);
 
@@ -53,7 +49,6 @@ export async function createAgentRun({ agentId, task, model, provider, workspace
     // Full prompt size (chars) for input-token estimation on completion —
     // `prompt` above is truncated for display.
     promptLength: (task.description || '').length,
-    ...(orchestrationLane ? { orchestrationLane } : {}),
     startTime: new Date().toISOString(),
     endTime: null,
     duration: null,
@@ -88,12 +83,7 @@ export async function createAgentRun({ agentId, task, model, provider, workspace
       model: metadata.model,
       workspacePath,
       workspaceName: metadata.workspaceName,
-      promptChars: metadata.promptLength,
-      // Orchestration accounting (#5993): the role, and — when the lane took its
-      // configured same-role alternate — the provider it was configured for. Both
-      // omitted on a `direct` run so the event shape is unchanged there.
-      ...(orchestrationLane?.role ? { orchestrationRole: orchestrationLane.role } : {}),
-      ...(orchestrationLane?.substitution?.from ? { laneSubstitutedFrom: orchestrationLane.substitution.from } : {}),
+      promptChars: metadata.promptLength
     }
   });
 

@@ -751,7 +751,7 @@ async function writeTaskUpdate(taskId, updates, taskType, { now, suppressDequeue
   // agent record then read its own pause as spent and spawned a SECOND agent on a
   // fresh task. The clear belongs at the transition, not at one caller.
   if (updates.status && updates.status !== 'blocked' && tasks[taskIndex].status === 'blocked') {
-    for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'orchestrationLane', 'failureCount', 'lastErrorCategory', 'lastFailureAt', ...PAUSE_METADATA_KEYS]) {
+    for (const key of ['blocker', 'blockedReason', 'blockedCategory', 'blockedAt', 'failureCount', 'lastErrorCategory', 'lastFailureAt', ...PAUSE_METADATA_KEYS]) {
       delete updatedMetadata[key];
     }
   }
