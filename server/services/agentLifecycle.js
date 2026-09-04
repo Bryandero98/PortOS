@@ -444,7 +444,7 @@ async function runAgentSpawn(task) {
     // patch and runs the repo's tests — so it is the one an operator actually
     // wants to attach to and steer. It may run as an interactive session when
     // its configured provider is a TUI record AND that vendor declares an
-    // attachable recipe (`tui: true`), which keeps every enforcement flag and
+    // attachable recipe (`tuiSpawnArgs`), which keeps every enforcement flag and
     // drops only the headless output flags.
     //
     // Everything else stays headless. The `no-tool` postures (Stage 1's

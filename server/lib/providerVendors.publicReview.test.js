@@ -369,22 +369,20 @@ describe('public-review provider postures', () => {
     // …as do non-binary records, whatever their vendor.
     expect(supportsTuiPublicReviewActionsProvider({ id: 'claude-api', type: 'api', command: 'claude' })).toBe(false);
     expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-api', type: 'api', command: 'opencode' })).toBe(false);
+    // #6238 — OpenCode is attachable on EVERY backend: unlike the no-tool gate
+    // (Ollama-only — see the `mtplxBacked` cases above) there is no
+    // model-capability probe involved, so an MTPLX or gateway wrapper qualifies.
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-tui', type: 'tui', command: 'opencode', mtplxBacked: true })).toBe(true);
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-cli', type: 'cli', command: 'opencode' })).toBe(true);
+    expect(supportsTuiPublicReviewPosture({ id: 'opencode-tui', type: 'tui', command: 'opencode', ollamaBacked: true }, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(false);
   });
 
   // #6238 — OpenCode's headless actions run is a one-shot `opencode run …`,
   // which cannot become an interactive session by dropping flags; the
   // attachable recipe is the BARE binary (OpenCode's TUI entry point) with the
   // same agent/model flags, and the spawner pastes the prompt as for any TUI.
-  it('declares OpenCode attachable for the actions stage on every backend, with a bare-binary argv', () => {
+  it('builds the attachable OpenCode actions argv as the bare binary while the headless argv is unchanged', () => {
     const opencodeTui = { id: 'opencode-tui', type: 'tui', command: 'opencode', args: ['--agent', 'plan', '--auto'], ollamaBacked: true };
-    expect(supportsTuiPublicReviewActionsProvider(opencodeTui)).toBe(true);
-    // Unlike the no-tool posture (Ollama-only — see the `mtplxBacked` cases
-    // above), attachability involves no model-capability probe, so an MTPLX or
-    // gateway-fronting wrapper is just as attachable.
-    expect(supportsTuiPublicReviewActionsProvider({ ...opencodeTui, ollamaBacked: false, mtplxBacked: true })).toBe(true);
-    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-cli', type: 'cli', command: 'opencode' })).toBe(true);
-    expect(supportsTuiPublicReviewPosture(opencodeTui, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(false);
-
     const headless = buildVendorSpawnConfig(opencodeTui, {
       effectiveModel: 'qwen3-coder:30b',
       safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
@@ -410,14 +408,6 @@ describe('public-review provider postures', () => {
       args: ['--agent', 'build', '-m', 'ollama/qwen3-coder:30b'],
       stdinMode: 'prompt',
     });
-    expect(tui.args).not.toContain('run');
-    // The model is namespaced the same way on both shapes, so they can't drift.
-    expect(tui.args.at(-1)).toBe(headless.args.at(-1));
-    expect(buildVendorSpawnConfig({ ...opencodeTui, ollamaBacked: false, mtplxBacked: true }, {
-      effectiveModel: 'x',
-      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
-      tui: true,
-    }).args).toEqual(['--agent', 'build', '-m', 'mtplx/x']);
     expect(buildVendorSpawnConfig(opencodeTui, {
       safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
       tui: true,

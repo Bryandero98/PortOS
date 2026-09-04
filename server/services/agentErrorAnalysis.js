@@ -221,7 +221,7 @@ export const ERROR_PATTERNS = [
       const requires = redactFailureSnippet(match[2] || '').replace(/[.,;]+$/, '').slice(0, CONFIG_EXPECTED_MAX_CHARS);
       return {
         message: `Provider CLI rejected the flag ${flag}`,
-        suggestedFix: `The CLI exited while parsing its arguments, before the prompt was delivered, so every retry fails identically.${requires ? ` It reports that \`${flag}\` only works with ${requires}.` : ''} PortOS builds this argv itself — fix the posture/vendor recipe in server/lib/providerVendors.js (an attachable \`tui: true\` recipe must drop every flag that requires \`--print\`), not the provider record.`,
+        suggestedFix: `The CLI exited while parsing its arguments, before the prompt was delivered, so every retry fails identically.${requires ? ` It reports that \`${flag}\` only works with ${requires}.` : ''} PortOS builds this argv itself — fix the posture/vendor recipe in server/lib/providerVendors.js (an attachable \`tuiSpawnArgs\` recipe must drop every flag that requires \`--print\`), not the provider record.`,
         rejectedCliFlag: flag
       };
     }

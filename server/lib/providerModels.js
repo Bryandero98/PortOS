@@ -619,6 +619,13 @@ export function isOpencodeCommand(command) {
 export const OPENCODE_PUBLIC_REVIEW_AGENT = 'plan';
 
 /**
+ * OpenCode's built-in tool-enabled agent — the one an attachable Stage 3
+ * session runs as (`providerVendors.js`) and the one `hardenOpencodeConfigForNoTool`
+ * must still empty. Homed here for the same import-graph reason as above.
+ */
+export const OPENCODE_BUILD_AGENT = 'build';
+
+/**
  * OpenCode addresses models as `provider/model` (e.g. `ollama/qwen2.5:7b`). The
  * OpenCode Ollama provider declares its local daemon under the config-provider
  * key `ollama` (via OPENCODE_CONFIG_CONTENT), so the bare Ollama model id stored
