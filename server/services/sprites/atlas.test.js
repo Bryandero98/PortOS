@@ -20,9 +20,11 @@ import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
 import {
   lockAllAnchors as lockAllAnchorsFixture,
+  lockAllAnchorsReal,
   placeCandidate,
   trackSpan as fullSpan,
   writeWalkFramePng,
+  normalizeManifestForComparison,
 } from './spriteTestFixtures.js';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-atlas-test-'));
@@ -69,7 +71,7 @@ const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 async function lockAllAnchors(id) {
   await records.createRecord({ kind: 'character', name: 'Atlas Walker' }, id);
-  await lockAllAnchorsFixture(TEST_ROOT, id, { lockReference, directions: SPRITE_DIRECTIONS });
+  await lockAllAnchorsFixture(TEST_ROOT, id, { lockReference, directions: SPRITE_DIRECTIONS, records });
 }
 
 const walkFramePng = writeWalkFramePng;
@@ -299,6 +301,48 @@ async function replaceFinalizedFrame(recordId, direction, index, bytes) {
   await writeFile(join(dir, walkSetRel), JSON.stringify(walkSet));
   return frame.phase;
 }
+
+// #6180 — this suite's own `lockAllAnchors(id)` wrapper always requests the
+// full SPRITE_DIRECTIONS set, so its 19 call sites are all fully covered by
+// spriteTestFixtures.js's materialized fast path. This is the acceptance
+// gate for that: it proves a materialized character is byte-for-byte
+// indistinguishable (after id normalization) from one the real per-anchor
+// Sharp lock pipeline built.
+describe('lockAllAnchors fixture materialization (#6180)', () => {
+  it('matches the real lock pipeline byte-for-byte (file names, PNG bytes, manifest, record state) after id normalization', async () => {
+    const realId = newId();
+    await records.createRecord({ kind: 'character', name: 'Atlas Walker' }, realId);
+    await lockAllAnchorsReal(TEST_ROOT, realId, { lockReference, directions: SPRITE_DIRECTIONS });
+    const fastId = newId();
+    await lockAllAnchors(fastId);
+
+    const { listSpriteAssets } = await import('./paths.js');
+    const [realAssets, fastAssets] = await Promise.all([
+      listSpriteAssets(realId, { subdir: 'reference', metadata: false }),
+      listSpriteAssets(fastId, { subdir: 'reference', metadata: false }),
+    ]);
+    const idNormalizedNames = (id, assets) => assets.map((a) => a.path.split(id).join('<id>')).sort();
+    expect(idNormalizedNames(fastId, fastAssets)).toEqual(idNormalizedNames(realId, realAssets));
+
+    for (const asset of realAssets.filter((a) => a.path.endsWith('.png'))) {
+      const fastRel = asset.path.split(realId).join(fastId);
+      const [realBytes, fastBytes] = await Promise.all([
+        readFile(join(TEST_ROOT, 'sprites', realId, asset.path)),
+        readFile(join(TEST_ROOT, 'sprites', fastId, fastRel)),
+      ]);
+      expect(fastBytes.equals(realBytes)).toBe(true);
+    }
+
+    const [realManifest, fastManifest] = await Promise.all([loadManifest(realId), loadManifest(fastId)]);
+    expect(normalizeManifestForComparison(fastManifest, fastId))
+      .toEqual(normalizeManifestForComparison(realManifest, realId));
+
+    const [realRecord, fastRecord] = await Promise.all([records.getRecord(realId), records.getRecord(fastId)]);
+    expect(fastRecord.chromaKey).toBe(realRecord.chromaKey);
+    expect(fastRecord.status).toBe(realRecord.status);
+    expect(fastRecord.status).toBe('reference-complete');
+  });
+});
 
 beforeEach(() => {
   rmSync(join(TEST_ROOT, 'sprite-records.json'), { force: true });
