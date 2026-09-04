@@ -125,6 +125,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `catalogUniverseTags.js` | Pure transform that rewrites legacy machine universe tags (`from-universe`, `universe:<id>`) on backfilled catalog ingredients into friendly universe-NAME tags, preserving user tags + the structured `catalog_ingredient_refs` link. Used by the boot-time repair and the bible→catalog backfill. |
 | `comicScriptParser.js` | Marvel/DC-format comic script parser. |
 | `composeStyledPrompt.js` | Compose user prompt + negative with an optional style preset. |
+| `scriptVideoCompiler.js` | Compiles a scene script + bible into beat-level continuous-video clip specs (duration/frame-grid snapping, byte-stable descriptor injection, chain-length fresh-cut rule). |
 | `creativeDirectorPresets.js` | Locked-at-creation aspect ratio + quality presets for the Creative Director. |
 | `creativeLatitude.js` | The IP-latitude clause every creative LLM request carries (`withCreativeLatitude`, `CREATIVE_LATITUDE_TOKENS`), plus the one creative-vs-operational table both stamp keys are matched against (`isCreativeStage` for stage names, `isCreativeRunSource` for run `source` tags). |
 | `universeBibleCompleteness.js` | Is a universe bible entry actually described? The shared per-kind expand-field vocabulary (`BIBLE_EXPAND_FIELDS`, `BIBLE_CORE_FIELDS`) and the `core`/`full` completeness predicates the quota-burn describe job scans with. Pure. |
