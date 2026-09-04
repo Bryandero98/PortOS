@@ -89,7 +89,7 @@ The `selectModelForTask` function routes tasks to appropriate model tiers:
 | domainAutonomy | execute per domain | Off, dry-run, or execute policy for each automatic-work domain |
 | domainBudgets | unlimited | Optional daily action and runtime caps per domain |
 | persistentMindProfile.enabled | false | Configure a persistent-mind profile without starting it |
-| avatarStyle | svg | Default CoS UI avatar style |
+| avatarStyle | svg | Default CoS UI avatar style (`svg`, `ascii`, `core`, the 3D styles, or a `rigged-<modelId>` record) |
 
 ## API Endpoints
 

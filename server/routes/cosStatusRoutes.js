@@ -46,7 +46,7 @@ export const cosConfigSchema = z.object({
   // the same traversal guard `server/routes/avatar.js` enforces), so unknown
   // spellings still 400 here instead of persisting a style nothing can render.
   avatarStyle: z.union([
-    z.enum(['svg', 'ascii', 'cyber', 'sigil', 'esoteric', 'nexus', 'muse', 'miniMaleC', 'miniFemaleD']),
+    z.enum(['svg', 'ascii', 'cyber', 'sigil', 'esoteric', 'nexus', 'muse', 'core', 'miniMaleC', 'miniFemaleD']),
     z.string().startsWith(RIGGED_VARIANT_PREFIX).refine(
       (value) => AVATAR_VARIANT_PATTERN.test(value.slice(RIGGED_VARIANT_PREFIX.length)),
     ),
