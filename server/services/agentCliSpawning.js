@@ -26,6 +26,7 @@ import { normalizeReviewers } from '../lib/validation.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { safeJSONParse, PATHS, writeFileGuarded } from '../lib/fileUtils.js';
 import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
+import { isKnownCliStderrNoise } from '../lib/cliStderrNoise.js';
 import { createStreamingAnsiStripper } from '../lib/ansiStrip.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
@@ -686,7 +687,8 @@ export async function spawnDirectly({
         // A chunk that decolors down to whitespace was pure terminal control
         // (`opencode run` emits a bare reset per progress redraw). Tagging it
         // `[stderr]` would add one blank noise line to the tail per redraw.
-        if (!text.trim()) return;
+        const trimmed = text.trim();
+        if (!trimmed || isKnownCliStderrNoise(trimmed)) return;
         outputBuffer += `[stderr] ${text}`;
         await writeFileGuarded(outputFile, outputBuffer).catch(() => {});
         outputBatcher.push(`[stderr] ${text}`);
