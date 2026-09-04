@@ -19,10 +19,15 @@ vi.mock('./localModelAssessmentStore.js', () => ({
   getMeasuredFits: async (backend) => measured[backend] || {},
 }));
 // Forces assessDownloadPreflight's verdict on its NEXT call only, then
-// reverts to real behavior (real statfs) — so a two-model migrateBackend
-// test can make model #1's preflight fail without also failing model #2's,
-// and the other ~14 installModel/migrateBackend call sites in this file
-// that never set `once` are unaffected.
+// reverts to a fake-abundant statfs — so a two-model migrateBackend test can
+// make model #1's preflight fail without also failing model #2's, and the
+// other ~14 installModel/migrateBackend call sites in this file that never
+// set `once` are unaffected. The statfs itself is faked (not real) so these
+// tests never depend on how much free space the machine running them
+// actually has — a real disk under a curated model's advertised size (e.g.
+// the 16.5GB Qwen3.8-27B GGUF) would otherwise force every plain-install
+// test into a false DISK_INSUFFICIENT.
+const { ABUNDANT_STATFS } = vi.hoisted(() => ({ ABUNDANT_STATFS: async () => ({ bavail: 1024 ** 4, bsize: 1 }) }));
 const preflightOverride = vi.hoisted(() => ({ once: null, lastCall: null }));
 vi.mock('../lib/downloadPreflight.js', async (importOriginal) => {
   const actual = await importOriginal();
@@ -30,7 +35,7 @@ vi.mock('../lib/downloadPreflight.js', async (importOriginal) => {
     ...actual,
     assessDownloadPreflight: async (opts) => {
       preflightOverride.lastCall = opts;
-      const real = await actual.assessDownloadPreflight(opts);
+      const real = await actual.assessDownloadPreflight({ ...opts, statfsImpl: ABUNDANT_STATFS });
       if (!preflightOverride.once) return real;
       const verdict = preflightOverride.once;
       preflightOverride.once = null;
