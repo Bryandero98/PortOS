@@ -6,7 +6,11 @@ import { useAutoRefetch } from './useAutoRefetch';
 import useMounted from './useMounted';
 
 const POLL_MS = 2000;
-const MAX_ATTEMPTS = 30;
+// The window the server is actually down for spans pm2-stop through
+// npm-install and the client build — commonly well past a minute on a cold
+// dependency install (issue #6169) — so the ceiling needs real headroom past
+// that, not just past a bare restart. 150 * 2s = 5 minutes.
+const MAX_ATTEMPTS = 150;
 // A raw 'disconnect' is not proof the update tore the process down — PortOS is
 // commonly used remotely over Tailscale, and a network blip during the early
 // steps (git-pull/submodules, while the server is very much alive) fires one

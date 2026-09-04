@@ -1,9 +1,8 @@
-import { spawn } from '../lib/childProcess.js';
 import { readFile, unlink } from 'fs/promises';
 import { join } from 'path';
 import { PATHS } from '../lib/fileUtils.js';
 import { spawnDetached, isDetachedRunning } from '../lib/detachedSpawn.js';
-import { recordUpdateResult } from './updateChecker.js';
+import { recordUpdateResult, getCurrentVersion } from './updateChecker.js';
 
 const UPDATE_SH = join(PATHS.root, 'update.sh');
 const UPDATE_PS1 = join(PATHS.root, 'update.ps1');
@@ -11,24 +10,33 @@ const UPDATE_PS1 = join(PATHS.root, 'update.ps1');
 /**
  * Execute the PortOS update script (git pull to latest).
  *
- * On POSIX the script is launched via spawnDetached's double-fork so it
- * reparents to init and SURVIVES pm2's TreeKill. A plain
- * `spawn(..., { detached: true })` does NOT survive: pm2 walks PPID
- * (`ps -e -o pid=,ppid=`), not the process group, so when update.sh reaches
- * its `pm2-stop` step (`pm2 delete ecosystem.config.cjs`) the script itself —
- * still a PPID-child of portos-server — was tree-killed with the server,
- * leaving every app stopped with nothing alive to run the final `pm2 start`
- * (the reconcile/update "shuts down but never comes back" failure). See the
- * rationale in `server/lib/detachedSpawn.js`.
+ * The script is launched via spawnDetached so it SURVIVES pm2's TreeKill. A
+ * plain `spawn(..., { detached: true })` does NOT survive: on POSIX, pm2
+ * walks PPID (`ps -e -o pid=,ppid=`), not the process group, so when
+ * update.sh reaches its `pm2-stop` step (`pm2 delete ecosystem.config.cjs`)
+ * the script itself — still a PPID-child of portos-server — was tree-killed
+ * with the server, leaving every app stopped with nothing alive to run the
+ * final `pm2 start` (the reconcile/update "shuts down but never comes back"
+ * failure). See the rationale in `server/lib/detachedSpawn.js`.
  *
- * Windows keeps the prior plain-spawn behavior (pm2 there is taskkill-based;
- * detached survival is a POSIX-only guarantee — same trade-off as
- * spawnDetached's own win32 fallback).
+ * On Windows, `spawn(..., { detached: true })` is worse than merely
+ * non-surviving: `detached: true` there maps to DETACHED_PROCESS, which
+ * gives `powershell.exe` no console — a console-less powershell.exe exits in
+ * ~100ms without running a single line of update.ps1, so the update never
+ * actually ran at all despite reporting success (issue #6169). `spawnDetached`'s
+ * `windowsDetached: true` opt-in launches a two-hop PowerShell supervisor
+ * instead (`server/lib/windowsDetachedLauncher.ps1`) that gives pm2's later
+ * `taskkill /T /F` nothing to find, matching the POSIX double-fork's survival
+ * guarantee.
  *
  * The scripts pull the latest code via `git pull --rebase --autostash` and
  * write the actual resulting version to `data/update-complete.json`.
  * The `tag` parameter is used only for logging and the initial API response;
- * the true post-update version is determined by the script from package.json.
+ * the true post-update version is determined by the script from package.json,
+ * falling back to a fresh on-disk package.json read (never the triggering
+ * tag) if the completion marker was never written — e.g. a launch that never
+ * ran at all still exits 0 on some interpreters, and the tag is only ever a
+ * request, not proof of what actually landed.
  *
  * @param {string} tag - The release tag that triggered the update (for logging)
  * @param {function} emit - Callback (step, status, message) for progress
@@ -66,13 +74,14 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
     delete childEnv.PORTOS_FORCE_CLEAN_WORKSPACES;
   }
 
-  // POSIX: double-fork via spawnDetached so the script reparents to init and
-  // survives the pm2 TreeKill its own `pm2 delete`/`pm2 start` steps trigger.
-  // The returned handle is ChildProcess-like (stdout/stderr 'data', 'close',
+  // spawnDetached survives the pm2 TreeKill its own `pm2 delete`/`pm2 start`
+  // steps trigger — the POSIX double-fork on Linux/macOS, the two-hop
+  // PowerShell launcher (windowsDetached: true, below) on Windows. The
+  // returned handle is ChildProcess-like (stdout/stderr 'data', 'close',
   // 'error'), streamed by tailing the control dir's log files — so the STEP:
-  // progress parsing below works unchanged. The control dir is reused across
-  // updates (spawnDetached truncates stale files) and kept afterward as the
-  // post-mortem record of the launch.
+  // progress parsing below works unchanged on both platforms. The control
+  // dir is reused across updates (spawnDetached truncates stale files) and
+  // kept afterward as the post-mortem record of the launch.
   const controlDir = join(PATHS.data, 'update-detached');
 
   // Refuse to reuse the control dir while a prior update script is still
@@ -80,7 +89,9 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
   // triggers, and its supervisor's late `exit` write into a truncated control
   // dir would prematurely close the new handle with the OLD script's status).
   // A still-running script also means a second update is wrong regardless.
-  if (!isWindows && await isDetachedRunning(controlDir, { executable: cmd, args })) {
+  // Windows now has the same survival guarantee via windowsDetached (below),
+  // so this guard applies on both platforms.
+  if (await isDetachedRunning(controlDir, { executable: cmd, args })) {
     const errorMessage = 'A previous update script is still running — wait for it to finish before starting another update';
     await recordUpdateResult({
       version: tag.replace(/^v/, ''),
@@ -92,18 +103,12 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
     return { success: false, failedStep: 'starting', errorMessage };
   }
 
-  const child = isWindows
-    ? spawn(cmd, args, {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        cwd: PATHS.root,
-        env: childEnv
-      })
-    : await spawnDetached(cmd, args, {
-        cwd: PATHS.root,
-        env: childEnv,
-        controlDir
-      });
+  const child = await spawnDetached(cmd, args, {
+    cwd: PATHS.root,
+    env: childEnv,
+    controlDir,
+    windowsDetached: isWindows,
+  });
 
   // The script is running from here on. Everything ABOVE can still refuse (a
   // prior update script is still alive) or throw (spawn error); nothing below
@@ -114,6 +119,19 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
 
   return new Promise((resolve) => {
     let lastStep = 'starting';
+    // Both scripts emit their first real STEP: line (git-pull:running) before
+    // touching anything, so a clean exit that never emitted ANY step line
+    // means the script never actually ran — a launch failure masquerading as
+    // success (issue #6169: a console-less Windows spawn used to do exactly
+    // this). Tracked separately from `lastStep`, which starts at 'starting'
+    // and would otherwise make that indistinguishable from real progress.
+    let sawAnyStep = false;
+    // The synthetic 'starting' step (emitted once below, before the script
+    // has even been spawned) has no natural close-out once real STEP: lines
+    // begin arriving under a DIFFERENT step name — left alone, the client's
+    // per-step list shows it spinning for the whole update. Close it out the
+    // moment the first real step lands.
+    let startingClosed = false;
 
     // Parse STEP:name:status:message lines from stdout/stderr streams
     const makeLineHandler = () => {
@@ -127,6 +145,11 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
           const match = line.match(/STEP:([^:]+):([^:]+):(.+)/);
           if (match) {
             const [, name, status, message] = match;
+            sawAnyStep = true;
+            if (!startingClosed && name !== 'starting') {
+              startingClosed = true;
+              emit('starting', 'done', 'Starting update...');
+            }
             lastStep = name;
             emit(name, status, message);
           }
@@ -146,8 +169,15 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
     }
 
     child.on('close', async (code, signal) => {
-      const success = code === 0;
+      // A clean exit with no STEP: line ever seen means the script never
+      // actually ran (see the `sawAnyStep` comment above) — treat it as a
+      // failure even though the process itself exited 0.
+      const ranAtAll = sawAnyStep;
+      const success = code === 0 && ranAtAll;
       const exitDetail = signal ? `killed by ${signal}` : `exit code ${code}`;
+      const failureLog = (code === 0 && !ranAtAll)
+        ? 'Update script exited cleanly without reporting any progress — it likely never ran'
+        : `Process ${exitDetail}`;
       // Record result for both success and failure so updateInProgress gets
       // cleared even if PM2 restart doesn't kill this process.
       if (!success) {
@@ -155,22 +185,25 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
           version: tag.replace(/^v/, ''),
           success: false,
           completedAt: new Date().toISOString(),
-          log: `Process ${exitDetail}`
+          log: failureLog
         }).catch(e => console.error(`❌ Failed to record update result: ${e.message}`));
       }
       if (success) {
-        // Read the actual version from the completion marker written by the script.
-        // Always record a success result so updateInProgress gets cleared even if
-        // PM2 restart doesn't kill this process. Falls back to the triggering tag
-        // when the marker isn't readable yet.
-        let actualVersion = tag.replace(/^v/, '');
+        // Read the actual version from the completion marker written by the
+        // script. Always record a success result so updateInProgress gets
+        // cleared even if PM2 restart doesn't kill this process. Falls back
+        // to a fresh on-disk package.json read when the marker isn't
+        // readable yet — never the triggering tag, which is only ever a
+        // request, not proof of what the script actually landed on.
+        let actualVersion = null;
         let completedAt = new Date().toISOString();
         const markerPath = join(PATHS.data, 'update-complete.json');
         try {
           const marker = JSON.parse(await readFile(markerPath, 'utf-8'));
-          actualVersion = marker.version || actualVersion;
+          actualVersion = marker.version || null;
           completedAt = marker.completedAt || completedAt;
-        } catch { /* marker may not be readable yet — fall back to triggering tag */ }
+        } catch { /* marker may not be readable yet — fall back below */ }
+        if (!actualVersion) actualVersion = await getCurrentVersion();
         let recorded = false;
         try {
           await recordUpdateResult({
@@ -191,8 +224,11 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
         emit('complete', 'done', 'Update complete — restarting');
         resolve({ success: true, version: actualVersion });
       } else {
-        emit(lastStep, 'error', `Update failed at step "${lastStep}" (${exitDetail})`);
-        resolve({ success: false, failedStep: lastStep, errorMessage: `Update failed at step "${lastStep}" (${exitDetail})` });
+        const errorMessage = ranAtAll
+          ? `Update failed at step "${lastStep}" (${exitDetail})`
+          : failureLog;
+        emit(lastStep, 'error', errorMessage);
+        resolve({ success: false, failedStep: lastStep, errorMessage });
       }
     });
 
@@ -207,10 +243,5 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
       emit('starting', 'error', errorMessage);
       resolve({ success: false, failedStep: 'starting', errorMessage });
     });
-
-    // Unref so the parent process doesn't wait for the detached child.
-    // The spawnDetached handle has no unref (its launcher already unref'd);
-    // only the Windows plain-spawn child needs it.
-    child.unref?.();
   });
 }

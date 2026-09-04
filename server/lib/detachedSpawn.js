@@ -46,13 +46,21 @@
 import { execFile, spawn } from './childProcess.js';
 import { EventEmitter } from 'events';
 import { constants as osConstants } from 'os';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { open, readFile, writeFile, rm, stat, readdir } from 'fs/promises';
 import { promisify } from 'util';
 import { killProcessTree } from './bufferedSpawn.js';
 import { ensureDir, sleep } from './fileUtils.js';
 import { safeChildProcessOptions } from './processEnv.js';
 import { withSpawnCwdEnv } from './spawnCwd.js';
+
+// The Windows two-hop launcher script for the `windowsDetached` opt-in below
+// (see windowsDetachedLauncher.ps1 for the full mechanism). A sibling file,
+// not an inlined template string like the POSIX LAUNCHER — PowerShell's
+// argv-quoting rules are finicky enough (see ConvertTo-QuotedArg in that
+// file) that a real, directly-editable/testable .ps1 is worth the extra file.
+const WINDOWS_LAUNCHER_PS1 = join(dirname(fileURLToPath(import.meta.url)), 'windowsDetachedLauncher.ps1');
 
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +72,14 @@ const DEFAULT_POLL_MS = 250;
 // the launch a failure. The supervisor writes it the instant the job spawns;
 // 10s is generous slack for a loaded machine.
 const PID_TIMEOUT_MS = 10000;
+// The windowsDetached launcher chains TWO separate powershell.exe cold starts
+// (hop 1, then hop 2 — see windowsDetachedLauncher.ps1) before the job's PID
+// is ever written, each of which can itself take several seconds under a
+// loaded machine or antivirus real-time scanning of a freshly-launched
+// interpreter; empirically observed up to ~15s. 10s is too tight a budget for
+// that chain and would misreport a launch that was merely slow to start as a
+// hard failure.
+const WINDOWS_PID_TIMEOUT_MS = 30000;
 // How long reapDetached lets a SIGTERM'd orphan checkpoint+exit before
 // escalating to SIGKILL. Matches the in-session cancel escalation (8s) plus
 // slack for a final checkpoint write.
@@ -236,10 +252,16 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
  *   group-leader wrapper and every runtime child terminate together. The job is
  *   responsible for establishing its own process group before spawning children.
  *   POSIX-only — the win32 fallback's `kill` always tree-kills, group or not.
+ * @param {boolean} [opts.windowsDetached] - on win32 ONLY, opt into the real
+ *   pm2-restart-surviving control-dir contract via a two-hop PowerShell
+ *   launcher (windowsDetachedLauncher.ps1) instead of the plain-spawn
+ *   fallback below. Ignored on POSIX, which always survives. Existing
+ *   Windows callers (media jobs) default to false and keep today's
+ *   plain-spawn behavior — this is strictly additive. See issue #6169.
  * @returns {Promise<object>} ChildProcess-like handle (resolves once the PID is known)
  */
 export async function spawnDetached(bin, args = [], {
-  env, cwd, controlDir, pollMs = DEFAULT_POLL_MS, cleanup = false, killProcessGroup = false,
+  env, cwd, controlDir, pollMs = DEFAULT_POLL_MS, cleanup = false, killProcessGroup = false, windowsDetached = false,
 } = {}) {
   if (!controlDir) throw new Error('spawnDetached requires a controlDir');
 
@@ -248,9 +270,10 @@ export async function spawnDetached(bin, args = [], {
   // back to a normal child process: a real ChildProcess already satisfies the
   // handle contract (pid / stdout / stderr / on('close',code,signal) / kill /
   // exitCode / signalCode), so callers are unaffected. Surviving a pm2 restart
-  // is a POSIX-only guarantee; Windows keeps its prior spawn semantics apart
-  // from `kill`, which is replaced with a tree-kill below.
-  if (process.platform === 'win32') {
+  // is a POSIX-only guarantee UNLESS the caller opts into `windowsDetached`
+  // (below) — Windows keeps its prior spawn semantics apart from `kill`,
+  // which is replaced with a tree-kill below.
+  if (process.platform === 'win32' && !windowsDetached) {
     const child = spawn(bin, args, { env: withSpawnCwdEnv(env ?? process.env, cwd), cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     // A bare `child.kill()` terminates ONLY the runner. Windows has no process
     // group for the POSIX `-pid` trick `killProcessGroup` relies on, so whatever
@@ -351,21 +374,45 @@ export async function spawnDetached(bin, args = [], {
     return handle;
   }
 
-  // Launch the double-fork. `detached` gives the outer sh its own session;
-  // `stdio: 'ignore'` because all job output is redirected to files by the
-  // launcher; `.unref()` so the server never waits on the (instantly-exiting)
-  // outer sh.
-  const launcher = spawn('sh', ['-c', LAUNCHER, 'sh', controlDir, bin, ...args], {
-    // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193).
-    env: withSpawnCwdEnv(env ?? process.env, cwd),
-    cwd,
-    detached: true,
-    stdio: 'ignore',
-  });
-  // The outer sh exits in ~1ms; a spawn error (e.g. no `sh`) is the only real
-  // launcher failure. Capture it so the deferred kickoff below surfaces it as
-  // the handle's 'error' AFTER the caller has attached listeners — emitting it
-  // synchronously here could throw as an unhandled 'error'.
+  // Launch the double-fork (POSIX) or the two-hop PowerShell launcher
+  // (windowsDetached) — both share the exact same control-dir contract
+  // (pid/exit/stdout.log/stderr.log), so everything below this point
+  // (tailing, awaitPid, kill) is platform-agnostic.
+  let launcher;
+  if (process.platform === 'win32') {
+    // `stdio: 'ignore'`, no `detached`: `detached: true` on Windows maps to
+    // DETACHED_PROCESS, which gives powershell.exe no console — a
+    // console-less powershell.exe exits in ~100ms without running a single
+    // line of its script (issue #6169's root cause). This spawn must stay a
+    // normal, attached child so hop 1's script actually runs long enough to
+    // start hop 2; hop 1 itself still exits within a few seconds (see
+    // windowsDetachedLauncher.ps1), same role as the POSIX outer `sh`.
+    launcher = spawn('powershell', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', WINDOWS_LAUNCHER_PS1,
+      controlDir, 'launch', cwd ?? process.cwd(), bin, ...args,
+    ], {
+      env: withSpawnCwdEnv(env ?? process.env, cwd),
+      cwd,
+      stdio: 'ignore',
+    });
+  } else {
+    // `detached` gives the outer sh its own session; `stdio: 'ignore'`
+    // because all job output is redirected to files by the launcher.
+    launcher = spawn('sh', ['-c', LAUNCHER, 'sh', controlDir, bin, ...args], {
+      // Pin PWD to the spawn cwd — see withSpawnCwdEnv (#3193).
+      env: withSpawnCwdEnv(env ?? process.env, cwd),
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+    });
+  }
+  // The launcher exits quickly either way (POSIX: the outer sh, ~1ms;
+  // Windows: hop 1, within several seconds); a spawn error (e.g. no
+  // `sh`/`powershell` on PATH) is the only real launcher failure. Capture it
+  // so the deferred kickoff below surfaces it as the handle's 'error' AFTER
+  // the caller has attached listeners — emitting it synchronously here could
+  // throw as an unhandled 'error'.
   let launcherSpawnError = null;
   launcher.on('error', (err) => { launcherSpawnError = err; });
   launcher.unref();
@@ -385,8 +432,9 @@ export async function spawnDetached(bin, args = [], {
   // any event can fire — otherwise an immediate emission would be lost (data /
   // close) or throw as unhandled (error), matching ChildProcess async timing.
   let launchError = null;
+  const pidTimeoutMs = process.platform === 'win32' ? WINDOWS_PID_TIMEOUT_MS : PID_TIMEOUT_MS;
   const awaitPid = async () => {
-    for (let waited = 0; waited < PID_TIMEOUT_MS; waited += pollMs) {
+    for (let waited = 0; waited < pidTimeoutMs; waited += pollMs) {
       if (launcherSpawnError) { launchError = launcherSpawnError; return; }
       const raw = await readFile(pidFile, 'utf8').catch(() => '');
       const pid = Number.parseInt(raw, 10);
@@ -401,7 +449,7 @@ export async function spawnDetached(bin, args = [], {
     // Otherwise it's a hard launch failure.
     const exitRaw = await readFile(exitFile, 'utf8').catch(() => '');
     if (exitRaw.length === 0) {
-      launchError = new Error(`detached spawn produced no PID within ${PID_TIMEOUT_MS}ms`);
+      launchError = new Error(`detached spawn produced no PID within ${pidTimeoutMs}ms`);
     }
   };
 
@@ -584,6 +632,13 @@ export async function isDetachedRunning(controlDir, expectedProcess = null) {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   const exitWritten = (await readControlFile(join(controlDir, 'exit'))).length > 0;
   if (exitWritten || !isAlive(pid)) return false;
+  // `processMatches` shells out to POSIX `ps`, which Windows doesn't have.
+  // Skip the executable/args identity check there and trust the PID + exit
+  // sentinel alone — the same trust level this module already extends to a
+  // single-user install elsewhere (see reapDetached's PID-trust note); a
+  // recycled PID landing on an unrelated process within the same few seconds
+  // is the same vanishingly-unlikely case, not a new gap.
+  if (process.platform === 'win32') return true;
   return expectedProcess ? processMatches(pid, expectedProcess) : true;
 }
 

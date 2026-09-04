@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { basename, join } from 'path';
-import { ChildProcess, execFile } from './childProcess.js';
+import { basename, dirname, join } from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { ChildProcess, execFile, spawn } from './childProcess.js';
 import { promisify } from 'util';
 import { pinPlatform } from './testHelper.js';
 import { killProcessTree } from './bufferedSpawn.js';
@@ -477,6 +478,82 @@ describe('spawnDetached', () => {
       expect(res).toEqual({ reaped: 0, scanned: 0 });
     });
   });
+});
+
+// windowsDetached (#6169) drives the real two-hop PowerShell launcher
+// (windowsDetachedLauncher.ps1) against the genuine Windows process model —
+// pinPlatform can't stand in for this, it needs an actual powershell.exe
+// chain, so these gate on the real OS rather than a pinned one and are
+// skipped everywhere else. Empirically slow: two cold powershell.exe starts
+// happen before the job's PID even lands (observed up to ~15-25s on a loaded
+// machine), so the generous per-test timeouts below are the real cost of the
+// mechanism, not slack for a flaky test.
+describe.runIf(process.platform === 'win32')('spawnDetached — windowsDetached (real Windows launcher)', () => {
+  const SRC_MODULE_URL = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'detachedSpawn.js')).href;
+
+  it('runs a job end to end: pid, exit code, and stdout are all recorded correctly', async () => {
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached(process.execPath, [
+      '-e', "console.log('STEP:one:running:x'); console.log('STEP:two:done:y'); process.exit(0);",
+    ], { controlDir, windowsDetached: true, pollMs: 200 });
+    expect(handle.pid).toBeGreaterThan(0);
+    const getOut = collect(handle.stdout);
+    const { code, signal } = await onClose(handle);
+    expect(code).toBe(0);
+    expect(signal).toBeNull();
+    expect(getOut()).toBe('STEP:one:running:x\nSTEP:two:done:y\n');
+  }, 45000);
+
+  it('survives a taskkill /T /F on its own spawning process, once the launcher has exited', async () => {
+    // Stand in for portos-server: a SEPARATE node process that itself calls
+    // spawnDetached({ windowsDetached: true }), so a real `taskkill /T /F`
+    // against ITS pid exercises the exact tree-walk pm2 performs when it
+    // stops the app — killing the process that spawned the launcher, not the
+    // launcher directly. That distinction is the entire point of the
+    // mechanism (see windowsDetachedLauncher.ps1's file header).
+    const controlDir = await tmpControlDir();
+    const scriptDir = await tmpControlDir();
+    const rootScript = join(scriptDir, 'root.mjs');
+    await writeFile(rootScript, `
+      import { spawnDetached } from ${JSON.stringify(SRC_MODULE_URL)};
+      const [, , controlDir] = process.argv;
+      await spawnDetached(process.execPath, [
+        '-e',
+        "let n=0;const t=setInterval(()=>{n++;console.log('STEP:tick:running:'+n);if(n>=3){clearInterval(t);console.log('STEP:done:done:x');process.exit(0);}},300);",
+      ], { controlDir, windowsDetached: true, pollMs: 200 });
+      process.stdout.write('LAUNCHED\\n');
+      setInterval(() => {}, 1000); // idle — stays alive until taskkill'd
+    `);
+    const root = spawn(process.execPath, [rootScript, controlDir], { stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      await new Promise((resolve, reject) => {
+        let out = '';
+        root.stdout.on('data', (d) => { out += d.toString(); if (out.includes('LAUNCHED')) resolve(); });
+        root.on('error', reject);
+      });
+      // Give the launcher its full natural lifetime to finish starting hop 2
+      // BEFORE killing the root — matches realistic pm2 timing (the kill
+      // lands at the update script's own pm2-stop step, well after
+      // git-pull/submodules, long past this launcher's own brief lifetime).
+      await new Promise((r) => setTimeout(r, 9000));
+      await execFileAsync('taskkill', ['/PID', String(root.pid), '/T', '/F']).catch(() => {});
+      const exitFile = join(controlDir, 'exit');
+      const deadline = Date.now() + 30000;
+      let exitContent = null;
+      while (Date.now() < deadline) {
+        // eslint-disable-next-line no-await-in-loop
+        exitContent = await readFile(exitFile, 'utf8').catch(() => null);
+        if (exitContent !== null) break;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(exitContent).toBe('0');
+      const stdout = await readFile(join(controlDir, 'stdout.log'), 'utf8');
+      expect(stdout).toContain('STEP:done:done:x');
+    } finally {
+      root.kill();
+    }
+  }, 60000);
 });
 
 describe('isReattachable', () => {

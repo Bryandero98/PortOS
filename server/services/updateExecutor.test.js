@@ -22,13 +22,14 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('./updateChecker.js', () => ({
-  recordUpdateResult: vi.fn().mockResolvedValue(undefined)
+  recordUpdateResult: vi.fn().mockResolvedValue(undefined),
+  getCurrentVersion: vi.fn().mockResolvedValue('0.0.0')
 }));
 
 import { spawn } from '../lib/childProcess.js';
 import { spawnDetached, isDetachedRunning } from '../lib/detachedSpawn.js';
 import { readFile } from 'fs/promises';
-import { recordUpdateResult } from './updateChecker.js';
+import { recordUpdateResult, getCurrentVersion } from './updateChecker.js';
 import { executeUpdate } from './updateExecutor.js';
 
 // The spawnDetached handle deliberately has NO unref (its launcher already
@@ -75,24 +76,30 @@ beforeEach(() => {
 });
 
 describe('executeUpdate', () => {
-  it('spawns powershell on Windows (plain spawn, not spawnDetached)', async () => {
+  // Regression for issue #6169: a plain spawn(..., {detached:true}) on
+  // Windows maps to DETACHED_PROCESS, which gives powershell.exe no console —
+  // it exits in ~100ms without running a single line of update.ps1, so the
+  // update never actually ran despite reporting success. Windows must launch
+  // through spawnDetached's windowsDetached:true two-hop PowerShell launcher,
+  // exactly like POSIX goes through its double-fork.
+  it('launches via spawnDetached with windowsDetached:true on Windows', async () => {
     // Re-pin over the file-level linux default; the file-level afterEach still
     // restores the pristine descriptor, so a failure here can't leak win32.
     pinPlatform('win32');
     const child = createMockChild();
-    child.unref = vi.fn();
-    spawn.mockReturnValue(child);
+    spawnDetached.mockResolvedValue(child);
 
     const { promise } = await startUpdate('v1.0.0', () => {});
+    child.stdout.emit('data', Buffer.from('STEP:git-pull:running:Pulling latest changes\n'));
     child.emit('close', 0);
     await promise;
 
-    expect(spawn).toHaveBeenCalledWith(
+    expect(spawn).not.toHaveBeenCalled();
+    expect(spawnDetached).toHaveBeenCalledWith(
       'powershell',
       expect.arrayContaining(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']),
-      expect.any(Object)
+      expect.objectContaining({ windowsDetached: true })
     );
-    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   // Regression for the reconcile "shuts down but never restarts" failure: a
@@ -132,6 +139,7 @@ describe('executeUpdate', () => {
     spawnDetached.mockResolvedValue(child);
 
     const { promise } = await startUpdate('v1.0.0', () => {});
+    child.stdout.emit('data', Buffer.from('STEP:git-pull:running:Pulling latest changes\n'));
     child.emit('close', 0);
     const result = await promise;
 
@@ -179,18 +187,24 @@ describe('executeUpdate', () => {
     expect(emits.some(e => e[0] === 'git-pull' && e[1] === 'done')).toBe(true);
   });
 
-  it('records update result on success with tag fallback when marker missing', async () => {
+  // Regression for issue #6169 point 4: the triggering tag is only ever a
+  // request, not proof of what actually landed — a fresh on-disk
+  // package.json read is the only trustworthy fallback when the completion
+  // marker was never written (e.g. the script never actually ran).
+  it('falls back to a fresh package.json read, never the triggering tag, when the marker is missing', async () => {
     const child = createMockChild();
     spawnDetached.mockResolvedValue(child);
+    getCurrentVersion.mockResolvedValue('3.4.5');
 
     const { promise } = await startUpdate('v1.0.0', () => {});
+    child.stdout.emit('data', Buffer.from('STEP:git-pull:running:Pulling latest changes\n'));
     child.emit('close', 0);
     const result = await promise;
 
     expect(result.success).toBe(true);
-    expect(result.version).toBe('1.0.0');
+    expect(result.version).toBe('3.4.5');
     expect(recordUpdateResult).toHaveBeenCalledWith(
-      expect.objectContaining({ version: '1.0.0', success: true })
+      expect.objectContaining({ version: '3.4.5', success: true })
     );
   });
 
@@ -206,6 +220,47 @@ describe('executeUpdate', () => {
     expect(recordUpdateResult).toHaveBeenCalledWith(
       expect.objectContaining({ success: false })
     );
+  });
+
+  // Regression for issue #6169: a console-less Windows spawn used to exit 0
+  // within ~100ms without ever running a line of update.ps1, and the old
+  // `code === 0` check alone reported that as a successful update. Both
+  // scripts emit their first STEP: line (git-pull:running) before touching
+  // anything, so a clean exit that never emitted one is proof the script
+  // never actually ran, regardless of exit code.
+  it('treats a clean exit with no STEP: lines at all as a failure, not a silent success', async () => {
+    const child = createMockChild();
+    spawnDetached.mockResolvedValue(child);
+
+    const emits = [];
+    const { promise } = await startUpdate('v1.0.0', (...args) => emits.push(args));
+    child.emit('close', 0);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toMatch(/never ran/i);
+    expect(recordUpdateResult).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, log: expect.stringMatching(/never ran/i) })
+    );
+    expect(emits.some((e) => e[0] === 'starting' && e[1] === 'error')).toBe(true);
+  });
+
+  // The synthetic 'starting' step is emitted once before the script has even
+  // been spawned; without an explicit close-out it stays 'running' in the
+  // client's per-step list for the whole update once real STEP: lines start
+  // arriving under different step names.
+  it('closes out the synthetic starting step once the first real step arrives', async () => {
+    const child = createMockChild();
+    spawnDetached.mockResolvedValue(child);
+
+    const emits = [];
+    const { promise } = await startUpdate('v1.0.0', (...args) => emits.push(args));
+    child.stdout.emit('data', Buffer.from('STEP:git-pull:running:Pulling latest changes\n'));
+    child.emit('close', 0);
+    await promise;
+
+    const startingEmits = emits.filter((e) => e[0] === 'starting');
+    expect(startingEmits.at(-1)[1]).toBe('done');
   });
 
   it('handles CRLF line endings from Windows PowerShell', async () => {
@@ -234,6 +289,7 @@ describe('executeUpdate', () => {
     readFile.mockResolvedValue(JSON.stringify({ version: '2.0.0', completedAt: '2026-01-01T00:00:00Z' }));
 
     const { promise } = await startUpdate('v1.0.0', () => {});
+    child.stdout.emit('data', Buffer.from('STEP:git-pull:running:Pulling latest changes\n'));
     child.emit('close', 0);
     const result = await promise;
 
