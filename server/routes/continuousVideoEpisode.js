@@ -96,12 +96,12 @@ router.post('/', asyncHandler(async (req, res) => {
   // reports progress over `GET /:jobId/events` (attachEpisodeSseClient) —
   // matches the queued-then-SSE contract every other video-gen submit uses.
   generateContinuousVideoEpisode({
-    scenes,
-    bible,
-    framings,
     backend,
-    compilerOptions,
     jobId,
+    // Already compiled + linted above — pass the finished clips through
+    // rather than recompiling the script a second time (bible/scenes are
+    // only needed to build clips, which is done).
+    clips,
     renderOptions: {
       ...renderOptions,
       settings,

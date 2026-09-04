@@ -101,7 +101,7 @@ const backendJobParams = ({ backend, clip, conditioning, renderOptions, jobId })
       modelId: renderOptions.falModelId,
       prompt: clip.prompt,
       negativePrompt: renderOptions.negativePrompt,
-      duration: renderOptions.falDuration,
+      duration: renderOptions.falDuration ?? clip.durationSeconds,
       aspectRatio: renderOptions.aspectRatio,
       width: renderOptions.width,
       height: renderOptions.height,
@@ -127,25 +127,33 @@ const backendJobParams = ({ backend, clip, conditioning, renderOptions, jobId })
 
 // Wait for the backend's own `completed`/`failed` videoGenEvents pair for one
 // inner clip render — the same event contract chainedVideo.js's runChunk()
-// consumes, shared by local/reactor/fal generateVideo().
-const awaitClipCompletion = (innerJobId) => new Promise((resolve, reject) => {
-  const detach = () => {
-    videoGenEvents.off('completed', onCompleted);
-    videoGenEvents.off('failed', onFailed);
-  };
-  const onCompleted = (e) => {
-    if (e.generationId !== innerJobId) return;
-    detach();
-    resolve(e);
-  };
-  const onFailed = (e) => {
-    if (e.generationId !== innerJobId) return;
-    detach();
-    reject(new Error(e.error || 'clip generation failed'));
-  };
-  videoGenEvents.on('completed', onCompleted);
-  videoGenEvents.on('failed', onFailed);
-});
+// consumes, shared by local/reactor/fal generateVideo(). Returns `detach`
+// alongside the promise so a caller whose `generate()` call throws/rejects
+// SYNCHRONOUSLY (before it ever gets to emit 'failed') can still unregister
+// these listeners itself — otherwise they leak on videoGenEvents forever,
+// each holding a promise nothing will ever settle.
+function awaitClipCompletion(innerJobId) {
+  let detach;
+  const promise = new Promise((resolve, reject) => {
+    detach = () => {
+      videoGenEvents.off('completed', onCompleted);
+      videoGenEvents.off('failed', onFailed);
+    };
+    const onCompleted = (e) => {
+      if (e.generationId !== innerJobId) return;
+      detach();
+      resolve(e);
+    };
+    const onFailed = (e) => {
+      if (e.generationId !== innerJobId) return;
+      detach();
+      reject(new Error(e.error || 'clip generation failed'));
+    };
+    videoGenEvents.on('completed', onCompleted);
+    videoGenEvents.on('failed', onFailed);
+  });
+  return { promise, detach };
+}
 
 // Build the conditioning the NEXT clip needs from the clip that just
 // completed. Reactor conditions natively via continue_from_clip_id (read back
@@ -178,20 +186,28 @@ async function buildConditioning(backend, completedInnerJobId) {
  *   client request.
  * @param {object} [params.compilerOptions] - forwarded to compileScriptToClips
  * @param {string} [params.jobId] - outer episode job id; minted when absent
+ * @param {Array} [params.clips] - a caller-precomposed + already-linted clip
+ *   array (`composeEpisodeClips` + a passing `lintClips`) — skips recompiling
+ *   and re-linting the script, for a caller (the route) that already did both
+ *   to fail fast before this async orchestration starts.
  */
 export async function generateContinuousVideoEpisode({
-  scenes, bible, framings = [], backend = 'local', renderOptions = {}, compilerOptions = {}, jobId,
+  scenes, bible, framings = [], backend = 'local', renderOptions = {}, compilerOptions = {}, jobId, clips: precomposedClips,
 } = {}) {
   if (!CONTINUOUS_VIDEO_BACKENDS.includes(backend)) {
     throw new ServerError(`Unknown continuous-video backend: ${backend}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
   const outerJobId = jobId || randomUUID();
-  const clips = composeEpisodeClips({ scenes, bible, framings, compilerOptions });
-  const lint = lintClips(clips, { bible });
-  if (!lint.pass) {
-    return {
-      ok: false, jobId: outerJobId, stage: 'lint', lint, clips,
-    };
+  const clips = precomposedClips || composeEpisodeClips({
+    scenes, bible, framings, compilerOptions,
+  });
+  if (!precomposedClips) {
+    const lint = lintClips(clips, { bible });
+    if (!lint.pass) {
+      return {
+        ok: false, jobId: outerJobId, stage: 'lint', lint, clips,
+      };
+    }
   }
   if (clips.length === 0) {
     return {
@@ -203,13 +219,15 @@ export async function generateContinuousVideoEpisode({
   const outerJob = { id: outerJobId, clients: [], status: 'running' };
   episodeJobs.set(outerJobId, outerJob);
 
+  // `progress` is CLIPS COMPLETED / total — index/clips.length while clip
+  // `index` is still in flight, so the fraction only reaches 1.0 once every
+  // clip has completed and stitching is what's left (see the pre-stitch call
+  // below).
   const emitProgress = (index, message) => {
-    videoGenEvents.emit('progress', {
-      generationId: outerJobId,
-      progress: index / clips.length,
-      message: `Clip ${index + 1}/${clips.length}${message ? ` — ${message}` : ''}`,
-    });
-    broadcastSse(outerJob, { type: 'progress', progress: index / clips.length, message: `Clip ${index + 1}/${clips.length}` });
+    const progress = index / clips.length;
+    const fullMessage = `Clip ${index + 1}/${clips.length}${message ? ` — ${message}` : ''}`;
+    videoGenEvents.emit('progress', { generationId: outerJobId, progress, message: fullMessage });
+    broadcastSse(outerJob, { type: 'progress', progress, message: fullMessage });
   };
 
   const runOneClip = async (clip, conditioning) => {
@@ -218,9 +236,15 @@ export async function generateContinuousVideoEpisode({
       backend, clip, conditioning, renderOptions, jobId: innerJobId,
     });
     // Listeners are registered BEFORE `generate` is even invoked, so no
-    // completion event it emits can fire before we're listening for it.
-    const completion = awaitClipCompletion(innerJobId);
-    await generate(params);
+    // completion event it emits can fire before we're listening for it. If
+    // `generate` itself throws/rejects (a synchronous validation error, never
+    // reaching its own 'failed' emit), detach here — otherwise these
+    // listeners would leak on videoGenEvents forever.
+    const { promise: completion, detach } = awaitClipCompletion(innerJobId);
+    await generate(params).catch((err) => {
+      detach();
+      throw err;
+    });
     await completion;
     return { innerJobId };
   };
@@ -254,6 +278,9 @@ export async function generateContinuousVideoEpisode({
     clipIds.push(outcome.innerJobId);
     previousClip = outcome.innerJobId;
   }
+
+  videoGenEvents.emit('progress', { generationId: outerJobId, progress: 1, message: 'Stitching episode' });
+  broadcastSse(outerJob, { type: 'progress', progress: 1, message: 'Stitching episode' });
 
   const stitched = await stitchVideos(clipIds, {
     id: outerJobId,
