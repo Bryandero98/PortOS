@@ -32,6 +32,7 @@ import {
   buildPersistentMindTaskCapabilityPrompt,
   executePersistentMindTaskRequests,
   readPersistentMindTaskCatalog,
+  readPersistentMindTaskInventory,
 } from './persistentMindTaskCapability.js';
 import {
   buildPersistentMindCallCapabilityPrompt,
@@ -247,7 +248,8 @@ Return ONLY one JSON object with this shape:
   "selfWake": { "reason": "Why another wake would be useful", "delayMinutes": 60 },
   "callRequest": { "reason": "Why this cannot wait for a screen", "openingLine": "What to say the moment they answer" }
 }
-Use empty arrays when there is no durable memory candidate, task request, or tool call, and null for selfWake and callRequest when neither is needed. Memory candidates are durable memories to save automatically; only include information that is worth retaining. Never put the same CoS task in both taskRequests and toolCalls. This lane cannot mutate files directly, call arbitrary routes, contact anyone other than the configured PortOS user, or exceed the semantic tool catalog.`;
+Use empty arrays when there is no durable memory candidate, task request, or tool call, and null for selfWake and callRequest when neither is needed. Memory candidates are durable memories to save automatically; only include information that is worth retaining. Never put the same CoS task in both taskRequests and toolCalls. This lane cannot mutate files directly, call arbitrary routes, contact anyone other than the configured PortOS user, or exceed the semantic tool catalog.
+Do not open with a recap. The human already sees the trajectory, the memories, and every earlier reply, so summarizing prior turns or listing what you remember is wasted output. Say only what is new this turn: what you are thinking now, what you decided, and what you need from them. Reference prior context only where it changes the decision you are stating.`;
 }
 
 const summaryEventLines = (events) => (Array.isArray(events) ? events : []).map((event) => {
@@ -343,12 +345,16 @@ export function createPersistentMindTurnAdapter() {
         prompt,
         provider,
       });
-      const taskCatalog = taskAccess.createTasks
-        ? await readPersistentMindTaskCatalog({ allowedAppIds: taskAccess.allowedAppIds })
-        : undefined;
+      const [taskCatalog, taskInventory] = taskAccess.createTasks
+        ? await Promise.all([
+          readPersistentMindTaskCatalog({ allowedAppIds: taskAccess.allowedAppIds }),
+          readPersistentMindTaskInventory(),
+        ])
+        : [undefined, []];
       const taskCapabilityPrompt = buildPersistentMindTaskCapabilityPrompt({
         enabled: taskAccess.createTasks,
         catalog: taskCatalog,
+        inventory: taskInventory,
       });
       const visibilityPrompt = buildPersistentMindVisibilityPrompt(visibility);
       // Deterministic and always included (epic #5593 decision 14): bounded,

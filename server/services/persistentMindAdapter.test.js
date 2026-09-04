@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   stopRun: vi.fn(),
   assertVision: vi.fn(),
   readTaskCatalog: vi.fn(),
+  readTaskInventory: vi.fn(),
   executeTaskRequests: vi.fn(),
   executeToolCall: vi.fn(),
   readVisibility: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock('./runner.js', () => ({ stopRun: (...args) => mock.stopRun(...args) }));
 vi.mock('./persistentMindTaskCapability.js', () => ({
   buildPersistentMindTaskCapabilityPrompt: ({ enabled }) => `Task access: ${enabled ? 'ON' : 'OFF'}`,
   readPersistentMindTaskCatalog: (...args) => mock.readTaskCatalog(...args),
+  readPersistentMindTaskInventory: (...args) => mock.readTaskInventory(...args),
   executePersistentMindTaskRequests: (...args) => mock.executeTaskRequests(...args),
 }));
 vi.mock('./persistentMindVisibility.js', () => ({
@@ -62,6 +64,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mock.root.config.persistentMindCapabilities = { createTasks: true };
   mock.readTaskCatalog.mockResolvedValue({ apps: [{ id: 'portos' }], providers: [{ id: 'codex' }] });
+  mock.readTaskInventory.mockResolvedValue([]);
   mock.readVisibility.mockResolvedValue({ readiness: 'ready', workspaces: [] });
   mock.executeTaskRequests.mockResolvedValue([]);
   mock.executeCallRequest.mockResolvedValue(null);
