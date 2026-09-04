@@ -102,6 +102,18 @@ describe('previewSlotstreamDownload', () => {
     expect(preview.requiredBytes).toBe(0);
   });
 
+  it('refuses a repo that publishes no weights it can stream', async () => {
+    // Config and tokenizer alone would make a checkpoint directory the cache
+    // walk reports as servable and a start then fails on.
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      id: REPO,
+      siblings: [{ rfilename: 'config.json', size: 10 }, { rfilename: 'pytorch_model.bin', lfs: { size: 999 } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    await expect(previewSlotstreamDownload({ model: REPO, cacheDir }))
+      .rejects.toMatchObject({ code: 'SLOTSTREAM_NO_WEIGHTS' });
+  });
+
   it('refuses an unknown model before it touches the network', async () => {
     await expect(previewSlotstreamDownload({ model: '../escape', cacheDir }))
       .rejects.toMatchObject({ code: 'SLOTSTREAM_INVALID_MODEL' });

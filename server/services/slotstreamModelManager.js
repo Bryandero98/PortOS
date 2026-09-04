@@ -102,9 +102,12 @@ async function planRepoDownload({ repo, token, signal, cacheDir }) {
   const model = await fetchHuggingfaceModel(repo, { token, signal, blobs: true });
   const siblings = Array.isArray(model?.siblings) ? model.siblings : [];
   const files = selectSlotstreamRepoFiles(siblings);
-  if (files.length === 0) {
+  // A repo whose only surviving files are config/tokenizer would otherwise
+  // produce a checkpoint directory with no weights in it — which the cache walk
+  // would then report as servable, and a start would fail on.
+  if (!files.some((file) => file.endsWith('.safetensors'))) {
     throw new ServerError(
-      `Hugging Face repo ${repo} publishes no checkpoint files PortOS can stream (no .safetensors weights).`,
+      `Hugging Face repo ${repo} publishes no weights PortOS can stream — Slotstream reads .safetensors checkpoints.`,
       { status: 422, code: 'SLOTSTREAM_NO_WEIGHTS' },
     );
   }
@@ -240,7 +243,10 @@ export async function downloadSlotstreamModel({ model = null, cacheDir, onProgre
           onProgress({
             event: 'progress',
             model: repo,
-            received: completedBytes + Math.max(0, received - resumedFrom),
+            // Clamped: a shard discarded for being the wrong length is credited
+            // once in `bytesOnDisk` and again as it re-transfers, which would
+            // otherwise walk the bar past 100%.
+            received: Math.min(plan.totalBytes, completedBytes + Math.max(0, received - resumedFrom)),
             total: plan.totalBytes,
             message: `Downloading ${entry.file}`,
           });
