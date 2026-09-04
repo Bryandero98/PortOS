@@ -24,6 +24,26 @@ import { safeReadJsonStorage, safeReadStorage, safeRemoveStorage, safeWriteJsonS
 const TASK_DESCRIPTION_DRAFT_KEY = 'portos-cos-task-description-draft';
 const INVALID_DRAFT = Symbol('invalid task description draft');
 
+// ReviewerPicker's onChange patch keys, mapped to their addCosTask payload
+// names — only `stopMode` differs (→ `reviewStopMode`). Only keys present in
+// `reviewOverrides` (i.e. actually touched by the user) go on the wire; see
+// the submit payload below and #6219.
+const REVIEW_PICKER_TO_PAYLOAD_KEY = {
+  reviewers: 'reviewers',
+  usernames: 'usernames',
+  optionalReviewers: 'optionalReviewers',
+  reviewerMaxRounds: 'reviewerMaxRounds',
+  reviewerModels: 'reviewerModels',
+  reviewerEfforts: 'reviewerEfforts',
+  stopMode: 'reviewStopMode',
+  reviewerApplies: 'reviewerApplies',
+};
+const reviewOverridePayload = (reviewOverrides) => Object.fromEntries(
+  Object.entries(REVIEW_PICKER_TO_PAYLOAD_KEY)
+    .filter(([pickerKey]) => reviewOverrides[pickerKey] !== undefined)
+    .map(([pickerKey, payloadKey]) => [payloadKey, reviewOverrides[pickerKey]])
+);
+
 const readTaskDescriptionDraft = (defaultApp) => {
   const raw = safeReadStorage(TASK_DESCRIPTION_DRAFT_KEY);
   if (raw === null) return { description: '', app: defaultApp };
@@ -65,14 +85,22 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
   // so the server keeps its own default. Only a slashdo-backed template sets it.
   const [worktreeChangesExpected, setWorktreeChangesExpected] = useState(undefined);
   const [prCompletion, setPrCompletion] = useState(DEFAULT_PR_COMPLETION);
-  const [reviewers, setReviewers] = useState(DEFAULT_REVIEWERS);
-  const [reviewUsernames, setReviewUsernames] = useState([]);
-  const [optionalReviewers, setOptionalReviewers] = useState([]);
-  const [reviewerMaxRounds, setReviewerMaxRounds] = useState({});
-  const [reviewerModels, setReviewerModels] = useState({});
-  const [reviewerEfforts, setReviewerEfforts] = useState({});
-  const [reviewStopMode, setReviewStopMode] = useState(DEFAULT_REVIEW_STOP_MODE);
-  const [reviewerApplies, setReviewerApplies] = useState(false);
+  const [reviewDefaults, setReviewDefaults] = useState({
+    reviewers: DEFAULT_REVIEWERS,
+    usernames: [],
+    optionalReviewers: [],
+    reviewerMaxRounds: {},
+    reviewerModels: {},
+    reviewerEfforts: {},
+    stopMode: DEFAULT_REVIEW_STOP_MODE,
+    reviewerApplies: false,
+  });
+  // Only the reviewer fields the user actually touched on THIS form, keyed like
+  // ReviewerPicker's onChange patch. Everything else inherits reviewDefaults, and
+  // only these (mapped to their task-metadata names) are ever submitted — so an
+  // untouched field keeps following future Code Review Defaults changes instead
+  // of freezing today's values into the new task permanently (#6219).
+  const [reviewOverrides, setReviewOverrides] = useState({});
   const [reviewerCliInstalled, setReviewerCliInstalled] = useState({});
   // Which federated instance runs this task (#4520). '' = any instance, the
   // opportunistic default. Hidden entirely on a single-instance install.
@@ -142,16 +170,18 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
     api.getCodeReviewDefaults({ silent: true })
       .then((d) => {
         if (cancelled || !d) return;
-        if (Array.isArray(d.reviewers) && d.reviewers.length) setReviewers(d.reviewers);
-        if (Array.isArray(d.usernames)) setReviewUsernames(d.usernames);
-        if (Array.isArray(d.optionalReviewers)) setOptionalReviewers(d.optionalReviewers);
-        if (d.reviewerMaxRounds && typeof d.reviewerMaxRounds === 'object' && !Array.isArray(d.reviewerMaxRounds)) setReviewerMaxRounds(d.reviewerMaxRounds);
-        // The defaults persist per-reviewer models as scalars; the picker takes the
-        // token-keyed map (see client/src/lib/reviewerModels.js).
-        setReviewerModels(reviewerModelsFromDefaults(d));
-        setReviewerEfforts(reviewerEffortsFromDefaults(d));
-        if (d.stopMode) setReviewStopMode(d.stopMode);
-        if (d.reviewerApplies === true) setReviewerApplies(true);
+        setReviewDefaults({
+          reviewers: Array.isArray(d.reviewers) && d.reviewers.length ? d.reviewers : DEFAULT_REVIEWERS,
+          usernames: Array.isArray(d.usernames) ? d.usernames : [],
+          optionalReviewers: Array.isArray(d.optionalReviewers) ? d.optionalReviewers : [],
+          reviewerMaxRounds: d.reviewerMaxRounds && typeof d.reviewerMaxRounds === 'object' && !Array.isArray(d.reviewerMaxRounds) ? d.reviewerMaxRounds : {},
+          // The defaults persist per-reviewer models as scalars; the picker takes the
+          // token-keyed map (see client/src/lib/reviewerModels.js).
+          reviewerModels: reviewerModelsFromDefaults(d),
+          reviewerEfforts: reviewerEffortsFromDefaults(d),
+          stopMode: d.stopMode || DEFAULT_REVIEW_STOP_MODE,
+          reviewerApplies: d.reviewerApplies === true,
+        });
         if (d.installed && typeof d.installed === 'object' && !Array.isArray(d.installed)) setReviewerCliInstalled(d.installed);
       })
       .catch(() => {});
@@ -563,17 +593,11 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
         : worktreeChangesExpected !== undefined ? { worktreeChangesExpected } : {}),
       prCompletion: !planOnly && useWorktree && openPR ? prCompletion : undefined,
       // One gate for every per-reviewer field: they only apply when this task
-      // opens a PR that PortOS reviews before merging.
-      ...(!planOnly && openPR && prCompletion === 'review-then-merge' ? {
-        reviewers,
-        usernames: reviewUsernames,
-        optionalReviewers,
-        reviewerMaxRounds,
-        reviewerModels,
-        reviewerEfforts,
-        reviewStopMode,
-        reviewerApplies,
-      } : {}),
+      // opens a PR that PortOS reviews before merging. Only fields the user
+      // actually touched (reviewOverrides) go on the wire — an untouched field
+      // stays absent so the task keeps inheriting future Code Review Defaults
+      // changes instead of freezing today's values in on create (#6219).
+      ...(!planOnly && openPR && prCompletion === 'review-then-merge' ? reviewOverridePayload(reviewOverrides) : {}),
       screenshots: screenshots.length > 0 ? screenshots.map(s => s.path) : undefined,
       attachments: attachments.length > 0 ? attachments.map(a => ({
         filename: a.filename,
@@ -904,25 +928,27 @@ export default function TaskAddForm({ providers, providersLoaded = true, apps, o
               {openPR && prCompletion === 'review-then-merge' && (
                 <div className="basis-full mt-1">
                   <ReviewerPicker
-                    reviewers={reviewers}
-                    usernames={reviewUsernames}
-                    optionalReviewers={optionalReviewers}
-                    reviewerMaxRounds={reviewerMaxRounds}
-                    reviewerModels={reviewerModels}
-                    reviewerEfforts={reviewerEfforts}
+                    reviewers={reviewOverrides.reviewers ?? reviewDefaults.reviewers}
+                    usernames={reviewOverrides.usernames ?? reviewDefaults.usernames}
+                    optionalReviewers={reviewOverrides.optionalReviewers ?? reviewDefaults.optionalReviewers}
+                    reviewerMaxRounds={reviewOverrides.reviewerMaxRounds ?? reviewDefaults.reviewerMaxRounds}
+                    reviewerModels={reviewOverrides.reviewerModels ?? reviewDefaults.reviewerModels}
+                    reviewerEfforts={reviewOverrides.reviewerEfforts ?? reviewDefaults.reviewerEfforts}
                     modelOptions={reviewerModelOptions}
                     installed={reviewerCliInstalled}
-                    stopMode={reviewStopMode}
-                    reviewerApplies={reviewerApplies}
-                    onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: rm, reviewerEfforts: re, stopMode, reviewerApplies: ra }) => {
-                      setReviewers(r);
-                      setReviewUsernames(u);
-                      setOptionalReviewers(o);
-                      setReviewerMaxRounds(m);
-                      setReviewerModels(rm);
-                      setReviewerEfforts(re);
-                      setReviewStopMode(stopMode);
-                      setReviewerApplies(ra);
+                    stopMode={reviewOverrides.stopMode ?? reviewDefaults.stopMode}
+                    reviewerApplies={reviewOverrides.reviewerApplies ?? reviewDefaults.reviewerApplies}
+                    // The same fallback the props above were seeded from — the
+                    // picker omits whatever still equals it, so touching one
+                    // control no longer freezes every field into a permanent
+                    // override (#6219, mirroring #6208's GlobalConfigControls fix).
+                    defaults={reviewDefaults}
+                    onChange={(patch) => {
+                      // The picker emits only what differs from `defaults`, so
+                      // the patch IS the complete override set — replace outright
+                      // rather than merge, or a key reverted back to the default
+                      // would keep pinning its stale value.
+                      setReviewOverrides(patch);
                     }}
                   />
                 </div>
