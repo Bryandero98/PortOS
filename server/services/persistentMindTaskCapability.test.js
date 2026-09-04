@@ -45,6 +45,8 @@ vi.mock('./persistentMindWorkspacePreflight.js', () => ({
   assessPersistentMindWorkspaceReadiness: (...args) => mocks.assessWorkspaceReadiness(...args),
 }));
 
+const { PORTOS_APP_ID } = await import('../lib/appIdentity.js');
+
 const {
   buildPersistentMindTaskCapabilityPrompt,
   executePersistentMindTaskRequests,
@@ -121,6 +123,21 @@ describe('persistent mind CoS-task capability', () => {
     expect(prompt).toContain('Plan & File Issue');
     expect(prompt).toContain('planOnly');
     expect(prompt).not.toContain('command');
+  });
+
+  it('flags only the PortOS baseline app and tells the mind to route by owning repo', async () => {
+    mocks.apps = [
+      { id: PORTOS_APP_ID, name: 'PortOS', repoPath: '/example/portos' },
+      { id: 'managed-app', name: 'Managed App', repoPath: '/example/managed' },
+    ];
+    const catalog = await readPersistentMindTaskCatalog();
+    expect(catalog.apps).toEqual([
+      { id: PORTOS_APP_ID, name: 'PortOS', planOnly: false, self: true },
+      { id: 'managed-app', name: 'Managed App', planOnly: false },
+    ]);
+    const prompt = buildPersistentMindTaskCapabilityPrompt({ enabled: true, catalog });
+    expect(prompt).toContain('pick the repository that will hold the change');
+    expect(prompt).toContain("marked 'self: true'");
   });
 
   it('publishes only allowlisted task models and rejects a model outside the policy', async () => {
