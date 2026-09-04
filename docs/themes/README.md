@@ -77,6 +77,10 @@ Headings read `--port-heading-tracking` and `--port-heading-glow` (h1–h3) plus
 
 Black ICE Terminal (both modes) uses `scanlines`; Kestrel Neon uses all five, and Kestrel Dawn `scanlines` + `grid-floor`.
 
+## Surface & control tokens
+
+The same "tokens over per-theme selector blocks" pattern covers the shared card/focus/nav/code rules: `--port-card-border-color` and `--port-card-border-alpha` (a card's border, `rgb(var(--port-card-border-color) / var(--port-card-border-alpha))`, defaulted to `var(--port-border)` / `var(--port-border-alpha)` so an unset theme matches the plain `.border-port-border` rule) plus `--port-card-surface-image` and `--port-card-surface-size` (a card's `background-image`/`background-size`, both a no-op by default); `--port-focus-shadow` (button/link `:focus-visible` box-shadow) and `--port-field-focus-shadow` (form-field `:focus` box-shadow, `none` by default — fields get no glow unless a theme opts in); `--port-nav-active-rule` (the active sidebar link's `border-left`) and `--port-nav-active-glow` (its `text-shadow`, defaulted to `inherit` rather than `none` since `text-shadow` is naturally inherited — Black ICE's body-wide glow reaches the active link through that); and `--port-code-glow` (a `text-shadow` on `pre`/`code`/`textarea`/`input`, `none` by default). `caret-color: rgb(var(--port-accent))` on that same selector is unconditional — every theme gets an accent-colored text cursor, not just Kestrel.
+
 ## New Feature Checklist
 
 Before merging UI work:
