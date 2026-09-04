@@ -55,7 +55,9 @@ describe('TimelineBlock — remove control', () => {
     expect(remove.className).toContain('lg:opacity-0');
     expect(remove.className).not.toContain('sm:opacity-0');
     expect(remove).toHaveAttribute('title', 'Remove from timeline');
-    expect(remove.querySelector('svg').className.baseVal).toContain('w-3 h-3');
+    // `getAttribute` rather than `.className.baseVal`: an SVG element's className
+    // is an SVGAnimatedString only where the environment implements one (#6144).
+    expect(remove.querySelector('svg').getAttribute('class')).toContain('w-3 h-3');
   });
 
   it('removes without starting a drag or selecting the parent timeline block', () => {

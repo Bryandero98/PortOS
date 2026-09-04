@@ -16,6 +16,21 @@
  * dynamically at spawn time, declaring the provider's configured models (+ the
  * model being run) under
  * `provider.<local-backend>.models` with bare ids.
+ *
+ * **The custom-provider shape above is still the supported one** — re-verified
+ * against OpenCode 1.18.27, where a config carrying the models map round-trips a
+ * local Ollama model fine. What CHANGED is the diagnostic: the same undeclared
+ * model that used to say "Model ollama/… is not valid" now fails as an opaque
+ *
+ *     {"name":"UnknownError","data":{"message":"Unexpected server error…"}}
+ *
+ * so a config missing the map reads like a broken provider rather than a
+ * misconfigured one. It cost #6125 an investigation; do not re-derive it. Two
+ * OTHER failures land in the same "spawns, ~12s, no output" shape and are NOT
+ * this one — `model '<id>' not found` (the daemon no longer holds that model,
+ * which `services/providerReadiness.js` now reports up front) and
+ * `<id> does not support tools` (a non-tool-capable model, which the
+ * `_fetchOllamaToolCapableModels` refresh filters out of the provider's list).
  */
 
 import {
@@ -168,6 +183,69 @@ const THINKING_STYLE = {
   ...Object.fromEntries(PROVIDER_GATEWAY_IDS.map((id) => [id, null])),
 };
 
+const asObject = (value) => (isPlainObject(value) ? value : {});
+
+/**
+ * The three OpenCode permissions that open an interactive gate: `question` (the
+ * "Should I …? 1. Yes 2. No" selector), and `plan_enter` / `plan_exit` (the plan
+ * agent's hand-back to a human). OpenCode denies all three in its OWN built-in
+ * agent defaults, and `opencode run` re-denies them explicitly, precisely
+ * because nothing can answer them without a person at the terminal.
+ *
+ * PortOS's config re-ENABLED them. A root `permission` is merged LAST into the
+ * agent ruleset and resolved with `findLast`, so the blanket `permission:
+ * "allow"` PortOS writes (and that every seeded provider record stores) wins
+ * over the vendor denial for every key including these. A denied permission
+ * also hides its tool from the model entirely (OpenCode's `visibleTools`), so
+ * allowing it is what put the `question` tool back into the schema handed to a
+ * local model — an unattended issues-watcher run on `qwen3-coder:30b` then
+ * called it and parked on "Should I review these issue comments and PRs?" with
+ * nobody there to press a key, burning its whole session. The
+ * UNATTENDED_RUN_RULE in `services/agentPromptBuilder.js` tells the agent not
+ * to ask; this makes asking unreachable.
+ *
+ * Every PortOS OpenCode spawn is unattended, so these stay denied
+ * unconditionally — this is an enforcement boundary, not a default. The rest of
+ * the blanket allow is kept: PortOS agents must not stall on an edit/bash
+ * approval either.
+ */
+const INTERACTIVE_GATE_DENIALS = Object.freeze({
+  question: 'deny',
+  plan_enter: 'deny',
+  plan_exit: 'deny',
+});
+
+/**
+ * Re-apply {@link INTERACTIVE_GATE_DENIALS} on top of whatever root permission a
+ * config carries. OpenCode accepts a string shorthand there (`"allow"`), which
+ * it decodes to `{'*': <action>}`; that expansion happens here so the denials
+ * have an object to be appended to.
+ *
+ * **Key order is the enforcement, not cosmetics.** OpenCode flattens the block
+ * to a rule list in key order and resolves a permission with `findLast`, where a
+ * `'*'` KEY matches every permission name — so the last rule wins outright,
+ * specificity notwithstanding, and the denials only bind while they sit after
+ * the wildcard. Overwriting a gate key in place would keep that key's ORIGINAL
+ * position, so a stored `{ question: 'allow', '*': 'allow' }` would emit
+ * `{ question: 'deny', '*': 'allow' }` and the trailing wildcard would allow
+ * `question` right back. The gate keys are therefore DROPPED from the base and
+ * re-appended, which puts them last whatever order the base used.
+ *
+ * Mutates and returns `config`; callers pass a config they already own.
+ *
+ * @param {object} config
+ * @returns {object} the same config
+ */
+function denyInteractiveGates(config) {
+  const current = config.permission;
+  const base = typeof current === 'string' ? { '*': current } : asObject(current);
+  const kept = Object.fromEntries(
+    Object.entries(base).filter(([key]) => !Object.hasOwn(INTERACTIVE_GATE_DENIALS, key)),
+  );
+  config.permission = { ...kept, ...INTERACTIVE_GATE_DENIALS };
+  return config;
+}
+
 const numberInRange = (value, min, max) => {
   if (value === null || value === undefined || value === '') return undefined;
   const n = Number(value);
@@ -234,6 +312,11 @@ export function buildAgentGeneration(generation, providerKey) {
  * is invented), identical to the shipped base. When `base` is absent/unusable,
  * the canonical endpoint for the selected local runtime is used.
  *
+ * The one field that is NOT purely preserved is the root `permission`: the
+ * interactive-gate denials are re-applied over it (see `denyInteractiveGates`),
+ * because a PortOS spawn has no human to answer a gate. Everything else the
+ * base sets there survives.
+ *
  * NOT the whole config: `small_model` is applied downstream by
  * `buildOpencodeEnvVars`, which is the only caller that knows THIS run's single
  * model (this one takes a list). A config built here alone is unpinned.
@@ -277,7 +360,7 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
       ...build,
     };
   }
-  return config;
+  return denyInteractiveGates(config);
 }
 
 // `'*'` is OpenCode's documented wildcard for a tool map; `deny` is its hard
@@ -293,8 +376,6 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
 const DENY_ALL_TOOLS = Object.freeze({ '*': false });
 const DENY_ALL_PERMISSIONS = 'deny';
 const DENY_ALL_AGENT_PERMISSIONS = Object.freeze({ edit: 'deny', bash: 'deny', webfetch: 'deny' });
-
-const asObject = (value) => (isPlainObject(value) ? value : {});
 
 /**
  * Harden an OpenCode config for the `no-tool` public-review posture.

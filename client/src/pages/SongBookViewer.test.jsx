@@ -782,11 +782,13 @@ K:  o - - - - - o -`;
   });
 
   describe('fit-to-duration autoscroll preset (#4100)', () => {
-    // jsdom lays nothing out, so the scroll container reports 0/0 — stub the two
+    // The test DOM lays nothing out, so the scroll container reports 0/0 — stub the two
     // metrics the preset measures. 2000 tall in a 500 viewport = 1500px of travel.
     const stubScrollMetrics = (scrollHeight, clientHeight) => {
-      const sh = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
-      const ch = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
+      // HTMLElement, not Element: `clientHeight` is declared on HTMLElement in some
+      // DOM implementations, and vi.spyOn only walks *up* the prototype chain (#6144).
+      const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
+      const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
       return () => { sh.mockRestore(); ch.mockRestore(); };
     };
 

@@ -22,6 +22,8 @@ import {
 } from './specDecodeModels.js';
 import { getModelsDir as getOllamaModelsDir } from './ollamaManager.js';
 import { getModelsDir as getLmStudioModelsDir } from './lmStudioManager.js';
+import { slotstreamCacheDir } from '../lib/slotstreamModels.js';
+import { isSlotstreamDownloadInFlight } from './slotstreamModelManager.js';
 import { createSweepScheduler } from './sweepScheduler.js';
 
 export { ORPHANED_PARTIAL_MAX_AGE_MS };
@@ -44,6 +46,10 @@ export async function collectPartialSweepDirs() {
   }
   dirs.add(getOllamaModelsDir());
   dirs.add(await getLmStudioModelsDir());
+  // Slotstream writes one directory per checkpoint, each holding ~30 shards, so
+  // an abandoned pull can strand tens of gigabytes of `.partial` a level down —
+  // the sweep is recursive, so naming the cache root covers every checkpoint.
+  dirs.add(slotstreamCacheDir());
   return [...dirs];
 }
 
@@ -60,7 +66,7 @@ export async function sweepOrphanedDownloadPartials({
   return sweepOrphanedPartials(targets, {
     now,
     maxAgeMs,
-    isProtected: (path) => isSpecDecodeDownloadInFlight(path),
+    isProtected: (path) => isSpecDecodeDownloadInFlight(path) || isSlotstreamDownloadInFlight(path),
   });
 }
 

@@ -159,7 +159,12 @@ export function createShellSession(socket, options = {}) {
       // login shell rewrites PWD itself at startup, but a non-login shell may
       // not, and an agent-TUI session injects its CLI command into this shell.
       env: withSpawnCwdEnv({
-        ...buildSafeEnv(), // filters process.env to prevent leaking inherited secrets (e.g. shell-inherited API keys)
+        // `envReplace` callers own the WHOLE environment: buildSafeEnv is a
+        // union, so a caller that has already narrowed its env to a strict
+        // allowlist (a public-content review stage — see
+        // agentTuiSpawning.js#createAgentTuiSession) would have every inherited
+        // variable it just withheld added straight back underneath it.
+        ...(options.envReplace ? {} : buildSafeEnv()), // filters process.env to prevent leaking inherited secrets (e.g. shell-inherited API keys)
         // options.env is the caller's explicit opt-in env (e.g. TUI provider API keys for codex/claude).
         // Callers are responsible for not passing vars they don't want visible inside attachable shells.
         // Single-user/single-instance deployment (Tailscale-only) makes this acceptable.

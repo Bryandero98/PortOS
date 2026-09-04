@@ -7,7 +7,7 @@ import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes } from '../../utils/formatters';
 import useDownloadPreflightConfirm from '../../hooks/useDownloadPreflightConfirm';
 import useLocalLlmStatus from '../../hooks/useLocalLlmStatus';
-import { migrateLocalLlmBackend, controlOllamaService, patchSettingsSlice, getLlamaServerStatus, getLlamaServerUpdateStatus, startLlamaServer, stopLlamaServer, installLlamaServer, upgradeLlamaServer, downloadSpecDecodeModel, cancelSpecDecodeModelDownload, previewLocalLlmDownload, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx, searchMtplxModels, pullMtplxModel, removeMtplxModel, getSlotstreamServerStatus, startSlotstreamServer, stopSlotstreamServer, installSlotstream, saveRuntimeStartupList } from '../../services/api';
+import { migrateLocalLlmBackend, controlOllamaService, patchSettingsSlice, getLlamaServerStatus, getLlamaServerUpdateStatus, startLlamaServer, stopLlamaServer, installLlamaServer, upgradeLlamaServer, downloadSpecDecodeModel, cancelSpecDecodeModelDownload, previewLocalLlmDownload, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx, searchMtplxModels, pullMtplxModel, removeMtplxModel, getSlotstreamServerStatus, startSlotstreamServer, stopSlotstreamServer, installSlotstream, downloadSlotstreamModel, saveRuntimeStartupList } from '../../services/api';
 import socket from '../../services/socket';
 import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 import RuntimeServersCard from './RuntimeServersCard.jsx';
@@ -73,6 +73,7 @@ export default function LocalLlmRuntimesView() {
   // at a time on purpose: a checkpoint is tens of gigabytes, so two concurrent
   // pulls just make both slower.
   const [mtplxDownload, setMtplxDownload] = useState(null);
+  const [slotstreamDownload, setSlotstreamDownload] = useState(null);
   const { confirm: downloadConfirm, request: requestWeightDownload, cancel: cancelDownloadConfirm, confirmRun: runDownloadConfirm } = useDownloadPreflightConfirm();
   const [llamaLoading, setLlamaLoading] = useState(false);
   // Anchor for the unified server card's "Configure" action — llama-server needs
@@ -237,6 +238,31 @@ export default function LocalLlmRuntimesView() {
     return () => socket.off('mtplx:download', handleMtplxDownload);
   }, [loadMtplxStatus]);
 
+  // Slotstream checkpoint download progress. Same contract as MTPLX above: a
+  // 100 GB+ pull outlives the request that started it, so the socket's terminal
+  // frame is what clears the bar and re-reads the cache — the list is then right
+  // even if the request itself never comes back.
+  useEffect(() => {
+    const handleSlotstreamDownload = (frame) => {
+      if (!frame) return;
+      if (frame.event === 'complete' || frame.event === 'error' || frame.event === 'cancelled') {
+        setSlotstreamDownload(null);
+        loadSlotstreamStatus();
+        return;
+      }
+      setSlotstreamDownload((prev) => ({
+        model: frame.model || prev?.model || null,
+        // A frame without byte counters (the resolving pass) must not reset a
+        // bar that already has them — keep the last known numbers.
+        received: Number.isFinite(frame.received) ? frame.received : (prev?.received ?? 0),
+        total: Number.isFinite(frame.total) ? frame.total : (prev?.total ?? 0),
+        message: frame.message || prev?.message || null,
+      }));
+    };
+    socket.on('slotstream:download', handleSlotstreamDownload);
+    return () => socket.off('slotstream:download', handleSlotstreamDownload);
+  }, [loadSlotstreamStatus]);
+
   // === Unified runtime-server controls ======================================
   // Every handler routes through `runAction` so one busy/spinner/refresh path
   // covers all four runtimes. The `runtime-<verb>-<id>` keys are what
@@ -311,6 +337,27 @@ export default function LocalLlmRuntimesView() {
     () => patchSettingsSlice('localLlm.slotstream', { launch }),
     'Saved — Slotstream will start on these options when a request needs it'
   ).then(loadSlotstreamStatus);
+  // The route awaits the whole transfer, so this request runs for as long as the
+  // download does; the bar is driven by `slotstream:download` (subscribed above)
+  // rather than by the spinner, and the terminal frame clears it first. The
+  // clear below is the belt for a socket that dropped mid-transfer.
+  const startSlotstreamDownload = (model) => runAction(
+    'slotstream-download',
+    () => downloadSlotstreamModel(model).then((r) => {
+      if (r?.success === false) throw new Error(r.error || 'Download failed');
+      return r;
+    }),
+    (r) => `${r?.repo || 'Checkpoint'} downloaded`,
+    { onError: (err) => toast.error(`Slotstream download failed: ${err.message}`) },
+  ).then(() => {
+    setSlotstreamDownload(null);
+    return loadSlotstreamStatus();
+  });
+  const slotstreamDownloadModel = (model) => requestWeightDownload({
+    title: 'Download Slotstream checkpoint',
+    preview: () => previewLocalLlmDownload({ kind: 'slotstream', model }, { silent: true }),
+    run: () => startSlotstreamDownload(model),
+  });
   const runtimeStopSlotstream = () => runAction(
     'runtime-stop-slotstream',
     () => stopSlotstreamServer(),
@@ -685,6 +732,8 @@ export default function LocalLlmRuntimesView() {
           onStart={runtimeStartSlotstream}
           onStop={runtimeStopSlotstream}
           onInstall={runtimeInstallSlotstream}
+          onDownloadModel={slotstreamDownloadModel}
+          download={slotstreamDownload}
         />
       </div>
 

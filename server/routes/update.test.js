@@ -130,7 +130,7 @@ describe('POST /api/update/execute — reconcile gating (issue #1779)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ started: true, tag: 'v1.26.0' });
     // Only the stale workspaces, with 'root' mapped to update.sh's '.' token.
-    expect(executeUpdate).toHaveBeenCalledWith('v1.26.0', expect.any(Function), { forceCleanWorkspaces: ['.', 'server'] });
+    expect(executeUpdate).toHaveBeenCalledWith('v1.26.0', expect.any(Function), expect.objectContaining({ forceCleanWorkspaces: ['.', 'server'] }));
   });
 
   it('reconcile with no stale deps (build/migration staleness) forces no clean', async () => {
@@ -139,7 +139,7 @@ describe('POST /api/update/execute — reconcile gating (issue #1779)', () => {
     }));
     const res = await request(makeApp()).post('/api/update/execute').send({ reconcile: true });
     expect(res.status).toBe(200);
-    expect(executeUpdate).toHaveBeenCalledWith('v1.26.0', expect.any(Function), { forceCleanWorkspaces: [] });
+    expect(executeUpdate).toHaveBeenCalledWith('v1.26.0', expect.any(Function), expect.objectContaining({ forceCleanWorkspaces: [] }));
   });
 
   it('reconcile runs even with NO cached release (out of sync)', async () => {
@@ -175,7 +175,7 @@ describe('POST /api/update/execute — reconcile gating (issue #1779)', () => {
     const res = await request(makeApp()).post('/api/update/execute').send({});
     expect(res.status).toBe(200);
     expect(res.body.tag).toBe('v1.27.0');
-    expect(executeUpdate).toHaveBeenCalledWith('v1.27.0', expect.any(Function), { forceCleanWorkspaces: undefined });
+    expect(executeUpdate).toHaveBeenCalledWith('v1.27.0', expect.any(Function), expect.objectContaining({ forceCleanWorkspaces: undefined }));
   });
 });
 
@@ -388,12 +388,16 @@ describe('POST /api/update/execute — lock handling and socket progress', () =>
 
   // Regression for issue #6036: executeUpdate rejecting (e.g. spawnDetached
   // throwing before any child listener is attached) skips recordUpdateResult,
-  // so the route is the only place left that can release the lock. Leaving it
-  // set wedges every later update at 409 and blocks all CoS agent spawns.
+  // so the launcher is the only place left that can release the lock. Leaving
+  // it set wedges every later update at 409 and blocks all CoS agent spawns.
   it('releases the update lock and emits an error when executeUpdate rejects', async () => {
     executeUpdate.mockRejectedValue(new Error('spawn EACCES'));
     const res = await request(makeApp()).post('/api/update/execute').send({});
-    expect(res.status).toBe(200);
+    // NOT 200: the rejection happens during the LAUNCH, before any script is
+    // running, so the caller is told the update never started rather than being
+    // handed `started: true` for a restart that is not coming.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.body.started).toBeUndefined();
     await vi.waitFor(() => {
       expect(updateChecker.setUpdateInProgress).toHaveBeenCalledWith(false);
     });

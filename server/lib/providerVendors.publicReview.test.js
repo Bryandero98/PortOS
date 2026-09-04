@@ -13,6 +13,8 @@ import {
   publicReviewProviderBlock,
   supportsPublicReviewProvider,
   supportsPublicReviewActionsProvider,
+  supportsTuiPublicReviewActionsProvider,
+  supportsTuiPublicReviewPosture,
 } from './providerVendors.js';
 
 const localClaude = {
@@ -307,6 +309,87 @@ describe('public-review provider postures', () => {
     });
     expect(cloudGate.args).not.toContain('--bare');
     expect(cloudGate.args).toContain('--restricted');
+  });
+
+  // #6062 — Stage 3 may run as an ATTACHABLE session so an operator can watch
+  // and steer the longest, least predictable stage in the pipeline. `tui: true`
+  // is a per-recipe opt-in, and it drops ONLY the flags that require `--print`.
+  it('keeps every Claude actions enforcement flag when the recipe is built for a TUI session', () => {
+    const claudeTui = { id: 'claude-tui', type: 'tui', command: 'claude', args: ['--dangerously-skip-permissions'] };
+    const headless = buildVendorSpawnConfig(claudeTui, {
+      effectiveModel: 'sonnet',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    });
+    const tui = buildVendorSpawnConfig(claudeTui, {
+      effectiveModel: 'sonnet',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+      tui: true,
+    });
+
+    expect(tui.command).toBe('claude');
+    // The whole sandbox recipe survives — this is what makes attaching safe.
+    expect(tui.args).toEqual(expect.arrayContaining([
+      '--permission-mode', 'acceptEdits',
+      '--settings', headless.args[headless.args.indexOf('--settings') + 1],
+      '--disallowedTools', 'WebFetch,WebSearch',
+      '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+      '--no-chrome', '--disable-slash-commands',
+      '--model', 'sonnet',
+    ]));
+    // Nothing inside the session can lift the sandbox: the only lever is
+    // `sandbox.filesystem.disabled`, and the recipe never emits it.
+    expect(JSON.parse(tui.args[tui.args.indexOf('--settings') + 1]).sandbox)
+      .not.toHaveProperty('filesystem');
+    // A saved skip-permissions arg is still ignored — provider.args is never
+    // forwarded on this path, headless or attachable.
+    expect(tui.args).not.toContain('--dangerously-skip-permissions');
+    // …and ONLY the flags that require `--print` are gone. `--no-session-persistence`
+    // is in the SHARED posture set rather than the headless output block, and
+    // leaving it on the attachable argv made the CLI exit(1) at parse time
+    // ("can only be used with --print mode") — three seconds in, before the
+    // prompt was pasted, on every retry of a Stage 3 pr-reviewer run.
+    const printOnly = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence'];
+    expect(headless.args).toEqual(expect.arrayContaining(printOnly));
+    for (const flag of printOnly) {
+      expect(tui.args).not.toContain(flag);
+    }
+    expect(headless.args.filter((a) => !printOnly.includes(a))).toEqual(tui.args);
+  });
+
+  it('declares attachability per recipe, and never for the tool-free postures', () => {
+    const claudeTui = { id: 'claude-tui', type: 'tui', command: 'claude' };
+    expect(supportsTuiPublicReviewActionsProvider(claudeTui)).toBe(true);
+    // An interactive session for a reasoner with no tools buys nothing and
+    // widens the boundary for free — no row declares it.
+    expect(supportsTuiPublicReviewPosture(claudeTui, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(false);
+    // Vendors whose actions recipe has not been reviewed for a PTY stay headless.
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'codex-tui', type: 'tui', command: 'codex' })).toBe(false);
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'grok-tui', type: 'tui', command: 'grok' })).toBe(false);
+    expect(supportsTuiPublicReviewActionsProvider(antigravity)).toBe(false);
+    // …as do vendors with no actions recipe at all, and non-binary records.
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-tui', type: 'tui', command: 'opencode' })).toBe(false);
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'claude-api', type: 'api', command: 'claude' })).toBe(false);
+  });
+
+  it('refuses to build an attachable argv for a vendor with no attachable recipe', () => {
+    // Failing closed matters more here than anywhere else on this path: the
+    // headless fallback tier emits `--print`/`exec`/`run` argv, which in a PTY
+    // neither accepts a pasted prompt nor enforces anything.
+    for (const provider of [
+      { id: 'codex-tui', type: 'tui', command: 'codex' },
+      { id: 'grok-tui', type: 'tui', command: 'grok' },
+      { id: 'opencode-tui', type: 'tui', command: 'opencode' },
+      { id: 'antigravity-tui', type: 'tui', command: 'agy' },
+    ]) {
+      expect(() => buildVendorSpawnConfig(provider, {
+        safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+        tui: true,
+      })).toThrow(/no attachable sandboxed-actions public-review recipe/);
+    }
+    expect(() => buildVendorSpawnConfig({ id: 'claude-tui', type: 'tui', command: 'claude' }, {
+      safetyProfile: PUBLIC_REVIEW_GATE_EXECUTION_PROFILE,
+      tui: true,
+    })).toThrow(/no attachable no-tool public-review recipe/);
   });
 
   it('runs a vendor with no sandbox recipe through its ordinary headless recipe for the actions stage only', () => {

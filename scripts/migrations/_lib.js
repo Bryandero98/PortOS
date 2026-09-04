@@ -36,6 +36,10 @@
  *       when retiring an id from the shipped seed; reach for 7b when a later
  *       tier needs to be OFFERED without disturbing whatever the user already
  *       has listed.
+ *   8. CoS config reads — `readCosConfig` resolves the durable CoS settings a
+ *      migration needs to honour an install-specific path, across both the
+ *      pre- and post-339 layouts (`data/cos/state.json`'s `config` slice and
+ *      `data/cos/config.json`).
  *
  * Families 5, 7, and 7b all target `data/providers.json` and share its
  * read → parse → shape-guard preamble via `readProvidersDoc`; each still owns
@@ -677,6 +681,43 @@ export async function readMediaRegistry({ rootDir, bucket = VIDEO_BUCKET_MLX } =
 /** Persist a media-model registry with the canonical trailing-newline shape. */
 export async function writeMediaRegistry(path, config) {
   await atomicWrite(path, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+// ---- CoS config readers ----
+
+/**
+ * Read the durable CoS user configuration a migration needs to resolve an
+ * install-specific path (`userTasksFile` / `cosTasksFile` are the ones that
+ * matter today). Returns `{}` when there is nothing usable — every caller
+ * already falls back to the shipped defaults.
+ *
+ * Config moved out of `data/cos/state.json` into `data/cos/config.json` in
+ * migration 339. Both are consulted, config file first, so this resolves
+ * correctly whether the reading migration runs before or after that split (and
+ * on an install restored from a pre-split backup).
+ *
+ * Deliberately tolerant: a truncated/corrupt file left by a prior crash must
+ * not abort the reading migration and every one after it — the state loader
+ * owns quarantining and repairing those files.
+ */
+export async function readCosConfig({ rootDir, label = 'migration' }) {
+  for (const relPath of ['data/cos/config.json', 'data/cos/state.json']) {
+    const raw = await readFile(join(rootDir, relPath), 'utf-8').catch(() => null);
+    if (raw === null) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Not necessarily the final answer — the next source in the list may
+              // still carry a usable config, so this says only what was skipped.
+              console.warn(`⚠️ ${label}: invalid JSON in ${relPath}; ignoring it`);
+      continue;
+    }
+    // config.json IS the config; state.json nests it under `config`.
+    const config = relPath.endsWith('config.json') ? parsed : parsed?.config;
+    if (config && typeof config === 'object' && !Array.isArray(config)) return config;
+  }
+  return {};
 }
 
 // ---- brain seed-record migration family ----

@@ -18,6 +18,7 @@ import {
   MessageSquare,
   ExternalLink,
   Terminal,
+  Hourglass,
   Send,
   GitBranch,
   GitPullRequest,
@@ -377,12 +378,40 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
   const lastOutput = output.length > 0 ? output[output.length - 1]?.line : null;
 
   // Why this run has NO "Open Shell" link. Scoped to the one case where the user
-  // configured a TUI provider and got no shell anyway: a public-review stage is
-  // forced headless regardless (`spawnHeadless = publicReview || !isTui`). An
-  // ordinary headless CLI agent gets no chip — nobody expected a shell there, and
-  // one on every card would be the noise this exists to remove.
-  const noShellReason = !agent.metadata?.tuiSessionId && agent.metadata?.publicReviewPosture
-    ? 'No shell: a public-review stage always runs headless, even when you configure it onto a TUI provider — the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
+  // configured a TUI provider and got no shell anyway: a public-review stage
+  // runs headless unless it is the sandboxed-actions stage on a provider whose
+  // vendor declares an attachable recipe. An ordinary headless CLI agent gets no
+  // chip — nobody expected a shell there, and one on every card would be the
+  // noise this exists to remove.
+  //
+  // `executionMode` is the authority on which way the run actually spawned, and
+  // it is stamped at registration while `tuiSessionId` only lands once the PTY
+  // attaches. An ATTACHABLE public-review stage therefore passes through a
+  // window where the session id is still null — without this second condition
+  // the card would spend that window asserting the stage runs headless, then
+  // silently swap the claim for an "Open Shell" link (same reason the ordinary
+  // TUI case is excluded below).
+  const noShellReason = !agent.metadata?.tuiSessionId
+    && agent.metadata?.executionMode !== 'tui'
+    && agent.metadata?.publicReviewPosture
+    ? 'No shell: this public-review stage runs headless — either it is a tool-free reasoning stage, or its provider has no attachable sandbox recipe — so the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
+    : null;
+
+  // Why this run can be silent for minutes and still be perfectly healthy: its
+  // prompt is large and its model server is on this machine, so the whole
+  // prefill happens before the child emits its first line (#6117). Only shown
+  // when the server actually stamped a long-prefill budget — an absent stamp is
+  // "no estimate" (a cloud run, or a pre-upgrade record), never "instant".
+  const prefillBudget = agent.metadata?.localPromptBudget?.longPrefill
+    && Number.isFinite(agent.metadata.localPromptBudget.prefillMs)
+    ? agent.metadata.localPromptBudget
+    : null;
+  const prefillLabel = prefillBudget ? formatDurationMs(prefillBudget.prefillMs) : null;
+  const prefillReason = prefillBudget
+    ? `Large prompt (~${(prefillBudget.promptTokens ?? 0).toLocaleString()} tokens) on a local model server — expect roughly ${prefillLabel} of silent prefill before the first line of output. The run is working, not wedged.${
+      prefillBudget.expectedDurationMs
+        ? ` Its duration estimate was raised to ~${formatDurationMs(prefillBudget.expectedDurationMs)} to cover it.`
+        : ''}`
     : null;
 
   // Extract recent tool activity (last few tool lines) for live display
@@ -681,6 +710,15 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               <span>No shell</span>
             </span>
           )}
+          {!inactive && prefillReason && (
+            <span
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-port-warning/20 text-port-warning whitespace-nowrap"
+              title={prefillReason}
+            >
+              <Hourglass size={10} aria-hidden="true" className="shrink-0" />
+              <span>Long prefill ~{prefillLabel}</span>
+            </span>
+          )}
           {!remote && (
             <button
               onClick={openPromptModal}
@@ -831,6 +869,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               disabled={sendingBtw || !btwInput.trim()}
               className="flex items-center gap-1.5 px-3 py-1 text-xs bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded transition-colors disabled:opacity-50 min-h-[32px]"
               title="Send BTW message to agent (pastes into the live Claude Code TUI session)"
+              data-voice-guard="confirm"
             >
               {sendingBtw ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Send size={12} aria-hidden="true" />}
               BTW
