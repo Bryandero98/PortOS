@@ -90,21 +90,28 @@ async function buildFinalizedWalkSet(recordId, {
     status: 'complete',
     directions: {},
   };
-  for (const direction of SPRITE_DIRECTIONS) {
+  // #6180 — the 8 directions are independent (each writes its own runId
+  // under grok/), and writeWalkFramePng already serves the encoded PNG
+  // buffer from cache (walkFramePngCache), so there is no Sharp compute left
+  // to save here — only the per-file write latency, which is exactly what
+  // running the 8 directions concurrently hides. `seq++` for each direction
+  // still happens synchronously in SPRITE_DIRECTIONS order before any await,
+  // since .map() invokes its callback bodies in sequence, so run ids stay
+  // deterministic despite the writes interleaving after that.
+  await Promise.all(SPRITE_DIRECTIONS.map(async (direction) => {
     const runId = `walk-${direction}-${(seq++).toString(16).padStart(8, '0')}`;
     const generatedRel = `grok/${runId}/generated`;
-    const frames = [];
-    for (let i = 0; i < labels.length; i++) {
+    const frames = await Promise.all(Array.from({ length: labels.length }, async (_, i) => {
       const name = `${String(i).padStart(2, '0')}-${labels[i]}.png`;
       const rel = `${generatedRel}/frames/${name}`;
       await walkFramePng(join(dir, rel), 20 + i * 8, varyArm ? 2 + (i % 4) * 2 : null, speckFrames.includes(i));
-      frames.push({
+      return {
         outputIndex: i,
         phase: labels[i],
         path: rel,
         sha256: sha256(await readFile(join(dir, rel))),
-      });
-    }
+      };
+    }));
     const runManifest = {
       schemaVersion: 1,
       kind: 'deterministically-packaged-grok-walk-video',
@@ -127,7 +134,7 @@ async function buildFinalizedWalkSet(recordId, {
       runManifestSha256: sha256(Buffer.from(manifestBytes)),
       approvedAt: new Date().toISOString(),
     };
-  }
+  }));
   await mkdir(join(dir, 'walk'), { recursive: true });
   const selectionRel = `walk/${recordId}-walk-selection-v1.json`;
   const selectionBytes = JSON.stringify(selection);
