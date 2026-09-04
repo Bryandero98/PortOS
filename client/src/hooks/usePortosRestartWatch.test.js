@@ -292,6 +292,28 @@ describe('usePortosRestartWatch', () => {
       expect(result.current.polling).toBe(true);
     });
 
+    it('arms on a successful completion that beat the restart', async () => {
+      const { result } = await mountActive();
+
+      await act(async () => { socketHandlers.get('portos:update:complete')({ success: true }); });
+      await act(async () => {});
+
+      expect(result.current.polling).toBe(true);
+    });
+
+    it('does not touch state when the surface unmounts mid-confirmation', async () => {
+      // The confirmation is a 1.5s detached timer; a user navigating away
+      // inside that window would otherwise arm a watch on a dead component.
+      const { unmount } = await mountActive();
+      mockCheckHealth.mockResolvedValue(null);
+
+      await act(async () => { socketHandlers.get('disconnect')(); });
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(DISCONNECT_CONFIRM_MS); });
+
+      expect(mockToast.loading).not.toHaveBeenCalled();
+    });
+
     it('reports a completion that reports failure instead of arming', async () => {
       const onFailure = vi.fn();
       const { result } = renderHook(() => usePortosRestartWatch({ active: true, onFailure }));
