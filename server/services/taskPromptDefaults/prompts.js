@@ -2501,7 +2501,7 @@ not sufficient.
 
 ## Review checklist
 
-{reviewChecklist}`,
+{reviewLenses}`,
 
   'reference-watch': `[Improvement: {appName}] Reference Repo Review
 

@@ -2320,6 +2320,35 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/agent-prev-1[\\/]output\.txt/);
     });
 
+    it('keeps a stage inside its worktree when the previous output is inlined in full', () => {
+      // The pointer names a file under data/cos/agents — outside every agent
+      // worktree. Under a sandboxed permission posture reading it is a dialog
+      // nobody answers (agent-e057cca7), and the text is already in the prompt.
+      const inlined = buildLightContextPrompt(makeTask({
+        metadata: { pipeline: {
+          previousStageAgentId: 'agent-prev-1',
+          previousStageOutput: JSON.stringify({ eligibility: 'passed', eligibleNumbers: [6223] }),
+          currentStage: 2,
+          stages: [{ name: 'scan' }, { name: 'gate' }, { name: 'review' }],
+        }}
+      }), '/r', null, isTruthyMeta);
+      expect(inlined).toMatch(/hand-off is inlined below in full/);
+      expect(inlined).not.toMatch(/output\.txt/);
+      expect(inlined).toMatch(/"eligibleNumbers":\[6223\]/);
+
+      // A clipped inline says so, and still never points outside the worktree.
+      const clipped = buildLightContextPrompt(makeTask({
+        metadata: { pipeline: {
+          previousStageAgentId: 'agent-prev-1',
+          previousStageOutput: 'x'.repeat(12_001),
+          currentStage: 2,
+          stages: [{ name: 'scan' }, { name: 'gate' }, { name: 'review' }],
+        }}
+      }), '/r', null, isTruthyMeta);
+      expect(clipped).toMatch(/clipped to its first 12000 characters/);
+      expect(clipped).not.toMatch(/output\.txt/);
+    });
+
     it('renders a direct preflight summary when the previous stage has no agent', () => {
       const prompt = buildLightContextPrompt(makeTask({
         metadata: { pipeline: {
