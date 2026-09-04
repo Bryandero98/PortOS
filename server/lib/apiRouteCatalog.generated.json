@@ -967,6 +967,14 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/apps/:id/claim-reviewers",
+      "mountPath": "/api/apps",
+      "sources": [
+        "server/routes/apps/taskTypes.js"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/apps/:id/detect-icon",
       "mountPath": "/api/apps",

@@ -191,6 +191,25 @@ export const REVIEW_STOP_MODES = [
 ];
 export const DEFAULT_REVIEW_STOP_MODE = 'all';
 
+// The task-metadata keys that together form a task-local reviewer override —
+// mirror of REVIEWER_OVERRIDE_KEYS. A task type carrying any of them has pinned
+// its own reviewers and no longer tracks the install-wide Code Review Defaults,
+// which is what the picker's "Use system Code Review Defaults" reset clears. A
+// key missing here leaves that reset visible after it has already removed
+// everything it knows about, and leaves the removed key silently pinning a
+// reviewer the user thinks they just cleared.
+export const REVIEWER_OVERRIDE_KEYS = Object.freeze([
+  'reviewer',
+  'reviewers',
+  'usernames',
+  'optionalReviewers',
+  'reviewerMaxRounds',
+  'reviewerModels',
+  'reviewerEfforts',
+  'reviewStopMode',
+  'reviewerApplies',
+]);
+
 // Resolve task metadata to an ordered, deduped reviewer list (mirror of the
 // server's normalizeReviewers): prefers `reviewers`, falls back to the legacy
 // single `reviewer`, defaults to DEFAULT_REVIEWERS.

@@ -33,6 +33,17 @@ export const getAppWorkItems = (id, { issueAuthorFilter } = {}, options) => {
   const qs = issueAuthorFilter ? `?issueAuthorFilter=${encodeURIComponent(issueAuthorFilter)}` : '';
   return request(`/apps/${id}/work-items${qs}`, { silent: true, ...options });
 };
+// The reviewers a `/do:next` claim will ACTUALLY run for this app, resolved
+// server-side through the claim-work task metadata AND the install-wide Code
+// Review Defaults: `{ source, reviewers, usernames, optionalReviewers,
+// reviewerMaxRounds, reviewerModels, reviewerEfforts, csv }`. `source` is
+// 'task-override' when a claim-work override supplied the list (the defaults
+// were never consulted) or 'defaults' when it came from Settings → Code
+// Reviewers. Seed a claim surface from THIS, not from getCodeReviewDefaults —
+// the latter can't see the override and so shows reviewers the run won't use.
+// Read-only; callers own their fallback, so default to silent.
+export const getAppClaimReviewers = (id, options) =>
+  request(`/apps/${id}/claim-reviewers`, { silent: true, ...options });
 // Every OPEN issue on the forge this app's git origin points at (GitHub via gh,
 // GitLab via glab): { forge, fullName, issues: [{ number, title, body, labels,
 // assignees, author, url, createdAt, updatedAt }], reason, transient }. Backs the

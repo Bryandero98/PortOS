@@ -6,6 +6,7 @@
  *   GET  /:id/task-types             → { taskTypeOverrides }
  *   GET  /:id/work-tracker           → { tracker info }
  *   GET  /:id/work-items             → { tracker, items, reason }
+ *   GET  /:id/claim-reviewers        → { source, reviewers, csv, … }
  *   GET  /:id/layered-intelligence           → { config, isPortos }
  *   GET  /:id/layered-intelligence/outcomes  → { stats, execution, metrics, approvalFunnel, rejections, recent }
  *   PUT  /:id/task-types/all         → { success, taskTypeOverrides }
@@ -19,9 +20,10 @@ import { Router } from 'express';
 import { logCosScheduleUpdate } from '../../services/userActionScheduleLog.js';
 import * as appsService from '../../services/apps.js';
 import { PORTOS_APP_ID } from '../../services/apps.js';
-import { sanitizeTaskMetadata, ISSUE_AUTHOR_FILTERS } from '../../lib/validation.js';
+import { sanitizeTaskMetadata, ISSUE_AUTHOR_FILTERS, resolveClaimReviewerConfig, hasReviewerOverride } from '../../lib/validation.js';
 import { listWorkItems } from '../../services/workItems.js';
 import { resolveClaimWorkMetadata, resolveClaimAuthorFilter } from '../../services/cosTaskGenerator.js';
+import { getCodeReviewDefaults } from '../../services/codeReview.js';
 import { parseCronToNextRun } from '../../services/eventScheduler.js';
 import { INTERVAL_TYPES, decodeIntervalType, isCronExpression, isKnownIntervalType } from '../../services/taskScheduleConstants.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
@@ -94,6 +96,46 @@ router.get('/:id/work-items', loadApp, asyncHandler(async (req, res) => {
   const issueExcludeLabels = claimMetadata?.issueExcludeLabels ?? [];
   const result = await listWorkItems(app, { issueAuthorFilter, issueExcludeLabels });
   res.json({ appId: app.id, appName: app.name, issueAuthorFilter, ...result });
+}));
+
+// GET /api/apps/:id/claim-reviewers - The reviewers a `/do:next` claim will
+// ACTUALLY run for this app, resolved through the same
+// `resolveClaimWorkMetadata` → `resolveClaimReviewerConfig` chain
+// `buildClaimWorkTask` uses to fill the claim prompt's `{reviewers}` token.
+//
+// The manual claim surfaces used to seed their reviewer display straight from
+// `GET /api/code-review/defaults`, which skips the claim-work task metadata
+// layer entirely. A `claim-work` override left over from an earlier reviewer
+// choice therefore ran reviewers the Code Reviewers panel no longer listed, with the
+// drawer confidently showing the panel's list — so the run named `codex` while
+// the UI said `antigravity`. `source` is what makes that visible: `task-override`
+// means an override supplied the list and the install defaults were not
+// consulted, `defaults` means they were.
+//
+// Read-only: metadata + settings reads, no claim markers, no LLM call.
+router.get('/:id/claim-reviewers', loadApp, asyncHandler(async (req, res) => {
+  const app = req.loadedApp;
+  // Independent reads — the resolver needs both, but neither depends on the other.
+  const [{ metadata }, codeReviewDefaults] = await Promise.all([
+    resolveClaimWorkMetadata(app),
+    // A settings read failure means "no configured defaults", never a failed
+    // lookup: the resolver still answers from the task metadata, which is the
+    // layer that wins anyway.
+    getCodeReviewDefaults().catch(() => null)
+  ]);
+  const config = resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers);
+  res.json({
+    appId: app.id,
+    appName: app.name,
+    source: hasReviewerOverride(metadata) ? 'task-override' : 'defaults',
+    reviewers: config.reviewers,
+    usernames: config.usernames,
+    optionalReviewers: config.optionalReviewers,
+    reviewerMaxRounds: config.reviewerMaxRounds,
+    reviewerModels: config.reviewerModels,
+    reviewerEfforts: config.reviewerEfforts,
+    csv: config.csv
+  });
 }));
 
 // GET /api/apps/:id/layered-intelligence - Effective Layered Intelligence config

@@ -138,6 +138,7 @@ export * from './useMediaCompletionRefresh.js';
 export * from './useOpenClawAttachments.js';
 
 // === Settings-derived shared state ===
+export { default as useClaimReviewers } from './useClaimReviewers.js';
 export * from './useCodeReviewDefaults.jsx';
 export { default as useCatalogTypes } from './useCatalogTypes.jsx';
 export * from './useCatalogTypes.jsx';

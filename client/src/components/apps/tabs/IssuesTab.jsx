@@ -12,6 +12,7 @@ import ProviderModelSelector from '../../ProviderModelSelector';
 import { useThemeContext } from '../../ThemeContext';
 import { useCosTaskUpdates } from '../../../hooks/useCosTaskUpdates';
 import useProviderModels from '../../../hooks/useProviderModels';
+import useClaimReviewers from '../../../hooks/useClaimReviewers';
 import { chipColors } from '../../../lib/chipContrast';
 import { isProcessProvider } from '../../../utils/providers';
 import * as api from '../../../services/api';
@@ -241,8 +242,10 @@ export default function IssuesTab({ appId, appName }) {
   // Page-level provider/model/effort pin for every Claim AND Replan button on this tab —
   // left untouched (blank), a claim resolves the install's active provider,
   // same as the bare button always did (POST /tasks/slashdo -> resolveAgentProviderAndModel;
-  // this manual path does NOT consult the app's scheduled claim-work override —
-  // that's a separate resolution used only by the automated claim-work task).
+  // this manual path does NOT consult the app's scheduled claim-work override for
+  // the PROVIDER — that pin is read only by the automated claim-work task).
+  // Scoped to the provider deliberately: the REVIEWERS below do come from that
+  // override, which is precisely the mismatch `claimReviewers` exists to surface.
   // This picker never persists across a reload; it's a session convenience for
   // "claim the next several issues with model X" without reopening the Agent
   // Operations drawer each time.
@@ -252,6 +255,13 @@ export default function IssuesTab({ appId, appName }) {
   } = useProviderModels({ filter: enabledProcessProviderFilter, allowDefault: true, silent: true, withEffort: true });
   const [effort, setEffort] = useState('');
   const [overrideContext, setOverrideContext] = useState('');
+  // The reviewers a Claim launched from this tab will actually run. This tab
+  // offers no reviewer picker, so the resolution was previously invisible here —
+  // and it is NOT the Models → Code Reviewers list a user would assume: a
+  // claim-work task override wins over it, which is how a claim from this tab
+  // reviewed with `codex` after the install default had been changed. Surfaced
+  // read-only next to the provider pin, with its source named.
+  const claimReviewers = useClaimReviewers(appId);
 
   // Keep the event-driven path based on the latest runs without putting a
   // mutable state snapshot in its effect dependencies. Socket callbacks can
@@ -575,6 +585,23 @@ export default function IssuesTab({ appId, appName }) {
             />
           </div>
         </div>
+        {claimReviewers.resolved && (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <span className="flex items-center gap-1.5 text-xs text-gray-500 uppercase tracking-wide shrink-0">
+              <ClipboardCheck size={14} /> Reviewed by
+            </span>
+            <p className="flex-1 text-xs text-gray-400">
+              {claimReviewers.reviewers.length
+                ? <code className="text-gray-300">{claimReviewers.csv || claimReviewers.reviewers.join(',')}</code>
+                : 'No reviewers resolve for this app.'}
+              {claimReviewers.source === 'task-override'
+                ? <> — from the <strong className="text-amber-400/90">claim-work</strong> task override in{' '}
+                  <Link to="/cos/schedule" className="text-port-accent hover:underline">Chief of Staff → Schedule</Link>,
+                  not Models → Code Reviewers. Clear it there to follow the install default.</>
+                : <> — from <Link to="/models/code-reviewers" className="text-port-accent hover:underline">Models → Code Reviewers</Link>.</>}
+            </p>
+          </div>
+        )}
         <div className="space-y-1">
           <label htmlFor={overrideContextId} className="block text-xs text-gray-400">
             Override context or instructions <span className="text-gray-600">(optional)</span>

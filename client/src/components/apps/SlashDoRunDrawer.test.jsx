@@ -9,6 +9,9 @@ const api = vi.hoisted(() => ({
   // Backs the reviewer table's Model column (useReviewerModelOptions).
   getLocalLlmStatus: vi.fn(),
   getAppWorkItems: vi.fn(),
+  // What the RUN resolves — the claim-work override layer getCodeReviewDefaults
+  // cannot see, and what the untouched picker is seeded from.
+  getAppClaimReviewers: vi.fn(),
   createSlashdoTask: vi.fn()
 }));
 
@@ -49,6 +52,10 @@ describe('SlashDoRunDrawer', () => {
       reason: 'actionable-issues',
       transient: false
     });
+    api.getAppClaimReviewers.mockResolvedValue({
+      source: 'defaults', reviewers: ['copilot'], usernames: [], optionalReviewers: [],
+      reviewerMaxRounds: {}, reviewerModels: {}, reviewerEfforts: {}, csv: 'copilot'
+    });
     api.createSlashdoTask.mockResolvedValue({ id: 'task-1', status: 'pending' });
   });
 
@@ -68,6 +75,35 @@ describe('SlashDoRunDrawer', () => {
     // Untouched reviewer controls must NOT pin a list — the server resolves the
     // app's configured claim-work reviewers instead.
     expect(settings.reviewers).toBeUndefined();
+  });
+
+  // The bug this seeding fixes: the picker used to display the Code Review
+  // Defaults, which do NOT include the claim-work task override the run resolves
+  // FIRST. A user who had moved the install default to `antigravity` saw
+  // `antigravity` here while every claim actually reviewed with codex + claude.
+  it('seeds the untouched picker from the reviewers the RUN resolves, not the install defaults', async () => {
+    api.getCodeReviewDefaults.mockResolvedValue({ reviewers: ['antigravity'], usernames: [], optionalReviewers: [] });
+    api.getAppClaimReviewers.mockResolvedValue({
+      source: 'task-override', reviewers: ['codex', 'claude'], usernames: [], optionalReviewers: [],
+      reviewerMaxRounds: {}, reviewerModels: {}, reviewerEfforts: {}, csv: 'codex,claude'
+    });
+
+    renderDrawer();
+
+    // Selected reviewers render as Remove buttons; unselected ones as Add.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Remove Codex/ })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Remove Claude/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Remove Antigravity/ })).not.toBeInTheDocument();
+    // …and the user is told WHERE that list comes from, since it isn't the panel
+    // they would go to in order to change it.
+    expect(screen.getByText(/claim-work/)).toBeInTheDocument();
+  });
+
+  it('does not blame a claim-work override when the reviewers came from the install defaults', async () => {
+    renderDrawer();
+
+    await waitFor(() => expect(screen.getByText('Reviewers (in order):')).toBeInTheDocument());
+    expect(screen.queryByText(/claim-work/)).not.toBeInTheDocument();
   });
 
   it('sends the reviewer list only once the user edits it', async () => {

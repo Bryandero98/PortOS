@@ -178,6 +178,37 @@ export function describeReviewerCli(reviewer) {
 export const REVIEW_STOP_MODES = ['all', 'on-findings', 'on-clean'];
 export const DEFAULT_REVIEW_STOP_MODE = 'all';
 
+// The task-metadata keys that TOGETHER form a task-local reviewer override. A
+// task type carrying ANY of them has pinned its own reviewers and no longer
+// tracks the install-wide Code Review Defaults — which is the point of the
+// override, and also the reason a claim launched from the UI can name a reviewer
+// the Code Reviewers panel no longer lists. One roster so the resolver, the `source`
+// claim-reviewer lookup reports, and the picker's "Use system Code Review
+// Defaults" reset all agree on what counts as an override.
+// Mirrored in client/src/lib/reviewerPins.js.
+export const REVIEWER_OVERRIDE_KEYS = Object.freeze([
+  // Legacy singular, still stored on schedules saved before the list existed.
+  'reviewer',
+  'reviewers',
+  'usernames',
+  'optionalReviewers',
+  'reviewerMaxRounds',
+  'reviewerModels',
+  'reviewerEfforts',
+  'reviewStopMode',
+  'reviewerApplies',
+]);
+
+/**
+ * Does this task metadata pin its own reviewers? Key PRESENCE is the signal, not
+ * truthiness: an explicitly empty `optionalReviewers: []` or `reviewerModels: {}`
+ * is a real override (it clears the defaults' value), so collapsing it into
+ * "nothing configured" would report the wrong source.
+ */
+export function hasReviewerOverride(metadata) {
+  return isPlainObject(metadata) && REVIEWER_OVERRIDE_KEYS.some((key) => key in metadata);
+}
+
 // Arbitrary GitHub reviewer usernames (e.g. `@CodeReviewbot`) requested as PR
 // reviewers to gate merging — a class distinct from the fixed REVIEWER_VALUES
 // enum (which either invoke a CLI, hit the local-LLM endpoint, or request the

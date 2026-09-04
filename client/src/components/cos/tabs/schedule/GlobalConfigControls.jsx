@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
+import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, REVIEWER_OVERRIDE_KEYS, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
 import ReviewerPicker from '../../ReviewerPicker';
 import Banner from '../../../ui/Banner';
 import InfoTooltip from '../../../ui/InfoTooltip';
@@ -27,18 +27,11 @@ const PR_COMPLETION_INHERIT_HINT = `Uses the target app's "After opening PR" def
 
 // These fields are the task-local reviewer-loop override. Removing them lets
 // the picker and server resolver fall back to the install-wide Code Review
-// Defaults without changing the task's PR policy or other agent options.
-const REVIEW_CONFIG_KEYS = [
-  'reviewer',
-  'reviewers',
-  'usernames',
-  'optionalReviewers',
-  'reviewerMaxRounds',
-  'reviewerModels',
-  'reviewerEfforts',
-  'reviewStopMode',
-  'reviewerApplies',
-];
+// Defaults without changing the task's PR policy or other agent options. The
+// roster is the shared REVIEWER_OVERRIDE_KEYS, so the reset button clears
+// exactly what the server counts as an override when it reports which layer a
+// claim run's reviewers came from.
+const REVIEW_CONFIG_KEYS = REVIEWER_OVERRIDE_KEYS;
 
 export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, category: _category, providers, providersLoaded = true, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled, dataInputCatalog }) {
   const reviewDefaults = useCodeReviewDefaults();
