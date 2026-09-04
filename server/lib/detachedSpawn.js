@@ -139,7 +139,25 @@ d="$1"; shift
 // `$null = $p.Handle` caches the process handle BEFORE the wait: without it
 // `Start-Process -PassThru` hands back an object whose `ExitCode` reads back
 // empty once the process is gone, and the tailer would never see a status.
+//
+// `-NoNewWindow` (NOT `-WindowStyle Hidden`) is what keeps this off Windows'
+// default-terminal handoff: only `-NoNewWindow` sets `CreateNoWindow`, while
+// `-WindowStyle Hidden` merely passes SW_HIDE and still allocates a console
+// host — condition 3 of docs/WINDOWS_CONSOLE.md. The job inherits the
+// supervisor's own (window-less) console, so it still HAS one and a console
+// host like powershell runs normally.
+//
+// The catch must write the `exit` sentinel and must NOT touch stdout/stderr.log:
+// `Start-Process`'s redirect holds both under an exclusive lock for as long as
+// the job lives, so a throw AFTER a successful launch (a faulting
+// `WaitForExit`, a sharing violation on the pid write) would fail on its own
+// error write and never reach the sentinel — leaving the tailer polling
+// forever, `executeUpdate`'s promise unsettled, and the update lock wedged
+// until its 30-minute stale timeout. Before the launch nothing holds the log,
+// so a launch failure is reported there where the caller's stderr stream sees
+// it; after it, the error goes to a file of its own.
 const WINDOWS_SUPERVISOR = `$dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$started = $false
 try {
   $ErrorActionPreference = 'Stop'
   $job = Get-Content -LiteralPath (Join-Path $dir 'job.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -147,18 +165,27 @@ try {
     FilePath               = $job.bin
     RedirectStandardOutput = (Join-Path $dir 'stdout.log')
     RedirectStandardError  = (Join-Path $dir 'stderr.log')
-    WindowStyle            = 'Hidden'
+    NoNewWindow            = $true
     PassThru               = $true
   }
   if ($job.arguments) { $params.ArgumentList = $job.arguments }
   if ($job.cwd) { $params.WorkingDirectory = $job.cwd }
   $p = Start-Process @params
+  $started = $true
   $null = $p.Handle
   [System.IO.File]::WriteAllText((Join-Path $dir 'pid'), "$($p.Id)")
   $p.WaitForExit()
-  [System.IO.File]::WriteAllText((Join-Path $dir 'exit'), "$($p.ExitCode)")
+  # ExitCode is a SIGNED int, so a status at or above 0x80000000 (0xC0000005 and
+  # the rest of the NTSTATUS crash codes) reads back negative. Node's own
+  # ChildProcess — and so the plain-spawn fallback beside this — reports those
+  # unsigned; mask back to that so both win32 arms agree on the same crash.
+  # The L suffix is required: PowerShell types a bare 0xFFFFFFFF as Int32 -1,
+  # and masking against -1 is the identity, silently leaving the value negative.
+  $code = [int64]$p.ExitCode -band 0xFFFFFFFFL
+  [System.IO.File]::WriteAllText((Join-Path $dir 'exit'), "$code")
 } catch {
-  [System.IO.File]::WriteAllText((Join-Path $dir 'stderr.log'), $_.Exception.ToString())
+  $errFile = if ($started) { 'supervisor-error.log' } else { 'stderr.log' }
+  try { [System.IO.File]::WriteAllText((Join-Path $dir $errFile), $_.Exception.ToString()) } catch { }
   [System.IO.File]::WriteAllText((Join-Path $dir 'exit'), '1')
 }
 `;
@@ -181,8 +208,8 @@ const quoteWindowsArg = (arg) => {
  * The supervisor is started with an explicit `CreateNoWindow`, not through
  * `Start-Process`, so this hop out of the console-less PM2 fork can never
  * trigger Windows' default-terminal handoff — see docs/WINDOWS_CONSOLE.md.
- * (The supervisor's own `Start-Process` of the job redirects to files, which
- * already forces `UseShellExecute = false`.)
+ * (The supervisor's own launch of the job passes `-NoNewWindow` for the same
+ * reason; `-WindowStyle Hidden` would NOT set `CreateNoWindow`.)
  */
 async function launchWindowsSupervisor({ controlDir, bin, args, env, cwd }) {
   const supervisorPath = join(controlDir, 'supervisor.ps1');
@@ -286,9 +313,10 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
     let code = null;
     let signal = null;
     if (Number.isFinite(status)) {
-      // 128+signum is a POSIX `wait` convention. On Windows the supervisor
-      // records the raw ExitCode, where values above 128 are ordinary statuses
-      // (0xC0000005 & friends), so decoding one as a signal would invent it.
+      // 128+signum is a POSIX `wait` convention. On Windows 129-255 are
+      // ordinary exit statuses a program may return for its own reasons, so
+      // decoding one of them as a signal would invent a death that never
+      // happened. (Crash codes like 0xC0000005 land far above this range.)
       if (process.platform !== 'win32' && status > 128 && SIGNAL_BY_NUMBER[status - 128]) signal = SIGNAL_BY_NUMBER[status - 128];
       else code = status;
     } else {
@@ -687,26 +715,53 @@ const processCommandMatches = (command, { executable, args }) => {
   return actualArgs === args.map(String).join(' ');
 };
 
-// Windows has no cheap argv probe — `tasklist` reports only the image name —
-// so identity there is the executable alone. That is all this guard needs: it
-// exists to stop a stale PID file whose number some unrelated process inherited
-// from blocking the control dir forever.
+// Split a Windows command line into its executable and the rest. The image path
+// is quoted whenever it contains a space, which is the common case for
+// `C:\Program Files\…` — a plain whitespace split would take `C:\Program` as
+// the executable and leave `Files\nodejs\node.exe` in the arguments.
+const splitWindowsCommand = (command) => {
+  if (command.startsWith('"')) {
+    const end = command.indexOf('"', 1);
+    if (end === -1) return { executable: command.slice(1), rest: '' };
+    return { executable: command.slice(1, end), rest: command.slice(end + 1).trim() };
+  }
+  const space = command.search(/\s/);
+  if (space === -1) return { executable: command, rest: '' };
+  return { executable: command.slice(0, space), rest: command.slice(space).trim() };
+};
+
+// The win32 counterpart of processCommandMatches. `tasklist` reports only the
+// image name, and PortOS runs many `node.exe` processes at once (the pm2 daemon,
+// the server, the autofixer, the browser, every agent CLI) — so an image-only
+// check would accept any of them as the job and leave the control dir blocked
+// for good. Read the full command line instead, so the caller's `args` mean here
+// what they mean on POSIX: `appUpdater` passes `{ executable: node, args: [the
+// dashboard script] }` precisely to tell its handoff apart from that crowd.
 //
-// One `tasklist` SPAWN per call, and it enumerates the whole process table
-// before applying the filter (~100-300ms). Fine for the one-per-launch probes
-// that reach it today; a fan-out or polled caller must instead take a single
-// `tasklist /FO CSV /NH` snapshot and match every PID against it.
-const processMatchesWin32 = async (pid, { executable }) => {
-  const { stdout } = await execFileAsync(
-    'tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], safeChildProcessOptions({ timeout: 5000 })
-  );
-  // No match prints an unquoted `INFO: No tasks are running …` banner instead
-  // of a CSV row, and tasklist exits 0 either way — so a missing quoted first
-  // field IS the not-running answer.
-  const image = stdout.trim().match(/^"([^"]*)"/)?.[1];
-  if (!image) return false;
+// The comparison can be exact rather than fuzzy because we built the launched
+// command line ourselves: `Start-Process` quotes the bin and appends the
+// `quoteWindowsArg`-joined argument string verbatim, so re-quoting the expected
+// argv reproduces it byte for byte.
+//
+// One PowerShell SPAWN per call. Fine for the one-per-launch probes that reach
+// it today; a fan-out or polled caller must instead take a single
+// `Get-CimInstance Win32_Process` snapshot and match every PID against it.
+const processMatchesWin32 = async (pid, { executable, args }) => {
+  const { stdout } = await execFileAsync('powershell', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+    // `pid` is already parsed by Number.parseInt and range-checked by every
+    // caller, so it cannot carry anything but digits into this filter.
+    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.WriteLine($p.CommandLine) }`,
+  ], safeChildProcessOptions({ timeout: 5000 }));
+  const command = stdout.trim();
+  // The process exited between the liveness probe and here, or Windows refused
+  // the query — either way this is not our job.
+  if (!command) return false;
+  const actual = splitWindowsCommand(command);
   const normalize = (value) => basename(value).toLowerCase().replace(/\.exe$/, '');
-  return normalize(image) === normalize(executable);
+  if (normalize(actual.executable) !== normalize(executable)) return false;
+  if (!Array.isArray(args)) return true;
+  return actual.rest === args.map(quoteWindowsArg).join(' ');
 };
 
 const processMatches = async (pid, expectedProcess) => {

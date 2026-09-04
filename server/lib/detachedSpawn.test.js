@@ -2,8 +2,9 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
-import { ChildProcess, execFile } from './childProcess.js';
+import { ChildProcess, execFile, spawn } from './childProcess.js';
 import { promisify } from 'util';
+import { pathToFileURL } from 'url';
 import { pinPlatform } from './testHelper.js';
 import { killProcessTree } from './bufferedSpawn.js';
 import { spawnDetached, reapDetached, reapAndCleanDetachedDirs, reattachDetached, isReattachable, isDetachedRunning, __detachedSpawnTesting } from './detachedSpawn.js';
@@ -67,6 +68,12 @@ const waitUntil = async (predicate, { timeoutMs = 5000 } = {}) => {
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
   }
+};
+
+// `process.kill(pid, 0)` is the portable liveness probe; the `ps`-based helpers
+// below are POSIX-only and unusable in the win32 tests.
+const isAliveForTest = (pid) => {
+  try { process.kill(pid, 0); return true; } catch { return false; }
 };
 
 const ppidOf = async (pid) => {
@@ -279,6 +286,71 @@ describe('spawnDetached', () => {
     expect(code).toBe(3);
     expect(signal).toBeNull();
     expect(getOut()).toBe('a b "c"\n');
+  });
+
+  // The whole POINT of the windowsDetached launcher: pm2 kills on Windows with
+  // `taskkill /pid <app> /T /F`, which walks the parent tree, so a job spawned
+  // as a plain child of portos-server dies at update.sh's own `pm2-stop` step
+  // and leaves the install headless (#5976, and #6169 on Windows). Nothing in
+  // the streaming tests above would fail if someone "simplified" the launcher
+  // by dropping the launcher hop and starting the supervisor directly, so this
+  // asserts the survival itself: tree-kill the spawning process, and the job
+  // must still be running and still writing.
+  it.runIf(!IS_POSIX)('windowsDetached survives a tree-kill of the process that spawned it', async () => {
+    const controlDir = await tmpControlDir();
+    const marker = join(controlDir, 'go');
+    const heartbeat = join(controlDir, 'heartbeat');
+    // A stand-in for portos-server: it spawns the job and then just stays alive.
+    const spawnerPath = join(controlDir, 'spawner.mjs');
+    await writeFile(spawnerPath, [
+      `import { spawnDetached } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'detachedSpawn.js')).href)};`,
+      'await spawnDetached(process.execPath, [',
+      "  '-e',",
+      "  'const {existsSync,appendFileSync}=require(\"fs\");const t=setInterval(()=>{appendFileSync(process.argv[2],\"x\");if(existsSync(process.argv[1])){clearInterval(t);process.exit(0);}},20);',",
+      `  ${JSON.stringify(marker)},`,
+      `  ${JSON.stringify(heartbeat)},`,
+      `], { controlDir: ${JSON.stringify(controlDir)}, windowsDetached: true });`,
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+
+    const spawner = spawn(process.execPath, [spawnerPath], { stdio: 'ignore' });
+    const pidFile = join(controlDir, 'pid');
+    const readPid = async () => Number.parseInt(await readFile(pidFile, 'utf8').catch(() => ''), 10);
+    expect(await waitUntil(async () => Number.isFinite(await readPid()))).toBe(true);
+    const jobPid = await readPid();
+
+    // Tree-kill the spawner exactly as pm2 would. `taskkill /T` walks the
+    // parent tree, so this is the real test: the job is only spared because the
+    // launcher that started its supervisor has already exited.
+    await execFileAsync('taskkill', ['/pid', String(spawner.pid), '/T', '/F']).catch(() => {});
+    expect(await waitUntil(() => spawner.exitCode !== null || spawner.killed)).toBe(true);
+
+    // Still alive, and still doing work — a job that survived the kill but was
+    // wedged would satisfy a liveness check alone.
+    const beats = async () => (await readFile(heartbeat, 'utf8').catch(() => '')).length;
+    const before = await beats();
+    expect(isAliveForTest(jobPid)).toBe(true);
+    expect(await waitUntil(async () => (await beats()) > before)).toBe(true);
+
+    await writeFile(marker, '1');
+    expect(await waitUntil(async () => (await readFile(join(controlDir, 'exit'), 'utf8').catch(() => '')).length > 0)).toBe(true);
+  });
+
+  // PowerShell's ExitCode is a SIGNED int, so an NTSTATUS crash status reads
+  // back negative — while Node's own ChildProcess (and so the plain-spawn
+  // fallback beside this) reports it unsigned. Without the mask the two win32
+  // arms disagree about the same crash, and a caller classifying a crash by its
+  // code silently stops recognizing one of them.
+  it.runIf(!IS_POSIX)('windowsDetached reports a crash status unsigned, as Node does', async () => {
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', '[Environment]::Exit(-1073741819)'],
+      { controlDir, windowsDetached: true }
+    );
+    const { code, signal } = await onClose(handle);
+    expect(code).toBe(3221225477); // 0xC0000005, not -1073741819
+    expect(signal).toBeNull();
   });
 
   it.runIf(!IS_POSIX)('windowsDetached identifies a live job by its executable', async () => {
