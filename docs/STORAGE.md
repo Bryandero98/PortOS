@@ -54,6 +54,8 @@ PostgreSQL is a **required** install/runtime dependency (see [Backup & Restore](
 
 **When to use.** The payload is long externally-editable prose; the domain syncs through iCloud/file-sync outside PortOS; or forcing the record through the app DB would break an existing sync boundary.
 
+**CoS task queues** (`data/TASKS.md`, `data/COS-TASKS.md`, or configured paths) remain file-primary because direct Markdown editing and watcher-driven updates are supported inputs. `cosTaskStore.js` caches parsed snapshots by file stamp and lazily indexes task IDs; single-task reads clone only the matching record, without grouping or copying either backlog. Store writes invalidate the snapshot and index together; external changes are detected on the next read. This optimization changes no persisted format, config key, or peer payload, so existing installs upgrade without an import or migration. PostgreSQL would permit per-row writes, but a future migration must explicitly replace the direct-edit/watch contract, import both configured sources without losing task metadata/order, and retain recovery copies before switching authority. Merely storing the complete Markdown blob in PostgreSQL would retain whole-queue parsing and rewriting.
+
 **Where it lives.** Filesystem under `./data/` (or an OS-managed sync container). DB may hold metadata/index rows (hashes, word counts, segment indexes) but **not** the body.
 
 **Examples.**
