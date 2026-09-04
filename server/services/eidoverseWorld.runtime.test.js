@@ -216,6 +216,13 @@ beforeEach(async () => {
 describe('Eidoverse private-world lifecycle', () => {
   it('keeps status read-only when config has not been persisted yet', async () => {
     const status = await world.getEidoverseWorldStatus();
+    const compact = await world.getEidoverseWorldStatus({ compact: true });
+    expect(compact).toMatchObject({ setup: { installed: true, runtimeStatus: 'online' }, cos: { connected: false } });
+    expect(JSON.stringify(compact).length).toBeLessThan(4000);
+    expect(compact).not.toHaveProperty('instance');
+    expect(compact).not.toHaveProperty('recipe');
+    expect(compact).not.toHaveProperty('human');
+    expect(mocks.sent).toHaveLength(0);
 
     expect(status).toMatchObject({
       world: 'portos',

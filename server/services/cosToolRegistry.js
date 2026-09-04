@@ -179,7 +179,7 @@ const eidoverseStatusTool = Object.freeze({
   version: COS_TOOL_SCHEMA_VERSION,
   providerName: 'eidoverse_status',
   aliases: ['eidoverse_status'],
-  description: 'Read the private PortOS Eidoverse world identity, projection recipe, CoS presence, and setup state.',
+  description: 'Read compact private Eidoverse setup, CoS presence, design versions, and resolved asset paths. Inspect this before building. An installed runtime may still need starting from the Eidoverse page.',
   input_schema: zodToOpenApiSchema(z.object({}).strict()),
   output_schema: objectOutputSchema,
   policy: {
@@ -219,7 +219,7 @@ const eidoverseAugmentTool = Object.freeze({
   version: COS_TOOL_SCHEMA_VERSION,
   providerName: 'eidoverse_augment',
   aliases: ['eidoverse_augment'],
-  description: 'Apply bounded, allowlisted construction or role operations to the private Eidoverse world.',
+  description: 'Apply bounded construction operations to the private Eidoverse world. Each operation is {verb,args}. spawn requires args {id,lib,pos:[x,y,z],yaw,scale}; use a lib path returned by eidoverse.status. place takes {id,pos:[x,y,z]} and/or yaw/scale; light takes {id,pos:[x,y,z],color:16767136,intensity:16,range:10}; remove takes {id}. Use your own new entity IDs and preserve existing projected content. No code execution or paid generation.',
   input_schema: zodToOpenApiSchema(eidoverseWorldAugmentSchema),
   output_schema: objectOutputSchema,
   policy: {
@@ -430,7 +430,7 @@ const executeAdapter = async (tool, args, context) => {
   }
   if (tool.adapter.kind === 'eidoverse-world') {
     const world = await import('./eidoverseWorld.js');
-    if (tool.adapter.operation === 'status') return world.getEidoverseWorldStatus();
+    if (tool.adapter.operation === 'status') return world.getEidoverseWorldStatus({ compact: true });
     if (tool.adapter.operation === 'project') return world.projectEidoverseWorld({ signal: context.signal });
     if (tool.adapter.operation === 'augment') return world.augmentEidoverseWorld(args.operations, { signal: context.signal });
     return world.sayInEidoverseWorld(args.text, { signal: context.signal });

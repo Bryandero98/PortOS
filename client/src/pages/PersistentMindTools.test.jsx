@@ -48,6 +48,17 @@ describe('PersistentMindTools', () => {
     api.updateCosConfig.mockResolvedValue({ success: true });
   });
 
+  it('updates executable tool access after changing a grant', async () => {
+    api.getPersistentMindTools.mockResolvedValue(response({ semanticTools: [{
+      name: 'eidoverse.augment', description: 'Build a private world', granted: false,
+      input_schema: { type: 'object' }, policy: { requiredCapabilities: ['manageEidoverse'] },
+    }] }));
+    renderPage();
+    expect(await screen.findByText('eidoverse.augment · Disabled')).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('checkbox', { name: 'Allow private Eidoverse world management' }));
+    expect(await screen.findByText('eidoverse.augment · Granted')).toBeInTheDocument();
+  });
+
   it('renders the server-described authority inventory and hard boundaries', async () => {
     renderPage();
 

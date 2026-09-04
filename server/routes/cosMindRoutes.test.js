@@ -218,6 +218,10 @@ describe('persistent mind routes', () => {
     const res = await get('/mind/tools');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
+      semanticTools: expect.arrayContaining([
+        expect.objectContaining({ name: 'eidoverse.status', granted: false, input_schema: expect.any(Object) }),
+        expect.objectContaining({ name: 'cos.create-task', granted: true }),
+      ]),
       schemaVersion: 5,
       capabilities: { schemaVersion: 5, createTasks: true, manageMind: false, manageEidoverse: false, callUser: false, readPortos: false, writePortos: false, taskModelAllowlist: [] },
       boundaries: expect.arrayContaining([expect.stringMatching(/arbitrary shell/i)]),

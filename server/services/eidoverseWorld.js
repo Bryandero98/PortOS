@@ -1854,9 +1854,26 @@ export async function sayInEidoverseWorld(text, { signal } = {}) {
   });
 }
 
-export async function getEidoverseWorldStatus() {
+export async function getEidoverseWorldStatus({ compact = false } = {}) {
   const [setup, self] = await Promise.all([getEidoverseStatus(), getSelf()]);
   const config = await readEidoverseWorldConfig(self);
+  // Semantic callers have a 4KB result budget. The full design/recipe can
+  // consume that before setup and presence are reached, hiding how to act.
+  if (compact) {
+    const assets = {};
+    const availableAssets = Object.entries(config.recipe.assets || {});
+    for (const [slot, path] of availableAssets) {
+      if (JSON.stringify({ ...assets, [slot]: path }).length > 2000) break;
+      assets[slot] = path;
+    }
+    return {
+      setup: { installed: setup.installed, runtimeStatus: setup.runtimeStatus, worldDataReady: setup.worldDataReady },
+      cos: { enabled: config.cos.enabled, connected: config.cos.connected, role: config.cos.role },
+      design: { selectedVersion: config.design.selectedVersion, lastAppliedVersion: config.design.lastAppliedVersion, pendingVersion: config.design.pendingVersion },
+      assets,
+      assetsTruncated: Object.keys(assets).length < availableAssets.length,
+    };
+  }
   return {
     ...config,
     identity: config.human,
