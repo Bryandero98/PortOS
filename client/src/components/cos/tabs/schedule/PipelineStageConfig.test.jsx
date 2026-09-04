@@ -1,20 +1,29 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
-vi.mock('../../../../hooks/useLocalModels', () => ({
-  default: () => ({
-    ollama: ['safe-model', 'tool-model'],
-    lmstudio: [],
-    capabilitiesByBackend: {
-      ollama: {
-        'safe-model': ['chat'],
-        'tool-model': ['chat', 'tools'],
-      },
+// The installed-local-model report, mutable so a test can model a daemon that
+// is stopped or still loading (both of which `useLocalModels` reports as `[]`).
+const INSTALLED_LOCAL_MODELS = {
+  ollama: ['safe-model', 'tool-model'],
+  lmstudio: [],
+  capabilitiesByBackend: {
+    ollama: {
+      'safe-model': ['chat'],
+      'tool-model': ['chat', 'tools'],
     },
-    loading: false,
-  }),
+  },
+  loading: false,
+};
+let localModels = { ...INSTALLED_LOCAL_MODELS };
+
+vi.mock('../../../../hooks/useLocalModels', () => ({
+  default: () => localModels,
 }));
+
+beforeEach(() => {
+  localModels = { ...INSTALLED_LOCAL_MODELS };
+});
 
 import PipelineStageConfig from './PipelineStageConfig';
 
@@ -222,5 +231,90 @@ describe('PipelineStageConfig — posture-driven eligibility', () => {
     expect(note.textContent).not.toContain('Eligible on this install');
     expect(note.textContent).toContain("OS-sandboxed by the vendor's own recipe: Codex TUI.");
     expect(note.textContent).toContain('isolated by the disposable worktree only: OpenCode TUI.');
+  });
+
+  // A local runtime's daemon is the authority on what it serves; the provider
+  // record's `models` array is a cached snapshot. The tool-free gate already
+  // read the daemon, but the sandboxed actions stage read the snapshot — so a
+  // stage on a local provider could only be pinned to models that had since
+  // been removed, and never to one just pulled.
+  it('offers the installed local models for a local-backed ACTIONS stage', () => {
+    const localProvider = {
+      id: 'opencode-ollama-tui',
+      name: 'OpenCode Ollama TUI',
+      type: 'tui',
+      command: 'opencode',
+      models: ['stale-cached-model'],
+      publicReviewPostures: ['no-tool', 'sandboxed-actions'],
+      publicReviewEnforcedPostures: ['no-tool'],
+    };
+    render(
+      <MemoryRouter>
+        <PipelineStageConfig
+          taskType="pr-reviewer"
+          config={{ taskMetadata: { pipeline: { stages: [
+            profiledStages[0],
+            profiledStages[1],
+            { ...profiledStages[2], providerId: 'opencode-ollama-tui', model: 'tool-model' },
+          ] } } }}
+          providers={[localProvider]}
+          onUpdate={vi.fn().mockResolvedValue(undefined)}
+          updating={false}
+          setUpdating={() => {}}
+        />
+      </MemoryRouter>,
+    );
+
+    const modelSelects = screen.getAllByLabelText('Model');
+    // The daemon's installed models, NOT the record's `stale-cached-model`.
+    expect([...modelSelects[1].options].map((o) => o.value)).toEqual(['', 'safe-model', 'tool-model']);
+  });
+});
+
+// `useLocalModels` reports "not fetched yet" and "the daemon listed nothing"
+// identically, as `[]` — so an empty list is not evidence the daemon serves no
+// models. The actions stage has no capability gate, so it must fall back to the
+// record's catalog rather than render an empty picker that also drops the
+// stage's own saved pin. The tool-free gate deliberately does NOT: a model with
+// no probeable capability report is not selectable there at all.
+describe('PipelineStageConfig — local daemon unreachable', () => {
+  const LOCAL = {
+    id: 'opencode-ollama-tui',
+    name: 'OpenCode Ollama TUI',
+    type: 'tui',
+    command: 'opencode',
+    models: ['cached-a', 'cached-b'],
+    publicReviewPostures: ['no-tool', 'sandboxed-actions'],
+    publicReviewEnforcedPostures: ['no-tool'],
+  };
+
+  it('falls back to the record catalog for the actions stage, but not for the gate', () => {
+    localModels = { ollama: [], lmstudio: [], capabilitiesByBackend: {}, loading: false };
+    render(
+      <MemoryRouter>
+        <PipelineStageConfig
+          taskType="pr-reviewer"
+          config={{ taskMetadata: { pipeline: { stages: [
+            STAGES[0],
+            { ...STAGES[1], executionProfile: 'public-review-gate', providerId: 'opencode-ollama-tui', model: 'cached-a' },
+            { ...STAGES[2], executionProfile: 'public-review-actions', providerId: 'opencode-ollama-tui', model: 'cached-a' },
+          ] } } }}
+          providers={[LOCAL]}
+          onUpdate={vi.fn().mockResolvedValue(undefined)}
+          updating={false}
+          setUpdating={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    const modelSelects = screen.getAllByLabelText('Model');
+    // The gate offers nothing from the catalog — `cached-a` is present only
+    // because ProviderModelSelector keeps a disallowed *selected* value visible
+    // rather than blanking the control, and `cached-b` proves the list itself
+    // was not consulted.
+    expect([...modelSelects[0].options].map((o) => o.value)).toEqual(['', 'cached-a']);
+    // The actions stage gets the whole record catalog instead of an empty
+    // picker that would also drop its own saved pin (nothing re-adds it there:
+    // its policy allows every model, so the disallowed affordance never fires).
+    expect([...modelSelects[1].options].map((o) => o.value)).toEqual(['', 'cached-a', 'cached-b']);
   });
 });

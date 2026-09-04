@@ -375,11 +375,25 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
     expect(r).toMatchObject({ ok: true, provider: { id: 'codex-cli' } });
   });
 
+  // `selectModelForTask`'s real precedence: `task.metadata.model` wins outright
+  // over everything else. The suite's flat `m-default` default cannot observe a
+  // pin that leaks through it, so the tests below that assert a pin was DROPPED
+  // install this instead — otherwise they pass no matter what the code does.
+  const useRealisticModelSelection = () => selectModelForTask.mockImplementation(async (task, provider) => (
+    task?.metadata?.model
+      ? { model: task.metadata.model, tier: 'user-specified', reason: 'user-preference' }
+      : { model: provider?.defaultModel || 'm-default', tier: 'medium', reason: 'default' }
+  ));
+
   it('keeps a model pin only on the provider it was chosen for', async () => {
+    useRealisticModelSelection();
     getAllProviders.mockResolvedValue({ providers: [CODEX, GROK], activeProvider: null });
     await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-4' })))
       .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'grok-4' });
     // Pinned for a DIFFERENT provider — falls back to that provider's own model.
+    // The posture swap above landed on codex-cli, and grok's model id must not
+    // ride along with it; leaving the pin on the task let `selectModelForTask`
+    // hand it straight back, so the swap silently kept the foreign model.
     await expect(resolveAgentProviderAndModel(gateTask({ provider: 'opencode', model: 'grok-4' })))
       .resolves.toMatchObject({ provider: { id: 'codex-cli' }, selectedModel: 'm-default' });
   });
@@ -399,6 +413,36 @@ describe('resolveAgentProviderAndModel — public-review stages', () => {
     // Retired from the list → the provider's own selection wins instead.
     await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-3-retired' })))
       .resolves.toMatchObject({ provider: { id: 'grok-cli' }, selectedModel: 'm-default' });
+  });
+
+  // The drop above has to survive model selection, which is where it used to
+  // be undone: `selectModelForTask` answers `metadata.model` verbatim as its
+  // highest-priority tier, so a resolution that left the rejected pin on the
+  // task got the same id back and spawned the CLI with it — while logging that
+  // it was "using its default instead". The mock is given the real precedence
+  // here on purpose; the flat `m-default` default cannot observe the bug.
+  it('does not let model selection hand the rejected pin back', async () => {
+    useRealisticModelSelection();
+    const CURATED = { id: 'grok-cli', type: 'cli', command: 'grok', models: ['grok-4'], defaultModel: 'grok-4' };
+    getAllProviders.mockResolvedValue({ providers: [CURATED], activeProvider: null });
+
+    const r = await resolveAgentProviderAndModel(gateTask({ provider: 'grok-cli', model: 'grok-3-retired' }));
+    expect(r.selectedModel).toBe('grok-4');
+  });
+
+  // A LOCAL runtime's `models` array is a cached snapshot of what the daemon
+  // had; the daemon itself is the authority, and the stage picker offers what
+  // it reports. Judging the pin against the snapshot rejected a model that was
+  // installed and serving — the live pr-reviewer gate logged "not offered by
+  // provider" for a freshly pulled Ollama model on every dispatch.
+  it('honors a model pin on a local-runtime provider whose cached list omits it', async () => {
+    const LOCAL = {
+      id: 'grok-ollama', type: 'cli', command: 'grok', ollamaBacked: true,
+      models: ['qwen3-coder:30b'], defaultModel: 'qwen3-coder:30b',
+    };
+    getAllProviders.mockResolvedValue({ providers: [LOCAL], activeProvider: null });
+    await expect(resolveAgentProviderAndModel(gateTask({ provider: 'grok-ollama', model: 'gemma3:27b' })))
+      .resolves.toMatchObject({ provider: { id: 'grok-ollama' }, selectedModel: 'gemma3:27b' });
   });
 
   // A provider that enumerates no models is a pass-through, so the pin stands.
