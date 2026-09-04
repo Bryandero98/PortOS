@@ -638,6 +638,19 @@
       "envVars": {},
       "secretEnvVars": []
     },
+    "slotstream": {
+      "id": "slotstream",
+      "name": "Slotstream (SSD-streaming MoE)",
+      "type": "api",
+      "endpoint": "http://127.0.0.1:5564/v1",
+      "apiKey": "",
+      "models": ["qwen3-235b-a22b-4bit", "gpt-oss-120b-mxfp4", "qwen3-30b-a3b-4bit"],
+      "defaultModel": "qwen3-235b-a22b-4bit",
+      "timeout": 300000,
+      "enabled": false,
+      "envVars": {},
+      "secretEnvVars": []
+    },
     "grok": {
       "id": "grok",
       "name": "xAI Grok",
