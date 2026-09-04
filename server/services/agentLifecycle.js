@@ -45,7 +45,7 @@ import { spawnAgentViaRunner, getRunnerHealth, classifyRunnerSpawnFailure, RUNNE
 import { MAX_TOTAL_SPAWNS, normalizeReviewers } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { isRetryHeld } from '../lib/taskRetryHold.js';
-import { ORCHESTRATION_LANE_BLOCKED_CATEGORY } from '../lib/taskBlockCategories.js';
+import { PROVIDER_CONFIG_BLOCKED_CATEGORY } from '../lib/taskBlockCategories.js';
 import { ensureDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { createToolExecution, startExecution, completeExecution, errorExecution } from './toolStateMachine.js';
 import { determineLane, acquire, release } from './executionLanes.js';
@@ -412,42 +412,16 @@ async function runAgentSpawn(task) {
       // `in_progress` record clobbered to `blocked` — which outranks `in_progress`
       // in the claim-aware merge. Transient failures fall through, skip the block,
       // and stay pending to retry.
-      // A configured orchestration lane that refused to substitute providers
-      // (#5993) is its OWN terminal outcome, not a generic provider failure: the
-      // fix is specific to the role ("authenticate that CLI", "pick another model
-      // for the implementer", "give it a fallbackProvider"), and a run that
-      // stopped for it must never be reported as anything else. The structured
-      // detail rides along on the task metadata, the `agent:error` event, and the
-      // ledger below so each surface names the role and provider itself.
-      const lane = resolution.orchestrationLane || null;
       if (resolution.permanent) {
         await updateTask(task.id, {
           status: 'blocked',
           metadata: {
             ...task.metadata,
             blockedReason: resolution.error,
-            blockedCategory: lane ? ORCHESTRATION_LANE_BLOCKED_CATEGORY : 'provider-config',
-            ...(lane ? { orchestrationLane: lane } : {}),
+            blockedCategory: PROVIDER_CONFIG_BLOCKED_CATEGORY,
             blockedAt: new Date().toISOString()
           }
         }, task.taskType || 'user').catch(() => {});
-      }
-      // Recorded BEFORE cleanup so the ledger holds the reason even if cleanup
-      // throws. No runId exists — the run never spawned — so this is keyed by the
-      // agent id, which is exactly the `agent:<id>` fallback `runEventKey` has.
-      if (lane) {
-        await appendRunEvent({
-          kind: 'run.lane-refused',
-          agentId,
-          taskId: task.id,
-          eventId: `lane-refused:${agentId}:${lane.role}`,
-          data: {
-            role: lane.role,
-            requestedProvider: lane.requestedProvider,
-            requestedModel: lane.requestedModel,
-            reason: lane.reason,
-          },
-        });
       }
       await cleanupOnError(resolution.error);
       cosEvents.emit('agent:error', {
@@ -455,7 +429,6 @@ async function runAgentSpawn(task) {
         error: resolution.error,
         ...(resolution.providerId && { providerId: resolution.providerId }),
         ...(resolution.providerStatus && { providerStatus: resolution.providerStatus }),
-        ...(lane && { orchestrationLane: lane }),
       });
       return null;
     }
@@ -748,8 +721,7 @@ async function runAgentSpawn(task) {
       model: selectedModel,
       provider,
       workspacePath,
-      appName: resolvedAppName,
-      orchestrationLane: resolution.orchestrationLane ?? null
+      appName: resolvedAppName
     });
     const executionMode = !spawnHeadless ? (dispatchUseRunner ? 'runner-tui' : 'tui') : dispatchUseRunner ? 'runner' : 'direct';
 

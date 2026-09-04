@@ -280,39 +280,3 @@ describe('createCosTaskSchema isInvestigation (#6043)', () => {
     expect(parsed).not.toHaveProperty('investigationFingerprint');
   });
 });
-
-/**
- * Same-role alternates (#5993). The schema rejects exactly what the normalizer
- * would drop and what the resolver would refuse — a 200 on a permanently-inert
- * profile is a configuration the user only discovers when a task blocks later.
- */
-describe('cosValidation orchestration role alternates', () => {
-  const parseRole = (architect) => createCosTaskSchema.safeParse({
-    description: 'x',
-    orchestrationProfile: { architect },
-  });
-
-  it('accepts an alternate beside a provider pin', () => {
-    expect(parseRole({ provider: 'p-cheap', fallbackProvider: 'p-cheap-2' }).success).toBe(true);
-  });
-
-  it('accepts a model-pinned role whose alternate names its own model', () => {
-    expect(parseRole({
-      provider: 'p-cheap', model: 'm-cheap', fallbackProvider: 'p-cheap-2', fallbackModel: 'm-cheap-2',
-    }).success).toBe(true);
-  });
-
-  it('rejects an alternate with no pin to be an alternate to', () => {
-    expect(parseRole({ effort: 'high', fallbackProvider: 'p-cheap-2' }).success).toBe(false);
-  });
-
-  it('rejects a fallbackModel with no fallbackProvider', () => {
-    expect(parseRole({ provider: 'p-cheap', fallbackModel: 'm-cheap-2' }).success).toBe(false);
-  });
-
-  it('rejects a model-pinned role whose alternate has no model to run it as', () => {
-    // Accepting this would let the run silently land on the alternate's own
-    // default — the substitution the fail-closed lane exists to prevent.
-    expect(parseRole({ provider: 'p-cheap', model: 'm-cheap', fallbackProvider: 'p-cheap-2' }).success).toBe(false);
-  });
-});

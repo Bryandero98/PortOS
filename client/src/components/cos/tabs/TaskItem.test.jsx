@@ -828,34 +828,3 @@ describe('TaskItem editing a pin whose instance has left the registry (#4520)', 
     expect(api.updateCosTask.mock.calls[0][1].targetInstanceId).toBe('peer-instance-id');
   });
 });
-
-describe('TaskItem fail-closed orchestration lane (#5993)', () => {
-  const blockedOnLane = {
-    ...task,
-    id: 'orch-lane',
-    status: 'blocked',
-    metadata: {
-      blockedCategory: 'orchestration-lane-unavailable',
-      blockedReason: 'Orchestrated implementer lane stopped: provider "p-cheap" model "m-cheap" is unavailable — not authenticated (no implementer.fallbackProvider is configured).',
-      orchestrationLane: { role: 'implementer', requestedProvider: 'p-cheap', requestedModel: 'm-cheap' },
-    },
-  };
-
-  it('headlines the role and provider so the fix is obvious', () => {
-    render(<TaskItem task={blockedOnLane} onRefresh={vi.fn()} providers={providers} />);
-
-    expect(screen.getByText('implementer lane unavailable — p-cheap / m-cheap')).toBeInTheDocument();
-  });
-
-  it('adds no headline to an ordinary block', () => {
-    const ordinary = {
-      ...blockedOnLane,
-      id: 'ordinary-block',
-      metadata: { blockedReason: 'Max spawn attempts reached', blockedCategory: 'max-spawns' },
-    };
-    render(<TaskItem task={ordinary} onRefresh={vi.fn()} providers={providers} />);
-
-    expect(screen.queryByText(/lane unavailable/)).toBeNull();
-    expect(screen.getByText('Max spawn attempts reached')).toBeInTheDocument();
-  });
-});

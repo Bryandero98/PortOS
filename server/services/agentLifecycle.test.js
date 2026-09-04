@@ -32,6 +32,7 @@ import { dirname, join } from 'path';
 import { spawningTasks, runnerAgents } from './agentState.js';
 import { withSpawnDedupGuard, withMapEntryCleanup, withUpdateInProgressGuard, SPAWN_DEDUP_SKIP, SPAWN_UPDATE_SKIP } from './agentGuards.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
+import { PROVIDER_CONFIG_BLOCKED_CATEGORY, PAUSED_BLOCKED_CATEGORIES, USER_DECISION_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENT_LIFECYCLE_SRC = readFileSync(join(__dirname, 'agentLifecycle.js'), 'utf-8');
@@ -612,50 +613,34 @@ describe('runAgentSpawn source — app-review marker release (issue #989)', () =
 // re-dispatch. Without a block, the task stays pending and silently re-fails
 // forever. Pin that the permanent branch flips the task to blocked BEFORE the
 // lease is released, so a federated peer can't be clobbered.
-// Wide enough to cover the whole `if (!resolution.ok)` arm — its comments carry
-// the reasoning for the ordering these tests pin, so the window has to include
-// them rather than being trimmed to the statements.
-const RESOLUTION_FAILURE_WINDOW = 4000;
-
 describe('runAgentSpawn source — permanent provider-config failure blocks the task', () => {
   it('the resolution-failure path blocks a permanent failure with a provider-config reason', () => {
     const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
     expect(idx, 'resolution call must exist').toBeGreaterThan(-1);
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
+    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + 2000);
     expect(body, 'gates the block on resolution.permanent').toMatch(/if\s*\(resolution\.permanent\)/);
     expect(body, 'flips the task to blocked').toMatch(/status:\s*'blocked'/);
-    expect(body, 'tags the block category').toMatch(/blockedCategory:[^\n]*'provider-config'/);
+    // The category is the SHARED constant, not a hand-written literal: the pause
+    // and reaper-exemption sets in lib/taskBlockCategories.js key on the same
+    // value, and a stamp-site literal is exactly how those three drift apart.
+    expect(body, 'tags the block category from the shared constant').toMatch(/blockedCategory:\s*PROVIDER_CONFIG_BLOCKED_CATEGORY,/);
+    expect(body, 'does not re-hardcode the literal').not.toMatch(/blockedCategory:\s*'provider-config'/);
+    expect(AGENT_LIFECYCLE_SRC, 'imports the shared constant').toMatch(/import \{[^}]*PROVIDER_CONFIG_BLOCKED_CATEGORY[^}]*\} from '\.\.\/lib\/taskBlockCategories\.js'/);
   });
 
-  // A configured orchestration lane that refuses to substitute providers (#5993)
-  // is a DISTINCT terminal outcome: same block, its own category and structured
-  // detail, so the client can name the role and provider instead of showing a
-  // generic provider-config failure.
-  it('tags a refused orchestration lane with its own category and detail', () => {
-    const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
-    expect(body, 'reads the structured lane detail').toMatch(/const lane = resolution\.orchestrationLane/);
-    // The category is referenced through the shared constant, not re-typed: the
-    // failure sweep exempts the same value, and two literals would drift.
-    expect(body, 'has its own block category').toMatch(/ORCHESTRATION_LANE_BLOCKED_CATEGORY/);
-    expect(AGENT_LIFECYCLE_SRC, 'takes the category from the shared module')
-      .toMatch(/import \{ ORCHESTRATION_LANE_BLOCKED_CATEGORY \} from '\.\.\/lib\/taskBlockCategories\.js';/);
-    expect(body, 'carries the detail onto the task').toMatch(/orchestrationLane: lane/);
-    expect(body, 'records the refusal in the ledger').toMatch(/kind: 'run\.lane-refused'/);
-  });
-
-  it('records the lane refusal BEFORE cleanup, so the reason survives a failing cleanup', () => {
-    const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
-    const ledgerIdx = body.indexOf("kind: 'run.lane-refused'");
-    const cleanupIdx = body.indexOf('await cleanupOnError(resolution.error)');
-    expect(ledgerIdx, 'ledger append must exist').toBeGreaterThan(-1);
-    expect(ledgerIdx, 'ledger append must precede cleanup').toBeLessThan(cleanupIdx);
+  // The block only does its job if the vocabulary module agrees it is a config
+  // PAUSE (keeps the resume pointer) and a user DECISION (exempt from the 14-day
+  // auto-expiry). Pin both memberships here, at the stamp site, so removing one
+  // fails beside the code that depends on it.
+  it('the stamped category is a config pause the reaper leaves alone', () => {
+    expect(PROVIDER_CONFIG_BLOCKED_CATEGORY).toBe('provider-config');
+    expect(PAUSED_BLOCKED_CATEGORIES.has(PROVIDER_CONFIG_BLOCKED_CATEGORY), 'keeps its resume pointer').toBe(true);
+    expect(USER_DECISION_BLOCKED_CATEGORIES.has(PROVIDER_CONFIG_BLOCKED_CATEGORY), 'never auto-expired to completed').toBe(true);
   });
 
   it('blocks BEFORE releasing the lease so a federated peer cannot be clobbered', () => {
     const idx = AGENT_LIFECYCLE_SRC.indexOf('const resolution = await resolveAgentProviderAndModel(task)');
-    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + RESOLUTION_FAILURE_WINDOW);
+    const body = AGENT_LIFECYCLE_SRC.slice(idx, idx + 2000);
     const permanentIdx = body.indexOf('if (resolution.permanent)');
     const cleanupIdx = body.indexOf('await cleanupOnError(resolution.error)');
     expect(permanentIdx, 'permanent block must exist').toBeGreaterThan(-1);

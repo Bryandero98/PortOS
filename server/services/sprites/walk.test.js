@@ -16,9 +16,11 @@ import { join } from 'path';
 import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { createHash } from 'crypto';
 import {
-  lockAllAnchors, lockAllAnchorsReal, expectCarriesCorrection, normalizeManifestForComparison,
+  capSharpThreads, lockAllAnchors, lockAllAnchorsReal, expectCarriesCorrection, normalizeManifestForComparison,
 } from './spriteTestFixtures.js';
 
+const restoreSharpThreads = capSharpThreads();
+afterAll(restoreSharpThreads);
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-walk-test-'));
 
 vi.mock('../../lib/fileUtils.js', async (importOriginal) => {

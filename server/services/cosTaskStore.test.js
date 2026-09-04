@@ -118,7 +118,6 @@ import {
 } from './cosTaskStore.js';
 import { AGENT_PAUSED_CATEGORY, PAUSE_METADATA_KEYS, registerPauseReleaseAdapter, __resetPauseReleaseAdapter } from '../lib/taskPauseHold.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/cosValidation.js';
-import { ORCHESTRATION_LANE_BLOCKED_CATEGORY } from '../lib/taskBlockCategories.js';
 
 const USER_FILE = join('/root', 'TASKS.md');
 const COS_FILE = join('/root', 'COS-TASKS.md');
@@ -988,23 +987,6 @@ describe('cosTaskStore.updateTask', () => {
     expect(reopened.metadata.blockedCategory).toBeUndefined();
   });
 
-  // The structured detail of a refused orchestration lane (#5993) goes with it.
-  // The task record federates, so a stale lane naming a provider the task is no
-  // longer blocked on would travel to every peer alongside a running task.
-  it('clears the orchestration lane detail when the block ends', async () => {
-    await addTask({ description: 'lane', id: 'task-lane' }, 'user');
-    await updateTask('task-lane', {
-      status: 'blocked',
-      metadata: {
-        blockedReason: 'Orchestrated architect lane stopped',
-        blockedCategory: 'orchestration-lane-unavailable',
-        orchestrationLane: { role: 'architect', requestedProvider: 'p-cheap', requestedModel: null, reason: 'not authenticated' },
-      },
-    }, 'user');
-    const reopened = await updateTask('task-lane', { status: 'pending' }, 'user');
-    expect(reopened.metadata.orchestrationLane).toBeUndefined();
-  });
-
   // The pause hold goes with it, whatever un-blocked the task. `resumeAgent` is only
   // ONE of the paths back to pending — a dedupe revive, an autopilot re-dispatch, a
   // cooldown expiry and a human unblocking it all land here — and every one of them
@@ -1195,23 +1177,22 @@ describe('cosTaskStore.updateTask', () => {
     expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
   });
 
-  // Same CONFIG-pause shape (#5993): the user authenticates the lane's provider
-  // and revives the task. Stripping the pointer here would restart the revived
-  // task clean and orphan its predecessor's worktree — and before this block
-  // category existed, that same condition left the task pending with its pointer
-  // intact, so losing it would be a NEW way to abandon work.
-  it('keeps the resume pointer through a refused orchestration lane', async () => {
-    await addTask({ description: 'lane', id: 'task-lane-ptr' }, 'user');
-    await updateTask('task-lane-ptr', {
+  // Same for a permanent provider-config block (#6193): the resolved provider is
+  // `api`-type and has no file-writing harness, so the task waits for the user to
+  // add a CLI provider. Dropping the pointer means the revived task starts on a
+  // fresh branch and orphans the worktree its dead agent left behind.
+  it('keeps the resume pointer through a provider-config block', async () => {
+    await addTask({ description: 'unrunnable provider', id: 'task-provider-config' }, 'user');
+    await updateTask('task-provider-config', {
       metadata: { existingBranch: 'cos/b', resumedFromAgentId: 'agent-x', resumeWorktreePath: '/w/agent-x' }
     }, 'user');
-    const blocked = await updateTask('task-lane-ptr', {
+    const blocked = await updateTask('task-provider-config', {
       status: 'blocked',
-      metadata: { blockedCategory: ORCHESTRATION_LANE_BLOCKED_CATEGORY }
+      metadata: { blockedCategory: 'provider-config' }
     }, 'user');
     expect(blocked.metadata.existingBranch).toBe('cos/b');
-    expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
     expect(blocked.metadata.resumedFromAgentId).toBe('agent-x');
+    expect(blocked.metadata.resumeWorktreePath).toBe('/w/agent-x');
   });
 
   // An `existingBranch` with no `resumedFromAgentId` beside it was never written
@@ -1663,7 +1644,10 @@ describe('cosTaskStore — stale failure-artifact reaper (#2619)', () => {
       // The workspace blocks are an open decision too: the task waits for the
       // user to fix the app's Repository Path, so auto-completing it at 14 days
       // would silently retire work nobody decided to drop.
-      for (const cat of ['user-terminated', 'agent-paused', 'challenge-escalation', 'app-unresolved', 'workspace-invalid']) {
+      // `provider-config` is the same shape: an `api`-only provider can't run an
+      // agent, and only the user can fix that — so a 14-day flip to `completed`
+      // would report undropped work as done and federate that lie to every peer.
+      for (const cat of ['user-terminated', 'agent-paused', 'challenge-escalation', 'app-unresolved', 'workspace-invalid', 'provider-config']) {
         expect(blockedFailureAgeMs(blocked(cat, daysAgo(30)), NOW)).toBeNull();
         expect(isReapableBlockedFailure(blocked(cat, daysAgo(30)), { now: NOW })).toBe(false);
       }
@@ -1676,8 +1660,8 @@ describe('cosTaskStore — stale failure-artifact reaper (#2619)', () => {
     });
 
     it('falls back to lastFailureAt then updatedAt when blockedAt is absent', () => {
-      expect(blockedFailureAgeMs({ status: 'blocked', metadata: { blockedCategory: 'provider-config', lastFailureAt: daysAgo(20) } }, NOW)).toBe(20 * 24 * 60 * 60 * 1000);
-      expect(blockedFailureAgeMs({ status: 'blocked', metadata: { blockedCategory: 'provider-config', updatedAt: daysAgo(20) } }, NOW)).toBe(20 * 24 * 60 * 60 * 1000);
+      expect(blockedFailureAgeMs({ status: 'blocked', metadata: { blockedCategory: 'max-spawns', lastFailureAt: daysAgo(20) } }, NOW)).toBe(20 * 24 * 60 * 60 * 1000);
+      expect(blockedFailureAgeMs({ status: 'blocked', metadata: { blockedCategory: 'max-spawns', updatedAt: daysAgo(20) } }, NOW)).toBe(20 * 24 * 60 * 60 * 1000);
     });
 
     it('never reaps an undated block (cannot prove it is old)', () => {
@@ -1750,22 +1734,21 @@ describe('cosTaskStore — stale failure-artifact reaper (#2619)', () => {
       expect(after.tasks.find(t => t.id === 'task-stop').status).toBe('blocked');
     });
 
-    // A fail-closed orchestration lane (#5993) stops the run ON PURPOSE and waits
-    // on a user config fix. Retiring it to `completed` after 14 days would convert
-    // that deliberate loud stop into the silent success the whole feature exists
-    // to prevent — so it is exempt like the other user-decision blocks.
-    it('leaves a refused orchestration lane for the user however long it sits', async () => {
-      await addTask({ description: 'lane blocked', id: 'task-lane-old', priority: 'LOW' }, 'user', { now: NOW });
-      await updateTask('task-lane-old', {
-        status: 'blocked',
-        metadata: { blockedCategory: ORCHESTRATION_LANE_BLOCKED_CATEGORY, blockedAt: daysAgo(90) },
-      }, 'user', { now: NOW });
+    // A provider-config block never self-revives — it waits for the user to add a
+    // CLI provider — so the reaper must leave it alone no matter how old it gets.
+    // Flipping it to `completed` with `resolution: 'auto-expired'` would report
+    // work nobody dropped as done, and federate that to every peer (#6193).
+    it('never auto-expires a provider-config block, however stale', async () => {
+      await addTask({ description: 'api-only provider pinned', id: 'task-pc-old', priority: 'HIGH' }, 'user', { now: NOW });
+      await updateTask('task-pc-old', { status: 'blocked', metadata: { blockedCategory: 'provider-config', blockedAt: daysAgo(90) } }, 'user', { now: NOW });
       const res = await sweepResolvedFailureTasks({ now: NOW });
       expect(res.reaped).toBe(0);
-      const after = await getUserTasks();
-      const task = after.tasks.find(t => t.id === 'task-lane-old');
+      expect(res.staleBlocks).toBe(0);
+      const task = (await getUserTasks()).tasks.find(t => t.id === 'task-pc-old');
       expect(task.status).toBe('blocked');
+      expect(task.metadata.blockedCategory).toBe('provider-config');
       expect(task.metadata.resolution).toBeUndefined();
+      expect(task.metadata.autoExpiredReason).toBeUndefined();
     });
 
     it('flips an investigation whose originating task has completed', async () => {

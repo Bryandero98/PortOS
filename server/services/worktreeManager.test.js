@@ -356,6 +356,28 @@ describe('classifyWorktreeDirt (real exported helper)', () => {
     // shared checkout is still dirt this caller must not silently discard.
     expect(classifyWorktreeDirt('?? .agent-done-agent-2', { ignoredPaths }).clean).toBe(false);
   });
+
+  // PortOS materializes the public-review bundle INTO the worktree it hands a
+  // reviewer model and never commits it. Subtracted for EVERY caller rather than
+  // passed in per call: counted as work, it made `removeWorktree` preserve the
+  // tree, `reapMergedWorktrees` hold it, and branch-reconcile spend a coordinator
+  // run per pass concluding "no real work product, a human should discard it".
+  it('subtracts PortOS runtime scratch with no ignoredPaths from the caller', () => {
+    expect(classifyWorktreeDirt('?? PORTOS_PUBLIC_REVIEW_INPUT.json').clean).toBe(true);
+    // Untracked directories arrive collapsed to their root…
+    expect(classifyWorktreeDirt('?? .portos-public-review/').clean).toBe(true);
+    // …and expanded to files under -uall.
+    expect(classifyWorktreeDirt('?? .portos-public-review/PR-42.patch').clean).toBe(true);
+    expect(classifyWorktreeDirt('?? PORTOS_PUBLIC_REVIEW_INPUT.json\n?? .portos-public-review/').clean).toBe(true);
+  });
+
+  it('still reports real work sitting beside the scratch', () => {
+    const r = classifyWorktreeDirt('?? PORTOS_PUBLIC_REVIEW_INPUT.json\n M src/index.js');
+    expect(r.hasRealChanges).toBe(true);
+    expect(r.realChangePaths).toEqual(['src/index.js']);
+    // A sibling that merely shares the prefix is real work, not scratch.
+    expect(classifyWorktreeDirt('?? .portos-public-review-notes.md').hasRealChanges).toBe(true);
+  });
 });
 
 describe('Broken Worktree Detection', () => {
