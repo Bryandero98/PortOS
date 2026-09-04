@@ -12,6 +12,10 @@ import { validateRequest } from '../lib/validation.js';
 import { z } from 'zod';
 import { DOMAIN_IDS, DOMAIN_MODES } from '../lib/domainAutonomy.js';
 import { AVATAR_VARIANT_PATTERN, RIGGED_VARIANT_PREFIX } from '../lib/avatarVariants.js';
+// Single source of truth for the avatar-style vocabulary (#6253) — a
+// dependency-free leaf, safe to import from the server the way
+// `server/lib/personaTraitBlend.js` imports `clamp` from client `utils/formatters.js`.
+import { AVATAR_STYLE_IDS } from '../../client/src/lib/avatarStyles.js';
 import { BUDGET_LIMIT_FIELDS } from '../lib/domainBudgets.js';
 import { persistentMindCapabilitiesSchema } from '../lib/persistentMindCapabilities.js';
 import { persistentMindProfileSchema } from '../lib/persistentMindProfile.js';
@@ -46,7 +50,7 @@ export const cosConfigSchema = z.object({
   // the same traversal guard `server/routes/avatar.js` enforces), so unknown
   // spellings still 400 here instead of persisting a style nothing can render.
   avatarStyle: z.union([
-    z.enum(['svg', 'ascii', 'cyber', 'sigil', 'esoteric', 'nexus', 'muse', 'core', 'miniMaleC', 'miniFemaleD']),
+    z.enum(AVATAR_STYLE_IDS),
     z.string().startsWith(RIGGED_VARIANT_PREFIX).refine(
       (value) => AVATAR_VARIANT_PATTERN.test(value.slice(RIGGED_VARIANT_PREFIX.length)),
     ),
