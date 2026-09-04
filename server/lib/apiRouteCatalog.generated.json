@@ -3512,6 +3512,14 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/continuous-video/lint",
+      "mountPath": "/api/continuous-video",
+      "sources": [
+        "server/routes/continuousVideoEpisode.js"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/cos",
       "mountPath": "/api/cos",
@@ -17570,8 +17578,8 @@
   ],
   "stats": {
     "mounts": 148,
-    "operations": 2176,
-    "declarations": 2184,
+    "operations": 2177,
+    "declarations": 2185,
     "sourceFiles": 231
   }
 }

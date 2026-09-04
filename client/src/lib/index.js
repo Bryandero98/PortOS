@@ -137,6 +137,7 @@ export * from './drumNotation.js';
 export * from './drumPlayback.js';
 export * from './editorialChecks.js';
 export * from './editorialHealth.js';
+export * from './episodeSceneImport.js';
 export * from './lookaheadTransport.js';
 export * from './lossSparkline.js';
 export * from './metronome.js';
