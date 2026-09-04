@@ -103,6 +103,13 @@ export const stopSlotstreamServer = () =>
 export const installSlotstream = () =>
   request('/local-llm/slotstream/install', { method: 'POST' });
 
+// Fetch one checkpoint into Slotstream's cache. `model` is a catalog id from
+// the status payload, or a Hugging Face `owner/name`. Byte progress arrives on
+// the `slotstream:download` socket event, not in this response — the transfer
+// outlives the request.
+export const downloadSlotstreamModel = (model) =>
+  request('/local-llm/slotstream/models/download', { method: 'POST', body: JSON.stringify({ model }) });
+
 // MTPLX model catalog — search, download, and remove MTP checkpoints in-app.
 // `mtplx forge discover` is upstream's index of MTPLX-branded models, which is
 // exactly the set `mtplx serve` can run; an empty query returns its default list.
