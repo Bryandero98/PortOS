@@ -69,7 +69,14 @@ export const DEFAULT_CONFIG = {
   improvementEnabled: true,
   avatarStyle: 'svg',
   dynamicAvatar: true,
-  alwaysOn: true,
+  // Start CoS with the server. FALSE is the shipped posture: an install that
+  // has never been configured must not begin autonomous, LLM-backed work on its
+  // own (AGENTS.md, "No cold-bootstrap LLM calls"), and every other work-
+  // generation flag below defaults on. This used to read `true` and was masked
+  // by a `data.reference/cos/config.json` seed seeding `false` over it; the
+  // seed is gone (see scripts/migrations/340-cos-config-seed-repair.js), so the
+  // default is now the only thing a fresh install reads.
+  alwaysOn: false,
   appReviewCooldownMs: 1800000,
   idleReviewEnabled: true,
   idleReviewPriority: 'MEDIUM',
