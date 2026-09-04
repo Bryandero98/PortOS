@@ -163,7 +163,10 @@ export default {
       return { repaired: 'recovered', keys: Object.keys(quarantined.config).length, source: quarantined.source };
     }
 
-    await rm(configPath);
+    // force: an ENOENT here would propagate out of runMigrations() and fail
+    // server boot, and "the file we were about to delete is already gone" is
+    // exactly the outcome this branch wants anyway.
+    await rm(configPath, { force: true });
     console.log(`🧹 Removed ${CONFIG_PATH} — it was the shipped seed, so CoS reads its in-code defaults again`);
     return { repaired: 'removed' };
   },

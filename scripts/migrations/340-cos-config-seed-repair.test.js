@@ -1,14 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { isDeepStrictEqual } from 'util';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 import migration, { RETIRED_SEED } from './340-cos-config-seed-repair.js';
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf-8'));
 
+// The retired data.reference/cos/config.json, extracted verbatim from the commit
+// that shipped it (ed19786aa) and checked in here. Every other test writes
+// RETIRED_SEED as its own fixture, so `isDeepStrictEqual` would compare the
+// constant to itself and pass for ANY value it held — the migration would then
+// no-op on 100% of affected installs with the suite still green. This is the
+// independent witness that closes that.
+const retiredSeedPath = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'retired-cos-config-seed.json');
+
 describe('migration 340 — repair a CoS config.json overwritten by the shipped seed', () => {
+  it('RETIRED_SEED matches the config.json data.reference actually shipped', () => {
+    const shipped = JSON.parse(readFileSync(retiredSeedPath, 'utf-8'));
+    expect(isDeepStrictEqual(RETIRED_SEED, shipped)).toBe(true);
+  });
+
   let rootDir;
   let statePath;
   let configPath;
