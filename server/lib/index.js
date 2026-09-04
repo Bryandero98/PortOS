@@ -359,6 +359,7 @@ export * from './localLlmDisk.js';
 export * from './specDecodePresets.js';
 export * from './llamaCppInstall.js';
 export * from './localModelHeuristics.js';
+export * from './localPromptBudget.js';
 export * from './localModelAssessment.js';
 export * from './localModelTuning.js';
 export * from './modelCapabilityTests.js';
