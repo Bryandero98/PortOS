@@ -74,7 +74,8 @@ vi.mock('../components/cos/MiniCharacterCoSAvatar', () => ({
   ),
 }));
 
-const { default: ChiefOfStaff, SPEAKING_MS } = await import('./ChiefOfStaff');
+const { default: ChiefOfStaff, SPEAKING_MS, LAZY_AVATARS, INLINE_RENDERED_AVATAR_STYLES } = await import('./ChiefOfStaff');
+const { AVATAR_STYLE_IDS } = await import('../lib/avatarStyles');
 
 const config = {
   avatarStyle: 'svg',
@@ -941,6 +942,28 @@ describe('CoS agent panel layout sizing', () => {
     const innerContainer = title.parentElement;
     expect(innerContainer?.className).toContain('lg:w-full');
     expect(innerContainer?.className).toContain('min-w-0');
+  });
+});
+
+// #6253 — every avatar style in the shared registry (`lib/avatarStyles.js`)
+// must render through either the lazy-load map or the inline-rendered pair,
+// or a style added to the registry alone silently falls through to the
+// default `CoSCharacter` render instead of failing loudly.
+describe('avatar-style registry coverage', () => {
+  it('has a render path for every registry id, and no extra map entries', () => {
+    const lazyIds = new Set(Object.keys(LAZY_AVATARS));
+    for (const id of AVATAR_STYLE_IDS) {
+      expect(
+        lazyIds.has(id) || INLINE_RENDERED_AVATAR_STYLES.has(id),
+        `avatar style "${id}" is missing from both LAZY_AVATARS and INLINE_RENDERED_AVATAR_STYLES`
+      ).toBe(true);
+    }
+    for (const id of lazyIds) {
+      expect(AVATAR_STYLE_IDS, `LAZY_AVATARS has an entry for unknown style "${id}"`).toContain(id);
+    }
+    for (const id of INLINE_RENDERED_AVATAR_STYLES) {
+      expect(AVATAR_STYLE_IDS, `INLINE_RENDERED_AVATAR_STYLES has an entry for unknown style "${id}"`).toContain(id);
+    }
   });
 });
 

@@ -17,6 +17,7 @@ import {
   MessageCircle
 } from 'lucide-react';
 import { normalizeReviewerSlug, REVIEWER_VALUES } from '../../lib/reviewerPins';
+import { AVATAR_STYLE_LABELS } from '../../lib/avatarStyles';
 import { inPlaceClipName } from '../../utils/animationClips';
 
 export const TABS = [
@@ -536,20 +537,7 @@ export const getDomainBudget = (config, domainId) => {
 };
 
 // Avatar style labels for display
-export const AVATAR_STYLE_LABELS = {
-  svg: 'Digital (SVG)',
-  cyber: 'Cyberpunk (3D)',
-  sigil: 'Arcane Sigil (3D)',
-  esoteric: 'Esoteric (3D)',
-  nexus: 'Neural Nexus (3D)',
-  muse: 'Cyber Muse (3D)',
-  // Kestrel Neon's rotating wireframe icosahedron — 2D canvas, no WebGL needed.
-  core: 'Core Assembly (Canvas)',
-  // Bundled CC0 Kenney Mini Characters — animated rigged GLB avatars.
-  miniMaleC: 'Mini Character — Male (3D)',
-  miniFemaleD: 'Mini Character — Female (3D)',
-  ascii: 'Minimalist (ASCII)'
-};
+export { AVATAR_STYLE_LABELS };
 
 // Dynamic avatar rules - maps task context to avatar styles
 // Priority order: provider > analysisType > taskType > priority > fallback

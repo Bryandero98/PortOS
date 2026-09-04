@@ -8,6 +8,7 @@ import * as api from '../services/api';
 import { isRiggedAvatarStyle, riggedRecordForStyle, useAvatarCapabilities } from '../hooks/useAvatarCapabilities';
 import { coalesce } from '../utils/coalesce';
 import { sameJsonShape } from '../lib/sameJsonShape';
+import { WEBGL_AVATAR_STYLE_IDS } from '../lib/avatarStyles';
 import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -61,7 +62,13 @@ const BriefingTab = lazy(() => import('../components/cos/tabs/BriefingTab'));
 // Three.js-based avatars lazy-loaded so the R3F stack isn't bundled unless the
 // user's chosen avatar style actually needs it. `core` is a plain 2D canvas
 // (no three.js) but stays lazy so the default SVG path loads nothing extra.
-const LAZY_AVATARS = {
+// Every registry id (`lib/avatarStyles.js`) EXCEPT `svg`/`ascii` renders through
+// a lazily-loaded component here — those two fall through to the inline
+// `CoSCharacter` default below. `ChiefOfStaff.avatarStyles.test.jsx` fails if a
+// registry id is missing from this map (or from the inline-rendered pair).
+export const INLINE_RENDERED_AVATAR_STYLES = new Set(['svg', 'ascii']);
+
+export const LAZY_AVATARS = {
   cyber:    lazy(() => import('../components/cos/CyberCoSAvatar')),
   sigil:    lazy(() => import('../components/cos/SigilCoSAvatar')),
   esoteric: lazy(() => import('../components/cos/EsotericCoSAvatar')),
@@ -79,10 +86,9 @@ const LAZY_AVATARS = {
 // avatar so three.js stays out of the main chunk until it is picked.
 const LazyRiggedAvatar = lazy(() => import('../components/cos/MiniCharacterCoSAvatar'));
 
-const CANVAS_AVATAR_STYLES = new Set([
-  'cyber', 'sigil', 'esoteric', 'nexus', 'muse',
-  'miniMaleC', 'miniFemaleD',
-]);
+// `CANVAS_AVATAR_STYLES` means "needs the WebGL/three.js stage" — derives
+// directly from the registry's `webgl` flag (`lib/avatarStyles.js`).
+const CANVAS_AVATAR_STYLES = WEBGL_AVATAR_STYLE_IDS;
 
 // Shared brand gradient for the "CoS" wordmark headings (clipped to text).
 const COS_TITLE_GRADIENT = 'linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4)';

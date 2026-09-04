@@ -78,6 +78,7 @@ export * from './a11yKeyboard.js';
 export * from './agentResumeOutcome.js';
 export * from './appIdentity.js';
 export * from './applyManuscriptEdits.js';
+export * from './avatarStyles.js';
 export * from './assessmentTuningNotice.js';
 export * from './audioRecorder.js';
 export * from './callAudioBridge.js';
