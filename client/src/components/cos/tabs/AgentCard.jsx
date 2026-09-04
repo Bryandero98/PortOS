@@ -378,12 +378,13 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
   const lastOutput = output.length > 0 ? output[output.length - 1]?.line : null;
 
   // Why this run has NO "Open Shell" link. Scoped to the one case where the user
-  // configured a TUI provider and got no shell anyway: a public-review stage is
-  // forced headless regardless (`spawnHeadless = publicReview || !isTui`). An
-  // ordinary headless CLI agent gets no chip — nobody expected a shell there, and
-  // one on every card would be the noise this exists to remove.
+  // configured a TUI provider and got no shell anyway: a public-review stage
+  // runs headless unless it is the sandboxed-actions stage on a provider whose
+  // vendor declares an attachable recipe. An ordinary headless CLI agent gets no
+  // chip — nobody expected a shell there, and one on every card would be the
+  // noise this exists to remove.
   const noShellReason = !agent.metadata?.tuiSessionId && agent.metadata?.publicReviewPosture
-    ? 'No shell: a public-review stage always runs headless, even when you configure it onto a TUI provider — the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
+    ? 'No shell: this public-review stage runs headless — either it is a tool-free reasoning stage, or its provider has no attachable sandbox recipe — so the screened PR content stays inside the sandboxed child. Watch the live output below to see what it is doing.'
     : null;
 
   // Why this run can be silent for minutes and still be perfectly healthy: its

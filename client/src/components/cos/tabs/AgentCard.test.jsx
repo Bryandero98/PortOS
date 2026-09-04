@@ -384,14 +384,28 @@ describe('AgentCard missing shell explanation', () => {
   );
 
   it('says why a public-review stage has no shell instead of leaving the card silent', () => {
-    // These stages are forced headless even on a TUI provider, so the "Open
+    // A tool-free stage — or an actions stage on a provider with no attachable
+    // sandbox recipe — runs headless even on a TUI provider, so the "Open
     // Shell" link never appears. Silence made a slow run look wedged with
     // nowhere to look.
     renderCard(running({ publicReviewPosture: 'sandboxed-actions', executionMode: 'direct' }));
 
     expect(screen.queryByText('Open Shell')).not.toBeInTheDocument();
     expect(screen.getByText('No shell')).toBeInTheDocument();
-    expect(screen.getByTitle(/public-review stage always runs headless/)).toBeInTheDocument();
+    expect(screen.getByTitle(/this public-review stage runs headless/)).toBeInTheDocument();
+  });
+
+  it('keeps the shell link on an attachable sandboxed-actions run', () => {
+    // Stage 3 on a TUI provider whose vendor declares an attachable recipe DOES
+    // get a PTY (#6062) — the chip above must not fire on it, or the card would
+    // claim there is no shell while linking to one.
+    renderCard(running({
+      publicReviewPosture: 'sandboxed-actions',
+      executionMode: 'tui',
+      tuiSessionId: 'sess-6062',
+    }));
+
+    expect(screen.queryByText('No shell')).not.toBeInTheDocument();
   });
 
   it('stays silent on a TUI run that has not registered its session yet', () => {
