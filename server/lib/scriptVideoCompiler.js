@@ -32,6 +32,10 @@ export const DEFAULT_FPS = 24;
 // The MiniMax H3 family's VAE decodes only frame counts on a 17n+5 grid (see
 // h3FrameGrid in mediaModels.js) — a beat targeting that runtime needs its
 // duration snapped to the same grid rather than a plain per-frame ceiling.
+// Duplicated rather than imported: mediaModels.js is a large registry module
+// (2000+ lines, 15 imports) this compiler has no other reason to pull in for
+// two constants — see the "widely-reached module" import-scoping rule in
+// server/AGENTS.md.
 export const H3_FRAME_STEP = 17;
 export const H3_FRAME_OFFSET = 5;
 
@@ -92,9 +96,11 @@ export const formatDialogueLine = ({ index, speaker, voice, text }) => (
 export function partitionLinesIntoBeats(lines, { maxWords = BEAT_MAX_WORDS, maxSpeakers = BEAT_MAX_SPEAKERS } = {}) {
   const beats = [];
   let current = null;
+  let currentWordCount = 0;
 
   const openBeat = () => {
     current = { lines: [], speakers: [] };
+    currentWordCount = 0;
     beats.push(current);
   };
 
@@ -103,12 +109,11 @@ export function partitionLinesIntoBeats(lines, { maxWords = BEAT_MAX_WORDS, maxS
     const speaker = line.type === 'dialogue' ? line.speaker : null;
     if (!current) openBeat();
 
-    const nextWordCount = beatWordCount(current) + words;
-    const nextSpeakers = new Set(current.speakers);
-    if (speaker) nextSpeakers.add(speaker);
+    const nextWordCount = currentWordCount + words;
+    const nextSpeakerCount = current.speakers.length + (speaker && !current.speakers.includes(speaker) ? 1 : 0);
 
     const wouldOverflow = current.lines.length > 0
-      && (nextWordCount > maxWords || nextSpeakers.size > maxSpeakers);
+      && (nextWordCount > maxWords || nextSpeakerCount > maxSpeakers);
     if (wouldOverflow) {
       openBeat();
       if (speaker) current.speakers.push(speaker);
@@ -116,6 +121,7 @@ export function partitionLinesIntoBeats(lines, { maxWords = BEAT_MAX_WORDS, maxS
       current.speakers.push(speaker);
     }
     current.lines.push(line);
+    currentWordCount += words;
   }
 
   return beats;
@@ -212,7 +218,7 @@ export function compileScriptToClips({
         beatIndex,
         cutType,
         chainPosition,
-        speakers: beat.speakers,
+        speakers: [...beat.speakers],
         fps,
         frames,
         durationSeconds: snappedSeconds,
