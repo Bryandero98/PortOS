@@ -12,7 +12,7 @@
  * invisible in behavior and only shows up as CI wall time, so it is asserted
  * directly rather than left to a timing threshold.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, onTestFinished, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -105,17 +105,40 @@ describe('describeFrameStats memo', () => {
     // actually re-measuring. Off for this test so the assertion is about OUR
     // memo — and note libvips' cache is per-process and short-lived, unlike an
     // hour-long path-keyed memo, which is why one is tolerable and the other
-    // would be a correctness bug.
+    // would be a correctness bug. Restored from a teardown, not inline: a
+    // failing assertion would otherwise leave libvips uncached for every later
+    // test in this worker and leak the tmpdir.
     sharp.cache(false);
+    onTestFinished(() => {
+      sharp.cache(true);
+      rmSync(dir, { recursive: true, force: true });
+    });
 
     const degenerate = await describeFrameStats(framePath);
     writeFileSync(framePath, await gradientPng());
     const rewritten = await describeFrameStats(framePath);
 
-    sharp.cache(true);
     expect(degenerate.ok).toBe(false);
     expect(rewritten.ok).toBe(true);
-    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('re-probes an unmeasurable buffer instead of pinning `ok: null` on it', async () => {
+    // `stats-unavailable` catches EVERY probe failure, including a transient
+    // libvips one on bytes that are perfectly valid. Memoizing it would disable
+    // the content gate for that frame until the TTL expired, so it is the one
+    // verdict that must stay unmemoized — asserted by decode count, since the
+    // returned verdict looks identical either way.
+    const undecodable = Buffer.from('this is not an image');
+    probe.calls = 0;
+
+    const first = await describeFrameStats(undecodable);
+    const decodesForFirst = probe.calls;
+    const second = await describeFrameStats(undecodable);
+
+    expect(first.ok).toBeNull();
+    expect(first.reason).toBe(FRAME_REASON.STATS_UNAVAILABLE);
+    expect(second).toEqual(first);
+    expect(probe.calls).toBeGreaterThan(decodesForFirst);
   });
 
   it('hands out a copy, so a caller mutating a verdict cannot poison the memo', async () => {

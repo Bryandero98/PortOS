@@ -101,9 +101,14 @@ const result = (ok, reason, perChannel = null) => ({ ok, reason, perChannel });
  * Hashing is worth it on a miss too: sha256 runs at GB/s, an order of magnitude
  * under the decode it guards.
  *
- * `null` (could-not-measure) verdicts are cached the same way: undecodable bytes
- * stay undecodable, and re-warning once per unique bad buffer is the signal —
- * re-warning per call is noise.
+ * `stats-unavailable` is the one verdict NOT memoized. That branch catches every
+ * failure the probe can raise, and not all of them are properties of the bytes:
+ * a transient libvips failure (allocation spike, worker exhaustion) on a
+ * perfectly valid frame would otherwise pin `ok: null` on it for the whole TTL
+ * and silently disable the content gate for that frame. Re-probing an
+ * undecodable buffer is the cheap side of that trade. `too-small-to-judge` IS
+ * memoized — it is read off a SUCCESSFUL decode's metadata, so it is a property
+ * of the bytes like any other verdict.
  */
 const verdictCache = createBoundedStateMap({ maxSize: 2000, ttlMs: 60 * 60 * 1000 });
 
@@ -125,7 +130,7 @@ export const __resetFrameStatsCache = () => verdictCache.clear();
  * @returns {Promise<{ ok: boolean|null, reason: string|null, perChannel: Array<{ mean: number, stdev: number, min: number, max: number }>|null }>}
  */
 export async function describeFrameStats(input) {
-  const cacheKey = Buffer.isBuffer(input) && input.length
+  const cacheKey = Buffer.isBuffer(input)
     ? createHash('sha256').update(input).digest('hex')
     : null;
   if (cacheKey) {
@@ -133,7 +138,9 @@ export async function describeFrameStats(input) {
     if (memo) return copyVerdict(memo);
   }
   const verdict = await measureFrameStats(input);
-  if (cacheKey) verdictCache.set(cacheKey, verdict);
+  if (cacheKey && verdict.reason !== FRAME_REASON.STATS_UNAVAILABLE) {
+    verdictCache.set(cacheKey, verdict);
+  }
   return copyVerdict(verdict);
 }
 
