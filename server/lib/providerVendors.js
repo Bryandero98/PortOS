@@ -392,6 +392,57 @@ function opencodePublicReviewSpawnArgs(provider, { effectiveModel } = {}) {
   };
 }
 
+const opencodeHeadlessSpawnArgs = defaultSpawnArgs(opencodeCliArgs, 'opencode');
+
+/**
+ * The tool-enabled agent an attachable Stage 3 session runs as. Named on the
+ * argv rather than left to OpenCode's default so the session cannot inherit a
+ * `plan` (read-only, hand-back-to-a-human) default from a user's own config.
+ */
+const OPENCODE_PUBLIC_REVIEW_ACTIONS_AGENT = 'build';
+
+/**
+ * The `sandboxed-actions` recipe. OpenCode ships no OS sandbox of its own, so
+ * this adds NO enforcement over the open-to-every-binary tier (the disposable
+ * worktree, the stripped child env, and the deterministic coordinator are the
+ * isolation — see `supportsPublicReviewPosture`). The row exists for the
+ * ATTACHABLE case (#6238): a headless run is still today's `opencode run …`,
+ * argv-for-argv, but that one-shot print-mode invocation cannot become an
+ * interactive session by dropping flags the way Claude's recipe does — in a
+ * PTY it neither accepts a pasted prompt nor renders anything. OpenCode's real
+ * interactive entry point is the BARE binary (`opencode [project]`, its default
+ * subcommand), which takes the same `--agent`/`-m` flags and reads the prompt
+ * the spawner already pastes into every other TUI (`agentTuiSpawning.js`).
+ * Verified under node-pty against a local Ollama backend: the pasted prompt
+ * renders, Enter submits it, and the build agent answers through its tools.
+ *
+ * `-m` is namespaced by `prefixOpencodeModel` exactly as the headless argv is,
+ * so the two shapes cannot drift on the model. Provider args are not forwarded
+ * on the attachable path (same rule as `buildTuiSpawnConfig`): a saved
+ * `--agent plan` would swap the tool-enabled agent for one that hands back to a
+ * human nobody has to be, and `--auto` is redundant with the config's blanket
+ * allow. The permission surface is the same on both paths: the config
+ * `buildOpencodeEnvVars` composes allows every tool and denies the three
+ * interactive gates (`question` / `plan_enter` / `plan_exit`), so an unattended
+ * session never parks on a selector — while an operator who attaches sees the
+ * same run the headless child would have executed.
+ */
+function opencodePublicReviewActionsSpawnArgs(provider, { effectiveModel, effort, tui = false } = {}) {
+  if (!tui) return opencodeHeadlessSpawnArgs(provider, { effectiveModel, effort });
+  const args = ['--agent', OPENCODE_PUBLIC_REVIEW_ACTIONS_AGENT];
+  const resolvedModel = prefixOpencodeModel(provider, effectiveModel);
+  if (resolvedModel) args.push('-m', resolvedModel);
+  return { command: provider?.command || 'opencode', args, stdinMode: 'prompt' };
+}
+
+/**
+ * Any spawnable OpenCode binary, whatever it fronts. Unlike the no-tool
+ * matcher there is no model-capability probe involved, so an MTPLX / llama.cpp
+ * / vLLM / gateway backend is as eligible as Ollama — the actions stage is open
+ * to every binary provider anyway; this row only decides attachability.
+ */
+const matchOpencodeBinary = (provider) => isDirectBinaryProvider(provider) && isOpencodeCommand(provider?.command);
+
 const OPENCODE = {
   id: 'opencode',
   idFragment: 'opencode',
@@ -401,15 +452,23 @@ const OPENCODE = {
   // (buildVendorCliArgs/buildVendorSpawnConfig fall back to matchCommand when
   // matchCliProvider is absent).
   cliArgs: opencodeCliArgs,
-  spawnArgs: defaultSpawnArgs(opencodeCliArgs, 'opencode'),
+  spawnArgs: opencodeHeadlessSpawnArgs,
   publicReview: {
     [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
       spawnArgs: opencodePublicReviewSpawnArgs,
       matchProvider: isLocalOpencodeProvider,
     },
-    // No `sandboxed-actions` recipe: OpenCode ships no OS sandbox of its own,
-    // so it stays in the open-to-every-binary tier where the disposable
-    // worktree is the isolation — see `supportsPublicReviewPosture`.
+    [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
+      spawnArgs: opencodePublicReviewActionsSpawnArgs,
+      matchProvider: matchOpencodeBinary,
+      // Not an enforcement: the stage stays worktree-only in the schedule UI.
+      enforces: false,
+      // Attachable: the bare-binary shape above is what the PTY runs. There is
+      // no argv-level permission boundary to preserve here — the headless run
+      // already executes with the same full tool access — so attaching widens
+      // nothing; the recipe only supplies the invocation a PTY can drive.
+      tui: true,
+    },
   },
 };
 
@@ -676,7 +735,8 @@ const CLAUDE = {
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: claudePublicReviewSpawnArgsFor(CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS),
       matchProvider: matchClaudeBinary,
-      // The only posture/vendor pairing that may run as an ATTACHABLE session.
+      // One of two posture/vendor pairings that may run as an ATTACHABLE session
+      // (OpenCode is the other — see its row).
       // `claudePublicReviewArgs` drops only the flags that REQUIRE `--print`
       // (the headless output set plus CLAUDE_PRINT_ONLY_ARGS) for
       // `tui: true`; every enforcement flag above (`--permission-mode
@@ -849,9 +909,15 @@ export function enforcedPublicReviewPosturesForProvider(provider) {
   return PUBLIC_REVIEW_POSTURES.filter((posture) => enforcesPublicReviewPosture(provider, posture));
 }
 
-const enforcesPublicReviewPosture = (provider, posture) => (
-  isDirectBinaryProvider(provider) && Boolean(publicReviewRecipe(provider, posture))
-);
+// A recipe may declare `enforces: false` when it exists only to name an
+// attachable invocation and adds no sandbox of its own (OpenCode's actions
+// row): it is still the argv the stage runs, but the schedule UI must keep
+// reporting that choice as worktree-only rather than OS-sandboxed.
+const enforcesPublicReviewPosture = (provider, posture) => {
+  if (!isDirectBinaryProvider(provider)) return false;
+  const recipe = publicReviewRecipe(provider, posture);
+  return Boolean(recipe) && recipe.enforces !== false;
+};
 
 /**
  * Vendor ids that declare a maintained recipe for `posture`, for naming what a
@@ -868,7 +934,8 @@ export function publicReviewCapableVendorIds(posture) {
  * The no-tool gate requires a maintained recipe: only an enforced argv can
  * hold a model tool-free. The sandboxed-actions stage is open to EVERY enabled
  * binary (CLI/TUI) provider — a vendor recipe (Codex, Antigravity, Grok,
- * Claude) adds an OS-level sandbox on top, but the stage's baseline isolation
+ * Claude) adds an OS-level sandbox on top (OpenCode's adds none — its row
+ * exists only to name the attachable invocation), but the stage's baseline isolation
  * is the disposable worktree, the stripped child environment, and the
  * deterministic coordinator owning all forge mutations. API providers have no
  * binary to spawn and fail closed for both.
