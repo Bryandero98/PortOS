@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
-import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, REVIEWER_OVERRIDE_KEYS, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
+import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, REVIEWER_OVERRIDE_KEYS as REVIEW_CONFIG_KEYS, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
 import ReviewerPicker from '../../ReviewerPicker';
 import Banner from '../../../ui/Banner';
 import InfoTooltip from '../../../ui/InfoTooltip';
@@ -25,13 +25,14 @@ import { INTERVAL_DESCRIPTIONS, PERPETUAL_DESCRIPTION, toggleMetadataField, pipe
 // runs (no app) land on the server-side fallback.
 const PR_COMPLETION_INHERIT_HINT = `Uses the target app's "After opening PR" default (Apps → Edit App), or "${prCompletionOption(IMPLICIT_PR_COMPLETION)?.label}" when it has none.`;
 
-// These fields are the task-local reviewer-loop override. Removing them lets
-// the picker and server resolver fall back to the install-wide Code Review
-// Defaults without changing the task's PR policy or other agent options. The
-// roster is the shared REVIEWER_OVERRIDE_KEYS, so the reset button clears
-// exactly what the server counts as an override when it reports which layer a
-// claim run's reviewers came from.
-const REVIEW_CONFIG_KEYS = REVIEWER_OVERRIDE_KEYS;
+// The task-local reviewer-loop override is REVIEWER_OVERRIDE_KEYS (imported as
+// REVIEW_CONFIG_KEYS above). Removing those keys lets the picker and the server
+// resolver fall back to the install-wide Code Review Defaults without changing
+// the task's PR policy or other agent options.
+//
+// Deliberately the WIDE roster, not `hasReviewerOverride`'s list-bearing subset:
+// the reset clears the two run flags too, so gating its visibility on the subset
+// would leave a stop-mode-only override on screen with no control that removes it.
 
 export default function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, category: _category, providers, providersLoaded = true, activeProviderId, apps, updating, setUpdating, allTaskTypes, improvementDisabled, dataInputCatalog }) {
   const reviewDefaults = useCodeReviewDefaults();
@@ -223,9 +224,18 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
   // Reviewers only run under review-then-merge, so the picker hides for the two
   // policies that never reach them — but an unpinned ('') task may still inherit
   // review-then-merge from its app, so that keeps it.
-  const reviewersApply = config.taskMetadata?.openPR
-    ? prCompletion === '' || prCompletion === 'review-then-merge'
-    : !!config.taskMetadata?.reviewLoop;
+  //
+  // A claimFlow task is unconditional: its PROMPT opens and merges its own PR and
+  // runs the reviewers itself, so the resolved list is operative no matter what
+  // `openPR` / `reviewLoop` say (both are false in the shipped claim metadata).
+  // Without this the picker — and the "Use system Code Review Defaults" reset
+  // beside it — never render for claim-work, leaving a reviewer override that
+  // every claim obeys with no control anywhere that can clear it.
+  const reviewersApply = config.taskMetadata?.claimFlow
+    ? true
+    : config.taskMetadata?.openPR
+      ? prCompletion === '' || prCompletion === 'review-then-merge'
+      : !!config.taskMetadata?.reviewLoop;
 
   // `selectedProvider` / `availableModels` come from useTaskModelPins above — it
   // resolves the pin against the active provider, lists Antigravity's BASE models

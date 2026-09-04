@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router';
 import SlashDoRunDrawer from './SlashDoRunDrawer';
 
 const api = vi.hoisted(() => ({
@@ -25,17 +26,21 @@ vi.mock('../../services/apiLocalLlm', () => ({
   getToolUseModels: vi.fn(() => new Promise(() => {})),
 }));
 
+// Routed: the override note links to the panel that owns the pin, so the drawer
+// needs a router the way it has one in the app.
 const renderDrawer = (props = {}) => render(
-  <SlashDoRunDrawer
-    open
-    command="next"
-    label="/do:next"
-    appId="acme"
-    appName="Acme App"
-    onClose={vi.fn()}
-    onQueued={vi.fn()}
-    {...props}
-  />
+  <MemoryRouter>
+    <SlashDoRunDrawer
+      open
+      command="next"
+      label="/do:next"
+      appId="acme"
+      appName="Acme App"
+      onClose={vi.fn()}
+      onQueued={vi.fn()}
+      {...props}
+    />
+  </MemoryRouter>
 );
 
 describe('SlashDoRunDrawer', () => {

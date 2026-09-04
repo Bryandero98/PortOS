@@ -192,12 +192,11 @@ export const REVIEW_STOP_MODES = [
 export const DEFAULT_REVIEW_STOP_MODE = 'all';
 
 // The task-metadata keys that together form a task-local reviewer override —
-// mirror of REVIEWER_OVERRIDE_KEYS. A task type carrying any of them has pinned
-// its own reviewers and no longer tracks the install-wide Code Review Defaults,
-// which is what the picker's "Use system Code Review Defaults" reset clears. A
-// key missing here leaves that reset visible after it has already removed
-// everything it knows about, and leaves the removed key silently pinning a
-// reviewer the user thinks they just cleared.
+// mirror of REVIEWER_OVERRIDE_KEYS. Everything the picker writes, and so
+// everything its "Use system Code Review Defaults" reset has to remove. A key
+// missing here leaves that reset visible after it has already removed everything
+// it knows about, and leaves the removed key silently pinning a reviewer the
+// user thinks they just cleared.
 export const REVIEWER_OVERRIDE_KEYS = Object.freeze([
   'reviewer',
   'reviewers',
@@ -209,6 +208,21 @@ export const REVIEWER_OVERRIDE_KEYS = Object.freeze([
   'reviewStopMode',
   'reviewerApplies',
 ]);
+
+// The subset that can actually change the resolved reviewer LIST — mirror of
+// REVIEWER_LIST_OVERRIDE_KEYS. The two run flags are excluded: a claim flow has
+// no slashdo flag string to put them in, so neither changes which reviewers run.
+export const REVIEWER_LIST_OVERRIDE_KEYS = Object.freeze(
+  REVIEWER_OVERRIDE_KEYS.filter((key) => key !== 'reviewStopMode' && key !== 'reviewerApplies')
+);
+
+// Mirror of hasReviewerOverride. Key PRESENCE, not truthiness — an explicitly
+// empty `optionalReviewers: []` is a real override, so `||`-style checks report
+// the wrong answer.
+export function hasReviewerOverride(metadata) {
+  return !!metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    && REVIEWER_LIST_OVERRIDE_KEYS.some((key) => key in metadata);
+}
 
 // Resolve task metadata to an ordered, deduped reviewer list (mirror of the
 // server's normalizeReviewers): prefers `reviewers`, falls back to the legacy

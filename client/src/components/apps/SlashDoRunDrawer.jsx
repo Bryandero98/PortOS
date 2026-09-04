@@ -8,6 +8,7 @@ import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
 import { CodeReviewDefaultsProvider, useCodeReviewDefaults } from '../../hooks/useCodeReviewDefaults';
 import useClaimReviewers from '../../hooks/useClaimReviewers';
+import ClaimReviewerSource from './ClaimReviewerSource';
 import { isProcessProvider } from '../../utils/providers';
 import WorkItemPicker from './WorkItemPicker';
 import * as api from '../../services/api';
@@ -33,7 +34,8 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
   const codeReviewDefaults = useCodeReviewDefaults();
   // What a claim actually resolves for this app — the claim-work override layer
   // the defaults above cannot see. Only `/do:next` reads reviewers server-side,
-  // so no other command pays for the lookup.
+  // so no other command pays for the lookup. `installed` still comes from the
+  // defaults, which is why both are fetched.
   const claimReviewers = useClaimReviewers(command === 'next' ? appId : null);
   // Resolved model lists for the reviewer table's Model column (the picker never
   // fetches — see its `modelOptions` prop).
@@ -50,33 +52,18 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
   // Seeded from what the RUN will resolve for display. `review` staying null is
   // what gates whether the fields are SENT — see the component doc.
   const [review, setReview] = useState(null);
-  // Seeded display for an untouched picker. It has to show the reviewers the run
-  // would resolve, which is NOT the Code Review Defaults: a claim resolves its
-  // claim-work task metadata first and only falls back to them, so an override
-  // there runs a chain this drawer previously never showed (a claim reviewed with
-  // `codex` while the picker displayed `antigravity`). `claimReviewers` is that
-  // resolution; the defaults remain the fallback for the window before it lands
-  // and for a lookup that failed — an unresolved lookup must not seed an empty
-  // chain, which would read as "no reviewers configured".
-  //
-  // The defaults carry per-reviewer models and efforts as `<reviewer>Model` /
-  // `<reviewer>Effort` scalars; the picker takes the token-keyed maps, so fold them
-  // in for that fallback.
+  // Seeded display for an untouched picker. It has to show the reviewers the RUN
+  // would resolve, which is not the Code Review Defaults whenever a claim-work
+  // override is in play (see `GET /apps/:id/claim-reviewers`). The defaults are
+  // the fallback for the window before the lookup lands and for one that failed —
+  // they carry per-reviewer pins as `<reviewer>Model` / `<reviewer>Effort`
+  // scalars, which the picker takes as token-keyed maps.
   const seededReview = useMemo(
-    () => (claimReviewers.resolved
-      ? {
-        reviewers: claimReviewers.reviewers,
-        usernames: claimReviewers.usernames,
-        optionalReviewers: claimReviewers.optionalReviewers,
-        reviewerMaxRounds: claimReviewers.reviewerMaxRounds,
-        reviewerModels: claimReviewers.reviewerModels,
-        reviewerEfforts: claimReviewers.reviewerEfforts,
-      }
-      : {
-        ...codeReviewDefaults,
-        reviewerModels: reviewerModelsFromDefaults(codeReviewDefaults),
-        reviewerEfforts: reviewerEffortsFromDefaults(codeReviewDefaults),
-      }),
+    () => claimReviewers ?? {
+      ...codeReviewDefaults,
+      reviewerModels: reviewerModelsFromDefaults(codeReviewDefaults),
+      reviewerEfforts: reviewerEffortsFromDefaults(codeReviewDefaults),
+    },
     [claimReviewers, codeReviewDefaults]
   );
   const reviewValue = review ?? seededReview;
@@ -196,13 +183,11 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
               </p>
               {/* Which layer supplied the seeded list. A claim-work override wins
                   over Models → Code Reviewers silently, so a user who changed the
-                  install default and sees a different chain here needs to be told
-                  where it came from — that mismatch is exactly what sent a claim to
-                  `codex` after the defaults had been moved to `antigravity`. */}
-              {!review && claimReviewers.source === 'task-override' && (
-                <p className="text-xs text-amber-400/80">
-                  These come from the <strong>claim-work</strong> task override in Chief of Staff → Schedule, not from
-                  Models → Code Reviewers. Clear it there (“Use system Code Review Defaults”) to follow the install default again.
+                  install default and sees a different chain here has to be told
+                  where it came from. */}
+              {!review && claimReviewers?.source === 'task-override' && (
+                <p className="text-xs text-port-warning">
+                  These come<ClaimReviewerSource source={claimReviewers.source} />
                 </p>
               )}
             </>

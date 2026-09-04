@@ -20,10 +20,9 @@ import { Router } from 'express';
 import { logCosScheduleUpdate } from '../../services/userActionScheduleLog.js';
 import * as appsService from '../../services/apps.js';
 import { PORTOS_APP_ID } from '../../services/apps.js';
-import { sanitizeTaskMetadata, ISSUE_AUTHOR_FILTERS, resolveClaimReviewerConfig, hasReviewerOverride } from '../../lib/validation.js';
+import { sanitizeTaskMetadata, ISSUE_AUTHOR_FILTERS } from '../../lib/validation.js';
 import { listWorkItems } from '../../services/workItems.js';
-import { resolveClaimWorkMetadata, resolveClaimAuthorFilter } from '../../services/cosTaskGenerator.js';
-import { getCodeReviewDefaults } from '../../services/codeReview.js';
+import { resolveClaimWorkMetadata, resolveClaimAuthorFilter, resolveAppClaimReviewers } from '../../services/cosTaskGenerator.js';
 import { parseCronToNextRun } from '../../services/eventScheduler.js';
 import { INTERVAL_TYPES, decodeIntervalType, isCronExpression, isKnownIntervalType } from '../../services/taskScheduleConstants.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
@@ -99,42 +98,36 @@ router.get('/:id/work-items', loadApp, asyncHandler(async (req, res) => {
 }));
 
 // GET /api/apps/:id/claim-reviewers - The reviewers a `/do:next` claim will
-// ACTUALLY run for this app, resolved through the same
-// `resolveClaimWorkMetadata` → `resolveClaimReviewerConfig` chain
-// `buildClaimWorkTask` uses to fill the claim prompt's `{reviewers}` token.
+// ACTUALLY run for this app. Resolved by `resolveAppClaimReviewers`, the same
+// function `buildClaimWorkTask` fills the claim prompt's `{reviewers}` token
+// from, so a preview cannot report a chain the run won't use.
 //
-// The manual claim surfaces used to seed their reviewer display straight from
-// `GET /api/code-review/defaults`, which skips the claim-work task metadata
-// layer entirely. A `claim-work` override left over from an earlier reviewer
-// choice therefore ran reviewers the Code Reviewers panel no longer listed, with the
-// drawer confidently showing the panel's list — so the run named `codex` while
-// the UI said `antigravity`. `source` is what makes that visible: `task-override`
-// means an override supplied the list and the install defaults were not
-// consulted, `defaults` means they were.
+// It exists because the two layers disagree in practice: a claim resolves the
+// claim-work task metadata FIRST and only falls back to the install-wide Code
+// Review Defaults, so a stale override there ran codex + claude long after the
+// user had moved the panel to antigravity — while every reviewer control on
+// screen, seeded from `GET /api/code-review/defaults`, showed antigravity.
+// `source` names the layer that won so the UI can send the user to the right one.
 //
 // Read-only: metadata + settings reads, no claim markers, no LLM call.
 router.get('/:id/claim-reviewers', loadApp, asyncHandler(async (req, res) => {
   const app = req.loadedApp;
-  // Independent reads — the resolver needs both, but neither depends on the other.
-  const [{ metadata }, codeReviewDefaults] = await Promise.all([
-    resolveClaimWorkMetadata(app),
-    // A settings read failure means "no configured defaults", never a failed
-    // lookup: the resolver still answers from the task metadata, which is the
-    // layer that wins anyway.
-    getCodeReviewDefaults().catch(() => null)
-  ]);
-  const config = resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers);
+  const { overridden, reviewers, usernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts, csv } =
+    await resolveAppClaimReviewers(app);
+  // Spelled out rather than spread: `resolveClaimReviewerConfig` also carries
+  // `stopMode` / `reviewerApplies`, which a claim flow has no flag string to put
+  // them in — publishing them would advertise a contract this route can't keep.
   res.json({
     appId: app.id,
     appName: app.name,
-    source: hasReviewerOverride(metadata) ? 'task-override' : 'defaults',
-    reviewers: config.reviewers,
-    usernames: config.usernames,
-    optionalReviewers: config.optionalReviewers,
-    reviewerMaxRounds: config.reviewerMaxRounds,
-    reviewerModels: config.reviewerModels,
-    reviewerEfforts: config.reviewerEfforts,
-    csv: config.csv
+    source: overridden ? 'task-override' : 'defaults',
+    reviewers,
+    usernames,
+    optionalReviewers,
+    reviewerMaxRounds,
+    reviewerModels,
+    reviewerEfforts,
+    csv
   });
 }));
 
