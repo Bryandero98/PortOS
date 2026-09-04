@@ -962,7 +962,7 @@ export const COMPLETION_REASON_ANALYSES = {
     actionable: true,
     escalation: 'Confirm the required CLI/tool is installed and on PATH for the agent user (or fix the command), then approve the retry.',
     message: 'Failed to start the agent session',
-    suggestedFix: 'The shell/PTY session could not be created. Check system resources and the provider command configuration.'
+    suggestedFix: 'The PTY session could not be created. Check system resources, whether too many sessions are already open, and the provider command configuration.'
   },
   // The runner refused the spawn outright — a command missing from its
   // allowlist, malformed cliArgs, or the runner simply unreachable. No child

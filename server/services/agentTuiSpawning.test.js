@@ -6,6 +6,7 @@ import { join } from 'path';
 
 vi.mock('./shell.js', () => ({
   createShellSession: vi.fn(),
+  spawnCommandSession: vi.fn(),
   writeToSession: vi.fn(),
   pasteToSession: vi.fn(),
   killSession: vi.fn(),
@@ -692,8 +693,23 @@ describe('spawnTuiAgent runtime', () => {
       return SESSION_ID;
     });
 
+    // The direct-PTY path a public-content stage takes (#6159). Real shell.js
+    // has no readiness probe there — the CLI *is* the PTY — so
+    // createAgentTuiSession opens the paste gate itself before the spawn; the
+    // mock therefore does NOT invoke onInitialCommandSent.
+    vi.mocked(shellService.spawnCommandSession).mockImplementation((_command, _args, opts) => {
+      capturedOnData = opts.onData;
+      capturedOnExit = opts.onExit;
+      return SESSION_ID;
+    });
+
     vi.mocked(shellService.getSessionProcess).mockReturnValue(null);
     vi.mocked(shellService.getSession).mockReturnValue({ id: SESSION_ID });
+    // Restore the liveness probe's "assume alive" default. `clearAllMocks` clears
+    // call history but KEEPS implementations, so a test that makes the probe
+    // report "no live child" would otherwise leak that verdict into whichever
+    // test runs next and strand it at the paste gate.
+    vi.mocked(execFile).mockImplementation((_file, _args, _opts, cb) => cb(new Error('not mocked')));
     vi.mocked(spawnTuiSessionViaRunner).mockImplementation(async (options) => {
       capturedOnData = options.onData;
       capturedOnExit = options.onExit;
@@ -780,7 +796,11 @@ describe('spawnTuiAgent runtime', () => {
   // environment its headless sibling would; a TUI Stage 3 running with the
   // server's own inherited environment would be a real regression, not a
   // cosmetic one — the whole posture assumes no forge credential is reachable.
-  it('hands an actions-posture PTY the allowlisted env verbatim instead of unioning it onto the shell base', async () => {
+  //
+  // #6159 closed the residual that allowlist could not: the stage no longer runs
+  // inside a login shell at all, so the operator's rc file never executes between
+  // the allowlist and the provider.
+  it('spawns an actions-posture stage as its own PTY with the allowlisted env, never inside a login shell', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
     vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
@@ -789,13 +809,17 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn({
       provider: { id: 'claude-tui', name: 'Local Claude TUI', type: 'tui', command: 'claude', envVars: {} },
       safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+      tuiConfig: { command: 'claude', args: ['--permission-mode', 'plan'], commandLine: 'claude --permission-mode plan', promptDelayMs: 100 },
     });
     await flushMicrotasks();
 
-    const opts = vi.mocked(shellService.createShellSession).mock.calls[0][1];
-    // envReplace is what stops shell.js unioning buildSafeEnv(process.env) back
-    // underneath the allowlist we just applied.
-    expect(opts.envReplace).toBe(true);
+    // No login shell is created at all — that is what makes an rc-file export
+    // unreachable, and no env assertion on its own can prove it.
+    expect(shellService.createShellSession).not.toHaveBeenCalled();
+    const [command, args, opts] = vi.mocked(shellService.spawnCommandSession).mock.calls[0];
+    // The PTY's process is the provider binary from the vendor recipe.
+    expect(command).toBe('claude');
+    expect(args).toEqual(['--permission-mode', 'plan']);
     expect(opts.env.PORTOS_TEST_6062_SECRET).toBeUndefined();
     expect(opts.env.GH_TOKEN).toBeUndefined();
     // …while the variables the stage legitimately needs survive.
@@ -817,13 +841,52 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn();
     await flushMicrotasks();
 
-    // `env` stays a DELTA here — the regression this guards is flipping every
-    // agent session onto the public-review allowlist, which would strip the
-    // toolchain vars an ordinary coding agent needs.
-    expect(vi.mocked(shellService.createShellSession).mock.calls[0][1].envReplace).toBeFalsy();
+    // The operator's rc file is a FEATURE for an ordinary coding agent — it is
+    // where their toolchain (nvm, pyenv, PATH edits) comes from. #6159 removes
+    // the hosting shell only for the restricted posture, and `env` stays a
+    // DELTA that createShellSession unions onto its own base: the regression
+    // this guards is flipping every agent session onto the public-review
+    // allowlist, which would strip the toolchain vars a coding agent needs.
+    expect(shellService.spawnCommandSession).not.toHaveBeenCalled();
+    const opts = vi.mocked(shellService.createShellSession).mock.calls[0][1];
+    expect(opts.initialCommand).toBe('codex');
+    expect(opts.waitForPromptReady).toBe(true);
 
     await capturedOnExit({ exitCode: 0, killed: false });
     await completeDone;
+  });
+
+  // #6159 — the direct PTY loses both affordances the login shell supplied:
+  // shell.js's readiness probe (which fired onInitialCommandSent, opening the
+  // paste gate) and the shell's bracketed-paste OFF that the input-ready tracker
+  // waited for. It also invalidates the "does this pid have a live child?" guard,
+  // because the pid IS the CLI. If any of those were left wired for the shell
+  // shape, the prompt would never be delivered — silently, on a live stage.
+  it('still delivers the prompt for a direct actions-posture PTY, with no shell probe or paste-mode OFF', async () => {
+    // Truthy pid AND a probe that reports no child of it — exactly the state
+    // that trips `tui-exited-early` on the login-shell path.
+    vi.mocked(shellService.getSessionProcess).mockReturnValue({ pid: 4242 });
+    vi.mocked(execFile).mockImplementation((_file, _args, _opts, cb) => cb(null, '1\n1\n999\n'));
+
+    runSpawn({
+      provider: { id: 'claude-tui', name: 'Local Claude TUI', type: 'tui', command: 'claude', envVars: {} },
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+      tuiConfig: { command: 'claude', args: [], commandLine: 'claude', promptDelayMs: 100 },
+    });
+    await flushMicrotasks();
+
+    // The TUI owns the PTY from byte zero: its composer turns bracketed-paste ON
+    // with no preceding shell OFF.
+    await capturedOnData(Buffer.from('\x1b[?2004hClaude Code v2.1.186\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    const pasteWrites = vi.mocked(shellService.writeToSession).mock.calls
+      .filter(([, data]) => typeof data === 'string' && data.includes('\x1b[200~'));
+    expect(pasteWrites).toHaveLength(1);
+
+    await capturedOnExit({ exitCode: 0, killed: false });
   });
 
   it('refuses to route a public-content stage through the shared CoS runner', async () => {
@@ -840,6 +903,7 @@ describe('spawnTuiAgent runtime', () => {
 
     expect(spawnTuiSessionViaRunner).not.toHaveBeenCalled();
     expect(shellService.createShellSession).not.toHaveBeenCalled();
+    expect(shellService.spawnCommandSession).not.toHaveBeenCalled();
     await expect(spawned).resolves.toBeNull();
   });
 
