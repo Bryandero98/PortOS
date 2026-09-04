@@ -869,6 +869,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
               disabled={sendingBtw || !btwInput.trim()}
               className="flex items-center gap-1.5 px-3 py-1 text-xs bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded transition-colors disabled:opacity-50 min-h-[32px]"
               title="Send BTW message to agent (pastes into the live Claude Code TUI session)"
+              data-voice-guard="confirm"
             >
               {sendingBtw ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Send size={12} aria-hidden="true" />}
               BTW

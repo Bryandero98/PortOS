@@ -50,3 +50,43 @@ describe('domIndex buildIndex — lazy vs eager text', () => {
     expect(text).toMatch(/Three tasks pending/);
   });
 });
+
+// #5907 — data-voice-guard is the one way to keep a control out of the voice
+// index entirely ("exclude"), or to require confirmation on it regardless of
+// its label ("confirm"), carried onto the index entry for the server-side
+// confirmGate to read.
+describe('domIndex buildIndex — data-voice-guard', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <main>
+        <button data-voice-guard="exclude">Secret internal control</button>
+        <button data-voice-guard="confirm">Send</button>
+        <button>Save</button>
+      </main>
+    `;
+    makeVisible();
+  });
+
+  it('never indexes an exclude-guarded control', () => {
+    const idx = buildIndex();
+    expect(idx.elements.some((e) => e.label === 'Secret internal control')).toBe(false);
+  });
+
+  it('does not assign a data-voice-ref to an excluded control', () => {
+    buildIndex();
+    const excluded = document.querySelector('button[data-voice-guard="exclude"]');
+    expect(excluded.hasAttribute('data-voice-ref')).toBe(false);
+  });
+
+  it('carries guard: "confirm" onto the indexed entry', () => {
+    const idx = buildIndex();
+    const send = idx.elements.find((e) => e.label === 'Send');
+    expect(send.guard).toBe('confirm');
+  });
+
+  it('leaves an unannotated control with no guard field', () => {
+    const idx = buildIndex();
+    const save = idx.elements.find((e) => e.label === 'Save');
+    expect(save.guard).toBeUndefined();
+  });
+});
