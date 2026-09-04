@@ -503,10 +503,10 @@ export async function buildClaimWorkTask(app, {
 }
 
 /**
- * Resolve the reviewer prompt pieces for the claim flow exactly as
- * buildClaimWorkTask does (including local-LLM reviewers). Mirrors the
- * scheduled claim-work resolution so the JIRA play button honors the user's
- * reviewer choice.
+ * Resolve the reviewer prompt pieces for the claim flow as buildClaimWorkTask
+ * does on its default (no-explicit-option) path (including local-LLM
+ * reviewers). Mirrors the scheduled claim-work resolution so the JIRA play
+ * button honors the user's reviewer choice.
  *
  * Returns each piece separately because they travel differently: `csv` fills the
  * template's `{reviewers}` placeholder, `effortBlock` is appended prose (the
@@ -514,14 +514,15 @@ export async function buildClaimWorkTask(app, {
  * reads the CSV's `~effort=` suffix), and `taskMetadata` is PERSISTED so the
  * prompt builder resolves the same list back off the task record (#4770).
  */
-async function resolveClaimReviewerPrompt() {
-  const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  // No task record exists yet for the play button, so the whole bundle resolves
-  // from the Code Review Defaults: the reviewer list, the `@user` tokens that
-  // gate the merge, the `~opt` set, the `~max=<n>` caps, and the model/effort
-  // pins (which resolve together — an agy model id can carry its effort as a
-  // suffix, so the bracket and the appended instruction can't disagree).
-  const config = resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers);
+async function resolveClaimReviewerPrompt(app) {
+  const [{ metadata }, codeReviewDefaults] = await Promise.all([
+    resolveClaimWorkMetadata(app),
+    getCodeReviewDefaults().catch(() => null)
+  ]);
+  // The app's configured claim-work metadata layers over the Code Review
+  // Defaults through the same claimReviewersFrom the scheduled path uses —
+  // resolving from the defaults alone would silently drop a pinned override.
+  const config = claimReviewersFrom(metadata, codeReviewDefaults);
   const { reviewers: list, reviewerModels, reviewerEfforts, csv } = config;
   return {
     csv,
@@ -556,10 +557,10 @@ export async function buildJiraTicketTask(app, ticketKey) {
   // null (unnormalizable) key can only come from a direct service caller.
   const key = normalizeWorkItemRef(ticketKey);
 
-  // Independent reads (prompt body + Code Review Defaults) — fetch concurrently.
+  // Independent reads (prompt body + claim reviewers) — fetch concurrently.
   const [template, { csv: reviewersCsv, taskMetadata: reviewerMetadata, effortBlock, localReviewerBlock }] = await Promise.all([
     getTaskPrompt('claim-issue-jira'),
-    resolveClaimReviewerPrompt(),
+    resolveClaimReviewerPrompt(app),
   ]);
   const prompt = template
     .replace(/\{appName\}/g, app.name)

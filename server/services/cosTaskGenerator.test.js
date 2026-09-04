@@ -461,7 +461,10 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // one site and silently miss another. It also applies the claim copilot
     // guard, which is what keeps the retired Copilot fallback from reappearing.
     expect(GEN_SRC).toContain('resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers)');
-    expect(GEN_SRC).toContain('resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers)');
+    // Every claim path layers the app's claim-work metadata over the defaults
+    // through claimReviewersFrom — no path may resolve the defaults alone with
+    // a bare `{}` (that silently drops a pinned override; #6210).
+    expect(GEN_SRC).not.toContain('resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers)');
     expect(GEN_SRC).not.toMatch(/normalizeReviewers\(metadata\)(?!,)/);
   });
 
@@ -522,8 +525,11 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     // rejects, while the other paths emitted the split form.
     expect(GEN_SRC).toContain('reviewerModels: reviewerModels ?? metadata?.reviewerModels');
     expect(GEN_SRC).toContain('reviewerEfforts: reviewerEfforts ?? metadata?.reviewerEfforts');
-    // The play-button path reads the defaults directly (no task metadata to layer).
-    expect(GEN_SRC).toContain('resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers)');
+    // All three claim paths layer claim-work metadata over the defaults via
+    // claimReviewersFrom — including the JIRA play button (#6210). No path may
+    // resolve the defaults alone with a bare `{}`.
+    expect(GEN_SRC).toContain('claimReviewersFrom(metadata, codeReviewDefaults)');
+    expect(GEN_SRC).not.toContain('resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers)');
     // No path may resolve one map without the other — or reach past the shared
     // claim resolver, which wraps `resolveReviewerPins` for all three sites.
     expect(GEN_SRC).not.toContain('resolveReviewerModels(');
@@ -763,11 +769,13 @@ describe('buildJiraTicketTask', () => {
     const { ticketKey, prompt, taskMetadata } = await buildJiraTicketTask(app, 'proj-1234');
     // Placeholders resolved from the app object.
     expect(prompt).toContain('App Acme App at /repos/acme (id acme)');
-    // {reviewers} substituted (no literal placeholder left) with the Code Review
-    // Defaults reviewer + @username token.
+    // {reviewers} substituted (no literal placeholder left) with the claim-work
+    // override (['codex','claude'] in this file's taskSchedule mock) layered
+    // over the Code Review Defaults' `@alice` token — the JIRA play button
+    // honors the same override the /do:next claim does (#6210).
     expect(prompt).not.toContain('{reviewers}');
-    expect(prompt).toContain('ollama');
-    expect(prompt).toContain('Local Reviewer Procedure');
+    expect(prompt).toContain('codex');
+    expect(prompt).toContain('claude');
     expect(prompt).not.toContain('copilot');
     expect(prompt).toContain('@alice');
     // Target-ticket constraint pins the uppercased key.
@@ -775,7 +783,7 @@ describe('buildJiraTicketTask', () => {
     expect(prompt).toContain('PROJ-1234');
     // Ticket key normalized to upper-case.
     expect(ticketKey).toBe('PROJ-1234');
-    // claim-issue-jira self-manages worktree + PR; claimFlow keeps that
+    // claim-issue-jira self-manages its worktree + PR; claimFlow keeps that
     // lifecycle from falling into CoS's generic false/false handoff. The
     // resolved reviewer bundle rides along so the prompt builder's reviewer pin
     // names the same tokens this prompt does (#4770) — the play button's claim
@@ -784,7 +792,7 @@ describe('buildJiraTicketTask', () => {
       useWorktree: false,
       openPR: false,
       claimFlow: true,
-      reviewers: ['ollama'],
+      reviewers: ['codex', 'claude'],
       usernames: ['alice'],
       optionalReviewers: [],
       reviewerMaxRounds: {},
@@ -793,11 +801,24 @@ describe('buildJiraTicketTask', () => {
     });
   });
 
+  it('falls through to the Code Review Defaults when claim-work pins no list', async () => {
+    getTaskInterval.mockResolvedValueOnce({ prompt: null, taskMetadata: { issueAuthorFilter: 'owner' } });
+    const { prompt, taskMetadata } = await buildJiraTicketTask(app, 'proj-1234');
+    expect(prompt).toContain('ollama');
+    expect(prompt).toContain('Local Reviewer Procedure');
+    expect(prompt).toContain('@alice');
+    expect(taskMetadata.reviewers).toEqual(['ollama']);
+  });
+
   it('is exported so the /tasks/jira-ticket route reuses the shared assembly', () => {
     expect(GEN_SRC).toContain('export async function buildJiraTicketTask(');
     // Routes the JIRA flow directly, not via buildClaimWorkTask.
     expect(GEN_SRC).toMatch(/buildJiraTicketTask[\s\S]*getTaskPrompt\('claim-issue-jira'\)/);
     expect(GEN_SRC).toMatch(/buildJiraTicketTask[\s\S]*appendTargetWorkItemBlock\('claim-issue-jira', key\)/);
+    // The play button layers the app's claim-work metadata, not the defaults
+    // alone (#6210) — the app travels into the reviewer resolution.
+    expect(GEN_SRC).toMatch(/buildJiraTicketTask[\s\S]*resolveClaimReviewerPrompt\(app\)/);
+    expect(GEN_SRC).toMatch(/async function resolveClaimReviewerPrompt\(app\)/);
   });
 });
 
