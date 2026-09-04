@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useId, useRef } from 'react'
 import { Link } from 'react-router';
 import {
   AlertTriangle, Bot, ChevronDown, ChevronRight, CircleDot, ClipboardCheck,
-  ExternalLink, Loader2, RefreshCw, Rocket, Search, Tag, User
+  ExternalLink, Loader2, MessageSquare, RefreshCw, Rocket, Search, Tag, User
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
@@ -676,6 +676,15 @@ export default function IssuesTab({ appId, appName }) {
                       {issue.author && <span>opened by {issue.author}</span>}
                       {issue.updatedAt && <span>updated {timeAgo(issue.updatedAt)}</span>}
                       {issue.milestone && <span className="text-cyan-400">{issue.milestone}</span>}
+                      {issue.commentCount > 0 && (
+                        <span
+                          className="flex items-center gap-1"
+                          title={`${issue.commentCount} comment${issue.commentCount === 1 ? '' : 's'}`}
+                        >
+                          <MessageSquare size={12} />
+                          {issue.commentCount}
+                        </span>
+                      )}
                       {issue.assignees.length > 0 ? (
                         <span className="flex items-center gap-1 text-gray-300">
                           <User size={12} /> {issue.assignees.join(', ')}

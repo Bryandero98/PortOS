@@ -131,6 +131,22 @@ describe('IssuesTab', () => {
     expect(chip.className).toContain('text-gray-300');
   });
 
+  it('shows a comment count only for issues that have comments', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      { ...ISSUE, number: 42, title: 'Crash on save', commentCount: 3 },
+      { ...ISSUE, number: 43, title: 'Add CSV export', commentCount: 1 },
+      { ...ISSUE, number: 44, title: 'Untouched', commentCount: 0 },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    // Titled, so the bare digit is never the only thing a screen reader gets —
+    // and so the assertion can't collide with the issue number or a label count.
+    expect(screen.getByTitle('3 comments')).toHaveTextContent('3');
+    expect(screen.getByTitle('1 comment')).toHaveTextContent('1');
+    expect(screen.queryByTitle('0 comments')).not.toBeInTheDocument();
+  });
+
   it('keeps the description collapsed until the user expands it', async () => {
     await renderTab();
 
