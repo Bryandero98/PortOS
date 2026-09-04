@@ -11,6 +11,8 @@
  * against a plain sibling list.
  */
 
+import { HF_REPO_ID_RE } from './huggingfaceLora.js';
+
 /**
  * Curated streaming candidates.
  *
@@ -50,16 +52,8 @@ export const SLOTSTREAM_CATALOG = Object.freeze([
   }),
 ]);
 
-/**
- * `owner/name`, the only shape a download is given.
- *
- * Deliberately the same rule `mtplxRepoIdSchema` applies: each segment must
- * START alphanumeric, so neither `owner/..` nor a leading `-` (which an argv or
- * a path walk would read as something other than a name) can get through.
- */
-const REPO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-export const isSlotstreamRepoId = (value) => typeof value === 'string' && REPO_ID_RE.test(value);
+/** `owner/name`, the only shape a download is given — see `HF_REPO_ID_RE`. */
+export const isSlotstreamRepoId = (value) => typeof value === 'string' && HF_REPO_ID_RE.test(value);
 
 /** The catalog row for a catalog id or a repo id, or null for anything else. */
 export function slotstreamCatalogEntry(value) {
@@ -116,8 +110,14 @@ export function selectSlotstreamRepoFiles(siblings) {
     .map((row) => (typeof row === 'string' ? row : row?.rfilename))
     .filter((name) => typeof name === 'string' && name);
 
-  return names
-    .filter((name) => !name.startsWith('/') && !name.split('/').includes('..'))
-    .filter((name) => KEEP_FILE_RE.test(name) && !SKIP_PATH_RE.test(name))
-    .sort();
+  // De-duplicated: a repeated sibling would otherwise be counted twice toward
+  // the size the user approves and fetched twice.
+  return [...new Set(
+    names
+      // Split on BOTH separators: a `..\` segment is not a traversal on the
+      // supported platform, but the guard should not be the thing that depends
+      // on which platform this runs on.
+      .filter((name) => !/^[/\\]/.test(name) && !name.split(/[/\\]/).includes('..'))
+      .filter((name) => KEEP_FILE_RE.test(name) && !SKIP_PATH_RE.test(name)),
+  )].sort();
 }

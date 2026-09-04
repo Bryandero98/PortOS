@@ -201,44 +201,6 @@ export default function SlotstreamServerCard({
               </div>
             </div>
           )}
-          {catalog.length > 0 && onDownloadModel && (
-            <div className="border-t border-port-border pt-3 space-y-2">
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:items-end">
-                <div className="space-y-1">
-                  <label htmlFor="slotstream-download" className="block text-xs text-gray-400">Add a checkpoint</label>
-                  <select
-                    id="slotstream-download"
-                    value={downloadModel}
-                    onChange={(e) => setDownloadModel(e.target.value)}
-                    className="w-full bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white"
-                  >
-                    <option value="">Choose a mixture-of-experts checkpoint…</option>
-                    {catalog.map((entry) => (
-                      <option key={entry.id} value={entry.id}>
-                        {entry.label} — {entry.params}, ~{formatBytes(entry.approxBytes)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={() => onDownloadModel(downloadModel)}
-                  disabled={busy || downloading || !downloadModel}
-                  className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent shrink-0`}
-                  title="Check the size and free disk, then download this checkpoint"
-                >
-                  {actionInProgress === 'slotstream-download' ? <BrailleSpinner /> : <Download size={13} />}
-                  Download checkpoint
-                </button>
-              </div>
-              {selectedEntry && (
-                <p className="text-[11px] text-gray-500">{selectedEntry.note}</p>
-              )}
-              <p className="text-[11px] text-gray-500">
-                Streaming only pays off on a mixture-of-experts checkpoint, where a few experts per token are read from SSD — so this is a curated list, not a Hugging Face search. PortOS shows the size and free disk before the transfer starts.
-              </p>
-              {download && <DownloadProgress download={download} />}
-            </div>
-          )}
           {status?.cacheError && (
             <p className="text-xs text-gray-500">Couldn&apos;t read Slotstream&apos;s model cache ({status.cacheError}).</p>
           )}
@@ -265,6 +227,45 @@ export default function SlotstreamServerCard({
             {actionInProgress === 'runtime-save-slotstream-launch' ? <BrailleSpinner /> : <Save size={13} />}
             Save configuration
           </button>
+        </div>
+      )}
+
+      {status?.installed && status?.supported !== false && catalog.length > 0 && onDownloadModel && (
+        <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:items-end">
+            <div className="space-y-1">
+              <label htmlFor="slotstream-download" className="block text-xs text-gray-400">Add a checkpoint</label>
+              <select
+                id="slotstream-download"
+                value={downloadModel}
+                onChange={(e) => setDownloadModel(e.target.value)}
+                className="w-full bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white"
+              >
+                <option value="">Choose a mixture-of-experts checkpoint…</option>
+                {catalog.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.label} — {entry.params}, ~{formatBytes(entry.approxBytes)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => onDownloadModel(downloadModel)}
+              disabled={busy || downloading || !downloadModel}
+              className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent shrink-0`}
+              title="Check the size and free disk, then download this checkpoint"
+            >
+              {actionInProgress === 'slotstream-download' ? <BrailleSpinner /> : <Download size={13} />}
+              Download checkpoint
+            </button>
+          </div>
+          {selectedEntry && (
+            <p className="text-[11px] text-gray-500">{selectedEntry.note}</p>
+          )}
+          <p className="text-[11px] text-gray-500">
+            Streaming only pays off on a mixture-of-experts checkpoint, where a few experts per token are read from SSD — so this is a curated list, not a Hugging Face search. PortOS shows the size and free disk before the transfer starts.
+          </p>
+          {download && <DownloadProgress download={download} />}
         </div>
       )}
 

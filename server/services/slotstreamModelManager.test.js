@@ -39,7 +39,7 @@ let fetched;
 
 const installFetch = (fileBodies = FILES) => {
   fetched = [];
-  globalThis.fetch = vi.fn(async (url) => {
+  vi.stubGlobal('fetch', vi.fn(async (url) => {
     const href = String(url);
     fetched.push(href);
     if (href.startsWith('https://huggingface.co/api/models/')) return metadataResponse();
@@ -47,7 +47,7 @@ const installFetch = (fileBodies = FILES) => {
     if (!file) return new Response('nope', { status: 404, statusText: 'Not Found' });
     const body = fileBodies[file];
     return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } });
-  });
+  }));
 };
 
 beforeEach(async () => {
@@ -59,7 +59,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(cacheDir, { recursive: true, force: true });
   vi.unstubAllGlobals();
-  delete globalThis.fetch;
 });
 
 describe('previewSlotstreamDownload', () => {
@@ -92,6 +91,33 @@ describe('previewSlotstreamDownload', () => {
     expect(preview.requiredBytes).toBeLessThan(preview.expectedBytes + preview.headroomBytes);
   });
 
+  it('does not credit a truncated leftover — the whole shard is re-fetched', async () => {
+    // Crediting it would under-reserve the disk by exactly the bytes the run is
+    // about to move again, so the modal could say "fits" on a volume that then
+    // fills mid-transfer.
+    const modelDir = join(cacheDir, DIR_NAME);
+    await mkdir(modelDir, { recursive: true });
+    await writeFile(join(modelDir, 'config.json'), CONFIG);
+    await writeFile(join(modelDir, 'model.safetensors'), SHARD.slice(0, 2048));
+
+    const preview = await previewSlotstreamDownload({ model: REPO, cacheDir });
+    expect(preview.requiredBytes - preview.headroomBytes).toBe(SHARD.length);
+    expect(preview.alreadyDownloaded).toBe(false);
+  });
+
+  it('does not call a full-size .partial "already downloaded"', async () => {
+    // That flag DISABLES Confirm. A partial the size of the whole file is a
+    // crash between the last byte and the rename — calling it done would strand
+    // the download with no way to finish it from the UI.
+    const modelDir = join(cacheDir, DIR_NAME);
+    await mkdir(modelDir, { recursive: true });
+    await writeFile(join(modelDir, 'config.json'), CONFIG);
+    await writeFile(join(modelDir, 'model.safetensors.partial'), SHARD);
+
+    const preview = await previewSlotstreamDownload({ model: REPO, cacheDir });
+    expect(preview.alreadyDownloaded).toBe(false);
+  });
+
   it('marks a fully cached checkpoint as already downloaded', async () => {
     const modelDir = join(cacheDir, DIR_NAME);
     await mkdir(modelDir, { recursive: true });
@@ -105,10 +131,10 @@ describe('previewSlotstreamDownload', () => {
   it('refuses a repo that publishes no weights it can stream', async () => {
     // Config and tokenizer alone would make a checkpoint directory the cache
     // walk reports as servable and a start then fails on.
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       id: REPO,
       siblings: [{ rfilename: 'config.json', size: 10 }, { rfilename: 'pytorch_model.bin', lfs: { size: 999 } }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
 
     await expect(previewSlotstreamDownload({ model: REPO, cacheDir }))
       .rejects.toMatchObject({ code: 'SLOTSTREAM_NO_WEIGHTS' });
@@ -161,15 +187,19 @@ describe('downloadSlotstreamModel', () => {
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const realFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url) => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).endsWith('model.safetensors')) await gate;
       return realFetch(url);
-    });
+    }));
 
     const first = downloadSlotstreamModel({ model: REPO, cacheDir });
     // Let the first call claim its slot before the second one checks.
     await vi.waitFor(() => expect(isSlotstreamDownloadInFlight(join(cacheDir, DIR_NAME))).toBe(true));
     await expect(downloadSlotstreamModel({ model: REPO, cacheDir }))
+      .rejects.toMatchObject({ code: 'SLOTSTREAM_DOWNLOAD_IN_FLIGHT' });
+
+    // A DIFFERENT checkpoint is refused too: one disk, one progress bar.
+    await expect(downloadSlotstreamModel({ model: 'someone/other-moe', cacheDir }))
       .rejects.toMatchObject({ code: 'SLOTSTREAM_DOWNLOAD_IN_FLIGHT' });
 
     release();
@@ -187,10 +217,10 @@ describe('downloadSlotstreamModel', () => {
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const realFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url) => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (String(url).endsWith('model.safetensors')) await gate;
       return realFetch(url);
-    });
+    }));
 
     const running = downloadSlotstreamModel({ model: REPO, cacheDir });
     await vi.waitFor(() => expect(isSlotstreamDownloadInFlight(shardPartial)).toBe(true));

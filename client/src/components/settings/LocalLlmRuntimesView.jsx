@@ -337,8 +337,10 @@ export default function LocalLlmRuntimesView() {
     () => patchSettingsSlice('localLlm.slotstream', { launch }),
     'Saved — Slotstream will start on these options when a request needs it'
   ).then(loadSlotstreamStatus);
-  // The bar is driven by `slotstream:download` (subscribed above), so the button
-  // spinner is not the progress indicator — it only covers the request itself.
+  // The route awaits the whole transfer, so this request runs for as long as the
+  // download does; the bar is driven by `slotstream:download` (subscribed above)
+  // rather than by the spinner, and the terminal frame clears it first. The
+  // clear below is the belt for a socket that dropped mid-transfer.
   const startSlotstreamDownload = (model) => runAction(
     'slotstream-download',
     () => downloadSlotstreamModel(model).then((r) => {

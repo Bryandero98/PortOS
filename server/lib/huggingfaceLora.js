@@ -31,6 +31,17 @@ export const HF_LORA_FAMILIES = Object.freeze([
 ]);
 
 export const HF_API = 'https://huggingface.co/api/models';
+
+/**
+ * `owner/name` — the only shape PortOS hands to an HF download or an argv slot.
+ *
+ * Each segment must START alphanumeric, so neither `owner/..` (which a path
+ * walk would follow out of a cache directory) nor a leading `-` (which an
+ * argument parser would read as a flag) can get through. One definition because
+ * two copies of a security rule drift: the MTPLX pull/remove schema and the
+ * Slotstream checkpoint catalog both validate against this.
+ */
+export const HF_REPO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const HF_HOSTS = new Set(['huggingface.co', 'www.huggingface.co']);
 
 // Parse any HuggingFace ref shape into `{ repo, revision, file }`:

@@ -112,6 +112,25 @@ describe('SlotstreamServerCard', () => {
     expect(screen.getByText('5 GB of 20 GB (25%)')).toBeInTheDocument();
   });
 
+  it('offers a download while the server is running, so a second checkpoint needs no stop', () => {
+    renderCard({
+      installed: true,
+      running: true,
+      supported: true,
+      endpoint: 'http://127.0.0.1:5564/v1',
+      cachedModels: ['qwen-moe'],
+      catalog: CATALOG,
+    });
+    expect(screen.getByLabelText('Add a checkpoint')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Stop Slotstream/ })).toBeInTheDocument();
+  });
+
+  it('leaves the picker out when the runtime is not installed', () => {
+    renderCard({ installed: false, running: false, supported: true, catalog: CATALOG });
+    expect(screen.queryByLabelText('Add a checkpoint')).toBeNull();
+    expect(screen.getByRole('button', { name: /Install Slotstream/ })).toBeInTheDocument();
+  });
+
   it('leaves the picker out when the runtime has no catalog to offer', () => {
     // An older status payload (a tab left open across an upgrade) carries no
     // catalog at all; the card must still render its launch controls.
