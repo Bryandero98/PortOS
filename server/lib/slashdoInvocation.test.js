@@ -290,7 +290,7 @@ describe('buildSlashdoSection — inline budget vs file pointer', () => {
     const section = buildSlashdoSection(codex(), small, { bodyPath: PATH });
     expect(section).not.toContain(small);
     expect(section).toContain(PATH);
-    expect(section).toContain('relative to that file');
+    expect(section).toContain('relative to the file containing that reference');
   });
 
   it('inlines an over-budget body when no path is offered (an api provider has no file tools)', () => {

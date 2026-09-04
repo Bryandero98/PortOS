@@ -3382,7 +3382,7 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
       { providerType: 'cli', providerId: 'codex' });
     expect(writeResolvedSlashdoBody).toHaveBeenCalledWith('review', body, { files });
     expect(prompt).toContain('/install/data/cos/slashdo-resolved/review.md');
-    expect(prompt).toContain('relative to that file');
+    expect(prompt).toContain('relative to the file containing that reference');
     expect(prompt).not.toContain(body);
     expect(prompt).toContain('--review-with codex');
   });

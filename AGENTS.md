@@ -125,7 +125,7 @@ Client- and server-specific conventions live in nested memory files that load wh
 
 PortOS bundles [slashdo](https://github.com/atomantic/slashdo) as a git submodule at `lib/slashdo`, providing slash commands (`/do:next`, `/do:review`, `/do:pr`, `/do:push`, `/do:release`, …) without a separate global install. The `.claude/commands/do/` symlinks expose them as project-level slash commands. `/do:next` claims the next PLAN.md item (or GitHub issue with `--issues`) in an isolated worktree and ships a PR. CoS agents use the shared slashdo renderer: file-tool hosts receive a short entrypoint with supporting files read by phase; `loadSlashdoCommand(name)` from `server/services/subAgentSpawner.js` remains the eager, self-contained form for other consumers.
 
-Project command symlinks expose slashdo source directly. In that source, `!read lib/<name>.md` means read `lib/slashdo/lib/<name>.md` when the named phase applies; resolve nested library references (including `~/.claude/lib/<name>.md` tokens) against that same bundled package root. These are required reads, not shell commands. Do not preload every phase or depend on a global slashdo installation. Staged CoS bundles instead use paths relative to their entrypoint.
+Project command symlinks expose slashdo source directly. In that source, `!read lib/<name>.md` means read `lib/slashdo/lib/<name>.md` when the named phase applies; resolve nested library references (including `~/.claude/lib/<name>.md` tokens) against that same bundled package root. These are required reads, not shell commands. Do not preload every phase or depend on a global slashdo installation. Staged CoS bundles instead resolve each reference relative to the file containing it.
 
 ## Module Organization
 

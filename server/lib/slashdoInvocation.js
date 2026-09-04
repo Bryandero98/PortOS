@@ -437,7 +437,7 @@ export function buildSlashdoSection(resolved, body = null, {
   }
   if (body && bodyPath) {
     lines.push('', oversizedBodyPointer(bodyPath, body),
-      'Resolve supporting-file paths relative to that file. Read each required reference only when its phase or condition applies; do not preload the bundle.');
+      'Resolve each supporting-file path relative to the file containing that reference. Read each required reference only when its phase or condition applies; do not preload the bundle.');
   } else if (body) {
     lines.push(
       '',
