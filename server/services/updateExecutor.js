@@ -19,12 +19,13 @@ const UPDATE_PS1 = join(PATHS.root, 'update.ps1');
  * `pm2 start` (the reconcile/update "shuts down but never comes back" failure).
  * See the rationale in `server/lib/detachedSpawn.js`.
  *
- * Windows needs `windowsDetached` for the same reason (pm2 kills there with
+ * Windows escapes the same way for the same reason (pm2 kills there with
  * `taskkill /T`, which walks the identical tree), and CANNOT use a plain
  * `detached: true`: on Windows that flag means DETACHED_PROCESS, which denies
  * the child a console — powershell then exits 0 within ~100ms without running a
  * single line of update.ps1, and this function used to report that as a
- * successful update to the target release (#6169).
+ * successful update to the target release (#6169). spawnDetached's Windows
+ * supervisor handles that internally, so no option is needed here.
  *
  * The scripts pull the latest code via `git pull --rebase --autostash` and
  * write the actual resulting version to `data/update-complete.json`.
@@ -99,7 +100,6 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunche
     cwd: PATHS.root,
     env: childEnv,
     controlDir,
-    windowsDetached: true,
     // The default 250ms cadence is calibrated for trainer/render output; this
     // job emits one human-paced `STEP:` line per multi-second stage, so a
     // quarter of the syscalls buys the same perceived progress.

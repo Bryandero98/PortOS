@@ -60,10 +60,10 @@ async function startDashboardHandoff(app) {
   const handoff = await spawnDetached(
     process.execPath,
     [scriptPath],
-    // windowsDetached: pm2 kills on Windows with `taskkill /T`, which walks the
-    // same parent tree — without it the handoff dies with portos-server there
-    // exactly as it would on POSIX without the double-fork.
-    { cwd: app.repoPath, controlDir: DASHBOARD_OPEN_CONTROL_DIR, cleanup: true, windowsDetached: true },
+    // spawnDetached leaves this process's tree on every platform — pm2 kills on
+    // Windows with `taskkill /T`, which walks the same parent tree the POSIX
+    // double-fork escapes, so without it the handoff dies with portos-server.
+    { cwd: app.repoPath, controlDir: DASHBOARD_OPEN_CONTROL_DIR, cleanup: true },
   ).catch((err) => {
     console.error(`⚠️ Dashboard auto-open could not start: ${err.message}`);
     return null;

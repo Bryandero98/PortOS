@@ -2,16 +2,18 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
-import { ChildProcess, execFile, spawn } from './childProcess.js';
+import { execFile, spawn } from './childProcess.js';
 import { promisify } from 'util';
 import { pathToFileURL } from 'url';
 import { pinPlatform } from './testHelper.js';
 import { killProcessTree } from './bufferedSpawn.js';
 import { spawnDetached, reapDetached, reapAndCleanDetachedDirs, reattachDetached, isReattachable, isDetachedRunning, __detachedSpawnTesting } from './detachedSpawn.js';
 
-// Only the win32 fallback's kill() reaches killProcessTree, so stubbing it is
-// inert for every POSIX test here — and it lets the win32 test assert the
-// delegation on a platform where `taskkill` doesn't exist.
+// Only a win32 cancel reaches killProcessTree, so stubbing it is inert for
+// every POSIX test here — and it lets the win32 tests assert the delegation on
+// a platform where `taskkill` doesn't exist. The one test that needs the real
+// tree-kill (a Windows host, killing a job with a live grandchild) restores it
+// for itself with `mockImplementationOnce`.
 vi.mock('./bufferedSpawn.js', async (importOriginal) => ({
   ...(await importOriginal()),
   killProcessTree: vi.fn(),
@@ -19,14 +21,13 @@ vi.mock('./bufferedSpawn.js', async (importOriginal) => ({
 
 const execFileAsync = promisify(execFile);
 
-// spawnDetached's POSIX `sh` double-fork — and with it the whole control-dir
-// contract (pid/exit sentinels, reap, re-attach, reparent-to-init survival) —
-// does not exist on Windows: that platform takes an explicit plain-spawn
-// fallback (see the win32 branch in detachedSpawn.js), where pm2 is
-// taskkill-based and surviving a restart is not a guarantee PortOS makes.
-// Tests that assert the double-fork mechanism are gated on IS_POSIX rather
-// than rewritten, because there is no Windows behavior for them to assert.
-// The win32 fallback itself is covered by its own test below.
+// Both platforms produce the same control-dir contract (pid/exit sentinels,
+// reap, re-attach, survive-the-restart) — but by different mechanisms: a POSIX
+// `sh` double-fork, and a powershell launcher+supervisor on Windows. Tests that
+// assert one MECHANISM are gated on the platform that has it (`sh -c` fixtures
+// and PPID walks on IS_POSIX; the real powershell launcher on !IS_POSIX).
+// Tests of the shared handle CONTRACT run everywhere, driving `node -e`
+// fixtures rather than `sh -c` so they work on a Windows checkout too.
 const IS_POSIX = process.platform !== 'win32';
 const dirs = [];
 const tmpControlDir = async () => {
@@ -244,33 +245,14 @@ describe('spawnDetached', () => {
     expect(handle.pid).toBeNull();
   });
 
-  it('falls back to a plain spawn on win32 (no POSIX sh double-fork)', async () => {
-    const restorePlatform = pinPlatform('win32');
-    try {
-      const controlDir = await tmpControlDir();
-      // Real `sh` exists on the test runner, so the plain-spawn fallback runs;
-      // the point is that it returns a working ChildProcess, not the file-tailed
-      // handle. (controlDir is unused on this path but still required.)
-      const handle = await spawnDetached('sh', ['-c', 'printf "hi\\n"; exit 0'], { controlDir });
-      expect(handle.pid).toBeGreaterThan(0);
-      expect(typeof handle.kill).toBe('function');
-      const getOut = collect(handle.stdout);
-      const { code } = await onClose(handle);
-      expect(code).toBe(0);
-      expect(getOut()).toBe('hi\n');
-    } finally {
-      restorePlatform();
-    }
-  });
-
-  // The `windowsDetached` launcher is real powershell, so it can only be
-  // exercised on a Windows host — pinning the platform elsewhere would just
+  // The Windows launcher is real powershell, so it can only be exercised on a
+  // Windows host — pinning the platform elsewhere would just
   // fail to find the binary. Regression for #6169: the plain
   // `spawn(..., { detached: true })` this replaced meant DETACHED_PROCESS,
   // which denies a console host any console, so the job exited 0 in ~100ms
   // having produced no output and run no part of the script. Asserting real
   // streamed output plus the job's own exit code is what catches that.
-  it.runIf(!IS_POSIX)('windowsDetached runs the job and streams its output through the control dir', async () => {
+  it.runIf(!IS_POSIX)('runs the job and streams its output through the control dir', async () => {
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached(
       process.execPath,
@@ -278,7 +260,7 @@ describe('spawnDetached', () => {
       // supervisor needs: .NET Framework's ProcessStartInfo takes one flat
       // argument STRING, so a mis-quoted path would silently split.
       ['-e', 'process.stdout.write(process.argv[1] + "\\n"); process.exit(3);', 'a b "c"'],
-      { controlDir, windowsDetached: true }
+      { controlDir }
     );
     const getOut = collect(handle.stdout);
     expect(handle.pid).toBeGreaterThan(0);
@@ -288,7 +270,7 @@ describe('spawnDetached', () => {
     expect(getOut()).toBe('a b "c"\n');
   });
 
-  // The whole POINT of the windowsDetached launcher: pm2 kills on Windows with
+  // The whole POINT of the Windows launcher: pm2 kills on Windows with
   // `taskkill /pid <app> /T /F`, which walks the parent tree, so a job spawned
   // as a plain child of portos-server dies at update.sh's own `pm2-stop` step
   // and leaves the install headless (#5976, and #6169 on Windows). Nothing in
@@ -296,7 +278,7 @@ describe('spawnDetached', () => {
   // by dropping the launcher hop and starting the supervisor directly, so this
   // asserts the survival itself: tree-kill the spawning process, and the job
   // must still be running and still writing.
-  it.runIf(!IS_POSIX)('windowsDetached survives a tree-kill of the process that spawned it', async () => {
+  it.runIf(!IS_POSIX)('survives a tree-kill of the process that spawned it', async () => {
     const controlDir = await tmpControlDir();
     const marker = join(controlDir, 'go');
     const heartbeat = join(controlDir, 'heartbeat');
@@ -309,7 +291,7 @@ describe('spawnDetached', () => {
       "  'const {existsSync,appendFileSync}=require(\"fs\");const t=setInterval(()=>{appendFileSync(process.argv[2],\"x\");if(existsSync(process.argv[1])){clearInterval(t);process.exit(0);}},20);',",
       `  ${JSON.stringify(marker)},`,
       `  ${JSON.stringify(heartbeat)},`,
-      `], { controlDir: ${JSON.stringify(controlDir)}, windowsDetached: true });`,
+      `], { controlDir: ${JSON.stringify(controlDir)} });`,
       'setInterval(() => {}, 1000);',
     ].join('\n'));
 
@@ -337,29 +319,29 @@ describe('spawnDetached', () => {
   });
 
   // PowerShell's ExitCode is a SIGNED int, so an NTSTATUS crash status reads
-  // back negative — while Node's own ChildProcess (and so the plain-spawn
-  // fallback beside this) reports it unsigned. Without the mask the two win32
-  // arms disagree about the same crash, and a caller classifying a crash by its
-  // code silently stops recognizing one of them.
-  it.runIf(!IS_POSIX)('windowsDetached reports a crash status unsigned, as Node does', async () => {
+  // back negative — while Node's own ChildProcess, and the POSIX arm's raw wait
+  // status, report it unsigned. Without the mask the two platforms disagree
+  // about the same crash, and a caller classifying one by its code silently
+  // stops recognizing it on Windows.
+  it.runIf(!IS_POSIX)('reports a crash status unsigned, as Node does', async () => {
     const controlDir = await tmpControlDir();
     const handle = await spawnDetached(
       'powershell',
       ['-NoProfile', '-NonInteractive', '-Command', '[Environment]::Exit(-1073741819)'],
-      { controlDir, windowsDetached: true }
+      { controlDir }
     );
     const { code, signal } = await onClose(handle);
     expect(code).toBe(3221225477); // 0xC0000005, not -1073741819
     expect(signal).toBeNull();
   });
 
-  it.runIf(!IS_POSIX)('windowsDetached identifies a live job by its executable', async () => {
+  it.runIf(!IS_POSIX)('identifies a live job by its executable', async () => {
     const controlDir = await tmpControlDir();
     const marker = join(controlDir, 'go');
     const handle = await spawnDetached(
       process.execPath,
       ['-e', 'const {existsSync}=require("fs");const t=setInterval(()=>{if(existsSync(process.argv[1])){clearInterval(t);process.exit(0);}},5);', marker],
-      { controlDir, windowsDetached: true }
+      { controlDir }
     );
     const closed = onClose(handle);
     expect(await isDetachedRunning(controlDir, { executable: process.execPath })).toBe(true);
@@ -370,42 +352,48 @@ describe('spawnDetached', () => {
     await closed;
   });
 
-  // A child that runs until a marker file appears, then exits with a code and
-  // NO signal — the shape `taskkill /T /F` produces on Windows, where the kill
-  // happens out of band so libuv records no exit_signal. Driven by `node -e`
-  // rather than `sh -c` because these tests are NOT gated on IS_POSIX: they
-  // pin the platform and must run on a real Windows checkout, which has no
-  // guaranteed POSIX shell.
-  const spawnWin32Fallback = async (exitCode = 1) => {
+  // A job that runs until a marker file appears, then exits with a code and NO
+  // signal — the shape `taskkill /T /F` leaves behind on Windows, where the kill
+  // happens out of band so nothing records an exit_signal. Driven by `node -e`
+  // rather than `sh -c` because these tests are NOT gated on IS_POSIX: they run
+  // against the control-dir handle both platforms now return, and must work on a
+  // real Windows checkout, which has no guaranteed POSIX shell.
+  //
+  // The handle is built by whichever launcher the HOST has; only `kill`'s
+  // dispatch is platform-dependent, so each test pins win32 around the cancel
+  // and holds the pin until 'close' (the tailer decodes the exit status
+  // per-platform too). On a Windows host the pin is a no-op and these run
+  // against the real supervisor handle end to end.
+  const spawnMarkerJob = async (exitCode = 1, opts = {}) => {
     const controlDir = await tmpControlDir();
     const marker = join(controlDir, 'go');
     const handle = await spawnDetached(
       process.execPath,
       ['-e', `const {existsSync}=require('fs');const t=setInterval(()=>{if(existsSync(process.argv[1])){clearInterval(t);process.exit(${exitCode});}},5);`, marker],
-      { controlDir }
+      { controlDir, pollMs: 25, ...opts }
     );
-    return { handle, terminate: () => writeFile(marker, '1') };
+    return { handle, controlDir, terminate: () => writeFile(marker, '1') };
   };
 
-  it('win32 fallback kill() tree-kills so the runner\'s children die with it', async () => {
+  it('win32 kill() tree-kills by pid so the runner\'s children die with it', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnWin32Fallback();
+      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       expect(handle.kill('SIGKILL')).toBe(true);
       expect(handle.killed).toBe(true);
       expect(killProcessTree).toHaveBeenCalledTimes(1);
-      const [target, signal, opts] = killProcessTree.mock.calls[0];
+      const [target, signal, opts, isWin32] = killProcessTree.mock.calls[0];
       expect(signal).toBe('SIGKILL');
-      expect(opts).toEqual({ processGroup: true });
-      // The target must still be a real ChildProcess — killProcessTree's
-      // `taskkill /T /F` branch is gated on `instanceof ChildProcess` — and must
-      // carry Node's own kill, not the override, so its POSIX fall-through
-      // can't recurse back into it.
-      expect(target).toBeInstanceOf(ChildProcess);
-      expect(target.pid).toBe(handle.pid);
-      expect(target.kill).not.toBe(handle.kill);
+      expect(opts).toEqual({ processGroup: false });
+      expect(isWin32).toBe(true);
+      // The job reparented away from this process, so a bare `{ pid }` is the
+      // only address there is — killProcessTree's taskkill branch has to accept
+      // it, or the cancel silently degrades to a leaf kill that orphans the
+      // ffmpeg/python the runner spawned (#4171).
+      expect(target).toEqual({ pid: handle.pid });
+      expect(target.kill).toBeUndefined();
       await terminate();
       await closed;
     } finally {
@@ -413,14 +401,35 @@ describe('spawnDetached', () => {
     }
   });
 
-  it('win32 fallback reports the requested signal on close (taskkill kills out of band)', async () => {
+  it('win32 maps killProcessGroup onto the same tree-kill (no process groups there)', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnWin32Fallback();
+      const { handle, terminate } = await spawnMarkerJob(1, { killProcessGroup: true });
+      const closed = onClose(handle);
+      expect(handle.kill('SIGTERM')).toBe(true);
+      const [target, , opts, isWin32] = killProcessTree.mock.calls[0];
+      // Forwarded as-is: killProcessTree's win32 branch runs BEFORE its
+      // process-group branch, so the flag can never reach a `process.kill(-pid)`
+      // that Windows has no meaning for.
+      expect(opts).toEqual({ processGroup: true });
+      expect(isWin32).toBe(true);
+      expect(target).toEqual({ pid: handle.pid });
+      await terminate();
+      await closed;
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it('win32 reports the requested signal on close (taskkill kills out of band)', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       handle.kill('SIGKILL');
-      // The stubbed tree-kill didn't terminate anything; let the child exit the
+      // The stubbed tree-kill didn't terminate anything; let the job exit the
       // way a taskkill'd one does — a plain non-zero code, no signal.
       await terminate();
       const { code, signal } = await closed;
@@ -435,11 +444,11 @@ describe('spawnDetached', () => {
     }
   });
 
-  it('win32 fallback leaves a clean exit alone when a cancel races completion', async () => {
+  it('win32 leaves a clean exit alone when a cancel races completion', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnWin32Fallback(0);
+      const { handle, terminate } = await spawnMarkerJob(0);
       const closed = onClose(handle);
       handle.kill('SIGTERM');
       await terminate();
@@ -451,10 +460,10 @@ describe('spawnDetached', () => {
     }
   });
 
-  it('win32 fallback stamps a numeric signal as its NAME on close', async () => {
+  it('win32 stamps a numeric signal as its NAME on close', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
-      const { handle, terminate } = await spawnWin32Fallback();
+      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       // kill() accepts a number; ChildProcess reports names, so a raw 9 would
       // break every `signal === 'SIGKILL'` comparison downstream.
@@ -469,54 +478,129 @@ describe('spawnDetached', () => {
     }
   });
 
-  it('win32 fallback refuses to tree-kill a child that already exited', async () => {
+  it('win32 refuses to tree-kill a job that already exited', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
-      const { handle, terminate } = await spawnWin32Fallback();
+      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
       await terminate();
       await closed;
-      // Windows recycles PIDs, so a late escalation must not taskkill whatever
-      // inherited the number.
+      // Windows recycles PIDs, so a late escalation (reapDetached's grace
+      // deadline) must not taskkill whatever inherited the number.
       killProcessTree.mockClear();
       expect(handle.kill('SIGKILL')).toBe(false);
       expect(killProcessTree).not.toHaveBeenCalled();
+      // ...and the status the supervisor recorded survives the refused kill.
+      expect(handle.exitCode).toBe(1);
+      expect(handle.signalCode).toBeNull();
     } finally {
       restorePlatform();
     }
   });
 
-  it('win32 fallback treats signal 0 as an existence probe, not a kill', async () => {
+  it('win32 treats signal 0 as an existence probe, not a kill', async () => {
     const restorePlatform = pinPlatform('win32');
     try {
       killProcessTree.mockClear();
-      const { handle, terminate } = await spawnWin32Fallback();
+      const { handle, terminate } = await spawnMarkerJob();
       const closed = onClose(handle);
-      // Node's own kill(0) answers the probe (and sets `killed`, as it always
-      // has); what matters is that no taskkill went out.
       expect(handle.kill(0)).toBe(true);
       expect(killProcessTree).not.toHaveBeenCalled();
       await terminate();
+      const { code, signal } = await closed;
+      // A probe is not a death: it must not stamp a signal onto the close.
+      expect(code).toBe(1);
+      expect(signal).toBeNull();
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it('win32 rejects an unknown signal instead of force-killing the tree', async () => {
+    const restorePlatform = pinPlatform('win32');
+    try {
+      killProcessTree.mockClear();
+      const { handle, terminate } = await spawnMarkerJob();
+      const closed = onClose(handle);
+      // ChildProcess.kill() throws ERR_UNKNOWN_SIGNAL on a typo'd name; the
+      // handle must not turn that into a silent whole-tree force-kill.
+      expect(() => handle.kill('SIGKLL')).toThrow(/Unknown signal/);
+      expect(killProcessTree).not.toHaveBeenCalled();
+      await terminate();
       await closed;
     } finally {
       restorePlatform();
     }
   });
 
-  it('win32 fallback rejects an unknown signal instead of force-killing the tree', async () => {
-    const restorePlatform = pinPlatform('win32');
+  // The convergence itself (#6170): on a real Windows host, a cancel must take
+  // the job's OWN descendants with it — the ffmpeg mux a video runtime shells
+  // out to, the pip a trainer launches. `process.kill(pid)` there terminates the
+  // job leaf and orphans them still holding the output file and GPU memory,
+  // which is exactly why the supervisor path used to be opt-in. Needs the REAL
+  // killProcessTree, so restore it for this one call.
+  //
+  // The runner is POWERSHELL, not node: libuv assigns a Node-spawned child to a
+  // job object that closes (and kills the child) when its Node parent dies, so a
+  // node-parent fixture passes even against a leaf-only kill and asserts
+  // nothing. A real trainer/render runner — python, a shell — has no such tie,
+  // and its ffmpeg keeps running. That is the orphan under test.
+  it.runIf(!IS_POSIX)('cancels a Windows job together with the grandchild it spawned', async () => {
+    const { killProcessTree: realKillProcessTree } = await vi.importActual('./bufferedSpawn.js');
+    killProcessTree.mockImplementationOnce(realKillProcessTree);
+
+    const controlDir = await tmpControlDir();
+    const grandchildPidFile = join(controlDir, 'grandchild-pid');
+    const heartbeat = join(controlDir, 'heartbeat');
+    const grandchildPath = join(controlDir, 'grandchild.cjs');
+    const runnerPath = join(controlDir, 'runner.ps1');
+    // A heartbeat file rather than a pid probe: on Windows a terminated process
+    // stays openable while any handle to it is alive, so `kill(pid, 0)` can
+    // still answer for a process that is gone. Output that STOPS is unambiguous.
+    await writeFile(grandchildPath, [
+      "const { appendFileSync } = require('fs');",
+      "setInterval(() => appendFileSync(process.env.PORTOS_TEST_HEARTBEAT, 'x'), 20);",
+    ].join('\n'));
+    // The paths reach the grandchild through the environment, not argv: Windows
+    // PowerShell 5.1's `Start-Process -ArgumentList` joins its array on spaces
+    // without quoting, so a temp path under a user name containing a space
+    // would silently split.
+    await writeFile(runnerPath, [
+      'param([string]$NodeExe, [string]$ScriptPath, [string]$PidFile, [string]$Heartbeat)',
+      '$env:PORTOS_TEST_HEARTBEAT = $Heartbeat',
+      '$g = Start-Process -FilePath $NodeExe -ArgumentList @((\'"\' + $ScriptPath + \'"\')) -PassThru -NoNewWindow',
+      'Set-Content -LiteralPath $PidFile -Value $g.Id',
+      'while ($true) { Start-Sleep -Milliseconds 200 }',
+    ].join('\n'));
+
+    const handle = await spawnDetached(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', runnerPath,
+        process.execPath, grandchildPath, grandchildPidFile, heartbeat],
+      { controlDir, pollMs: 25 }
+    );
+    const closed = onClose(handle);
+
+    const beats = async () => (await readFile(heartbeat, 'utf8').catch(() => '')).length;
+    // Two powershell hops plus a Start-Process, so this is slower than the
+    // node-only fixtures above.
+    expect(await waitUntil(async () => (await beats()) > 0, { timeoutMs: 30000 })).toBe(true);
+    const grandchildPid = Number.parseInt(await readFile(grandchildPidFile, 'utf8'), 10);
+    expect(grandchildPid).toBeGreaterThan(0);
+
     try {
-      killProcessTree.mockClear();
-      const { handle, terminate } = await spawnWin32Fallback();
-      const closed = onClose(handle);
-      // ChildProcess.kill() throws ERR_UNKNOWN_SIGNAL on a typo'd name; the
-      // override must not turn that into a silent whole-tree force-kill.
-      expect(() => handle.kill('SIGKLL')).toThrow();
-      expect(killProcessTree).not.toHaveBeenCalled();
-      await terminate();
+      expect(handle.kill('SIGKILL')).toBe(true);
       await closed;
+      // Stopped writing — a leaf-only kill leaves it beating forever.
+      const settled = await waitUntil(async () => {
+        const before = await beats();
+        await new Promise((r) => setTimeout(r, 150));
+        return (await beats()) === before;
+      }, { timeoutMs: 10000 });
+      expect(settled).toBe(true);
     } finally {
-      restorePlatform();
+      // Never leave a real orphan behind when the assertion above is what failed.
+      try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* already gone */ }
     }
   });
 
