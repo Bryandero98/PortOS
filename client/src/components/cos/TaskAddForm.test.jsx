@@ -149,6 +149,67 @@ describe('TaskAddForm responsive layout', () => {
     expect(api.addCosTask.mock.calls[0][0].app).toBe('current-app');
   });
 
+  // #6219: ReviewerPicker gets no `defaults` prop wired, the submit payload
+  // unconditionally spread all eight reviewer fields whenever review-then-merge
+  // was active — even when the picker was never touched — freezing today's
+  // Code Review Defaults into the new task's metadata permanently.
+  describe('reviewer defaults inheritance (#6219)', () => {
+    const REVIEWER_PAYLOAD_KEYS = [
+      'reviewers', 'usernames', 'optionalReviewers', 'reviewerMaxRounds',
+      'reviewerModels', 'reviewerEfforts', 'reviewStopMode', 'reviewerApplies',
+    ];
+    const app = {
+      id: 'example-app',
+      name: 'Example App',
+      repoPath: 'example.com/repo',
+      defaultOpenPR: true,
+      defaultPrCompletion: 'review-then-merge',
+    };
+
+    it('leaves every reviewer field absent when the picker is never touched', async () => {
+      const user = userEvent.setup();
+      api.getCodeReviewDefaults.mockResolvedValue({
+        reviewers: ['copilot', 'claude'], usernames: [], optionalReviewers: [],
+        reviewerMaxRounds: {}, stopMode: 'all', reviewerApplies: false,
+      });
+      api.addCosTask.mockResolvedValue({ success: true });
+      render(<TaskAddForm providers={[]} apps={[app]} defaultApp="example-app" onTaskAdded={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText('Reviewers (in order):')).toBeInTheDocument());
+      await user.type(screen.getByPlaceholderText('Task description *'), 'Fix the bug');
+      await user.click(screen.getByRole('button', { name: /^Add$/ }));
+
+      await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+      const payload = api.addCosTask.mock.calls.at(-1)[0];
+      for (const key of REVIEWER_PAYLOAD_KEYS) expect(payload).not.toHaveProperty(key);
+    });
+
+    it('sends only the field the user actually changed', async () => {
+      const user = userEvent.setup();
+      api.getCodeReviewDefaults.mockResolvedValue({
+        reviewers: ['copilot', 'claude'], usernames: [], optionalReviewers: [],
+        reviewerMaxRounds: {}, stopMode: 'all', reviewerApplies: false,
+      });
+      api.addCosTask.mockResolvedValue({ success: true });
+      render(<TaskAddForm providers={[]} apps={[app]} defaultApp="example-app" onTaskAdded={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText('Reviewers (in order):')).toBeInTheDocument());
+      const stopModeSelect = await screen.findByLabelText('Stop mode:');
+      await user.selectOptions(stopModeSelect, 'on-clean');
+
+      await user.type(screen.getByPlaceholderText('Task description *'), 'Fix the bug');
+      await user.click(screen.getByRole('button', { name: /^Add$/ }));
+
+      await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+      const payload = api.addCosTask.mock.calls.at(-1)[0];
+      expect(payload.reviewStopMode).toBe('on-clean');
+      for (const key of REVIEWER_PAYLOAD_KEYS) {
+        if (key === 'reviewStopMode') continue;
+        expect(payload).not.toHaveProperty(key);
+      }
+    });
+  });
+
   it('restores a plain-text draft from the previous storage format', async () => {
     localStorage.setItem('portos-cos-task-description-draft', 'Legacy task draft');
     render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
