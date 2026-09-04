@@ -297,6 +297,35 @@ export function localRuntimeKind(provider) {
 }
 
 /**
+ * Whether a provider may be handed `model` — the one rule for validating a
+ * stored model pin against a provider record.
+ *
+ * Two providers are pass-throughs, for opposite reasons:
+ *
+ *   - one that enumerates NO models has nothing to validate against, so any id
+ *     is its caller's to choose;
+ *   - one backed by a LOCAL daemon has a `models` array that is only a cached
+ *     snapshot, while the daemon on this machine is the authority. Every model
+ *     picker in PortOS deliberately offers what the daemon reports rather than
+ *     what the record lists, so judging a local pin against the record rejects
+ *     a model that is installed and serving — that is how a pr-reviewer stage
+ *     pinned to a freshly pulled Ollama model got "not offered by provider" on
+ *     every dispatch.
+ *
+ * Anything else enumerates its own catalog, and a pin outside it reaches the
+ * CLI as a model it cannot serve.
+ *
+ * @param {object|null|undefined} provider
+ * @param {string|null|undefined} model
+ * @returns {boolean}
+ */
+export function modelPinIsOffered(provider, model) {
+  const offered = Array.isArray(provider?.models) ? provider.models : [];
+  if (offered.length === 0 || localRuntimeKind(provider)) return true;
+  return offered.includes(model);
+}
+
+/**
  * The local runtime a provider needs, with the endpoint PortOS should probe.
  *
  * @param {object|null|undefined} provider
