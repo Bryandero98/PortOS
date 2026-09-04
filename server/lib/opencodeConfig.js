@@ -38,6 +38,7 @@ import {
   isOpencodeCommand,
   prefixOpencodeModel,
   parseOpencodeConfigContent,
+  OPENCODE_BUILD_AGENT,
   OPENCODE_PUBLIC_REVIEW_AGENT,
 } from './providerModels.js';
 import { PROVIDER_GATEWAYS, PROVIDER_GATEWAY_IDS, gatewayById, isGatewayNamespace } from './providerGateways.js';
@@ -408,14 +409,14 @@ function hardenOpencodeConfigForNoTool(config) {
   config.permission = DENY_ALL_PERMISSIONS;
   config.tools = { ...DENY_ALL_TOOLS };
   const agents = asObject(config.agent);
-  const agentNames = new Set([...Object.keys(agents), 'build', OPENCODE_PUBLIC_REVIEW_AGENT]);
+  const agentNames = new Set([...Object.keys(agents), OPENCODE_BUILD_AGENT, OPENCODE_PUBLIC_REVIEW_AGENT]);
   // `buildAgentGeneration` writes the stage's temperature / topP / thinking /
   // reasoningEffort onto `agent.build` — OpenCode's default agent — but this
   // profile runs `--agent plan`. Seed the review agent from `build` so the
   // stage's configured effort actually reaches the model that runs, instead of
   // silently falling back to the backend default. An explicit `agent.plan` in
   // the user's own config still wins (it is spread after).
-  const generationSource = asObject(agents.build);
+  const generationSource = asObject(agents[OPENCODE_BUILD_AGENT]);
   config.agent = Object.fromEntries([...agentNames].map((name) => [name, {
     ...(name === OPENCODE_PUBLIC_REVIEW_AGENT ? generationSource : {}),
     ...asObject(agents[name]),

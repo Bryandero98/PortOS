@@ -366,9 +366,52 @@ describe('public-review provider postures', () => {
     expect(supportsTuiPublicReviewActionsProvider({ id: 'codex-tui', type: 'tui', command: 'codex' })).toBe(false);
     expect(supportsTuiPublicReviewActionsProvider({ id: 'grok-tui', type: 'tui', command: 'grok' })).toBe(false);
     expect(supportsTuiPublicReviewActionsProvider(antigravity)).toBe(false);
-    // …as do vendors with no actions recipe at all, and non-binary records.
-    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-tui', type: 'tui', command: 'opencode' })).toBe(false);
+    // …as do non-binary records, whatever their vendor.
     expect(supportsTuiPublicReviewActionsProvider({ id: 'claude-api', type: 'api', command: 'claude' })).toBe(false);
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-api', type: 'api', command: 'opencode' })).toBe(false);
+    // #6238 — OpenCode is attachable on EVERY backend: unlike the no-tool gate
+    // (Ollama-only — see the `mtplxBacked` cases above) there is no
+    // model-capability probe involved, so an MTPLX or gateway wrapper qualifies.
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-tui', type: 'tui', command: 'opencode', mtplxBacked: true })).toBe(true);
+    expect(supportsTuiPublicReviewActionsProvider({ id: 'opencode-cli', type: 'cli', command: 'opencode' })).toBe(true);
+    expect(supportsTuiPublicReviewPosture({ id: 'opencode-tui', type: 'tui', command: 'opencode', ollamaBacked: true }, PUBLIC_REVIEW_NO_TOOL_POSTURE)).toBe(false);
+  });
+
+  // #6238 — OpenCode's headless actions run is a one-shot `opencode run …`,
+  // which cannot become an interactive session by dropping flags; the
+  // attachable recipe is the BARE binary (OpenCode's TUI entry point) with the
+  // same agent/model flags, and the spawner pastes the prompt as for any TUI.
+  it('builds the attachable OpenCode actions argv as the bare binary while the headless argv is unchanged', () => {
+    const opencodeTui = { id: 'opencode-tui', type: 'tui', command: 'opencode', args: ['--agent', 'plan', '--auto'], ollamaBacked: true };
+    const headless = buildVendorSpawnConfig(opencodeTui, {
+      effectiveModel: 'qwen3-coder:30b',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+    });
+    // The headless shape is UNCHANGED by the row: still the ordinary
+    // `run`-prefixed argv with the provider's own args forwarded.
+    expect(headless).toEqual({
+      command: 'opencode',
+      args: ['run', '--agent', 'plan', '--auto', '-m', 'ollama/qwen3-coder:30b'],
+      stdinMode: 'prompt',
+    });
+
+    const tui = buildVendorSpawnConfig(opencodeTui, {
+      effectiveModel: 'qwen3-coder:30b',
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+      tui: true,
+    });
+    expect(tui).toEqual({
+      command: 'opencode',
+      // No `run` subcommand: that is print mode and never renders in a PTY. The
+      // tool-enabled agent is pinned on the argv, and the provider's saved args
+      // (`--agent plan`, `--auto`) are NOT forwarded on the attachable path.
+      args: ['--agent', 'build', '-m', 'ollama/qwen3-coder:30b'],
+      stdinMode: 'prompt',
+    });
+    expect(buildVendorSpawnConfig(opencodeTui, {
+      safetyProfile: PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE,
+      tui: true,
+    }).args).toEqual(['--agent', 'build']);
   });
 
   it('refuses to build an attachable argv for a vendor with no attachable recipe', () => {
@@ -378,7 +421,6 @@ describe('public-review provider postures', () => {
     for (const provider of [
       { id: 'codex-tui', type: 'tui', command: 'codex' },
       { id: 'grok-tui', type: 'tui', command: 'grok' },
-      { id: 'opencode-tui', type: 'tui', command: 'opencode' },
       { id: 'antigravity-tui', type: 'tui', command: 'agy' },
     ]) {
       expect(() => buildVendorSpawnConfig(provider, {
