@@ -10,17 +10,20 @@ import { Link } from 'react-router';
  * actually supplying it — and being sent to the wrong panel is the same class of
  * confusion as not being told at all.
  *
- * The override lives on the `claim-work` task, editable both globally (Chief of
- * Staff → Schedule) and per app (the app's Automation tab), so the copy names
- * the task rather than a single screen.
+ * The link target is deliberate and verified: the reviewer picker (and the "Use
+ * system Code Review Defaults" reset beside it) is rendered ONLY by
+ * `GlobalConfigControls`, reachable only through Chief of Staff → Schedule's
+ * TaskConfigDrawer. The per-app `claim-work` override the server merges on top
+ * carries reviewer keys too, but the app's Automation tab has no picker for
+ * them — naming it here would send the user to a screen with no such control.
  */
 export default function ClaimReviewerSource({ source }) {
   if (source === 'task-override') {
     return (
       <>
-        {' — from the '}<strong className="text-port-warning">claim-work</strong>{' reviewer override ('}
+        {' — from the '}<strong className="text-port-warning">claim-work</strong>{' reviewer override in '}
         <Link to="/cos/schedule" className="text-port-accent hover:underline">Chief of Staff → Schedule</Link>
-        {', or this app’s Automation tab), not Models → Code Reviewers. Clear it there to follow the install default again.'}
+        {', not Models → Code Reviewers. Clear it there to follow the install default again.'}
       </>
     );
   }

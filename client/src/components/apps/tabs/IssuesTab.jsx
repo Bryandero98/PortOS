@@ -589,13 +589,12 @@ export default function IssuesTab({ appId, appName }) {
             <span className="flex items-center gap-1.5 text-xs text-gray-500 uppercase tracking-wide shrink-0">
               <ClipboardCheck size={14} /> Reviewed by
             </span>
+            {/* No empty-list branch: the route resolves through
+                `claimSafeReviewers`, which falls back to a non-empty list rather
+                than ever handing a claim agent nothing to run. */}
             <p className="flex-1 text-xs text-gray-400">
-              {claimReviewers.reviewers.length ? (
-                <>
-                  <code className="text-gray-300">{claimReviewers.csv}</code>
-                  <ClaimReviewerSource source={claimReviewers.source} />
-                </>
-              ) : 'No reviewers resolve for this app — a Claim will merge without one.'}
+              <code className="text-gray-300">{claimReviewers.csv}</code>
+              <ClaimReviewerSource source={claimReviewers.source} />
             </p>
           </div>
         )}

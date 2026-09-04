@@ -187,7 +187,7 @@ function SlashDoRunDrawerBody({ open, command, label, appId, appName, onClose, o
                   where it came from. */}
               {!review && claimReviewers?.source === 'task-override' && (
                 <p className="text-xs text-port-warning">
-                  These come<ClaimReviewerSource source={claimReviewers.source} />
+                  Seeded<ClaimReviewerSource source={claimReviewers.source} />
                 </p>
               )}
             </>
