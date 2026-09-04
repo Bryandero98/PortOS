@@ -318,6 +318,31 @@ describe('buildCliChildEnv — public-review-actions profile', () => {
     expect(env).toMatchObject({ ANTHROPIC_BASE_URL: 'http://localhost:11434', ANTHROPIC_AUTH_TOKEN: 'ollama', ANTHROPIC_SMALL_FAST_MODEL: 'small:7b' });
     expect(env).not.toHaveProperty('GH_TOKEN');
   });
+
+  // An allowlist carrying the wrapper's ENDPOINT but not its TUNING is the worst
+  // of both: the stage reaches the local daemon and then runs it on Claude Code's
+  // cloud-shaped ceilings — a 32K output cap and a 300s first-byte timeout that a
+  // ~100K-token prefill can never meet. Derived from what composeProviderEnv
+  // actually emits rather than a copy of the key list, so a knob added to
+  // `claudeLocalEnvDefaults` and forgotten in an allowlist fails here.
+  it('lets every local-Claude tuning knob through both public-review allowlists', () => {
+    const envVars = { ANTHROPIC_BASE_URL: 'http://localhost:11434', ANTHROPIC_AUTH_TOKEN: 'ollama' };
+    // Maximally-configured so every conditional knob is emitted.
+    const provider = { command: 'claude', ollamaBacked: true, thinking: false, envVars };
+    const tuning = Object.keys(composeProviderEnv({ provider })).filter((key) => !(key in envVars));
+    expect(tuning.length).toBeGreaterThan(0);
+
+    for (const safetyProfile of [PUBLIC_REVIEW_EXECUTION_PROFILE, PUBLIC_REVIEW_ACTIONS_EXECUTION_PROFILE]) {
+      const env = buildCliChildEnv({
+        baseEnv: { PATH: '/usr/bin', GH_TOKEN: 'forge-secret' },
+        provider,
+        cwd: '/tmp/public-review',
+        safetyProfile,
+      });
+      for (const key of tuning) expect(env, `${safetyProfile} dropped ${key}`).toHaveProperty(key);
+      expect(env).not.toHaveProperty('GH_TOKEN');
+    }
+  });
 });
 
 describe('buildCliChildEnv — PWD pin and CLAUDECODE strip', () => {
@@ -390,6 +415,23 @@ describe('composeProviderEnv — delta for sites that do not spawn directly', ()
     expect(composeProviderEnv({
       provider: { command: 'opencode', ollamaBacked: true, envVars: {} },
     }).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
+  });
+
+  // The 300s default is a first-byte deadline, and a local daemon spends longer
+  // than that PREFILLING a ~100K-token review envelope before it can emit one.
+  // Every attempt was cancelled mid-prefill and re-sent, so the run sat at
+  // `API error · Retrying … attempt 1/10` forever without ever being unhealthy.
+  it('raises the Claude request timeout past a local prefill, never for a cloud model', () => {
+    const localClaude = { command: '/usr/local/bin/claude', ollamaBacked: true, envVars: {} };
+    expect(composeProviderEnv({ provider: localClaude }).API_TIMEOUT_MS).toBe('3600000');
+    expect(composeProviderEnv({
+      provider: { ...localClaude, envVars: { API_TIMEOUT_MS: '900000' } },
+    }).API_TIMEOUT_MS).toBe('900000');
+
+    expect(composeProviderEnv({ provider: { command: 'claude', envVars: {} } }).API_TIMEOUT_MS).toBeUndefined();
+    expect(composeProviderEnv({
+      provider: { command: 'opencode', ollamaBacked: true, envVars: {} },
+    }).API_TIMEOUT_MS).toBeUndefined();
   });
 
   it('disables Claude/Ollama thinking when the provider requests it', () => {
