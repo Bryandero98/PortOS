@@ -187,6 +187,9 @@ describe('persistent mind CoS-task capability', () => {
     mocks.listManagedBackendModels.mockResolvedValue({ models: [], error: 'daemon not running' });
 
     const catalog = await readPersistentMindTaskCatalog();
+    // Asserting the call as well as the result: without it this passes just as
+    // green against a build that never consults the daemon at all.
+    expect(mocks.listManagedBackendModels).toHaveBeenCalledWith('ollama');
     expect(catalog.providers[0].models.map((model) => model.id)).toEqual(['qwen3-coder:30b']);
   });
 

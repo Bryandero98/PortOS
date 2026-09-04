@@ -958,6 +958,9 @@ describe('listManagedBackendModels', () => {
     expect(await svc.listManagedBackendModels('ollama')).toEqual({ models: [], error: null });
   });
 
+  // The failed read still surfaces the empty array the manager is holding — the
+  // `error` is what separates it from the genuinely-empty case above, so a
+  // caller keying on `models.length` alone would still get this wrong.
   it('separates an unreadable list from an empty one', async () => {
     mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([]);
     mocks.lmstudio.getLastListError.mockReturnValueOnce('LM Studio is unavailable');
