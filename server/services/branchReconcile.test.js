@@ -1205,6 +1205,38 @@ describe('reconcile — cached SUPERSEDED verdicts (#3842)', () => {
     expect(res.superseded.map((b) => b.branch)).toEqual([BRANCH]);
   });
 
+  // Cross-version: this install's ledger predates classifyWorktreeDirt subtracting
+  // PortOS's own runtime scratch, so its recorded dirtyPaths list it while the live
+  // side no longer does. Both the partition and the reap must subtract it — a raw
+  // compare in either one strands the branch it was written to retire.
+  it('reaps a verdict recorded before the scratch subtraction shipped', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger({
+      dirtyPaths: ['server/services/thing.js', 'PORTOS_PUBLIC_REVIEW_INPUT.json']
+    }));
+
+    const res = await reconcile('/repo', { activeAgentIds: new Set() });
+    expect(res.reapedSuperseded).toEqual([BRANCH]);
+    expect(res.skipped).not.toContainEqual(
+      expect.objectContaining({ branch: BRANCH, reason: 'verdict-does-not-match-branch' })
+    );
+  });
+
+  it('holds a branch whose verdict names a genuinely different change set', async () => {
+    setupAbandoned();
+    tryReadFileMock.mockResolvedValue(ledger());
+    // Freshness passed on the gathered entry, but the entry handed to the reap
+    // disagrees with its own verdict — the contract check a direct caller needs.
+    const { reapSupersededBranches } = await import('./branchReconcile.js');
+    const out = await reapSupersededBranches('/repo', 'main', [{
+      branch: BRANCH, tip: 'aaaaaaa', worktreePath: WORKTREE, dirtyPaths: ['other.js'],
+      verdict: { tip: 'aaaaaaa', dirtyPaths: ['server/services/thing.js'] }
+    }], { activeAgentIds: new Set() });
+    expect(out.reaped).toEqual([]);
+    expect(out.skipped).toEqual([{ branch: BRANCH, reason: 'verdict-does-not-match-branch' }]);
+    expect(backupSupersededBranchMock).not.toHaveBeenCalled();
+  });
+
   it('re-analyzes when the branch tip moved', async () => {
     setupAbandoned({ tip: 'bbbbbbb' });
     tryReadFileMock.mockResolvedValue(ledger());

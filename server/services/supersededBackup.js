@@ -23,6 +23,7 @@
  * survives binary content and needs no patch tooling to read back.
  */
 
+import { createHash } from 'node:crypto';
 import { cp, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { atomicWrite, ensureDir, PATHS } from '../lib/fileUtils.js';
@@ -32,8 +33,18 @@ import { execGitSafe } from './git.js';
 /** Where an install keeps its pre-reap backups. */
 export const backupRoot = (cosDir = PATHS.cos) => join(cosDir, 'abandoned-worktree-backups');
 
-/** Branch name → a filesystem-safe directory name. Pure. */
-export const backupSlug = (branch) => kebabCase(String(branch || '')) || 'branch';
+/**
+ * Branch name → a filesystem-safe, collision-free directory name. Pure.
+ *
+ * The hash suffix is not decoration: `kebabCase` maps `feature/foo-bar` and
+ * `feature/foo/bar` to the same slug, and reaping the second would overwrite the
+ * first's backup — which by then is the only remaining copy of that branch.
+ */
+export const backupSlug = (branch) => {
+  const name = String(branch || '');
+  const digest = createHash('sha256').update(name).digest('hex').slice(0, 8);
+  return `${kebabCase(name) || 'branch'}-${digest}`;
+};
 
 // A single untracked file above this is almost certainly build output or a model
 // artifact rather than authored work; it is named in the manifest instead of

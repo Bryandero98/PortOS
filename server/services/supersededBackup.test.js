@@ -54,6 +54,9 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('backupSupersededBranch', () => {
     );
 
     expect(result.dir).toBe(join(backupRoot(cosDir), backupSlug(BRANCH)));
+    // Two branch names that kebab-case identically must not share a backup dir —
+    // the second reap would overwrite the only surviving copy of the first.
+    expect(backupSlug('feature/foo-bar')).not.toBe(backupSlug('feature/foo/bar'));
 
     // The patches' CONTENT is proven by the replay test below, which applies
     // them; here it is enough that both were written.

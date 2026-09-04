@@ -124,16 +124,31 @@ export function isVerdictFresh(entry, branch, { replacedByPresent = true, repoPa
   if (!replacedByPresent) return false;
   if (!entry.tip || entry.tip !== branch.tip) return false;
   if (!sameSet(entry.collisionPaths, branch.collisionPaths)) return false;
-  // A verdict recorded before `classifyWorktreeDirt` learned to subtract PortOS's
-  // own runtime scratch lists that scratch among its dirty paths, while the live
-  // side no longer does. Comparing raw would expire every such entry and re-pay
-  // the coordinator analysis that the ledger exists to avoid — so subtract on
-  // both sides. Nothing else changes: a live list never contains scratch.
-  return sameSet(
-    (entry.dirtyPaths || []).filter((path) => !isAgentScratchPath(path)),
-    (branch.dirtyPaths || []).filter((path) => !isAgentScratchPath(path))
-  );
+  return sameDirtyPaths(entry.dirtyPaths, branch.dirtyPaths);
 }
+
+/**
+ * Do a ledger entry's recorded dirty paths still describe the branch's live ones?
+ *
+ * Subtracts PortOS's own runtime scratch from BOTH sides. A verdict recorded
+ * before `classifyWorktreeDirt` learned to subtract that scratch lists it among
+ * its dirty paths while the live side no longer does; comparing raw would expire
+ * every such entry and re-pay the coordinator analysis the ledger exists to
+ * avoid. Nothing else changes — a live list never contains scratch.
+ *
+ * Exported because `reapSupersededBranches` re-checks the same pairing before it
+ * deletes anything: comparing raw there would pass the partition and then hold
+ * the branch forever as "verdict-does-not-match-branch", which is the accumulation
+ * this whole path exists to end.
+ *
+ * @param {string[]} recorded
+ * @param {string[]} live
+ * @returns {boolean}
+ */
+export const sameDirtyPaths = (recorded = [], live = []) => sameSet(
+  (recorded || []).filter((path) => !isAgentScratchPath(path)),
+  (live || []).filter((path) => !isAgentScratchPath(path))
+);
 
 /**
  * Split the in-flight set into branches still worth analyzing and branches whose

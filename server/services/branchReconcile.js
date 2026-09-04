@@ -32,7 +32,7 @@ import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubRepoSpec, githubApiHost } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 import { PROTECTED_BRANCHES } from '../lib/gitArgs.js';
-import { readVerdictLedger, partitionSuperseded, recordVerdictInstruction, recordVerdict, sameSet } from './supersededLedger.js';
+import { readVerdictLedger, partitionSuperseded, recordVerdictInstruction, recordVerdict, sameDirtyPaths } from './supersededLedger.js';
 import { backupSupersededBranch } from './supersededBackup.js';
 
 // Never reconciled — the canonical long-lived-branch set (`main`/`master`/`dev`/
@@ -953,7 +953,9 @@ export async function reapSupersededBranches(repoPath, defaultBranch, superseded
 
   for (const b of superseded || []) {
     const verdict = b.verdict || {};
-    if (!b.tip || b.tip !== verdict.tip || !sameSet(b.dirtyPaths || [], verdict.dirtyPaths || [])) {
+    // Same comparison isVerdictFresh makes, via the same helper — a raw compare
+    // here would hold a pre-upgrade entry that the partition just accepted.
+    if (!b.tip || b.tip !== verdict.tip || !sameDirtyPaths(verdict.dirtyPaths, b.dirtyPaths)) {
       hold(b, { reason: 'verdict-does-not-match-branch' });
       continue;
     }
