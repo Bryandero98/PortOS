@@ -85,17 +85,12 @@ const CLAUDE_LOCAL_MAX_OUTPUT_TOKENS = '65536';
 //   • the stream idle timeout — 300s; `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, floor
 //     300s, likewise clamped to 30 minutes.
 //
-// All four are widened for a Claude harness pointed at a LOCAL daemon: the
-// two idle knobs at Claude Code's own 30-minute ceiling (a local model can go
-// quiet mid-turn while a tool-heavy conversation re-prefills its uncached
-// tail), the first-byte window at an hour. The ceilings exist to bound a retry
-// storm, not to budget a healthy run: a request that never answers still ends,
-// because the child prints nothing and the run's own supervision reaps it —
-// and `createRetryStallGate` (tuiHandshake.js) fails a TUI over once a retry
-// ladder outlives its window. `localPromptBudget.js` predicts the prefill for
-// the run card; this is the harness half of the same fact. Cloud Claude
-// answers in seconds and keeps every stock value. A value in provider.envVars
-// still wins below.
+// All four are widened for a Claude harness pointed at a LOCAL daemon — the
+// idle knobs at Claude Code's own 30-minute ceiling, the first-byte window at
+// an hour. A request that never answers still ends: `createRetryStallGate`
+// (tuiHandshake.js) fails a TUI over once its retry ladder outlives the window,
+// and the run's own supervision reaps a silent child. Cloud Claude keeps every
+// stock value.
 const CLAUDE_LOCAL_API_TIMEOUT_MS = '3600000';
 const CLAUDE_LOCAL_FORCE_IDLE_TIMEOUT = '0';
 const CLAUDE_LOCAL_STREAM_IDLE_TIMEOUT_MS = '1800000';

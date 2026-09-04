@@ -2336,7 +2336,7 @@ describe('buildLightContextPrompt', () => {
       expect(inlined).not.toMatch(/output\.txt/);
       expect(inlined).toMatch(/"eligibleNumbers":\[6223\]/);
 
-      // A clipped inline still needs the pointer: the rest is only on disk.
+      // A clipped inline says so, and still never points outside the worktree.
       const clipped = buildLightContextPrompt(makeTask({
         metadata: { pipeline: {
           previousStageAgentId: 'agent-prev-1',
@@ -2345,7 +2345,8 @@ describe('buildLightContextPrompt', () => {
           stages: [{ name: 'scan' }, { name: 'gate' }, { name: 'review' }],
         }}
       }), '/r', null, isTruthyMeta);
-      expect(clipped).toMatch(/agent-prev-1[\\/]output\.txt/);
+      expect(clipped).toMatch(/clipped to its first 12000 characters/);
+      expect(clipped).not.toMatch(/output\.txt/);
     });
 
     it('renders a direct preflight summary when the previous stage has no agent', () => {

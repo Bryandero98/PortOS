@@ -75,8 +75,10 @@ async function loadSlashdoCommandBody(commandName) {
 
 /**
  * The slashdo review LENSES — the per-file / cross-file checklists that
- * `/do:review` dispatches its focused reviewers with. This is the whole of
- * `{reviewChecklist}` for the public-review actions stage (`pr-reviewer-review`).
+ * `/do:review` dispatches its focused reviewers with — behind the
+ * `{reviewLenses}` placeholder the public-review actions stage
+ * (`pr-reviewer-review`) carries. `review-structural-ambition` is left out on
+ * purpose: `/do:review` itself only selects it under `--strict`.
  *
  * That stage runs a single sandboxed agent with no network, no forge
  * credential, no sub-agent dispatch, and — on the local wrappers it is
@@ -98,9 +100,7 @@ const PUBLIC_REVIEW_LENS_LIBS = [
   'review-cross-file-tracing',
   'review-cross-file-contract',
 ];
-const LENS_ONLY_CHECKLIST_PROMPT_KEYS = new Set(['pr-reviewer-review']);
-
-async function loadPublicReviewChecklist() {
+async function loadReviewLenses() {
   const lenses = await Promise.all(PUBLIC_REVIEW_LENS_LIBS.map((name) => loadSlashdoLib(name).catch(() => null)));
   return lenses.filter(Boolean).join('\n\n');
 }
@@ -115,12 +115,8 @@ async function loadPublicReviewChecklist() {
  * BEFORE THE PLACEHOLDER back into the prompt at that point — seven copies of
  * the stage prompt inside one Stage 3 body, the same footgun
  * `resolveSlashdoIncludes` documents for its own includes.
- *
- * `promptKey` names the catalog entry being rendered (a pipeline stage's
- * `promptKey`; absent for a task-level prompt) so a placeholder can resolve
- * differently for a stage whose runtime cannot use the general body.
  */
-async function resolvePromptPlaceholders(prompt, { promptKey = null } = {}) {
+async function resolvePromptPlaceholders(prompt) {
   // {worktreesRoot} → PortOS's shared worktrees dir (absolute). The claim flows
   // (plan-task, claim-issue, claim-issue-gitlab, claim-issue-jira) create their
   // agent worktree here rather than inside the managed app repo, so a worktree
@@ -129,10 +125,12 @@ async function resolvePromptPlaceholders(prompt, { promptKey = null } = {}) {
     prompt = prompt.replace(/\{worktreesRoot\}/g, () => PATHS.worktrees);
   }
   if (prompt.includes('{reviewChecklist}')) {
-    const checklist = LENS_ONLY_CHECKLIST_PROMPT_KEYS.has(promptKey)
-      ? await loadPublicReviewChecklist()
-      : await loadSlashdoCommandBody('review').catch(() => '');
+    const checklist = await loadSlashdoCommandBody('review').catch(() => '');
     prompt = prompt.replace(/\{reviewChecklist\}/g, () => checklist);
+  }
+  if (prompt.includes('{reviewLenses}')) {
+    const lenses = await loadReviewLenses();
+    prompt = prompt.replace(/\{reviewLenses\}/g, () => lenses);
   }
   if (prompt.includes('{slashdoReplan}')) {
     const replan = await loadSlashdoCommandBody('replan').catch(() => '');
@@ -168,5 +166,5 @@ export async function getStagePrompt(taskType, stageIndex) {
   if (!stage?.promptKey) return getTaskPrompt(taskType);
   const prompt = DEFAULT_TASK_PROMPTS[stage.promptKey];
   if (!prompt) return getTaskPrompt(taskType);
-  return resolvePromptPlaceholders(prompt, { promptKey: stage.promptKey });
+  return resolvePromptPlaceholders(prompt);
 }

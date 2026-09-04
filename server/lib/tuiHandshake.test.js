@@ -50,8 +50,6 @@ import {
   detectToolPermissionPrompt,
   createToolPermissionGate,
   TOOL_PERMISSION_REPAINT_COOLDOWN_MS,
-  TOOL_PERMISSION_NUDGE_SETTLE_MS,
-  TOOL_PERMISSION_NUDGE_ARM_WINDOW_MS,
   TOOL_PERMISSION_DECLINE_MAX,
   TOOL_PERMISSION_NUDGE_TEXT,
 } from './tuiHandshake.js';
@@ -1729,8 +1727,8 @@ describe('tool-permission dialog (agent-e057cca7)', () => {
       expect(gate.takeNudge(5000, 4000)).toBe(0);
       // Quiet for the settle window: nudge, exactly once.
       const quietAt = 5000;
-      expect(gate.takeNudge(quietAt + TOOL_PERMISSION_NUDGE_SETTLE_MS, quietAt)).toBe(1);
-      expect(gate.takeNudge(quietAt + TOOL_PERMISSION_NUDGE_SETTLE_MS + 5000, quietAt)).toBe(0);
+      expect(gate.takeNudge(quietAt + OOM_NUDGE_SETTLE_MS, quietAt)).toBe(1);
+      expect(gate.takeNudge(quietAt + OOM_NUDGE_SETTLE_MS + 5000, quietAt)).toBe(0);
     });
 
     it('drops the nudge when the session carried on by itself', () => {
@@ -1738,17 +1736,20 @@ describe('tool-permission dialog (agent-e057cca7)', () => {
       gate.observe(READ_DIALOG, 0);
       // Output never stops for the whole arm window — the build handed the model
       // a rejection and it kept working — so a later quiet stretch gets no nudge.
-      const late = TOOL_PERMISSION_NUDGE_ARM_WINDOW_MS + 1000;
+      const late = OOM_NUDGE_ARM_WINDOW_MS + 1000;
       expect(gate.takeNudge(late, late - 100)).toBe(0);
-      expect(gate.takeNudge(late + TOOL_PERMISSION_NUDGE_SETTLE_MS, late)).toBe(0);
+      expect(gate.takeNudge(late + OOM_NUDGE_SETTLE_MS, late)).toBe(0);
     });
 
-    it('reports exhaustion after TOOL_PERMISSION_DECLINE_MAX distinct dialogs', () => {
+    it('reports exhaustion once TOOL_PERMISSION_DECLINE_MAX nudges have been spent', () => {
       const gate = createToolPermissionGate();
       let now = 0;
       for (let i = 1; i <= TOOL_PERMISSION_DECLINE_MAX; i += 1) {
         now += TOOL_PERMISSION_REPAINT_COOLDOWN_MS + 1;
         expect(gate.observe(READ_DIALOG, now)).toMatchObject({ count: i });
+        // The decline ends the turn, the session goes quiet, the nudge fires.
+        expect(gate.takeNudge(now + OOM_NUDGE_SETTLE_MS, now)).toBe(i);
+        now += OOM_NUDGE_SETTLE_MS;
       }
       now += TOOL_PERMISSION_REPAINT_COOLDOWN_MS + 1;
       expect(gate.observe(TWO_OPTION_DIALOG, now)).toBe('exhausted');

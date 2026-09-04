@@ -1449,7 +1449,7 @@ export async function spawnTuiAgent({
         // "No" is the last option and option 1 is highlighted: arrow down to it,
         // then Enter — lands under both of Ink's selection models, whereas a bare
         // digit is immediate-select in some builds and ignored in others.
-        shellService.writeToSession(sessionId, `${'\x1b[B'.repeat(Math.max(0, permissionDialog.noOption - 1))}\r`);
+        shellService.writeToSession(sessionId, `${'\x1b[B'.repeat(Math.max(0, permissionDialog.noOption - 1))}${SUBMIT_KEY}`);
         appendLine(`🚫 Declined ${tuiConfig.command} permission prompt for ${permissionDialog.toolCall || 'a tool call'} — an unattended run never widens its scope (${permissionDialog.count}/${TOOL_PERMISSION_DECLINE_MAX})`);
       }
 

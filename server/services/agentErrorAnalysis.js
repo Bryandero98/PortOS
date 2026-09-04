@@ -13,6 +13,7 @@ import { redactOutput } from '../lib/commandSecurity.js';
 import { stripAnsi } from '../lib/ansiStrip.js';
 import { describeOllamaContextOverflow, parseOllamaContextOverflow } from '../lib/ollamaContext.js';
 import { retryHoldMetadata } from '../lib/taskRetryHold.js';
+import { TUI_TOOL_PERMISSION_PROMPT_PATTERN } from '../lib/tuiHandshake.js';
 import {
   INVESTIGATION_CIRCUIT_MAX_CREATIONS,
   INVESTIGATION_HEADLINE_PREFIX,
@@ -1015,7 +1016,9 @@ export const AWAITING_INPUT_MARKERS = [
   /Enter to select/i,
   /↑\/↓ to navigate/,
   /❯\s*1\./,
-  /Do you want to proceed\?/i,
+  // Claude Code's tool-permission dialog — the live gate that declines it
+  // (createToolPermissionGate) reads the same pattern.
+  TUI_TOOL_PERMISSION_PROMPT_PATTERN,
   /Press Enter to continue/i
 ];
 

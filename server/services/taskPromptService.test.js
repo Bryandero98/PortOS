@@ -13,16 +13,16 @@ vi.mock('./taskSchedule.js', () => ({
 // `$&` (the match), `$1`, and the "text before / after the match" forms — so a
 // regression to string-form replacement shows up as spliced prompt text rather
 // than passing by luck on a body that happens to contain no `$`.
-const BACKREFERENCE_BAIT = "regex `^[^/]+#[0-9]+$` and $& and $1 and $' end";
+const { BACKREFERENCE_BAIT } = vi.hoisted(() => ({ BACKREFERENCE_BAIT: "regex `^[^/]+#[0-9]+$` and $& and $1 and $' end" }));
 vi.mock('../lib/slashdoLoader.js', () => ({
   loadSlashdoFile: vi.fn(async (name) => (
     name === 'review'
-      ? `FULL /do:review BODY ## Parse Arguments ## Copilot Code Review Loop ${"regex `^[^/]+#[0-9]+$` and $& and $1 and $' end"}`
+      ? `FULL /do:review BODY ## Parse Arguments ## Copilot Code Review Loop ${BACKREFERENCE_BAIT}`
       : name === 'replan'
-        ? `REPLAN BODY ${"regex `^[^/]+#[0-9]+$` and $& and $1 and $' end"}`
+        ? `REPLAN BODY ${BACKREFERENCE_BAIT}`
         : ''
   )),
-  loadSlashdoLib: vi.fn(async (name) => `# ${name} lens\n${"regex `^[^/]+#[0-9]+$` and $& and $1 and $' end"}`),
+  loadSlashdoLib: vi.fn(async (name) => `# ${name} lens\n${BACKREFERENCE_BAIT}`),
 }));
 
 import { getTaskPrompt, getStagePrompt, DEFAULT_TASK_PROMPTS, PREVIOUS_DEFAULT_PROMPTS } from './taskPromptService.js';
@@ -70,7 +70,7 @@ describe('slashdo placeholder substitution', () => {
     expect(out.match(/HEAD/g)).toHaveLength(1);
   });
 
-  it('gives the public-review actions stage the review LENSES only, never the whole /do:review procedure', async () => {
+  it('gives the public-review actions stage the review LENSES ({reviewLenses}), never the whole /do:review procedure', async () => {
     getTaskInterval.mockResolvedValueOnce(PR_REVIEWER_INTERVAL);
     vi.mocked(loadSlashdoFile).mockClear();
     vi.mocked(loadSlashdoLib).mockClear();
@@ -81,7 +81,7 @@ describe('slashdo placeholder substitution', () => {
     // set — the argument parser, reviewer loops and PR-posting procedure of the
     // full body are a runtime this sandboxed, network-less stage cannot use.
     expect(stage.match(/PR Code Review & Actions \(Stage 3\)/g)).toHaveLength(1);
-    expect(stage).not.toContain('{reviewChecklist}');
+    expect(stage).not.toContain('{reviewLenses}');
     expect(stage).not.toContain('FULL /do:review BODY');
     expect(stage).toContain('# review-surface-scan lens');
     expect(stage).toContain('# review-security-audit lens');
@@ -97,7 +97,7 @@ describe('slashdo placeholder substitution', () => {
     ]);
   });
 
-  it('still hands every other consumer the full /do:review body', async () => {
+  it('keeps {reviewChecklist} as the full /do:review body for stored and prior-default prompts', async () => {
     getTaskInterval.mockResolvedValueOnce({ prompt: 'X {reviewChecklist} Y' });
 
     const out = await getTaskPrompt('code-reviewer');

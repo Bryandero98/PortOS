@@ -252,7 +252,6 @@ import {
   OOM_NUDGE_MAX_ATTEMPTS,
   OOM_NUDGE_TEXT,
   RETRY_STALL_MS,
-  TOOL_PERMISSION_NUDGE_SETTLE_MS,
   TOOL_PERMISSION_NUDGE_TEXT,
 } from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
@@ -1836,7 +1835,7 @@ describe('spawnTuiAgent runtime', () => {
     expect(shellService.writeToSession).toHaveBeenCalledWith(SESSION_ID, '\x1b[B\x1b[B\r');
 
     // The decline ends the turn; once the session is quiet the nudge goes out.
-    await vi.advanceTimersByTimeAsync(TOOL_PERMISSION_NUDGE_SETTLE_MS + 10000);
+    await vi.advanceTimersByTimeAsync(OOM_NUDGE_SETTLE_MS + 10000);
     await flushMicrotasks();
     expect(shellService.pasteToSession).toHaveBeenCalledWith(
       SESSION_ID,
