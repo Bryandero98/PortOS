@@ -11,6 +11,7 @@ import {
   EIDOVERSE_DISTRICTS_V2,
   EIDOVERSE_MANAGED_PREFIX,
   EIDOVERSE_MAX_LIVE_ENTITIES,
+  EIDOVERSE_META_ENTITY_ID,
   EIDOVERSE_PROJECTION_PREFIX,
   EIDOVERSE_WORLD_DESIGN_V1,
   EIDOVERSE_WORLD_DESIGN_V2,
@@ -51,6 +52,9 @@ const DISTRICT_ASSET_SLOT = Object.freeze({
   federation: 'peer',
   activity: 'activity',
 });
+// Just off the nexus and clear of every nexus->district path lane, whose first
+// node sits at 27% of the district anchor.
+const META_ENTITY_POS = Object.freeze([2.4, 0.08, 2.4]);
 const DISTRICT_SCALE = Object.freeze({
   nexus: 1.15,
   apps: 1.1,
@@ -308,7 +312,7 @@ function equal(valueA, valueB) {
  * intentionally exported so recipe changes can be tested without a live
  * Eidoverse process and so future renderers can reuse the same projection.
  */
-export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PROJECTION_RECIPE, currentState = {} }) {
+export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PROJECTION_RECIPE, currentState = {}, meta = null }) {
   const effectiveRecipe = mergeRecipe(recipe);
   const stateEntities = currentState?.entities && typeof currentState.entities === 'object'
     ? currentState.entities
@@ -457,6 +461,44 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
       removed += delta.removed;
       pathNodeCount += 1;
     });
+  }
+
+  // The world's own title, its host, and the design it was built from. Placed
+  // in the managed set so reconciliation keeps it and a world reset sweeps it
+  // away with every other `portos-design-v2-` entity.
+  let metaEntityCount = 0;
+  if (meta) {
+    const delta = upsertModel({
+      operations,
+      stateEntities,
+      desiredIds,
+      id: EIDOVERSE_META_ENTITY_ID,
+      lib: assetPathFor(effectiveRecipe, null, 'district'),
+      pos: META_ENTITY_POS,
+      yaw: 0,
+      scale: 0.2,
+      collide: null,
+      component: {
+        schemaVersion: 1,
+        managedBy: 'portos',
+        designVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
+        kind: 'world-meta',
+        label: 'World identity',
+        route: '/eidoverse',
+        status: 'active',
+        // World title and host identity only — never a record, a machine name,
+        // an address, or a filesystem path.
+        meta: {
+          title: safeText(meta.title, effectiveRecipe.name, 120),
+          hostId: safeText(meta.hostId, '', 64) || null,
+        },
+      },
+      layer: 'infrastructure',
+    });
+    created += delta.created;
+    updated += delta.updated;
+    removed += delta.removed;
+    metaEntityCount = 1;
   }
 
   const liveEntityLimit = Math.min(
@@ -639,7 +681,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
       designVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
       liveEntityCount,
       maxLiveEntities: liveEntityLimit,
-      infrastructureCount: districts.length + pathNodeCount,
+      infrastructureCount: districts.length + pathNodeCount + metaEntityCount,
       districtCounts,
       sourceAvailability,
       truncated: Object.keys(droppedBySource).length > 0,

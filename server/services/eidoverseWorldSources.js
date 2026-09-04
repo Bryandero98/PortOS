@@ -31,10 +31,19 @@ const safeText = (value, fallback = '', max = 160) => {
   return clean ? clean.slice(0, max) : fallback;
 };
 
-const opaqueId = (namespace, value, fallback) => {
+const opaqueDigest = (namespace, value, fallback) => {
   const source = safeText(value, fallback, 256);
-  return `${namespace}-${createHash('sha256').update(`${namespace}:${source}`).digest('hex').slice(0, 12)}`;
+  return createHash('sha256').update(`${namespace}:${source}`).digest('hex').slice(0, 12);
 };
+
+const opaqueId = (namespace, value, fallback) => `${namespace}-${opaqueDigest(namespace, value, fallback)}`;
+
+/**
+ * The install's public host identity. Anyone who can reach the Eidoverse door
+ * reads this, so it is a one-way digest of the federation instance id — never
+ * the hostname, tailnet name, address, OS user, or a filesystem path.
+ */
+export const eidoverseHostId = (instanceId) => `hst_${opaqueDigest('hst', instanceId, 'unknown-instance')}`;
 
 const coarseStatus = (value) => {
   const status = String(value || '').toLowerCase();

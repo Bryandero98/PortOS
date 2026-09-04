@@ -8,6 +8,7 @@ import { ServerError } from '../lib/errorHandler.js';
 import { EIDOVERSE_PORT } from './eidoverse.js';
 
 const BAD_GATEWAY_BODY = 'Eidoverse Worlds is not running.';
+const HOST_DESCRIPTOR_PATH = '/host';
 
 // Where a conflicting listener would sit. A local squatter almost always claims
 // loopback — Docker publishes to 127.0.0.1, dev servers bind localhost — and
@@ -25,6 +26,51 @@ const forwardedHeaders = (req, protocol, targetHost, targetPort) => ({
   'x-forwarded-host': req.headers.host || '',
   'x-forwarded-proto': protocol,
 });
+
+const requestPathname = (url) => String(url || '').split('?')[0].replace(/\/+$/, '') || '/';
+
+// Node suppresses the body of a HEAD response itself, so every writer here can
+// pass one unconditionally.
+const writePlainText = (res, status, body, headers = {}) => {
+  res.writeHead(status, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    ...headers,
+  });
+  res.end(body);
+};
+
+/**
+ * Terminate `GET /host` at the bridge. Runs outside the Express lifecycle, so a
+ * rejected read is caught here rather than crashing the process.
+ */
+const serveHostDescriptor = async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    writePlainText(res, 405, 'The PortOS host descriptor is read-only.', { allow: 'GET, HEAD' });
+    return;
+  }
+  // Deferred import: this bridge is constructed from the always-loaded settings
+  // route, while `/host` is a rare request. A static edge would drag the world
+  // config graph into every suite that reaches this module (server/AGENTS.md,
+  // "Import scoping").
+  const descriptor = await import('./eidoverseWorld.js')
+    .then(({ readEidoverseHostDescriptor }) => readEidoverseHostDescriptor())
+    .catch((error) => {
+      console.error(`❌ Eidoverse host descriptor failed: ${error.message}`);
+      return null;
+    });
+  if (!descriptor) {
+    writePlainText(res, 503, 'The PortOS host descriptor is unavailable.');
+    return;
+  }
+  const body = JSON.stringify(descriptor);
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
+  });
+  res.end(body);
+};
 
 const writeBadGateway = (res) => {
   if (res.headersSent) {
@@ -89,6 +135,15 @@ export function createEidoverseHost({
   };
 
   const handleHttp = (req, res) => {
+    if (requestPathname(req.url) === HOST_DESCRIPTOR_PATH) {
+      // Nothing holds this promise, and a client that hung up mid-write makes
+      // `res` throw — so own the rejection here rather than killing the process.
+      serveHostDescriptor(req, res).catch((error) => {
+        console.error(`❌ Eidoverse host descriptor response failed: ${error.message}`);
+        res.destroy();
+      });
+      return;
+    }
     const upstream = httpRequest({
       hostname: targetHost,
       port: targetPort,

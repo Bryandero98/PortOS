@@ -6,6 +6,7 @@ import {
   projectedStorage,
 } from './eidoverseWorld.js';
 import { eidoverseProjectionRecipeSchema } from '../lib/validation.js';
+import { EIDOVERSE_META_ENTITY_ID, EIDOVERSE_WORLD_DESIGN_VERSION } from '../lib/eidoverseWorldDesign.js';
 
 const APP_FALLBACK = DEFAULT_EIDOVERSE_PROJECTION_RECIPE.assetRecipe.slots.app.fallback;
 
@@ -746,5 +747,69 @@ describe('Eidoverse PortOS projection plan', () => {
     expect(plan.operations).toContainEqual(expect.objectContaining({
       layer: 'reconciliation', verb: 'remove', args: { id: 'portos-projection-app-retired' },
     }));
+  });
+});
+
+describe('Eidoverse world self-description', () => {
+  it('hangs the world title, host id, and design version on one managed meta entity', () => {
+    const meta = { title: 'Example Garden', hostId: 'hst_0123456789ab' };
+    const plan = buildProjectionPlan({ source: emptySources(), meta });
+    const state = snapshotFromPlan(plan);
+    const entity = state.entities[EIDOVERSE_META_ENTITY_ID];
+
+    expect(entity.comp.portos).toMatchObject({
+      managedBy: 'portos',
+      kind: 'world-meta',
+      designVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
+      meta: { title: 'Example Garden', hostId: 'hst_0123456789ab' },
+    });
+    // No record contents ride along — the payload is identity, not data.
+    expect(Object.keys(entity.comp.portos.meta).sort()).toEqual(['hostId', 'title']);
+    expect(plan.summary.infrastructureCount)
+      .toBe(buildProjectionPlan({ source: emptySources() }).summary.infrastructureCount + 1);
+  });
+
+  it('creates the meta entity once and reconciles it like every other managed entity', () => {
+    const meta = { title: 'Example Garden', hostId: 'hst_0123456789ab' };
+    const first = buildProjectionPlan({ source: emptySources(), meta });
+    const currentState = snapshotFromPlan(first, { foldModelDefaults: true });
+
+    const second = buildProjectionPlan({ source: emptySources(), meta, currentState });
+    expect(second.operations.filter(({ args }) => args?.id === EIDOVERSE_META_ENTITY_ID)).toEqual([]);
+
+    const renamed = buildProjectionPlan({
+      source: emptySources(),
+      meta: { ...meta, title: 'Renamed Garden' },
+      currentState,
+    });
+    expect(renamed.operations.filter(({ args }) => args?.id === EIDOVERSE_META_ENTITY_ID))
+      .toEqual([{
+        layer: 'infrastructure',
+        verb: 'comp',
+        args: {
+          id: EIDOVERSE_META_ENTITY_ID,
+          type: 'portos',
+          data: expect.objectContaining({ meta: { title: 'Renamed Garden', hostId: meta.hostId } }),
+        },
+      }]);
+  });
+
+  // A managed entity the plan no longer wants is swept by the reconciliation
+  // pass — which is what makes a world reset take the meta carrier with it.
+  it('sweeps the meta entity away when the world no longer declares one', () => {
+    const withMeta = buildProjectionPlan({
+      source: emptySources(),
+      meta: { title: 'Example Garden', hostId: 'hst_0123456789ab' },
+    });
+    const plan = buildProjectionPlan({
+      source: emptySources(),
+      currentState: snapshotFromPlan(withMeta, { foldModelDefaults: true }),
+    });
+
+    expect(plan.operations).toContainEqual({
+      layer: 'reconciliation',
+      verb: 'remove',
+      args: { id: EIDOVERSE_META_ENTITY_ID },
+    });
   });
 });

@@ -15,9 +15,10 @@ import { atomicWrite, dataPath, ensureDir, readJSONFile } from '../lib/fileUtils
 import { createMutex } from '../lib/asyncMutex.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { canonicalStringify } from '../lib/objects.js';
-import { getSelf, ensureSelf } from './instances.js';
+import { getSelf, ensureSelf, getInstanceId } from './instances.js';
 import { getInstanceFeatures } from './instanceFeatures.js';
 import { getEidoverseStatus, EIDOVERSE_PORT } from './eidoverse.js';
+import { getCurrentVersion } from './updateChecker.js';
 import {
   EIDOVERSE_ASSET_SLOTS_BY_DISTRICT,
   EIDOVERSE_ASSET_RECIPE_VERSION,
@@ -37,6 +38,7 @@ import {
 } from './eidoverseWorldProjection.js';
 import {
   collectEidoverseWorldSources,
+  eidoverseHostId,
   projectedJiraTickets,
   projectedStorage,
 } from './eidoverseWorldSources.js';
@@ -438,6 +440,33 @@ export async function ensureEidoverseWorldConfig() {
     applyConfigDefaults(state, fallback);
     return configFromState(state);
   });
+}
+
+/**
+ * Who hosts this world? Answered by the PortOS bridge on `GET /host`, so the
+ * upstream Eidoverse checkout stays untouched — and hung on the world's own
+ * meta entity, so a fork of the log carries it too.
+ *
+ * Anyone who can reach the door reads this, so it carries a non-reversible
+ * install digest and the operator-chosen world title only — never a hostname,
+ * tailnet/MagicDNS name, LAN or public address, OS username, or home path.
+ * Config reads only: the bridge must not have to open a world connection.
+ */
+export async function readEidoverseHostDescriptor() {
+  const [state, instanceId, version] = await Promise.all([
+    loadState(),
+    getInstanceId(),
+    getCurrentVersion(),
+  ]);
+  return {
+    id: eidoverseHostId(instanceId),
+    kind: 'portos',
+    label: safeText(state.recipe?.name, DEFAULT_EIDOVERSE_PROJECTION_RECIPE.name, 120),
+    version,
+    // The `eido:` resolver/export path is unimplemented upstream, so a visiting
+    // client must not assume this host can serve one.
+    caps: { eido: false },
+  };
 }
 
 export async function updateEidoverseWorldConfig(patch) {
@@ -1603,11 +1632,13 @@ export async function projectEidoverseWorld({ signal } = {}) {
     const lockedConfig = await resolveAndLockAssets(config, { signal });
     const presence = await ensureCosPresenceInternal({ fresh: true, signal });
     const source = await collectEidoverseWorldSources({ signal });
+    const hostId = eidoverseHostId(await getInstanceId());
     throwIfAborted(signal);
     const plan = buildProjectionPlan({
       source,
       recipe: lockedConfig.recipe,
       currentState: presence.snapshot?.state || {},
+      meta: { title: lockedConfig.design.name, hostId },
     });
     await applyProjectionPlan(presence, plan, {
       signal,
