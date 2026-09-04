@@ -34,9 +34,14 @@ function roleLine(task, role) {
   // The lane's ONE permitted substitution (#5993). Named here because the
   // architect otherwise has no way to know a lane is fail-closed, and would plan
   // around a fallback that does not exist.
-  const alternate = assignment?.fallbackProvider
+  // Gated on a provider/model pin — the SAME condition the resolver uses. An
+  // effort-only role stays on the ordinary fallback chain, so telling the
+  // architect its run would stop would be false (and reads as nonsense besides:
+  // the "target" there is a reasoning rung, not a provider).
+  const failClosed = Boolean(assignment?.provider || assignment?.model);
+  const alternate = failClosed && assignment.fallbackProvider
     ? ` If it is unavailable, the lane may use \`${assignment.fallbackProvider}\`${assignment.fallbackModel ? ` with model \`${assignment.fallbackModel}\`` : ''} — and nothing else.`
-    : (pins.length ? ' If it is unavailable, the run STOPS — no other provider is substituted for this lane.' : '');
+    : (failClosed ? ' If it is unavailable, the run STOPS — no other provider is substituted for this lane.' : '');
   return `- **${role}** — ${ROLE_DUTIES[role]}. Runs on ${target}.${alternate}`;
 }
 

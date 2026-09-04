@@ -77,16 +77,21 @@ const trimmedString = (value, maxLength) => {
  * (#5993): the only substitution a configured lane accepts when its provider is
  * unavailable. It is deliberately per-role rather than the run-level
  * `metadata.fallbackProvider`, because the run-level chain is what silently
- * collapses a cheap cross-vendor lane back onto the architect's provider. A
- * fallback pinned with no primary `provider` is dropped — there is nothing for
- * it to be an alternate TO, and keeping it would read as a second pin.
+ * collapses a cheap cross-vendor lane back onto the architect's provider.
+ *
+ * It rides on a `provider` OR a `model` pin — the same pair the resolver treats
+ * as fail-closed. A MODEL-only role is fail-closed too (its model is what the
+ * generic chain would drop), so it needs the alternate just as much; dropping
+ * one there would leave the refusal telling the user to configure a field this
+ * normalizer discards. A fallback pinned beside neither is dropped: there is
+ * nothing for it to be an alternate TO, and keeping it would read as a lane.
  */
 function normalizeRoleAssignment(raw) {
   if (!isPlainObject(raw)) return null;
   const provider = trimmedString(raw.provider, MAX_PROVIDER_ID_LENGTH);
   const model = trimmedString(raw.model, MAX_MODEL_ID_LENGTH);
   const effort = EFFORT_LEVELS.includes(raw.effort) ? raw.effort : null;
-  const fallbackProvider = provider ? trimmedString(raw.fallbackProvider, MAX_PROVIDER_ID_LENGTH) : null;
+  const fallbackProvider = provider || model ? trimmedString(raw.fallbackProvider, MAX_PROVIDER_ID_LENGTH) : null;
   const fallbackModel = fallbackProvider ? trimmedString(raw.fallbackModel, MAX_MODEL_ID_LENGTH) : null;
   if (!provider && !model && !effort) return null;
   return Object.freeze({

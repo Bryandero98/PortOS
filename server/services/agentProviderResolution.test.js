@@ -695,3 +695,89 @@ describe('resolveAgentProviderAndModel — effort-only orchestration roles', () 
     });
   });
 });
+
+/**
+ * The same-role alternate is the ONE substitution a fail-closed lane accepts, so
+ * it has to clear every bar the primary would have: a real provider, currently
+ * available, with a file-writing harness, and — when the lane pinned a model — a
+ * model of its own to run. An alternate that fails any of these is not a lane,
+ * it is the same silent collapse one hop later.
+ */
+describe('resolveAgentProviderAndModel — what a same-role alternate must satisfy', () => {
+  const orchestrated = (architect) => ({
+    id: 'task-alt',
+    metadata: { orchestrationMode: 'orchestrated', orchestrationProfile: { architect } },
+  });
+
+  beforeEach(() => {
+    getProviderStatus.mockImplementation((id) => ({ message: `${id} down`, reason: 'down' }));
+  });
+
+  it('refuses an api-type alternate instead of leaking into the transient harness guard', async () => {
+    // The harness guard below computes `permanent` from the lane's CLI primary,
+    // so an api alternate reaching it returns a retryable failure with no lane
+    // detail — the task would never block and would re-fail forever.
+    getProviderById.mockImplementation(async (id) => (
+      id === 'p-cheap'
+        ? { id, type: 'cli', defaultModel: 'm-cheap' }
+        : { id, type: 'api', defaultModel: 'm-api' }
+    ));
+    isProviderAvailable.mockImplementation((id) => id !== 'p-cheap');
+
+    const r = await resolveAgentProviderAndModel(orchestrated({ provider: 'p-cheap', fallbackProvider: 'p-api' }));
+
+    expect(r.ok).toBe(false);
+    expect(r.permanent).toBe(true);
+    expect(r.orchestrationLane.role).toBe('architect');
+    expect(r.orchestrationLane.reason).toContain('no file-writing harness');
+  });
+
+  it('refuses when a model-pinned lane names an alternate with no fallbackModel', async () => {
+    getProviderById.mockImplementation(async (id) => ({ id, type: 'cli', defaultModel: `m-${id}` }));
+    isProviderAvailable.mockImplementation((id) => id !== 'p-cheap');
+
+    const r = await resolveAgentProviderAndModel(orchestrated({
+      provider: 'p-cheap',
+      model: 'm-cheap',
+      fallbackProvider: 'p-cheap-2',
+    }));
+
+    expect(r.ok).toBe(false);
+    expect(r.orchestrationLane.reason).toContain('no architect.fallbackModel');
+    expect(r.orchestrationLane.requestedModel).toBe('m-cheap');
+  });
+
+  it('lets a provider-only lane take an alternate that supplies its own default', async () => {
+    const alternate = { id: 'p-cheap-2', type: 'cli', models: ['alt-default'], defaultModel: 'alt-default' };
+    getProviderById.mockImplementation(async (id) => (
+      id === 'p-cheap' ? { id, type: 'cli', defaultModel: 'm-cheap' } : alternate
+    ));
+    isProviderAvailable.mockImplementation((id) => id === 'p-cheap-2');
+    selectModelForTask.mockResolvedValue({ model: 'alt-default', tier: 'medium', reason: 'default' });
+
+    const r = await resolveAgentProviderAndModel(orchestrated({ provider: 'p-cheap', fallbackProvider: 'p-cheap-2' }));
+
+    expect(r.ok).toBe(true);
+    expect(r.provider).toBe(alternate);
+    expect(r.orchestrationLane.substitution.to).toBe('p-cheap-2');
+  });
+
+  it('carries a model-pinned lane onto its alternate using the configured fallbackModel', async () => {
+    const alternate = { id: 'p-cheap-2', type: 'cli', models: ['alt-m'], defaultModel: 'alt-default' };
+    getProviderById.mockImplementation(async (id) => (
+      id === 'p-cheap' ? { id, type: 'cli', defaultModel: 'm-cheap' } : alternate
+    ));
+    isProviderAvailable.mockImplementation((id) => id === 'p-cheap-2');
+
+    const r = await resolveAgentProviderAndModel(orchestrated({
+      provider: 'p-cheap',
+      model: 'm-cheap',
+      fallbackProvider: 'p-cheap-2',
+      fallbackModel: 'alt-m',
+    }));
+
+    expect(r.ok).toBe(true);
+    // Never the alternate's own default — that is the substitution this closes.
+    expect(r.selectedModel).toBe('alt-m');
+  });
+});

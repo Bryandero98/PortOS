@@ -71,3 +71,29 @@ describe('fail-closed lane doctrine (#5993)', () => {
     expect(section.split('\n').find(l => l.startsWith('- **reviewer**'))).not.toContain('STOPS');
   });
 });
+
+describe('the doctrine states fail-closed only for the lanes that are', () => {
+  const orchestrated = (profile) => ({
+    metadata: { orchestrationMode: 'orchestrated', orchestrationProfile: profile },
+  });
+  const roleLineFor = (section, role) => section.split('\n').find(l => l.startsWith(`- **${role}**`));
+
+  it('says nothing about substitution for an effort-only role', () => {
+    // That role stays on the ordinary fallback chain, so promising the architect
+    // the run would stop is false — and reads as nonsense, since its only "pin"
+    // is a reasoning rung rather than a provider.
+    const section = buildOrchestrationDoctrineSection(orchestrated({
+      implementer: { effort: 'high' },
+      architect: { provider: 'p1' },
+    }));
+    expect(roleLineFor(section, 'implementer')).not.toContain('STOPS');
+    expect(roleLineFor(section, 'architect')).toContain('STOPS');
+  });
+
+  it('names the alternate a model-only lane may use', () => {
+    const section = buildOrchestrationDoctrineSection(orchestrated({
+      implementer: { model: 'm-cheap', fallbackProvider: 'p-cheap-2', fallbackModel: 'm-cheap-2' },
+    }));
+    expect(roleLineFor(section, 'implementer')).toContain('the lane may use `p-cheap-2` with model `m-cheap-2` — and nothing else');
+  });
+});

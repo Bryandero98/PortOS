@@ -987,6 +987,23 @@ describe('cosTaskStore.updateTask', () => {
     expect(reopened.metadata.blockedCategory).toBeUndefined();
   });
 
+  // The structured detail of a refused orchestration lane (#5993) goes with it.
+  // The task record federates, so a stale lane naming a provider the task is no
+  // longer blocked on would travel to every peer alongside a running task.
+  it('clears the orchestration lane detail when the block ends', async () => {
+    await addTask({ description: 'lane', id: 'task-lane' }, 'user');
+    await updateTask('task-lane', {
+      status: 'blocked',
+      metadata: {
+        blockedReason: 'Orchestrated architect lane stopped',
+        blockedCategory: 'orchestration-lane-unavailable',
+        orchestrationLane: { role: 'architect', requestedProvider: 'p-cheap', requestedModel: null, reason: 'not authenticated' },
+      },
+    }, 'user');
+    const reopened = await updateTask('task-lane', { status: 'pending' }, 'user');
+    expect(reopened.metadata.orchestrationLane).toBeUndefined();
+  });
+
   // The pause hold goes with it, whatever un-blocked the task. `resumeAgent` is only
   // ONE of the paths back to pending — a dedupe revive, an autopilot re-dispatch, a
   // cooldown expiry and a human unblocking it all land here — and every one of them

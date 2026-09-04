@@ -253,12 +253,32 @@ async function resolveOrdinaryProviderAndModel(task) {
     if (lane) {
       const alternateId = lane.fallbackProvider;
       const alternate = alternateId ? await getProviderById(alternateId) : null;
-      if (!alternate || !isProviderAvailable(alternate.id)) {
+      // An `api`-type alternate is rejected HERE rather than left to the harness
+      // guard below. That guard computes its `permanent` flag from the lane's own
+      // (CLI) primary, so an api alternate reaching it returns a TRANSIENT failure
+      // with no lane detail — the task never blocks, never records the refusal,
+      // and re-dispatches into the same dead end forever. Silent re-failure is the
+      // behavior this whole path exists to end, so it cannot be the way it ends.
+      //
+      // A lane that pinned a MODEL also needs the alternate to name one. Without
+      // `fallbackModel` the pin belongs to the primary, the swap invalidates it,
+      // and the run silently lands on the alternate's own default — the same
+      // substitution this closes, moved from the provider axis to the model axis.
+      const alternateUnusable = !alternate ? 'missing'
+        : alternate.type === 'api' ? 'no-harness'
+        : !isProviderAvailable(alternate.id) ? 'unavailable'
+        : lane.model && !lane.fallbackModel ? 'no-model'
+        : null;
+      if (alternateUnusable) {
         const why = !alternateId
           ? `${status.message} (no ${laneRole}.fallbackProvider is configured)`
-          : !alternate
+          : alternateUnusable === 'missing'
             ? `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" is not a configured provider`
-            : `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" is also unavailable (${getProviderStatus(alternate.id).message})`;
+            : alternateUnusable === 'no-harness'
+              ? `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" is an HTTP API provider with no file-writing harness`
+              : alternateUnusable === 'no-model'
+                ? `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" was given no ${laneRole}.fallbackModel to run the pinned model "${lane.model}" on`
+                : `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" is also unavailable (${getProviderStatus(alternate.id).message})`;
         return laneUnavailable({
           role: laneRole,
           requestedProvider: provider.id,

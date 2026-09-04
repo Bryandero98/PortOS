@@ -623,7 +623,7 @@ async function requeuePausedTask({ task, taskType, overrides }) {
 // state owned by the spent task/run so the replacement gets a new retry budget,
 // lease, workspace pointer, and output-hook dispatch.
 const REPLACEMENT_RUNTIME_METADATA_KEYS = new Set([
-  'blockedReason', 'blockedCategory', 'blockedAt', 'blocker', 'failureCount',
+  'blockedReason', 'blockedCategory', 'blockedAt', 'blocker', 'orchestrationLane', 'failureCount',
   'lastErrorCategory', 'lastFailureAt', 'cooldownUntil', 'totalSpawnCount',
   'orphanRetryCount', 'lastOrphanedAt', 'lastOrphanedAgentId', 'worktreeBusyAttempts',
   LAST_SPAWNED_AT_KEY, 'interruptedByRestart', 'lastInterruptedAt', 'lastInterruptedAgentId',
