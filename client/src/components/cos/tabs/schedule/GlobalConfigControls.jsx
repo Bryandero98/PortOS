@@ -13,7 +13,7 @@ import useReviewerModelOptions from '../../../../hooks/useReviewerModelOptions';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../../../lib/reviewerModels';
 import ToggleSwitch from '../../../ToggleSwitch';
 import useTaskModelPins from '../../../../hooks/useTaskModelPins';
-import { effectiveModelFor } from '../../../../utils/providers';
+import { effectiveModelFor, selectableProviders } from '../../../../utils/providers';
 import EffortSelect from '../../EffortSelect';
 import PromptEditor from './PromptEditor';
 import RunTaskButton from './RunTaskButton';
@@ -82,6 +82,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
     provider: selectedProvider,
     defaultProviderLabel,
     availableModels,
+    toolFree,
     changeProvider: handleProviderChange,
     changeModel: handleModelChange,
     changeEffort: handleEffortChange,
@@ -147,16 +148,6 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
   const handleToggleEnabled = async () => {
     setUpdating(true);
     await onUpdate(taskType, { enabled: isPaused });
-    setUpdating(false);
-  };
-
-  const handlePrAuthorFilterChange = async (value) => {
-    setUpdating(true);
-    // Send the full merged taskMetadata — updateTaskInterval replaces the
-    // object wholesale, and loadSchedule re-merges defaults on read.
-    await onUpdate(taskType, {
-      taskMetadata: { ...(config.taskMetadata || {}), prAuthorFilter: value }
-    });
     setUpdating(false);
   };
 
@@ -398,11 +389,13 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
               {/* Mid-fetch the list is empty, so "Default (active provider)" would
                   be this select's only option — a slow control that reads broken. */}
               <option value="">{providersLoaded ? defaultProviderLabel : 'Loading providers…'}</option>
-              {providers?.map(provider => (
-                <option key={provider.id} value={provider.id}>{provider.name}</option>
+              {selectableProviders(providers || [], { selectedId: selectedProviderId, allowed: toolFree ? (provider) => provider.type === 'api' : undefined }).map(provider => (
+                <option key={provider.id} value={provider.id} disabled={toolFree && provider.type !== 'api'}>{provider.name}{toolFree && provider.type !== 'api' ? ' (API provider required)' : ''}</option>
               ))}
             </select>
-            <p className="text-xs text-gray-500 mt-1">Leave as default to use the currently active provider</p>
+            <p className="text-xs text-gray-500 mt-1">{toolFree
+              ? <>Uses a text API with no tools. Default follows <a href="/models/llms/abuse" className="text-port-accent underline">Abuse Guard source settings</a>; a saved CLI provider must be cleared or replaced.</>
+              : 'Leave as default to use the currently active provider'}</p>
           </FormField>
 
           <FormField label="Model (optional)" labelClassName="text-sm text-gray-400 block mb-2">
@@ -438,12 +431,11 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
 
       {taskType === 'pr-watcher' && (
         <div>
-          <label htmlFor={`pr-author-filter-${taskType}`} className="text-sm text-gray-400 block mb-2">PR Author Filter</label>
+          <label htmlFor={`pr-author-filter-${taskType}`} className="text-sm text-gray-400 block mb-2">PR Remediation Scope</label>
           <select
             id={`pr-author-filter-${taskType}`}
-            value={config.taskMetadata?.prAuthorFilter || 'any'}
-            onChange={(e) => handlePrAuthorFilterChange(e.target.value)}
-            disabled={updating}
+            value="trusted"
+            disabled
             className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
           >
             {PR_AUTHOR_FILTER_OPTIONS.map(opt => (
@@ -451,7 +443,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
             ))}
           </select>
           <p className="text-xs text-gray-500 mt-1">
-            {PR_AUTHOR_FILTER_OPTIONS.find(o => o.value === (config.taskMetadata?.prAuthorFilter || 'any'))?.description}
+            {PR_AUTHOR_FILTER_OPTIONS.find(o => o.value === 'trusted')?.description}
             {' '}Edit the prompt below to control what the agent does for each opened PR (it can use <code>{'{prData}'}</code>, <code>{'{repoFullName}'}</code>, <code>{'{defaultBranch}'}</code>).
           </p>
         </div>

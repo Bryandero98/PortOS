@@ -351,14 +351,10 @@ export {
   sanitizeReviewerModelInput
 } from '../../lib/reviewerPins';
 
-// pr-watcher author gate (taskMetadata.prAuthorFilter). Mirrors
-// PR_AUTHOR_FILTERS in server/lib/validation.js. 'self' = PRs opened by the
-// gh-authenticated operator (or their automation); 'others' = external
-// contributors; 'any' = react to every opened PR.
+// pr-watcher owns trusted remediation. Legacy filter values remain accepted
+// server-side for compatibility; every dispatch enforces collaborator trust.
 export const PR_AUTHOR_FILTER_OPTIONS = [
-  { value: 'any', label: 'Any author', description: 'React to every PR opened on the default branch' },
-  { value: 'self', label: 'Opened by me', description: 'Only PRs opened by the gh-authenticated user (or their automation)' },
-  { value: 'others', label: 'Opened by others', description: 'Only PRs opened by someone other than the gh-authenticated user' }
+  { value: 'trusted', label: 'Owner and write collaborators', description: 'Verified repository collaborators and the signed-in operator; external PRs use PR Reviewer' }
 ];
 
 // claim-issue author gate (taskMetadata.issueAuthorFilter). Mirrors

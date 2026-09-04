@@ -41,7 +41,8 @@ export default function AppProviderPin({
   disabled = false,
   loading = false,
   compact = false,
-  layout = 'row'
+  layout = 'row',
+  selectionPolicy
 }) {
   const selectedProviderId = providerId || '';
   const selectedModel = model || '';
@@ -72,6 +73,7 @@ export default function AppProviderPin({
       loading={loading}
       compact={compact}
       layout={layout}
+      selectionPolicy={selectionPolicy}
     />
   );
 }

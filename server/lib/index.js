@@ -496,6 +496,7 @@ export * from './sseUtils.js';
 export * from './repoIntakeActions.js';
 export * from './repoLinkFields.js';
 export * from './tombstones.js';
+export * from './untrustedContent.js';
 export * from './uploadLimits.js';
 export * from './userActionTypes.js';
 export * from './uuid.js';

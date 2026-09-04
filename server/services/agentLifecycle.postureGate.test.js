@@ -348,7 +348,7 @@ describe('public-review posture gate — spawn behavior (#5866)', () => {
   // #6238 — OpenCode's actions row exists for exactly this: a Stage 3 run on an
   // OpenCode-backed TUI record gets a PTY (and so an attachable Shell session)
   // instead of being forced headless. Its no-tool gate stays blocked above.
-  it('spawns the sandboxed-actions stage as a PTY on an OpenCode TUI provider', async () => {
+  it('blocks OpenCode actions because a worktree cannot isolate untrusted code', async () => {
     const { buildTuiSpawnConfig, spawnTuiAgent } = await import('./agentTuiSpawning.js');
     vi.mocked(resolveAgentProviderAndModel).mockResolvedValue({
       ok: true, provider: { ...OPENCODE_TUI, mtplxBacked: true }, selectedModel: 'example-model', modelSelection: {},
@@ -368,14 +368,10 @@ describe('public-review posture gate — spawn behavior (#5866)', () => {
       },
     });
 
-    expect(postureBlockWrites()).toEqual([]);
+    expect(postureBlockWrites()).toHaveLength(1);
     expect(spawnDirectly).not.toHaveBeenCalled();
-    expect(spawnTuiAgent).toHaveBeenCalledTimes(1);
-    expect(buildTuiSpawnConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'opencode-tui' }),
-      'example-model',
-      expect.objectContaining({ safetyProfile: 'public-review-actions' }),
-    );
+    expect(spawnTuiAgent).not.toHaveBeenCalled();
+    expect(buildTuiSpawnConfig).not.toHaveBeenCalled();
   });
 
   // The narrow half of the same rule. A vendor whose actions recipe has not been

@@ -303,7 +303,7 @@ describe('taskSchedule', () => {
 
   describe('managed-app target task types', () => {
     it('keeps app-required scope explicit and separate from install-wide scope', () => {
-      expect([...MANAGED_APP_TARGET_TASK_TYPES]).toEqual(['pr-reviewer'])
+      expect([...MANAGED_APP_TARGET_TASK_TYPES]).toEqual(['pr-reviewer', 'issue-watcher', 'pr-watcher', 'issue-reconcile'])
       expect(requiresManagedAppTarget('pr-reviewer')).toBe(true)
       expect(requiresManagedAppTarget('security')).toBe(false)
       expect(requiresManagedAppTarget('repo-sync')).toBe(false)
@@ -431,11 +431,11 @@ describe('taskSchedule', () => {
       expect(TASK_TYPE_PROMPT_INFO['issue-watcher']).toMatchObject({ mode: 'runtime-generated' });
     });
 
-    it('locks the reasoning-only throwaway-worktree posture', () => {
-      expect(MANAGED_AGENT_OPTIONS['issue-watcher']).toEqual(['useWorktree', 'openPR', 'discardWorktree']);
+    it('locks the direct no-checkout reasoning posture', () => {
+      expect(MANAGED_AGENT_OPTIONS['issue-watcher']).toEqual(['useWorktree', 'openPR', 'readOnly', 'worktreeChangesExpected']);
       const config = { taskMetadata: { useWorktree: false, openPR: true, discardWorktree: false } };
       expect(enforceManagedAgentOptions('issue-watcher', config)).toBe(true);
-      expect(config.taskMetadata).toMatchObject({ useWorktree: true, openPR: false, discardWorktree: true });
+      expect(config.taskMetadata).toMatchObject({ useWorktree: false, openPR: false, readOnly: true, worktreeChangesExpected: false });
     });
   });
 
@@ -446,7 +446,7 @@ describe('taskSchedule', () => {
       expect(DEFAULT_TASK_INTERVALS['pr-reviewer'].taskMetadata.pipeline.stages).toEqual([
         expect.objectContaining({ name: 'Security Scan', role: 'security', readOnly: true, managed: true }),
         expect.objectContaining({ name: 'Eligibility Gate', role: 'eligibility', readOnly: true, executionProfile: 'public-review-gate' }),
-        expect.objectContaining({ name: 'Code Review & Actions', role: 'actions', readOnly: true, executionProfile: 'public-review-actions' }),
+        expect.objectContaining({ name: 'Code Review & Validated Actions', role: 'actions', readOnly: true, executionProfile: 'public-review-gate' }),
       ]);
       expect(MANAGED_AGENT_OPTIONS['pr-reviewer']).toEqual(['useWorktree', 'openPR', 'worktreeChangesExpected']);
     });
@@ -2211,7 +2211,7 @@ describe('taskSchedule', () => {
       expect(status.tasks['issue-watcher']).toMatchObject({
         description: TASK_TYPE_DESCRIPTIONS['issue-watcher'],
         promptMode: 'runtime-generated',
-        promptDescription: expect.stringContaining('deterministic GitHub gathering'),
+        promptDescription: expect.stringContaining('Three enforced server phases'),
         invocation: { kind: 'direct', visibility: 'visible', userInvokable: true },
       })
       expect(status.tasks.security).toMatchObject({

@@ -43,7 +43,7 @@ import { getOriginInfo, readOriginRemoteUrl } from '../lib/gitRemote.js';
 beforeEach(() => {
   vi.clearAllMocks();
   ensureForgeReachableMock.mockResolvedValue({ ok: true, status: 'ok', detail: null, remedy: null });
-  execGhMock.mockResolvedValue('[]');
+  execGhMock.mockImplementation(async args => args.at(-1) === 'user' ? JSON.stringify({ login: 'maintainer' }) : '[]');
   execGlabMock.mockResolvedValue('ok');
   execGlabJsonMock.mockResolvedValue({ rows: [], reason: 'ok' });
   getOriginInfo.mockResolvedValue({ isGithub: true, host: 'github.com', fullName: 'atomantic/PortOS' });
@@ -124,7 +124,7 @@ describe('gatherBlockedIssueState (GitHub)', () => {
 
   it('resolves a blocked issue whose named blocker is now closed', async () => {
     execGhMock
-      .mockResolvedValueOnce(JSON.stringify([{ number: 5, title: 'Feature X', body: 'Blocked by #10', url: 'u' }]))
+      .mockResolvedValueOnce(JSON.stringify([{ number: 5, author: { login: 'maintainer' }, title: 'Feature X', body: 'Blocked by #10', url: 'u' }]))
       .mockResolvedValueOnce(JSON.stringify([{ number: 10, state: 'CLOSED' }, { number: 5, state: 'OPEN' }]));
     const result = await gatherBlockedIssueState('/repo');
     expect(result.ready).toEqual([
@@ -132,9 +132,19 @@ describe('gatherBlockedIssueState (GitHub)', () => {
     ]);
   });
 
+  it('does not unblock externally authored or unknown-author issues even with closed dependencies', async () => {
+    execGhMock
+      .mockResolvedValueOnce(JSON.stringify([
+        { number: 5, author: { login: 'external' }, body: 'Blocked by #10' },
+        { number: 6, body: 'Blocked by #10' },
+      ]))
+      .mockResolvedValueOnce(JSON.stringify([{ number: 10, state: 'CLOSED' }]));
+    expect((await gatherBlockedIssueState('/repo')).ready).toEqual([]);
+  });
+
   it('leaves a blocked issue out of ready when its blocker is still open', async () => {
     execGhMock
-      .mockResolvedValueOnce(JSON.stringify([{ number: 5, title: 'Feature X', body: 'Blocked by #10', url: 'u' }]))
+      .mockResolvedValueOnce(JSON.stringify([{ number: 5, author: { login: 'maintainer' }, title: 'Feature X', body: 'Blocked by #10', url: 'u' }]))
       .mockResolvedValueOnce(JSON.stringify([{ number: 10, state: 'OPEN' }]));
     const result = await gatherBlockedIssueState('/repo');
     expect(result.ready).toEqual([]);

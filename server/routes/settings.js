@@ -18,6 +18,7 @@ import { ensureEidoverseHost } from '../services/eidoverseHost.js';
 import { isGitHubRepoUrl } from '../lib/repoUrl.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
+import { DEFAULT_UNTRUSTED_CONTENT_POLICY, untrustedContentSettingsSchema } from '../lib/untrustedContent.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
 import { EFFORT_LEVELS } from '../lib/providerModels.js';
 import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, hideFirstRunCardSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, instanceFeatureSettingsSchema, instanceFeatureIdSchema, instanceFeatureUpdateSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, usageApiBilledInstanceIdsSchema, namedOrchestrationProfileSchema, orchestrationProfilesSettingsSchema, validateRequest } from '../lib/validation.js';
@@ -40,6 +41,7 @@ const eidoverseRepoSchema = z.object({
 // the bounds describe lives.
 const decorateBounds = (settings) => ({
   ...settings,
+  untrustedContent: { defaults: { ...DEFAULT_UNTRUSTED_CONTENT_POLICY, ...settings.untrustedContent?.defaults }, sources: settings.untrustedContent?.sources || {} },
   imageGen: {
     ...(settings.imageGen || {}),
     codex: {
@@ -257,6 +259,9 @@ router.put('/', asyncHandler(async (req, res) => {
   // schema. Validate that slice when it's present so a malformed Backup-tab
   // save doesn't reach disk (the runtime guards downstream are belt-and-
   // suspenders, but per project convention all inputs are validated).
+  if (req.body?.untrustedContent !== undefined) {
+    validateRequest(untrustedContentSettingsSchema, req.body.untrustedContent);
+  }
   if (req.body?.backup !== undefined) {
     validateRequest(backupConfigSchema.partial(), req.body.backup);
   }

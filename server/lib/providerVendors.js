@@ -193,10 +193,6 @@ function codexSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads
 // `provider.args`: a saved `--dangerously-bypass-approvals-and-sandbox` in a
 // user's provider config would otherwise turn a screened review into an
 // unrestricted session.
-function codexPublicReviewSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
-  return codexPublicReviewArgs(provider, { effectiveModel, effort, maxConcurrentThreads }, ['--sandbox', 'read-only']);
-}
-
 function codexPublicReviewActionsSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
   // `workspace-write` is intentionally the narrowest Codex sandbox that can
   // apply a supplied patch and run local tests; `--approve-for-me` only
@@ -231,10 +227,6 @@ function codexPublicReviewArgs(provider, { effectiveModel, effort, maxConcurrent
 // unrestricted session. `--print` carries the prompt as its VALUE (see
 // antigravity.js) — `prepareAntigravityPrompt` relocates it to the end of the
 // argv at spawn time, which is why it is safe to append flags after it here.
-function antigravityPublicReviewSpawnArgs(provider, ctx) {
-  return antigravityPublicReviewArgs(provider, ctx, 'plan');
-}
-
 function antigravityPublicReviewActionsSpawnArgs(provider, ctx) {
   return antigravityPublicReviewArgs(provider, ctx, 'accept-edits');
 }
@@ -290,10 +282,7 @@ const CODEX = {
   publicReview: {
     // The CLI id and the TUI id share one binary, so both reach the same
     // enforced recipe when a stage selects them.
-    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
-      spawnArgs: codexPublicReviewSpawnArgs,
-      matchProvider: (provider) => isDirectBinaryProvider(provider) && (isCodexCommand(provider?.command) || provider?.id === CODEX_CLI_ID || provider?.id === 'codex-tui'),
-    },
+    // Read-only filesystem access still exposes tools; it is not no-tool.
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: codexPublicReviewActionsSpawnArgs,
       matchProvider: (provider) => isDirectBinaryProvider(provider) && isCodexCommand(provider?.command),
@@ -320,10 +309,7 @@ const ANTIGRAVITY = {
   preparePrompt: prepareAntigravityPrompt,
   spawnArgs: defaultSpawnArgs(antigravityCliArgs, ANTIGRAVITY_COMMAND),
   publicReview: {
-    [PUBLIC_REVIEW_NO_TOOL_POSTURE]: {
-      spawnArgs: antigravityPublicReviewSpawnArgs,
-      matchProvider: (provider) => isDirectBinaryProvider(provider) && isAntigravityCommand(provider?.command),
-    },
+    // Plan mode is not an explicit empty-tool contract.
     [PUBLIC_REVIEW_ACTIONS_POSTURE]: {
       spawnArgs: antigravityPublicReviewActionsSpawnArgs,
       matchProvider: (provider) => isDirectBinaryProvider(provider) && isAntigravityCommand(provider?.command),
@@ -833,6 +819,9 @@ export function buildVendorSpawnConfig(provider, ctx) {
   const posture = publicReviewPostureForProfile(ctx?.safetyProfile);
   if (posture) {
     const recipe = publicReviewRecipe(provider, posture);
+    if (!supportsPublicReviewPosture(provider, posture)) {
+      throw new Error(`Provider '${providerLabel(provider)}' has no enforced ${posture} public-review posture`);
+    }
     // An interactive spawn has no headless fallback tier: the ordinary
     // `spawnArgs` of a vendor without a TUI-capable recipe emits that vendor's
     // HEADLESS argv (`--print`, `exec`, `run`), which in a PTY neither accepts
@@ -902,16 +891,12 @@ export function publicReviewCapableVendorIds(posture) {
  * Whether `provider` may run a stage with this posture.
  *
  * The no-tool gate requires a maintained recipe: only an enforced argv can
- * hold a model tool-free. The sandboxed-actions stage is open to EVERY enabled
- * binary (CLI/TUI) provider — a vendor recipe (Codex, Antigravity, Grok,
- * Claude) adds an OS-level sandbox on top, but the stage's baseline isolation
- * is the disposable worktree, the stripped child environment, and the
- * deterministic coordinator owning all forge mutations. API providers have no
- * binary to spawn and fail closed for both.
+ * hold a model tool-free. Actions require a maintained enforcement recipe too:
+ * a disposable worktree cannot stop malware reading host files or networking.
+ * API providers have no binary to spawn and fail closed for these CLI profiles.
  */
 export function supportsPublicReviewPosture(provider, posture) {
-  return enforcesPublicReviewPosture(provider, posture)
-    || (posture === PUBLIC_REVIEW_ACTIONS_POSTURE && isDirectBinaryProvider(provider));
+  return enforcesPublicReviewPosture(provider, posture);
 }
 
 /**
@@ -965,7 +950,7 @@ export function supportsPublicReviewActionsProvider(provider) {
  * declares it and this returns false for that posture by construction.
  */
 export function supportsTuiPublicReviewPosture(provider, posture) {
-  return isDirectBinaryProvider(provider) && Boolean(publicReviewRecipe(provider, posture)?.tuiSpawnArgs);
+  return enforcesPublicReviewPosture(provider, posture) && Boolean(publicReviewRecipe(provider, posture)?.tuiSpawnArgs);
 }
 
 /** Whether the sandboxed final public-review stage can attach a PTY here. */
