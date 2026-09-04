@@ -47,7 +47,6 @@ import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createPgFileFacade, resolvePgBackend } from '../lib/pgFileFacade.js';
 import { isTestRunner } from '../lib/runtimeEnv.js';
-import { isInsideRealDataRoot } from '../lib/testDataIsolation.js';
 import { isUserActionActor, isUserActionType } from '../lib/userActionTypes.js';
 import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } from './userActionsDb.js';
 
@@ -55,6 +54,14 @@ import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } fr
 // test proxy (lib/mockPathsDataRoot.js), and a load-time join would both bind the
 // pre-mock value and crash any suite whose fileUtils stub omits PATHS.data.
 const eventsFile = () => join(PATHS.data, 'user-action-events.json');
+
+// `isInsideRealDataRoot` (and its pathContainment.js closure) is loaded ONLY
+// under the test runner, the same shape `fileCore.js`'s `loadGuard` uses for
+// #6176's write guard — this file is reached by enough suites that a static
+// import pushed importScoping.test.js's tree-wide budget over its ceiling.
+// The module promise is memoized, so the dynamic import resolves once per worker.
+let realDataRootGuard = null;
+const loadRealDataRootGuard = () => (realDataRootGuard ??= import('../lib/testDataIsolation.js'));
 
 /**
  * Structural guard against the bug class in #3683/#3687/#5605: a suite that
@@ -77,8 +84,10 @@ const eventsFile = () => join(PATHS.data, 'user-action-events.json');
  * @param {string} attempted what the file backend was about to do, e.g.
  *   `'recordUserAction attempted a write of'`
  */
-function assertTestDataRootRedirected(attempted) {
-  if (!isTestRunner() || !isInsideRealDataRoot(eventsFile())) return;
+async function assertTestDataRootRedirected(attempted) {
+  if (!isTestRunner()) return;
+  const { isInsideRealDataRoot } = await loadRealDataRootGuard();
+  if (!isInsideRealDataRoot(eventsFile())) return;
   throw new Error(
     `${attempted} user-action-events.json in the repo's real data/ tree. ` +
       'This suite exercises the user-action ledger but never redirected ' +
@@ -322,7 +331,7 @@ function makeFileBackend() {
       // BEFORE this guard ever ran, silently no-op'ing past it with no throw —
       // and by then loadFileEvents() had already read the real ledger into the
       // test process regardless. Running the guard first closes both holes.
-      assertTestDataRootRedirected('recordUserAction attempted a file-backend write of');
+      await assertTestDataRootRedirected('recordUserAction attempted a file-backend write of');
       const events = await loadFileEvents();
       if (events.some((row) => row.type === event.type && row.dedupeKey === event.dedupeKey)) return null;
       await ensureDir(PATHS.data);
@@ -333,7 +342,7 @@ function makeFileBackend() {
       // Same guard as the write path: an un-redirected suite must not get to READ
       // the developer's live ledger either — those rows are machine-local operator
       // records (docs/decisions/2026-08-08-privacy-records-machine-local.md).
-      assertTestDataRootRedirected('listUserActions attempted a file-backend read of');
+      await assertTestDataRootRedirected('listUserActions attempted a file-backend read of');
       const events = await loadFileEvents();
       return events
         .filter((event) => matchesFilters(event, filters))
