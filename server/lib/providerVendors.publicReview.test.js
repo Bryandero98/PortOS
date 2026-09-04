@@ -313,7 +313,7 @@ describe('public-review provider postures', () => {
 
   // #6062 — Stage 3 may run as an ATTACHABLE session so an operator can watch
   // and steer the longest, least predictable stage in the pipeline. `tui: true`
-  // is a per-recipe opt-in, and it drops ONLY the headless output flags.
+  // is a per-recipe opt-in, and it drops ONLY the flags that require `--print`.
   it('keeps every Claude actions enforcement flag when the recipe is built for a TUI session', () => {
     const claudeTui = { id: 'claude-tui', type: 'tui', command: 'claude', args: ['--dangerously-skip-permissions'] };
     const headless = buildVendorSpawnConfig(claudeTui, {
@@ -333,7 +333,7 @@ describe('public-review provider postures', () => {
       '--settings', headless.args[headless.args.indexOf('--settings') + 1],
       '--disallowedTools', 'WebFetch,WebSearch',
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--no-chrome', '--no-session-persistence', '--disable-slash-commands',
+      '--no-chrome', '--disable-slash-commands',
       '--model', 'sonnet',
     ]));
     // Nothing inside the session can lift the sandbox: the only lever is
@@ -343,13 +343,17 @@ describe('public-review provider postures', () => {
     // A saved skip-permissions arg is still ignored — provider.args is never
     // forwarded on this path, headless or attachable.
     expect(tui.args).not.toContain('--dangerously-skip-permissions');
-    // …and ONLY the headless output flags are gone.
-    expect(headless.args).toEqual(expect.arrayContaining(['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']));
-    for (const flag of ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']) {
+    // …and ONLY the flags that require `--print` are gone. `--no-session-persistence`
+    // is in the SHARED posture set rather than the headless output block, and
+    // leaving it on the attachable argv made the CLI exit(1) at parse time
+    // ("can only be used with --print mode") — three seconds in, before the
+    // prompt was pasted, on every retry of a Stage 3 pr-reviewer run.
+    const printOnly = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence'];
+    expect(headless.args).toEqual(expect.arrayContaining(printOnly));
+    for (const flag of printOnly) {
       expect(tui.args).not.toContain(flag);
     }
-    expect(headless.args.filter((a) => !['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'].includes(a)))
-      .toEqual(tui.args);
+    expect(headless.args.filter((a) => !printOnly.includes(a))).toEqual(tui.args);
   });
 
   it('declares attachability per recipe, and never for the tool-free postures', () => {

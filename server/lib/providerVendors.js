@@ -590,6 +590,38 @@ const CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS = [
   ...CLAUDE_PUBLIC_REVIEW_COMMON_ARGS,
 ];
 
+// Flags Claude Code accepts ONLY alongside `--print`, mapped to whether they
+// consume the following argv entry as their value. The posture arrays above are
+// written for the headless launch, so an attachable (`tui: true`) recipe has to
+// drop them — the CLI refuses to start at all otherwise:
+//
+//   Error: --no-session-persistence can only be used with --print mode.
+//
+// That is a 3-second exit(1) before the prompt is ever pasted, and it burned all
+// three retries of a Stage 3 pr-reviewer run. Worse, the only thing in the PTY
+// transcript by then was the shell's echo of the argv, so the failure analyzer
+// classified the run off `--mcp-config '{"mcpServers":{}}'` and filed "MCP server
+// error" for what was a flag-compatibility bug (agent-a12b1837).
+//
+// Filtered rather than conditionally spread so a print-only flag added to ANY
+// posture set is dropped for the attachable recipe automatically.
+const CLAUDE_PRINT_ONLY_ARGS = new Map([
+  ['--no-session-persistence', false],
+  ['--output-format', true],
+]);
+
+function dropPrintOnlyArgs(args) {
+  const kept = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (!CLAUDE_PRINT_ONLY_ARGS.has(args[i])) {
+      kept.push(args[i]);
+      continue;
+    }
+    if (CLAUDE_PRINT_ONLY_ARGS.get(args[i])) i += 1; // also skip its value
+  }
+  return kept;
+}
+
 const claudePublicReviewSpawnArgsFor = (postureArgs) => (provider, ctx) => claudePublicReviewArgs(postureArgs, provider, ctx);
 
 function claudePublicReviewArgs(postureArgs, provider, {
@@ -600,7 +632,7 @@ function claudePublicReviewArgs(postureArgs, provider, {
 } = {}) {
   const providerId = provider?.id || 'claude-code';
   const args = [
-    ...postureArgs,
+    ...(tui ? dropPrintOnlyArgs(postureArgs) : postureArgs),
     ...(tui ? [] : ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']),
   ];
   if (systemPromptFile) args.push('--append-system-prompt-file', systemPromptFile);
@@ -645,7 +677,8 @@ const CLAUDE = {
       spawnArgs: claudePublicReviewSpawnArgsFor(CLAUDE_PUBLIC_REVIEW_ACTIONS_ARGS),
       matchProvider: matchClaudeBinary,
       // The only posture/vendor pairing that may run as an ATTACHABLE session.
-      // `claudePublicReviewArgs` drops only the headless output flags for
+      // `claudePublicReviewArgs` drops only the flags that REQUIRE `--print`
+      // (the headless output set plus CLAUDE_PRINT_ONLY_ARGS) for
       // `tui: true`; every enforcement flag above (`--permission-mode
       // acceptEdits`, the `--settings` sandbox JSON, `--disallowedTools`, and
       // the shared no-MCP/no-chrome/no-slash-command set) is still emitted, so
@@ -888,7 +921,8 @@ export function supportsPublicReviewActionsProvider(provider) {
  * declares none, which is fine for a `--print` child and useless in a PTY. An
  * interactive session requires a recipe that has been reviewed for it and says
  * so with `tui: true` — the recipe still owns the argv (`spawnArgs(provider,
- * { ...ctx, tui: true })`), it just drops the headless output flags.
+ * { ...ctx, tui: true })`), it just drops the flags that only work under
+ * `--print`.
  *
  * `no-tool` is structurally excluded: an interactive session for a reasoner
  * with no tools buys nothing and widens the boundary for free, so no row
