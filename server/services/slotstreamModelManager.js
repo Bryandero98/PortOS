@@ -338,7 +338,10 @@ export function isSlotstreamDownloadInFlight(path) {
   if (!path || inFlight.size === 0) return false;
   const target = String(path);
   for (const modelDir of inFlight.keys()) {
-    if (target === modelDir || target.startsWith(`${modelDir}/`)) return true;
+    // `sep`, not `/`: the sweep hands us paths built with `join`, so on Windows
+    // a hardcoded slash would never match and the GC would be free to unlink a
+    // shard that is still transferring.
+    if (target === modelDir || target.startsWith(`${modelDir}${sep}`)) return true;
   }
   return false;
 }
