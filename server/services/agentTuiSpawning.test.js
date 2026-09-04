@@ -297,9 +297,14 @@ describe('agent TUI spawning', () => {
     expect(config.args).not.toContain('--dangerously-skip-permissions');
     expect(config.args).not.toContain('--print');
     expect(config.args).not.toContain('--output-format');
-    // The command LINE is still rendered the same way every TUI spawn renders it.
-    expect(config.commandLine.startsWith('claude ')).toBe(true);
+    // The command LINE is still rendered by the shared renderer, so it names the
+    // binary and carries the recipe. Asserted by CONTENT, not by prefix: the
+    // rendering is shell-dialect specific (cmd.exe/PowerShell quote the command
+    // token itself), so a `startsWith('claude ')` here passes on POSIX and fails
+    // on a Windows runner.
+    expect(config.commandLine).toContain('claude');
     expect(config.commandLine).toContain('--permission-mode');
+    expect(config.commandLine).toContain('acceptEdits');
   });
 
   it('fails closed rather than opening an actions-posture PTY with no maintained recipe', () => {
