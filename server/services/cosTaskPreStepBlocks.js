@@ -378,12 +378,18 @@ export async function resolveBranchReconcileBlock(app, taskType, metadata, taskS
   if (result.cleaned.length) {
     emitLog('info', `🔀 branch-reconcile ${app.name}: cleaned ${result.cleaned.length} merged branch(es)`, { appId: app.id, analysisType: taskType });
   }
-  // Branches whose SUPERSEDED verdict is already cached and still verifies were
-  // dropped from `inFlight` by the reconciler (#3842). They are real branches a
-  // human still has to reap, so name them rather than letting them vanish into a
-  // quiet park — the invisibility is the same failure mode as a lingering worktree
-  // reported as "cleaned 0".
-  const supersededSuffix = countSuffix(result.superseded, 'branch(es) already verified superseded and awaiting human reap');
+  // Reported separately from `cleaned`: a superseded branch's work is NOT on the
+  // default branch — it landed there under other names — so it survives only as
+  // the backup the reap wrote before deleting it.
+  if (result.reapedSuperseded?.length) {
+    emitLog('info', `🔀 branch-reconcile ${app.name}: reaped ${result.reapedSuperseded.length} verified-superseded branch(es) (backed up under data/cos/abandoned-worktree-backups)`, { appId: app.id, analysisType: taskType });
+  }
+  // Verified-superseded branches are reaped by the reconciler itself and counted
+  // in `cleaned`. What is left in `superseded` is the reap's leftovers — held by a
+  // lock, a live agent, or a claim window — so name them rather than letting them
+  // vanish into a quiet park; the invisibility is the same failure mode as a
+  // lingering worktree reported as "cleaned 0".
+  const supersededSuffix = countSuffix(result.superseded, 'branch(es) verified superseded, reap held back');
   // Branches somebody is actively working in (a running CoS agent, a live human
   // /claim, a locked worktree) are classified WIP and never reach `inFlight` — the
   // reconcile is DONE when they are all that's left, not stuck. Named in the park

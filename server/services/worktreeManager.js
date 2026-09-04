@@ -14,6 +14,7 @@ import { readdir, rm, stat } from 'fs/promises';
 import { join } from 'path';
 import { ensureDir, isPathInsideDir, PATHS, sleep, tryReadFile } from '../lib/fileUtils.js';
 import { DONE_SENTINEL_NAME, doneSentinelName } from '../lib/agentSentinel.js';
+import { AGENT_SCRATCH_PATHS, matchesScratchRoot } from '../lib/agentScratchPaths.js';
 import { execGit } from '../lib/execGit.js';
 import { createKeyCachedQueue } from '../lib/createKeyCachedQueue.js';
 import { enforceSafeBranchUpstream } from '../lib/branchUpstreamGuard.js';
@@ -270,11 +271,20 @@ async function enforceUpstreamOrUndoAdd(sourceWorkspace, branchName, worktreePat
  * Classify a `git status --porcelain` blob into real changes vs auto-generated
  * lockfile churn. Pure (testable) — callers decide what to do with the result.
  *
+ * PortOS's own runtime scratch (`AGENT_SCRATCH_PATHS` — the public-review input
+ * bundle and its patch directory) is subtracted for EVERY caller, not passed in
+ * per call. It is written by PortOS into the worktree and never committed, so a
+ * tree holding only that is finished work by every consumer's definition; making
+ * each one learn the names is how two `pr-reviewer` worktrees survived
+ * `removeWorktree`, `reapMergedWorktrees` and branch-reconcile in turn.
+ *
  * @param {string} porcelain - raw `git status --porcelain` stdout
  * @param {object} [options]
- * @param {string[]} [options.ignoredPaths] - runtime-only paths that must not
- *   preserve a completed worktree. They are still removed only when the rest of
- *   the tree is safe to remove.
+ * @param {string[]} [options.ignoredPaths] - ADDITIONAL runtime-only paths that
+ *   must not preserve a completed worktree — for names this module cannot know
+ *   statically, notably one run's own `.agent-done-<agentId>` sentinel. Matched
+ *   as roots: a directory entry also covers everything under it. They are still
+ *   removed only when the rest of the tree is safe to remove.
  * @returns {{ clean: boolean, lockfileOnly: boolean, lockfilePaths: string[], realChangePaths: string[], hasRealChanges: boolean }}
  *   - clean: no changes at all
  *   - lockfileOnly: every change is an auto-generated lockfile (safe to discard)
@@ -286,12 +296,12 @@ async function enforceUpstreamOrUndoAdd(sourceWorkspace, branchName, worktreePat
  *   - hasRealChanges: at least one non-lockfile change (worktree must be preserved)
  */
 export function classifyWorktreeDirt(porcelain, { ignoredPaths = [] } = {}) {
-  const ignored = new Set(ignoredPaths);
+  const ignored = [...AGENT_SCRATCH_PATHS, ...ignoredPaths];
   const toPath = (line) => line.replace(/^\s*\S+\s+/, '').split(' -> ').pop();
   const lines = (porcelain || '').split('\n')
     .map(l => l.trim())
     .filter(Boolean)
-    .filter(line => !ignored.has(toPath(line)));
+    .filter(line => !matchesScratchRoot(toPath(line), ignored));
   if (lines.length === 0) {
     return { clean: true, lockfileOnly: false, lockfilePaths: [], realChangePaths: [], hasRealChanges: false };
   }

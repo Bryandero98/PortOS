@@ -9088,6 +9088,14 @@
     },
     {
       "method": "POST",
+      "path": "/api/local-llm/slotstream/models/download/cancel",
+      "mountPath": "/api/local-llm",
+      "sources": [
+        "server/routes/localLlm.js"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/local-llm/slotstream/start",
       "mountPath": "/api/local-llm",
       "sources": [
