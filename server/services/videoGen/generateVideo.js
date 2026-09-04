@@ -11,12 +11,12 @@
  */
 
 import { execFile } from '../../lib/childProcess.js';
-import { unlink, rm, mkdtemp } from 'fs/promises';
+import { mkdtemp } from 'fs/promises';
 import { join, basename } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { promisify } from 'util';
-import { ensureDir, PATHS } from '../../lib/fileUtils.js';
+import { ensureDir, PATHS, unlinkGuarded, rmGuarded } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import {
   isDefaultI2vReferenceMode, normalizeI2vReferenceMode, resolveI2vReferenceStrength,
@@ -670,7 +670,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
         ? [audioFilePath]
         : []),
     ];
-    return Promise.all(paths.filter(Boolean).map((path) => unlink(path).catch(() => {})));
+    return Promise.all(paths.filter(Boolean).map((path) => unlinkGuarded(path).catch(() => {})));
   };
   if (isIcLoraMode(mode) && icLoraSpecForMode(mode)?.referenceKind === 'image'
     && Array.isArray(icReferencePaths) && icReferencePaths.length) {
@@ -899,7 +899,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     broadcastSse(job, { type: 'error', error: reason });
     videoGenEvents.emit('failed', { generationId: jobId, error: reason });
     void cleanupTempFiles({ includeUploads: true, includeUntrackedAudio: true });
-    void rm(stepwiseDir, { recursive: true, force: true });
+    void rmGuarded(stepwiseDir, { recursive: true, force: true });
     closeJobAfterDelay(videoJobState.jobs, jobId);
     throw err;
   }

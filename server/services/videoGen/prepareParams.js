@@ -26,11 +26,10 @@
  */
 
 import { existsSync } from 'fs';
-import { copyFile, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { join, extname } from 'path';
 import { ServerError } from '../../lib/errorHandler.js';
-import { PATHS, ensureDir, resolveGalleryImage } from '../../lib/fileUtils.js';
+import { PATHS, ensureDir, resolveGalleryImage, copyFileGuarded, unlinkGuarded } from '../../lib/fileUtils.js';
 import { probeVideoDuration, safeUnder } from '../../lib/ffmpeg.js';
 import { RENDER_TARGET } from '../../lib/renderTargets.js';
 import {
@@ -196,7 +195,7 @@ export const cleanupMultipartTemp = async (uploads) => {
     cleanedMultipartUploads.add(uploads);
   }
   for (const f of Object.values(uploads || {})) {
-    if (f?.path) await unlink(f.path).catch(() => {});
+    if (f?.path) await unlinkGuarded(f.path).catch(() => {});
   }
 };
 
@@ -366,7 +365,7 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
   // worker's cleanup never runs).
   const stagedDurablePaths = [];
   const cleanupStaged = async () => {
-    for (const p of stagedDurablePaths) await unlink(p).catch(() => {});
+    for (const p of stagedDurablePaths) await unlinkGuarded(p).catch(() => {});
     await cleanupMultipartTemp(uploads);
   };
 
@@ -402,16 +401,16 @@ async function resolvePreparedParams({
     const ext = extname(file.originalname || file.path) || '.bin';
     const durablePath = join(PATHS.uploads, `video-${kind}-${randomUUID()}${ext}`);
     try {
-      await copyFile(file.path, durablePath);
+      await copyFileGuarded(file.path, durablePath);
     } catch (err) {
-      await unlink(durablePath).catch(() => {});
+      await unlinkGuarded(durablePath).catch(() => {});
       await cleanupStaged();
       throw new ServerError(
         `Failed to stage upload to durable location: ${err.message}`,
         { status: 500, code: 'VIDEO_GEN_UPLOAD_STAGE_FAILED' },
       );
     }
-    await unlink(file.path).catch(() => {});
+    await unlinkGuarded(file.path).catch(() => {});
     stagedDurablePaths.push(durablePath);
     return durablePath;
   };
@@ -423,8 +422,8 @@ async function resolvePreparedParams({
   const stageExistingAudioDurable = async (sourcePath) => {
     const ext = extname(sourcePath) || '.bin';
     const durablePath = join(PATHS.uploads, `video-audio-${randomUUID()}${ext}`);
-    await copyFile(sourcePath, durablePath).catch(async (err) => {
-      await unlink(durablePath).catch(() => {});
+    await copyFileGuarded(sourcePath, durablePath).catch(async (err) => {
+      await unlinkGuarded(durablePath).catch(() => {});
       await cleanupStaged();
       throw new ServerError(
         `Failed to stage project audio: ${err.message}`,
@@ -728,11 +727,11 @@ async function resolvePreparedParams({
   }
   const discardSourceImage = async () => {
     if (uploadedTempPath) {
-      await unlink(uploadedTempPath).catch(() => {});
+      await unlinkGuarded(uploadedTempPath).catch(() => {});
       const index = stagedDurablePaths.indexOf(uploadedTempPath);
       if (index >= 0) stagedDurablePaths.splice(index, 1);
     }
-    if (uploads.sourceImage?.path) await unlink(uploads.sourceImage.path).catch(() => {});
+    if (uploads.sourceImage?.path) await unlinkGuarded(uploads.sourceImage.path).catch(() => {});
   };
   // Grok backend short-circuit (#2859 phase 2): everything past this point —
   // last-frame/keyframe staging, extend resolution, LoRA gating — is
