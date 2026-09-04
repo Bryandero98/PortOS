@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import { cp, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { atomicWrite, ensureDir, PATHS } from '../lib/fileUtils.js';
+import { isAgentScratchPath } from '../lib/agentScratchPaths.js';
 import { kebabCase } from '../lib/textUtils.js';
 import { execGitSafe } from './git.js';
 
@@ -46,15 +47,32 @@ export const backupSlug = (branch) => {
   return `${kebabCase(name) || 'branch'}-${digest}`;
 };
 
-// A single untracked file above this is almost certainly build output or a model
-// artifact rather than authored work; it is named in the manifest instead of
-// copied, so one stray blob can't turn a backup into a disk-filling operation.
-// The tracked diff is deliberately uncapped by contrast — every byte of it is
-// authored, and truncating it would break the "no backup, no delete" gate.
+// Bounds on what one backup may copy, so a stray build artifact or model blob
+// can't turn it into a disk-filling operation. Exceeding either REFUSES the
+// backup (and with it the reap) rather than copying a subset — a partial backup
+// would hand the caller a success it then deletes real work on. The tracked diff
+// is deliberately uncapped by contrast: every byte of it is authored.
 const MAX_UNTRACKED_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_UNTRACKED_TOTAL_BYTES = 50 * 1024 * 1024;
 
-const gitText = async (args, cwd) => (await execGitSafe(args, cwd, { ignoreExitCode: true })).stdout || '';
+/**
+ * git stdout, or a THROW on a non-zero exit.
+ *
+ * `execGitSafe` never rejects — a locked index, an unreadable worktree or a bad
+ * ref all come back as `{ exitCode: 1, stdout: '' }`. Reading only `.stdout` would
+ * make every one of those indistinguishable from a legitimately empty result (a
+ * branch with no commits of its own, a worktree with no tracked edits), and the
+ * caller's contract is that a resolved backup means the work is safe on disk. So
+ * exit status is the signal here, never emptiness: a failure throws, the reap
+ * treats that as "do not delete", and the branch waits for the next pass.
+ */
+const gitText = async (args, cwd) => {
+  const result = await execGitSafe(args, cwd, { ignoreExitCode: true });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(' ')} failed in ${cwd} (exit ${result.exitCode}): ${(result.stderr || '').trim() || 'no stderr'}`);
+  }
+  return result.stdout || '';
+};
 
 /** Newline-separated git stdout → trimmed non-empty lines. */
 const gitLines = (stdout) => (stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
@@ -65,7 +83,12 @@ const gitLines = (stdout) => (stdout || '').split('\n').map((l) => l.trim()).fil
  * @returns {Promise<{copied:string[], skipped:{path:string,reason:string}[]}>}
  */
 async function copyUntracked(worktreePath, destDir) {
-  const paths = gitLines(await gitText(['ls-files', '--others', '--exclude-standard'], worktreePath));
+  // PortOS's own scratch is not work product and must not be preserved — and on a
+  // worktree branched before this scratch was gitignored, `--exclude-standard`
+  // still reports it, so filtering here is what keeps it from eating the budget
+  // below and pushing a real file into the refusal path.
+  const paths = gitLines(await gitText(['ls-files', '--others', '--exclude-standard'], worktreePath))
+    .filter((rel) => !isAgentScratchPath(rel));
   const copied = [];
   const skipped = [];
   const created = new Set();
@@ -130,6 +153,14 @@ export async function backupSupersededBranch(repoPath, branch, { defaultBranch =
     // No upfront mkdir: copyUntracked creates each parent lazily, so a worktree
     // with nothing untracked leaves no empty directory behind.
     untracked = await copyUntracked(branch.worktreePath, join(dir, 'untracked'));
+    // A file we could not copy is a file the reap would then delete with no copy
+    // anywhere. That includes the size caps: their job is to stop one stray blob
+    // from filling the disk, not to license deleting it — so an oversized file
+    // refuses the reap and the branch stays put for a human to look at.
+    if (untracked.skipped.length) {
+      const detail = untracked.skipped.map((s) => `${s.path} (${s.reason})`).join(', ');
+      throw new Error(`could not back up ${untracked.skipped.length} untracked file(s): ${detail}`);
+    }
   }
 
   const manifest = {

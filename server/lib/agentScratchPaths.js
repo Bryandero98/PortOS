@@ -48,9 +48,16 @@ export const AGENT_SCRATCH_PATHS = [PUBLIC_REVIEW_INPUT_FILENAME, PUBLIC_REVIEW_
  */
 export function matchesScratchRoot(path, roots = []) {
   if (typeof path !== 'string' || !roots.length) return false;
-  const normalized = path.trim().replace(/\/+$/, '');
+  const strip = (value) => String(value ?? '').trim().replace(/\/+$/, '');
+  const normalized = strip(path);
   if (!normalized) return false;
-  return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+  // Both sides are stripped: `ignoredPaths: ['build/']` is the conventional way to
+  // spell a directory, and matching it only in its slashless form would silently
+  // ignore the option rather than fail loudly.
+  return roots.some((root) => {
+    const base = strip(root);
+    return Boolean(base) && (normalized === base || normalized.startsWith(`${base}/`));
+  });
 }
 
 /**

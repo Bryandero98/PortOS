@@ -91,6 +91,58 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('backupSupersededBranch', () => {
     expect(await readFile(join(replay, 'initial.txt'), 'utf8')).toBe('edited but never committed\n');
   });
 
+  // The reap deletes on this function RESOLVING, so every way the copy can come
+  // up short has to throw. `execGitSafe` never rejects — it returns
+  // { exitCode: 1, stdout: '' } — which is indistinguishable from a legitimately
+  // empty result unless exit status is what's checked.
+  it('throws rather than reporting an empty backup when git fails', async () => {
+    await expect(backupSupersededBranch(
+      repo,
+      { branch: 'no/such/branch', tip: null, worktreePath: null, verdict: {} },
+      { defaultBranch: 'main', cosDir }
+    )).rejects.toThrow(/git format-patch .* failed/);
+
+    await expect(backupSupersededBranch(
+      repo,
+      { branch: BRANCH, tip, worktreePath: join(sandbox.scratch, 'worktrees', 'gone'), verdict: {} },
+      { defaultBranch: 'main', cosDir }
+    )).rejects.toThrow(/failed/);
+  });
+
+  it('refuses the backup when an untracked file exceeds the size budget', async () => {
+    const big = join(worktree, 'huge.bin');
+    await writeFile(big, Buffer.alloc(6 * 1024 * 1024));
+    try {
+      // Not "copy what fits and delete the rest" — the caps bound disk use, they
+      // do not license deleting the file that tripped them.
+      await expect(backupSupersededBranch(
+        repo,
+        { branch: BRANCH, tip, worktreePath: worktree, verdict: {} },
+        { defaultBranch: 'main', cosDir }
+      )).rejects.toThrow(/could not back up 1 untracked file\(s\).*huge\.bin.*too-large/s);
+    } finally {
+      await rm(big, { force: true });
+    }
+  });
+
+  // A worktree branched before the scratch was gitignored still reports it as
+  // untracked, and copying it would spend the budget on PortOS's own pipeline state.
+  it('does not back up PortOS runtime scratch', async () => {
+    const scratch = join(worktree, 'PORTOS_PUBLIC_REVIEW_INPUT.json');
+    await writeFile(scratch, '{"screened":true}');
+    try {
+      const result = await backupSupersededBranch(
+        repo,
+        { branch: BRANCH, tip, worktreePath: worktree, verdict: {} },
+        { defaultBranch: 'main', cosDir }
+      );
+      expect(result.untracked).not.toContain('PORTOS_PUBLIC_REVIEW_INPUT.json');
+      await expect(stat(join(result.dir, 'untracked', 'PORTOS_PUBLIC_REVIEW_INPUT.json'))).rejects.toThrow();
+    } finally {
+      await rm(scratch, { force: true });
+    }
+  });
+
   it('writes a manifest even for a branch with nothing to capture', async () => {
     await execGit(['branch', 'empty/branch', 'main'], repo);
     const result = await backupSupersededBranch(

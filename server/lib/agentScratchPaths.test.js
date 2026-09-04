@@ -20,6 +20,17 @@ describe('matchesScratchRoot', () => {
     expect(matchesScratchRoot('.portos-public-review/nested/deep.json', roots)).toBe(true);
   });
 
+  // A caller spelling a directory the conventional way must not be silently
+  // ignored — 'temp' vs 'temp/' matching differently is an option that looks
+  // configured and does nothing.
+  it('normalizes the ROOT as well as the path', () => {
+    expect(matchesScratchRoot('build/out.js', ['build/'])).toBe(true);
+    expect(matchesScratchRoot('build', ['build/'])).toBe(true);
+    expect(matchesScratchRoot('build/', ['build/'])).toBe(true);
+    // An empty or slash-only root matches nothing, rather than everything.
+    expect(matchesScratchRoot('anything', ['', '/'])).toBe(false);
+  });
+
   it('does not match a sibling that merely shares the prefix', () => {
     const roots = ['.portos-public-review', 'PORTOS_PUBLIC_REVIEW_INPUT.json'];
     expect(matchesScratchRoot('.portos-public-review-notes.md', roots)).toBe(false);
