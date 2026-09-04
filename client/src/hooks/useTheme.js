@@ -11,18 +11,33 @@ import { getSettings, updateSettings } from '../services/apiSystem.js';
 
 const STORAGE_KEY = 'portos-theme';
 
+// Custom properties the last applyTheme() wrote. A theme only declares the
+// tokens it uses (the optional --port-fx-* effect tokens especially), and an
+// inline property on <html> outlives a theme switch — so without clearing
+// these, Kestrel Neon's multiply-blend scanlines would still tint Classic
+// Midnight after the user switched away.
+let appliedVars = new Set();
+
 const applyTheme = (id) => {
   const theme = getTheme(id);
   const style = document.documentElement.style;
   const vars = { ...theme.colors, ...theme.tokens };
+  for (const prop of appliedVars) {
+    if (!(prop in vars)) style.removeProperty(prop);
+  }
   for (const [prop, value] of Object.entries(vars)) {
     style.setProperty(prop, value);
   }
-  document.documentElement.dataset.portTheme = theme.id;
-  document.documentElement.dataset.portThemeFamily = theme.family;
-  document.documentElement.dataset.portThemeDensity = theme.density;
-  document.documentElement.dataset.portThemeMode = theme.mode;
-  document.documentElement.style.colorScheme = theme.colorScheme ?? 'dark';
+  appliedVars = new Set(Object.keys(vars));
+  const root = document.documentElement;
+  root.dataset.portTheme = theme.id;
+  root.dataset.portThemeFamily = theme.family;
+  root.dataset.portThemeDensity = theme.density;
+  root.dataset.portThemeMode = theme.mode;
+  // Space-separated so index.css can key on html[data-port-theme-effects~="x"].
+  if (theme.effects?.length) root.dataset.portThemeEffects = theme.effects.join(' ');
+  else delete root.dataset.portThemeEffects;
+  root.style.colorScheme = theme.colorScheme ?? 'dark';
   return theme.id;
 };
 

@@ -1025,23 +1025,6 @@ html[data-port-theme="black-ice-terminal"] body {
   text-shadow: 0 0 12px rgb(var(--port-accent) / 0.08);
 }
 
-html[data-port-theme="black-ice-terminal"] body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 9998;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg,
-    rgb(255 255 255 / 0.025) 0,
-    rgb(255 255 255 / 0.025) 1px,
-    transparent 1px,
-    transparent 5px
-  );
-  mix-blend-mode: screen;
-  opacity: 0.22;
-}
-
 html[data-port-theme="black-ice-terminal"] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
   border-color: rgb(var(--port-border) / 0.34) !important;
   background-image: linear-gradient(180deg, rgb(var(--port-accent) / 0.035), transparent 38px);
@@ -1441,23 +1424,6 @@ html[data-port-theme="black-ice-terminal-day"] body {
   text-shadow: 0 0 8px rgb(var(--port-accent) / 0.04);
 }
 
-html[data-port-theme="black-ice-terminal-day"] body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 9998;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg,
-    rgb(10 60 30 / 0.04) 0,
-    rgb(10 60 30 / 0.04) 1px,
-    transparent 1px,
-    transparent 5px
-  );
-  mix-blend-mode: multiply;
-  opacity: 0.4;
-}
-
 html[data-port-theme="black-ice-terminal-day"] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
   border-color: rgb(var(--port-border) / 0.32) !important;
   background-image: linear-gradient(180deg, rgb(255 255 255 / 0.5), transparent 38px);
@@ -1488,6 +1454,183 @@ html[data-port-theme="blueprint-ops-day"] aside :is(h1, h2, h3),
 html[data-port-theme="blueprint-ops-day"] header :is(h1, h2, h3) {
   border-left: 0;
   padding-left: 0;
+}
+
+/* === Theme effects layer ===
+   A theme opts into full-screen effects by listing them in `effects` in
+   portosThemes.js; useTheme publishes that list as
+   html[data-port-theme-effects="scanlines vignette …"], so each block below
+   keys on the ~= attribute selector. Colors, strengths, and timings come from
+   --port-fx-* tokens the theme declares (defaults here), so a new theme
+   composes effects without adding selectors of its own.
+
+   The overlay effects (scanlines, vignette, sweep) share ONE body::after so
+   they compose in a single background list; an effect the theme did not list
+   resolves to a transparent layer. */
+:root {
+  --port-fx-scanline-color: rgb(255 255 255 / 0.025);
+  --port-fx-scanline-period: 5px;
+  --port-fx-scanline-thickness: 1px;
+  --port-fx-overlay-blend: screen;
+  --port-fx-overlay-opacity: 0.22;
+  --port-fx-vignette-color: rgb(0 0 0 / 0.55);
+  --port-fx-sweep-color: rgb(var(--port-accent) / 0.07);
+  --port-fx-sweep-duration: 7s;
+  --port-fx-grid-floor-x: rgb(var(--port-accent-2) / 0.18);
+  --port-fx-grid-floor-y: rgb(var(--port-accent) / 0.18);
+  --port-fx-grid-floor-opacity: 0.45;
+  --port-fx-grid-floor-duration: 3s;
+  --port-fx-glitch-period: 9s;
+  /* Resolved per listed effect below; unlisted effects stay transparent. */
+  --port-fx-scanline-active: transparent;
+  --port-fx-vignette-active: transparent;
+  --port-fx-sweep-active: transparent;
+}
+
+html[data-port-theme-effects~="scanlines"] { --port-fx-scanline-active: var(--port-fx-scanline-color); }
+html[data-port-theme-effects~="vignette"] { --port-fx-vignette-active: var(--port-fx-vignette-color); }
+html[data-port-theme-effects~="sweep"] { --port-fx-sweep-active: var(--port-fx-sweep-color); }
+
+html:is([data-port-theme-effects~="scanlines"], [data-port-theme-effects~="vignette"], [data-port-theme-effects~="sweep"]) body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, transparent, var(--port-fx-sweep-active), transparent) 0 -20% / 100% 18% no-repeat,
+    radial-gradient(ellipse at center, transparent 58%, var(--port-fx-vignette-active) 100%),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 calc(var(--port-fx-scanline-period) - var(--port-fx-scanline-thickness)),
+      var(--port-fx-scanline-active) calc(var(--port-fx-scanline-period) - var(--port-fx-scanline-thickness)) var(--port-fx-scanline-period)
+    );
+  mix-blend-mode: var(--port-fx-overlay-blend);
+  opacity: var(--port-fx-overlay-opacity);
+}
+
+html[data-port-theme-effects~="sweep"] body::after {
+  animation: portos-fx-sweep var(--port-fx-sweep-duration) linear infinite;
+}
+
+@keyframes portos-fx-sweep {
+  to { background-position: 0 120%, 0 0, 0 0; }
+}
+
+/* Perspective grid floor: fixed behind content, masked so it fades toward the
+   horizon. Lives on #root::before because body::before is the shared
+   token-driven backdrop and a background-image cannot be tilted. */
+html[data-port-theme-effects~="grid-floor"] #root::before {
+  content: "";
+  position: fixed;
+  /* Three viewports wide and one tall, hinged at its bottom edge and tilted
+     away: the near rows stay full size while the far rows converge toward a
+     horizon about a quarter of the way up the screen. The extra width keeps
+     the foreshortened far edge wider than the viewport. */
+  left: -100%;
+  right: -100%;
+  bottom: -6%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, var(--port-fx-grid-floor-x) 1px, transparent 1px) 0 0 / 60px 100%,
+    linear-gradient(0deg, var(--port-fx-grid-floor-y) 1px, transparent 1px) 0 0 / 100% 40px;
+  transform: perspective(1200px) rotateX(60deg);
+  transform-origin: 50% 100%;
+  mask-image: linear-gradient(180deg, transparent 30%, #000 75%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 30%, #000 75%);
+  opacity: var(--port-fx-grid-floor-opacity);
+  animation: portos-fx-gridmove var(--port-fx-grid-floor-duration) linear infinite;
+}
+
+@keyframes portos-fx-gridmove {
+  to { background-position: 0 0, 0 40px; }
+}
+
+/* Page titles glitch every few seconds: at rest for most of the cycle, then a
+   two-step chromatic split between the two accents. */
+html[data-port-theme-effects~="glitch"] h1 {
+  animation: portos-fx-glitch var(--port-fx-glitch-period) steps(2) infinite;
+}
+
+@keyframes portos-fx-glitch {
+  0%, 92%, 100% { text-shadow: 0 0 12px rgb(var(--port-accent) / 0.5); transform: none; }
+  94% { text-shadow: -3px 0 rgb(var(--port-accent-2)), 3px 0 rgb(var(--port-accent)); transform: translate(-1px, 1px); }
+  96% { text-shadow: 4px 0 rgb(var(--port-accent-2)), -4px 0 rgb(var(--port-accent)); transform: translate(2px, -1px); }
+  98% { text-shadow: -1px 0 rgb(var(--port-accent-2)), 1px 0 rgb(var(--port-accent)); transform: translate(1px, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-port-theme-effects] body::after,
+  html[data-port-theme-effects] #root::before,
+  html[data-port-theme-effects] h1 {
+    animation: none;
+  }
+}
+
+/* === Kestrel Neon (CRT boot terminal) === */
+html[data-port-theme="kestrel-neon"] body {
+  text-shadow: 0 0 10px rgb(var(--port-accent) / 0.08);
+}
+
+html[data-port-theme="kestrel-neon"] :is(h1, h2, h3) {
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 12px rgb(var(--port-accent) / 0.5);
+}
+
+html[data-port-theme="kestrel-neon"] h1 {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+html[data-port-theme="kestrel-neon"] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
+  border-color: rgb(var(--port-accent-2) / 0.3) !important;
+  background-image: linear-gradient(180deg, rgb(var(--port-accent) / 0.06), transparent 32px);
+}
+
+html[data-port-theme="kestrel-neon"] :is(pre, code, textarea, input) {
+  text-shadow: 0 0 8px rgb(var(--port-accent) / 0.25);
+  caret-color: rgb(var(--port-accent));
+}
+
+html[data-port-theme="kestrel-neon"] :is(input, textarea, select):focus,
+html[data-port-theme="kestrel-neon"] button:focus-visible,
+html[data-port-theme="kestrel-neon"] a:focus-visible {
+  box-shadow: 0 0 0 1px rgb(var(--port-focus-ring) / 0.7), 0 0 18px rgb(var(--port-focus-ring) / 0.35);
+}
+
+html[data-port-theme="kestrel-neon"] aside nav [aria-current="page"] {
+  border-left: 2px solid rgb(var(--port-accent-2));
+  text-shadow: 0 0 8px rgb(var(--port-accent) / 0.6);
+}
+
+html[data-port-theme="kestrel-neon"] ::selection {
+  background: rgb(var(--port-accent-2) / 0.45);
+  color: rgb(255 255 255);
+}
+
+/* === Kestrel Dawn (Kestrel Neon, day) === */
+html[data-port-theme="kestrel-neon-day"] :is(h1, h2, h3) {
+  letter-spacing: 0.06em;
+}
+
+html[data-port-theme="kestrel-neon-day"] h1 {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+html[data-port-theme="kestrel-neon-day"] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
+  border-color: rgb(var(--port-accent-2) / 0.26) !important;
+  background-image: linear-gradient(180deg, rgb(var(--port-accent) / 0.06), transparent 32px);
+}
+
+html[data-port-theme="kestrel-neon-day"] :is(pre, code, textarea, input) {
+  caret-color: rgb(var(--port-accent));
+}
+
+html[data-port-theme="kestrel-neon-day"] aside nav [aria-current="page"] {
+  border-left: 2px solid rgb(var(--port-accent-2));
 }
 
 /* Accessibility: Global focus styles for keyboard navigation */

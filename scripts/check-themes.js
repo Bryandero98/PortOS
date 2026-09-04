@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_THEME_ID,
   LEGACY_THEME_ALIASES,
+  THEME_EFFECTS,
   THEME_IDS,
   THEMES,
   getTheme,
@@ -123,6 +124,10 @@ async function main() {
     assert(theme.accent?.startsWith('#'), `${id} needs a hex accent`);
     assert(Array.isArray(theme.swatches) && theme.swatches.length >= 4, `${id} needs at least four swatches`);
 
+    for (const effect of theme.effects ?? []) {
+      assert(THEME_EFFECTS.includes(effect), `${id} lists unknown effect ${effect}`);
+    }
+
     assert(isPlainObject(theme.colors), `${id} colors must be a plain object`);
     assert(isPlainObject(theme.tokens), `${id} tokens must be a plain object`);
 
@@ -149,6 +154,9 @@ async function main() {
     );
   }
   assert(css.includes('data-port-theme'), 'index.css must include the theme runtime layer');
+  for (const effect of THEME_EFFECTS) {
+    assert(css.includes(`data-port-theme-effects~="${effect}"`), `index.css has no shared block for effect ${effect}`);
+  }
 
   console.log(`Theme contract OK: ${THEME_IDS.join(', ')}`);
 }
