@@ -32,13 +32,17 @@ const UPDATE_PS1 = join(PATHS.root, 'update.ps1');
  *
  * @param {string} tag - The release tag that triggered the update (for logging)
  * @param {function} emit - Callback (step, status, message) for progress
+ * @param {object} [options]
+ * @param {string[]} [options.forceCleanWorkspaces] - workspaces to reinstall from scratch
+ * @param {function} [options.onLaunched] - called once the script is spawned, before
+ *   the returned promise starts tracking its lifetime
  * @returns {Promise<{success: boolean, version?: string, failedStep?: string, errorMessage?: string}>}
  */
 // Workspaces update.sh / update.ps1 know how to clean-reinstall — the env
 // passthrough is allowlisted to these so nothing arbitrary reaches the scripts.
 const CLEANABLE_WORKSPACES = new Set(['.', 'client', 'server', 'autofixer']);
 
-export async function executeUpdate(tag, emit, { forceCleanWorkspaces } = {}) {
+export async function executeUpdate(tag, emit, { forceCleanWorkspaces, onLaunched } = {}) {
   const isWindows = process.platform === 'win32';
   const cmd = isWindows ? 'powershell' : 'bash';
   const args = isWindows
@@ -100,6 +104,13 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces } = {}) {
         env: childEnv,
         controlDir
       });
+
+  // The script is running from here on. Everything ABOVE can still refuse (a
+  // prior update script is still alive) or throw (spawn error); nothing below
+  // can — the returned promise then tracks the script's whole lifetime. A
+  // caller that must tell "the launch failed" from "the update failed" waits on
+  // this signal rather than on the promise. See `portosSelfUpdate`'s launch gate.
+  onLaunched?.();
 
   return new Promise((resolve) => {
     let lastStep = 'starting';
