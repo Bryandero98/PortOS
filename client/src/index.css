@@ -138,7 +138,6 @@
   --port-card-surface-image: none;
   --port-card-surface-size: auto;
   --port-focus-shadow: 0 0 0 4px rgb(var(--port-focus-ring) / 0.2);
-  --port-field-focus-shadow: none;
   --port-nav-active-rule: none;
   /* `inherit`, not `none` — `text-shadow` is naturally inherited, and Black
      ICE's body-wide glow used to reach this element through that inheritance.
@@ -888,15 +887,27 @@ html[data-port-theme] :is(
   box-shadow: var(--port-shadow-card);
 }
 
-/* Card border tint + top wash, tokenized (#6248) — was 8 near-identical
-   per-theme selector blocks differing only in a border alpha and a
-   background-image. Scoped to the same narrow `.bg-port-card, /50` pair every
-   one of those blocks actually used (not the wide list above) so a theme that
-   never overrode these tokens renders byte-identical to before. */
+/* Card top wash, tokenized (#6248) — was 8 near-identical per-theme selector
+   blocks differing only in a border alpha and a background-image. The image
+   half is safe to share unconditionally (default `none`/`auto` is a true
+   no-op). The border half is NOT shared here — see the theme-scoped rule
+   below: an unconditional `border-color` here would out-specificity a
+   component's own semantic border class (`border-port-accent` for a
+   "selected" card, `border-port-error`, …) on every theme, not just the ones
+   that used to override it. */
 html[data-port-theme] :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
-  border-color: rgb(var(--port-card-border-color) / var(--port-card-border-alpha)) !important;
   background-image: var(--port-card-surface-image);
   background-size: var(--port-card-surface-size);
+}
+
+/* Card border tint, tokenized (#6248) — scoped to the exact themes that
+   overrode it before (specificity matters here: this selector shape is what
+   let the theme tint win over `.border-port-border` while still losing to a
+   component's own semantic border class at equal specificity elsewhere). A
+   theme not listed here never applied this override and still doesn't. */
+html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="black-ice-terminal"], [data-port-theme="black-ice-terminal-day"], [data-port-theme-family="kestrel"])
+  :is(.bg-port-card, [class~="bg-port-card/50"]):is(.border, .rounded, .rounded-lg, .rounded-xl, .rounded-2xl) {
+  border-color: rgb(var(--port-card-border-color) / var(--port-card-border-alpha)) !important;
 }
 
 html[data-port-theme] :is(.shadow-lg, .shadow-xl, .shadow-2xl) {
@@ -1629,13 +1640,18 @@ a:focus-visible,
   box-shadow: var(--port-focus-shadow);
 }
 
-/* Field focus shadow, tokenized (#6248) — was 3 per-theme copies of the same
-   `:is(input, textarea, select):focus, button:focus-visible, a:focus-visible`
-   block. The button/link half is `--port-focus-shadow` above (shared, not
-   per-theme-duplicated to begin with); `--port-field-focus-shadow` covers
-   fields, which have no box-shadow by default (`none`), unlike buttons. */
-:is(input, textarea, select):focus {
-  box-shadow: var(--port-field-focus-shadow);
+/* Field + button/link focus glow, tokenized (#6248) — was 3 per-theme copies
+   of this exact `:is(input, textarea, select):focus, button:focus-visible,
+   a:focus-visible` block. Kept theme-scoped rather than folded into the bare
+   `button:focus-visible` rule above: that rule's specificity is lower than
+   `.bg-port-accent`'s `box-shadow: var(--port-shadow-interactive)`, so an
+   accent-colored button would lose its focus glow to the interactive shadow.
+   Restoring the original per-theme selector shape (specificity, not the
+   values) keeps these three themes' stronger glow winning, same as before. */
+html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="kestrel-neon"]) :is(input, textarea, select):focus,
+html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="kestrel-neon"]) button:focus-visible,
+html:is([data-port-theme="lumen-glass"], [data-port-theme="lumen-glass-day"], [data-port-theme="kestrel-neon"]) a:focus-visible {
+  box-shadow: var(--port-focus-shadow);
 }
 
 /* DRY pointer cursor for interactive elements. Tailwind v4 dropped the
