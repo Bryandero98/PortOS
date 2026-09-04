@@ -411,16 +411,42 @@ async function runAgentSpawn(task) {
       // `in_progress` record clobbered to `blocked` — which outranks `in_progress`
       // in the claim-aware merge. Transient failures fall through, skip the block,
       // and stay pending to retry.
+      // A configured orchestration lane that refused to substitute providers
+      // (#5993) is its OWN terminal outcome, not a generic provider failure: the
+      // fix is specific to the role ("authenticate that CLI", "pick another model
+      // for the implementer", "give it a fallbackProvider"), and a run that
+      // stopped for it must never be reported as anything else. The structured
+      // detail rides along on the task metadata, the `agent:error` event, and the
+      // ledger below so each surface names the role and provider itself.
+      const lane = resolution.orchestrationLane || null;
       if (resolution.permanent) {
         await updateTask(task.id, {
           status: 'blocked',
           metadata: {
             ...task.metadata,
             blockedReason: resolution.error,
-            blockedCategory: 'provider-config',
+            blockedCategory: lane ? 'orchestration-lane-unavailable' : 'provider-config',
+            ...(lane ? { orchestrationLane: lane } : {}),
             blockedAt: new Date().toISOString()
           }
         }, task.taskType || 'user').catch(() => {});
+      }
+      // Recorded BEFORE cleanup so the ledger holds the reason even if cleanup
+      // throws. No runId exists — the run never spawned — so this is keyed by the
+      // agent id, which is exactly the `agent:<id>` fallback `runEventKey` has.
+      if (lane) {
+        await appendRunEvent({
+          kind: 'run.lane-refused',
+          agentId,
+          taskId: task.id,
+          eventId: `lane-refused:${agentId}:${lane.role}`,
+          data: {
+            role: lane.role,
+            requestedProvider: lane.requestedProvider,
+            requestedModel: lane.requestedModel,
+            reason: lane.reason,
+          },
+        });
       }
       await cleanupOnError(resolution.error);
       cosEvents.emit('agent:error', {
@@ -428,6 +454,7 @@ async function runAgentSpawn(task) {
         error: resolution.error,
         ...(resolution.providerId && { providerId: resolution.providerId }),
         ...(resolution.providerStatus && { providerStatus: resolution.providerStatus }),
+        ...(lane && { orchestrationLane: lane }),
       });
       return null;
     }
@@ -720,7 +747,8 @@ async function runAgentSpawn(task) {
       model: selectedModel,
       provider,
       workspacePath,
-      appName: resolvedAppName
+      appName: resolvedAppName,
+      orchestrationLane: resolution.orchestrationLane ?? null
     });
     const executionMode = !spawnHeadless ? (dispatchUseRunner ? 'runner-tui' : 'tui') : dispatchUseRunner ? 'runner' : 'direct';
 

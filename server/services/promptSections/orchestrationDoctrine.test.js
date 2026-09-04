@@ -46,3 +46,28 @@ describe('buildOrchestrationDoctrineSection', () => {
     expect(section).toMatch(/never rounded/);
   });
 });
+
+describe('fail-closed lane doctrine (#5993)', () => {
+  const orchestrated = (profile) => ({
+    metadata: { orchestrationMode: 'orchestrated', orchestrationProfile: profile },
+  });
+
+  it('tells the architect a pinned lane has no substitute', () => {
+    const section = buildOrchestrationDoctrineSection(orchestrated({ implementer: { provider: 'p-cheap' } }));
+    expect(section).toContain('the run STOPS — no other provider is substituted for this lane');
+  });
+
+  it('names the one alternate a lane may use', () => {
+    const section = buildOrchestrationDoctrineSection(orchestrated({
+      implementer: { provider: 'p-cheap', fallbackProvider: 'p-cheap-2', fallbackModel: 'm-cheap-2' },
+    }));
+    expect(section).toContain('the lane may use `p-cheap-2` with model `m-cheap-2` — and nothing else');
+    expect(section).not.toContain('the run STOPS — no other provider is substituted for this lane.\n- **implementer**');
+  });
+
+  it('says nothing about substitution for a role that pins nothing', () => {
+    const section = buildOrchestrationDoctrineSection(orchestrated({ architect: { provider: 'p1' } }));
+    expect(section).toContain('- **reviewer** —');
+    expect(section.split('\n').find(l => l.startsWith('- **reviewer**'))).not.toContain('STOPS');
+  });
+});

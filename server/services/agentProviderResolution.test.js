@@ -513,3 +513,147 @@ describe('orchestration profiles (#5992)', () => {
     expect(result.provider.id).toBe('p-pinned');
   });
 });
+
+/**
+ * Fail-closed orchestration lanes (#5993).
+ *
+ * The regression these exist for: a cheap cross-vendor implementer/architect
+ * lane silently becoming the expensive same-vendor lane. Every case below is a
+ * point where the generic pin → active → fallback chain WOULD have substituted
+ * a provider, and asserts it refuses instead.
+ */
+describe('resolveAgentProviderAndModel — fail-closed orchestration lanes', () => {
+  const orchestrated = (architect, extraMetadata = {}) => ({
+    id: 'task-orch',
+    metadata: {
+      orchestrationMode: 'orchestrated',
+      orchestrationProfile: { architect },
+      ...extraMetadata,
+    },
+  });
+
+  it('refuses to fall back to the active provider when the lane provider is not configured', async () => {
+    getProviderById.mockResolvedValue(null);
+    getActiveProvider.mockResolvedValue({ id: 'p-active', type: 'cli', defaultModel: 'm-active' });
+
+    const r = await resolveAgentProviderAndModel(orchestrated({ provider: 'p-cheap', model: 'm-cheap' }));
+
+    expect(r.ok).toBe(false);
+    expect(r.permanent).toBe(true);
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: 'p-cheap',
+      requestedModel: 'm-cheap',
+      reason: 'no provider with that id is configured on this install',
+    });
+    expect(r.error).toContain('architect');
+    expect(r.error).toContain('p-cheap');
+    expect(getActiveProvider).not.toHaveBeenCalled();
+  });
+
+  it('refuses the generic fallback chain when a lane provider is unavailable', async () => {
+    getProviderById.mockResolvedValue({ id: 'p-cheap', type: 'cli', defaultModel: 'm-cheap' });
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockReturnValue({ message: 'not authenticated', reason: 'auth' });
+
+    const r = await resolveAgentProviderAndModel(
+      // A run-level fallback is configured and must still be ignored: it is the
+      // exact silent collapse onto the architect's provider this closes.
+      orchestrated({ provider: 'p-cheap' }, { fallbackProvider: 'p-premium' }),
+    );
+
+    expect(r.ok).toBe(false);
+    expect(r.permanent).toBe(true);
+    expect(r.orchestrationLane.reason).toContain('not authenticated');
+    expect(r.orchestrationLane.reason).toContain('no architect.fallbackProvider is configured');
+    expect(getFallbackProvider).not.toHaveBeenCalled();
+  });
+
+  it('honors the same-role alternate and records the substitution', async () => {
+    const cheap = { id: 'p-cheap', type: 'cli', defaultModel: 'm-cheap' };
+    const alternate = { id: 'p-cheap-2', type: 'cli', models: ['alt-m'], defaultModel: 'alt-default' };
+    getProviderById.mockImplementation(async (id) => (id === 'p-cheap' ? cheap : alternate));
+    isProviderAvailable.mockImplementation((id) => id === 'p-cheap-2');
+    getProviderStatus.mockReturnValue({ message: 'rate limited', reason: 'limit' });
+
+    const r = await resolveAgentProviderAndModel(orchestrated({
+      provider: 'p-cheap',
+      fallbackProvider: 'p-cheap-2',
+      fallbackModel: 'alt-m',
+    }));
+
+    expect(r.ok).toBe(true);
+    expect(r.provider).toBe(alternate);
+    expect(r.selectedModel).toBe('alt-m');
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: 'p-cheap',
+      providerId: 'p-cheap-2',
+      model: 'alt-m',
+      substitution: { role: 'architect', from: 'p-cheap', to: 'p-cheap-2', reason: 'rate limited' },
+    });
+    expect(getFallbackProvider).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the same-role alternate is itself unavailable', async () => {
+    getProviderById.mockImplementation(async (id) => ({ id, type: 'cli', defaultModel: `m-${id}` }));
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockImplementation((id) => ({ message: `${id} down`, reason: 'down' }));
+
+    const r = await resolveAgentProviderAndModel(orchestrated({
+      provider: 'p-cheap',
+      fallbackProvider: 'p-cheap-2',
+    }));
+
+    expect(r.ok).toBe(false);
+    expect(r.orchestrationLane.reason).toContain('p-cheap-2');
+    expect(r.orchestrationLane.reason).toContain('also unavailable');
+  });
+
+  it('refuses a model-only lane rather than inheriting a swapped provider', async () => {
+    getActiveProvider.mockResolvedValue(null);
+
+    const r = await resolveAgentProviderAndModel(orchestrated({ model: 'm-cheap' }));
+
+    expect(r.ok).toBe(false);
+    expect(r.permanent).toBe(true);
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: null,
+      requestedModel: 'm-cheap',
+      reason: 'no active AI provider is configured for it to inherit',
+    });
+  });
+
+  it('reports the lane a healthy orchestrated run actually ran on', async () => {
+    const cheap = { id: 'p-cheap', type: 'cli', models: ['m-default'] };
+    getProviderById.mockResolvedValue(cheap);
+
+    const r = await resolveAgentProviderAndModel(orchestrated({ provider: 'p-cheap' }));
+
+    expect(r.ok).toBe(true);
+    expect(r.orchestrationLane).toEqual({
+      role: 'architect',
+      requestedProvider: 'p-cheap',
+      providerId: 'p-cheap',
+      model: 'm-default',
+    });
+  });
+
+  it('leaves a direct-mode run on the generic fallback chain', async () => {
+    const primary = { id: 'p1', type: 'cli' };
+    const fallback = { id: 'p2', type: 'cli', models: ['m-fb'] };
+    getActiveProvider.mockResolvedValue(primary);
+    isProviderAvailable.mockReturnValue(false);
+    getProviderStatus.mockReturnValue({ message: 'usage-limit', reason: 'limit' });
+    getAllProviders.mockResolvedValue({ providers: [primary, fallback] });
+    getFallbackProvider.mockResolvedValue({ provider: fallback, source: 'system', model: 'm-fb' });
+
+    const r = await resolveAgentProviderAndModel({ id: 'task-direct-2', metadata: {} });
+
+    expect(r.ok).toBe(true);
+    expect(r.provider).toBe(fallback);
+    expect(r.orchestrationLane).toBeUndefined();
+    expect(getFallbackProvider).toHaveBeenCalled();
+  });
+});

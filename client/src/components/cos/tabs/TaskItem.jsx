@@ -679,6 +679,22 @@ export default function TaskItem({ task, agent = null, isSystem, spawning = fals
                   {/* Clamped: server-side auto-blocks write `blockedReason` from
                       LLM error analysis / raw stderr, which can run very long. */}
                   <div className="min-w-0 flex-1">
+                    {/* A fail-closed orchestration lane (#5993) reads as a bare
+                        "agent failed" without this: the reason sentence is long
+                        and gets clamped, so the two facts that make the fix
+                        obvious — WHICH role stopped and WHICH provider it wanted
+                        — get a headline of their own above the clamp. */}
+                    {task.metadata?.blockedCategory === 'orchestration-lane-unavailable' && task.metadata?.orchestrationLane?.role && (
+                      <div className="font-medium text-port-error mb-0.5">
+                        {`${task.metadata.orchestrationLane.role} lane unavailable`}
+                        {task.metadata.orchestrationLane.requestedProvider
+                          ? ` — ${task.metadata.orchestrationLane.requestedProvider}`
+                          : ''}
+                        {task.metadata.orchestrationLane.requestedModel
+                          ? ` / ${task.metadata.orchestrationLane.requestedModel}`
+                          : ''}
+                      </div>
+                    )}
                     <CollapsibleText
                       id={`task-blocker-${idScope}-${task.id}`}
                       text={task.metadata.blocker || task.metadata.blockedReason}

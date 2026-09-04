@@ -136,6 +136,11 @@ const orchestrationRoleSchema = z.object({
   // Per-role reasoning effort. The architect's own rung for its planning pass;
   // for the implementer it is the DEFAULT a spec's `REASONING:` line overrides.
   effort: z.enum(EFFORT_LEVELS).optional(),
+  // The role's SAME-ROLE alternate (#5993) — the only provider swap a configured
+  // lane accepts. Without one, an unavailable lane stops the run rather than
+  // walking the run-level fallback chain back onto the architect's provider.
+  fallbackProvider: z.string().trim().min(1).max(120).optional(),
+  fallbackModel: z.string().trim().min(1).max(300).optional(),
 }).strict();
 
 export const orchestrationProfileSchema = z.object(

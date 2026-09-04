@@ -112,6 +112,36 @@ async function resolvePublicReviewAgentProvider(task, posture) {
   return { ok: true, provider, selectedModel, modelSelection };
 }
 
+/**
+ * A configured orchestration lane refused to substitute providers (#5993).
+ *
+ * Shaped so every consumer reads one structure: the caller blocks the task with
+ * `error` as its reason, the `agent:error` event and the run ledger carry
+ * `orchestrationLane` verbatim, and the client names the role and provider from
+ * the same fields rather than re-parsing the sentence.
+ *
+ * Always PERMANENT. That is the point of a fail-closed lane: a rate-limited
+ * cheap provider that would recover in an hour is still a lane the user has to
+ * decide about, and quietly re-dispatching until it comes back is the silent
+ * behavior this replaces. Unblocking is one click once the CLI is authenticated
+ * or a `fallbackProvider` is configured; a lane that retried itself would spend
+ * the architect's budget with nobody watching.
+ */
+function laneUnavailable({ role, requestedProvider, requestedModel, reason }) {
+  const requested = requestedProvider
+    ? `its provider "${requestedProvider}"${requestedModel ? ` (model "${requestedModel}")` : ''} is unavailable`
+    : `its pinned model "${requestedModel}" has nothing to run on`;
+  return {
+    ok: false,
+    permanent: true,
+    error: `Orchestrated ${role} lane stopped — ${requested}: ${reason}. `
+      + `PortOS will not substitute another provider for a configured lane; authenticate or repair that provider, `
+      + `pick another model for the ${role} role, or configure ${role}.fallbackProvider.`,
+    providerId: requestedProvider || undefined,
+    orchestrationLane: { role, requestedProvider: requestedProvider || null, requestedModel: requestedModel || null, reason },
+  };
+}
+
 async function resolveOrdinaryProviderAndModel(task) {
   // A task can pin a specific provider via metadata.provider (e.g. a CoS job's
   // per-job AI override). Resolve it BEFORE the active-provider availability
@@ -126,19 +156,54 @@ async function resolveOrdinaryProviderAndModel(task) {
   // (availability, fallback swap, the model-pin invalidation a swap triggers)
   // rather than growing a second, subtly-different resolution path. Null on a
   // `direct` task, so the metadata pin stays authoritative as before.
-  const userProviderId = roleAssignment(task, PRIMARY_ORCHESTRATION_ROLE)?.provider || task.metadata?.provider;
+  //
+  // …with ONE exception, and it is the whole of #5993. An orchestrated run's
+  // roles exist BECAUSE they are different providers: the implementer lane is
+  // cheap and cross-vendor on purpose. Swapping a configured lane onto whatever
+  // is healthy spends the architect's premium tokens on mechanical editing —
+  // the exact cost orchestration was turned on to avoid — and collapses the
+  // vendor split with nobody told. So when the role carries an assignment at
+  // all, this lane is FAIL-CLOSED: the only substitution it accepts is the
+  // role's own `fallbackProvider`, and anything else stops the run loudly.
+  // `direct`-mode runs keep the pin → active → fallback chain untouched
+  // (`roleAssignment` returns null for every role on one).
+  const laneRole = PRIMARY_ORCHESTRATION_ROLE;
+  const lane = roleAssignment(task, laneRole);
+  const userProviderId = lane?.provider || task.metadata?.provider;
   let userProviderMissing = false;
   if (userProviderId) {
     const userProvider = await getProviderById(userProviderId);
     if (userProvider) {
       emitLog('info', `Using user-specified provider: ${userProviderId}`, { taskId: task.id });
       provider = userProvider;
+    } else if (lane?.provider) {
+      // A configured lane whose provider record does not exist is a config error
+      // that re-fails identically forever — never "use the active provider".
+      return laneUnavailable({
+        role: laneRole,
+        requestedProvider: userProviderId,
+        requestedModel: lane.model || null,
+        reason: 'no provider with that id is configured on this install',
+      });
     } else {
       userProviderMissing = true;
       emitLog('warn', `User-specified provider "${userProviderId}" not found, using active provider`, { taskId: task.id });
     }
   }
   if (!provider) provider = await getActiveProvider();
+  // A lane that pins only a MODEL inherits the active provider — so when there
+  // is no active provider it is the LANE that has nowhere to run, and it says so
+  // in the lane's own shape. Falling through to the generic
+  // "No active AI provider configured" below would lose the role, leaving the
+  // client with nothing to name.
+  if (lane && !provider) {
+    return laneUnavailable({
+      role: laneRole,
+      requestedProvider: null,
+      requestedModel: lane.model || null,
+      reason: 'no active AI provider is configured for it to inherit',
+    });
+  }
 
   if (!provider) {
     return { ok: false, error: 'No active AI provider configured' };
@@ -163,6 +228,9 @@ async function resolveOrdinaryProviderAndModel(task) {
   // Model" pin — it overrides the usual per-task model selection so the
   // user's chosen fallback provider+model pair is honored on agent runs.
   let fallbackModelPin = null;
+  // The one substitution a configured lane DID accept, recorded so the run
+  // ledger can show the tier really ran where the user said it could (#5993).
+  let laneSubstitution = null;
   const providerAvailable = isProviderAvailable(provider.id);
   if (!providerAvailable) {
     const status = getProviderStatus(provider.id);
@@ -172,36 +240,68 @@ async function resolveOrdinaryProviderAndModel(task) {
       reason: status.reason
     });
 
-    // Try to get a fallback provider (check task-level, then provider-level, then system default).
-    // getFallbackProvider indexes its providers arg by id, so pass a map — NOT the
-    // { activeProvider, providers: [...] } shape getAllProviders() returns (mirrors promptRunner.js).
-    const { providers: providerList = [] } = await getAllProviders();
-    const providersMap = Object.fromEntries(providerList.map((p) => [p.id, p]));
-    const taskFallbackId = task.metadata?.fallbackProvider;
-    const taskFallbackModel = task.metadata?.fallbackModel;
-    const fallbackResult = await getFallbackProvider(provider.id, providersMap, taskFallbackId, taskFallbackModel);
-
-    if (fallbackResult) {
-      emitLog('info', `Using fallback provider: ${fallbackResult.provider.id} (source: ${fallbackResult.source})`, {
+    // A configured lane never walks the GENERIC chain (#5993). Its only accepted
+    // substitution is the same-role alternate the user named on the role itself,
+    // and that alternate must be a real, currently-available provider — an
+    // alternate that is itself down is not a lane, it is the same silent
+    // collapse one hop later.
+    if (lane) {
+      const alternateId = lane.fallbackProvider;
+      const alternate = alternateId ? await getProviderById(alternateId) : null;
+      if (!alternate || !isProviderAvailable(alternate.id)) {
+        const why = !alternateId
+          ? `${status.message} (no ${laneRole}.fallbackProvider is configured)`
+          : !alternate
+            ? `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" is not a configured provider`
+            : `${status.message}, and its ${laneRole}.fallbackProvider "${alternateId}" is also unavailable (${getProviderStatus(alternate.id).message})`;
+        return laneUnavailable({
+          role: laneRole,
+          requestedProvider: provider.id,
+          requestedModel: lane.model || null,
+          reason: why,
+        });
+      }
+      emitLog('info', `Orchestrated ${laneRole} lane using its same-role alternate ${alternate.id}`, {
         taskId: task.id,
         primaryProvider: provider.id,
-        fallbackProvider: fallbackResult.provider.id,
-        fallbackSource: fallbackResult.source
+        fallbackProvider: alternate.id,
+        fallbackSource: `orchestration-${laneRole}`,
       });
-      provider = fallbackResult.provider;
-      fallbackModelPin = fallbackResult.model || null;
+      laneSubstitution = { role: laneRole, from: provider.id, to: alternate.id, reason: status.message };
+      provider = alternate;
+      fallbackModelPin = lane.fallbackModel || null;
     } else {
-      const errorMsg = `Provider ${provider.id} unavailable (${status.message}) and no fallback available`;
-      // TRANSIENT, never permanent: a null fallback here can mean a configured
-      // CLI/TUI fallback is merely momentarily down (getFallbackProvider skips
-      // unavailable candidates), so blocking would strand a task that recovers
-      // when that fallback returns. Permanence is decided by PROVIDER TYPE where we
-      // can actually inspect it — the harness check below, reached once the
-      // provider is available again — not inferred from a transient unavailable +
-      // null-fallback combination. A down api provider with no viable path retries
-      // cheaply (it fails fast here, spawning no agent) and self-heals to a
-      // permanent block the moment it becomes reachable.
-      return { ok: false, error: errorMsg, providerId: provider.id, providerStatus: status };
+      // Try to get a fallback provider (check task-level, then provider-level, then system default).
+      // getFallbackProvider indexes its providers arg by id, so pass a map — NOT the
+      // { activeProvider, providers: [...] } shape getAllProviders() returns (mirrors promptRunner.js).
+      const { providers: providerList = [] } = await getAllProviders();
+      const providersMap = Object.fromEntries(providerList.map((p) => [p.id, p]));
+      const taskFallbackId = task.metadata?.fallbackProvider;
+      const taskFallbackModel = task.metadata?.fallbackModel;
+      const fallbackResult = await getFallbackProvider(provider.id, providersMap, taskFallbackId, taskFallbackModel);
+
+      if (fallbackResult) {
+        emitLog('info', `Using fallback provider: ${fallbackResult.provider.id} (source: ${fallbackResult.source})`, {
+          taskId: task.id,
+          primaryProvider: provider.id,
+          fallbackProvider: fallbackResult.provider.id,
+          fallbackSource: fallbackResult.source
+        });
+        provider = fallbackResult.provider;
+        fallbackModelPin = fallbackResult.model || null;
+      } else {
+        const errorMsg = `Provider ${provider.id} unavailable (${status.message}) and no fallback available`;
+        // TRANSIENT, never permanent: a null fallback here can mean a configured
+        // CLI/TUI fallback is merely momentarily down (getFallbackProvider skips
+        // unavailable candidates), so blocking would strand a task that recovers
+        // when that fallback returns. Permanence is decided by PROVIDER TYPE where we
+        // can actually inspect it — the harness check below, reached once the
+        // provider is available again — not inferred from a transient unavailable +
+        // null-fallback combination. A down api provider with no viable path retries
+        // cheaply (it fails fast here, spawning no agent) and self-heals to a
+        // permanent block the moment it becomes reachable.
+        return { ok: false, error: errorMsg, providerId: provider.id, providerStatus: status };
+      }
     }
   }
 
@@ -317,5 +417,23 @@ async function resolveOrdinaryProviderAndModel(task) {
     ...(modelSelection.learningReason && { learningReason: modelSelection.learningReason })
   });
 
-  return { ok: true, provider, selectedModel, modelSelection };
+  return {
+    ok: true,
+    provider,
+    selectedModel,
+    modelSelection,
+    // What the run ledger records so `/cos/runs` can show the tier split really
+    // happened (#5993): the role this run was dispatched as, the provider it
+    // ACTUALLY ran on, and the one substitution — if any — the lane accepted.
+    // Absent on a `direct`-mode run, which has no roles to account for.
+    ...(lane ? {
+      orchestrationLane: {
+        role: laneRole,
+        requestedProvider: lane.provider || directProviderId,
+        providerId: provider.id,
+        model: selectedModel,
+        ...(laneSubstitution ? { substitution: laneSubstitution } : {}),
+      },
+    } : {}),
+  };
 }

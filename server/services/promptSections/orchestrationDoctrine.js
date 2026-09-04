@@ -31,7 +31,13 @@ function roleLine(task, role) {
     assignment?.effort ? `default reasoning \`${assignment.effort}\`` : null,
   ].filter(Boolean);
   const target = pins.length ? pins.join(', ') : 'this run’s own provider and model';
-  return `- **${role}** — ${ROLE_DUTIES[role]}. Runs on ${target}.`;
+  // The lane's ONE permitted substitution (#5993). Named here because the
+  // architect otherwise has no way to know a lane is fail-closed, and would plan
+  // around a fallback that does not exist.
+  const alternate = assignment?.fallbackProvider
+    ? ` If it is unavailable, the lane may use \`${assignment.fallbackProvider}\`${assignment.fallbackModel ? ` with model \`${assignment.fallbackModel}\`` : ''} — and nothing else.`
+    : (pins.length ? ' If it is unavailable, the run STOPS — no other provider is substituted for this lane.' : '');
+  return `- **${role}** — ${ROLE_DUTIES[role]}. Runs on ${target}.${alternate}`;
 }
 
 /**
