@@ -46,8 +46,8 @@ import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createPgFileFacade, resolvePgBackend } from '../lib/pgFileFacade.js';
-import { isTestRunner } from '../lib/db.js';
-import { resolveCodeRootForModule, resolveInstallRoot } from '../lib/dataRoot.js';
+import { isTestRunner } from '../lib/runtimeEnv.js';
+import { isInsideRealDataRoot } from '../lib/testDataIsolation.js';
 import { isUserActionActor, isUserActionType } from '../lib/userActionTypes.js';
 import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } from './userActionsDb.js';
 
@@ -55,14 +55,6 @@ import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } fr
 // test proxy (lib/mockPathsDataRoot.js), and a load-time join would both bind the
 // pre-mock value and crash any suite whose fileUtils stub omits PATHS.data.
 const eventsFile = () => join(PATHS.data, 'user-action-events.json');
-
-// The REAL repo data/ dir, computed independently of the (possibly test-mocked)
-// `PATHS` import above via the same resolveCodeRootForModule/resolveInstallRoot
-// technique lib/paths.js itself uses (both go through the shared helper, so
-// they can't silently drift apart) — so a suite that redirects PATHS.data to a
-// temp root can't accidentally spoof this comparison too. `dataRoot.js` reads
-// its own env var directly rather than through anything a PATHS mock would touch.
-const REAL_REPO_DATA_DIR = join(resolveInstallRoot(resolveCodeRootForModule(import.meta.url)), 'data');
 
 /**
  * Structural guard against the bug class in #3683/#3687/#5605: a suite that
@@ -77,13 +69,16 @@ const REAL_REPO_DATA_DIR = join(resolveInstallRoot(resolveCodeRootForModule(impo
  *
  * Reads are guarded as well as writes: the live ledger holds machine-local
  * operator records (ADR docs/decisions/2026-08-08-privacy-records-machine-local.md),
- * so an untethered suite must not pull them into the test process either.
+ * so an untethered suite must not pull them into the test process either. That
+ * read half is why this stays a local guard rather than folding into #6176's
+ * write backstop; the real-root derivation itself is shared with it, so the two
+ * can't disagree about which tree is live.
  *
  * @param {string} attempted what the file backend was about to do, e.g.
  *   `'recordUserAction attempted a write of'`
  */
 function assertTestDataRootRedirected(attempted) {
-  if (!isTestRunner() || PATHS.data !== REAL_REPO_DATA_DIR) return;
+  if (!isTestRunner() || !isInsideRealDataRoot(eventsFile())) return;
   throw new Error(
     `${attempted} user-action-events.json in the repo's real data/ tree. ` +
       'This suite exercises the user-action ledger but never redirected ' +

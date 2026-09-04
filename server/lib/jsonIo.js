@@ -1,8 +1,8 @@
 /** JSON, JSONL, and cached-store file IO helpers. */
 import { existsSync } from 'fs';
-import { appendFile, open, readFile, readdir, stat } from 'fs/promises';
+import { open, readFile, readdir, stat } from 'fs/promises';
 import { basename, dirname } from 'path';
-import { atomicWrite, ensureDir, sleep } from './fileCore.js';
+import { appendFileGuarded, atomicWrite, ensureDir, sleep } from './fileCore.js';
 import { createFileWriteQueue } from './fileWriteQueue.js';
 
 const isWindows = () => process.platform === 'win32';
@@ -472,7 +472,7 @@ export async function appendJSONLine(filePath, value) {
     throw new TypeError('appendJSONLine value must be JSON-serializable');
   }
   await ensureDir(dirname(filePath));
-  await appendFile(filePath, serialized + '\n');
+  await appendFileGuarded(filePath, serialized + '\n');
 }
 
 /**
