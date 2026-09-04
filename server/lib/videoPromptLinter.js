@@ -107,8 +107,9 @@ export function lintClipPrompt(clip, { bible, maxLength = MAX_CLIP_PROMPT_LENGTH
  * @returns {{pass: boolean, results: Array<{index: number, pass: boolean, reasons: string[]}>}}
  */
 export function lintClips(clips, { bible, maxLength = MAX_CLIP_PROMPT_LENGTH } = {}) {
-  const results = (clips || []).map((clip, index) => {
-    const previousFraming = clip?.previousFraming ?? clips[index - 1]?.framing ?? null;
+  const clipList = Array.isArray(clips) ? clips : [];
+  const results = clipList.map((clip, index) => {
+    const previousFraming = clip?.previousFraming ?? clipList[index - 1]?.framing ?? null;
     return { index, ...lintClipPrompt({ ...clip, previousFraming }, { bible, maxLength }) };
   });
   return { pass: results.every((r) => r.pass), results };

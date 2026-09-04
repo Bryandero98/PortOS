@@ -154,6 +154,9 @@ describe('lintClips', () => {
   it('never throws on a non-array clips argument', () => {
     expect(() => lintClips(null, { bible })).not.toThrow();
     expect(() => lintClips(undefined, { bible })).not.toThrow();
+    expect(() => lintClips('not-an-array', { bible })).not.toThrow();
+    expect(() => lintClips(42, { bible })).not.toThrow();
     expect(lintClips(null, { bible })).toEqual({ pass: true, results: [] });
+    expect(lintClips('not-an-array', { bible })).toEqual({ pass: true, results: [] });
   });
 });
