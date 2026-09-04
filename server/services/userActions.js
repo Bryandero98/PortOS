@@ -46,7 +46,7 @@ import { atomicWrite, ensureDir, PATHS, readJSONFile } from '../lib/fileUtils.js
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createPgFileFacade, resolvePgBackend } from '../lib/pgFileFacade.js';
-import { isTestRunner } from '../lib/runtimeEnv.js';
+import { isTestRunner, isVitestRunner } from '../lib/runtimeEnv.js';
 import { isUserActionActor, isUserActionType } from '../lib/userActionTypes.js';
 import { insertUserActionEvent, listUserActionEvents, pruneUserActionEvents } from './userActionsDb.js';
 
@@ -85,7 +85,7 @@ const loadRealDataRootGuard = () => (realDataRootGuard ??= import('../lib/testDa
  *   `'recordUserAction attempted a write of'`
  */
 async function assertTestDataRootRedirected(attempted) {
-  if (!isTestRunner()) return;
+  if (!isVitestRunner()) return;
   const { isInsideRealDataRoot } = await loadRealDataRootGuard();
   if (!isInsideRealDataRoot(eventsFile())) return;
   throw new Error(

@@ -29,3 +29,24 @@
 export function isTestRunner() {
   return process.env.NODE_ENV === 'test' || process.env.VITEST != null;
 }
+
+/**
+ * Are we executing inside an actual Vitest worker — narrower than
+ * `isTestRunner()`.
+ *
+ * `NODE_ENV=test` alone is not "running under Vitest": it is also the
+ * documented signal a plain `node` process uses to select the file-backend
+ * escape hatch (see AGENTS.md "Storage backend policy"), and `scripts/
+ * smoke-boot.js` sets it on the real `server/index.js` boot specifically so
+ * CI can smoke-test the server without Postgres. That smoke-booted server
+ * legitimately writes its own runtime files into the real `data/` tree — the
+ * exact thing `lib/testDataIsolation.js`'s write guard exists to catch a
+ * *test suite* doing. Only `process.env.VITEST` (set by every Vitest worker,
+ * never by a bare `node` invocation) tells the two apart, so the write guard
+ * gates on this, not `isTestRunner()`.
+ *
+ * @returns {boolean}
+ */
+export function isVitestRunner() {
+  return process.env.VITEST != null;
+}

@@ -31,9 +31,13 @@
  *
  * ## Scope
  *
- * Inert outside the test runner — production writes are never touched, and the
- * `isTestRunner()` check comes first everywhere so a production call costs two
- * `process.env` reads and no syscall.
+ * Inert outside an actual Vitest worker — production writes are never
+ * touched, and the `isVitestRunner()` check (narrower than `isTestRunner()`:
+ * only `process.env.VITEST`, not `NODE_ENV=test` alone — see its doc comment)
+ * comes first everywhere so a non-Vitest call costs one `process.env` read and
+ * no syscall. `NODE_ENV=test` alone is not enough here: `scripts/smoke-boot.js`
+ * sets it on the real server boot to select the file-backend escape hatch, and
+ * that boot's writes into the real `data/` tree are correct, not a leak.
  *
  * Under the runner it fires from the shared primitives in `fileCore.js` /
  * `jsonIo.js` (`atomicWrite`, `ensureDir`'s create path, `writeFileGuarded`,
@@ -60,7 +64,7 @@ import { existsSync, lstatSync, readlinkSync } from 'fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { resolveCodeRootForModule, resolveInstallRoot } from './dataRoot.js';
 import { canonicalizePath, isPathAtOrInsideDir } from './pathContainment.js';
-import { isTestRunner } from './runtimeEnv.js';
+import { isVitestRunner } from './runtimeEnv.js';
 
 // Resolved lazily, not at module load, so the realpath below sees a tree that
 // exists. Derived through `resolveCodeRootForModule`/`resolveInstallRoot` — the
@@ -175,7 +179,7 @@ export function isInsideRealDataRoot(target) {
  * @throws {Error} when the runner is active and `target` lands in the real root
  */
 export function assertNotRealDataWrite(target, operation) {
-  if (!isTestRunner() || !isInsideRealDataRoot(target)) return;
+  if (!isVitestRunner() || !isInsideRealDataRoot(target)) return;
   throw new Error(
     `${operation} refused: this test tried to write ${target} inside the install's real data/ tree ` +
       `(${realDataRoot()}). A test must never write into the developer's live data — see ` +
@@ -203,6 +207,6 @@ export function assertNotRealDataWrite(target, operation) {
  * @param {string} dir - the directory `ensureDir` is about to create
  */
 export function assertNotNewRealDataDir(dir) {
-  if (!isTestRunner() || existsSync(dir)) return;
+  if (!isVitestRunner() || existsSync(dir)) return;
   assertNotRealDataWrite(dir, 'ensureDir');
 }

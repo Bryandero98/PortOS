@@ -5,14 +5,18 @@ import { createHash, randomUUID } from 'crypto';
 import { basename, dirname, extname, join } from 'path';
 import { promisify } from 'util';
 import { execFile } from './childProcess.js';
-import { isTestRunner } from './runtimeEnv.js';
+import { isVitestRunner } from './runtimeEnv.js';
 
-// The #6176 data-root guard is loaded ONLY under the test runner. `fileCore` is
+// The #6176 data-root guard is loaded ONLY under an actual Vitest worker —
+// `isVitestRunner()`, narrower than `isTestRunner()`, because `scripts/
+// smoke-boot.js` sets NODE_ENV=test on the real server boot to select the
+// file-backend escape hatch, and that boot's writes into the real data/ tree
+// are correct, not a leak (see `isVitestRunner()`'s doc comment). `fileCore` is
 // reached by essentially every server suite, so a static import of the guard
 // (and its `dataRoot`/`pathContainment` closure) landed on every one of them and
 // pushed `importScoping.test.js`'s tree-wide budget over its ceiling. Deferring
-// it behind `isTestRunner()` — the shape server/AGENTS.md prescribes — also means
-// production never loads the guard at all, rather than loading it to no-op.
+// it — the shape server/AGENTS.md prescribes — also means production never
+// loads the guard at all, rather than loading it to no-op.
 // The module promise is memoized, so the dynamic import resolves once per worker.
 let guardModule = null;
 const loadGuard = () => (guardModule ??= import('./testDataIsolation.js'));
@@ -100,7 +104,7 @@ export function watchForFile(filePath, onDetected, { settleMs = 50, pollMs = FIL
 export async function ensureDir(dir) {
   // #6176 — refuse a NEW dir in the real data/ tree under the runner. Only the
   // CREATE path: `mkdir -p` on an existing directory mutates nothing.
-  if (isTestRunner()) (await loadGuard()).assertNotNewRealDataDir(dir);
+  if (isVitestRunner()) (await loadGuard()).assertNotNewRealDataDir(dir);
   // mkdir with recursive: true is idempotent - it succeeds if dir exists.
   // BUT on Windows it can intermittently throw UNKNOWN/EPERM/EEXIST even when
   // the directory already exists or is created concurrently — antivirus locks,
@@ -176,7 +180,7 @@ export async function atomicWrite(filePath, data) {
   // #6176 — the filesystem analogue of db.js's row-write backstop. Refuses
   // before any bytes are produced, so a leaking suite cannot even leave a temp
   // file behind in the real tree.
-  if (isTestRunner()) (await loadGuard()).assertNotRealDataWrite(filePath, 'atomicWrite');
+  if (isVitestRunner()) (await loadGuard()).assertNotRealDataWrite(filePath, 'atomicWrite');
   // Buffer must pass through unchanged — JSON.stringify on a Buffer produces
   // `{"type":"Buffer","data":[...]}` which corrupts binary writes (PNG, etc.).
   const payload = typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data, null, 2);
@@ -259,19 +263,19 @@ export async function atomicWrite(filePath, data) {
 
 /** Guarded `fs/promises.writeFile`. Same signature. */
 export async function writeFileGuarded(filePath, data, options) {
-  if (isTestRunner()) (await loadGuard()).assertNotRealDataWrite(filePath, 'writeFile');
+  if (isVitestRunner()) (await loadGuard()).assertNotRealDataWrite(filePath, 'writeFile');
   return writeFile(filePath, data, options);
 }
 
 /** Guarded `fs/promises.appendFile`. Same signature. */
 export async function appendFileGuarded(filePath, data, options) {
-  if (isTestRunner()) (await loadGuard()).assertNotRealDataWrite(filePath, 'appendFile');
+  if (isVitestRunner()) (await loadGuard()).assertNotRealDataWrite(filePath, 'appendFile');
   return appendFile(filePath, data, options);
 }
 
 /** Guarded `fs/promises.copyFile` — the DESTINATION is what gets written. */
 export async function copyFileGuarded(src, dest, mode) {
-  if (isTestRunner()) (await loadGuard()).assertNotRealDataWrite(dest, 'copyFile');
+  if (isVitestRunner()) (await loadGuard()).assertNotRealDataWrite(dest, 'copyFile');
   return copyFile(src, dest, mode);
 }
 

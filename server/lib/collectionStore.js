@@ -85,7 +85,7 @@ import { join } from 'path';
 import { readdir, lstat, rm } from 'fs/promises';
 import { atomicWrite, readJSONFile, ensureDir } from './fileUtils.js';
 import { createFileWriteQueue, createRecordWriteQueue } from './fileWriteQueue.js';
-import { isTestRunner } from './runtimeEnv.js';
+import { isVitestRunner } from './runtimeEnv.js';
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -378,7 +378,7 @@ export function createCollectionStore({
     // #6176 — a recursive delete is the most destructive form of a data-root
     // leak, so it takes the same guard the write primitives do. Loaded lazily
     // for the same import-budget reason as fileCore.js.
-    if (isTestRunner()) {
+    if (isVitestRunner()) {
       const { assertNotRealDataWrite } = await import('./testDataIsolation.js');
       assertNotRealDataWrite(recordDir(id), 'collectionStore delete');
     }
