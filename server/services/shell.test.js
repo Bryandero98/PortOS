@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { dirname } from 'path';
 
 let ptyInstances = [];
 let spawnImpl;
@@ -545,21 +546,29 @@ describe('changeSessionDirectory', () => {
 });
 
 describe('spawnCommandSession', () => {
+  // A REAL resolvable executable. `spawnCommandSession` resolves the command
+  // against the child PATH before spawning (there is no shell to report a
+  // missing binary), so a made-up provider name would fail that pre-flight
+  // rather than reach pty.spawn. node is the one binary this suite can name on
+  // any platform.
+  const REAL_BIN = process.execPath;
+  const REAL_BIN_DIR = dirname(process.execPath);
+
   it('spawns the command itself as the PTY, so no rc file runs before it (#6159)', () => {
     // The whole point of this entry point: a public-content review stage's
     // environment is an allowlist, and an interactive login shell would run the
     // operator's `.zshrc` between that allowlist and the provider. Asserting
     // WHICH process the PTY is, is what proves no rc file can execute.
-    const id = shell.spawnCommandSession('claude', ['--permission-mode', 'plan'], {
+    const id = shell.spawnCommandSession(REAL_BIN, ['--permission-mode', 'plan'], {
       cwd: '/tmp/ws',
-      env: { PATH: '/usr/bin', HOME: '/home/example' },
+      env: { PATH: REAL_BIN_DIR, HOME: '/home/example' },
       kind: 'agent-tui',
       agentId: 'agent-1',
     });
 
     expect(typeof id).toBe('string');
     const [spawnedCommand, spawnedArgs] = vi.mocked(defaultSpawn).mock.calls[0];
-    expect(spawnedCommand).toBe('claude');
+    expect(spawnedCommand).toBe(REAL_BIN);
     expect(spawnedArgs).toEqual(['--permission-mode', 'plan']);
     // No shell binary anywhere in the launch, and no shell recorded on the
     // session (which is what `changeSessionDirectory` reads).
@@ -573,13 +582,13 @@ describe('spawnCommandSession', () => {
     // just withheld, which is the regression this guards.
     process.env.PORTOS_TEST_6159_SECRET = 'must-not-reach-the-child';
     try {
-      shell.spawnCommandSession('claude', [], {
+      shell.spawnCommandSession(REAL_BIN, [], {
         cwd: '/tmp/ws',
-        env: { PATH: '/usr/bin', HOME: '/home/example' },
+        env: { PATH: REAL_BIN_DIR, HOME: '/home/example' },
       });
       const { env } = vi.mocked(defaultSpawn).mock.calls[0][2];
       expect(env.PORTOS_TEST_6159_SECRET).toBeUndefined();
-      expect(env.PATH).toBe('/usr/bin');
+      expect(env.PATH).toBe(REAL_BIN_DIR);
       // PWD is pinned to the spawn cwd for the CLIs that read it (#3193).
       expect(env.PWD).toBe('/tmp/ws');
       expect(env.TERM).toBe('xterm-256color');
@@ -592,9 +601,9 @@ describe('spawnCommandSession', () => {
     const onData = vi.fn();
     const onExit = vi.fn();
     const observer = makeSocket('obs-direct');
-    const id = shell.spawnCommandSession('claude', [], {
+    const id = shell.spawnCommandSession(REAL_BIN, [], {
       cwd: '/tmp/ws',
-      env: { PATH: '/usr/bin' },
+      env: { PATH: REAL_BIN_DIR },
       kind: 'agent-tui',
       agentId: 'agent-1',
       label: 'Local Claude TUI agent-1',
@@ -619,17 +628,28 @@ describe('spawnCommandSession', () => {
 
   it('refuses a cd rather than typing it into the agent', () => {
     // Same reasoning as an external TUI run: there is no shell reading that line.
-    const id = shell.spawnCommandSession('claude', [], { cwd: '/tmp/ws', env: { PATH: '/usr/bin' } });
+    const id = shell.spawnCommandSession(REAL_BIN, [], { cwd: '/tmp/ws', env: { PATH: REAL_BIN_DIR } });
     expect(shell.changeSessionDirectory(id, '/tmp/other')).toBe(false);
     expect(ptyInstances[0].write).not.toHaveBeenCalled();
   });
 
+  it('resolves the command against the CHILD PATH before spawning, and names it when missing', () => {
+    // A PTY has no shell to print "command not found" — on POSIX node-pty forks
+    // and `execvp` fails in the CHILD, which exits 1 with an empty screen. So a
+    // missing binary has to be caught before the spawn, or the run finalizes as
+    // a bare exit-1 with no cause. The env's PATH is the one that counts: a
+    // caller may replace it with only the provider's own bin dir.
+    expect(() => shell.spawnCommandSession('definitely-not-installed-xyz', [], {
+      cwd: '/tmp/ws',
+      env: { PATH: '/nonexistent-bin' },
+    })).toThrow(/^Command executable unavailable: definitely-not-installed-xyz/);
+    expect(vi.mocked(defaultSpawn)).not.toHaveBeenCalled();
+  });
+
   it('propagates a PTY that will not open instead of collapsing it to null', () => {
-    // node-pty reports a missing executable by throwing; the message is the only
-    // evidence the spawner has for classifying it as command-not-found.
-    spawnImpl = () => { throw new Error('File not found: claude'); };
-    expect(() => shell.spawnCommandSession('claude', [], { cwd: '/tmp/ws', env: {} }))
-      .toThrow(/File not found/);
+    spawnImpl = () => { throw new Error('posix_spawnp failed'); };
+    expect(() => shell.spawnCommandSession('node', [], { cwd: '/tmp/ws', env: { PATH: process.env.PATH } }))
+      .toThrow(/posix_spawnp failed/);
   });
 });
 
