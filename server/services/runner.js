@@ -3,9 +3,9 @@
  * Re-exports toolkit runner service functions with local overrides
  */
 import { spawn } from '../lib/childProcess.js';
-import { writeFile, readFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { atomicWrite, ensureDir, tryReadFile, PATHS } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, tryReadFile, writeFileGuarded, PATHS } from '../lib/fileUtils.js';
 import { resolveSpawnCwd } from '../lib/spawnCwd.js';
 import { hasModelFlag, extractBakedModel } from '../lib/providerModels.js';
 import { buildCliArgs, prepareCliPrompt } from '../lib/cliProviderArgs.js';
@@ -110,7 +110,7 @@ export async function finalizeRunRecord({ runId, output, exitCode, success, erro
   const outputPath = join(runDir, 'output.txt');
   const metadataPath = join(runDir, 'metadata.json');
 
-  await writeFile(outputPath, output).catch(() => {});
+  await writeFileGuarded(outputPath, output).catch(() => {});
 
   const metadataStr = await readFile(metadataPath, 'utf-8').catch(() => '{}');
   let metadata = {};
@@ -521,7 +521,7 @@ export async function executeCliRun({ runId, provider, prompt, workspacePath, sc
       await cleanupVisionFiles().catch((error) => console.error(`❌ Failed to clean CLI vision files: ${error.message}`));
       if (spawnError) console.error(`❌ Run ${runId} spawn error: ${spawnError.message}`);
 
-      await writeFile(outputPath, output);
+      await writeFileGuarded(outputPath, output);
 
       metadata.endTime = new Date().toISOString();
       metadata.duration = Date.now() - startTime;

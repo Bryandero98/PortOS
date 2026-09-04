@@ -4,7 +4,7 @@
  * Shared state management for Chief of Staff services.
  */
 
-import { readFile, writeFile, readdir, rm, rename } from 'fs/promises';
+import { readFile, readdir, rm, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
@@ -220,7 +220,7 @@ function mergeStoredConfig(storedConfig) {
 async function quarantineCorruptFile(filePath, content, label, { remove = false } = {}) {
   const backupPath = `${filePath}.corrupted.${Date.now()}`;
   const moved = remove && await rename(filePath, backupPath).then(() => true).catch(() => false);
-  if (!moved) await writeFile(backupPath, content).catch(() => {});
+  if (!moved) await atomicWrite(backupPath, content).catch(() => {});
   console.log(`📝 Backed up corrupted ${label} to ${backupPath}`);
   const dir = dirname(filePath);
   const prefix = `${basename(filePath)}.corrupted.`;

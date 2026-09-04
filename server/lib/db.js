@@ -6,6 +6,7 @@
  */
 
 import pg from 'pg';
+import { isTestRunner } from './runtimeEnv.js';
 
 const { Pool } = pg;
 
@@ -62,25 +63,6 @@ export function isTestDatabase() {
   if (process.env.TEST_DB_OK === '1') return true;
   const db = process.env.PGDATABASE || 'portos';
   return /_test$/.test(db) || db === 'portos_test';
-}
-
-/**
- * Are we executing under a test runner?
- *
- * `NODE_ENV === 'test'` alone is not reliable: a suite run from a CoS-agent
- * worktree (or any wrapper that sets NODE_ENV=development / leaves it unset)
- * still executes test code, and the backend selectors that key off NODE_ENV
- * (e.g. seriesStore's `useFileBackend()`) then quietly choose the *Postgres*
- * backend — so the test writes land in the real `portos` DB with the guard
- * below disarmed. Vitest always sets `process.env.VITEST` in every worker
- * process, so OR-ing it in arms the guard regardless of how NODE_ENV was
- * (mis)configured. This is the signal that actually closed the 2026-06-14
- * fixture leak into prod.
- *
- * @returns {boolean}
- */
-export function isTestRunner() {
-  return process.env.NODE_ENV === 'test' || process.env.VITEST != null;
 }
 
 // Guard ALL row writes — not just deletions. The original guard only blocked
