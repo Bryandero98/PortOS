@@ -155,6 +155,7 @@ export * from './mediaModels.js';
 export * from './minimaxH3Memory.js';
 export * from './videoContinuity.js';
 export * from './videoDisclosure.js';
+export * from './videoPromptLinter.js';
 export * from './videoDraftDecoders.js';
 export * from './videoFinishProfiles.js';
 export * from './videoSpeedProfiles.js';
