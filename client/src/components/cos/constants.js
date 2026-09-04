@@ -543,6 +543,8 @@ export const AVATAR_STYLE_LABELS = {
   esoteric: 'Esoteric (3D)',
   nexus: 'Neural Nexus (3D)',
   muse: 'Cyber Muse (3D)',
+  // Kestrel Neon's rotating wireframe icosahedron — 2D canvas, no WebGL needed.
+  core: 'Core Assembly (Canvas)',
   // Bundled CC0 Kenney Mini Characters — animated rigged GLB avatars.
   miniMaleC: 'Mini Character — Male (3D)',
   miniFemaleD: 'Mini Character — Female (3D)',

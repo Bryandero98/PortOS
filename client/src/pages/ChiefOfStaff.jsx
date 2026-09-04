@@ -59,13 +59,15 @@ const ConfigTab = lazy(() => import('../components/cos/tabs/ConfigTab'));
 const BriefingTab = lazy(() => import('../components/cos/tabs/BriefingTab'));
 
 // Three.js-based avatars lazy-loaded so the R3F stack isn't bundled unless the
-// user's chosen avatar style actually needs it.
+// user's chosen avatar style actually needs it. `core` is a plain 2D canvas
+// (no three.js) but stays lazy so the default SVG path loads nothing extra.
 const LAZY_AVATARS = {
   cyber:    lazy(() => import('../components/cos/CyberCoSAvatar')),
   sigil:    lazy(() => import('../components/cos/SigilCoSAvatar')),
   esoteric: lazy(() => import('../components/cos/EsotericCoSAvatar')),
   nexus:    lazy(() => import('../components/cos/NexusCoSAvatar')),
   muse:     lazy(() => import('../components/cos/MuseCoSAvatar')),
+  core:     lazy(() => import('../components/cos/CoreCoSAvatar')),
   // Bundled CC0 Kenney Mini Characters — animated rigged GLB avatars.
   miniMaleC:   lazy(() => import('../components/cos/MiniCharMaleC')),
   miniFemaleD: lazy(() => import('../components/cos/MiniCharFemaleD')),

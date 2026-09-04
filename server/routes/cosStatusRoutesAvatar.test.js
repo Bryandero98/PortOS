@@ -14,6 +14,7 @@ import { cosConfigSchema } from './cosStatusRoutes.js';
 describe('cosConfigSchema avatarStyle', () => {
   it('accepts built-in styles and rigged record spellings', () => {
     expect(cosConfigSchema.safeParse({ avatarStyle: 'muse' }).success).toBe(true);
+    expect(cosConfigSchema.safeParse({ avatarStyle: 'core' }).success).toBe(true);
     expect(cosConfigSchema.safeParse({ avatarStyle: 'rigged-image3d-abc-123' }).success).toBe(true);
   });
 

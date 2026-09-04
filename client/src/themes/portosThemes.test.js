@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_AVATAR_COLOR, DEFAULT_THEME_ID, THEMES } from './portosThemes.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { DEFAULT_AVATAR_COLOR, DEFAULT_THEME_ID, THEMES, THEME_EFFECTS } from './portosThemes.js';
 
 // WCAG 2.x relative luminance + contrast ratio, computed straight from the
 // stored "R G B" token strings so the assertion proves the on-disk theme
@@ -101,14 +104,14 @@ describe('portosThemes warning token contrast', () => {
   );
 });
 
-describe('shared eight-theme color contract', () => {
+describe('shared ten-theme color contract', () => {
   const entries = Object.values(THEMES);
 
-  it('keeps four day/night variants on the same token surface', () => {
-    expect(entries).toHaveLength(8);
-    expect(entries.filter((theme) => theme.mode === 'day')).toHaveLength(4);
-    expect(entries.filter((theme) => theme.mode === 'night')).toHaveLength(4);
-    expect(new Set(entries.map((theme) => theme.family))).toEqual(new Set(['classic', 'glass', 'terminal', 'blueprint']));
+  it('keeps five day/night variants on the same token surface', () => {
+    expect(entries).toHaveLength(10);
+    expect(entries.filter((theme) => theme.mode === 'day')).toHaveLength(5);
+    expect(entries.filter((theme) => theme.mode === 'night')).toHaveLength(5);
+    expect(new Set(entries.map((theme) => theme.family))).toEqual(new Set(['classic', 'glass', 'terminal', 'blueprint', 'kestrel']));
   });
 
   it.each(entries.map((theme) => [theme.id, theme]))(
@@ -240,6 +243,25 @@ describe('content cards read as raised surfaces in every theme', () => {
       expect(contrastRatio(parseRgb(theme.colors['--port-text-muted']), composited)).toBeGreaterThanOrEqual(AA_SMALL_TEXT);
     },
   );
+});
+
+describe('theme effects', () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.css'), 'utf8');
+
+  it('every effect a theme lists is a shared effect with a CSS block keyed on the effects attribute', () => {
+    for (const theme of Object.values(THEMES)) {
+      for (const effect of theme.effects ?? []) {
+        expect(THEME_EFFECTS, `${theme.id} lists ${effect}`).toContain(effect);
+      }
+    }
+    for (const effect of THEME_EFFECTS) {
+      expect(css).toContain(`[data-port-theme-effects~="${effect}"]`);
+    }
+  });
+
+  it('is exercised by at least one theme (guards the loop above from vacuously passing)', () => {
+    expect(Object.values(THEMES).some((theme) => theme.effects?.length)).toBe(true);
+  });
 });
 
 describe('DEFAULT_AVATAR_COLOR', () => {

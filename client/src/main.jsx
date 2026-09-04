@@ -65,6 +65,10 @@ const router = createBrowserRouter([
     element: (
       <>
         <App />
+        {/* Theme effects (scanlines, grid floor, sweep) paint on this element's
+            pseudo-elements and child — see the "Theme effects layer" in
+            index.css. Empty and inert for themes that list no effects. */}
+        <div className="port-fx-layer" aria-hidden="true"><span className="port-fx-sweep" /></div>
         <Toaster
           position="bottom-right"
           toastOptions={{
