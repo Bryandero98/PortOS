@@ -3415,6 +3415,114 @@ describe('generateVideo — BYOV missing-python-module failure path (#1833 regre
   });
 });
 
+// ── an ordinary nonzero exit that is neither a missing module nor a death
+// signal (#6281) — before this, handleChildClose's fallback reported only a
+// bare `Exit code N`, discarding whatever the child actually printed. ────────
+describe('generateVideo — ordinary nonzero exit surfaces a cause instead of a bare exit code (#6281)', () => {
+  const spawnDrivenChild = async () => {
+    vi.resetModules();
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    let stderrData;
+    let stdoutData;
+    let closeListener;
+    vi.mocked(spawnDetached).mockImplementationOnce(async () => {
+      const proc = {
+        pid: 5281,
+        exitCode: null,
+        signalCode: null,
+        killed: false,
+        stdout: { on: (event, fn) => { if (event === 'data') stdoutData = fn; } },
+        stderr: { on: (event, fn) => { if (event === 'data') stderrData = fn; } },
+        on(event, fn) { if (event === 'close') closeListener = fn; return proc; },
+        off() { return proc; },
+        kill: vi.fn(),
+      };
+      return proc;
+    });
+    const { generateVideo: gv } = await import('./local.js');
+    const { videoGenEvents: events } = await import('./events.js');
+    await gv({
+      jobId: 'ordinary-nonzero-exit',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+    });
+    return {
+      stderr: (text) => stderrData?.(Buffer.from(text)),
+      stdout: (text) => stdoutData?.(Buffer.from(text)),
+      close: (code) => closeListener?.(code, null),
+      failed: () => new Promise((resolve) => events.once('failed', resolve)),
+    };
+  };
+
+  it('reports the traceback\'s exception line, not just the exit code', async () => {
+    const child = await spawnDrivenChild();
+    const failed = child.failed();
+    child.stderr(
+      'Traceback (most recent call last):\n'
+      + '  File "generate_ltx2.py", line 214, in <module>\n'
+      + '    raise RuntimeError("disk quota exceeded while writing checkpoint cache")\n'
+      + 'RuntimeError: disk quota exceeded while writing checkpoint cache\n',
+    );
+    child.close(1);
+
+    const evt = await failed;
+    expect(evt.error).toMatch(/^Exit code 1: /);
+    expect(evt.error).toMatch(/RuntimeError: disk quota exceeded while writing checkpoint cache/);
+  });
+
+  it('still captures the cause when the final line has no trailing newline (flushed on close)', async () => {
+    const child = await spawnDrivenChild();
+    const failed = child.failed();
+    // Split across two chunks with nothing to terminate the second — only
+    // stderrReader.flush() (called inside handleChildClose, before this
+    // fallback runs) can surface it.
+    child.stderr('RuntimeError: disk quota exce');
+    child.stderr('eded mid-write');
+    child.close(1);
+
+    const evt = await failed;
+    expect(evt.error).toMatch(/RuntimeError: disk quota exceeded mid-write/);
+  });
+
+  it('ignores STATUS:/STAGE: protocol lines and tqdm-style noise, keeping only the real cause', async () => {
+    const child = await spawnDrivenChild();
+    const failed = child.failed();
+    child.stderr(
+      'STATUS:loading checkpoint\n'
+      + '  45%|####5     | 45/100 [00:12<00:15]\n'
+      + 'RuntimeError: shape mismatch on conditioning tensor\n',
+    );
+    child.close(1);
+
+    const evt = await failed;
+    expect(evt.error).toMatch(/RuntimeError: shape mismatch on conditioning tensor/);
+    expect(evt.error).not.toMatch(/STATUS:loading checkpoint/);
+    expect(evt.error).not.toMatch(/45\/100/);
+  });
+
+  it('falls back to stdout when stderr contributed nothing', async () => {
+    const child = await spawnDrivenChild();
+    const failed = child.failed();
+    child.stdout('AssertionError: unexpected tensor shape (3, 512, 512)\n');
+    child.close(1);
+
+    const evt = await failed;
+    expect(evt.error).toMatch(/AssertionError: unexpected tensor shape/);
+  });
+
+  it('falls back to the bare exit code when neither stream printed anything useful', async () => {
+    const child = await spawnDrivenChild();
+    const failed = child.failed();
+    child.close(7);
+
+    const evt = await failed;
+    expect(evt.error).toBe('Exit code 7');
+  });
+});
+
 describe('resolveVideoModel — live registry lookup (#2124 no-restart add)', () => {
   it('resolves a model id through the live getVideoModels() list', async () => {
     const { resolveVideoModel } = await import('./local.js');

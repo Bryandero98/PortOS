@@ -13,6 +13,7 @@ import { broadcastSse } from '../../lib/sseUtils.js';
 import { generateThumbnail, optimizeForStreaming } from '../../lib/ffmpeg.js';
 import { formatBytes } from '../../lib/fileUtils.js';
 import { renderTimingFields } from '../../lib/renderTiming.js';
+import { scrubSecretTokens } from '../../lib/secretText.js';
 import { videoGenEvents } from './events.js';
 
 /**
@@ -393,6 +394,30 @@ export function describeSignalDeath(signal, { fingerprint = null } = {}) {
   const cause = SIGNAL_DEATH_CAUSES[signal] || `Killed by signal ${signal}`;
   const fp = formatRuntimeFingerprint(fingerprint);
   return fp ? `${cause} [runtime: ${fp}]` : cause;
+}
+
+/**
+ * Pick the cause text for an ordinary (no signal, no missing-module match)
+ * nonzero exit — the gap that otherwise reports only `Exit code N` with
+ * nothing else to go on (issue #6281). `stdoutText`/`stderrText` come from
+ * two `createOutputTail()` instances in `spawnWatch.js` fed ONLY the lines
+ * neither the child's own STATUS:/STAGE:/RUNTIME:/SPEEDPROFILE: protocol nor
+ * `PYTHON_NOISE_RE` claimed, so a progress bar, a dependency warning, or a
+ * STAGE marker can never win over the real cause — and each tail already caps
+ * itself by a char budget, so this can never surface an unbounded traceback.
+ * stderr wins over stdout (a raised exception normally lands there); a Python
+ * traceback also prints its exception message LAST, so the tail's most recent
+ * line is almost always that message rather than a stack frame above it.
+ * Returns null when neither tail collected anything, so the caller can fall
+ * back to the bare exit-code message.
+ * @param {object} opts
+ * @param {string} [opts.stdoutText]
+ * @param {string} [opts.stderrText]
+ * @returns {string|null}
+ */
+export function pickExitDiagnostic({ stdoutText = '', stderrText = '' } = {}) {
+  const chosen = (stderrText || stdoutText || '').trim();
+  return chosen ? scrubSecretTokens(chosen) : null;
 }
 
 /**

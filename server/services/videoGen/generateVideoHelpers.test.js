@@ -3,7 +3,7 @@ import { writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { EventEmitter } from 'events';
-import { makeVideoGenLineHandler, isWatchdogSuccess, finalizeGeneratedVideo, parseByteProgress, formatBytes, formatDownloadMessage, describeSignalDeath, formatRuntimeFingerprint, describeRenderConditioning, isPromptEncodingMetalWatchdog, planPromptEncodingRetry, DEFAULT_GEMMA_MAX_LENGTH, RETRY_GEMMA_MAX_LENGTH, bufferChildExit, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
+import { makeVideoGenLineHandler, isWatchdogSuccess, finalizeGeneratedVideo, parseByteProgress, formatBytes, formatDownloadMessage, describeSignalDeath, pickExitDiagnostic, formatRuntimeFingerprint, describeRenderConditioning, isPromptEncodingMetalWatchdog, planPromptEncodingRetry, DEFAULT_GEMMA_MAX_LENGTH, RETRY_GEMMA_MAX_LENGTH, bufferChildExit, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
 
 describe('parseByteProgress', () => {
   it('parses single byte value (e.g., "2.5G")', () => {
@@ -478,6 +478,34 @@ describe('describeSignalDeath (#3101 signal → actionable cause)', () => {
   it('omits the fingerprint suffix entirely when nothing is known (no empty brackets)', () => {
     expect(describeSignalDeath('SIGSEGV', { fingerprint: null })).not.toMatch(/runtime:/);
     expect(describeSignalDeath('SIGSEGV', { fingerprint: {} })).not.toMatch(/runtime:/);
+  });
+});
+
+describe('pickExitDiagnostic (#6281 — explain an ordinary nonzero exit)', () => {
+  it('returns null when neither tail collected anything', () => {
+    expect(pickExitDiagnostic({})).toBeNull();
+    expect(pickExitDiagnostic({ stdoutText: '', stderrText: '' })).toBeNull();
+  });
+
+  it('prefers stderr over stdout — a raised exception normally lands there', () => {
+    const result = pickExitDiagnostic({
+      stdoutText: 'some stdout noise',
+      stderrText: 'RuntimeError: CUDA out of memory',
+    });
+    expect(result).toBe('RuntimeError: CUDA out of memory');
+  });
+
+  it('falls back to stdout when stderr collected nothing', () => {
+    const result = pickExitDiagnostic({ stdoutText: 'AssertionError: shape mismatch', stderrText: '' });
+    expect(result).toBe('AssertionError: shape mismatch');
+  });
+
+  it('scrubs a credential-shaped token before it can reach the job record or UI', () => {
+    const result = pickExitDiagnostic({
+      stderrText: 'Auth failed for token sk-abcdefghijklmnopqrstuvwx while loading weights',
+    });
+    expect(result).not.toMatch(/sk-abcdefghijklmnopqrstuvwx/);
+    expect(result).toMatch(/\[REDACTED\]/);
   });
 });
 

@@ -6,7 +6,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { PATHS, rmGuarded } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
-import { createLineReader } from '../../lib/streamLines.js';
+import { createLineReader, createOutputTail } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { prepareLocalMemory, gpuBlockersMessage } from '../localMemory.js';
 import { ServerError } from '../../lib/errorHandler.js';
@@ -22,6 +22,7 @@ import {
   isWatchdogSuccess,
   describeSignalDeath,
   planPromptEncodingRetry,
+  pickExitDiagnostic,
   bufferChildExit,
 } from './generateVideoHelpers.js';
 import {
@@ -248,6 +249,15 @@ export async function spawnAndWatchVideo({
       stderrTail.push(raw);
       if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift();
     };
+    // Separate, char-budget-bounded tails (issue #6281) fed only the lines the
+    // readers below already decided are worth raw-logging — i.e. neither the
+    // STATUS:/STAGE:/RUNTIME:/SPEEDPROFILE: protocol nor PYTHON_NOISE_RE
+    // claimed them. Kept apart from `stderrTail` above, which the Metal-retry
+    // sniffer needs UNFILTERED (it greps for the STAGE:encode-prompt markers
+    // this pair deliberately excludes). Used to explain an ordinary nonzero
+    // exit that matches neither a missing module nor a death signal.
+    const stdoutDiagTail = createOutputTail();
+    const stderrDiagTail = createOutputTail();
 
     // The python child's STATUS:/STAGE:/DOWNLOAD:/tqdm → SSE-frame parser lives
     // in generateVideoHelpers.js so it can be unit-tested without a real child.
@@ -277,6 +287,7 @@ export async function spawnAndWatchVideo({
       // Some runtimes don't print the result JSON but do log the final
       // decode+mux line right before they should exit — treat it the same way.
       if (MUXING_DONE_RE.test(line)) armCompletionWatchdog();
+      stdoutDiagTail.remember(line);
       console.log(`🐍-out [${jobId.slice(0, 8)}] ${line}`);
     });
     const stderrReader = createLineReader((raw) => {
@@ -287,7 +298,10 @@ export async function spawnAndWatchVideo({
         const m = raw.match(MODULE_NOT_FOUND_RE);
         if (m) missingPyModule = m[1];
       }
-      if (!handleLine(raw)) console.log(`🐍 [${jobId.slice(0, 8)}] ${raw.trim()}`);
+      if (!handleLine(raw)) {
+        stderrDiagTail.remember(raw);
+        console.log(`🐍 [${jobId.slice(0, 8)}] ${raw.trim()}`);
+      }
     }, { splitRe: /[\n\r]+/ });
 
     proc.stdout.on('data', (chunk) => {
@@ -369,7 +383,11 @@ export async function spawnAndWatchVideo({
               fingerprint: await pickDeathFingerprint({ emitted: job.runtime, runtimeId: model.runtime }),
             });
           } else {
-            reason = `Exit code ${code}`;
+            const diagnostic = pickExitDiagnostic({
+              stdoutText: stdoutDiagTail.text(),
+              stderrText: stderrDiagTail.text(),
+            });
+            reason = diagnostic ? `Exit code ${code}: ${diagnostic}` : `Exit code ${code}`;
           }
           console.log(`❌ Video generation failed [${jobId.slice(0, 8)}]: ${reason}`);
           broadcastSse(job, { type: 'error', error: `Generation failed: ${reason}` });
