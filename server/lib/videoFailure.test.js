@@ -22,6 +22,10 @@ describe('local video diagnostic privacy boundary', () => {
     expect(failure.cause.length).toBeLessThanOrEqual(240);
     expect(normalizeVideoFailure('RuntimeError: authentication failed password="invented secret words"').cause)
       .toBe('authentication failed [credential]');
+    const basic = Buffer.from('example:invented-password').toString('base64');
+    const basicFailure = normalizeVideoFailure(`RuntimeError: request failed Authorization: Basic ${basic}`);
+    expect(basicFailure.cause).toBe('request failed [credential]');
+    expect(basicFailure.signature).toBe(normalizeVideoFailure('RuntimeError: request failed Authorization: Basic changed').signature);
     expect(normalizeVideoFailure('RuntimeError: shape mismatch')).not.toEqual(normalizeVideoFailure('RuntimeError: shader compilation failed'));
     expect(normalizeVideoFailure("ModuleNotFoundError: No module named 'example_runtime'"))
       .toMatchObject({ classification: 'missing-module', cause: 'Python module example_runtime is missing' });

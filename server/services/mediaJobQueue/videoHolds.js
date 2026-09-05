@@ -32,11 +32,16 @@ export function createVideoHolds() {
       const local = jobs.filter(isLocalVideo);
       if (!local.length) return;
       // Catalog loading stays off the queue's widely imported static graph.
-      const { getVideoModels, getDefaultVideoModelId } = await import('../../lib/mediaModels.js');
+      const { getVideoModels } = await import('../../lib/mediaModels.js');
+      const omitted = (job) => job.params?.modelId === undefined || job.params?.modelId === '';
+      let defaultModel = null;
+      if (local.some(omitted)) {
+        const { resolveVideoModelSelection } = await import('../videoGen/modelSelection.js');
+        ({ model: defaultModel } = await resolveVideoModelSelection());
+      }
       const models = getVideoModels();
       for (const job of local) {
-        const modelId = job.params?.modelId || getDefaultVideoModelId();
-        const model = models.find((m) => m.id === modelId);
+        const model = omitted(job) ? defaultModel : models.find((m) => m.id === job.params.modelId);
         job.videoCohort = model ? { modelId: model.id, runtime: model.runtime || 'mlx_video' } : null;
       }
     },

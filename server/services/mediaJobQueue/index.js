@@ -1024,6 +1024,11 @@ async function runJob(job) {
   // corrupted path from a hand-edited media-jobs.json. Null it out here if
   // it doesn't resolve under PATHS.uploads so the constraint holds end-to-end.
   const safeParams = { ...job.params };
+  // Freeze only the dispatch copy to the default whose cohort passed the hold
+  // check. The retained job's original parameters stay unchanged.
+  if (job.videoCohort && (safeParams.modelId === undefined || safeParams.modelId === '')) {
+    safeParams.modelId = job.videoCohort.modelId;
+  }
   if (safeParams.uploadedTempPath && (typeof safeParams.uploadedTempPath !== 'string' || !isUnderUploadsRoot(safeParams.uploadedTempPath))) {
     console.log(`⚠️ media-job [${job.id.slice(0, 8)}] uploadedTempPath outside PATHS.uploads — nulled before gen invoke: ${safeParams.uploadedTempPath}`);
     safeParams.uploadedTempPath = null;

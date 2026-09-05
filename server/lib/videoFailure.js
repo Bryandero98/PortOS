@@ -9,12 +9,13 @@ const failureRecord = (classification, cause, identity = cause) => ({
   cause,
   // Streak-only evidence. Never projected or persisted in an active hold. Keep
   // diagnostic identifiers distinct even when the display redacts quotes.
-  signature: createHash('sha256').update(`${classification}\n${identity.toLowerCase()}`).digest('hex'),
+  signature: createHash('sha256').update(`${classification}\n${identity}`).digest('hex'),
 });
 
 const scrubCause = (text) => scrubSecretTokens(text)
   .replace(/\b(?:https?|file):\/\/\S+/gi, '[url]')
-  .replace(/\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi, '[credential]')
+  .replace(/\b(?:proxy-)?authorization["']?\s*[:=][^\r\n]*/gi, '[credential]')
+  .replace(/\b(?:api[_-]?key|token|password|secret)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi, '[credential]')
   // An unquoted path has no reliable ending delimiter (spaces are legal on
   // both platforms). Redact the remainder rather than leaking path fragments.
   .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/(?=\S))[^\r\n]*/g, '[path]')

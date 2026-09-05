@@ -38,9 +38,17 @@ vi.mock('../../lib/mediaModels.js', () => ({
   getVideoModels: () => [
     { id: 'example-mlx', runtime: 'mlx_video' },
     { id: 'example-cuda', runtime: 'cuda_video' },
+    { id: 'example-large-cuda', runtime: 'cuda_video', hardwareRequirements: { requiresNvidiaGpu: true, minVramGb: 48 } },
     { id: 'example-other', runtime: 'mlx_video' },
   ],
-  getDefaultVideoModelId: () => 'example-mlx',
+  getDefaultVideoModelId: vi.fn(() => 'example-mlx'),
+}));
+
+vi.mock('../../lib/systemCapabilities.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  captureSystemCapabilities: () => ({ platform: 'win32', arch: 'x64', totalMemoryGb: 64 }),
+  detectSystemCapabilities: vi.fn(async () => ({ platform: 'win32', arch: 'x64', totalMemoryGb: 64,
+    cuda: { status: 'available', maxVramGb: 8 } })),
 }));
 
 // Mock the gen modules so the worker's dynamic imports return controllable
@@ -167,6 +175,8 @@ const remoteVideoMediaParams = () => ({
 beforeEach(async () => {
   tempDataDir = mkdtempSync(join(tmpdir(), 'mediaJobQueue-test-'));
   Object.values(stubs).forEach((fn) => fn.mockReset());
+  const { getDefaultVideoModelId } = await import('../../lib/mediaModels.js');
+  getDefaultVideoModelId.mockImplementation(() => 'example-mlx');
   // Default codex stub: hang (matches video/local defaults so tests that
   // don't care about codex don't accidentally complete too fast).
   stubs.generateImageCodex.mockImplementation(() => new Promise(() => {}));
@@ -1797,8 +1807,8 @@ describe('local video failure holds', () => {
   });
 
   it('holds repeated quoted-only exceptions while keeping distinct keys separate', async () => {
-    const errors = ["KeyError: 'encoder_size'", "KeyError: 'decoder_size'", "KeyError: 'encoder_size'",
-      "KeyError: 'decoder_size'", "KeyError: 'decoder_size'", "KeyError: 'decoder_size'"];
+    const errors = ["KeyError: 'Width'", "KeyError: 'width'", "KeyError: 'Width'",
+      "KeyError: 'width'", "KeyError: 'width'", "KeyError: 'width'"];
     const ids = Array.from({ length: errors.length + 1 }, () => submit());
     for (const [i, error] of errors.entries()) {
       await tick();
@@ -1814,6 +1824,28 @@ describe('local video failure holds', () => {
     expect(hold).not.toHaveProperty('signature');
     expect(await mediaJobQueue.resumeVideoHold(hold.id)).toBe(true);
     expect(mediaJobQueue.listVideoHolds()).toEqual([]);
+  });
+
+  it('holds the effective CUDA fallback without rewriting omitted model parameters', async () => {
+    const { getDefaultVideoModelId } = await import('../../lib/mediaModels.js');
+    getDefaultVideoModelId.mockImplementation((capabilities) => capabilities?.cuda?.maxVramGb === 8
+      ? 'example-cuda' : 'example-large-cuda');
+    const ids = Array.from({ length: 4 }, () => mediaJobQueue.enqueueJob({
+      kind: 'video', params: { prompt: 'invented clip' },
+    }).jobId);
+    for (const id of ids.slice(0, 3)) {
+      await tick();
+      expect(stubs.generateVideo).toHaveBeenLastCalledWith(expect.objectContaining({ jobId: id, modelId: 'example-cuda' }));
+      await finish(id);
+    }
+    await tick();
+    expect(stubs.generateVideo).toHaveBeenCalledTimes(3);
+    const retained = mediaJobQueue.getJob(ids[3]);
+    expect(retained).toMatchObject({ status: 'queued', hold: { modelId: 'example-cuda', runtime: 'cuda_video' } });
+    expect(retained.params).not.toHaveProperty('modelId');
+    await mediaJobQueue.resumeVideoHold(retained.hold.id);
+    await tick();
+    expect(stubs.generateVideo).toHaveBeenLastCalledWith(expect.objectContaining({ jobId: ids[3], modelId: 'example-cuda' }));
   });
 
   it('uses structured signal evidence and ignores advisory text when no cause was found', async () => {

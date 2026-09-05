@@ -20,7 +20,7 @@ const importRunner = [
 ].join('\n');
 
 describe.skipIf(!pyBin)('generate_fastvideo.py', () => {
-  it.each(['ValueError: loading converted tensors failed', null])('preserves converter cause evidence (%s) without inventing it from an exit code', (cause) => {
+  it.each(['ValueError: loading converted tensors failed', 'kIOGPUCommandBufferCallbackErrorTimeout', null])('preserves converter cause evidence (%s) without inventing it from an exit code', (cause) => {
     const output = runPython(`${importRunner}\n${[
       'import tempfile',
       'from contextlib import redirect_stderr',
@@ -42,7 +42,8 @@ describe.skipIf(!pyBin)('generate_fastvideo.py', () => {
     expect(output).toContain('STATUS:Loading weights');
     const tail = createVideoDiagnosticTail();
     tail.push('stderr', output);
-    if (cause) expect(tail.failure()).toMatchObject({ classification: 'valueerror', cause: 'loading converted tensors failed' });
+    if (cause?.startsWith('kIOGPU')) expect(tail.failure()).toMatchObject({ classification: 'metal-command-buffer', cause: 'Metal command buffer failed: Timeout' });
+    else if (cause) expect(tail.failure()).toMatchObject({ classification: 'valueerror', cause: 'loading converted tensors failed' });
     else expect(tail.failure()).toBeNull();
   });
 

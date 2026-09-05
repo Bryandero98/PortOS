@@ -123,7 +123,8 @@ def translate_line(line: str, *, conversion: bool = False) -> str:
     """Translate one upstream output line into PortOS's progress protocol."""
     # Preserve terminal cause evidence before progress formatting can hide it.
     # The queue deliberately ignores STATUS lines and generic child exit codes.
-    if re.match(r"^[\w.]*(?:Error|Exception):", line):
+    if (re.match(r"^[\w.]*(?:Error|Exception):", line)
+            or re.search(r"\bkIOGPUCommandBufferCallbackError(?:OutOfMemory|InnocentVictim|Timeout|ImpactingInteractivity)\b", line)):
         return line
     if conversion:
         return f"STATUS:{line}"

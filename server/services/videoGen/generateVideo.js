@@ -25,12 +25,8 @@ import {
 import { videoGenEvents } from './events.js';
 import { broadcastSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
-import {
-  captureSystemCapabilities,
-  detectSystemCapabilities,
-  isHardwareCompatible,
-  withHardwareCompatibility,
-} from '../../lib/systemCapabilities.js';
+import { isHardwareCompatible } from '../../lib/systemCapabilities.js';
+import { resolveVideoModelSelection } from './modelSelection.js';
 import { findFfmpeg, findFfprobe } from '../../lib/ffmpeg.js';
 import { inspectModelCache, findCachedRepoFile, findCachedRepoFiles } from '../../lib/hfCache.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
@@ -162,27 +158,8 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // callers (legacy / tests) bypass the queue and would clobber the shared active process
   // on concurrent calls; that's an explicit "don't do that" contract.
 
-  const needsCuda = (requirements) => requirements?.requiresNvidiaGpu
-    || requirements?.minVramGb != null
-    || requirements?.minCudaComputeCapability != null;
-  let capabilities = captureSystemCapabilities();
-  // `undefined`/empty means the caller omitted the field and may use the
-  // configured default. Explicit null is a routed-job sentinel and must remain
-  // an unknown model so an older dispatcher cannot render a remote job locally.
-  const modelWasOmitted = modelId === undefined || modelId === '';
-  let selectedModelId = modelWasOmitted ? defaultVideoModelId(capabilities) : modelId;
-  let resolvedModel = resolveVideoModel(selectedModelId);
-  if (needsCuda(resolvedModel?.hardwareRequirements)) {
-    capabilities = await detectSystemCapabilities();
-    if (modelWasOmitted) selectedModelId = defaultVideoModelId(capabilities);
-    resolvedModel = resolveVideoModel(selectedModelId);
-  }
+  const { modelId: selectedModelId, model } = await resolveVideoModelSelection(modelId, { resolveModel: resolveVideoModel });
   modelId = selectedModelId;
-  const model = resolvedModel && withHardwareCompatibility(
-    resolvedModel,
-    capabilities,
-    resolvedModel.hardwareRequirements,
-  );
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
   if (!isHardwareCompatible(model.hardwareCompatibility)) {
     throw new ServerError(
