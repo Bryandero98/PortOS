@@ -20,10 +20,13 @@ function AliasField({ resourceKey, value, onChange, busy }) {
   );
 }
 
-export default function EidoverseObjectLegend({ objects, districts = [], aliases = {}, onAliasChange, busy, onAssets }) {
+export default function EidoverseObjectLegend({ objects, districts = [], aliases = {}, savedAliases = {}, onAliasChange, busy, onAssets }) {
   const groups = new Map();
   const currentKeys = new Set((objects || []).map(({ resourceKey }) => resourceKey));
-  const unmatchedAliases = Object.entries(aliases).filter(([key]) => !currentKeys.has(key));
+  // Keep a saved field mounted through an empty draft while the user renames
+  // it. A successful save/reset updates savedAliases and releases removed rows.
+  const aliasKeys = new Set([...Object.keys(savedAliases), ...Object.keys(aliases)]);
+  const unmatchedAliases = [...aliasKeys].filter((key) => !currentKeys.has(key));
   for (const object of objects || []) {
     if (!groups.has(object.districtId)) groups.set(object.districtId, []);
     groups.get(object.districtId).push(object);
@@ -64,8 +67,8 @@ export default function EidoverseObjectLegend({ objects, districts = [], aliases
           <h4 className="text-sm font-medium text-white">Saved aliases without a current object</h4>
           <p className="mt-1 text-xs leading-5 text-gray-400">Kept for objects that may return. Clear an alias to remove it without resetting the world.</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            {unmatchedAliases.map(([key, value]) => (
-              <AliasField key={key} resourceKey={key} value={value} onChange={onAliasChange} busy={busy} />
+            {unmatchedAliases.map((key) => (
+              <AliasField key={key} resourceKey={key} value={aliases[key]} onChange={onAliasChange} busy={busy} />
             ))}
           </div>
         </section>

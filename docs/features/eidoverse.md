@@ -335,8 +335,8 @@ Search matches and catalog/recipe fallbacks are explicitly called fallbacks.
 A retained model whose path differs from the current resolution lock reports
 unverified provenance. The link to **Appearance & Assets** uses the existing
 asset override, refresh, and reset controls. The legend remains readable with
-floating labels off and on older renderers. Agent projection-tool results keep
-only the operation summary, object count, and presence; the full legend remains
+floating labels off and on older renderers. Agent-tool, scheduled-job, and boot projection results use the service's compact
+response: operation summary, object count, and presence. The full legend remains
 in saved projection state for the drawer.
 
 Optional aliases name individual live indicators using stable opaque resource

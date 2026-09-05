@@ -277,6 +277,7 @@ export default function EidoverseWorldDrawer({
         objects={projectionSummary.objects}
         districts={worldState?.recipe?.districts}
         aliases={labelAliasesDraft}
+        savedAliases={design.labelAliases}
         onAliasChange={mutateLabelAlias}
         busy={busy}
         onAssets={() => setActiveTab('appearance')}

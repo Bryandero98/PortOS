@@ -227,7 +227,13 @@ describe('Eidoverse hosted page', () => {
     expect(screen.getByLabelText('Display alias for app 0123456789ab')).toHaveValue('Example tower');
     expect(screen.getByLabelText('Display alias for app abcdef012345')).toHaveValue('Example tower');
     const savedAliases = screen.getByRole('region', { name: 'Saved aliases without a current object' });
-    await user.clear(within(savedAliases).getByLabelText('Display alias for agent 0123456789ab'));
+    const absentAlias = within(savedAliases).getByLabelText('Display alias for agent 0123456789ab');
+    await user.clear(absentAlias);
+    expect(absentAlias).toHaveFocus();
+    expect(absentAlias).toBeInTheDocument();
+    await user.type(absentAlias, 'Example renamed beacon');
+    expect(absentAlias).toHaveValue('Example renamed beacon');
+    await user.clear(absentAlias);
     await user.click(screen.getByRole('button', { name: 'Save and project' }));
     await waitFor(() => expect(api.updateEidoverseWorldConfig).toHaveBeenCalled());
     const patch = api.updateEidoverseWorldConfig.mock.calls.at(-1)[0];

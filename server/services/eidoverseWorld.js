@@ -1636,7 +1636,7 @@ async function recordProjection({ success, summary = null, error = null }) {
   });
 }
 
-export async function projectEidoverseWorld({ signal } = {}) {
+export async function projectEidoverseWorld({ signal, compact = false } = {}) {
   const run = async () => {
     throwIfAborted(signal);
     await assertInstalled();
@@ -1672,6 +1672,12 @@ export async function projectEidoverseWorld({ signal } = {}) {
       ...plan.summary,
     };
     const projection = await recordProjection({ success: true, summary });
+    // Persist the complete legend for the drawer before selecting the compact
+    // result used by tools, scheduled jobs, and boot reconciliation.
+    if (compact) {
+      const { objects, ...counts } = summary;
+      return { success: true, summary: { ...counts, objectCount: objects.length }, presence: presenceSummary(presence) };
+    }
     const appliedConfig = configFromState(await loadState());
     return {
       success: true,
@@ -1732,7 +1738,7 @@ export async function reconcilePendingEidoverseWorld() {
   }
   if (!setup.installed) return { reconciled: false, reason: 'not-installed' };
   if (setup.runtimeStatus !== 'online') return { reconciled: false, reason: 'runtime-offline' };
-  const result = await projectEidoverseWorld();
+  const result = await projectEidoverseWorld({ compact: true });
   return { reconciled: true, result };
 }
 

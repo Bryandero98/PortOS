@@ -23,7 +23,7 @@ import { runBrainParitySweep } from './brainParitySweep.js'
 // store itself. The job remains deterministic and makes no provider call.
 async function eidoverseProjection() {
   const { projectEidoverseWorld } = await import('../eidoverseWorld.js')
-  return projectEidoverseWorld()
+  return projectEidoverseWorld({ compact: true })
 }
 
 /**

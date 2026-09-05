@@ -238,16 +238,6 @@ describe('cosToolRegistry', () => {
       authority: { scope: 'mind', capabilities: { readPortos: true } },
       context: { signal },
     });
-    const objects = Array.from({ length: 78 }, (_, index) => ({
-      id: `example-object-${index}`, description: 'Example semantic description. '.repeat(6),
-    }));
-    mocks.worldProject.mockResolvedValueOnce({
-      success: true,
-      summary: { operationCount: 2, objects },
-      projection: { lastSummary: { objects } },
-      design: { labelAliases: { 'app-0123456789ab': 'Example alias' } },
-      recipe: { assets: { app: 'store/example-asset' } },
-    });
     const project = await executeCosToolCall({
       call: { requestId: 'world-project', name: 'eidoverse.project', arguments: {} },
       authority: { scope: 'mind', capabilities: { readPortos: true, manageEidoverse: true } },
@@ -280,9 +270,7 @@ describe('cosToolRegistry', () => {
     expect([status.state, project.state, augment.state, say.state, agentAugment.state])
       .toEqual(['completed', 'completed', 'completed', 'completed', 'completed']);
     expect(mocks.worldStatus).toHaveBeenCalledWith({ compact: true });
-    expect(mocks.worldProject).toHaveBeenCalledWith({ signal });
-    expect(project.result).toEqual({ success: true, summary: { operationCount: 2, objectCount: 78 } });
-    expect(JSON.stringify(project.result).length).toBeLessThan(4096);
+    expect(mocks.worldProject).toHaveBeenCalledWith({ signal, compact: true });
     expect(mocks.worldAugment).toHaveBeenCalledWith(
       [{ verb: 'spawn', args: { id: 'example', lib: 'eidoverse/assets/example.glb' } }],
       { signal },

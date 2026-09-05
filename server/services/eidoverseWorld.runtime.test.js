@@ -701,7 +701,7 @@ describe('Eidoverse private-world lifecycle', () => {
     expect(JSON.stringify(metaComp.args.data)).not.toContain(mocks.self.name);
   });
 
-  it('round-trips explicit aliases and the object legend across projection and reconnect', async () => {
+  it('keeps scheduled results compact while persisting aliases and the full legend across reconnect', async () => {
     mocks.appStatuses = [{ id: 'app-example', name: 'Example private title', overallStatus: 'online' }];
     fetch.mockImplementationOnce(async () => Response.json({
       sha: 'example-label-build', commitTime: '2026-01-01T00:00:00.000Z',
@@ -712,15 +712,22 @@ describe('Eidoverse private-world lifecycle', () => {
     const object = first.summary.objects.find(({ kind }) => kind === 'app');
     expect(object).toBeDefined();
     await world.updateEidoverseWorldConfig({ labelAliases: { [object.resourceKey]: 'Example tower' } });
-    const next = await world.projectEidoverseWorld();
-    expect(next.summary.objects.find(({ id }) => id === object.id).name).toBe('Example tower');
-    // A legacy renderer remains usable even though it advertises no label capabilities.
-    expect(next.design.reconciliation.runtimeVersion.capabilities.objectLabels).toBeNull();
+    const { SCRIPT_HANDLERS } = await import('./autonomousJobs/scriptHandlers.js');
+    const next = await SCRIPT_HANDLERS['eidoverse-projection']();
+    expect(next.summary.objectCount).toBeGreaterThan(0);
+    expect(JSON.stringify(next).length).toBeLessThan(4096);
+    expect(JSON.stringify(next)).not.toContain('Example tower');
+    expect(next).not.toHaveProperty('projection');
+    expect(next).not.toHaveProperty('summary.objects');
     await world.closeEidoverseWorldConnections();
     const reloaded = await world.getEidoverseWorldStatus();
+    // A legacy renderer remains usable even though it advertises no label capabilities.
+    expect(reloaded.design.reconciliation.runtimeVersion.capabilities.objectLabels).toBeNull();
     expect(reloaded.design.labelAliases).toEqual({ [object.resourceKey]: 'Example tower' });
-    expect(reloaded.projection.lastSummary.objects).toEqual(next.summary.objects);
-    expect(JSON.stringify(next.summary.objects)).not.toContain('Example private title');
+    const savedObjects = reloaded.projection.lastSummary.objects;
+    expect(savedObjects).toHaveLength(next.summary.objectCount);
+    expect(savedObjects.find(({ id }) => id === object.id).name).toBe('Example tower');
+    expect(JSON.stringify(savedObjects)).not.toContain('Example private title');
     await world.updateEidoverseWorldConfig({ reset: { scope: 'assets' } });
     expect((await world.getEidoverseWorldStatus()).design.labelAliases).toEqual({ [object.resourceKey]: 'Example tower' });
     await world.updateEidoverseWorldConfig({ reset: { scope: 'district', districtId: 'apps' } });

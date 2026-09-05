@@ -431,13 +431,7 @@ const executeAdapter = async (tool, args, context) => {
   if (tool.adapter.kind === 'eidoverse-world') {
     const world = await import('./eidoverseWorld.js');
     if (tool.adapter.operation === 'status') return world.getEidoverseWorldStatus({ compact: true });
-    if (tool.adapter.operation === 'project') {
-      const result = await world.projectEidoverseWorld({ signal: context.signal });
-      const { objects = [], ...summary } = result.summary || {};
-      // The full recipe, aliases, and duplicate saved legend are for the
-      // drawer; semantic callers need a bounded operation result.
-      return { success: result.success, summary: { ...summary, objectCount: objects.length }, presence: result.presence };
-    }
+    if (tool.adapter.operation === 'project') return world.projectEidoverseWorld({ signal: context.signal, compact: true });
     if (tool.adapter.operation === 'augment') return world.augmentEidoverseWorld(args.operations, { signal: context.signal });
     return world.sayInEidoverseWorld(args.text, { signal: context.signal });
   }
