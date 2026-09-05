@@ -16,9 +16,11 @@ vi.mock('./fileUtils.js', async importOriginal => {
   } };
 });
 import { loadSlashdoLib, loadSlashdoFile, loadSlashdoBundle, writeResolvedSlashdoBody } from './slashdoLoader.js';
+import { requireSlashdoSubmoduleInCi } from './testHelper.js';
 
 const source = fileURLToPath(new URL('../../lib/slashdo/src', import.meta.url));
 const hasSubmodule = existsSync(join(source, 'transformer.js'));
+requireSlashdoSubmoduleInCi(hasSubmodule);
 const write = (path, body) => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, body);

@@ -16,6 +16,7 @@ import {
   unreachableReviewerIncludes,
 } from './slashdoInvocation.js';
 import { loadSlashdoFile } from './slashdoLoader.js';
+import { requireSlashdoSubmoduleInCi } from './testHelper.js';
 
 describe('isValidSlashdoCommand', () => {
   it('accepts bare command names', () => {
@@ -386,7 +387,10 @@ describe('unreachableReviewerIncludes', () => {
 describe('bundled command context budget', () => {
   it('keeps the better entrypoint small and preserves an eager procedure', async () => {
     const { existsSync } = await import('fs');
-    if (!existsSync(new URL('../../lib/slashdo/src/transformer.js', import.meta.url))) return;
+    if (!existsSync(new URL('../../lib/slashdo/src/transformer.js', import.meta.url))) {
+      requireSlashdoSubmoduleInCi(false);
+      return;
+    }
     const { loadSlashdoBundle } = await import('./slashdoLoader.js');
     const bundle = await loadSlashdoBundle('better', { stripFrontmatter: true });
     const eager = await loadSlashdoFile('better', { stripFrontmatter: true });
