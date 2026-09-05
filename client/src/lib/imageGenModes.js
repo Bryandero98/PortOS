@@ -227,8 +227,11 @@ export const I2I_CAPABLE_MODES = Object.freeze([
 export const isI2iCapableMode = (mode) => I2I_CAPABLE_MODES.includes(mode);
 
 // Backward-compatibility read of a media job's execution lane for a queue
-// response projected by a server that predates the `executionLane` envelope
-// field (server/lib/generationModes.js#mediaJobExecutionLane). A federated job
+// response carrying no `executionLane` (server/lib/generationModes.js#
+// mediaJobExecutionLane). The bundle is served by the same install whose API it
+// calls, so this is not routine version skew — it covers the window where a
+// rebuilt client is already being served by a server process that has not
+// restarted yet, and a replayed/hand-edited response. A federated job
 // is already identifiable from `renderer`; otherwise the cloud alphabets
 // decide, and every remaining mode — including local video's semantic
 // text/image/fflf values, which are not backend names at all — is a local GPU

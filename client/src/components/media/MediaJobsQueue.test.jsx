@@ -205,8 +205,9 @@ describe('MediaJobsQueue — video render lanes', () => {
   });
 
   it('derives the lane from mode + renderer when the response predates executionLane', async () => {
-    // A peer still running an older build projects no lane at all; the queue
-    // must not fall back to filing every cloud render under Local machine.
+    // A rebuilt bundle can be served briefly by a server process that has not
+    // restarted onto the new projection yet; the queue must not fall back to
+    // filing every cloud render under Local machine while that window is open.
     listMediaJobs.mockResolvedValue([
       {
         id: 'legacylocal01',
