@@ -1874,4 +1874,19 @@ describe('local video failure holds', () => {
     const next = submit(); await tick();
     expect(mediaJobQueue.getJob(next).status).toBe('running');
   });
+
+  it('preserves malformed holds without crashing boot or dispatching the retained batch', async () => {
+    const file = join(tempDataDir, 'media-jobs.json');
+    const snapshot = JSON.stringify({ jobs: [{ id: 'retained-corrupt', kind: 'video', status: 'queued',
+      params: { modelId: 'example-mlx' } }], videoHolds: [{ id: 'malformed-hold' }] });
+    writeFileSync(file, snapshot);
+    await expect(mediaJobQueue.initMediaJobQueue()).resolves.toBeUndefined();
+    await tick();
+    expect(stubs.generateVideo).not.toHaveBeenCalled();
+    expect(readFileSync(file, 'utf8')).toBe(snapshot);
+    submit('example-other');
+    await tick();
+    expect(readFileSync(file, 'utf8')).toBe(snapshot);
+    expect(stubs.generateVideo.mock.calls.every(([params]) => params.jobId !== 'retained-corrupt')).toBe(true);
+  });
 });

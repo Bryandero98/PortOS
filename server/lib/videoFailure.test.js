@@ -11,6 +11,8 @@ describe('local video diagnostic privacy boundary', () => {
     expect(tail.failure()?.summary || null).toBeNull();
     tail.push('stderr', '\nRuntimeError: shader compilation failed');
     expect(tail.failure()?.summary || null).toBe('RuntimeError: shader compilation failed');
+    tail.push('stderr', "\nKeyError: 'width'");
+    expect(tail.failure().summary).toBe('KeyError: redacted diagnostic details');
   });
 
   it('scrubs conditioning, tokens, credentials and POSIX/Windows paths before identity or display', () => {

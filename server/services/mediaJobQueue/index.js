@@ -461,7 +461,13 @@ export async function initMediaJobQueue() {
       // indication that repairing or deleting one file restores it.
       console.error(`❌ media-job queue: ${JOBS_FILE} is present but unreadable — starting empty and NOT persisting so it is preserved; repair or delete it and restart to re-enable persistence`);
     }
-    videoHolds.restore(data?.videoHolds);
+    const holdsReadable = videoHolds.restore(data?.videoHolds);
+    if (!holdsReadable) {
+      // A malformed hold must neither kill server boot nor silently release a
+      // batch. Preserve the snapshot under the existing unreadable-file latch.
+      persistBlocked = true;
+      console.error('❌ media-job queue: invalid video holds — snapshot preserved and retained jobs not dispatched; repair the holds and restart');
+    }
     const persistedJobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const restartedFailedIds = [];
     // #1332: training jobs whose detached trainer survived the restart, to be
@@ -480,6 +486,7 @@ export async function initMediaJobQueue() {
     // present is an orphan from the prior process.
     const videoReap = await reapAndCleanDetachedDirs(join(PATHS.videos, '.detached')).catch(() => ({ reaped: 0 }));
     if (videoReap.reaped) console.log(`🧹 reaped ${videoReap.reaped} surviving render(s) on boot`);
+    if (!holdsReadable) return;
 
     for (const j of persistedJobs) {
       if (j.status === 'running') {

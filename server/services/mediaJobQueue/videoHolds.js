@@ -23,7 +23,10 @@ export function createVideoHolds() {
   const streaks = new Map();
   return {
     restore(value = []) {
-      for (const hold of z.array(videoHoldSchema).parse(value)) holds.set(cohortKey(hold), hold);
+      const result = z.array(videoHoldSchema).safeParse(value);
+      if (!result.success) return false;
+      for (const hold of result.data) holds.set(cohortKey(hold), hold);
+      return true;
     },
     snapshot: () => [...holds.values()],
     has: (cohort) => holds.has(cohortKey(cohort)),

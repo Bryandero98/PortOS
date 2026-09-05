@@ -78,7 +78,10 @@ export function createVideoDiagnosticTail() {
           if (stream === 'stderr' && metal) return failureRecord('metal-command-buffer', `Metal command buffer failed: ${metal[1]}`);
           if (!/^(?:[\w.]*?(?:Error|Exception)):\s/.test(line)) continue;
           const failure = normalizeVideoFailure(line, options);
-          if (failure) return { ...failure, summary: `${line.split(':')[0].slice(0, 128)}: ${failure.cause}` };
+          if (failure) {
+            const prefix = `${line.split(':')[0].slice(0, 128)}:`;
+            return { ...failure, summary: failure.cause.startsWith(prefix) ? failure.cause : `${prefix} ${failure.cause}` };
+          }
         }
       }
       return null;
