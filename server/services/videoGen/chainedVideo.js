@@ -1,3 +1,4 @@
+import { normalizeVideoFailure } from '../../lib/videoFailure.js';
 /** Multi-chunk local-video orchestration. */
 
 import { join } from 'path';
@@ -225,7 +226,7 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
     const onFailed = (e) => {
       if (e.generationId !== innerJobId) return;
       detach();
-      reject(new Error(e.error || 'chunk failed'));
+      resolve({ error: e.error || 'chunk failed', failure: e.failure });
     };
     videoGenEvents.on('progress', onProgress);
     videoGenEvents.on('completed', onCompleted);
@@ -309,10 +310,11 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
     broadcastSse(outerJob, { type: 'complete', result: payload });
     closeJobAfterDelay(videoJobState.jobs, outerJobId);
   };
-  const finishFail = (error) => {
+  const failureOptions = { prompts: [rest.prompt, rest.negativePrompt, ...(chunkPrompts || [])] };
+  const finishFail = (error, failure = normalizeVideoFailure(error, failureOptions)) => {
     if (videoJobState.activeChain === chainState) videoJobState.activeChain = null;
     cleanupContextClips();
-    videoGenEvents.emit('failed', { generationId: outerJobId, error });
+    videoGenEvents.emit('failed', { generationId: outerJobId, error, failure });
     broadcastSse(outerJob, { type: 'error', error });
     closeJobAfterDelay(videoJobState.jobs, outerJobId);
   };
@@ -327,10 +329,10 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
         return;
       }
       // eslint-disable-next-line no-await-in-loop
-      const completed = await runChunk(i).catch((err) => ({ error: err.message }));
+      const completed = await runChunk(i).catch((err) => ({ error: err.message, failure: normalizeVideoFailure(err, failureOptions) }));
       if (completed?.error) {
         await setHistoryItemsHidden(chunkIds, true);
-        finishFail(completed.error);
+        finishFail(completed.error, completed.failure);
         return;
       }
       // The chunk's output file is always <innerJobId>.mp4 under PATHS.videos
@@ -440,7 +442,7 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
     });
   })().catch((err) => {
     console.log(`❌ chain orchestration crashed [${outerJobId.slice(0, 8)}]: ${err.message}`);
-    finishFail(err.message);
+    finishFail(err.message, normalizeVideoFailure(err, failureOptions));
   });
 
   // Match the synchronous shape of generateVideo so the route's response

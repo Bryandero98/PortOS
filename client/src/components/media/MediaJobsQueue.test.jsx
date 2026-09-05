@@ -7,6 +7,8 @@ import { retypeSettled } from '../../test/settledInput';
 // the network. useAutoRefetch calls the fetcher on mount.
 const listMediaJobs = vi.fn();
 const retryMediaJob = vi.fn();
+const resumeMediaVideoHold = vi.fn();
+const listMediaVideoHolds = vi.fn();
 vi.mock('../../services/apiMediaJobs.js', () => ({
   listMediaJobs: (...a) => listMediaJobs(...a),
   cancelMediaJob: vi.fn(),
@@ -14,6 +16,8 @@ vi.mock('../../services/apiMediaJobs.js', () => ({
   deleteMediaJob: vi.fn(),
   retryMediaJob: (...a) => retryMediaJob(...a),
   runMediaJobNow: vi.fn(),
+  resumeMediaVideoHold: (...a) => resumeMediaVideoHold(...a),
+  listMediaVideoHolds: (...a) => listMediaVideoHolds(...a),
 }));
 
 const getVideoGenStatus = vi.fn();
@@ -51,6 +55,8 @@ const trainingJob = {
 
 beforeEach(() => {
   listMediaJobs.mockReset();
+  listMediaVideoHolds.mockReset().mockResolvedValue([]);
+  resumeMediaVideoHold.mockReset();
   listLoraTrainingCheckpoints.mockReset();
   retryMediaJob.mockReset();
   retryMediaJob.mockResolvedValue({ jobId: 'new-job-1234' });
@@ -703,5 +709,63 @@ describe('MediaJobsQueue — video retry decode override (#5449)', () => {
     await user.click(screen.getByRole('button', { name: /Retry with changes/i }));
     const [, overrides] = retryMediaJob.mock.calls.at(-1);
     expect(overrides.draftDecode).toBeNull();
+  });
+});
+
+describe('MediaJobsQueue — local video holds', () => {
+  it('makes the scope of damaged-hold recovery explicit before resuming', async () => {
+    listMediaJobs.mockResolvedValue([]);
+    listMediaVideoHolds.mockResolvedValue([{ id: 'recovery-hold', scope: 'local-video', modelId: '*', runtime: '*',
+      cause: 'Saved video holds are damaged.', heldJobCount: 0 }]);
+    const user = userEvent.setup();
+    render(<MediaJobsQueue kind="video" />);
+    expect(await screen.findByText('All local video')).toBeInTheDocument();
+    expect(screen.queryByText(/Three matching failures/)).not.toBeInTheDocument();
+    resumeMediaVideoHold.mockResolvedValue({ resumed: true });
+    listMediaVideoHolds.mockResolvedValue([]);
+    await user.click(screen.getByRole('button', { name: 'Resume all local video' }));
+    await waitFor(() => expect(screen.queryByText('All local video')).not.toBeInTheDocument());
+    expect(resumeMediaVideoHold).toHaveBeenCalledWith('recovery-hold', { silent: true });
+  });
+
+  it('retains held state on a failed resume and clears it only after a successful response', async () => {
+    const hold = { id: 'example-hold', modelId: 'example-mlx', runtime: 'mlx_video', cause: 'Shader compilation failed', heldJobCount: 2 };
+    const jobs = ['held-1', 'held-2'].map((id) => ({ id, kind: 'video', status: 'queued', hold, params: {} }));
+    listMediaJobs.mockResolvedValue(jobs);
+    listMediaVideoHolds.mockResolvedValue([hold]);
+    resumeMediaVideoHold.mockRejectedValueOnce(new Error('Resume unavailable'));
+    const user = userEvent.setup();
+    render(<MediaJobsQueue kind="video" />);
+    expect(await screen.findByText('2 video jobs held')).toBeInTheDocument();
+    expect(screen.getByText('Shader compilation failed')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled());
+    expect(screen.getByText('2 video jobs held')).toBeInTheDocument();
+    let finishResume;
+    resumeMediaVideoHold.mockImplementationOnce(() => new Promise((resolve) => { finishResume = resolve; }));
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(screen.getByRole('button', { name: 'Resuming…' })).toBeDisabled();
+    expect(screen.getByText('2 video jobs held')).toBeInTheDocument();
+    listMediaJobs.mockResolvedValue(jobs.map((job) => ({ ...job, hold: undefined })));
+    listMediaVideoHolds.mockResolvedValue([]);
+    await act(async () => { finishResume({ resumed: true }); });
+    await waitFor(() => expect(screen.queryByText('2 video jobs held')).not.toBeInTheDocument());
+    expect(resumeMediaVideoHold).toHaveBeenLastCalledWith('example-hold', { silent: true });
+    expect(retryMediaJob).not.toHaveBeenCalled();
+  });
+
+  it('offers resume for an active hold after all retained jobs were canceled', async () => {
+    listMediaJobs.mockResolvedValue([]);
+    listMediaVideoHolds.mockResolvedValue([{ id: 'empty-hold', modelId: 'example-mlx', runtime: 'mlx_video',
+      cause: 'Shader compilation failed', heldJobCount: 0 }]);
+    const user = userEvent.setup();
+    render(<MediaJobsQueue kind="video" />);
+    expect(await screen.findByText('0 video jobs held')).toBeInTheDocument();
+    resumeMediaVideoHold.mockResolvedValue({ resumed: true });
+    listMediaVideoHolds.mockResolvedValue([]);
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(screen.queryByText('0 video jobs held')).not.toBeInTheDocument());
+    expect(resumeMediaVideoHold).toHaveBeenCalledWith('empty-hold', { silent: true });
+    expect(retryMediaJob).not.toHaveBeenCalled();
   });
 });
