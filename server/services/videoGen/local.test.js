@@ -3603,6 +3603,24 @@ describe('generateVideo — signal-death diagnosis (#3101)', () => {
     return failed;
   }
 
+  it.each(['stdout', 'stderr'])('keeps a chunked final %s exception in the ordinary exit cause', async (stream) => {
+    vi.resetModules();
+    const { generateVideo: gv } = await import('./local.js');
+    const { videoGenEvents: events } = await import('./events.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const ctrl = makeSignalProc();
+    vi.mocked(spawnDetached).mockImplementationOnce(async () => ctrl.proc);
+    const failed = new Promise((resolve) => events.once('failed', resolve));
+    await gv({ jobId: 'example-diagnostic', pythonPath: '/mock/python', modelId: 'ltx2_unified',
+      prompt: 'invented clip', width: 512, height: 512, numFrames: 25, fps: 24, mode: 'text' });
+    const emit = stream === 'stdout' ? ctrl.emitStdout : ctrl.emitStderr;
+    emit('Traceback (most recent call last):\n  File "/mock/runtime.py", line 42, in render\n');
+    emit('RuntimeError: shader comp');
+    emit('ilation failed');
+    await ctrl.fireClose(1, null);
+    expect((await failed).error).toBe('Exit code 1: RuntimeError: shader compilation failed');
+  });
+
   it('SIGABRT names the macOS Metal command-buffer watchdog with a resolution/frame-count next step', async () => {
     const evt = await failWithSignal('signal-sigabrt', 'SIGABRT');
     expect(evt.error).toMatch(/Metal command-buffer watchdog/i);

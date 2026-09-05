@@ -515,3 +515,5 @@ export * from './dbTestGate.js';
 export * from './runtimeEnv.js';
 export * from './testDataIsolation.js';
 export * from './testHelper.js';
+
+export * from './videoFailure.js';

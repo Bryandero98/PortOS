@@ -5,7 +5,7 @@ import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import { FormField } from '../ui/FormField';
 import AutoSizeTextarea from '../ui/AutoSizeTextarea';
-import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs, deleteMediaJob, retryMediaJob, runMediaJobNow } from '../../services/apiMediaJobs.js';
+import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs, deleteMediaJob, retryMediaJob, runMediaJobNow, resumeMediaVideoHold } from '../../services/apiMediaJobs.js';
 import { listLoraTrainingCheckpoints } from '../../services/apiLoraTraining.js';
 import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel, mediaJobLane, isCloudVideoMode } from '../../lib/imageGenBackends';
 import { ANTIGRAVITY_CONFIGURED_DEFAULT, CODEX_EFFORT_LEVELS, isConfiguredDefaultModel } from '../../utils/providers';
@@ -137,6 +137,7 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
+  const [resumingHold, setResumingHold] = useState(null);
 
   const fetchJobs = useCallback(async () => {
     const outcome = await listMediaJobs(kind ? { kind } : {}).then(
@@ -216,6 +217,19 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
     })
     .catch((err) => toast.error(err?.message || 'Run-now failed'));
 
+  const holds = [...new Map(live.filter((job) => job.hold).map((job) => [job.hold.id, job.hold])).values()];
+  const handleResume = (id) => {
+    setResumingHold(id);
+    return resumeMediaVideoHold(id, { silent: true })
+      .then(() => {
+        setJobs((previous) => previous.map((job) => job.hold?.id === id ? { ...job, hold: undefined } : job));
+        toast.success('Retained video jobs resumed');
+        fetchJobs();
+      })
+      .catch((error) => toast.error(error?.message || 'Resume failed'))
+      .finally(() => setResumingHold(null));
+  };
+
   const handleDelete = (id) => deleteMediaJob(id, { silent: true })
     .then(() => {
       setJobs((prev) => prev.filter((j) => j.id !== id));
@@ -274,6 +288,19 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
           Queue refresh failed. Showing the last known snapshot.
         </div>
       )}
+
+      {holds.map((hold) => (
+        <div key={hold.id} role="status" className="rounded border border-port-warning/30 bg-port-warning/10 p-3 text-sm">
+          <div className="font-medium text-port-warning">{hold.heldJobCount} video job{hold.heldJobCount === 1 ? '' : 's'} held</div>
+          <div className="text-xs text-port-text-muted break-words">{hold.modelId} · {hold.runtime}</div>
+          <p className="mt-1 break-words">{hold.cause}</p>
+          <p className="mt-1 text-xs text-port-text-muted">Three matching failures. Repair the runtime, then resume the retained jobs.</p>
+          <button type="button" disabled={resumingHold !== null} onClick={() => handleResume(hold.id)}
+            className="mt-2 min-h-[44px] rounded border border-port-border px-3 py-2 text-sm hover:bg-port-border disabled:opacity-50">
+            {resumingHold === hold.id ? 'Resuming…' : 'Resume'}
+          </button>
+        </div>
+      ))}
 
       {loading && !hasSnapshot ? (
         <div className="text-xs"><BrailleSpinner text="Loading…" /></div>
@@ -485,7 +512,7 @@ function JobRow({ job, onCancel, onRetry, onRunNow, onDelete }) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className={`text-xs px-2 py-0.5 rounded ${STATUS_BADGE[job.status] || ''}`}>{job.status}</span>
+          <span className={`text-xs px-2 py-0.5 rounded ${STATUS_BADGE[job.status] || ''}`}>{job.hold ? 'held' : job.status}</span>
           {job.cancelRequested && (
             <span className="text-xs text-port-warning" title="Cancellation requested — waiting for worker">cancelling…</span>
           )}

@@ -7,6 +7,7 @@ import { retypeSettled } from '../../test/settledInput';
 // the network. useAutoRefetch calls the fetcher on mount.
 const listMediaJobs = vi.fn();
 const retryMediaJob = vi.fn();
+const resumeMediaVideoHold = vi.fn();
 vi.mock('../../services/apiMediaJobs.js', () => ({
   listMediaJobs: (...a) => listMediaJobs(...a),
   cancelMediaJob: vi.fn(),
@@ -14,6 +15,7 @@ vi.mock('../../services/apiMediaJobs.js', () => ({
   deleteMediaJob: vi.fn(),
   retryMediaJob: (...a) => retryMediaJob(...a),
   runMediaJobNow: vi.fn(),
+  resumeMediaVideoHold: (...a) => resumeMediaVideoHold(...a),
 }));
 
 const getVideoGenStatus = vi.fn();
@@ -703,5 +705,31 @@ describe('MediaJobsQueue — video retry decode override (#5449)', () => {
     await user.click(screen.getByRole('button', { name: /Retry with changes/i }));
     const [, overrides] = retryMediaJob.mock.calls.at(-1);
     expect(overrides.draftDecode).toBeNull();
+  });
+});
+
+describe('MediaJobsQueue — local video holds', () => {
+  it('retains held state on a failed resume and clears it only after a successful response', async () => {
+    const hold = { id: 'example-hold', modelId: 'example-mlx', runtime: 'mlx_video', cause: 'Shader compilation failed', heldJobCount: 2 };
+    const jobs = ['held-1', 'held-2'].map((id) => ({ id, kind: 'video', status: 'queued', hold, params: {} }));
+    listMediaJobs.mockResolvedValue(jobs);
+    resumeMediaVideoHold.mockRejectedValueOnce(new Error('Resume unavailable'));
+    const user = userEvent.setup();
+    render(<MediaJobsQueue kind="video" />);
+    expect(await screen.findByText('2 video jobs held')).toBeInTheDocument();
+    expect(screen.getByText('Shader compilation failed')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled());
+    expect(screen.getByText('2 video jobs held')).toBeInTheDocument();
+    let finishResume;
+    resumeMediaVideoHold.mockImplementationOnce(() => new Promise((resolve) => { finishResume = resolve; }));
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(screen.getByRole('button', { name: 'Resuming…' })).toBeDisabled();
+    expect(screen.getByText('2 video jobs held')).toBeInTheDocument();
+    listMediaJobs.mockResolvedValue(jobs.map((job) => ({ ...job, hold: undefined })));
+    await act(async () => { finishResume({ resumed: true }); });
+    await waitFor(() => expect(screen.queryByText('2 video jobs held')).not.toBeInTheDocument());
+    expect(resumeMediaVideoHold).toHaveBeenLastCalledWith('example-hold', { silent: true });
+    expect(retryMediaJob).not.toHaveBeenCalled();
   });
 });

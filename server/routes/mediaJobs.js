@@ -9,7 +9,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
-import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchivedJob, runJobNow, JOB_KINDS, JOB_STATUSES } from '../services/mediaJobQueue/index.js';
+import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchivedJob, runJobNow, resumeVideoHold, JOB_KINDS, JOB_STATUSES } from '../services/mediaJobQueue/index.js';
 import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
@@ -127,6 +127,17 @@ router.post('/refine-prompt', asyncHandler(async (req, res) => {
 router.post('/prompt-from-media', asyncHandler(async (req, res) => {
   const data = validateRequest(promptFromMediaSchema, req.body);
   res.json(await promptFromMedia(data));
+}));
+
+const resumeHoldParamsSchema = z.object({ holdId: z.string().uuid() });
+const resumeHoldBodySchema = z.object({}).strict();
+router.post('/holds/:holdId/resume', asyncHandler(async (req, res) => {
+  const { holdId } = validateRequest(resumeHoldParamsSchema, req.params);
+  validateRequest(resumeHoldBodySchema, req.body ?? {});
+  if (!await resumeVideoHold(holdId)) {
+    throw new ServerError('Hold no longer exists', { status: 404, code: 'NOT_FOUND' });
+  }
+  res.json({ resumed: true });
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {

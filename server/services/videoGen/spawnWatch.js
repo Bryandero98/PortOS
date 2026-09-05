@@ -6,6 +6,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { PATHS, rmGuarded } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
+import { createVideoDiagnosticTail } from '../../lib/videoFailure.js';
 import { createLineReader } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { prepareLocalMemory, gpuBlockersMessage } from '../localMemory.js';
@@ -244,8 +245,9 @@ export async function spawnAndWatchVideo({
     // grow it without limit; the abort banner is the last thing printed before
     // the process dies, so the tail always holds it.
     const stderrTail = [];
+    const diagnostics = createVideoDiagnosticTail();
     const recordStderrTail = (raw) => {
-      stderrTail.push(raw);
+      stderrTail.push(raw.slice(-2048));
       if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift();
     };
 
@@ -291,10 +293,12 @@ export async function spawnAndWatchVideo({
     }, { splitRe: /[\n\r]+/ });
 
     proc.stdout.on('data', (chunk) => {
+      diagnostics.push('stdout', chunk);
       stdoutReader.push(chunk);
     });
 
     proc.stderr.on('data', (chunk) => {
+      diagnostics.push('stderr', chunk);
       stderrReader.push(chunk);
     });
 
@@ -369,7 +373,8 @@ export async function spawnAndWatchVideo({
               fingerprint: await pickDeathFingerprint({ emitted: job.runtime, runtimeId: model.runtime }),
             });
           } else {
-            reason = `Exit code ${code}`;
+            const diagnostic = diagnostics.summary({ prompts: [meta?.prompt, meta?.negativePrompt] });
+            reason = `Exit code ${code}${diagnostic ? `: ${diagnostic}` : ''}`;
           }
           console.log(`❌ Video generation failed [${jobId.slice(0, 8)}]: ${reason}`);
           broadcastSse(job, { type: 'error', error: `Generation failed: ${reason}` });

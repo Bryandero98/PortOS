@@ -1,4 +1,5 @@
 import { effectiveJobPrompt } from '../../lib/federatedMediaWire.js';
+import { videoHoldSchema } from './videoHolds.js';
 import { isRemoteMediaJob } from './remoteMediaJob.js';
 import { mediaJobExecutionLane } from '../../lib/generationModes.js';
 
@@ -78,6 +79,7 @@ export function sanitizeJob(job) {
   // requires an explicit `modelId` for a peer render) carries it on the wire
   // request. This branch is now the ONLY source of a routed job's model id.
   const routed = isRemoteMediaJob(job);
+  const hold = !routed && job.status === 'queued' ? videoHoldSchema.safeParse(job.hold) : null;
   const remoteModelId = job.params?.remoteMedia?.request?.modelId;
   if (safeParams && routed) {
     if (remotePrompt) safeParams.prompt = remotePrompt;
@@ -99,6 +101,7 @@ export function sanitizeJob(job) {
     executionLane: mediaJobExecutionLane({ kind: job.kind, mode: job.params?.mode, remote: routed }),
     owner: job.owner,
     status: job.status,
+    ...(hold?.success ? { hold: { ...hold.data, heldJobCount: job.hold.heldJobCount } } : {}),
     queuedAt: job.queuedAt,
     startedAt: job.startedAt,
     completedAt: job.completedAt,

@@ -47,6 +47,7 @@ import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
 import { VIDEO_GEN_MODE, CLOUD_VIDEO_GEN_MODES, mediaJobExecutionLane } from '../../lib/generationModes.js';
 import { REMOTE_MEDIA_MODULES, isRemoteMediaJob } from './remoteMediaJob.js';
+import { createVideoHolds } from './videoHolds.js';
 import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 
 // Cloud-CLI jobs (Codex/Grok/Agy images, Grok videos) share one parallel lane —
@@ -227,6 +228,7 @@ let running = null;
 const cloudRunning = [];
 const remoteRunning = [];
 const archive = [];
+const videoHolds = createVideoHolds();
 
 // One install can route to several peers, while each provider remains the
 // authority on its own capacity. This bound prevents corrupted persisted state
@@ -433,7 +435,7 @@ async function persistImpl() {
   const serializable = live.map(({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs }) =>
     ({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs }),
   );
-  await atomicWrite(JOBS_FILE, { jobs: serializable });
+  await atomicWrite(JOBS_FILE, { jobs: serializable, videoHolds: videoHolds.snapshot() });
 }
 
 export async function initMediaJobQueue() {
@@ -459,6 +461,7 @@ export async function initMediaJobQueue() {
       // indication that repairing or deleting one file restores it.
       console.error(`❌ media-job queue: ${JOBS_FILE} is present but unreadable — starting empty and NOT persisting so it is preserved; repair or delete it and restart to re-enable persistence`);
     }
+    videoHolds.restore(data?.videoHolds);
     const persistedJobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const restartedFailedIds = [];
     // #1332: training jobs whose detached trainer survived the restart, to be
@@ -565,6 +568,8 @@ export async function initMediaJobQueue() {
     if (persistedJobs.length) {
       console.log(`📦 mediaJobQueue restored: ${queue.length} queued, ${archive.length} archived`);
     }
+    await videoHolds.resolveCohorts(queue);
+    videoHolds.updateQueued(queue);
     // Pre-seed terminal SSE payloads for each restart-failed job so that any
     // client that reconnects to /:jobId/events after a restart (the route
     // attaches via attachSseClient → attachSse, which replays lastPayload)
@@ -650,6 +655,10 @@ function startLaneJob(job, { lane }) {
         mediaJobEvents.emit('failed', job);
       }
     }
+    // Count once, after every terminal path (including pre-dispatch throws),
+    // and before releasing the lane. Boot reconciliation never comes here.
+    videoHolds.recordTerminal(job);
+    videoHolds.updateQueued(queue);
     if (lane === 'cloud') {
       const idx = cloudRunning.indexOf(job);
       if (idx >= 0) cloudRunning.splice(idx, 1);
@@ -670,12 +679,16 @@ function startLaneJob(job, { lane }) {
 
 async function drainLoop() {
   while (true) {
+    const candidates = queue.slice();
+    await videoHolds.resolveCohorts(candidates);
+    videoHolds.updateQueued(queue);
     // Single queue scan, promoting work independently into each open lane.
     let gpuOpen = !running;
     let cloudSlots = codexParallelLimit - cloudRunning.length;
     let remoteSlots = REMOTE_MEDIA_PARALLEL_LIMIT - remoteRunning.length;
     if ((gpuOpen || cloudSlots > 0 || remoteSlots > 0) && queue.length > 0) {
-      for (const job of queue.slice()) {
+      for (const job of candidates) {
+        if (job.status !== 'queued' || job.hold) continue;
         const lane = jobLane(job);
         if (lane === 'remote') {
           if (remoteSlots > 0) {
@@ -739,6 +752,7 @@ export function runJobNow(jobId) {
 // /:jobId/events would keep showing the position from its original enqueue
 // frame even after the line ahead of it cleared.
 function recomputeQueuePositions() {
+  videoHolds.updateQueued(queue);
   const cloudJobs = queue.filter(isCloudImageJob);
   const remoteJobs = queue.filter(isRemoteMediaJob);
   const gpuJobs = queue.filter((j) => jobLane(j) === 'gpu');
@@ -1192,6 +1206,14 @@ export function enqueueJob({ kind, params, owner = null }) {
   return { jobId: id, position: job.position, status: 'queued' };
 }
 
+// Resume retained work only; failed jobs are never re-enqueued.
+export async function resumeVideoHold(holdId) {
+  if (!videoHolds.resume(holdId)) return false;
+  videoHolds.updateQueued(queue);
+  await persist();
+  return true;
+}
+
 // Bulk-cancel every queued job (optionally filtered by kind: 'image' | 'video').
 // Running jobs are left alone — they have to be canceled individually with
 // cancelJob(id) so the SIGTERM path runs. Returns the count of jobs that were
@@ -1351,6 +1373,7 @@ export function __resetForTests() {
   cloudRunning.length = 0;
   remoteRunning.length = 0;
   archive.length = 0;
+  videoHolds.clear();
   sseJobs.clear();
   workerStarted = false;
   initPromise = null;

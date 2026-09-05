@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
@@ -26,12 +26,22 @@ vi.mock('../../lib/fileUtils.js', async () => {
     PATHS: new Proxy({}, {
       get(_, key) {
         if (key === 'data') return tempDataDir;
+        if (key === 'uploads' || key === 'videos') return join(tempDataDir, key);
         return actual.PATHS[key];
       },
     }),
     atomicWrite: (...args) => atomicWriteSpy(...args),
   };
 });
+
+vi.mock('../../lib/mediaModels.js', () => ({
+  getVideoModels: () => [
+    { id: 'example-mlx', runtime: 'mlx_video' },
+    { id: 'example-cuda', runtime: 'cuda_video' },
+    { id: 'example-other', runtime: 'mlx_video' },
+  ],
+  getDefaultVideoModelId: () => 'example-mlx',
+}));
 
 // Mock the gen modules so the worker's dynamic imports return controllable
 // stubs. The dispatcher relies on videoGenEvents / imageGenEvents to fire
@@ -311,6 +321,8 @@ describe('mediaJobQueue', () => {
     expect(mediaJobQueue.listJobs({ kind: 'video' })).toHaveLength(2);
     expect(mediaJobQueue.listJobs({ kind: 'image' })).toHaveLength(1);
     expect(mediaJobQueue.listJobs({ owner: 'voice' })).toHaveLength(1);
+    await vi.dynamicImportSettled();
+    await flush();
     // One job is 'running' (worker dequeued it), the other two are still 'queued'.
     expect(mediaJobQueue.listJobs({ status: 'queued' })).toHaveLength(2);
     expect(mediaJobQueue.listJobs({ status: 'running' })).toHaveLength(1);
@@ -1668,5 +1680,126 @@ describe('waitFor test helper (#5512)', () => {
   it('reports a cleanly-false predicate without inventing an error', async () => {
     await expect(waitFor(() => false, { timeoutMs: 20, intervalMs: 5 }))
       .rejects.toThrow(/never became true within 20ms(?!.*last error)/s);
+  });
+});
+
+// Regression: three terminal failures must preserve the rest of a batch,
+// including its staged bytes, across reload and explicit resume.
+describe('local video failure holds', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+  const tick = async () => {
+    await vi.dynamicImportSettled();
+    await vi.advanceTimersByTimeAsync(150);
+    await flush();
+  };
+  const submit = (modelId = 'example-mlx', extra = {}) => mediaJobQueue.enqueueJob({
+    kind: 'video', owner: 'example-owner', params: { modelId, prompt: 'invented clip', ...extra },
+  }).jobId;
+  const finish = async (id, error = 'RuntimeError: shader compilation failed') => {
+    videoGenEvents.emit(error ? 'failed' : 'completed', { generationId: id, error });
+    await flush();
+  };
+
+  it.each(['example-mlx', 'example-cuda'])('retains %s batch inputs through hold, restart and one resume', async (modelId) => {
+    const upload = join(tempDataDir, 'uploads', 'example.png');
+    mkdirSync(join(tempDataDir, 'uploads'));
+    writeFileSync(upload, 'synthetic image');
+    const ids = Array.from({ length: 5 }, () => submit(modelId, { uploadedTempPath: upload, seed: 42 }));
+    for (const id of ids.slice(0, 3)) {
+      await tick();
+      expect(mediaJobQueue.getJob(id).status).toBe('running');
+      await finish(id);
+      // A duplicate terminal event must never advance the streak a second time.
+      await finish(id);
+    }
+    await tick();
+    expect(stubs.generateVideo).toHaveBeenCalledTimes(3);
+    const retained = ids.slice(3).map((id) => mediaJobQueue.getJob(id));
+    expect(retained.map((j) => j.id)).toEqual(ids.slice(3));
+    expect(retained.every((j) => j.status === 'queued' && j.hold.heldJobCount === 2)).toBe(true);
+    expect(existsSync(upload)).toBe(true);
+    const persisted = JSON.parse(readFileSync(join(tempDataDir, 'media-jobs.json'), 'utf8'));
+    expect(persisted.videoHolds).toHaveLength(1);
+
+    vi.clearAllTimers();
+    mediaJobQueue.__resetForTests();
+    await importFresh();
+    await mediaJobQueue.initMediaJobQueue();
+    await tick();
+    expect(stubs.generateVideo).toHaveBeenCalledTimes(3);
+    const restored = mediaJobQueue.getJob(ids[3]);
+    expect(restored).toMatchObject({ owner: 'example-owner', status: 'queued', params: { uploadedTempPath: upload, seed: 42 }, hold: { heldJobCount: 2 } });
+    expect(await mediaJobQueue.resumeVideoHold(restored.hold.id)).toBe(true);
+    expect(await mediaJobQueue.resumeVideoHold(persisted.videoHolds[0].id)).toBe(false);
+    for (const id of ids.slice(3)) { await tick(); await finish(id, null); }
+    await tick();
+    expect(stubs.generateVideo.mock.calls.map(([p]) => p.jobId)).toEqual(ids);
+    expect(JSON.parse(readFileSync(join(tempDataDir, 'media-jobs.json'), 'utf8')).videoHolds).toEqual([]);
+  });
+
+  it('lets other local models, image, audio, training, cloud and remote work pass a hold', async () => {
+    const ids = Array.from({ length: 4 }, () => submit());
+    for (const id of ids.slice(0, 3)) { await tick(); await finish(id); }
+    const cloud = submit('example-mlx', { mode: 'grok' });
+    const remote = submit('example-mlx', { remoteMedia: remoteVideoMediaParams() });
+    const other = submit('example-other');
+    await tick();
+    expect(stubs.generateVideoGrok).toHaveBeenCalledWith(expect.objectContaining({ jobId: cloud }));
+    expect(stubs.generateVideoRemote).toHaveBeenCalledWith(expect.objectContaining({ jobId: remote }));
+    expect(mediaJobQueue.getJob(other).status).toBe('running');
+    await finish(other, null);
+    for (const [kind, emitter] of [['image', imageGenEvents], ['audio', audioGenEvents], ['training', (await import('../loraTraining/events.js')).trainingEvents]]) {
+      stubs.runTraining.mockResolvedValue({});
+      const { jobId } = mediaJobQueue.enqueueJob({ kind, params: {} });
+      await tick();
+      expect(mediaJobQueue.getJob(jobId).status).toBe('running');
+      emitter.emit('completed', { generationId: jobId });
+      await flush();
+    }
+    expect(mediaJobQueue.getJob(ids[3]).status).toBe('queued');
+  });
+
+  it('resets on success or a different cause, ignores cancellation, and excludes bare exit codes', async () => {
+    const errors = ['RuntimeError: shape mismatch', 'RuntimeError: shape mismatch', null,
+      'RuntimeError: shader failed', 'RuntimeError: shader failed', 'Exit code 1',
+      'RuntimeError: shape mismatch', 'RuntimeError: shader failed', 'RuntimeError: shader failed'];
+    for (const error of errors) {
+      const id = submit(); await tick(); await finish(id, error);
+    }
+    const canceled = submit(); await tick();
+    await mediaJobQueue.cancelJob(canceled);
+    await finish(canceled, 'RuntimeError: unrelated cancellation');
+    const third = submit(); const retained = submit();
+    await tick(); await finish(third, 'RuntimeError: shader failed'); await tick();
+    expect(mediaJobQueue.getJob(canceled).status).toBe('canceled');
+    expect(mediaJobQueue.getJob(retained)).toMatchObject({ status: 'queued', hold: { cause: 'shader failed' } });
+  });
+
+  it('counts pre-dispatch rejection once and resumes with a cleared streak', async () => {
+    stubs.generateVideo.mockRejectedValue(new Error('Python is not configured'));
+    const ids = Array.from({ length: 4 }, () => submit());
+    for (let i = 0; i < 4; i += 1) await tick();
+    expect(stubs.generateVideo).toHaveBeenCalledTimes(3);
+    const held = mediaJobQueue.getJob(ids[3]);
+    expect(held.status).toBe('queued');
+    await mediaJobQueue.resumeVideoHold(held.hold.id);
+    const next = submit();
+    await tick(); await tick();
+    expect(stubs.generateVideo).toHaveBeenCalledTimes(5);
+    expect(mediaJobQueue.getJob(next).status).toBe('failed');
+  });
+
+  it('loads legacy jobs without treating startup reconciliation as an engine failure', async () => {
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({ jobs: [
+      ...[1, 2, 3].map((n) => ({ id: `interrupted-${n}`, kind: 'video', status: 'running', params: { modelId: 'example-mlx' } })),
+      { id: 'retained-legacy', kind: 'video', status: 'queued', params: { modelId: 'example-mlx' } },
+    ] }));
+    await mediaJobQueue.initMediaJobQueue(); await tick();
+    expect(mediaJobQueue.getJob('retained-legacy').status).toBe('running');
+    await finish('retained-legacy');
+    const next = submit(); await tick();
+    expect(mediaJobQueue.getJob(next).status).toBe('running');
   });
 });

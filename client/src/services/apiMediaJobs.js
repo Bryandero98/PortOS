@@ -53,3 +53,7 @@ export const promptFromMedia = (data, options) => request('/media-jobs/prompt-fr
   body: JSON.stringify(data),
   ...options,
 });
+
+// Resume only the retained jobs covered by this local video hold.
+export const resumeMediaVideoHold = (holdId, options = {}) =>
+  request(`/media-jobs/holds/${encodeURIComponent(holdId)}/resume`, { method: 'POST', ...options });
