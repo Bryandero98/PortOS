@@ -1650,7 +1650,13 @@ export async function projectEidoverseWorld({ signal } = {}) {
       source,
       recipe: lockedConfig.recipe,
       labelAliases: lockedConfig.design.labelAliases,
-      assetResolutions: lockedConfig.design.assetResolutions,
+      assetResolutions: {
+        ...lockedConfig.design.assetResolutions,
+        // Preflight verifies legacy kind overrides too, even though only the
+        // semantic slots have durable resolution locks.
+        ...Object.fromEntries(Object.entries(lockedConfig.design.userOverrides?.assets || {})
+          .map(([slot, path]) => [slot, { path, userOverride: true }])),
+      },
       currentState: presence.snapshot?.state || {},
       meta: { title: lockedConfig.design.name, hostId },
     });

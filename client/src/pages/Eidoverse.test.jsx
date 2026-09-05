@@ -208,6 +208,24 @@ describe('Eidoverse hosted page', () => {
     ));
   });
 
+  it('preserves saved aliases when the initial projection fails and another setting is saved', async () => {
+    const user = userEvent.setup();
+    const labelAliases = { 'app-0123456789ab': 'Example saved tower' };
+    api.getEidoverseWorldStatus.mockResolvedValueOnce({
+      ...worldResponse, design: { ...design, labelAliases },
+    });
+    api.projectEidoverseWorld.mockRejectedValueOnce(new Error('Example initial projection failure'));
+    renderPage();
+    await screen.findByTitle('Eidoverse Worlds');
+    await user.click(screen.getByRole('button', { name: 'World controls' }));
+    expect(await screen.findByText('Example initial projection failure')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('My Eidoverse name'), '-edited');
+    await user.click(screen.getByRole('button', { name: 'Save and project' }));
+    await waitFor(() => expect(api.updateEidoverseWorldConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ labelAliases, humanName: 'example-portos-user-edited' }), { silent: true },
+    ));
+  });
+
   it('shows a renderer update link while preserving the saved recipe on older clients', async () => {
     const user = userEvent.setup();
     const oldDesign = { ...design, reconciliation: { ...design.reconciliation,

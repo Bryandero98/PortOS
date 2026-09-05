@@ -913,8 +913,10 @@ describe('Eidoverse private-world lifecycle', () => {
     });
   });
 
-  it('verifies and records an explicit install-local store override', async () => {
-    await world.updateEidoverseWorldConfig({ assetOverrides: { app: 'store/example-local-asset' } });
+  it('verifies semantic and legacy store overrides and explains their provenance in the legend', async () => {
+    await world.updateEidoverseWorldConfig({ assetOverrides: {
+      app: 'store/example-local-asset', operations: 'store/example-legacy-operations',
+    } });
 
     const result = await world.projectEidoverseWorld();
 
@@ -924,6 +926,9 @@ describe('Eidoverse private-world lifecycle', () => {
       shippedDefault: false,
     });
     expect(fetch.mock.calls.some(([input]) => String(input).includes('/library/store/example-local-asset'))).toBe(true);
+    expect(fetch.mock.calls.some(([input]) => String(input).includes('/library/store/example-legacy-operations'))).toBe(true);
+    expect(result.summary.objects.find(({ kind, districtId }) => kind === 'district' && districtId === 'nexus')?.asset)
+      .toEqual({ path: 'store/example-legacy-operations', slot: 'operations', reason: 'user-override' });
   });
 
   it('resets only the selected district asset lock and override', async () => {

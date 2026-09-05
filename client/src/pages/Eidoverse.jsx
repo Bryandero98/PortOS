@@ -260,6 +260,7 @@ export default function Eidoverse() {
       setHumanName(result.world?.identity?.name || result.world?.human?.name || '');
       setRecipeDraft(result.world?.recipe || null);
       setAssetOverridesDraft(result.world?.design?.userOverrides?.assets || {});
+      setLabelAliasesDraft(result.world?.design?.labelAliases || {});
       setHostUrl(result.hostUrl || '');
     }, (reason) => {
       if (!isCurrent()) return;
