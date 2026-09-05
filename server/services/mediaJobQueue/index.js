@@ -649,9 +649,10 @@ function startLaneJob(job, { lane }) {
       if (job.status === 'running') {
         job.status = job.cancelRequested ? 'canceled' : 'failed';
         videoHolds.captureFailure(job, err);
-        job.error = `runJob threw: ${err.message}`;
+        job.error = job.cancelRequested ? 'Canceled' : `runJob threw: ${err.message}`;
         job.completedAt = new Date().toISOString();
-        broadcastSse(ensureSseEntry(job.id), { type: 'error', error: job.error });
+        broadcastSse(ensureSseEntry(job.id), job.cancelRequested
+          ? { type: 'canceled', reason: job.error } : { type: 'error', error: job.error });
         closeJobAfterDelay(sseJobs, job.id);
         mediaJobEvents.emit(job.status, job);
       }
@@ -1208,6 +1209,20 @@ export function enqueueJob({ kind, params, owner = null }) {
   startWorker();
   console.log(`📥 media-job [${id.slice(0, 8)}] ${kind} queued (position ${job.position})`);
   return { jobId: id, position: job.position, status: 'queued' };
+}
+
+// Admission can query a cohort even after its last retained job is canceled.
+export function listVideoHolds() {
+  videoHolds.updateQueued(queue);
+  const counts = new Map();
+  for (const job of queue) {
+    if (job.hold) counts.set(job.hold.id, (counts.get(job.hold.id) || 0) + 1);
+  }
+  return videoHolds.snapshot().map((hold) => ({ ...hold, heldJobCount: counts.get(hold.id) || 0 }));
+}
+
+export function isVideoModelHeld(modelId, runtime) {
+  return videoHolds.has({ modelId, runtime: runtime || 'mlx_video' });
 }
 
 // Resume retained work only; failed jobs are never re-enqueued.

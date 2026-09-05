@@ -14,6 +14,7 @@ const stubs = {
   runJobNow: vi.fn(() => ({ ok: false, code: 'NOT_FOUND' })),
   removeArchivedJob: vi.fn((id) => jobStore.delete(id)),
   resumeVideoHold: vi.fn(),
+  listVideoHolds: vi.fn(() => []),
 };
 vi.mock('../services/mediaJobQueue/index.js', () => ({
   JOB_KINDS: ['video', 'image'],
@@ -26,6 +27,7 @@ vi.mock('../services/mediaJobQueue/index.js', () => ({
   runJobNow: (...args) => stubs.runJobNow(...args),
   removeArchivedJob: (...args) => stubs.removeArchivedJob(...args),
   resumeVideoHold: (...args) => stubs.resumeVideoHold(...args),
+  listVideoHolds: (...args) => stubs.listVideoHolds(...args),
 }));
 vi.mock('../services/videoGen/prepareParams.js', () => ({
   validateVideoRetryParams: vi.fn(),
@@ -630,6 +632,10 @@ it('projects local holds on the array list and validates explicit resume', async
   expect(list.body[0].hold.workerOnly).toBeUndefined();
   const detail = await request(app).get('/api/media-jobs/held-job');
   expect(detail.body.hold).toEqual(list.body[0].hold);
+  jobStore.clear();
+  stubs.listVideoHolds.mockReturnValue([{ ...list.body[0].hold, heldJobCount: 0 }]);
+  const holds = await request(app).get('/api/media-jobs/holds');
+  expect(holds.body).toEqual([{ ...list.body[0].hold, heldJobCount: 0 }]);
   stubs.resumeVideoHold.mockResolvedValue(true);
   expect((await request(app).post(`/api/media-jobs/holds/${holdId}/resume`).send({})).body).toEqual({ resumed: true });
   expect(stubs.resumeVideoHold).toHaveBeenLastCalledWith(holdId);

@@ -26,6 +26,7 @@ export function createVideoHolds() {
       for (const hold of z.array(videoHoldSchema).parse(value)) holds.set(cohortKey(hold), hold);
     },
     snapshot: () => [...holds.values()],
+    has: (cohort) => holds.has(cohortKey(cohort)),
     clear() { holds.clear(); streaks.clear(); },
     async resolveCohorts(jobs) {
       const local = jobs.filter(isLocalVideo);
@@ -52,6 +53,7 @@ export function createVideoHolds() {
       }
     },
     captureFailure(job, error, { code, failure } = {}) {
+      if (!isLocalVideo(job)) return;
       job.videoFailure = failure !== undefined ? failure : normalizeVideoFailure(error, {
         code, prompts: [job.params?.prompt, job.params?.negativePrompt, ...(job.params?.chunkPrompts || [])],
       });

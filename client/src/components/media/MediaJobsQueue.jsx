@@ -5,7 +5,7 @@ import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import { FormField } from '../ui/FormField';
 import AutoSizeTextarea from '../ui/AutoSizeTextarea';
-import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs, deleteMediaJob, retryMediaJob, runMediaJobNow, resumeMediaVideoHold } from '../../services/apiMediaJobs.js';
+import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs, deleteMediaJob, retryMediaJob, runMediaJobNow, listMediaVideoHolds, resumeMediaVideoHold } from '../../services/apiMediaJobs.js';
 import { listLoraTrainingCheckpoints } from '../../services/apiLoraTraining.js';
 import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel, mediaJobLane, isCloudVideoMode } from '../../lib/imageGenBackends';
 import { ANTIGRAVITY_CONFIGURED_DEFAULT, CODEX_EFFORT_LEVELS, isConfiguredDefaultModel } from '../../utils/providers';
@@ -133,6 +133,7 @@ function modelLabel(params, renderer) {
 // cards on the gen page already, so listing them here is duplicate noise.
 export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' }) {
   const [jobs, setJobs] = useState([]);
+  const [holds, setHolds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -140,16 +141,20 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
   const [resumingHold, setResumingHold] = useState(null);
 
   const fetchJobs = useCallback(async () => {
-    const outcome = await listMediaJobs(kind ? { kind } : {}).then(
+    const outcome = await Promise.all([
+      listMediaJobs(kind ? { kind } : {}),
+      !kind || kind === 'video' ? listMediaVideoHolds() : [],
+    ]).then(
       (value) => ({ value }),
       () => ({ error: true }),
     );
-    if (outcome.error || !Array.isArray(outcome.value)) {
+    if (outcome.error || !outcome.value.every(Array.isArray)) {
       setLoadError(true);
       setLoading(false);
       return;
     }
-    setJobs(outcome.value);
+    setJobs(outcome.value[0]);
+    setHolds(outcome.value[1]);
     setHasSnapshot(true);
     setLoadError(false);
     setLoading(false);
@@ -217,12 +222,12 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
     })
     .catch((err) => toast.error(err?.message || 'Run-now failed'));
 
-  const holds = [...new Map(live.filter((job) => job.hold).map((job) => [job.hold.id, job.hold])).values()];
   const handleResume = (id) => {
     setResumingHold(id);
     return resumeMediaVideoHold(id, { silent: true })
       .then(() => {
         setJobs((previous) => previous.map((job) => job.hold?.id === id ? { ...job, hold: undefined } : job));
+        setHolds((previous) => previous.filter((hold) => hold.id !== id));
         toast.success('Retained video jobs resumed');
         fetchJobs();
       })

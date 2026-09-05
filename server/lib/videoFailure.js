@@ -14,7 +14,7 @@ const failureRecord = (classification, cause, identity = cause) => ({
 
 const scrubCause = (text) => scrubSecretTokens(text)
   .replace(/\b(?:https?|file):\/\/\S+/gi, '[url]')
-  .replace(/\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*\S+/gi, '[credential]')
+  .replace(/\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi, '[credential]')
   // An unquoted path has no reliable ending delimiter (spaces are legal on
   // both platforms). Redact the remainder rather than leaking path fragments.
   .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/(?=\S))[^\r\n]*/g, '[path]')
@@ -50,8 +50,10 @@ export function normalizeVideoFailure(error, { prompts = [], code = error?.code 
   const classification = exception?.[1] || (/^[A-Z][A-Z0-9_]{0,127}$/.test(code || '') ? code : null);
   if (!classification || scrubSecretTokens(classification) !== classification) return null;
   const identity = scrubCause(exception?.[2] || text);
-  const cause = identity.replace(/(['"])(?:\\.|(?!\1).)*?\1/g, '[value]').slice(0, MAX_CAUSE_LENGTH);
-  if (!/[a-z]{3}/i.test(cause.replace(/\[[^\]]*\]/g, ''))) return null;
+  if (!/[a-z0-9]/i.test(identity.replace(/\[[^\]]*\]/g, ''))) return null;
+  const display = identity.replace(/(['"])(?:\\.|(?!\1).)*?\1/g, '[value]').slice(0, MAX_CAUSE_LENGTH);
+  const cause = /[a-z]{3}/i.test(display.replace(/\[[^\]]*\]/g, ''))
+    ? display : `${classification}: redacted diagnostic details`;
   return failureRecord(classification.toLowerCase().slice(0, 128), cause, identity);
 }
 

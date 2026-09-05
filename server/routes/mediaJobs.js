@@ -9,7 +9,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
-import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchivedJob, runJobNow, resumeVideoHold, JOB_KINDS, JOB_STATUSES } from '../services/mediaJobQueue/index.js';
+import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchivedJob, runJobNow, listVideoHolds, resumeVideoHold, JOB_KINDS, JOB_STATUSES } from '../services/mediaJobQueue/index.js';
 import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
@@ -131,6 +131,10 @@ router.post('/prompt-from-media', asyncHandler(async (req, res) => {
 
 const resumeHoldParamsSchema = z.object({ holdId: z.string().uuid() });
 const resumeHoldBodySchema = z.object({}).strict();
+router.get('/holds', asyncHandler(async (_req, res) => {
+  res.json(listVideoHolds());
+}));
+
 router.post('/holds/:holdId/resume', asyncHandler(async (req, res) => {
   const { holdId } = validateRequest(resumeHoldParamsSchema, req.params);
   validateRequest(resumeHoldBodySchema, req.body ?? {});

@@ -1723,6 +1723,7 @@ describe('local video failure holds', () => {
     const persisted = JSON.parse(readFileSync(join(tempDataDir, 'media-jobs.json'), 'utf8'));
     expect(persisted.videoHolds).toHaveLength(1);
     expect(persisted.videoHolds[0]).not.toHaveProperty('signature');
+    expect(mediaJobQueue.isVideoModelHeld(modelId, persisted.videoHolds[0].runtime)).toBe(true);
 
     vi.clearAllTimers();
     mediaJobQueue.__resetForTests();
@@ -1733,6 +1734,7 @@ describe('local video failure holds', () => {
     const restored = mediaJobQueue.getJob(ids[3]);
     expect(restored).toMatchObject({ owner: 'example-owner', status: 'queued', params: { uploadedTempPath: upload, seed: 42 }, hold: { heldJobCount: 2 } });
     expect(await mediaJobQueue.resumeVideoHold(restored.hold.id)).toBe(true);
+    expect(mediaJobQueue.isVideoModelHeld(modelId, persisted.videoHolds[0].runtime)).toBe(false);
     expect(await mediaJobQueue.resumeVideoHold(persisted.videoHolds[0].id)).toBe(false);
     for (const id of ids.slice(3)) { await tick(); await finish(id, null); }
     await tick();
@@ -1792,6 +1794,26 @@ describe('local video failure holds', () => {
     await tick(); await tick();
     expect(stubs.generateVideo).toHaveBeenCalledTimes(5);
     expect(mediaJobQueue.getJob(next).status).toBe('failed');
+  });
+
+  it('holds repeated quoted-only exceptions while keeping distinct keys separate', async () => {
+    const errors = ["KeyError: 'encoder_size'", "KeyError: 'decoder_size'", "KeyError: 'encoder_size'",
+      "KeyError: 'decoder_size'", "KeyError: 'decoder_size'", "KeyError: 'decoder_size'"];
+    const ids = Array.from({ length: errors.length + 1 }, () => submit());
+    for (const [i, error] of errors.entries()) {
+      await tick();
+      expect(mediaJobQueue.getJob(ids[i]).status).toBe('running');
+      await finish(ids[i], error);
+    }
+    await tick();
+    expect(mediaJobQueue.getJob(ids.at(-1))).toMatchObject({ status: 'queued',
+      hold: { classification: 'keyerror', cause: 'KeyError: redacted diagnostic details' } });
+    await mediaJobQueue.cancelJob(ids.at(-1));
+    const [hold] = mediaJobQueue.listVideoHolds();
+    expect(hold.heldJobCount).toBe(0);
+    expect(hold).not.toHaveProperty('signature');
+    expect(await mediaJobQueue.resumeVideoHold(hold.id)).toBe(true);
+    expect(mediaJobQueue.listVideoHolds()).toEqual([]);
   });
 
   it('uses structured signal evidence and ignores advisory text when no cause was found', async () => {

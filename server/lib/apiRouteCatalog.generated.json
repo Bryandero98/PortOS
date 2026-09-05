@@ -10560,6 +10560,14 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/media-jobs/holds",
+      "mountPath": "/api/media-jobs",
+      "sources": [
+        "server/routes/mediaJobs.js"
+      ]
+    },
+    {
       "method": "POST",
       "path": "/api/media-jobs/holds/:holdId/resume",
       "mountPath": "/api/media-jobs",
@@ -17618,8 +17626,8 @@
   ],
   "stats": {
     "mounts": 148,
-    "operations": 2182,
-    "declarations": 2190,
+    "operations": 2183,
+    "declarations": 2191,
     "sourceFiles": 231
   }
 }

@@ -20,6 +20,8 @@ describe('local video diagnostic privacy boundary', () => {
     expect(failure.classification).toBe('runtimeerror');
     expect(failure.cause).not.toMatch(/invented|private|mock|arbitrary|ghp_/);
     expect(failure.cause.length).toBeLessThanOrEqual(240);
+    expect(normalizeVideoFailure('RuntimeError: authentication failed password="invented secret words"').cause)
+      .toBe('authentication failed [credential]');
     expect(normalizeVideoFailure('RuntimeError: shape mismatch')).not.toEqual(normalizeVideoFailure('RuntimeError: shader compilation failed'));
     expect(normalizeVideoFailure("ModuleNotFoundError: No module named 'example_runtime'"))
       .toMatchObject({ classification: 'missing-module', cause: 'Python module example_runtime is missing' });
