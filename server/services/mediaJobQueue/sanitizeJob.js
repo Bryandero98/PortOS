@@ -1,5 +1,6 @@
 import { effectiveJobPrompt } from '../../lib/federatedMediaWire.js';
 import { isRemoteMediaJob } from './remoteMediaJob.js';
+import { mediaJobExecutionLane } from '../../lib/generationModes.js';
 
 // Public projection of a media job. Keep worker-only paths and subprocess
 // details out of both the queue API and the processing dashboard.
@@ -90,6 +91,12 @@ export function sanitizeJob(job) {
     // an exact description of what a projected `params` can contain. The UI
     // needs it because a peer render must not wear the local model badge.
     renderer: routed ? 'remote' : 'local',
+    // Which of the scheduler's execution lanes actually runs this job, from the
+    // SAME classifier mediaJobQueue schedules with — so the Render Queue can
+    // never re-derive a stale backend list of its own. `renderer` above stays
+    // exactly what it was (routed vs not); this is the finer local-GPU vs
+    // cloud-provider split it cannot express.
+    executionLane: mediaJobExecutionLane({ kind: job.kind, mode: job.params?.mode, remote: routed }),
     owner: job.owner,
     status: job.status,
     queuedAt: job.queuedAt,

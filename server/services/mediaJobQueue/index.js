@@ -45,7 +45,7 @@ import { trainingEvents } from '../loraTraining/events.js';
 import { audioGenEvents } from '../audioGen/events.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
-import { VIDEO_GEN_MODE, CLOUD_VIDEO_GEN_MODES } from '../../lib/generationModes.js';
+import { VIDEO_GEN_MODE, CLOUD_VIDEO_GEN_MODES, mediaJobExecutionLane } from '../../lib/generationModes.js';
 import { REMOTE_MEDIA_MODULES, isRemoteMediaJob } from './remoteMediaJob.js';
 import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 
@@ -57,8 +57,7 @@ import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 // under the codex name for backward compat — it now bounds every cloud CLI
 // renders combined).
 const isCloudImageJob = (j) =>
-  (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
-  || (j.kind === 'video' && CLOUD_VIDEO_GEN_MODES.includes(j.params?.mode));
+  mediaJobExecutionLane({ kind: j.kind, mode: j.params?.mode }) === 'cloud';
 
 // The federated-kind map and its predicate live in ./remoteMediaJob.js so light
 // consumers (sanitizeJob, route handlers) can ask "is this routed?" without
@@ -66,11 +65,11 @@ const isCloudImageJob = (j) =>
 // always found it.
 export { isRemoteMediaJob };
 
-const jobLane = (job) => {
-  if (isRemoteMediaJob(job)) return 'remote';
-  if (isCloudImageJob(job)) return 'cloud';
-  return 'gpu';
-};
+const jobLane = (job) => mediaJobExecutionLane({
+  kind: job.kind,
+  mode: job.params?.mode,
+  remote: isRemoteMediaJob(job),
+});
 
 // Boot restoration is the second way a job enters the queue, so it needs the
 // same routed-job normalization enqueueJob applies (#4683). A job written by a
