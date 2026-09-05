@@ -7,7 +7,9 @@ import { createVideoDiagnosticTail } from '../server/lib/videoFailure.js';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), 'generate_fastvideo.py');
 const pyBin = resolveTestPython();
-const runPython = (source) => execFileSync(pyBin, ['-c', source, script], { encoding: 'utf8' });
+const runPython = (source) => execFileSync(pyBin, ['-c', source, script], {
+  encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+});
 const lines = (output) => output.trim().split('\n').map((line) => line.trimEnd());
 
 const importRunner = [
