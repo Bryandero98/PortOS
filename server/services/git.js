@@ -821,34 +821,66 @@ export async function pull(dir) {
 
 /**
  * Move a managed application's primary checkout onto origin's default branch
- * and fast-forward it. This is intentionally non-destructive: unlike the
- * Git-tab reset escape hatch it neither stashes nor discards local work.
+ * and bring it up to date. Non-destructive: nothing is discarded, and local
+ * work is preserved either by carrying it across the checkout or by git's own
+ * `--autostash` (which re-applies it after the rebase).
+ *
+ * Order of attempts:
+ *   1. `pull --ff-only` — the common case, no rewrite, no stash.
+ *   2. `pull --rebase --autostash` — the checkout is dirty and/or the local
+ *      branch has diverged from origin. This is what "Update App" used to
+ *      refuse outright with DIRTY_WORKTREE.
+ *   3. On conflict, abort any in-progress rebase and report `conflict: true`
+ *      rather than throwing, so the caller can hand the mess to a CoS agent.
+ *
+ * `rebase --abort` is best-effort: a conflict raised while `--autostash`
+ * re-applies the stash happens AFTER the rebase completed, so there is no
+ * rebase to abort and the working tree keeps its conflict markers. That is
+ * still `conflict: true` — a human or an agent has to finish it.
  *
  * @param {string} dir
- * @returns {Promise<{success: boolean, branch: string, output: string}>}
+ * @returns {Promise<{success: boolean, branch: string, output: string, conflict: boolean, rebased?: boolean, error?: string}>}
  */
 export async function updateDefaultBranch(dir) {
   await execGit(['fetch', 'origin'], dir);
   const branch = await getDefaultBranch(dir, { strict: true });
   if (!branch) throw new ServerError('could not determine origin default branch', { status: 400, code: 'NO_DEFAULT_BRANCH' });
 
-  const status = await getStatus(dir);
-  if (!status.clean) {
-    throw new ServerError('checkout has local changes; commit or stash them before updating', {
-      status: 409,
-      code: 'DIRTY_WORKTREE'
-    });
-  }
-
   const currentBranch = await getBranch(dir);
   let output = '';
   if (currentBranch !== branch) {
-    const checkout = await execGit(['checkout', branch], dir);
+    // Uncommitted changes ride along when they don't collide with the target
+    // branch; when they do, git refuses and we route that to the conflict path
+    // instead of throwing an unactionable error at the UI.
+    const checkout = await execGit(['checkout', branch], dir, { ignoreExitCode: true });
     output += checkout.stdout + checkout.stderr;
+    if (checkout.exitCode !== 0) {
+      return {
+        success: false,
+        branch,
+        output,
+        conflict: true,
+        error: (checkout.stderr || `could not check out ${branch}`).trim()
+      };
+    }
   }
-  const pull = await execGit(['pull', '--ff-only', 'origin', branch], dir);
-  output += pull.stdout + pull.stderr;
-  return { success: true, branch, output };
+
+  const fastForward = await execGit(['pull', '--ff-only', 'origin', branch], dir, { ignoreExitCode: true });
+  output += fastForward.stdout + fastForward.stderr;
+  if (fastForward.exitCode === 0) return { success: true, branch, output, conflict: false };
+
+  const rebase = await execGit(['pull', '--rebase', '--autostash', 'origin', branch], dir, { ignoreExitCode: true });
+  output += rebase.stdout + rebase.stderr;
+  if (rebase.exitCode === 0) return { success: true, branch, output, conflict: false, rebased: true };
+
+  await execGit(['rebase', '--abort'], dir, { ignoreExitCode: true });
+  return {
+    success: false,
+    branch,
+    output,
+    conflict: true,
+    error: (rebase.stderr || rebase.stdout || `rebase onto origin/${branch} failed`).trim()
+  };
 }
 
 /**
