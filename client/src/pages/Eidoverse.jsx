@@ -10,6 +10,7 @@ import {
 import { Link } from 'react-router';
 import PageHeader from '../components/PageHeader';
 import BrailleSpinner from '../components/BrailleSpinner';
+import useEidoverseFrame from '../hooks/useEidoverseFrame';
 import EidoverseWorldDrawer from '../components/eidoverse/EidoverseWorldDrawer';
 import {
   EIDOVERSE_SOURCE_KIND as SOURCE_KIND,
@@ -146,6 +147,15 @@ function reconcileResetAssetOverrides(current, submitted, after, reset, sources 
   );
 }
 
+function reconcileResetAliases(current, submitted, after, reset, sources) {
+  if (reset.scope === 'all') return reconcileActionDraft(current, submitted, submitted, after);
+  if (reset.scope !== 'district') return current;
+  const kinds = sources.map((source) => SOURCE_KIND[source]).filter(Boolean);
+  const keys = new Set([...Object.keys(current), ...Object.keys(submitted), ...Object.keys(after)]);
+  return mergeSubmittedKeys(current, submitted, after,
+    [...keys].filter((key) => kinds.some((kind) => key.startsWith(`${kind}-`))));
+}
+
 export default function Eidoverse() {
   const requestGeneration = useRef(0);
   const configDraftRevision = useRef(0);
@@ -163,12 +173,15 @@ export default function Eidoverse() {
   const [humanName, setHumanName] = useState('');
   const [recipeDraft, setRecipeDraft] = useState(null);
   const [assetOverridesDraft, setAssetOverridesDraft] = useState({});
+  const [labelAliasesDraft, setLabelAliasesDraft] = useState({});
   const [projectionStatus, setProjectionStatus] = useState('idle');
   const [projectionError, setProjectionError] = useState('');
   const [configStatus, setConfigStatus] = useState('');
   const [draftDirty, setDraftDirty] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [iframeReady, setIframeReady] = useState(false);
+
+  const frame = useEidoverseFrame(hostUrl, worldState?.projection?.lastSummary?.objects);
 
   const applyWorldResponse = useCallback((updated, { replaceDraft = true } = {}) => {
     setWorldState((current) => current
@@ -177,6 +190,7 @@ export default function Eidoverse() {
     if (replaceDraft) {
       if (updated?.recipe) setRecipeDraft(updated.recipe);
       setAssetOverridesDraft(updated?.design?.userOverrides?.assets || {});
+      setLabelAliasesDraft(updated?.design?.labelAliases || {});
       if (updated?.world) setWorldName(updated.world);
       if (updated?.identity?.name || updated?.human?.name) setHumanName(updated.identity?.name || updated.human.name);
       savedDraftRevision.current = configDraftRevision.current;
@@ -198,6 +212,7 @@ export default function Eidoverse() {
     setWorldState(null);
     setRecipeDraft(null);
     setAssetOverridesDraft({});
+    setLabelAliasesDraft({});
     setProjectionStatus('idle');
     setProjectionError('');
     setConfigStatus('');
@@ -245,6 +260,7 @@ export default function Eidoverse() {
       setHumanName(result.world?.identity?.name || result.world?.human?.name || '');
       setRecipeDraft(result.world?.recipe || null);
       setAssetOverridesDraft(result.world?.design?.userOverrides?.assets || {});
+      setLabelAliasesDraft(result.world?.design?.labelAliases || {});
       setHostUrl(result.hostUrl || '');
     }, (reason) => {
       if (!isCurrent()) return;
@@ -288,6 +304,7 @@ export default function Eidoverse() {
       if (replaceDraft && result.recipe) {
         setRecipeDraft(result.recipe);
         setAssetOverridesDraft(result.design?.userOverrides?.assets || {});
+        setLabelAliasesDraft(result.design?.labelAliases || {});
       }
       setProjectionStatus('complete');
       return result;
@@ -342,6 +359,16 @@ export default function Eidoverse() {
     });
   }, [markConfigDirty]);
 
+  const mutateLabelAlias = useCallback((key, value) => {
+    markConfigDirty();
+    setLabelAliasesDraft((current) => {
+      const next = { ...current };
+      if (value.trim()) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+  }, [markConfigDirty]);
+
   const saveWorldConfig = useCallback(async () => {
     if (!recipeDraft) return;
     const submittedRevision = configDraftRevision.current;
@@ -351,6 +378,7 @@ export default function Eidoverse() {
       humanName: humanName.trim() || null,
       recipe: recipeDraft,
       assetOverrides: assetOverridesDraft,
+      labelAliases: labelAliasesDraft,
     }, silent).catch((reason) => {
       setConfigStatus(reason?.message || 'Could not save the Eidoverse world configuration.');
       return null;
@@ -365,13 +393,14 @@ export default function Eidoverse() {
       : hostUrl;
     if (nextHostUrl !== hostUrl) setHostUrl(nextHostUrl);
     else void runProjection().catch(() => {});
-  }, [applyWorldResponse, assetOverridesDraft, hostInfo, hostUrl, humanName, recipeDraft, runProjection, setupState, worldName]);
+  }, [applyWorldResponse, assetOverridesDraft, labelAliasesDraft, hostInfo, hostUrl, humanName, recipeDraft, runProjection, setupState, worldName]);
 
   const runConfigAction = useCallback(async (payload) => {
     const submittedRevision = configDraftRevision.current;
     const submittedDraftWasClean = submittedRevision === savedDraftRevision.current;
     const submittedRecipeDraft = recipeDraft;
     const submittedAssetOverrides = assetOverridesDraft;
+    const submittedAliases = labelAliasesDraft;
     const serverRecipeBeforeAction = worldState?.recipe;
     const serverAssetOverridesBefore = worldState?.design?.userOverrides?.assets || {};
     setConfigStatus('saving');
@@ -386,6 +415,10 @@ export default function Eidoverse() {
     if (replaceDraft) configDraftRevision.current += 1;
     applyWorldResponse(updated, { replaceDraft });
     if (!replaceDraft && payload.reset) {
+      setLabelAliasesDraft((current) => reconcileResetAliases(
+        current, submittedAliases, updated.design?.labelAliases || {}, payload.reset,
+        updated.recipe?.districts?.find(({ id }) => id === payload.reset.districtId)?.sources || [],
+      ));
       if (updated.recipe) {
         setRecipeDraft((current) => reconcileResetRecipe(
           current,
@@ -419,7 +452,7 @@ export default function Eidoverse() {
     }
     setConfigStatus(replaceDraft ? 'saved' : '');
     void runProjection().catch(() => {});
-  }, [applyWorldResponse, assetOverridesDraft, recipeDraft, runProjection, worldState]);
+  }, [applyWorldResponse, assetOverridesDraft, labelAliasesDraft, recipeDraft, runProjection, worldState]);
 
   const actions = (
     <>
@@ -494,12 +527,13 @@ export default function Eidoverse() {
       {phase === 'ready' && (
         <main className="relative min-h-0 flex-1 overflow-hidden bg-port-bg">
           <iframe
+            ref={frame.frameRef}
             src={hostUrl}
             title="Eidoverse Worlds"
             className="absolute inset-0 h-full w-full border-0 bg-port-bg"
             allow="camera; microphone; fullscreen; gamepad; xr-spatial-tracking"
             allowFullScreen
-            onLoad={() => setIframeReady(true)}
+            onLoad={() => { setIframeReady(true); frame.onFrameLoad(); }}
           />
 
           {showLoadingCurtain && (
@@ -566,6 +600,12 @@ export default function Eidoverse() {
         setHumanName={setHumanName}
         recipeDraft={recipeDraft}
         assetOverridesDraft={assetOverridesDraft}
+        labelAliasesDraft={labelAliasesDraft}
+        mutateLabelAlias={mutateLabelAlias}
+        frameConnection={frame.connection}
+        labelVisibility={frame.labelVisibility}
+        onLabelVisibilityChange={frame.changeLabelVisibility}
+        appId={appId}
         mutateRecipe={mutateRecipe}
         mutateAssetOverride={mutateAssetOverride}
         markDirty={markConfigDirty}

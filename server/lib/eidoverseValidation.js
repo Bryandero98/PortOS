@@ -4,11 +4,12 @@
 // Split out of validation.js (#5698), which re-exports this module so every
 // existing consumer's import specifier keeps working.
 //
-// Cycle rule: this module must import ONLY zod. Importing back from
-// validation.js would TDZ — ESM hoists its `export * from` line, so this file
-// evaluates before validation.js's body runs.
+// Cycle rule: only import zod or dependency-free leaf contracts. Importing
+// back from validation.js would TDZ — ESM hoists its `export * from` line,
+// so this file evaluates before validation.js's body runs.
 
 import { z } from 'zod';
+import { EIDOVERSE_LABEL_ALIAS_KEY } from './eidoverseWorldLabels.js';
 
 // Eidoverse identities are currently name-based when no archipelago session is
 // present. Keep the PortOS-side contract deliberately conservative: names and
@@ -301,6 +302,10 @@ export const eidoverseWorldConfigPatchSchema = z.object({
     ]),
     eidoverseModelAssetOverrideSchema,
   ).optional(),
+  labelAliases: z.record(
+    z.string().regex(EIDOVERSE_LABEL_ALIAS_KEY),
+    z.string().trim().min(1).max(72).regex(/^[^\u0000-\u001f\u007f]+$/),
+  ).refine((aliases) => Object.keys(aliases).length <= 128, 'at most 128 display aliases may be configured').optional(),
   refreshAssets: z.boolean().optional(),
   reset: z.object({
     scope: z.enum(['all', 'assets', 'district']),

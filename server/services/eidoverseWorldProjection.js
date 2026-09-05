@@ -35,7 +35,7 @@ const COMPONENT_RESOURCE_BY_KIND = Object.freeze({
   health: 'health', productivity: 'productivity', activity: 'activity', goal: 'goals',
   memory: 'memory', storage: 'storage', jira: 'jira', operations: 'operations',
 });
-const COMPONENT_ROUTE_BY_KIND = Object.freeze({
+export const COMPONENT_ROUTE_BY_KIND = Object.freeze({
   app: '/apps', agent: '/cos/agents', task: '/cos/tasks', feature: '/settings/features',
   peer: '/instances', health: '/cos/health', productivity: '/cos/productivity',
   activity: '/cos/productivity', goal: '/goals/list', memory: '/brain/memory',
@@ -259,14 +259,40 @@ function nexusStatusLight(light, source, existing) {
  * `null` when the entity already carries exactly this label, which is what
  * keeps a no-op projection from emitting label verbs.
  */
-function labelOperation({ prior, id, component, layer }) {
-  const label = buildEidoverseLabel(component);
+function labelOperation({ prior, id, component, layer, lib, labelContext }) {
+  const { aliases, objects, recipe, assetResolutions } = labelContext;
+  const label = buildEidoverseLabel(component, aliases[component.resourceKey]);
+  const kind = component.kind === 'district'
+    ? (component.districtId === 'nexus' ? 'operations' : null)
+    : component.kind;
+  const semanticSlot = component.kind === 'district'
+    ? (DISTRICT_ASSET_SLOT[component.districtId] || 'district')
+    : (EIDOVERSE_PROJECTION_KINDS.find((entry) => entry.kind === kind)?.slot || 'district');
+  const slot = recipe.assets?.[kind] ? kind : semanticSlot;
+  const resolution = assetResolutions[slot];
+  objects.push({
+    id, kind: component.kind,
+    districtId: component.districtId || component.toDistrictId || 'nexus',
+    resourceKey: component.resourceKey || null,
+    route: component.route,
+    ...label,
+    asset: {
+      path: lib,
+      slot,
+      // A stale retained model can differ from today's lock. Never describe
+      // it as preferred/overridden using provenance for a different path.
+      reason: resolution?.path === lib
+        ? (resolution.userOverride ? 'user-override' : (resolution.strategy || resolution.source || 'lock'))
+        : 'unresolved',
+    },
+  });
   if (equal(prior ?? null, label)) return null;
   return { layer, verb: 'comp', args: { id, type: EIDOVERSE_LABEL_COMPONENT_TYPE, data: label } };
 }
 
 function upsertModel({
   operations,
+  labelContext,
   stateEntities,
   desiredIds,
   id,
@@ -309,7 +335,7 @@ function upsertModel({
     operations.push({ layer, verb: 'comp', args: { id, type: COMPONENT_TYPE, data: component } });
     if (existing) updated += 1;
   }
-  const labelOp = labelOperation({ prior: priorComponents?.[EIDOVERSE_LABEL_COMPONENT_TYPE], id, component, layer });
+  const labelOp = labelOperation({ prior: priorComponents?.[EIDOVERSE_LABEL_COMPONENT_TYPE], id, component, layer, lib, labelContext });
   if (labelOp) {
     operations.push(labelOp);
     if (existing) updated += 1;
@@ -330,8 +356,10 @@ function equal(valueA, valueB) {
  * intentionally exported so recipe changes can be tested without a live
  * Eidoverse process and so future renderers can reuse the same projection.
  */
-export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PROJECTION_RECIPE, currentState = {}, meta = null }) {
+export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PROJECTION_RECIPE, currentState = {}, meta = null, labelAliases = {}, assetResolutions = {} }) {
   const effectiveRecipe = mergeRecipe(recipe);
+  const objects = [];
+  const labelContext = { aliases: labelAliases, objects, recipe: effectiveRecipe, assetResolutions };
   const stateEntities = currentState?.entities && typeof currentState.entities === 'object'
     ? currentState.entities
     : {};
@@ -423,6 +451,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
     const districtScale = DISTRICT_SCALE[district.id] ?? 1;
     const delta = upsertModel({
       operations,
+      labelContext,
       stateEntities,
       desiredIds,
       id,
@@ -452,6 +481,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
       const id = `${EIDOVERSE_MANAGED_PREFIX}path-${path.id}-${index + 1}`;
       const delta = upsertModel({
         operations,
+        labelContext,
         stateEntities,
         desiredIds,
         id,
@@ -488,6 +518,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
   if (meta) {
     const delta = upsertModel({
       operations,
+      labelContext,
       stateEntities,
       desiredIds,
       id: EIDOVERSE_META_ENTITY_ID,
@@ -635,6 +666,8 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
           id,
           component: staleComponent,
           layer: 'live',
+          lib: existing.lib,
+          labelContext,
         });
         if (staleLabelOp) {
           operations.push(staleLabelOp);
@@ -665,6 +698,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
       const shouldMove = signal.severity !== 'normal' || ['agent', 'activity', 'goal', 'jira', 'memory'].includes(kind);
       const delta = upsertModel({
         operations,
+        labelContext,
         stateEntities,
         desiredIds,
         id,
@@ -702,6 +736,7 @@ export function buildProjectionPlan({ source = {}, recipe = DEFAULT_EIDOVERSE_PR
   return {
     operations,
     summary: {
+      objects,
       created,
       updated,
       removed,

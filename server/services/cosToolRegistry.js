@@ -431,7 +431,7 @@ const executeAdapter = async (tool, args, context) => {
   if (tool.adapter.kind === 'eidoverse-world') {
     const world = await import('./eidoverseWorld.js');
     if (tool.adapter.operation === 'status') return world.getEidoverseWorldStatus({ compact: true });
-    if (tool.adapter.operation === 'project') return world.projectEidoverseWorld({ signal: context.signal });
+    if (tool.adapter.operation === 'project') return world.projectEidoverseWorld({ signal: context.signal, compact: true });
     if (tool.adapter.operation === 'augment') return world.augmentEidoverseWorld(args.operations, { signal: context.signal });
     return world.sayInEidoverseWorld(args.text, { signal: context.signal });
   }

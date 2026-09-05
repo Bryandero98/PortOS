@@ -263,7 +263,7 @@ describe('Eidoverse private-world lifecycle', () => {
       }),
     ]));
     expect(mocks.persistedState).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       lastAppliedDesignVersion: 2,
       pendingDesignVersion: null,
       migrationReport: { status: 'applied' },
@@ -701,6 +701,39 @@ describe('Eidoverse private-world lifecycle', () => {
     expect(JSON.stringify(metaComp.args.data)).not.toContain(mocks.self.name);
   });
 
+  it('keeps scheduled results compact while persisting aliases and the full legend across reconnect', async () => {
+    mocks.appStatuses = [{ id: 'app-example', name: 'Example private title', overallStatus: 'online' }];
+    fetch.mockImplementationOnce(async () => Response.json({
+      sha: 'example-label-build', commitTime: '2026-01-01T00:00:00.000Z',
+      capabilities: { objectLabels: 1, portosNavigation: 1, labelPreferences: 99 },
+    }));
+    const first = await world.projectEidoverseWorld();
+    expect(first.design.reconciliation.runtimeVersion.capabilities).toEqual({ objectLabels: 1, portosNavigation: 1, labelPreferences: null });
+    const object = first.summary.objects.find(({ kind }) => kind === 'app');
+    expect(object).toBeDefined();
+    await world.updateEidoverseWorldConfig({ labelAliases: { [object.resourceKey]: 'Example tower' } });
+    const { SCRIPT_HANDLERS } = await import('./autonomousJobs/scriptHandlers.js');
+    const next = await SCRIPT_HANDLERS['eidoverse-projection']();
+    expect(next.summary.objectCount).toBeGreaterThan(0);
+    expect(JSON.stringify(next).length).toBeLessThan(4096);
+    expect(JSON.stringify(next)).not.toContain('Example tower');
+    expect(next).not.toHaveProperty('projection');
+    expect(next).not.toHaveProperty('summary.objects');
+    await world.closeEidoverseWorldConnections();
+    const reloaded = await world.getEidoverseWorldStatus();
+    // A legacy renderer remains usable even though it advertises no label capabilities.
+    expect(reloaded.design.reconciliation.runtimeVersion.capabilities.objectLabels).toBeNull();
+    expect(reloaded.design.labelAliases).toEqual({ [object.resourceKey]: 'Example tower' });
+    const savedObjects = reloaded.projection.lastSummary.objects;
+    expect(savedObjects).toHaveLength(next.summary.objectCount);
+    expect(savedObjects.find(({ id }) => id === object.id).name).toBe('Example tower');
+    expect(JSON.stringify(savedObjects)).not.toContain('Example private title');
+    await world.updateEidoverseWorldConfig({ reset: { scope: 'assets' } });
+    expect((await world.getEidoverseWorldStatus()).design.labelAliases).toEqual({ [object.resourceKey]: 'Example tower' });
+    await world.updateEidoverseWorldConfig({ reset: { scope: 'district', districtId: 'apps' } });
+    expect((await world.getEidoverseWorldStatus()).design.labelAliases).toEqual({});
+  });
+
   it('preflights and locks recipe assets before completing a V2 reconciliation', async () => {
     const result = await world.projectEidoverseWorld();
 
@@ -722,7 +755,7 @@ describe('Eidoverse private-world lifecycle', () => {
     });
     expect(Object.keys(result.design.assetResolutions)).toHaveLength(10);
     expect(mocks.persistedState).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       lastAppliedDesignVersion: 2,
       pendingDesignVersion: null,
       reconciliation: { status: 'complete' },
@@ -887,8 +920,10 @@ describe('Eidoverse private-world lifecycle', () => {
     });
   });
 
-  it('verifies and records an explicit install-local store override', async () => {
-    await world.updateEidoverseWorldConfig({ assetOverrides: { app: 'store/example-local-asset' } });
+  it('verifies semantic and legacy store overrides and explains their provenance in the legend', async () => {
+    await world.updateEidoverseWorldConfig({ assetOverrides: {
+      app: 'store/example-local-asset', operations: 'store/example-legacy-operations',
+    } });
 
     const result = await world.projectEidoverseWorld();
 
@@ -898,6 +933,9 @@ describe('Eidoverse private-world lifecycle', () => {
       shippedDefault: false,
     });
     expect(fetch.mock.calls.some(([input]) => String(input).includes('/library/store/example-local-asset'))).toBe(true);
+    expect(fetch.mock.calls.some(([input]) => String(input).includes('/library/store/example-legacy-operations'))).toBe(true);
+    expect(result.summary.objects.find(({ kind, districtId }) => kind === 'district' && districtId === 'nexus')?.asset)
+      .toEqual({ path: 'store/example-legacy-operations', slot: 'operations', reason: 'user-override' });
   });
 
   it('resets only the selected district asset lock and override', async () => {

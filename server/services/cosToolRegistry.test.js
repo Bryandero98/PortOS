@@ -270,7 +270,7 @@ describe('cosToolRegistry', () => {
     expect([status.state, project.state, augment.state, say.state, agentAugment.state])
       .toEqual(['completed', 'completed', 'completed', 'completed', 'completed']);
     expect(mocks.worldStatus).toHaveBeenCalledWith({ compact: true });
-    expect(mocks.worldProject).toHaveBeenCalledWith({ signal });
+    expect(mocks.worldProject).toHaveBeenCalledWith({ signal, compact: true });
     expect(mocks.worldAugment).toHaveBeenCalledWith(
       [{ verb: 'spawn', args: { id: 'example', lib: 'eidoverse/assets/example.glb' } }],
       { signal },
