@@ -35,7 +35,7 @@ const COMPONENT_RESOURCE_BY_KIND = Object.freeze({
   health: 'health', productivity: 'productivity', activity: 'activity', goal: 'goals',
   memory: 'memory', storage: 'storage', jira: 'jira', operations: 'operations',
 });
-const COMPONENT_ROUTE_BY_KIND = Object.freeze({
+export const COMPONENT_ROUTE_BY_KIND = Object.freeze({
   app: '/apps', agent: '/cos/agents', task: '/cos/tasks', feature: '/settings/features',
   peer: '/instances', health: '/cos/health', productivity: '/cos/productivity',
   activity: '/cos/productivity', goal: '/goals/list', memory: '/brain/memory',

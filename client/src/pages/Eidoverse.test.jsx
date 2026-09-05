@@ -190,7 +190,7 @@ describe('Eidoverse hosted page', () => {
     const legend = screen.getByRole('region', { name: 'Projected object labels' });
     expect(within(legend).getByText('Managed app 012345')).toBeInTheDocument();
     expect(within(legend).getByText('Fallback — available library asset')).toBeInTheDocument();
-    const alias = screen.getByLabelText('Display alias for Managed app 012345');
+    const alias = screen.getByLabelText('Display alias for app 0123456789ab');
     expect(alias).toHaveValue('');
     await user.type(alias, 'Example tower');
     api.updateEidoverseWorldConfig.mockRejectedValueOnce(new Error('Example save failure'));
@@ -206,6 +206,33 @@ describe('Eidoverse hosted page', () => {
     await waitFor(() => expect(api.updateEidoverseWorldConfig).toHaveBeenLastCalledWith(
       expect.objectContaining({ labelAliases: {} }), { silent: true },
     ));
+  });
+
+  it('clears aliases for absent objects without resetting and distinguishes identical display names', async () => {
+    const user = userEvent.setup();
+    const keys = ['app-0123456789ab', 'app-abcdef012345'];
+    const absentKey = 'agent-0123456789ab';
+    const labelAliases = { [keys[0]]: 'Example tower', [keys[1]]: 'Example tower', [absentKey]: 'Example retired beacon' };
+    const objects = keys.map((resourceKey) => ({
+      id: `example-${resourceKey}`, resourceKey, kind: 'app', districtId: 'apps',
+      name: 'Example tower', description: 'An app this install manages.', visibility: 'nearby',
+    }));
+    const saved = { ...worldResponse, design: { ...design, labelAliases }, projection: { lastSummary: { objects } } };
+    api.getEidoverseWorldStatus.mockResolvedValueOnce(saved);
+    api.projectEidoverseWorld.mockResolvedValueOnce({ success: true, ...saved });
+    renderPage();
+    await screen.findByTitle('Eidoverse Worlds');
+    await user.click(screen.getByRole('button', { name: 'World controls' }));
+    await user.click(screen.getByRole('tab', { name: 'Districts & Data' }));
+    expect(screen.getByLabelText('Display alias for app 0123456789ab')).toHaveValue('Example tower');
+    expect(screen.getByLabelText('Display alias for app abcdef012345')).toHaveValue('Example tower');
+    const savedAliases = screen.getByRole('region', { name: 'Saved aliases without a current object' });
+    await user.clear(within(savedAliases).getByLabelText('Display alias for agent 0123456789ab'));
+    await user.click(screen.getByRole('button', { name: 'Save and project' }));
+    await waitFor(() => expect(api.updateEidoverseWorldConfig).toHaveBeenCalled());
+    const patch = api.updateEidoverseWorldConfig.mock.calls.at(-1)[0];
+    expect(patch.labelAliases).toEqual({ [keys[0]]: 'Example tower', [keys[1]]: 'Example tower' });
+    expect(patch).not.toHaveProperty('reset');
   });
 
   it('preserves saved aliases when the initial projection fails and another setting is saved', async () => {
@@ -536,8 +563,8 @@ describe('Eidoverse hosted page', () => {
     await user.clear(sunHour);
     await user.type(sunHour, '8.4');
     await user.click(screen.getByRole('tab', { name: 'Districts & Data' }));
-    await user.type(screen.getByLabelText('Display alias for Example app signal'), 'Unsaved app alias');
-    await user.type(screen.getByLabelText('Display alias for Example agent signal'), 'Keep agent alias');
+    await user.type(screen.getByLabelText('Display alias for app 0123456789ab'), 'Unsaved app alias');
+    await user.type(screen.getByLabelText('Display alias for agent 0123456789ab'), 'Keep agent alias');
     const appsSection = screen.getByRole('heading', { name: 'App Terraces' }).closest('section');
     const appsLimit = within(appsSection).getByRole('spinbutton', { name: 'Cap' });
     await user.clear(appsLimit);

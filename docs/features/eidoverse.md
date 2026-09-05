@@ -335,12 +335,18 @@ Search matches and catalog/recipe fallbacks are explicitly called fallbacks.
 A retained model whose path differs from the current resolution lock reports
 unverified provenance. The link to **Appearance & Assets** uses the existing
 asset override, refresh, and reset controls. The legend remains readable with
-floating labels off and on older renderers.
+floating labels off and on older renderers. Agent projection-tool results keep
+only the operation summary, object count, and presence; the full legend remains
+in saved projection state for the drawer.
 
 Optional aliases name individual live indicators using stable opaque resource
 keys, never private record IDs or titles. The configuration accepts at most 128
 aliases, each plain text of at most 72 characters. Clear the field to restore
-the generic label. Saving an alias explicitly publishes that display text into
+the generic label. Every alias field displays its opaque resource reference,
+including when multiple objects share a display name. Aliases for absent objects
+remain editable in **Saved aliases without a current object**, so users can free
+slots without resetting a district or losing aliases during a temporary outage.
+Saving an alias explicitly publishes that display text into
 the private world's append-only history; removing it changes the current label,
 not older history. Asset resets preserve aliases; district/all resets clear the
 matching aliases. Migration 343 upgrades existing config to schema V3, preserving

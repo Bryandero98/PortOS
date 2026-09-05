@@ -8,8 +8,22 @@ const ASSET_REASONS = {
   unresolved: 'Resolution not verified for this model — refresh the world',
 };
 
+function AliasField({ resourceKey, value, onChange, busy }) {
+  return (
+    <label className="mt-3 block text-xs text-gray-300" htmlFor={`eidoverse-alias-${resourceKey}`}>
+      Display alias for {resourceKey.replace('-', ' ')}
+      <input id={`eidoverse-alias-${resourceKey}`} maxLength={72} disabled={busy}
+        className="mt-1 min-h-[44px] w-full rounded border border-port-border bg-port-card px-2 text-sm text-white"
+        value={value || ''} placeholder="Use generic label"
+        onChange={(event) => onChange(resourceKey, event.target.value)} />
+    </label>
+  );
+}
+
 export default function EidoverseObjectLegend({ objects, districts = [], aliases = {}, onAliasChange, busy, onAssets }) {
   const groups = new Map();
+  const currentKeys = new Set((objects || []).map(({ resourceKey }) => resourceKey));
+  const unmatchedAliases = Object.entries(aliases).filter(([key]) => !currentKeys.has(key));
   for (const object of objects || []) {
     if (!groups.has(object.districtId)) groups.set(object.districtId, []);
     groups.get(object.districtId).push(object);
@@ -37,19 +51,25 @@ export default function EidoverseObjectLegend({ objects, districts = [], aliases
                   <div><dt className="sr-only">Resolution reason</dt><dd className="text-gray-300">{ASSET_REASONS[object.asset?.reason] || ASSET_REASONS.unresolved}</dd></div>
                 </dl>
                 {object.resourceKey && (
-                  <label className="mt-3 block text-xs text-gray-300" htmlFor={`eidoverse-alias-${object.resourceKey}`}>
-                    Display alias for {object.name}
-                    <input id={`eidoverse-alias-${object.resourceKey}`} maxLength={72} disabled={busy}
-                      className="mt-1 min-h-[44px] w-full rounded border border-port-border bg-port-card px-2 text-sm text-white"
-                      value={aliases[object.resourceKey] || ''} placeholder="Use generic label"
-                      onChange={(event) => onAliasChange(object.resourceKey, event.target.value)} />
-                  </label>
+                  <AliasField resourceKey={object.resourceKey} value={aliases[object.resourceKey]}
+                    onChange={onAliasChange} busy={busy} />
                 )}
               </article>
             ))}
           </div>
         </details>
       ))}
+      {unmatchedAliases.length > 0 && (
+        <section aria-label="Saved aliases without a current object" className="rounded-xl border border-port-border bg-port-bg p-3">
+          <h4 className="text-sm font-medium text-white">Saved aliases without a current object</h4>
+          <p className="mt-1 text-xs leading-5 text-gray-400">Kept for objects that may return. Clear an alias to remove it without resetting the world.</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {unmatchedAliases.map(([key, value]) => (
+              <AliasField key={key} resourceKey={key} value={value} onChange={onAliasChange} busy={busy} />
+            ))}
+          </div>
+        </section>
+      )}
       <button type="button" onClick={onAssets} className="min-h-[44px] rounded-lg border border-port-border px-3 py-2 text-sm text-port-accent">
         Change or reset asset choices
       </button>

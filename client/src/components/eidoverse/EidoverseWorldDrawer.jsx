@@ -117,7 +117,7 @@ export default function EidoverseWorldDrawer({
         {labelSupportChecked && !labelSupport && (
           <p className="mt-2 text-sm text-port-warning" role="status">
             This renderer does not report object-label support. Update Eidoverse Worlds, then reload this page.
-            {' '}<Link className="underline" to={appId ? `/apps/${appId}/overview` : '/apps'}>Manage renderer updates</Link>
+            {' '}<Link className="underline" to={appId ? `/apps/${appId}/overview` : '/apps'}>Manage renderer updates</Link>.
             {' '}Your design, aliases, and asset choices stay saved. The object legend below remains available.
           </p>
         )}
