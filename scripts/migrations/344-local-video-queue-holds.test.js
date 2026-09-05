@@ -1,8 +1,8 @@
 import { afterEach, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import migration from './343-local-video-queue-holds.js';
+import migration from './344-local-video-queue-holds.js';
 let rootDir;
 afterEach(async () => { if (rootDir) await rm(rootDir, { recursive: true, force: true }); });
 it('adds an empty hold list while preserving ordered jobs, unknown fields and existing holds', async () => {
@@ -18,7 +18,14 @@ it('adds an empty hold list while preserving ordered jobs, unknown fields and ex
   await writeFile(file, JSON.stringify(current));
   expect(await migration.up({ rootDir })).toEqual({ updated: 0 });
   expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(current);
-  await writeFile(file, '{invalid');
-  await expect(migration.up({ rootDir })).rejects.toThrow();
-  expect(await readFile(file, 'utf8')).toBe('{invalid');
+  for (const invalid of ['{invalid', '{}']) {
+    await writeFile(file, invalid);
+    expect(await migration.up({ rootDir })).toEqual({ updated: 0 });
+    expect(await readFile(file, 'utf8')).toBe(invalid);
+  }
+  // A directory is a portable non-ENOENT read failure, without chmod/root assumptions.
+  await rm(file);
+  await mkdir(file);
+  expect(await migration.up({ rootDir })).toEqual({ updated: 0 });
+  expect((await stat(file)).isDirectory()).toBe(true);
 });
