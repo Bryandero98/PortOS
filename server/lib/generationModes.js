@@ -47,3 +47,26 @@ export const VIDEO_GEN_MODES = Object.freeze(Object.values(VIDEO_GEN_MODE));
 export const CLOUD_VIDEO_GEN_MODES = Object.freeze([
   VIDEO_GEN_MODE.GROK, VIDEO_GEN_MODE.FAL, VIDEO_GEN_MODE.REACTOR,
 ]);
+
+/**
+ * THE media-queue execution-lane rule, shared by the scheduler and the public
+ * job projection so the UI can never drift from how a job is actually run.
+ *
+ * `remote` wins outright — a federated job is executed by a peer whatever
+ * backend it names. Otherwise the cloud alphabets above decide: a cloud-CLI
+ * image or video backend shells out to an external provider and runs in the
+ * parallel cloud lane, while everything else (local video's text/image/fflf
+ * semantic modes included) serializes on the local accelerator.
+ *
+ * Kept here rather than in mediaJobQueue so a light consumer — sanitizeJob, a
+ * route handler, a client mirror's counterpart test — can classify a job
+ * without importing the queue.
+ */
+export const MEDIA_JOB_EXECUTION_LANES = Object.freeze(['gpu', 'cloud', 'remote']);
+
+export const mediaJobExecutionLane = ({ kind, mode, remote } = {}) => {
+  if (remote) return 'remote';
+  if (kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(mode)) return 'cloud';
+  if (kind === 'video' && CLOUD_VIDEO_GEN_MODES.includes(mode)) return 'cloud';
+  return 'gpu';
+};

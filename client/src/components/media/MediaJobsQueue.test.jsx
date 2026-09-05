@@ -127,12 +127,15 @@ describe('MediaJobsQueue — Creative Director renders', () => {
 });
 
 describe('MediaJobsQueue — video render lanes', () => {
-  it('shows local, Grok, and remote work in separate queues', async () => {
+  it('files each job under the lane the server scheduled it into', async () => {
+    // The lane comes from the server's own classifier (`executionLane`), so a
+    // cloud backend the client has never heard of still lands in Cloud renders.
     listMediaJobs.mockResolvedValue([
       {
         id: 'localvideo0001',
         kind: 'video',
         status: 'running',
+        executionLane: 'gpu',
         queuedAt: '2026-06-19T10:00:00Z',
         params: { prompt: 'an invented local shot', mode: 'text', modelId: 'local-video' },
       },
@@ -140,27 +143,101 @@ describe('MediaJobsQueue — video render lanes', () => {
         id: 'grokvideo0001',
         kind: 'video',
         status: 'running',
+        executionLane: 'cloud',
         queuedAt: '2026-06-19T10:01:00Z',
-        params: { prompt: 'an invented cloud shot', mode: 'grok' },
+        params: { prompt: 'an invented grok shot', mode: 'grok' },
+      },
+      {
+        id: 'falvideo00001',
+        kind: 'video',
+        status: 'running',
+        executionLane: 'cloud',
+        queuedAt: '2026-06-19T10:01:30Z',
+        params: { prompt: 'an invented fal shot', mode: 'fal', modelId: 'provider/video-model' },
+      },
+      {
+        id: 'reactorvideo01',
+        kind: 'video',
+        status: 'queued',
+        executionLane: 'cloud',
+        queuedAt: '2026-06-19T10:01:45Z',
+        params: { prompt: 'an invented reactor shot', mode: 'reactor' },
       },
       {
         id: 'remotevideo001',
         kind: 'video',
         status: 'queued',
-        queuedAt: '2026-06-19T10:02:00Z',
+        executionLane: 'remote',
         renderer: 'remote',
+        queuedAt: '2026-06-19T10:02:00Z',
         params: { prompt: 'an invented peer shot', mode: 'text', modelId: 'peer-video' },
       },
     ]);
 
     render(<MediaJobsQueue kind="video" />);
 
-    expect(await screen.findByRole('region', { name: 'Local machine video queue' })).toHaveTextContent('an invented local shot');
-    expect(screen.getByRole('region', { name: 'Grok video queue' })).toHaveTextContent('an invented cloud shot');
+    const local = await screen.findByRole('region', { name: 'Local machine video queue' });
+    expect(local).toHaveTextContent('an invented local shot');
+    expect(local).not.toHaveTextContent('an invented fal shot');
+
+    const cloud = screen.getByRole('region', { name: 'Cloud renders video queue' });
+    expect(cloud).toHaveTextContent('an invented grok shot');
+    expect(cloud).toHaveTextContent('an invented fal shot');
+    expect(cloud).toHaveTextContent('an invented reactor shot');
+
     expect(screen.getByRole('region', { name: 'Remote machines video queue' })).toHaveTextContent('an invented peer shot');
-    expect(screen.getByRole('heading', { name: 'Local machine' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Grok' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Remote machines' })).toBeInTheDocument();
+  });
+
+  it('badges a cloud provider render with its provider, not the local engine', async () => {
+    listMediaJobs.mockResolvedValue([{
+      id: 'falvideo00001',
+      kind: 'video',
+      status: 'running',
+      executionLane: 'cloud',
+      queuedAt: '2026-06-19T10:00:00Z',
+      params: { prompt: 'an invented fal shot', mode: 'fal', modelId: 'provider/video-model' },
+    }]);
+
+    render(<MediaJobsQueue kind="video" />);
+
+    expect(await screen.findByTitle('provider/video-model')).toHaveTextContent('fal.ai / provider/video-model');
+    expect(screen.queryByText(/local \//)).not.toBeInTheDocument();
+  });
+
+  it('derives the lane from mode + renderer when the response predates executionLane', async () => {
+    // A rebuilt bundle can be served briefly by a server process that has not
+    // restarted onto the new projection yet; the queue must not fall back to
+    // filing every cloud render under Local machine while that window is open.
+    listMediaJobs.mockResolvedValue([
+      {
+        id: 'legacylocal01',
+        kind: 'video',
+        status: 'running',
+        queuedAt: '2026-06-19T10:00:00Z',
+        params: { prompt: 'an invented legacy local shot', mode: 'text', modelId: 'local-video' },
+      },
+      {
+        id: 'legacyfal0001',
+        kind: 'video',
+        status: 'running',
+        queuedAt: '2026-06-19T10:01:00Z',
+        params: { prompt: 'an invented legacy fal shot', mode: 'fal' },
+      },
+      {
+        id: 'legacyremote1',
+        kind: 'video',
+        status: 'queued',
+        renderer: 'remote',
+        queuedAt: '2026-06-19T10:02:00Z',
+        params: { prompt: 'an invented legacy peer shot', mode: 'text', modelId: 'peer-video' },
+      },
+    ]);
+
+    render(<MediaJobsQueue kind="video" />);
+
+    expect(await screen.findByRole('region', { name: 'Local machine video queue' })).toHaveTextContent('an invented legacy local shot');
+    expect(screen.getByRole('region', { name: 'Cloud renders video queue' })).toHaveTextContent('an invented legacy fal shot');
+    expect(screen.getByRole('region', { name: 'Remote machines video queue' })).toHaveTextContent('an invented legacy peer shot');
   });
 });
 

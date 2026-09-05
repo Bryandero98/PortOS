@@ -7,7 +7,7 @@ import { FormField } from '../ui/FormField';
 import AutoSizeTextarea from '../ui/AutoSizeTextarea';
 import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs, deleteMediaJob, retryMediaJob, runMediaJobNow } from '../../services/apiMediaJobs.js';
 import { listLoraTrainingCheckpoints } from '../../services/apiLoraTraining.js';
-import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel } from '../../lib/imageGenBackends';
+import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel, mediaJobLane, isCloudVideoMode } from '../../lib/imageGenBackends';
 import { ANTIGRAVITY_CONFIGURED_DEFAULT, CODEX_EFFORT_LEVELS, isConfiguredDefaultModel } from '../../utils/providers';
 import { lossSparklineGeometry } from '../../lib/lossSparkline';
 import {
@@ -46,20 +46,16 @@ const KIND_ICON = { video: Film, image: ImageIcon, training: Cpu };
 
 // Video jobs are scheduled by the server into independent execution lanes.
 // Keep the UI labels aligned with the user-facing targets rather than exposing
-// implementation names such as "gpu" and "cloud". Remote jobs are already
-// projected with renderer="remote"; Grok video jobs carry the Grok mode while
-// local video jobs carry their pipeline mode (text/image/etc.).
+// implementation names such as "gpu" and "cloud". The lane a row belongs to is
+// the server's own scheduling decision, read via `mediaJobLane` — the queue
+// must never keep a second list of cloud backends, which is exactly how fal.ai
+// and Reactor renders ended up filed under Local machine. The three cloud
+// providers share one scheduler lane, so they share one section.
 const VIDEO_QUEUE_LANES = Object.freeze([
-  { id: 'local', label: 'Local machine', description: 'Local GPU renders run one at a time.' },
-  { id: 'grok', label: 'Grok', description: 'Grok renders use a cloud lane in parallel with local work.' },
+  { id: 'gpu', label: 'Local machine', description: 'Local GPU renders run one at a time.' },
+  { id: 'cloud', label: 'Cloud renders', description: 'Cloud provider renders share a lane that runs in parallel with local work.' },
   { id: 'remote', label: 'Remote machines', description: 'Each selected peer owns the queue for work it receives.' },
 ]);
-
-const videoQueueLane = (job) => {
-  if (job?.renderer === 'remote') return 'remote';
-  if (job?.kind === 'video' && job.params?.mode === IMAGE_GEN_MODE.GROK) return 'grok';
-  return 'local';
-};
 
 // Creative Director scene renders use the same durable media queue as manual
 // Video Gen renders, but carry an owner tag so the orchestrator can reconcile
@@ -111,6 +107,15 @@ function modelLabel(params, renderer) {
     return model && model !== ANTIGRAVITY_CONFIGURED_DEFAULT
       ? `agy / ${model}`
       : 'agy / configured default';
+  }
+  if (renderer !== 'remote' && isCloudVideoMode(params.mode)) {
+    // fal.ai / Reactor renders happen in the provider's cloud on a model id the
+    // provider owns, so the row must name the provider rather than fall through
+    // to the local-engine badge below (grok video is caught by the mode branch
+    // above, which adds its aspect ratio).
+    const cloudModel = (params.modelId || '').trim();
+    const provider = modeLabel(params.mode);
+    return cloudModel ? `${provider} / ${cloudModel}` : provider;
   }
   const id = (params.modelId || '').trim();
   // A federated render ran on a peer, so it must not wear the local badge. The
@@ -186,7 +191,7 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
   const videoLanes = useMemo(() => {
     if (kind !== 'video') return [];
     return VIDEO_QUEUE_LANES
-      .map((lane) => ({ ...lane, jobs: live.filter((job) => videoQueueLane(job) === lane.id) }))
+      .map((lane) => ({ ...lane, jobs: live.filter((job) => mediaJobLane(job) === lane.id) }))
       .filter((lane) => lane.jobs.length > 0);
   }, [kind, live]);
 
