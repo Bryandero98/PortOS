@@ -367,6 +367,22 @@ describe('persistent mind routes', () => {
     });
   });
 
+  it('validates the displayed temporary selection and requires its preset id to match', async () => {
+    const thinkingPreset = { id: 'deep', label: 'Deep', providerId: 'example-provider', model: 'example-model', effort: '' };
+    const input = { id: 'selected-message', text: 'Use this selection.', thinkingPresetId: 'deep', thinkingPreset };
+    expect((await post('/mind/messages', input)).status).toBe(202);
+    expect(mocks.enqueuePersistentMindMessage).toHaveBeenCalledWith(input);
+    mocks.enqueuePersistentMindMessage.mockClear();
+    for (const patch of [
+      { thinkingPresetId: 'other' },
+      { thinkingPreset: { ...thinkingPreset, effort: 'invalid' } },
+      { thinkingPreset: { ...thinkingPreset, credential: 'redacted-example' } },
+    ]) {
+      expect((await post('/mind/messages', { ...input, ...patch })).status).toBe(400);
+    }
+    expect(mocks.enqueuePersistentMindMessage).not.toHaveBeenCalled();
+  });
+
   it('rejects empty, duplicate, oversized, and traversal image references', async () => {
     expect((await post('/mind/messages', { id: 'empty' })).status).toBe(400);
     expect((await post('/mind/messages', { id: 'duplicate', images: ['attachment-1', 'attachment-1'] })).status).toBe(400);
