@@ -1,48 +1,58 @@
 /** Bounded, local-only video failure summaries shared by the runner and queue. */
+import { createHash } from 'crypto';
 import { scrubSecretTokens } from './secretText.js';
 
 const MAX_TAIL_BYTES = 8192;
 const MAX_CAUSE_LENGTH = 240;
+const failureRecord = (classification, cause, identity = cause) => ({
+  classification,
+  cause,
+  // Streak-only evidence. Never projected or persisted in an active hold. Keep
+  // diagnostic identifiers distinct even when the display redacts quotes.
+  signature: createHash('sha256').update(`${classification}\n${identity.toLowerCase()}`).digest('hex'),
+});
 
-// Only diagnostic-shaped lines qualify. Progress, prompts, JSON and bare exit
-// codes cannot establish a repeated engine failure.
-export function normalizeVideoFailure(error, { prompts = [] } = {}) {
-  if (typeof error !== 'string') return null;
-  let text = error.slice(-MAX_TAIL_BYTES).replace(/\x1b\[[0-9;]*m/g, '');
-  for (const prompt of prompts.filter((p) => typeof p === 'string' && p)) {
-    text = text.replaceAll(prompt, '[prompt]');
-  }
+const scrubCause = (text) => scrubSecretTokens(text)
+  .replace(/\b(?:https?|file):\/\/\S+/gi, '[url]')
+  .replace(/\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*\S+/gi, '[credential]')
+  // An unquoted path has no reliable ending delimiter (spaces are legal on
+  // both platforms). Redact the remainder rather than leaking path fragments.
+  .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/(?=\S))[^\r\n]*/g, '[path]')
+  .replace(/\bprompt\b.*$/i, '[prompt]')
+  .replace(/\b0x[\da-f]+\b/gi, '[address]')
+  .replace(/\s+/g, ' ').trim();
+
+// Only diagnostic-shaped lines or a producer's explicit error code qualify.
+// Progress, prompts, signal advice and bare exit codes are not cause evidence.
+export function normalizeVideoFailure(error, { prompts = [], code = error?.code } = {}) {
+  let text = typeof error === 'string' ? error : error?.message;
+  if (typeof text !== 'string') return null;
+  for (const prompt of prompts.filter((p) => typeof p === 'string' && p)) text = text.replaceAll(prompt, '[prompt]');
+  text = text.slice(-MAX_TAIL_BYTES).replace(/\x1b\[[0-9;]*m/g, '');
+  if (/^(?:Generation failed:\s*)?Exit code \d+\s*$/i.test(text.trim())) return null;
   const missing = text.match(/(?:No module named|Python module) ['"]([\w.]+)['"]/);
-  if (missing) return { classification: 'missing-module', cause: `Python module ${missing[1].slice(0, 128)} is missing` };
-  if (/\b(?:CUDA|Metal|MPS|GPU).*out of memory|out of memory.*\b(?:CUDA|Metal|MPS|GPU)/i.test(text)) {
-    return { classification: 'out-of-memory', cause: 'GPU memory exhausted' };
+  if (missing && scrubSecretTokens(missing[1]) === missing[1]) {
+    return failureRecord('missing-module', `Python module ${missing[1].slice(0, 128)} is missing`);
   }
-  if (/Metal command-buffer watchdog|kIOGPUCommandBufferCallbackErrorImpactingInteractivity/.test(text)) {
-    return { classification: 'metal-watchdog', cause: 'Metal command-buffer watchdog stopped the render' };
+  if (/\b(?:CUDA|Metal|MPS|GPU).*out of memory|out of memory.*\b(?:CUDA|Metal|MPS|GPU)|GPU memory exhausted/i.test(text)) {
+    return failureRecord('out-of-memory', 'GPU memory exhausted');
   }
   if (/watchdog timeout: no runner output/.test(text)) {
-    return { classification: 'idle-timeout', cause: 'Video runtime stopped reporting progress' };
+    return failureRecord('idle-timeout', 'Video runtime stopped reporting progress');
   }
   if (/\b(?:ENOENT|EACCES)\b/.test(text) && /spawn/i.test(text)) {
-    const code = text.match(/\b(ENOENT|EACCES)\b/)[1];
-    return { classification: 'runtime-launch', cause: `Video runtime could not start (${code})` };
+    return failureRecord('runtime-launch', `Video runtime could not start (${text.match(/\b(ENOENT|EACCES)\b/)[1]})`);
   }
   if (/python.*not configured/i.test(text)) {
-    return { classification: 'runtime-configuration', cause: 'Python runtime is not configured' };
+    return failureRecord('runtime-configuration', 'Python runtime is not configured');
   }
   const exception = text.match(/(?:^|\n|Exit code \d+:\s*|runJob threw:\s*)([\w.]*?(?:Error|Exception)):\s*([^\r\n]+)/);
-  if (!exception) return null;
-  const cause = scrubSecretTokens(exception[2])
-    // Drop URL, credential assignments, quoted payloads and machine paths.
-    .replace(/\b(?:https?|file):\/\/\S+/gi, '[url]')
-    .replace(/\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*\S+/gi, '[credential]')
-    .replace(/(['"])(?:\\.|(?!\1).)*?\1/g, '[value]')
-    .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/(?!\s))[^\s,;)]*/g, '[path]')
-    .replace(/\bprompt\b.*$/i, '[prompt]')
-    .replace(/\b0x[\da-f]+\b/gi, '[address]')
-    .replace(/\s+/g, ' ').trim().slice(0, MAX_CAUSE_LENGTH);
+  const classification = exception?.[1] || (/^[A-Z][A-Z0-9_]{0,127}$/.test(code || '') ? code : null);
+  if (!classification || scrubSecretTokens(classification) !== classification) return null;
+  const identity = scrubCause(exception?.[2] || text);
+  const cause = identity.replace(/(['"])(?:\\.|(?!\1).)*?\1/g, '[value]').slice(0, MAX_CAUSE_LENGTH);
   if (!/[a-z]{3}/i.test(cause.replace(/\[[^\]]*\]/g, ''))) return null;
-  return { classification: exception[1].toLowerCase().slice(0, 128), cause };
+  return failureRecord(classification.toLowerCase().slice(0, 128), cause, identity);
 }
 
 export function createVideoDiagnosticTail() {
@@ -52,14 +62,20 @@ export function createVideoDiagnosticTail() {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       tails[stream] = Buffer.concat([tails[stream], bytes.subarray(-MAX_TAIL_BYTES)]).subarray(-MAX_TAIL_BYTES);
     },
-    summary(options) {
-      // Prefer the final stderr exception; some runtimes only use stdout.
+    failure(options) {
+      // Prefer stderr; some runtimes only write exceptions to stdout. Signal
+      // classification comes from actual child evidence, never fallback advice.
       for (const stream of ['stderr', 'stdout']) {
         const lines = tails[stream].toString('utf8').split(/[\r\n]+/).slice(-40).reverse();
-        for (const line of lines) {
-          if (!/^(?:[\w.]*?(?:Error|Exception)):\s/.test(line.trim())) continue;
-          const failure = normalizeVideoFailure(line.trim(), options);
-          if (failure) return `${line.trim().split(':')[0]}: ${failure.cause}`;
+        for (const raw of lines) {
+          let line = raw.replace(/\x1b\[[0-9;]*m/g, '').trim();
+          for (const prompt of (options?.prompts || []).filter((p) => typeof p === 'string' && p)) line = line.replaceAll(prompt, '[prompt]');
+          if (/^(?:prompt|STATUS|STAGE|DOWNLOAD|RUNTIME):/i.test(line) || line.startsWith('{')) continue;
+          const metal = line.match(/kIOGPUCommandBufferCallbackError(OutOfMemory|InnocentVictim|Timeout|ImpactingInteractivity)\b/);
+          if (stream === 'stderr' && metal) return failureRecord('metal-command-buffer', `Metal command buffer failed: ${metal[1]}`);
+          if (!/^(?:[\w.]*?(?:Error|Exception)):\s/.test(line)) continue;
+          const failure = normalizeVideoFailure(line, options);
+          if (failure) return { ...failure, summary: `${line.split(':')[0].slice(0, 128)}: ${failure.cause}` };
         }
       }
       return null;

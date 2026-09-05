@@ -1722,6 +1722,7 @@ describe('local video failure holds', () => {
     expect(existsSync(upload)).toBe(true);
     const persisted = JSON.parse(readFileSync(join(tempDataDir, 'media-jobs.json'), 'utf8'));
     expect(persisted.videoHolds).toHaveLength(1);
+    expect(persisted.videoHolds[0]).not.toHaveProperty('signature');
 
     vi.clearAllTimers();
     mediaJobQueue.__resetForTests();
@@ -1762,7 +1763,9 @@ describe('local video failure holds', () => {
   });
 
   it('resets on success or a different cause, ignores cancellation, and excludes bare exit codes', async () => {
-    const errors = ['RuntimeError: shape mismatch', 'RuntimeError: shape mismatch', null,
+    const errors = ["AttributeError: 'Tokenizer' object has no attribute 'encode'",
+      "AttributeError: 'Pipeline' object has no attribute 'decode'",
+      "AttributeError: 'Tokenizer' object has no attribute 'encode'", 'RuntimeError: shape mismatch', 'RuntimeError: shape mismatch', null,
       'RuntimeError: shader failed', 'RuntimeError: shader failed', 'Exit code 1',
       'RuntimeError: shape mismatch', 'RuntimeError: shader failed', 'RuntimeError: shader failed'];
     for (const error of errors) {
@@ -1778,7 +1781,7 @@ describe('local video failure holds', () => {
   });
 
   it('counts pre-dispatch rejection once and resumes with a cleared streak', async () => {
-    stubs.generateVideo.mockRejectedValue(new Error('Python is not configured'));
+    stubs.generateVideo.mockRejectedValue(Object.assign(new Error("Example runtime is not installed. Install or repair it from Video Gen's model setup panel."), { code: 'EXAMPLE_VENV_MISSING' }));
     const ids = Array.from({ length: 4 }, () => submit());
     for (let i = 0; i < 4; i += 1) await tick();
     expect(stubs.generateVideo).toHaveBeenCalledTimes(3);
@@ -1789,6 +1792,21 @@ describe('local video failure holds', () => {
     await tick(); await tick();
     expect(stubs.generateVideo).toHaveBeenCalledTimes(5);
     expect(mediaJobQueue.getJob(next).status).toBe('failed');
+  });
+
+  it('uses structured signal evidence and ignores advisory text when no cause was found', async () => {
+    const { createVideoDiagnosticTail } = await import('../../lib/videoFailure.js');
+    const ids = Array.from({ length: 6 }, () => submit());
+    const causes = ['OutOfMemory', 'InnocentVictim', null, 'Timeout', 'Timeout'];
+    for (const [i, cause] of causes.entries()) {
+      await tick();
+      const tail = createVideoDiagnosticTail();
+      if (cause) tail.push('stderr', `kIOGPUCommandBufferCallbackError${cause}`);
+      videoGenEvents.emit('failed', { generationId: ids[i], error: 'Render aborted: Metal command-buffer watchdog advice', failure: tail.failure() });
+      await flush();
+    }
+    await tick();
+    expect(mediaJobQueue.getJob(ids[5]).status).toBe('running');
   });
 
   it('loads legacy jobs without treating startup reconciliation as an engine failure', async () => {

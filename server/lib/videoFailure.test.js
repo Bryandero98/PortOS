@@ -8,9 +8,9 @@ describe('local video diagnostic privacy boundary', () => {
     tail.push('stderr', 'RuntimeError: obsolete exception\n');
     tail.push('stderr', 'x'.repeat(20000));
     tail.push('stdout', 'STAGE:load-model\nSTATUS:working\nprompt: RuntimeError: invented prose\n');
-    expect(tail.summary()).toBeNull();
+    expect(tail.failure()?.summary || null).toBeNull();
     tail.push('stderr', '\nRuntimeError: shader compilation failed');
-    expect(tail.summary()).toBe('RuntimeError: shader compilation failed');
+    expect(tail.failure()?.summary || null).toBe('RuntimeError: shader compilation failed');
   });
 
   it('scrubs conditioning, tokens, credentials and POSIX/Windows paths before identity or display', () => {
@@ -22,6 +22,18 @@ describe('local video diagnostic privacy boundary', () => {
     expect(failure.cause.length).toBeLessThanOrEqual(240);
     expect(normalizeVideoFailure('RuntimeError: shape mismatch')).not.toEqual(normalizeVideoFailure('RuntimeError: shader compilation failed'));
     expect(normalizeVideoFailure("ModuleNotFoundError: No module named 'example_runtime'"))
-      .toEqual({ classification: 'missing-module', cause: 'Python module example_runtime is missing' });
+      .toMatchObject({ classification: 'missing-module', cause: 'Python module example_runtime is missing' });
   });
+});
+
+it('keeps redacted identifiers distinct and removes entire paths containing spaces', () => {
+  const first = normalizeVideoFailure("AttributeError: 'Tokenizer' object has no attribute 'encode'");
+  const second = normalizeVideoFailure("AttributeError: 'Pipeline' object has no attribute 'decode'");
+  expect(first.cause).toBe(second.cause);
+  expect(first.signature).not.toBe(second.signature);
+  for (const path of ['/mock/private folder/encoder file', 'C:\\mock\\private folder\\encoder file']) {
+    const failure = normalizeVideoFailure(`RuntimeError: Substituted text encoder is missing: ${path}`);
+    expect(failure.cause).toBe('Substituted text encoder is missing: [path]');
+    expect(failure.signature).toMatch(/^[a-f0-9]{64}$/);
+  }
 });

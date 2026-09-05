@@ -1,3 +1,4 @@
+import { normalizeVideoFailure } from '../../lib/videoFailure.js';
 /**
  * Video Gen — local render runner (mlx_video on macOS, diffusers on Windows).
  *
@@ -897,7 +898,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     const reason = err.message || 'Failed to build video gen args';
     console.log(`❌ Video generation buildArgs error [${jobId.slice(0, 8)}]: ${reason}`);
     broadcastSse(job, { type: 'error', error: reason });
-    videoGenEvents.emit('failed', { generationId: jobId, error: reason });
+    videoGenEvents.emit('failed', { generationId: jobId, error: reason, failure: normalizeVideoFailure(err, { prompts: [prompt, negativePrompt] }) });
     void cleanupTempFiles({ includeUploads: true, includeUntrackedAudio: true });
     void rmGuarded(stepwiseDir, { recursive: true, force: true });
     closeJobAfterDelay(videoJobState.jobs, jobId);

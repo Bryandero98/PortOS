@@ -317,6 +317,16 @@ describe('federated media provider capacity and idempotency', () => {
     expect(status.queue).toMatchObject({ totalActive: 2, providerActive: 1, running: 1, queued: 0 });
   });
 
+  it('admits unrelated peer audio while retained local videos reach the queue cap', async () => {
+    state.jobs = [1, 2, 3].map((id) => ({ id: `held-${id}`, kind: 'video', status: 'queued',
+      hold: { cause: 'local diagnostic' }, owner: null }));
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status.queue).toMatchObject({ accepting: true, totalActive: 0 });
+    expect(JSON.stringify(status)).not.toContain('local diagnostic');
+    const result = await submitFederatedMediaJob({ callerId: 'peer-example', config: config(), input: input(), idempotencyKey: 'while-held' });
+    expect(result.job).toMatchObject({ status: 'queued', kind: 'audio' });
+  });
+
   it('queues allowlisted audio without exposing the prompt in its response', async () => {
     const result = await submitFederatedMediaJob({
       callerId: 'peer-example', config: config(), input: input(), idempotencyKey: 'commission-1',

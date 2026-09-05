@@ -51,21 +51,24 @@ export function createVideoHolds() {
           ? { ...holds.get(key), heldJobCount: counts.get(key) } : undefined;
       }
     },
+    captureFailure(job, error, { code, failure } = {}) {
+      job.videoFailure = failure !== undefined ? failure : normalizeVideoFailure(error, {
+        code, prompts: [job.params?.prompt, job.params?.negativePrompt, ...(job.params?.chunkPrompts || [])],
+      });
+    },
     recordTerminal(job) {
       if (!isLocalVideo(job) || !job.videoCohort || job.status === 'canceled') return;
       const key = cohortKey(job.videoCohort);
       if (job.status === 'completed') { streaks.delete(key); return; }
       if (job.status !== 'failed') return;
-      const failure = normalizeVideoFailure(job.error, {
-        prompts: [job.params?.prompt, job.params?.negativePrompt, ...(job.params?.chunkPrompts || [])],
-      });
+      const failure = job.videoFailure;
       if (!failure) { streaks.delete(key); return; }
-      const signature = JSON.stringify([failure.classification, failure.cause.toLowerCase()]);
+      const signature = failure.signature;
       const previous = streaks.get(key);
       const count = previous?.signature === signature ? previous.count + 1 : 1;
       streaks.set(key, { signature, count });
       if (count >= 3 && !holds.has(key)) {
-        holds.set(key, { id: randomUUID(), ...job.videoCohort, ...failure, heldAt: new Date().toISOString() });
+        holds.set(key, { id: randomUUID(), ...job.videoCohort, classification: failure.classification, cause: failure.cause, heldAt: new Date().toISOString() });
       }
     },
     resume(id) {

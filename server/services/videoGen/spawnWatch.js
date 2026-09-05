@@ -6,7 +6,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { PATHS, rmGuarded } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
-import { createVideoDiagnosticTail } from '../../lib/videoFailure.js';
+import { createVideoDiagnosticTail, normalizeVideoFailure } from '../../lib/videoFailure.js';
 import { createLineReader } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { prepareLocalMemory, gpuBlockersMessage } from '../localMemory.js';
@@ -224,7 +224,7 @@ export async function spawnAndWatchVideo({
       const reason = `Failed to spawn ${bin}: ${err.message}`;
       console.log(`❌ Video generation spawn error [${jobId.slice(0, 8)}]: ${reason}`);
       broadcastSse(job, { type: 'error', error: reason });
-      videoGenEvents.emit('failed', { generationId: jobId, error: reason });
+      videoGenEvents.emit('failed', { generationId: jobId, error: reason, failure: normalizeVideoFailure(err, { prompts: [meta?.prompt, meta?.negativePrompt] }) });
       videoJobState.activeProcess = null;
       if (displaySlept) wakeDisplayForVideo(videoGenSettings, 'Video generation');
       void releaseHeavyClaim();
@@ -353,6 +353,7 @@ export async function spawnAndWatchVideo({
         if (code !== 0 && !watchdogSuccess) {
           job.status = 'error';
           let reason;
+          const failure = diagnostics.failure({ prompts: [meta?.prompt, meta?.negativePrompt] });
           if (missingPyModule) {
             const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];
             if (runtimeInfo) {
@@ -373,12 +374,12 @@ export async function spawnAndWatchVideo({
               fingerprint: await pickDeathFingerprint({ emitted: job.runtime, runtimeId: model.runtime }),
             });
           } else {
-            const diagnostic = diagnostics.summary({ prompts: [meta?.prompt, meta?.negativePrompt] });
+            const diagnostic = failure?.summary || failure?.cause;
             reason = `Exit code ${code}${diagnostic ? `: ${diagnostic}` : ''}`;
           }
           console.log(`❌ Video generation failed [${jobId.slice(0, 8)}]: ${reason}`);
           broadcastSse(job, { type: 'error', error: `Generation failed: ${reason}` });
-          videoGenEvents.emit('failed', { generationId: jobId, error: reason });
+          videoGenEvents.emit('failed', { generationId: jobId, error: reason, failure: missingPyModule ? normalizeVideoFailure(reason) : failure });
         } else {
           if (watchdogSuccess) {
             console.log(`⚠️ video child force-killed (completion teardown hang) — output is intact [${jobId.slice(0, 8)}]`);
@@ -392,7 +393,7 @@ export async function spawnAndWatchVideo({
         job.status = 'error';
         console.error(`❌ Video close handler failed [${jobId.slice(0, 8)}]: ${err.message}`);
         broadcastSse(job, { type: 'error', error: `Generation failed: ${err.message}` });
-        videoGenEvents.emit('failed', { generationId: jobId, error: err.message });
+        videoGenEvents.emit('failed', { generationId: jobId, error: err.message, failure: normalizeVideoFailure(err, { prompts: [meta?.prompt, meta?.negativePrompt] }) });
       } finally {
         // A prompt-encode relaunch returns before this finalizer, deliberately
         // leaving the display asleep while its replacement owns the GPU.
@@ -572,7 +573,7 @@ export async function spawnAndWatchVideo({
     const reason = err.message || 'Video generation failed before the render child was wired';
     console.log(`❌ Video generation setup error [${jobId.slice(0, 8)}]: ${reason}`);
     broadcastSse(job, { type: 'error', error: reason });
-    videoGenEvents.emit('failed', { generationId: jobId, error: reason });
+    videoGenEvents.emit('failed', { generationId: jobId, error: reason, failure: normalizeVideoFailure(err, { prompts: [meta?.prompt, meta?.negativePrompt] }) });
     void cleanupTempFiles({ includeUploads: true, includeUntrackedAudio: true });
     cleanupStepwisePreview();
     closeJobAfterDelay(videoJobState.jobs, jobId);

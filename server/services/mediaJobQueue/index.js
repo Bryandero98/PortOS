@@ -647,12 +647,13 @@ function startLaneJob(job, { lane }) {
       // not configured). Recover so a single bad job can't freeze its lane.
       console.log(`❌ media-job [${job.id.slice(0, 8)}] ${label} runJob threw: ${err.message}`);
       if (job.status === 'running') {
-        job.status = 'failed';
+        job.status = job.cancelRequested ? 'canceled' : 'failed';
+        videoHolds.captureFailure(job, err);
         job.error = `runJob threw: ${err.message}`;
         job.completedAt = new Date().toISOString();
         broadcastSse(ensureSseEntry(job.id), { type: 'error', error: job.error });
         closeJobAfterDelay(sseJobs, job.id);
-        mediaJobEvents.emit('failed', job);
+        mediaJobEvents.emit(job.status, job);
       }
     }
     // Count once, after every terminal path (including pre-dispatch throws),
@@ -862,7 +863,7 @@ function makeGenDispatcher(emitter, job, handlers) {
     }
   };
   const onCompleted = (e) => { if (e.generationId === job.id) handlers.completed(e); };
-  const onFailed = (e) => { if (e.generationId === job.id) handlers.failed({ error: e.error }); };
+  const onFailed = (e) => { if (e.generationId === job.id) handlers.failed(e); };
   return {
     attach() {
       emitter.on('progress', onProgress);
@@ -1007,7 +1008,10 @@ async function runJob(job) {
         return;
       }
       trackTerminalOperation(
-        terminate('failed', (j) => { j.error = payload.error || 'unknown error'; })
+        terminate('failed', (j) => {
+          j.error = payload.error || 'unknown error';
+          videoHolds.captureFailure(j, j.error, payload);
+        })
           .catch((e) => console.log(`⚠️ media-job [${job.id.slice(0, 8)}] terminal handler failed: ${e.message}`)),
       );
     },
@@ -1155,7 +1159,7 @@ async function runJob(job) {
     for (const p of normalizeTempPaths(job.params?.uploadedTempPaths)) {
       await safeUnlinkUpload(p);
     }
-    handlers.failed({ error: err.message });
+    handlers.failed({ error: err.message, code: err.code });
   }
 
   // The gen modules emit completed/failed asynchronously after kickoff. Await

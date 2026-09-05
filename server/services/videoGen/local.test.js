@@ -3368,6 +3368,24 @@ describe('generateVideo — BYOV missing-python-module failure path (#1833 regre
   // re-exported (`export * from './runtimes.js'`) but NOT bound in local.js's
   // own scope — which would make the reference here throw a ReferenceError, so
   // the terminal 'failed' event never carries the venv-specific reason.
+  it('classifies the first emitted missing-venv failure before the render rejects', async () => {
+    vi.resetModules();
+    const { generateVideo: gv } = await import('./local.js');
+    const { videoGenEvents: events } = await import('./events.js');
+    const { BYOV_RUNTIME_INFO } = await import('./runtimes.js');
+    const { existsSync } = await import('fs');
+    const originalExists = vi.mocked(existsSync).getMockImplementation();
+    vi.mocked(existsSync).mockImplementation((path) => path !== BYOV_RUNTIME_INFO.ltx2.venvPython);
+    const failed = new Promise((resolve) => events.once('failed', resolve));
+    try {
+      await expect(gv({ jobId: 'example-missing-venv', modelId: 'ltx2_unified', prompt: 'invented clip',
+        width: 512, height: 512, numFrames: 25, fps: 24, mode: 'text' })).rejects.toMatchObject({ code: 'LTX2_VENV_MISSING' });
+      expect((await failed).failure).toMatchObject({ classification: 'ltx2_venv_missing' });
+    } finally {
+      vi.mocked(existsSync).mockImplementation(originalExists);
+    }
+  });
+
   it('emits a failed event naming the runtime venv when the child reports ModuleNotFoundError', async () => {
     vi.resetModules();
     const { spawnDetached } = await import('../../lib/detachedSpawn.js');
@@ -3619,6 +3637,44 @@ describe('generateVideo — signal-death diagnosis (#3101)', () => {
     emit('ilation failed');
     await ctrl.fireClose(1, null);
     expect((await failed).error).toBe('Exit code 1: RuntimeError: shader compilation failed');
+  });
+
+  it('classifies distinct Metal abort evidence and leaves signal-only advice unclassified', async () => {
+    const failures = [];
+    for (const cause of ['OutOfMemory', 'InnocentVictim', null]) {
+      failures.push(await failWithSignal(`signal-evidence-${cause}`, 'SIGABRT', {
+        onStarted: (ctrl) => { if (cause) ctrl.emitStderr(`kIOGPUCommandBufferCallbackError${cause}\n`); },
+      }));
+    }
+    expect(failures[0].failure.cause).toBe('Metal command buffer failed: OutOfMemory');
+    expect(failures[1].failure.signature).not.toBe(failures[0].failure.signature);
+    expect(failures[2].failure).toBeNull();
+  });
+
+  it('preserves classified child failure evidence on a chained render', async () => {
+    vi.resetModules();
+    const { generateChainedVideo: chain } = await import('./local.js');
+    const { videoGenEvents: events } = await import('./events.js');
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const ctrl = makeSignalProc();
+    vi.mocked(spawnDetached).mockImplementationOnce(async () => {
+      setImmediate(() => {
+        ctrl.emitStderr("AttributeError: 'Tokenizer' object has no attribute 'encode'\n");
+        ctrl.fireClose(1, null);
+      });
+      return ctrl.proc;
+    });
+    const failed = new Promise((resolve) => {
+      const onFailed = (event) => {
+        if (event.generationId !== 'example-failed-chain') return;
+        events.off('failed', onFailed);
+        resolve(event);
+      };
+      events.on('failed', onFailed);
+    });
+    await chain({ chunks: 2, jobId: 'example-failed-chain', pythonPath: '/mock/python', modelId: 'ltx2_unified',
+      prompt: 'invented clip', width: 512, height: 512, numFrames: 25, fps: 24, mode: 'text' });
+    expect((await failed).failure).toMatchObject({ classification: 'attributeerror', signature: expect.stringMatching(/^[a-f0-9]{64}$/) });
   });
 
   it('SIGABRT names the macOS Metal command-buffer watchdog with a resolution/frame-count next step', async () => {

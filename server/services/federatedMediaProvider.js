@@ -557,7 +557,8 @@ const federatedLaneConcurrency = (kinds) => (kinds.length === 0 ? 1 : Math.min(
  */
 function activeQueueSnapshot(config, kinds) {
   const active = listJobs().filter((job) =>
-    ACTIVE_STATUSES.has(job.status) && !isRemoteMediaJob(job),
+    ACTIVE_STATUSES.has(job.status) && !isRemoteMediaJob(job)
+      && !(job.status === 'queued' && job.hold),
   );
   let providerActive = 0;
   let queued = 0;
