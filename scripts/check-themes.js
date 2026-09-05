@@ -91,6 +91,8 @@ const FX_TOKEN_OWNERS = [
   ['--port-fx-sweep-', ['sweep']],
   ['--port-fx-grid-floor-', ['grid-floor']],
   ['--port-fx-glitch-', ['glitch']],
+  ['--port-fx-aurora-', ['aurora']],
+  ['--port-fx-grain-', ['grain']],
 ];
 
 const REQUIRED_DOC_SECTIONS = [
@@ -138,6 +140,13 @@ async function main() {
     for (const effect of effects) {
       assert(THEME_EFFECTS.includes(effect), `${id} lists unknown effect ${effect}`);
     }
+    // `aurora` and `grid-floor` are both below-content full-screen layers at the
+    // same depth, so listing both stacks them and washes the grid out. Documented
+    // in index.css and the themes README; asserted here so it can't drift.
+    assert(
+      !(effects.includes('aurora') && effects.includes('grid-floor')),
+      `${id} lists both aurora and grid-floor — they occupy the same below-content depth`,
+    );
     // A --port-fx-* token tunes exactly one effect (the overlay tokens tune the
     // two overlay effects); declaring one for an effect the theme does not list
     // would silently paint nothing.

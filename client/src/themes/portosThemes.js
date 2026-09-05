@@ -31,7 +31,7 @@ const DEFAULT_ACCENT2 = {
 // Full-screen effects a theme composes by listing them in `effects`; each is
 // a shared block in index.css ("Theme effects layer") tuned by --port-fx-*
 // tokens. Catalogue and tokens: docs/themes/README.md, "Effects".
-export const THEME_EFFECTS = Object.freeze(['scanlines', 'vignette', 'sweep', 'grid-floor', 'glitch']);
+export const THEME_EFFECTS = Object.freeze(['scanlines', 'vignette', 'sweep', 'grid-floor', 'glitch', 'aurora', 'grain']);
 
 const baseMotionTokens = {
   '--port-motion-fast': '120ms',
@@ -124,17 +124,25 @@ export const THEMES = {
       '--port-font-ui': "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
       '--port-font-display': 'var(--port-font-ui)',
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
-      '--port-shadow-card': 'none',
-      '--port-shadow-elevated': '0 18px 45px rgb(0 0 0 / 0.35)',
-      '--port-shadow-interactive': 'none',
+      // Baseline stays neutral graphite + blue; what changed is material, not
+      // identity — a hairline top sheen and a real cast shadow so a card reads
+      // as raised rather than as a same-color rectangle with a border.
+      '--port-heading-tracking': '-0.011em',
+      '--port-card-surface-image': 'linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 72px)',
+      '--port-nav-active-rule': '2px solid rgb(var(--port-accent))',
+      '--port-shadow-card': 'inset 0 1px 0 rgb(255 255 255 / 0.04), 0 10px 28px -18px rgb(0 0 0 / 0.9)',
+      '--port-shadow-elevated': 'inset 0 1px 0 rgb(255 255 255 / 0.05), 0 18px 45px rgb(0 0 0 / 0.35)',
+      '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.35)',
       '--port-backdrop-filter': 'none',
       '--port-border-style': 'solid',
-      '--port-body-gradient': 'none',
-      '--port-body-texture': 'none',
+      // Deep-to-near-black fall with a faint accent haze off the top edge, read
+      // through a slightly translucent app backdrop.
+      '--port-body-gradient': 'linear-gradient(180deg, rgb(24 25 30) 0%, rgb(15 15 15) 55%, rgb(10 10 12) 100%)',
+      '--port-body-texture': 'radial-gradient(ellipse 90% 46% at 50% -8%, rgb(var(--port-accent) / 0.1) 0%, transparent 70%)',
       '--port-body-size': 'cover, cover',
-      '--port-body-overlay-opacity': '0',
-      '--port-app-backdrop': 'rgb(var(--port-bg))',
-      '--port-sidebar-bg': 'rgb(var(--port-card))',
+      '--port-body-overlay-opacity': '1',
+      '--port-app-backdrop': 'rgb(var(--port-bg) / 0.88)',
+      '--port-sidebar-bg': 'linear-gradient(180deg, rgb(32 32 34), rgb(26 26 28))',
       '--port-input-bg': 'rgb(var(--port-bg))',
       '--port-control-bg': 'rgb(var(--port-border))',
       '--port-control-bg-hover': 'rgb(64 64 64)',
@@ -209,17 +217,20 @@ export const THEMES = {
       '--port-font-ui': "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
       '--port-font-display': 'var(--port-font-ui)',
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
-      '--port-shadow-card': '0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.03)',
-      '--port-shadow-elevated': '0 14px 40px -12px rgb(15 23 42 / 0.18), 0 4px 10px -2px rgb(15 23 42 / 0.08)',
+      '--port-heading-tracking': '-0.011em',
+      '--port-card-surface-image': 'linear-gradient(180deg, rgb(var(--port-accent) / 0.028), transparent 72px)',
+      '--port-nav-active-rule': '2px solid rgb(var(--port-accent))',
+      '--port-shadow-card': 'inset 0 1px 0 rgb(255 255 255 / 0.9), 0 1px 2px rgb(15 23 42 / 0.05), 0 6px 16px -10px rgb(15 23 42 / 0.16)',
+      '--port-shadow-elevated': 'inset 0 1px 0 rgb(255 255 255 / 0.9), 0 14px 40px -12px rgb(15 23 42 / 0.18), 0 4px 10px -2px rgb(15 23 42 / 0.08)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.4)',
       '--port-backdrop-filter': 'none',
       '--port-border-style': 'solid',
-      '--port-body-gradient': 'none',
-      '--port-body-texture': 'none',
+      '--port-body-gradient': 'linear-gradient(180deg, rgb(252 252 253) 0%, rgb(240 240 240) 52%, rgb(232 232 235) 100%)',
+      '--port-body-texture': 'radial-gradient(ellipse 90% 44% at 50% -8%, rgb(var(--port-accent) / 0.07) 0%, transparent 70%)',
       '--port-body-size': 'cover, cover',
-      '--port-body-overlay-opacity': '0',
-      '--port-app-backdrop': 'rgb(var(--port-bg))',
-      '--port-sidebar-bg': 'rgb(var(--port-card))',
+      '--port-body-overlay-opacity': '1',
+      '--port-app-backdrop': 'rgb(var(--port-bg) / 0.86)',
+      '--port-sidebar-bg': 'linear-gradient(180deg, rgb(255 255 255), rgb(249 249 250))',
       '--port-input-bg': 'rgb(255 255 255)',
       '--port-control-bg': 'rgb(244 244 245)',
       '--port-control-bg-hover': 'rgb(228 228 231)',
@@ -247,6 +258,10 @@ export const THEMES = {
     doc: '/docs/themes/lumen-glass.md',
     colorScheme: 'dark',
     density: 'spacious',
+    // The night pane finally gets the ambient depth its day partner always had
+    // (which drifts on its own body::before/::after): two slow blooms behind
+    // the glass, plus edge falloff so the stack reads as lit from the middle.
+    effects: ['aurora', 'vignette'],
     swatches: ['#071016', '#1c2e37', '#67e8f9', '#fb7185'],
     colors: {
       '--port-bg': '7 16 22',
@@ -293,6 +308,12 @@ export const THEMES = {
       '--port-font-display': 'var(--port-font-ui)',
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
       '--port-card-border-alpha': '0.28',
+      '--port-heading-tracking': '-0.015em',
+      // A pane of glass catches the light along its top-left edge; the wash is
+      // what separates a glass panel from a flat translucent rectangle.
+      '--port-card-surface-image': 'linear-gradient(155deg, rgb(255 255 255 / 0.075), rgb(255 255 255 / 0.012) 42%, transparent 70%)',
+      '--port-nav-active-rule': '2px solid rgb(var(--port-accent) / 0.85)',
+      '--port-nav-active-glow': '0 0 14px rgb(var(--port-accent) / 0.4)',
       '--port-focus-glow': '0 0 0 4px rgb(var(--port-focus-ring) / 0.18), 0 0 36px rgb(var(--port-focus-ring) / 0.12)',
       '--port-shadow-card': '0 22px 55px rgb(0 0 0 / 0.28), inset 0 1px 0 rgb(255 255 255 / 0.08)',
       '--port-shadow-elevated': '0 28px 80px rgb(0 0 0 / 0.42), inset 0 1px 0 rgb(255 255 255 / 0.12)',
@@ -303,7 +324,9 @@ export const THEMES = {
       '--port-body-texture': 'linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px), linear-gradient(180deg, rgb(255 255 255 / 0.018) 1px, transparent 1px)',
       '--port-body-size': '28px 28px, 28px 28px, cover',
       '--port-body-overlay-opacity': '0.72',
-      '--port-app-backdrop': 'linear-gradient(135deg, rgb(var(--port-bg) / 0.82), rgb(9 28 36 / 0.84))',
+      // Thinned from 0.82 so the aurora behind it actually reaches the page —
+      // a translucent command deck whose shell is nearly opaque isn't one.
+      '--port-app-backdrop': 'linear-gradient(135deg, rgb(var(--port-bg) / 0.6), rgb(9 28 36 / 0.62))',
       '--port-sidebar-bg': 'linear-gradient(180deg, rgb(12 24 31 / 0.82), rgb(13 20 29 / 0.72))',
       '--port-input-bg': 'rgb(8 18 24 / 0.72)',
       '--port-control-bg': 'rgb(21 42 52 / 0.82)',
@@ -318,6 +341,14 @@ export const THEMES = {
       '--port-chart-3': '251 191 36',
       '--port-chart-4': '251 113 133',
       '--port-chart-grid': '129 229 255',
+      '--port-fx-aurora-a': 'rgb(var(--port-accent) / 0.45)',
+      '--port-fx-aurora-b': 'rgb(var(--port-accent-2) / 0.38)',
+      '--port-fx-aurora-opacity': '0.7',
+      '--port-fx-aurora-blur': '90px',
+      '--port-fx-aurora-duration': '44s',
+      '--port-fx-vignette-color': 'rgb(0 0 0 / 0.5)',
+      '--port-fx-overlay-blend': 'normal',
+      '--port-fx-overlay-opacity': '0.55',
     },
   },
 
@@ -332,6 +363,9 @@ export const THEMES = {
     doc: '/docs/themes/lumen-glass.md',
     colorScheme: 'light',
     density: 'spacious',
+    // The drifting mesh stays on this theme's own body pseudo-elements; grain
+    // is what turns its white panes from flat fill into frosted glass.
+    effects: ['grain'],
     swatches: ['#eae4db', '#ffffff', '#155e75', '#fb7185'],
     colors: {
       '--port-bg': '234 228 219',
@@ -377,6 +411,9 @@ export const THEMES = {
       '--port-font-display': 'var(--port-font-ui)',
       '--port-font-mono': "'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
       '--port-card-border-alpha': '0.22',
+      '--port-heading-tracking': '-0.015em',
+      '--port-card-surface-image': 'linear-gradient(155deg, rgb(255 255 255 / 0.85), rgb(255 255 255 / 0.2) 40%, transparent 68%)',
+      '--port-nav-active-rule': '2px solid rgb(var(--port-accent) / 0.85)',
       '--port-focus-glow': '0 0 0 3px rgb(var(--port-focus-ring) / 0.22), 0 0 24px rgb(var(--port-focus-ring) / 0.16)',
       '--port-shadow-card': 'inset 0 1px 0 0 rgb(255 255 255 / 0.6), 0 10px 30px -12px rgb(8 80 110 / 0.16), 0 2px 6px -2px rgb(8 80 110 / 0.08)',
       '--port-shadow-elevated': 'inset 0 1px 0 0 rgb(255 255 255 / 0.7), 0 22px 56px -16px rgb(8 80 110 / 0.24), 0 6px 14px -4px rgb(8 80 110 / 0.12)',
@@ -402,6 +439,8 @@ export const THEMES = {
       '--port-chart-3': '202 138 4',
       '--port-chart-4': '225 29 72',
       '--port-chart-grid': '21 94 117',
+      '--port-fx-grain-blend': 'multiply',
+      '--port-fx-grain-opacity': '0.035',
     },
   },
 
@@ -416,7 +455,10 @@ export const THEMES = {
     doc: '/docs/themes/black-ice-terminal.md',
     colorScheme: 'dark',
     density: 'compact',
-    effects: ['scanlines'],
+    // A cyberpunk CRT was already scanlined but otherwise inert: the phosphor
+    // sweep, the tube's edge falloff, and the title glitch are the rest of the
+    // same monitor.
+    effects: ['scanlines', 'vignette', 'sweep', 'glitch'],
     swatches: ['#020403', '#151c19', '#00f5a0', '#ff2bd6'],
     colors: {
       '--port-bg': '2 4 3',
@@ -467,6 +509,11 @@ export const THEMES = {
       // The shared heading rule sets text-shadow explicitly, so restate the
       // body glow here or headings would lose what they used to inherit.
       '--port-heading-glow': '0 0 12px rgb(var(--port-accent) / 0.08)',
+      '--port-heading-tracking': '0.04em',
+      '--port-title-tracking': '0.12em',
+      '--port-title-transform': 'uppercase',
+      '--port-focus-glow': '0 0 0 1px rgb(var(--port-focus-ring) / 0.7), 0 0 20px rgb(var(--port-focus-ring) / 0.3)',
+      '--port-nav-active-glow': '0 0 8px rgb(var(--port-accent) / 0.55)',
       '--port-card-border-alpha': '0.34',
       '--port-card-surface-image': 'linear-gradient(180deg, rgb(var(--port-accent) / 0.035), transparent 38px)',
       '--port-nav-active-rule': '2px solid rgb(var(--port-accent))',
@@ -495,6 +542,17 @@ export const THEMES = {
       '--port-chart-3': '255 214 10',
       '--port-chart-4': '0 194 255',
       '--port-chart-grid': '0 245 160',
+      // `normal` rather than the default `screen`: the overlay carries the
+      // vignette too, and screening a black radial is a no-op. Straight alpha
+      // compositing still lifts the phosphor line on this near-black page.
+      '--port-fx-scanline-color': 'rgb(0 245 160 / 0.055)',
+      '--port-fx-scanline-period': '4px',
+      '--port-fx-overlay-blend': 'normal',
+      '--port-fx-overlay-opacity': '0.75',
+      '--port-fx-vignette-color': 'rgb(0 0 0 / 0.62)',
+      '--port-fx-sweep-color': 'rgb(var(--port-accent) / 0.05)',
+      '--port-fx-sweep-duration': '9s',
+      '--port-fx-glitch-period': '14s',
     },
   },
 
@@ -509,7 +567,11 @@ export const THEMES = {
     doc: '/docs/themes/black-ice-terminal.md',
     colorScheme: 'light',
     density: 'compact',
-    effects: ['scanlines'],
+    // Paper tooth moved off --port-body-texture (where a 400-char inline SVG
+    // sat behind the app backdrop) and onto the shared grain effect, which
+    // blends over the whole page the way real stock does. Vignette is the
+    // warm edge fall of a page under a desk lamp.
+    effects: ['scanlines', 'vignette', 'grain'],
     swatches: ['#ece6d5', '#fbf6e8', '#086c43', '#b91d6a'],
     colors: {
       '--port-bg': '236 230 213',
@@ -557,6 +619,10 @@ export const THEMES = {
       '--port-font-display': "'GeistPixelGrid', 'SFMono-Regular', Consolas, monospace",
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
       '--port-heading-glow': '0 0 8px rgb(var(--port-accent) / 0.04)',
+      '--port-heading-tracking': '0.04em',
+      '--port-title-tracking': '0.12em',
+      '--port-title-transform': 'uppercase',
+      '--port-focus-glow': '0 0 0 2px rgb(var(--port-focus-ring) / 0.45)',
       '--port-card-border-alpha': '0.32',
       '--port-card-surface-image': 'linear-gradient(180deg, rgb(255 255 255 / 0.5), transparent 38px)',
       '--port-nav-active-rule': '2px solid rgb(var(--port-accent))',
@@ -567,8 +633,8 @@ export const THEMES = {
       '--port-backdrop-filter': 'none',
       '--port-border-style': 'solid',
       '--port-body-gradient': 'linear-gradient(180deg, rgb(248 242 226) 0%, rgb(243 237 220) 100%)',
-      '--port-body-texture': "linear-gradient(0deg, rgb(10 122 74 / 0.05) 1px, transparent 1px), linear-gradient(90deg, rgb(185 29 106 / 0.035) 1px, transparent 1px), url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.55  0 0 0 0 0.45  0 0 0 0 0.25  0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/></svg>\")",
-      '--port-body-size': '28px 28px, 28px 28px, 200px 200px, cover',
+      '--port-body-texture': 'linear-gradient(0deg, rgb(10 122 74 / 0.05) 1px, transparent 1px), linear-gradient(90deg, rgb(185 29 106 / 0.035) 1px, transparent 1px)',
+      '--port-body-size': '28px 28px, 28px 28px, cover',
       '--port-body-overlay-opacity': '0.9',
       '--port-app-backdrop': 'transparent',
       '--port-sidebar-bg': 'rgb(248 242 226 / 0.96)',
@@ -588,6 +654,10 @@ export const THEMES = {
       '--port-fx-scanline-color': 'rgb(10 60 30 / 0.04)',
       '--port-fx-overlay-blend': 'multiply',
       '--port-fx-overlay-opacity': '0.4',
+      '--port-fx-vignette-color': 'rgb(96 78 44 / 0.5)',
+      '--port-fx-grain-blend': 'multiply',
+      '--port-fx-grain-opacity': '0.06',
+      '--port-fx-grain-size': '200px 200px',
     },
   },
 
@@ -602,6 +672,8 @@ export const THEMES = {
     doc: '/docs/themes/blueprint-ops.md',
     colorScheme: 'dark',
     density: 'compact',
+    // A drafting table is lit from above: the sheet falls off toward its edges.
+    effects: ['vignette'],
     swatches: ['#0b1020', '#1b2231', '#60a5fa', '#f59e0b'],
     colors: {
       '--port-bg': '11 16 32',
@@ -646,16 +718,25 @@ export const THEMES = {
       '--port-font-ui': "'Avenir Next', Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       '--port-font-display': 'var(--port-font-ui)',
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+      // Sheet titles are drafting labels: uppercase, tracked, ruled off by the
+      // accent bar the per-theme heading rule already draws.
+      '--port-heading-tracking': '0.03em',
+      '--port-title-tracking': '0.1em',
+      '--port-title-transform': 'uppercase',
+      '--port-card-border-color': 'var(--port-accent)',
+      '--port-card-border-alpha': '0.2',
+      '--port-nav-active-rule': '2px solid rgb(var(--port-accent))',
+      '--port-focus-glow': '0 0 0 1px rgb(var(--port-focus-ring) / 0.6), 0 0 0 4px rgb(var(--port-focus-ring) / 0.12)',
       '--port-card-surface-image': 'linear-gradient(90deg, rgb(var(--port-border) / 0.045) 1px, transparent 1px), linear-gradient(180deg, rgb(var(--port-border) / 0.035) 1px, transparent 1px)',
       '--port-card-surface-size': '20px 20px',
-      '--port-shadow-card': '0 0 0 1px rgb(var(--port-border) / 0.1), 0 12px 28px rgb(0 0 0 / 0.2)',
-      '--port-shadow-elevated': '0 0 0 1px rgb(var(--port-border) / 0.18), 0 22px 54px rgb(0 0 0 / 0.38)',
+      '--port-shadow-card': 'inset 0 1px 0 rgb(var(--port-border) / 0.08), 0 0 0 1px rgb(var(--port-border) / 0.1), 0 12px 28px rgb(0 0 0 / 0.2)',
+      '--port-shadow-elevated': 'inset 0 1px 0 rgb(var(--port-border) / 0.1), 0 0 0 1px rgb(var(--port-border) / 0.18), 0 22px 54px rgb(0 0 0 / 0.38)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.35), 0 0 0 4px rgb(var(--port-accent) / 0.08)',
       '--port-backdrop-filter': 'blur(6px)',
       '--port-border-style': 'solid',
-      '--port-body-gradient': 'linear-gradient(180deg, rgb(9 14 28) 0%, rgb(13 22 38) 100%)',
+      '--port-body-gradient': 'radial-gradient(ellipse 120% 60% at 50% -10%, rgb(22 38 66) 0%, transparent 62%), linear-gradient(180deg, rgb(9 14 28) 0%, rgb(13 22 38) 100%)',
       '--port-body-texture': 'linear-gradient(rgb(148 163 184 / 0.055) 1px, transparent 1px), linear-gradient(90deg, rgb(148 163 184 / 0.045) 1px, transparent 1px), linear-gradient(rgb(96 165 250 / 0.08) 1px, transparent 1px), linear-gradient(90deg, rgb(96 165 250 / 0.065) 1px, transparent 1px)',
-      '--port-body-size': '20px 20px, 20px 20px, 100px 100px, 100px 100px, cover',
+      '--port-body-size': '20px 20px, 20px 20px, 100px 100px, 100px 100px, cover, cover',
       '--port-body-overlay-opacity': '0.82',
       '--port-app-backdrop': 'rgb(var(--port-bg) / 0.94)',
       '--port-sidebar-bg': 'linear-gradient(180deg, rgb(13 20 37 / 0.96), rgb(15 23 42 / 0.92))',
@@ -672,6 +753,9 @@ export const THEMES = {
       '--port-chart-3': '245 158 11',
       '--port-chart-4': '248 113 113',
       '--port-chart-grid': '148 163 184',
+      '--port-fx-vignette-color': 'rgb(2 6 18 / 0.6)',
+      '--port-fx-overlay-blend': 'normal',
+      '--port-fx-overlay-opacity': '0.7',
     },
   },
 
@@ -686,6 +770,9 @@ export const THEMES = {
     doc: '/docs/themes/blueprint-ops.md',
     colorScheme: 'light',
     density: 'compact',
+    // Vellum tooth over the printed grid — the day sheet's counterpart to the
+    // night table's edge falloff.
+    effects: ['grain'],
     swatches: ['#eaeef2', '#ffffff', '#1d4ed8', '#d97706'],
     colors: {
       '--port-bg': '234 238 242',
@@ -730,16 +817,22 @@ export const THEMES = {
       '--port-font-ui': "'Avenir Next', Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       '--port-font-display': 'var(--port-font-ui)',
       '--port-font-mono': "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+      '--port-heading-tracking': '0.03em',
+      '--port-title-tracking': '0.1em',
+      '--port-title-transform': 'uppercase',
+      '--port-card-border-color': 'var(--port-accent)',
+      '--port-card-border-alpha': '0.18',
+      '--port-nav-active-rule': '2px solid rgb(var(--port-accent))',
       '--port-card-surface-image': 'linear-gradient(90deg, rgb(var(--port-border) / 0.05) 1px, transparent 1px), linear-gradient(180deg, rgb(var(--port-border) / 0.04) 1px, transparent 1px)',
       '--port-card-surface-size': '20px 20px',
-      '--port-shadow-card': '0 0 0 1px rgb(var(--port-border) / 0.14), 0 8px 22px -8px rgb(15 23 42 / 0.12)',
-      '--port-shadow-elevated': '0 0 0 1px rgb(var(--port-border) / 0.22), 0 22px 54px -16px rgb(15 23 42 / 0.22)',
+      '--port-shadow-card': 'inset 0 1px 0 rgb(255 255 255 / 0.9), 0 0 0 1px rgb(var(--port-border) / 0.14), 0 8px 22px -8px rgb(15 23 42 / 0.12)',
+      '--port-shadow-elevated': 'inset 0 1px 0 rgb(255 255 255 / 0.9), 0 0 0 1px rgb(var(--port-border) / 0.22), 0 22px 54px -16px rgb(15 23 42 / 0.22)',
       '--port-shadow-interactive': '0 0 0 1px rgb(var(--port-accent) / 0.45), 0 0 0 4px rgb(var(--port-accent) / 0.1)',
       '--port-backdrop-filter': 'none',
       '--port-border-style': 'solid',
-      '--port-body-gradient': 'linear-gradient(180deg, rgb(248 250 252) 0%, rgb(240 244 248) 100%)',
+      '--port-body-gradient': 'radial-gradient(ellipse 120% 55% at 50% -8%, rgb(255 255 255) 0%, transparent 60%), linear-gradient(180deg, rgb(248 250 252) 0%, rgb(238 242 247) 100%)',
       '--port-body-texture': 'linear-gradient(rgb(37 99 235 / 0.07) 1px, transparent 1px), linear-gradient(90deg, rgb(37 99 235 / 0.06) 1px, transparent 1px), linear-gradient(rgb(29 78 216 / 0.1) 1px, transparent 1px), linear-gradient(90deg, rgb(29 78 216 / 0.08) 1px, transparent 1px)',
-      '--port-body-size': '20px 20px, 20px 20px, 100px 100px, 100px 100px, cover',
+      '--port-body-size': '20px 20px, 20px 20px, 100px 100px, 100px 100px, cover, cover',
       '--port-body-overlay-opacity': '0.82',
       '--port-app-backdrop': 'rgb(var(--port-bg) / 0.94)',
       '--port-sidebar-bg': 'linear-gradient(180deg, rgb(255 255 255 / 0.94), rgb(248 250 252 / 0.9))',
@@ -756,6 +849,9 @@ export const THEMES = {
       '--port-chart-3': '180 83 9',
       '--port-chart-4': '185 28 28',
       '--port-chart-grid': '148 163 184',
+      '--port-fx-grain-blend': 'multiply',
+      '--port-fx-grain-opacity': '0.045',
+      '--port-fx-grain-size': '180px 180px',
     },
   },
   'kestrel-neon': {
