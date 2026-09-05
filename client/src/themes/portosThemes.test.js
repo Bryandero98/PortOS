@@ -264,6 +264,39 @@ describe('theme effects', () => {
   });
 });
 
+// index.css scopes the stronger focus glow to an opt-in theme list, partly by
+// FAMILY. `--port-focus-glow` defaults to `none`, and the rule out-specificities
+// `.bg-port-accent`'s interactive shadow — so a theme that the selector matches
+// without declaring the token loses its accent button's focus indicator to
+// nothing. Adding a variant to a listed family is enough to trip that silently,
+// which is why this is a test and not a comment.
+describe('the theme-scoped focus glow only matches themes that declare it', () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.css'), 'utf8');
+  // The selector prelude of the one rule whose body is `box-shadow:
+  // var(--port-focus-glow)` — everything between the previous `}` and the `{`
+  // that opens it. Anchored on the declaration rather than on the selector text
+  // so rewording the scope list doesn't quietly stop matching.
+  const rule = css.slice(0, css.indexOf('box-shadow: var(--port-focus-glow)'));
+  const selector = rule.slice(rule.lastIndexOf('}') + 1, rule.lastIndexOf('{'));
+
+  const matched = Object.values(THEMES).filter((theme) => (
+    selector.includes(`[data-port-theme="${theme.id}"]`)
+    || selector.includes(`[data-port-theme-family="${theme.family}"]`)
+  ));
+
+  it('finds the rule and matches at least one theme', () => {
+    expect(css, 'focus-glow declaration not found in index.css').toContain('box-shadow: var(--port-focus-glow)');
+    expect(matched.length).toBeGreaterThan(0);
+  });
+
+  it.each(matched.map((theme) => [theme.id, theme]))(
+    '%s: declares --port-focus-glow',
+    (_id, theme) => {
+      expect(theme.tokens['--port-focus-glow']).toBeTruthy();
+    },
+  );
+});
+
 describe('DEFAULT_AVATAR_COLOR', () => {
   it('is a literal #rrggbb hex — a native <input type="color"> rejects anything else', () => {
     expect(DEFAULT_AVATAR_COLOR).toMatch(/^#[0-9a-f]{6}$/);

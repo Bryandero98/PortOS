@@ -91,6 +91,8 @@ const FX_TOKEN_OWNERS = [
   ['--port-fx-sweep-', ['sweep']],
   ['--port-fx-grid-floor-', ['grid-floor']],
   ['--port-fx-glitch-', ['glitch']],
+  ['--port-fx-aurora-', ['aurora']],
+  ['--port-fx-grain-', ['grain']],
 ];
 
 const REQUIRED_DOC_SECTIONS = [
