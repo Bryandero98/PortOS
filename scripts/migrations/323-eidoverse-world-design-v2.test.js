@@ -27,7 +27,7 @@ describe('migration 323 — Eidoverse World Design V2', () => {
 
     await expect(migration.up({ rootDir })).resolves.toEqual({ updated: 1, preservedOverrides: [] });
     expect(await readState()).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       world: 'example-world',
       selectedDesignVersion: 2,
       lastAppliedDesignVersion: 1,

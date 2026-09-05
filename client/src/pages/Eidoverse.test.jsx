@@ -1,3 +1,4 @@
+// @vitest-environment-options {"settings":{"navigation":{"disableChildFrameNavigation":true}}}
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -162,6 +163,62 @@ describe('Eidoverse hosted page', () => {
     await user.click(screen.getByRole('tab', { name: 'Districts & Data' }));
     expect(screen.getByText(/12 are shown now; the 48-indicator limit keeps the scene legible/)).toBeInTheDocument();
     expect(screen.getByText('App Terraces')).toBeInTheDocument();
+  });
+
+  it('keeps label visibility browser-only and saves or clears explicit aliases from the object legend', async () => {
+    const user = userEvent.setup();
+    const key = 'app-0123456789ab';
+    const object = {
+      id: 'portos-design-v2-signal-app-example', kind: 'app', resourceKey: key,
+      districtId: 'apps', name: 'Managed app 012345', description: 'An app this install manages. Data is current.',
+      visibility: 'nearby', route: '/apps',
+      asset: { slot: 'app', path: 'eidoverse/assets/models/orb.glb', reason: 'catalog-fallback' },
+    };
+    const summary = { ...worldResponse.projection.lastSummary, objects: [object] };
+    api.projectEidoverseWorld.mockResolvedValue({
+      success: true, recipe, design, projection: { lastSummary: summary },
+    });
+    renderPage();
+    await screen.findByTitle('Eidoverse Worlds');
+    await waitFor(() => expect(api.projectEidoverseWorld).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'World controls' }));
+    api.projectEidoverseWorld.mockClear();
+    await user.selectOptions(screen.getByLabelText('Floating labels'), 'off');
+    expect(api.updateEidoverseWorldConfig).not.toHaveBeenCalled();
+    expect(api.projectEidoverseWorld).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('tab', { name: 'Districts & Data' }));
+    const legend = screen.getByRole('region', { name: 'Projected object labels' });
+    expect(within(legend).getByText('Managed app 012345')).toBeInTheDocument();
+    expect(within(legend).getByText('Fallback — available library asset')).toBeInTheDocument();
+    const alias = screen.getByLabelText('Display alias for Managed app 012345');
+    expect(alias).toHaveValue('');
+    await user.type(alias, 'Example tower');
+    api.updateEidoverseWorldConfig.mockRejectedValueOnce(new Error('Example save failure'));
+    await user.click(screen.getByRole('button', { name: 'Save and project' }));
+    expect(await screen.findByText('Example save failure')).toBeInTheDocument();
+    expect(alias).toHaveValue('Example tower');
+    expect(api.updateEidoverseWorldConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({ labelAliases: { [key]: 'Example tower' } }), { silent: true },
+    );
+    expect(api.projectEidoverseWorld).not.toHaveBeenCalled();
+    await user.clear(alias);
+    await user.click(screen.getByRole('button', { name: 'Save and project' }));
+    await waitFor(() => expect(api.updateEidoverseWorldConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({ labelAliases: {} }), { silent: true },
+    ));
+  });
+
+  it('shows a renderer update link while preserving the saved recipe on older clients', async () => {
+    const user = userEvent.setup();
+    const oldDesign = { ...design, reconciliation: { ...design.reconciliation,
+      runtimeVersion: { sha: 'example-old-build', capabilities: { objectLabels: null } } } };
+    api.projectEidoverseWorld.mockResolvedValue({ success: true, recipe, design: oldDesign });
+    renderPage();
+    await screen.findByTitle('Eidoverse Worlds');
+    await user.click(screen.getByRole('button', { name: 'World controls' }));
+    expect(await screen.findByText(/does not report object-label support/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Manage renderer updates' })).toHaveAttribute('href', '/apps/app-eidoverse/overview');
+    expect(screen.getByText('Luminous Systems Garden')).toBeInTheDocument();
   });
 
   it('keeps an unknown indicator count distinct from a projected empty world', async () => {
@@ -444,6 +501,13 @@ describe('Eidoverse hosted page', () => {
 
   it('merges a scoped reset into the draft without discarding unrelated unsaved edits', async () => {
     const user = userEvent.setup();
+    const objects = ['app', 'agent'].map((kind) => ({
+      id: `portos-design-v2-signal-${kind}-example`, kind, resourceKey: `${kind}-0123456789ab`,
+      districtId: `${kind}s`, name: `Example ${kind} signal`, visibility: 'nearby',
+      description: 'An example aggregate signal.', asset: { path: 'store/example', reason: 'user-override' },
+    }));
+    api.projectEidoverseWorld.mockResolvedValue({ success: true, recipe, design,
+      projection: { lastSummary: { ...worldResponse.projection.lastSummary, objects } } });
     renderPage();
     await screen.findByTitle('Eidoverse Worlds');
     await waitFor(() => expect(api.projectEidoverseWorld).toHaveBeenCalledOnce());
@@ -454,6 +518,8 @@ describe('Eidoverse hosted page', () => {
     await user.clear(sunHour);
     await user.type(sunHour, '8.4');
     await user.click(screen.getByRole('tab', { name: 'Districts & Data' }));
+    await user.type(screen.getByLabelText('Display alias for Example app signal'), 'Unsaved app alias');
+    await user.type(screen.getByLabelText('Display alias for Example agent signal'), 'Keep agent alias');
     const appsSection = screen.getByRole('heading', { name: 'App Terraces' }).closest('section');
     const appsLimit = within(appsSection).getByRole('spinbutton', { name: 'Cap' });
     await user.clear(appsLimit);
@@ -477,6 +543,7 @@ describe('Eidoverse hosted page', () => {
     await user.click(save);
     await waitFor(() => expect(api.updateEidoverseWorldConfig).toHaveBeenCalledTimes(2));
     const saved = api.updateEidoverseWorldConfig.mock.calls.at(-1)[0];
+    expect(saved.labelAliases).toEqual({ 'agent-0123456789ab': 'Keep agent alias' });
     expect(saved.recipe.environment.sky.hours).toBe(8.4);
     expect(saved.recipe.limits.apps).toBe(8);
   });

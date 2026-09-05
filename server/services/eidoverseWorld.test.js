@@ -969,3 +969,44 @@ describe('Eidoverse projection labels', () => {
     expect(labelFor(unavailable, entityId).description).toContain('data is stale');
   });
 });
+
+
+describe('Eidoverse saved object legend and aliases', () => {
+  it('keeps alias, asset provenance, stale retention and removal in the projection contract', () => {
+    const source = appSource();
+    const path = 'store/example-display-model';
+    const recipe = { ...DEFAULT_EIDOVERSE_PROJECTION_RECIPE, assets: { app: path } };
+    const assetResolutions = { app: { path, strategy: 'user-override', userOverride: true } };
+    const first = buildProjectionPlan({ source, recipe, assetResolutions });
+    const object = first.summary.objects.find(({ kind }) => kind === 'app');
+    expect(object).toMatchObject({
+      name: expect.stringMatching(/^Managed app /), visibility: 'nearby', route: '/apps',
+      asset: { slot: 'app', path, reason: 'user-override' },
+    });
+    const labelAliases = { [object.resourceKey]: 'Example observatory' };
+    const renamed = buildProjectionPlan({
+      source, recipe, assetResolutions, labelAliases, currentState: snapshotFromPlan(first),
+    });
+    expect(renamed.operations.filter(({ args }) => args.type === 'label')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ id: object.id, data: expect.objectContaining({ name: 'Example observatory' }) }) }),
+    ]);
+    const renamedState = snapshotFromPlan(first);
+    renamedState.entities[object.id].comp.label.name = 'Example observatory';
+    const noop = buildProjectionPlan({ source, recipe, assetResolutions, labelAliases, currentState: renamedState });
+    expect(noop.operations).toEqual([]);
+    expect(noop.summary.objects).toEqual(renamed.summary.objects);
+    const stale = buildProjectionPlan({ source: { ...source, apps: null }, recipe, assetResolutions, labelAliases, currentState: renamedState });
+    expect(stale.summary.objects.find(({ id }) => id === object.id)).toMatchObject({
+      name: 'Example observatory', description: expect.stringContaining('data is stale'),
+      asset: { path, reason: 'user-override' },
+    });
+    const mismatchedLock = buildProjectionPlan({ source: { ...source, apps: null }, recipe,
+      assetResolutions: { app: { path: 'store/example-replacement', strategy: 'preferred' } }, currentState: renamedState });
+    expect(mismatchedLock.summary.objects.find(({ id }) => id === object.id).asset.reason).toBe('unresolved');
+    const cleared = buildProjectionPlan({ source, recipe, assetResolutions, labelAliases: {}, currentState: renamedState });
+    expect(cleared.summary.objects.find(({ id }) => id === object.id).name).toBe(object.name);
+    const removed = buildProjectionPlan({ source: { ...source, apps: [] }, recipe, labelAliases, currentState: renamedState });
+    expect(removed.summary.objects.some(({ id }) => id === object.id)).toBe(false);
+    expect(removed.operations).toContainEqual({ layer: 'reconciliation', verb: 'remove', args: { id: object.id } });
+  });
+});

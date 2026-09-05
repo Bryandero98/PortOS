@@ -211,3 +211,4 @@ export * from './useVideoGenForm.js';
 export * from './useVideoGenSubmitFlow.js';
 export * from './useVideoGenValidation.js';
 export * from './useVoiceUiSync.js';
+export { default as useEidoverseFrame } from './useEidoverseFrame.js';

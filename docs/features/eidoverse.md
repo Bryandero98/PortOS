@@ -198,7 +198,7 @@ are exhausted. Catalog entries without byte metadata remain usable with
 
 ## Versioning, updates, and recovery
 
-`data/eidoverse/portos-world.json` schema V2 records
+`data/eidoverse/portos-world.json` schema V3 records
 `selectedDesignVersion`, `lastAppliedDesignVersion`, `pendingDesignVersion`,
 `userOverrides`, `assetRecipeVersion`, `assetResolutions`, `migrationReport`,
 and the reconciliation checkpoint/error. The immutable V1 and V2 registries are
@@ -316,3 +316,87 @@ The hosted page, identity bridge, projection service, and CoS tools are explicit
 PortOS adapters across the two projects' public protocols. They remain
 deterministic and install-local: opening PortOS does not call an AI provider,
 and no raw Eidoverse world log is copied to another machine by federation.
+
+
+## Object labels, aliases, and the saved legend
+
+PortOS emits a generic `comp.label` beside each owned object's `comp.portos`:
+`{name, description?, visibility: 'nearby' | 'always' | 'inspect', offset?}`.
+District and world landmarks use `always`, bounded by the renderer's range;
+live indicators use `nearby`; walkway markers use `inspect`. Ordinary refresh
+adds labels to existing worlds. One projector helper updates the label and the
+saved object legend together, including stale retained indicators. Repeating an
+unchanged projection emits no label verbs. Removed managed entities take their
+labels with them; foreign entities and their labels are preserved.
+
+**World controls → Districts & Data** shows the last successful projection by
+district: semantic name, meaning, label mode, model path, and resolution reason.
+Search matches and catalog/recipe fallbacks are explicitly called fallbacks.
+A retained model whose path differs from the current resolution lock reports
+unverified provenance. The link to **Appearance & Assets** uses the existing
+asset override, refresh, and reset controls. The legend remains readable with
+floating labels off and on older renderers.
+
+Optional aliases name individual live indicators using stable opaque resource
+keys, never private record IDs or titles. The configuration accepts at most 128
+aliases, each plain text of at most 72 characters. Clear the field to restore
+the generic label. Saving an alias explicitly publishes that display text into
+the private world's append-only history; removing it changes the current label,
+not older history. Asset resets preserve aliases; district/all resets clear the
+matching aliases. Migration 343 upgrades existing config to schema V3, preserving
+custom recipes and asset locks, and initializes an empty alias map without
+reading private records. No config seed or raw-data backfill ships. Older PortOS
+versions reject the newer config schema rather than discarding the aliases.
+
+## Renderer capabilities and frame contract V1
+
+The external Worlds checkout remains the sole renderer. This PortOS contract
+can ship before its companion implementation in
+[Worlds issue 5](https://github.com/atomantic/eidoverse-worlds/issues/5).
+End-to-end label/picking/touch/keyboard acceptance requires that companion;
+producer and frame-contract tests alone do not establish it.
+
+`GET /version` advertises independently versioned capabilities alongside its
+existing build identity:
+
+```json
+{"sha":"example-build","commitTime":"2026-01-01T00:00:00Z","capabilities":{"objectLabels":1,"portosNavigation":1,"labelPreferences":1}}
+```
+
+Missing, malformed, or unknown capability versions do not block projection.
+The drawer shows an update/reload action when label support or the frame bridge
+is unavailable. Updating the managed checkout preserves PortOS design settings,
+explicit aliases, and asset overrides. The actual frame handshake takes
+precedence over the server capability report, so a stale browser bundle cannot
+pretend it supports the updated runtime.
+
+After each iframe load, PortOS posts to its **exact hosted origin**:
+
+```json
+{"type":"portos:connect","version":1,"nonce":"fresh-opaque-session","capabilities":{"portosNavigation":1,"labelPreferences":1},"labelVisibility":"nearby"}
+```
+
+The renderer validates `event.source === parent` and the embedding PortOS origin,
+then replies to that exact origin with `eidoverse:ready`, echoing `version` and
+`nonce` and advertising its supported capabilities. The renderer must obtain
+the expected parent origin from its trusted embedding configuration; accepting
+an arbitrary opener as the parent is not sufficient. Each later message carries
+the same version and nonce. A reload invalidates the prior session. Unsupported
+clients simply ignore the handshake and continue rendering.
+
+For a user-triggered **Open in PortOS**, the renderer sends
+`{type:'eidoverse:navigate', version:1, nonce, entityId, route}`. PortOS requires
+all of: the current iframe window, its exact origin, the current nonce, a V1
+navigation-capable handshake, an entity present in the saved projection legend,
+and exact equality between the requested route and that object's known PortOS
+section route. Only the fixed source-section routes (plus `/eidoverse`) are
+allowed. URLs, query strings, encoded/relative paths, record payloads, and
+unknown entities cannot navigate. No URL proxy is exposed.
+
+Floating-label preference is browser-only: `nearby` respects authored modes,
+`all-nearby` includes inspect-only objects within the renderer's bounded range,
+and `off` hides floating labels while keeping selected-object details accessible.
+PortOS sends `portos:label-preference` with `version`, `nonce`, and
+`labelVisibility` only after the frame advertises V1 preference support. A
+preference change never sends a world verb or rewrites configuration. The
+renderer owns distance culling, object picking, and accessible selected details.

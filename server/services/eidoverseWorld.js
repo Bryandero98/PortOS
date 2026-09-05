@@ -14,6 +14,7 @@ import { WebSocket } from 'ws';
 import { atomicWrite, dataPath, ensureDir, readJSONFile } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { ServerError } from '../lib/errorHandler.js';
+import { eidoverseLabelCapabilities, normalizeEidoverseLabelAliases } from '../lib/eidoverseWorldLabels.js';
 import { canonicalStringify } from '../lib/objects.js';
 import { getSelf, ensureSelf, getInstanceId } from './instances.js';
 import { getInstanceFeatures } from './instanceFeatures.js';
@@ -84,6 +85,7 @@ const DEFAULT_STATE = {
   lastAppliedDesignVersion: null,
   pendingDesignVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
   userOverrides: {},
+  labelAliases: {},
   assetRecipeVersion: EIDOVERSE_ASSET_RECIPE_VERSION,
   assetResolutions: {},
   migrationReport: null,
@@ -320,6 +322,7 @@ function normalizeState(raw) {
           ? input.pendingDesignVersion
           : EIDOVERSE_WORLD_DESIGN_VERSION),
     userOverrides: clone(userOverrides),
+    labelAliases: normalizeEidoverseLabelAliases(input.labelAliases),
     assetRecipeVersion: EIDOVERSE_ASSET_RECIPE_VERSION,
     assetResolutions: clone(assetResolutions),
     migrationReport: input.migrationReport || migration.report || null,
@@ -386,6 +389,7 @@ function configFromState(state, presence = cosPresence) {
     },
     design: {
       name: state.recipe.name,
+      labelAliases: clone(state.labelAliases),
       selectedVersion: state.selectedDesignVersion,
       lastAppliedVersion: state.lastAppliedDesignVersion,
       pendingVersion: state.pendingDesignVersion,
@@ -497,6 +501,7 @@ export async function updateEidoverseWorldConfig(patch) {
       if (patch.cosEnabled !== undefined) state.cos.enabled = patch.cosEnabled;
       if (fullReset) {
         state.userOverrides = {};
+        state.labelAliases = {};
         state.assetResolutions = {};
         state.ownership.retired = [];
         state.human.role = null;
@@ -524,6 +529,8 @@ export async function updateEidoverseWorldConfig(patch) {
           delete state.userOverrides.limits?.[sourceKey];
         }
         for (const kind of districtKinds) delete state.userOverrides.scale?.[kind];
+        state.labelAliases = Object.fromEntries(Object.entries(state.labelAliases)
+          .filter(([key]) => !districtKinds.some((kind) => key.startsWith(`${kind}-`))));
         const districtAssetSlots = new Set([
           ...(EIDOVERSE_ASSET_SLOTS_BY_DISTRICT[district.id] || ['district']),
           ...districtKinds,
@@ -532,6 +539,10 @@ export async function updateEidoverseWorldConfig(patch) {
           delete state.userOverrides.assets?.[slot];
           delete state.assetResolutions[slot];
         }
+        designChanged = true;
+      }
+      if (patch.labelAliases !== undefined) {
+        state.labelAliases = normalizeEidoverseLabelAliases(patch.labelAliases);
         designChanged = true;
       }
       if (patch.refreshAssets) {
@@ -1198,6 +1209,7 @@ async function preflightEidoverseProtocol({ signal } = {}) {
     });
   }
   return {
+    capabilities: eidoverseLabelCapabilities(version),
     sha: safeText(version.sha, 'unknown', 80),
     commitTime: safeText(version.commitTime, 'unknown', 80),
   };
@@ -1637,6 +1649,8 @@ export async function projectEidoverseWorld({ signal } = {}) {
     const plan = buildProjectionPlan({
       source,
       recipe: lockedConfig.recipe,
+      labelAliases: lockedConfig.design.labelAliases,
+      assetResolutions: lockedConfig.design.assetResolutions,
       currentState: presence.snapshot?.state || {},
       meta: { title: lockedConfig.design.name, hostId },
     });

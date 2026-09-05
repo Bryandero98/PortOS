@@ -263,7 +263,7 @@ describe('Eidoverse private-world lifecycle', () => {
       }),
     ]));
     expect(mocks.persistedState).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       lastAppliedDesignVersion: 2,
       pendingDesignVersion: null,
       migrationReport: { status: 'applied' },
@@ -701,6 +701,32 @@ describe('Eidoverse private-world lifecycle', () => {
     expect(JSON.stringify(metaComp.args.data)).not.toContain(mocks.self.name);
   });
 
+  it('round-trips explicit aliases and the object legend across projection and reconnect', async () => {
+    mocks.appStatuses = [{ id: 'app-example', name: 'Example private title', overallStatus: 'online' }];
+    fetch.mockImplementationOnce(async () => Response.json({
+      sha: 'example-label-build', commitTime: '2026-01-01T00:00:00.000Z',
+      capabilities: { objectLabels: 1, portosNavigation: 1, labelPreferences: 99 },
+    }));
+    const first = await world.projectEidoverseWorld();
+    expect(first.design.reconciliation.runtimeVersion.capabilities).toEqual({ objectLabels: 1, portosNavigation: 1, labelPreferences: null });
+    const object = first.summary.objects.find(({ kind }) => kind === 'app');
+    expect(object).toBeDefined();
+    await world.updateEidoverseWorldConfig({ labelAliases: { [object.resourceKey]: 'Example tower' } });
+    const next = await world.projectEidoverseWorld();
+    expect(next.summary.objects.find(({ id }) => id === object.id).name).toBe('Example tower');
+    // A legacy renderer remains usable even though it advertises no label capabilities.
+    expect(next.design.reconciliation.runtimeVersion.capabilities.objectLabels).toBeNull();
+    await world.closeEidoverseWorldConnections();
+    const reloaded = await world.getEidoverseWorldStatus();
+    expect(reloaded.design.labelAliases).toEqual({ [object.resourceKey]: 'Example tower' });
+    expect(reloaded.projection.lastSummary.objects).toEqual(next.summary.objects);
+    expect(JSON.stringify(next.summary.objects)).not.toContain('Example private title');
+    await world.updateEidoverseWorldConfig({ reset: { scope: 'assets' } });
+    expect((await world.getEidoverseWorldStatus()).design.labelAliases).toEqual({ [object.resourceKey]: 'Example tower' });
+    await world.updateEidoverseWorldConfig({ reset: { scope: 'district', districtId: 'apps' } });
+    expect((await world.getEidoverseWorldStatus()).design.labelAliases).toEqual({});
+  });
+
   it('preflights and locks recipe assets before completing a V2 reconciliation', async () => {
     const result = await world.projectEidoverseWorld();
 
@@ -722,7 +748,7 @@ describe('Eidoverse private-world lifecycle', () => {
     });
     expect(Object.keys(result.design.assetResolutions)).toHaveLength(10);
     expect(mocks.persistedState).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       lastAppliedDesignVersion: 2,
       pendingDesignVersion: null,
       reconciliation: { status: 'complete' },

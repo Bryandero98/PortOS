@@ -6,10 +6,11 @@
  * resulting paths in its machine-local world state.
  */
 
+import { normalizeEidoverseLabelAliases } from './eidoverseWorldLabels.js';
 import { createHash } from 'node:crypto';
 import { canonicalStringify, deepMerge } from './objects.js';
 
-export const EIDOVERSE_WORLD_STATE_SCHEMA_VERSION = 2;
+export const EIDOVERSE_WORLD_STATE_SCHEMA_VERSION = 3;
 export const EIDOVERSE_WORLD_DESIGN_VERSION = 2;
 export const EIDOVERSE_ASSET_RECIPE_VERSION = 2;
 export const EIDOVERSE_MAX_LIVE_ENTITIES = 48;
@@ -498,7 +499,7 @@ export function migrateEidoverseWorldState(raw, { now = new Date().toISOString()
     };
   }
 
-  if (inputSchema === EIDOVERSE_WORLD_STATE_SCHEMA_VERSION) {
+  if (inputSchema >= 2) {
     const userOverrides = isObject(input.userOverrides)
       ? input.userOverrides
       : extractEidoverseDesignOverrides(input.recipe);
@@ -516,6 +517,7 @@ export function migrateEidoverseWorldState(raw, { now = new Date().toISOString()
       state: {
         ...input,
         schemaVersion: EIDOVERSE_WORLD_STATE_SCHEMA_VERSION,
+        labelAliases: normalizeEidoverseLabelAliases(input.labelAliases),
         selectedDesignVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
         assetRecipeVersion: EIDOVERSE_ASSET_RECIPE_VERSION,
         userOverrides,
@@ -548,6 +550,7 @@ export function migrateEidoverseWorldState(raw, { now = new Date().toISOString()
     state: {
       ...input,
       schemaVersion: EIDOVERSE_WORLD_STATE_SCHEMA_VERSION,
+      labelAliases: {},
       selectedDesignVersion: EIDOVERSE_WORLD_DESIGN_VERSION,
       lastAppliedDesignVersion: 1,
       pendingDesignVersion: EIDOVERSE_WORLD_DESIGN_VERSION,

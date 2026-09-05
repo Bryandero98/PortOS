@@ -30,7 +30,7 @@ describe('Eidoverse World Design V2', () => {
 
     expect(migrated.compatible).toBe(true);
     expect(migrated.state).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       selectedDesignVersion: 2,
       lastAppliedDesignVersion: 1,
       pendingDesignVersion: 2,

@@ -9,13 +9,30 @@
  *
  * Every string here is generated from PortOS's own vocabulary — district and
  * kind names, coarse status, freshness — plus an opaque hashed resource ref.
- * Nothing that could name a record, a machine, a network, or a filesystem ever
- * reaches the append-only world log, and a label describes what an object
+ * Raw private records never supply names; explicit user-authored aliases are
+ * the sole opt-in exception to generic names in the append-only world log, and a label describes what an object
  * represents rather than the decorative asset standing in for it.
  */
 
 export const EIDOVERSE_LABEL_COMPONENT_TYPE = 'label';
 export const EIDOVERSE_LABEL_VISIBILITIES = Object.freeze(['always', 'nearby', 'inspect']);
+export const EIDOVERSE_LABEL_ALIAS_KEY = /^(?:app|agent|task|feature|peer|health|productivity|activity|goal|memory|storage|jira|operations)-[0-9a-f]{12}$/;
+
+/** Only explicit display aliases belong here; never infer one from a record. */
+export function normalizeEidoverseLabelAliases(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key, alias]) => EIDOVERSE_LABEL_ALIAS_KEY.test(key) && typeof alias === 'string')
+    .slice(0, 128)
+    .map(([key, alias]) => [key, safeWorldText(alias, '', 72)])
+    .filter(([, alias]) => alias));
+}
+
+/** Feature versions, independent of the checkout SHA and world-design version. */
+export function eidoverseLabelCapabilities(version) {
+  return Object.fromEntries(['objectLabels', 'portosNavigation', 'labelPreferences']
+    .map((key) => [key, version?.capabilities?.[key] === 1 ? 1 : null]));
+}
 
 const MAX_NAME_CHARS = 72;
 const MAX_DESCRIPTION_CHARS = 240;
@@ -139,7 +156,11 @@ const LABEL_BUILDERS = Object.freeze({
  * `comp.portos` component already computed for it. Returns `null` for anything
  * PortOS does not own, so a caller can never label somebody else's entity.
  */
-export function buildEidoverseLabel(component) {
+export function buildEidoverseLabel(component, alias) {
   if (!component || component.managedBy !== 'portos') return null;
-  return (LABEL_BUILDERS[component.kind] || signalLabel)(component);
+  const result = (LABEL_BUILDERS[component.kind] || signalLabel)(component);
+  const name = EIDOVERSE_LABEL_ALIAS_KEY.test(component.resourceKey || '')
+    ? safeWorldText(alias, '', MAX_NAME_CHARS)
+    : '';
+  return result && name ? { ...result, name } : result;
 }

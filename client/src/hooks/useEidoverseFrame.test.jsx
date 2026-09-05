@@ -1,0 +1,91 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router';
+import useEidoverseFrame from './useEidoverseFrame';
+import { safeRemoveStorage } from '../lib/safeStorage';
+
+const hostUrl = 'https://world.example.com/';
+const objects = [{ id: 'portos-design-v2-signal-app-example', route: '/apps' }];
+function Harness() {
+  const frame = useEidoverseFrame(hostUrl, objects);
+  const location = useLocation();
+  return <>
+    <iframe title="Test renderer" ref={frame.frameRef} onLoad={frame.onFrameLoad} />
+    <output aria-label="Route">{location.pathname}</output>
+    <output aria-label="Bridge status">{frame.connection.status}</output>
+    <button onClick={() => frame.changeLabelVisibility('off')}>Hide labels</button>
+  </>;
+}
+const mount = () => render(<MemoryRouter initialEntries={['/eidoverse']}><Harness /></MemoryRouter>);
+const send = (source, data, extra = {}) => act(() => {
+  window.dispatchEvent(new MessageEvent('message', { source, origin: new URL(hostUrl).origin, data, ...extra }));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  safeRemoveStorage('portos-eidoverse-label-visibility');
+});
+
+describe('hosted Eidoverse frame navigation', () => {
+  it('requires the hosted window, exact origin, current handshake and projected section route', () => {
+    mount();
+    const frame = screen.getByTitle('Test renderer');
+    const source = frame.contentWindow;
+    const post = vi.spyOn(source, 'postMessage').mockImplementation(() => {});
+    fireEvent.load(frame);
+    const [hello, origin] = post.mock.calls.at(-1);
+    expect(origin).toBe('https://world.example.com');
+    expect(hello).toMatchObject({ type: 'portos:connect', version: 1, labelVisibility: 'nearby' });
+    expect(Object.keys(hello).sort()).toEqual(['capabilities', 'labelVisibility', 'nonce', 'type', 'version']);
+    const navigation = { type: 'eidoverse:navigate', version: 1, nonce: hello.nonce, entityId: objects[0].id, route: '/apps' };
+    send(source, navigation); // No handshake yet.
+    expect(screen.getByLabelText('Route')).toHaveTextContent('/eidoverse');
+    const ready = { type: 'eidoverse:ready', version: 1, nonce: hello.nonce, capabilities: { objectLabels: 1, portosNavigation: 1, labelPreferences: 1 } };
+    send(source, { ...ready, version: 0 });
+    send(source, navigation);
+    expect(screen.getByLabelText('Route')).toHaveTextContent('/eidoverse');
+    send(source, ready);
+    for (const [data, extra] of [
+      [navigation, { origin: 'https://attacker.example.com' }],
+      [navigation, { source: window }],
+      [{ ...navigation, nonce: 'old-session' }, {}],
+      [{ ...navigation, version: 99 }, {}],
+      [{ ...navigation, route: 'https://attacker.example.com/' }, {}],
+      [{ ...navigation, route: '//attacker.example.com/' }, {}],
+      [{ ...navigation, route: '/apps?redirect=https://attacker.example.com' }, {}],
+      [{ ...navigation, route: '/apps/../settings' }, {}],
+      [{ ...navigation, route: '/settings/database' }, {}],
+      [{ ...navigation, entityId: 'foreign-object' }, {}],
+    ]) {
+      send(source, data, extra);
+      expect(screen.getByLabelText('Route')).toHaveTextContent('/eidoverse');
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Hide labels' }));
+    expect(post.mock.calls.at(-1)).toEqual([{
+      type: 'portos:label-preference', version: 1, nonce: hello.nonce, labelVisibility: 'off',
+    }, origin]);
+    fireEvent.load(frame);
+    const [nextHello] = post.mock.calls.at(-1);
+    expect(nextHello.nonce).not.toBe(hello.nonce);
+    expect(nextHello.labelVisibility).toBe('off');
+    send(source, ready);
+    send(source, navigation);
+    expect(screen.getByLabelText('Route')).toHaveTextContent('/eidoverse');
+    send(source, { ...ready, nonce: nextHello.nonce });
+    send(source, { ...navigation, nonce: nextHello.nonce });
+    expect(screen.getByLabelText('Route')).toHaveTextContent('/apps');
+  });
+
+  it('marks an unresponsive older renderer unsupported without waiting in production time', () => {
+    vi.useFakeTimers();
+    const view = mount();
+    const iframe = screen.getByTitle('Test renderer');
+    vi.spyOn(iframe.contentWindow, 'postMessage').mockImplementation(() => {});
+    fireEvent.load(iframe);
+    act(() => vi.advanceTimersByTime(5000));
+    expect(screen.getByLabelText('Bridge status')).toHaveTextContent('unsupported');
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

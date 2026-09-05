@@ -301,6 +301,10 @@ export const eidoverseWorldConfigPatchSchema = z.object({
     ]),
     eidoverseModelAssetOverrideSchema,
   ).optional(),
+  labelAliases: z.record(
+    z.string().regex(/^(?:app|agent|task|feature|peer|health|productivity|activity|goal|memory|storage|jira|operations)-[0-9a-f]{12}$/),
+    z.string().trim().min(1).max(72).regex(/^[^\u0000-\u001f\u007f]+$/),
+  ).refine((aliases) => Object.keys(aliases).length <= 128, 'at most 128 display aliases may be configured').optional(),
   refreshAssets: z.boolean().optional(),
   reset: z.object({
     scope: z.enum(['all', 'assets', 'district']),
