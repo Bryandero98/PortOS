@@ -921,6 +921,35 @@ describe('persistent mind supervisor', () => {
     expect(mock.root.persistentMind.recentMessageIds).toContain('legacy');
   });
 
+  it('refuses revocation during preparation before summary or turn inference can begin', async () => {
+    withDeepPreset();
+    mock.root.config.persistentMindThinkingPresets.presets[0].effort = '';
+    mock.useActualThinkingSession = true;
+    mock.providerOverride = { id: 'example-alt', type: 'api', models: ['alt-model'] };
+    const preparing = deferred();
+    const prepare = vi.fn(async ({ profile }) => {
+      await preparing.promise;
+      return { ok: true, provider: profile.provider };
+    });
+    const run = vi.fn();
+    const summarize = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({ prepare, run, summarize });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    await supervisor.enqueuePersistentMindMessage({ id: 'revoke-during-prepare', text: 'Use the alternate.', thinkingPresetId: 'deep' });
+    const drain = supervisor.drainPersistentMind();
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+    mock.root.config.persistentMindThinkingPresets.presets = [];
+    preparing.resolve();
+    await drain;
+    expect(mock.prepareContext).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.recordUsage).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
+    expect(mock.root.persistentMind.recentMessageIds).toContain('revoke-during-prepare');
+  });
+
   it('never auto-replays a temporary session interrupted after its provider span opened', async () => {
     withDeepPreset();
     const run = vi.fn(({ signal }) => new Promise((_resolve, reject) => {

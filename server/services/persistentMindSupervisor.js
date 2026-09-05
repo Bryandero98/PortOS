@@ -969,6 +969,20 @@ async function runOnePersistentMindTurn() {
       }
       release = slot.release;
       if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
+      // Preparation and slot admission may wait. A preset revoked during those
+      // waits must be refused before even a context-summary call can begin.
+      if (thinkingPresetId) {
+        const admissionProfile = await resolvePersistentMindThinkingSession({
+          presetId: thinkingPresetId,
+          selection: turn.wake.message.thinkingPreset,
+          config: (await loadState()).config,
+        });
+        if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
+        if (!admissionProfile.ok) {
+          await parkActiveTurn(turn.id, admissionProfile.error, 'degraded', { retireWake: true });
+          return;
+        }
+      }
       // One accounted provider span covers both optional context summarization
       // and the turn itself. A local adapter must not bypass endpoint capacity
       // merely because its first inference happens while context is prepared.
