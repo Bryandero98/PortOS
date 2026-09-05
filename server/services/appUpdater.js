@@ -50,16 +50,24 @@ async function failWithGitConflict({ app, repoPath, pullResult, stepId, emit, st
   steps.push({ step: stepId, success: false, message });
   const label = app?.name || repoPath;
   const branch = pullResult.branch || 'the default branch';
+  // `app` is what routes the agent's workspace: agentWorkspacePrep resolves the
+  // cwd as `getAppWorkspace(metadata.app)`, which returns the app's PRIMARY
+  // repoPath. A companion repository has no app record of its own, so claiming
+  // the app there would spawn the agent in the wrong checkout — one that isn't
+  // even conflicted. Only the primary repo may carry it; a companion conflict
+  // runs from the default workspace and is steered by the absolute path below.
+  const isPrimaryRepo = app?.repoPath === repoPath;
   const task = {
     description: `Resolve git conflict in ${label} at ${repoPath}`,
     priority: 'HIGH',
-    app: app?.id || null,
+    app: (isPrimaryRepo && app?.id) || null,
     context: `Updating ${label} failed: the checkout could not be brought onto origin/${branch}. `
       + `A fast-forward and then a rebase with --autostash were both attempted. `
       + `Error: ${error}\n\n`
-      + `Resolve the conflict in ${repoPath} (finish or abort any in-progress rebase, reconcile the `
-      + `working tree, commit or restore the stashed work), then leave the checkout clean on `
-      + `origin/${branch} so the update can be re-run.`,
+      + `The conflicted repository is at ${repoPath}`
+      + (isPrimaryRepo ? '' : ` — a companion repository of ${label}, NOT your default workspace, so work there explicitly`)
+      + `. Finish or abort any in-progress rebase, reconcile the working tree, commit or restore the `
+      + `stashed work, then leave the checkout clean on origin/${branch} so the update can be re-run.`,
     position: 'top'
   };
   const created = await import('./cosTaskStore.js')

@@ -833,15 +833,28 @@ export async function pull(dir) {
  *   3. On conflict, abort any in-progress rebase and report `conflict: true`
  *      rather than throwing, so the caller can hand the mess to a CoS agent.
  *
- * `rebase --abort` is best-effort: a conflict raised while `--autostash`
- * re-applies the stash happens AFTER the rebase completed, so there is no
- * rebase to abort and the working tree keeps its conflict markers. That is
- * still `conflict: true` — a human or an agent has to finish it.
+ * A zero exit status is NOT enough to call the rebase clean. `--autostash`
+ * re-applies the stash after the rebase finishes, and git only WARNS when that
+ * apply conflicts ("Applying autostash resulted in conflicts") — the pull still
+ * exits 0 with conflict markers in the working tree. So a successful rebase is
+ * confirmed by asking git for unmerged paths, not by its exit code; otherwise
+ * the caller would build and restart on a broken tree. There is no rebase to
+ * abort in that state (it already completed), which is why the abort below sits
+ * on the non-zero path only.
  *
  * @param {string} dir
  * @returns {Promise<{success: boolean, branch: string, output: string, conflict: boolean, rebased?: boolean, error?: string}>}
  */
 export async function updateDefaultBranch(dir) {
+  // Git splits a failed pull across both streams — fetch progress and rebase
+  // instructions on stderr, the `CONFLICT (content): …` lines naming the files
+  // on stdout — so an `stderr || stdout` pick would drop exactly the part that
+  // says WHICH files collided from the UI message and the CoS task's context.
+  const bothStreams = (result, fallback) => [result.stdout, result.stderr]
+    .map(stream => (stream || '').trim())
+    .filter(Boolean)
+    .join('\n') || fallback;
+
   await execGit(['fetch', 'origin'], dir);
   const branch = await getDefaultBranch(dir, { strict: true });
   if (!branch) throw new ServerError('could not determine origin default branch', { status: 400, code: 'NO_DEFAULT_BRANCH' });
@@ -860,7 +873,7 @@ export async function updateDefaultBranch(dir) {
         branch,
         output,
         conflict: true,
-        error: (checkout.stderr || `could not check out ${branch}`).trim()
+        error: bothStreams(checkout, `could not check out ${branch}`)
       };
     }
   }
@@ -871,7 +884,18 @@ export async function updateDefaultBranch(dir) {
 
   const rebase = await execGit(['pull', '--rebase', '--autostash', 'origin', branch], dir, { ignoreExitCode: true });
   output += rebase.stdout + rebase.stderr;
-  if (rebase.exitCode === 0) return { success: true, branch, output, conflict: false, rebased: true };
+  if (rebase.exitCode === 0) {
+    const unmerged = await execGit(['diff', '--name-only', '--diff-filter=U'], dir, { ignoreExitCode: true });
+    const conflicted = unmerged.stdout.trim().split('\n').filter(Boolean);
+    if (!conflicted.length) return { success: true, branch, output, conflict: false, rebased: true };
+    return {
+      success: false,
+      branch,
+      output,
+      conflict: true,
+      error: `re-applying the autostashed local changes conflicted in: ${conflicted.join(', ')}`
+    };
+  }
 
   await execGit(['rebase', '--abort'], dir, { ignoreExitCode: true });
   return {
@@ -879,7 +903,7 @@ export async function updateDefaultBranch(dir) {
     branch,
     output,
     conflict: true,
-    error: (rebase.stderr || rebase.stdout || `rebase onto origin/${branch} failed`).trim()
+    error: bothStreams(rebase, `rebase onto origin/${branch} failed`)
   };
 }
 

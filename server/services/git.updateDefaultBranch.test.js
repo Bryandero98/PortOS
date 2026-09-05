@@ -54,20 +54,48 @@ describe('updateDefaultBranch', () => {
 
     expect(result).toMatchObject({ success: true, branch: 'main', conflict: false, rebased: true });
     expect(commands()).toContain('pull --rebase --autostash origin main');
+    expect(commands()).toContain('diff --name-only --diff-filter=U');
     expect(commands()).not.toContain('rebase --abort');
   });
 
   it('reports a conflict and aborts the rebase when --autostash cannot reconcile', async () => {
     withGit({
       'pull --ff-only origin main': fail('fatal: Not possible to fast-forward, aborting.'),
-      'pull --rebase --autostash origin main': fail('CONFLICT (content): Merge conflict in server/index.js')
+      // Git splits a failed pull across both streams: fetch progress on stderr,
+      // the lines naming the colliding files on stdout.
+      'pull --rebase --autostash origin main': {
+        stdout: 'CONFLICT (content): Merge conflict in server/index.js',
+        stderr: 'From github.com:example/example\nerror: could not apply 1a2b3c4',
+        exitCode: 1
+      }
     });
 
     const result = await updateDefaultBranch('/repo');
 
     expect(result).toMatchObject({ success: false, branch: 'main', conflict: true });
-    expect(result.error).toMatch(/CONFLICT/);
+    // The file that collided has to survive into the message — it is the whole
+    // actionable content of the CoS task the caller queues from this.
+    expect(result.error).toContain('CONFLICT (content): Merge conflict in server/index.js');
+    expect(result.error).toContain('could not apply 1a2b3c4');
     expect(commands()).toContain('rebase --abort');
+  });
+
+  it('reports a conflict when the autostash re-apply collides, which git exits 0 on', async () => {
+    // `--autostash` re-applies the stash AFTER the rebase finishes and git only
+    // WARNS when that apply conflicts, so exit status alone would call this a
+    // clean update and let the caller build and restart on a conflicted tree.
+    withGit({
+      'pull --ff-only origin main': fail('fatal: Not possible to fast-forward, aborting.'),
+      'pull --rebase --autostash origin main': ok('Applying autostash resulted in conflicts.'),
+      'diff --name-only --diff-filter=U': ok('server/index.js\nclient/src/App.jsx\n')
+    });
+
+    const result = await updateDefaultBranch('/repo');
+
+    expect(result).toMatchObject({ success: false, branch: 'main', conflict: true });
+    expect(result.error).toContain('server/index.js, client/src/App.jsx');
+    // The rebase already completed, so there is nothing to abort.
+    expect(commands()).not.toContain('rebase --abort');
   });
 
   it('reports a conflict when local changes block the branch switch', async () => {
@@ -80,5 +108,6 @@ describe('updateDefaultBranch', () => {
     expect(result).toMatchObject({ success: false, branch: 'main', conflict: true });
     expect(result.error).toMatch(/local changes/);
     expect(commands()).not.toContain('pull --ff-only origin main');
+    expect(commands()).not.toContain('rebase --abort');
   });
 });

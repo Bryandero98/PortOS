@@ -122,6 +122,7 @@ describe('managed app updates', () => {
       }),
       'internal',
     );
+    expect(mock.addTask.mock.calls[0][0].context).toContain('Merge conflict in server/index.js');
     // The conflict is upstream of every mutating step — nothing may run on a
     // checkout that is mid-rebase or carrying conflict markers.
     expect(mock.spawn).not.toHaveBeenCalled();
@@ -146,8 +147,15 @@ describe('managed app updates', () => {
 
     expect(result.success).toBe(false);
     expect(emit).toHaveBeenCalledWith('git-pull:companion-1', 'error', expect.stringContaining('CoS agent'));
+    // `app` routes the agent's workspace to the app's PRIMARY repoPath, so a
+    // companion conflict must NOT claim it — the agent would land in a checkout
+    // that isn't even conflicted. The absolute path steers it instead.
     expect(mock.addTask).toHaveBeenCalledWith(
-      expect.objectContaining({ description: `Resolve git conflict in Example App at ${companionRepo}` }),
+      expect.objectContaining({
+        description: `Resolve git conflict in Example App at ${companionRepo}`,
+        app: null,
+        context: expect.stringContaining(companionRepo),
+      }),
       'internal',
     );
     expect(mock.restart).not.toHaveBeenCalled();
