@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultPersistentMindState, PERSISTENT_MIND_LIMITS } from '../lib/persistentMind.js';
+import { createDefaultPersistentMindState, normalizePersistentMindState, PERSISTENT_MIND_LIMITS } from '../lib/persistentMind.js';
 import {
   __resetCosAdmissionReservations,
   acquireCosActionReservation,
@@ -26,6 +26,8 @@ const mock = vi.hoisted(() => ({
   },
   imageCapability: { status: 'supported', reason: 'Supported.' },
   thinkingSession: null,
+  useActualThinkingSession: false,
+  providerOverride: null,
 }));
 
 vi.mock('./cosState.js', () => ({
@@ -65,11 +67,17 @@ vi.mock('./persistentMindContext.js', () => ({
   preparePersistentMindContext: (...args) => mock.prepareContext(...args),
 }));
 
-vi.mock('./persistentMindProfile.js', () => ({
+vi.mock('./persistentMindProfile.js', async (importOriginal) => ({
   resolvePersistentMindProfile: vi.fn(async () => mock.profile),
-  resolvePersistentMindThinkingSession: vi.fn(async () => mock.thinkingSession),
+  resolvePersistentMindThinkingSession: vi.fn(async (input) => mock.useActualThinkingSession
+    ? (await importOriginal()).resolvePersistentMindThinkingSession(input)
+    : mock.thinkingSession),
 }));
-vi.mock('./providers.js', () => ({ getProviderById: vi.fn(async () => mock.profile.provider) }));
+vi.mock('./providers.js', () => ({ getProviderById: vi.fn(async () => mock.providerOverride || mock.profile.provider) }));
+vi.mock('./providerStatus.js', () => ({
+  isProviderAvailable: () => true,
+  getProviderStatus: () => ({}),
+}));
 vi.mock('./persistentMindImageCapability.js', () => ({
   resolvePersistentMindImageCapability: vi.fn(async () => mock.imageCapability),
   imageCapabilityAllowsAttempt: (capability, provider) => capability?.status === 'supported'
@@ -108,6 +116,8 @@ describe('persistent mind supervisor', () => {
     mock.budget = { withinBudget: true, exceeded: null };
     mock.daemonRunning = true;
     mock.updateInProgress = false;
+    mock.useActualThinkingSession = false;
+    mock.providerOverride = null;
     mock.recordUsage.mockClear();
     mock.profile = {
       ok: true,
@@ -828,8 +838,87 @@ describe('persistent mind supervisor', () => {
     expect(run).not.toHaveBeenCalled();
     expect(mock.root.persistentMind.status).toBe('degraded');
     expect(mock.root.persistentMind.pauseReason).toMatch(/Temporary thinking preset/);
-    // Nothing was spent, so the message stays queued for the user to fix the preset.
-    expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
+    // A refused route cannot revive if a preset with the same id reappears.
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
+    expect(mock.root.persistentMind.recentMessageIds).toContain('message-1');
+  });
+
+  it('pins acceptance through persistence and refuses a later preset edit without reviving a matching retry', async () => {
+    withDeepPreset();
+    mock.root.config.persistentMindThinkingPresets.presets[0].effort = '';
+    const selection = structuredClone(mock.root.config.persistentMindThinkingPresets.presets[0]);
+    mock.useActualThinkingSession = true;
+    mock.providerOverride = { id: 'example-alt', type: 'api', models: ['alt-model', 'other-model'] };
+    const run = vi.fn(async () => ({}));
+    await supervisor.registerPersistentMindTurnAdapter({ prepare: echoProfileAdapter(), run });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    await supervisor.pausePersistentMind();
+    const input = { id: 'accepted-route', text: 'Use this exact route.', thinkingPresetId: 'deep', thinkingPreset: selection };
+    expect(await supervisor.enqueuePersistentMindMessage(input)).toMatchObject({ success: true, duplicate: false });
+    expect(mock.root.persistentMind.status).toBe('paused');
+    expect(run).not.toHaveBeenCalled();
+    mock.root = JSON.parse(JSON.stringify(mock.root));
+    mock.root.persistentMind = normalizePersistentMindState(mock.root.persistentMind);
+    expect(mock.root.persistentMind.queuedMessages[0].thinkingPreset).toEqual(selection);
+    mock.root.config.persistentMindThinkingPresets.presets[0].model = 'other-model';
+    expect(await supervisor.enqueuePersistentMindMessage({ ...input, id: 'stale-display' }))
+      .toMatchObject({ success: false, code: 'THINKING_PRESET_CHANGED' });
+    expect(await supervisor.enqueuePersistentMindMessage({ ...input, thinkingPreset: { ...selection, model: 'other-model' } }))
+      .toMatchObject({ success: false, code: 'IDEMPOTENCY_CONFLICT' });
+
+    await supervisor.resumePersistentMind();
+    await supervisor.drainPersistentMind();
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind).toMatchObject({ status: 'degraded', queuedMessages: [] });
+    expect(mock.appendMindEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'mind.failed', data: expect.objectContaining({ requiresResubmission: true, consumedAttempt: false }),
+    }));
+    mock.root.config.persistentMindThinkingPresets.presets = [];
+    expect(await supervisor.enqueuePersistentMindMessage(input)).toMatchObject({ success: true, duplicate: true });
+    // Old clients send only the id. Their retry reads the accepted receipt,
+    // rather than revalidating a preset that no longer exists.
+    const { thinkingPreset: _selection, ...legacyInput } = input;
+    expect(await supervisor.enqueuePersistentMindMessage(legacyInput)).toMatchObject({ success: true, duplicate: true });
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
+    expect(mock.root.config.persistentMindProfile).toMatchObject({ providerId: 'example-cloud', model: 'example-model', effort: 'high' });
+  });
+
+  it('lets an id-only client retry after completion and a label-only edit while retaining the accepted route', async () => {
+    withDeepPreset();
+    mock.root.config.persistentMindThinkingPresets.presets[0].effort = '';
+    mock.useActualThinkingSession = true;
+    mock.providerOverride = { id: 'example-alt', type: 'api', models: ['alt-model'] };
+    const run = vi.fn(async () => ({}));
+    await supervisor.registerPersistentMindTurnAdapter({ prepare: echoProfileAdapter(), run });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    const input = { id: 'id-only', text: 'Keep the accepted model.', thinkingPresetId: 'deep' };
+    await supervisor.enqueuePersistentMindMessage(input);
+    const accepted = structuredClone(mock.root.persistentMind.queuedMessages[0].thinkingPreset);
+    mock.root.config.persistentMindThinkingPresets.presets[0].label = 'Renamed';
+    await supervisor.drainPersistentMind();
+    expect(run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: 'alt-model', effort: null }));
+    expect(mock.root.persistentMind.recentMessageFingerprints[0].thinkingPreset).toEqual(accepted);
+    mock.root.config.persistentMindThinkingPresets.presets = [];
+    expect(await supervisor.enqueuePersistentMindMessage(input)).toMatchObject({ success: true, duplicate: true });
+    expect(await supervisor.enqueuePersistentMindMessage({ ...input, thinkingPreset: { ...accepted, effort: 'high' } }))
+      .toMatchObject({ success: false, code: 'IDEMPOTENCY_CONFLICT' });
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
+  });
+
+  it('retains legacy temporary input but refuses to derive a route from current config', async () => {
+    withDeepPreset();
+    mock.useActualThinkingSession = true;
+    const run = vi.fn();
+    await supervisor.registerPersistentMindTurnAdapter({ prepare: echoProfileAdapter(), run });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    mock.root.persistentMind.queuedMessages = [{ id: 'legacy', text: 'Saved before snapshots.', thinkingPresetId: 'deep' }];
+    await supervisor.drainPersistentMind();
+    expect(run).not.toHaveBeenCalled();
+    expect(mock.root.persistentMind.pauseReason).toMatch(/no valid accepted route/);
+    expect(mock.root.persistentMind.recentMessageIds).toContain('legacy');
   });
 
   it('never auto-replays a temporary session interrupted after its provider span opened', async () => {

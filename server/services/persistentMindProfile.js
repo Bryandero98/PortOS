@@ -13,7 +13,11 @@
 
 import { effortLevelsForProvider } from '../lib/providerModels.js';
 import { normalizePersistentMindProfile } from '../lib/persistentMindProfile.js';
-import { findPersistentMindThinkingPreset } from '../lib/persistentMindThinkingPresets.js';
+import {
+  findPersistentMindThinkingPreset,
+  normalizePersistentMindThinkingSelection,
+  samePersistentMindThinkingSelection,
+} from '../lib/persistentMindThinkingPresets.js';
 import { getProviderById } from './providers.js';
 import { getProviderStatus, isProviderAvailable } from './providerStatus.js';
 
@@ -25,7 +29,7 @@ const providerModelIds = (provider) => (provider?.models || [])
  * Validate one exact provider/model/effort selection against the live registry.
  * Every failure is a refusal: nothing here may substitute a nearby route.
  */
-async function resolveExactRoute({ providerId, model, effort, noun, incompleteError }) {
+async function resolveExactRoute({ providerId, model, effort, noun, incompleteError, requireCatalog = false }) {
   if (!providerId || !model) return { ok: false, error: incompleteError };
 
   const provider = await getProviderById(providerId);
@@ -38,7 +42,7 @@ async function resolveExactRoute({ providerId, model, effort, noun, incompleteEr
   }
 
   const models = providerModelIds(provider);
-  if (models.length > 0 && !models.includes(model)) {
+  if ((requireCatalog || models.length > 0) && !models.includes(model)) {
     return { ok: false, error: `${noun} model "${model}" is not available from provider "${provider.id}"` };
   }
   const supportedEfforts = effortLevelsForProvider(provider, model);
@@ -75,17 +79,25 @@ export async function resolvePersistentMindProfile(rawProfile) {
  * dropped is a refusal — the turn must not quietly answer on the default route
  * the user was deliberately stepping away from.
  */
-export async function resolvePersistentMindThinkingSession({ presetId, config } = {}) {
+export async function resolvePersistentMindThinkingSession({ presetId, selection, config } = {}) {
   const profile = normalizePersistentMindProfile(config?.persistentMindProfile);
   if (!profile.enabled) return { ok: false, error: 'Persistent mind profile is disabled' };
   const preset = findPersistentMindThinkingPreset(config?.persistentMindThinkingPresets, presetId);
   if (!preset) {
     return { ok: false, error: `Temporary thinking preset "${presetId}" is no longer available` };
   }
+  const accepted = normalizePersistentMindThinkingSelection(selection);
+  if (!accepted || accepted.id !== presetId) {
+    return { ok: false, error: 'Temporary thinking session has no valid accepted route; send a new message to authorize it' };
+  }
+  if (!samePersistentMindThinkingSelection(accepted, preset)) {
+    return { ok: false, error: 'Temporary thinking preset changed after acceptance; send a new message to authorize its new route' };
+  }
   const route = await resolveExactRoute({
-    providerId: preset.providerId,
-    model: preset.model,
-    effort: preset.effort,
+    providerId: accepted.providerId,
+    model: accepted.model,
+    effort: accepted.effort,
+    requireCatalog: true,
     noun: `Temporary thinking preset "${preset.label}"`,
     // Unreachable: normalization drops a preset without both, so this is the
     // belt-and-braces refusal rather than a route the resolver could invent.
@@ -96,7 +108,7 @@ export async function resolvePersistentMindThinkingSession({ presetId, config } 
     ...route,
     temporary: true,
     presetId: preset.id,
-    presetLabel: preset.label,
+    presetLabel: accepted.label || preset.label,
     thinkingInterface: profile.thinkingInterface,
   };
 }

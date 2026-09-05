@@ -24,6 +24,7 @@ import {
   nextPersistentMindWakeAt,
   normalizePersistentMindState,
   persistentMindMessageFingerprint,
+  persistentMindMessageReceipt,
   persistentMindBackoffMs,
   persistentMindTurnIsStale,
   persistentMindWakeConsumesAttempt,
@@ -55,6 +56,8 @@ import { normalizePersistentMindProfile, persistentMindWakeIntervalMs } from '..
 import { getProviderById } from './providers.js';
 import {
   findPersistentMindThinkingPreset,
+  normalizePersistentMindThinkingSelection,
+  samePersistentMindThinkingSelection,
   PERSISTENT_MIND_THINKING_PRESET_LIMITS,
 } from '../lib/persistentMindThinkingPresets.js';
 import {
@@ -140,13 +143,13 @@ const claimedAttachmentsForMessage = (mind, messageId) => mind.pendingAttachment
   ))
   .map(({ attachment }) => attachment);
 
-const messageFromAttachments = ({ id, text, createdAt, attachments, thinkingPresetId }) => ({
+const messageFromAttachments = ({ id, text, createdAt, attachments, thinkingPresetId, thinkingPreset }) => ({
   id,
   text,
   ...(attachments.length > 0 ? {
     images: attachments.map(normalizePersistentMindMessageImage).filter(Boolean),
   } : {}),
-  ...(thinkingPresetId ? { thinkingPresetId } : {}),
+  ...(thinkingPresetId ? { thinkingPresetId, thinkingPreset: thinkingPreset || null } : {}),
   createdAt,
 });
 
@@ -581,15 +584,15 @@ async function interruptActiveTurn(reason, status, { retry = false, expectedTurn
  *
  * `consumedAttempt` says the provider span had already opened, so a temporary
  * thinking session must not be replayed automatically. Every refusal decided
- * before that point — an unresolvable route, an unavailable adapter, a busy
- * local endpoint — spent nothing and still requeues normally.
+ * before that point normally requeues. A refused temporary route is explicitly
+ * retired too: changing a preset back later must not resurrect refused work.
  */
-async function parkActiveTurn(turnId, reason, status = 'waiting', { retryAt = null, consumedAttempt = false } = {}) {
+async function parkActiveTurn(turnId, reason, status = 'waiting', { retryAt = null, consumedAttempt = false, retireWake = false } = {}) {
   const result = await mutateMindState((mind) => {
     if (mind.activeTurn?.id !== turnId) return { mind, value: false };
-    // A refusal decided before the provider span opened spent nothing, so it
-    // requeues even for a temporary session.
-    const held = consumedAttempt && persistentMindWakeConsumesAttempt(mind.activeTurn.wake);
+    // Transport/slot waits may retry; a revoked route or uncertain inference
+    // requires a fresh user submission.
+    const held = (consumedAttempt || retireWake) && persistentMindWakeConsumesAttempt(mind.activeTurn.wake);
     const next = held
       ? holdPersistentMindWake(mind, mind.activeTurn.wake)
       : requeuePersistentMindWake(mind, mind.activeTurn.wake);
@@ -612,7 +615,7 @@ async function parkActiveTurn(turnId, reason, status = 'waiting', { retryAt = nu
     mindId: result.state.mindId,
     turnId,
     eventId: `mind-failed:${turnId}:${status}`,
-    data: { status, error: reason, retryAt, consumedAttempt: result.value === true },
+    data: { status, error: reason, retryAt, consumedAttempt: consumedAttempt && result.value === true, requiresResubmission: result.value === true },
   });
   emitMindStatus(result.state);
   return result.state;
@@ -718,18 +721,14 @@ async function completeTurn(turnId, result, generation) {
     const messageId = mind.activeTurn.wake.kind === 'message'
       ? mind.activeTurn.wake.message.id
       : null;
-    const messageFingerprint = messageId
-      ? persistentMindMessageFingerprint(mind.activeTurn.wake.message)
-      : null;
     const recentMessageIds = messageId
       ? [...mind.recentMessageIds.filter((id) => id !== messageId), messageId]
         .slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS)
       : mind.recentMessageIds;
     const recentMessageFingerprints = messageId
-      ? [...mind.recentMessageFingerprints.filter((entry) => entry.id !== messageId), {
-          id: messageId,
-          fingerprint: messageFingerprint,
-        }].slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS)
+      ? [...mind.recentMessageFingerprints.filter((entry) => entry.id !== messageId),
+          persistentMindMessageReceipt(mind.activeTurn.wake.message),
+        ].slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS)
       : mind.recentMessageFingerprints;
     const quietPeriodMs = persistentMindWakeIntervalMs(root.config?.persistentMindProfile);
     const quietDeadline = Date.parse(completedAt) + quietPeriodMs;
@@ -915,11 +914,16 @@ async function runOnePersistentMindTurn() {
       const thinkingPresetId = turn.wake.kind === 'message'
         ? turn.wake.message.thinkingPresetId || null
         : null;
+      const routeConfig = (await loadState()).config;
       const profile = thinkingPresetId
-        ? await resolvePersistentMindThinkingSession({ presetId: thinkingPresetId, config: root.config })
-        : await resolvePersistentMindProfile(root.config?.persistentMindProfile);
+        ? await resolvePersistentMindThinkingSession({
+            presetId: thinkingPresetId,
+            selection: turn.wake.message.thinkingPreset,
+            config: routeConfig,
+          })
+        : await resolvePersistentMindProfile(routeConfig?.persistentMindProfile);
       if (!profile.ok) {
-        await parkActiveTurn(turn.id, profile.error, 'degraded');
+        await parkActiveTurn(turn.id, profile.error, 'degraded', { retireWake: Boolean(thinkingPresetId) });
         return;
       }
       // Adapters receive the exact profile. They may prepare their text
@@ -1284,6 +1288,7 @@ export async function enqueuePersistentMindMessage({
   text,
   images,
   thinkingPresetId,
+  thinkingPreset,
   createdAt = nowIso(),
 } = {}) {
   const messageId = typeof id === 'string' ? id.trim().slice(0, 200) : '';
@@ -1295,37 +1300,15 @@ export async function enqueuePersistentMindMessage({
   if (!messageId || attachmentIds === null || (!messageText && attachmentIds.length === 0)) {
     return attachmentFailure('Message id and text or at least one image are required', { code: 'VALIDATION_ERROR' });
   }
-  if (presetId || attachmentIds.length > 0) {
-    const root = await loadState();
-    const profile = normalizePersistentMindProfile(root.config?.persistentMindProfile);
-    // Admission reads the saved preset list only — a lookup, never a provider
-    // call, model pull, or generation. Selecting a model must stay free.
-    const preset = presetId
-      ? findPersistentMindThinkingPreset(root.config?.persistentMindThinkingPresets, presetId)
-      : null;
-    if (presetId && !preset) {
-      return attachmentFailure(`Temporary thinking preset "${presetId}" is not available`, {
-        code: 'THINKING_PRESET_UNAVAILABLE',
-        status: 422,
-      });
-    }
-    if (attachmentIds.length > 0) {
-      // Images are checked against the route this message will actually take,
-      // so a text-only alternate cannot accept an image it can never read.
-      const routeProviderId = preset ? preset.providerId : profile.providerId;
-      const routeModel = preset ? preset.model : profile.model;
-      const provider = routeProviderId ? await getProviderById(routeProviderId) : null;
-      const imageCapability = await resolvePersistentMindImageCapability({ provider, model: routeModel });
-      if (!imageCapabilityAllowsAttempt(imageCapability, provider)) {
-        return attachmentFailure(imageCapability.reason, { code: 'IMAGE_CAPABILITY_UNSUPPORTED', status: 422 });
-      }
-    }
+  const submittedSelection = normalizePersistentMindThinkingSelection(thinkingPreset);
+  if (thinkingPreset !== undefined && (!submittedSelection || submittedSelection.id !== presetId)) {
+    return attachmentFailure('A temporary selection must include the exact preset, provider, model and effort', { code: 'VALIDATION_ERROR' });
   }
   const messageCreatedAt = typeof createdAt === 'string' && Number.isFinite(Date.parse(createdAt))
     ? new Date(createdAt).toISOString()
     : nowIso();
   await cleanupPersistentMindAttachments();
-  const result = await mutateMindState(async (mind) => {
+  const result = await mutateMindState(async (mind, root) => {
     if (attachmentIds.length > 0 && isUpdateInProgress()) {
       return {
         mind,
@@ -1338,12 +1321,15 @@ export async function enqueuePersistentMindMessage({
     const existingMessage = findMessageById(mind, messageId);
     const claimedRecords = claimedAttachmentsForMessage(mind, messageId);
     const duplicate = Boolean(existingMessage) || mind.recentMessageIds.includes(messageId);
+    const recentReceipt = mind.recentMessageFingerprints.find((entry) => entry.id === messageId);
+    const acceptedSelection = existingMessage?.thinkingPreset || recentReceipt?.thinkingPreset || null;
     const requestedFingerprint = persistentMindMessageFingerprint({
       text: messageText,
       images: attachmentIds,
       thinkingPresetId: presetId,
+      thinkingPreset: submittedSelection || acceptedSelection,
     });
-    const recentFingerprint = mind.recentMessageFingerprints.find((entry) => entry.id === messageId)?.fingerprint;
+    const recentFingerprint = recentReceipt?.fingerprint;
     const existingImageIds = existingMessage
       ? imageIdsForMessage(existingMessage)
       : claimedRecords.map((attachment) => attachment.attachmentId);
@@ -1384,6 +1370,16 @@ export async function enqueuePersistentMindMessage({
           }),
         };
       }
+      if (existingMessage && submittedSelection
+          && !samePersistentMindThinkingSelection(submittedSelection, acceptedSelection)) {
+        return {
+          mind,
+          value: attachmentFailure('A retry must use the same accepted thinking route', {
+            code: 'IDEMPOTENCY_CONFLICT',
+            status: 409,
+          }),
+        };
+      }
       if (!sameAttachmentIds(existingImageIds, attachmentIds)) {
         return {
           mind,
@@ -1407,9 +1403,33 @@ export async function enqueuePersistentMindMessage({
             createdAt: messageCreatedAt,
             attachments: resolved.attachments,
             thinkingPresetId: presetId,
+            thinkingPreset: acceptedSelection,
           }),
         },
       };
+    }
+    // Resolve new admissions inside the same state update that accepts them.
+    // Matching retries above use their receipt, even if the preset was revoked.
+    const selection = presetId
+      ? findPersistentMindThinkingPreset(root.config?.persistentMindThinkingPresets, presetId)
+      : null;
+    if (presetId && !selection) {
+      return { mind, value: attachmentFailure('The temporary thinking preset is unavailable', {
+        code: 'THINKING_PRESET_UNAVAILABLE', status: 422,
+      }) };
+    }
+    if (submittedSelection && !samePersistentMindThinkingSelection(submittedSelection, selection)) {
+      return { mind, value: attachmentFailure('The displayed preset changed; select its current route before sending', {
+        code: 'THINKING_PRESET_CHANGED', status: 409,
+      }) };
+    }
+    if (attachmentIds.length > 0) {
+      const profile = selection || normalizePersistentMindProfile(root.config?.persistentMindProfile);
+      const provider = profile.providerId ? await getProviderById(profile.providerId) : null;
+      const capability = await resolvePersistentMindImageCapability({ provider, model: profile.model });
+      if (!imageCapabilityAllowsAttempt(capability, provider)) {
+        return { mind, value: attachmentFailure(capability.reason, { code: 'IMAGE_CAPABILITY_UNSUPPORTED', status: 422 }) };
+      }
     }
     if (claimedRecords.length > 0 && !sameAttachmentIds(
       claimedRecords.map((attachment) => attachment.attachmentId),
@@ -1455,6 +1475,7 @@ export async function enqueuePersistentMindMessage({
       createdAt: messageCreatedAt,
       attachments: resolved.attachments,
       thinkingPresetId: presetId,
+      thinkingPreset: selection,
     });
     return {
       mind: {
@@ -1481,6 +1502,7 @@ export async function enqueuePersistentMindMessage({
         displayText: acceptedMessage.text,
         textChars: acceptedMessage.text.length,
         thinkingPresetId: acceptedMessage.thinkingPresetId || null,
+        thinkingPreset: acceptedMessage.thinkingPreset || null,
         imageCount: Array.isArray(acceptedMessage.images) ? acceptedMessage.images.length : 0,
         images: Array.isArray(acceptedMessage.images)
           ? acceptedMessage.images.map(normalizePersistentMindMessageImage).filter(Boolean)

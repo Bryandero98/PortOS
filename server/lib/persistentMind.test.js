@@ -279,7 +279,7 @@ describe('persistent mind state', () => {
     // Hand-edited or downgraded state cannot smuggle in an unusable selection.
     expect(normalizePersistentMindState({
       enabled: true, started: true, queuedMessages: [{ ...message, thinkingPresetId: '../escape' }],
-    }).queuedMessages[0].thinkingPresetId).toBeUndefined();
+    }).queuedMessages[0]).toMatchObject({ thinkingPresetId: 'invalid-preset', thinkingPreset: null });
 
     // The selection is content: the same text on another model is a different
     // request, but a message without one must hash exactly as it always did.

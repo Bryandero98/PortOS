@@ -6,6 +6,7 @@ import {
   normalizePersistentMindThinkingPresets,
   PERSISTENT_MIND_THINKING_PRESET_LIMITS,
   persistentMindThinkingPresetsSchema,
+  persistentMindThinkingSelectionSchema,
 } from './persistentMindThinkingPresets.js';
 
 const preset = (overrides = {}) => ({
@@ -41,8 +42,12 @@ describe('persistent mind thinking presets', () => {
     const { presets } = normalizePersistentMindThinkingPresets({
       presets: [preset({ effort: 'turbo' }), preset({ id: 'plain', label: '  ', effort: undefined })],
     });
-    expect(presets[0].effort).toBe('');
-    expect(presets[1]).toMatchObject({ label: 'example-provider / example-model', effort: '' });
+    expect(presets).toHaveLength(1);
+    expect(presets[0]).toMatchObject({ label: 'example-provider / example-model', effort: '' });
+    const longRoute = normalizePersistentMindThinkingPresets({
+      presets: [preset({ providerId: 'p'.repeat(100), model: 'm'.repeat(200), label: '' })],
+    }).presets[0];
+    expect(persistentMindThinkingSelectionSchema.safeParse(longRoute).success).toBe(true);
   });
 
   it('keeps the first of a duplicated id and caps the stored list', () => {

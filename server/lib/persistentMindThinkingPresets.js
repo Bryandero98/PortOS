@@ -38,6 +38,23 @@ export const persistentMindThinkingPresetSchema = z.object({
   effort: z.union([z.literal(''), z.enum(EFFORT_LEVELS)]).optional(),
 }).strict();
 
+// Accepted messages require an explicit effort sentinel too: a missing field
+// on an old/partial record is not permission to use the provider default.
+export const persistentMindThinkingSelectionSchema = persistentMindThinkingPresetSchema
+  .required({ effort: true });
+
+export function normalizePersistentMindThinkingSelection(value) {
+  const parsed = persistentMindThinkingSelectionSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Labels are presentation; only the exact route participates in consent. */
+export function samePersistentMindThinkingSelection(left, right) {
+  const a = normalizePersistentMindThinkingSelection(left);
+  const b = normalizePersistentMindThinkingSelection(right);
+  return Boolean(a && b && ['id', 'providerId', 'model', 'effort'].every((key) => a[key] === b[key]));
+}
+
 export const persistentMindThinkingPresetsSchema = z.object({
   schemaVersion: z.literal(PERSISTENT_MIND_THINKING_PRESETS_SCHEMA_VERSION).optional(),
   // A list PATCH replaces the whole list: there is no stable way to express
@@ -67,20 +84,18 @@ export function asPersistentMindThinkingPresetId(value) {
   return ID_PATTERN.test(id) ? id : null;
 }
 
+const storedThinkingPresetSchema = persistentMindThinkingPresetSchema.strip();
+
 const sanitizePreset = (value) => {
-  const id = asPersistentMindThinkingPresetId(value?.id);
-  const providerId = text(value?.providerId, PERSISTENT_MIND_THINKING_PRESET_LIMITS.PROVIDER_ID_MAX);
-  const model = text(value?.model, PERSISTENT_MIND_THINKING_PRESET_LIMITS.MODEL_MAX);
-  // A preset without an exact route cannot be resolved without inventing one,
-  // so it is dropped rather than stored as a half-pin.
-  if (!id || !providerId || !model) return null;
-  const effort = text(value?.effort, 20);
+  const parsed = storedThinkingPresetSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const { id, providerId, model, effort = '', label } = parsed.data;
   return {
     id,
-    label: text(value?.label, PERSISTENT_MIND_THINKING_PRESET_LIMITS.LABEL_MAX) || `${providerId} / ${model}`,
+    label: label || text(`${providerId} / ${model}`, PERSISTENT_MIND_THINKING_PRESET_LIMITS.LABEL_MAX),
     providerId,
     model,
-    effort: EFFORT_LEVELS.includes(effort) ? effort : '',
+    effort,
   };
 };
 

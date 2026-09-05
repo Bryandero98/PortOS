@@ -74,7 +74,7 @@ describe('resolvePersistentMindThinkingSession', () => {
   });
 
   it('borrows one exact alternate route while the mind keeps its own identity', async () => {
-    await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', config })).resolves.toMatchObject({
+    await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', selection: config.persistentMindThinkingPresets.presets[0], config })).resolves.toMatchObject({
       ok: true,
       temporary: true,
       presetId: 'deep',
@@ -89,13 +89,13 @@ describe('resolvePersistentMindThinkingSession', () => {
   it('refuses instead of quietly answering on the default the user stepped away from', async () => {
     await expect(resolvePersistentMindThinkingSession({ presetId: 'removed', config })).resolves
       .toEqual({ ok: false, error: 'Temporary thinking preset "removed" is no longer available' });
-    await expect(resolvePersistentMindThinkingSession({ presetId: 'retired', config })).resolves
+    await expect(resolvePersistentMindThinkingSession({ presetId: 'retired', selection: config.persistentMindThinkingPresets.presets[1], config })).resolves
       .toMatchObject({ ok: false, error: /not available from provider/ });
-    await expect(resolvePersistentMindThinkingSession({ presetId: 'strained', config })).resolves
+    await expect(resolvePersistentMindThinkingSession({ presetId: 'strained', selection: config.persistentMindThinkingPresets.presets[2], config })).resolves
       .toMatchObject({ ok: false, error: /not supported/ });
 
     mocks.available = false;
-    await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', config })).resolves
+    await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', selection: config.persistentMindThinkingPresets.presets[0], config })).resolves
       .toEqual({ ok: false, error: 'offline' });
   });
 
@@ -104,5 +104,22 @@ describe('resolvePersistentMindThinkingSession', () => {
       presetId: 'deep',
       config: { ...config, persistentMindProfile: { ...profile, enabled: false } },
     })).resolves.toEqual({ ok: false, error: 'Persistent mind profile is disabled' });
+  });
+
+  it('refuses missing/malformed consent, route edits, and an empty provider catalog', async () => {
+    const selection = config.persistentMindThinkingPresets.presets[0];
+    for (const changed of [
+      undefined,
+      { ...selection, effort: 'invalid' },
+      { ...selection, providerId: 'another-provider' },
+      { ...selection, model: 'another-model' },
+      { ...selection, effort: 'high' },
+    ]) {
+      await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', selection: changed, config }))
+        .resolves.toMatchObject({ ok: false });
+    }
+    mocks.provider.models = [];
+    await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', selection, config }))
+      .resolves.toMatchObject({ ok: false, error: /not available/ });
   });
 });

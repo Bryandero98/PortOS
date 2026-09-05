@@ -11,9 +11,12 @@ import { PERSISTENT_MIND_ID } from './persistentMindTrajectory.js';
 import { MAX_SCREENSHOT_BYTES } from './uploadLimits.js';
 import { sanitizeFilename } from './mimeTypes.js';
 import { isSafeFilename } from './pathSafety.js';
-import { asPersistentMindThinkingPresetId } from './persistentMindThinkingPresets.js';
+import {
+  asPersistentMindThinkingPresetId,
+  normalizePersistentMindThinkingSelection,
+} from './persistentMindThinkingPresets.js';
 
-export const PERSISTENT_MIND_SCHEMA_VERSION = 6;
+export const PERSISTENT_MIND_SCHEMA_VERSION = 7;
 
 export const PERSISTENT_MIND_IMAGE_EXTENSIONS = Object.freeze(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 export const PERSISTENT_MIND_IMAGE_MIME_TYPES = Object.freeze({
@@ -190,13 +193,27 @@ export function persistentMindMessageFingerprint(value) {
       .filter(Boolean)
     : [];
   const thinkingPresetId = asPersistentMindThinkingPresetId(value?.thinkingPresetId);
+  const selection = normalizePersistentMindThinkingSelection(value?.thinkingPreset);
   return createHash('sha256')
     .update(JSON.stringify({
       text: asBoundedString(value?.text, PERSISTENT_MIND_LIMITS.MAX_MESSAGE_CHARS),
       images,
       ...(thinkingPresetId ? { thinkingPresetId } : {}),
+      ...(thinkingPresetId && selection ? {
+        thinkingPreset: { id: selection.id, providerId: selection.providerId, model: selection.model, effort: selection.effort },
+      } : {}),
     }))
     .digest('hex');
+}
+
+/** Retain the accepted selection so id-only clients can retry after revocation. */
+export function persistentMindMessageReceipt(message) {
+  const selection = normalizePersistentMindThinkingSelection(message?.thinkingPreset);
+  return {
+    id: message.id,
+    fingerprint: persistentMindMessageFingerprint(message),
+    ...(selection ? { thinkingPreset: selection } : {}),
+  };
 }
 
 /** Build the safe upload response without exposing claim bookkeeping. */
@@ -236,7 +253,12 @@ const sanitizeMessage = (value) => {
     // Absent on every ordinary message. Kept on the durable queued/active record
     // so a requeue or a restart replays the route the user actually chose,
     // instead of quietly answering on the home profile.
-    ...(thinkingPresetId ? { thinkingPresetId } : {}),
+    ...(thinkingPresetId || value?.thinkingPresetId || value?.thinkingPreset ? {
+      thinkingPresetId: thinkingPresetId || 'invalid-preset',
+      thinkingPreset: thinkingPresetId
+        ? normalizePersistentMindThinkingSelection(value?.thinkingPreset)
+        : null,
+    } : {}),
     createdAt: asIso(value?.createdAt) || new Date(0).toISOString(),
   };
 };
@@ -344,7 +366,8 @@ export function normalizePersistentMindState(raw) {
     const fingerprint = asFingerprint(candidate?.fingerprint);
     if (!id || !fingerprint || seenFingerprintIds.has(id)) continue;
     seenFingerprintIds.add(id);
-    recentMessageFingerprints.push({ id, fingerprint });
+    const selection = normalizePersistentMindThinkingSelection(candidate?.thinkingPreset);
+    recentMessageFingerprints.push({ id, fingerprint, ...(selection ? { thinkingPreset: selection } : {}) });
   }
   const callHistory = [];
   for (const candidate of Array.isArray(source.callHistory) ? source.callHistory : []) {
@@ -384,10 +407,7 @@ export function normalizePersistentMindState(raw) {
           const queuedIndex = queuedMessages.findIndex((queued) => queued.id === message.id);
           if (queuedIndex >= 0) queuedMessages.splice(queuedIndex, 1);
           recentMessageIds.push(message.id);
-          recentMessageFingerprints.push({
-            id: message.id,
-            fingerprint: persistentMindMessageFingerprint(message),
-          });
+          recentMessageFingerprints.push(persistentMindMessageReceipt(message));
         } else if (!seenQueued.has(message.id)) {
           queuedMessages.unshift(message);
           if (queuedMessages.length > PERSISTENT_MIND_LIMITS.MAX_QUEUED_MESSAGES) queuedMessages.pop();
@@ -525,7 +545,7 @@ export function holdPersistentMindWake(raw, wake) {
       .slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS),
     recentMessageFingerprints: [
       ...state.recentMessageFingerprints.filter((entry) => entry.id !== id),
-      { id, fingerprint: persistentMindMessageFingerprint(sanitized.message) },
+      persistentMindMessageReceipt(sanitized.message),
     ].slice(-PERSISTENT_MIND_LIMITS.MAX_RECENT_MESSAGE_IDS),
   };
 }

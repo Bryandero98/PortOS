@@ -22,6 +22,7 @@ import { normalizePersistentMindProfile } from '../lib/persistentMindProfile.js'
 import {
   normalizePersistentMindThinkingPresets,
   persistentMindThinkingPresetSchema,
+  persistentMindThinkingSelectionSchema,
 } from '../lib/persistentMindThinkingPresets.js';
 import { normalizePersistentMindPrompt } from '../lib/persistentMindPrompt.js';
 import { publicPersistentMindState } from '../lib/persistentMindPublic.js';
@@ -90,7 +91,11 @@ const messageSchema = z.object({
     z.literal(''),
     z.null(),
   ]).optional(),
+  thinkingPreset: persistentMindThinkingSelectionSchema.optional(),
 }).strict().superRefine((value, ctx) => {
+  if (value.thinkingPreset && value.thinkingPreset.id !== value.thinkingPresetId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['thinkingPreset'], message: 'The displayed selection must match thinkingPresetId' });
+  }
   const images = Array.isArray(value.images) ? value.images : [];
   const ids = images.map((image) => typeof image === 'string' ? image : image.attachmentId);
   if (!value.text && ids.length === 0) {
