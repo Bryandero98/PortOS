@@ -21,16 +21,32 @@ export const videoHoldSchema = z.object({
 export function createVideoHolds() {
   const holds = new Map();
   const streaks = new Map();
+  let recoveryHold = null;
+  const holdFor = (cohort) => recoveryHold || (cohort && holds.get(cohortKey(cohort)));
+  const clear = () => { holds.clear(); streaks.clear(); recoveryHold = null; };
   return {
-    restore(value = []) {
-      const result = z.array(videoHoldSchema).safeParse(value);
-      if (!result.success) return false;
-      for (const hold of result.data) holds.set(cohortKey(hold), hold);
-      return true;
+    restore(value) {
+      const entries = value ?? [];
+      let readable = Array.isArray(entries);
+      for (const entry of readable ? entries : []) {
+        const result = videoHoldSchema.safeParse(entry);
+        if (result.success) holds.set(cohortKey(result.data), result.data);
+        else readable = false;
+      }
+      if (!readable) {
+        // Unknown hold metadata cannot identify a safe local video cohort.
+        // Cover all local video, including new submissions, while other kinds
+        // recover normally. The queue latches persistence off to preserve the
+        // original file; this recovery hold exists only in this process.
+        recoveryHold = { id: randomUUID(), scope: 'local-video', modelId: '*', runtime: '*',
+          classification: 'invalid-hold-metadata', heldAt: new Date().toISOString(),
+          cause: 'Saved video holds are damaged. Repair the queue snapshot and restart to restore persistence. Resume releases all local video holds for this session.' };
+      }
+      return readable;
     },
-    snapshot: () => [...holds.values()],
-    has: (cohort) => holds.has(cohortKey(cohort)),
-    clear() { holds.clear(); streaks.clear(); },
+    snapshot: () => recoveryHold ? [recoveryHold] : [...holds.values()],
+    has: (cohort) => Boolean(holdFor(cohort)),
+    clear,
     async resolveCohorts(jobs) {
       const local = jobs.filter(isLocalVideo);
       if (!local.length) return;
@@ -51,13 +67,12 @@ export function createVideoHolds() {
     updateQueued(jobs) {
       const counts = new Map();
       for (const job of jobs) {
-        const key = job.videoCohort && cohortKey(job.videoCohort);
-        if (isLocalVideo(job) && holds.has(key)) counts.set(key, (counts.get(key) || 0) + 1);
+        const hold = isLocalVideo(job) && holdFor(job.videoCohort);
+        if (hold) counts.set(hold.id, (counts.get(hold.id) || 0) + 1);
       }
       for (const job of jobs) {
-        const key = job.videoCohort && cohortKey(job.videoCohort);
-        job.hold = isLocalVideo(job) && holds.has(key)
-          ? { ...holds.get(key), heldJobCount: counts.get(key) } : undefined;
+        const hold = isLocalVideo(job) && holdFor(job.videoCohort);
+        job.hold = hold ? { ...hold, heldJobCount: counts.get(hold.id) } : undefined;
       }
     },
     captureFailure(job, error, { code, failure } = {}) {
@@ -82,6 +97,7 @@ export function createVideoHolds() {
       }
     },
     resume(id) {
+      if (recoveryHold?.id === id) { clear(); return true; }
       const entry = [...holds].find(([, hold]) => hold.id === id);
       if (!entry) return false;
       holds.delete(entry[0]);

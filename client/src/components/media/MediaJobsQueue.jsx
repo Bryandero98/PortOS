@@ -297,12 +297,12 @@ export default function MediaJobsQueue({ kind, recentLimit = 10, className = '' 
       {holds.map((hold) => (
         <div key={hold.id} role="status" className="rounded border border-port-warning/30 bg-port-warning/10 p-3 text-sm">
           <div className="font-medium text-port-warning">{hold.heldJobCount} video job{hold.heldJobCount === 1 ? '' : 's'} held</div>
-          <div className="text-xs text-port-text-muted break-words">{hold.modelId} · {hold.runtime}</div>
+          <div className="text-xs text-port-text-muted break-words">{hold.scope === 'local-video' ? 'All local video' : `${hold.modelId} · ${hold.runtime}`}</div>
           <p className="mt-1 break-words">{hold.cause}</p>
-          <p className="mt-1 text-xs text-port-text-muted">Three matching failures. Repair the runtime, then resume the retained jobs.</p>
+          {hold.scope !== 'local-video' && <p className="mt-1 text-xs text-port-text-muted">Three matching failures. Repair the runtime, then resume the retained jobs.</p>}
           <button type="button" disabled={resumingHold !== null} onClick={() => handleResume(hold.id)}
             className="mt-2 min-h-[44px] rounded border border-port-border px-3 py-2 text-sm hover:bg-port-border disabled:opacity-50">
-            {resumingHold === hold.id ? 'Resuming…' : 'Resume'}
+            {resumingHold === hold.id ? 'Resuming…' : hold.scope === 'local-video' ? 'Resume all local video' : 'Resume'}
           </button>
         </div>
       ))}

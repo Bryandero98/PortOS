@@ -1863,8 +1863,8 @@ describe('local video failure holds', () => {
     expect(mediaJobQueue.getJob(ids[5]).status).toBe('running');
   });
 
-  it('loads legacy jobs without treating startup reconciliation as an engine failure', async () => {
-    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({ jobs: [
+  it.each([undefined, null])('loads legacy jobs with holds=%s without counting restart failures', async (videoHolds) => {
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({ videoHolds, jobs: [
       ...[1, 2, 3].map((n) => ({ id: `interrupted-${n}`, kind: 'video', status: 'running', params: { modelId: 'example-mlx' } })),
       { id: 'retained-legacy', kind: 'video', status: 'queued', params: { modelId: 'example-mlx' } },
     ] }));
@@ -1875,18 +1875,53 @@ describe('local video failure holds', () => {
     expect(mediaJobQueue.getJob(next).status).toBe('running');
   });
 
-  it('preserves malformed holds without crashing boot or dispatching the retained batch', async () => {
+  it('recovers independent work while damaged holds protect saved and new local video until explicit resume', async () => {
     const file = join(tempDataDir, 'media-jobs.json');
-    const snapshot = JSON.stringify({ jobs: [{ id: 'retained-corrupt', kind: 'video', status: 'queued',
-      params: { modelId: 'example-mlx' } }], videoHolds: [{ id: 'malformed-hold' }] });
+    const savedVideos = ['retained-mlx', 'retained-cuda'];
+    const snapshot = JSON.stringify({ jobs: [
+      ...savedVideos.map((id, index) => ({ id, kind: 'video', status: 'queued',
+        params: { modelId: index ? 'example-cuda' : 'example-mlx' } })),
+      { id: 'saved-image', kind: 'image', status: 'queued', params: {} },
+      { id: 'saved-cloud', kind: 'video', status: 'queued', params: { mode: 'grok' } },
+      { id: 'saved-remote', kind: 'video', status: 'running', params: { remoteMedia: remoteVideoMediaParams() } },
+      { id: 'saved-training', kind: 'training', status: 'running', params: { runId: 'example-training' } },
+      { id: 'interrupted-video', kind: 'video', status: 'running', params: { modelId: 'example-mlx' } },
+    ], videoHolds: [
+      { id: 'aaaaaaaa-0000-4000-8000-000000000001', modelId: 'example-cuda', runtime: 'cuda_video',
+        classification: 'runtimeerror', cause: 'shader failed', heldAt: new Date().toISOString() },
+      { id: 'malformed-hold' },
+    ] });
     writeFileSync(file, snapshot);
+    stubs.hasSurvivingTrainer.mockResolvedValue(true);
+    stubs.runTraining.mockResolvedValue({});
     await expect(mediaJobQueue.initMediaJobQueue()).resolves.toBeUndefined();
     await tick();
     expect(stubs.generateVideo).not.toHaveBeenCalled();
-    expect(readFileSync(file, 'utf8')).toBe(snapshot);
-    submit('example-other');
+    expect(mediaJobQueue.getJob('interrupted-video').status).toBe('failed');
+    expect(mediaJobQueue.getJob('saved-remote')).toMatchObject({ status: 'running', params: { remoteMedia: { reconcile: true } } });
+    expect(mediaJobQueue.getJob('saved-cloud').status).toBe('running');
+    expect(mediaJobQueue.getJob('saved-training')).toMatchObject({ status: 'running', params: { reattach: true } });
+    (await import('../loraTraining/events.js')).trainingEvents.emit('completed', { generationId: 'saved-training' });
     await tick();
+    expect(mediaJobQueue.getJob('saved-image').status).toBe('running');
+    imageGenEvents.emit('completed', { generationId: 'saved-image' });
+    await flush();
+    const newlyQueued = submit('example-other');
+    await tick();
+    const retainedIds = [...savedVideos, newlyQueued];
+    for (const id of retainedIds) expect(mediaJobQueue.getJob(id)).toMatchObject({ status: 'queued', hold: { scope: 'local-video', heldJobCount: 3 } });
+    expect(mediaJobQueue.isVideoModelHeld('example-cuda', 'cuda_video')).toBe(true);
+    expect(mediaJobQueue.isVideoModelHeld('example-other', 'mlx_video')).toBe(true);
+    expect(stubs.generateVideo).not.toHaveBeenCalled();
     expect(readFileSync(file, 'utf8')).toBe(snapshot);
-    expect(stubs.generateVideo.mock.calls.every(([params]) => params.jobId !== 'retained-corrupt')).toBe(true);
+    const [recoveryHold] = mediaJobQueue.listVideoHolds();
+    expect(recoveryHold).toMatchObject({ scope: 'local-video', heldJobCount: 3 });
+    const { sanitizeJob } = await import('./sanitizeJob.js');
+    expect(sanitizeJob(mediaJobQueue.getJob(savedVideos[0])).hold).toEqual(recoveryHold);
+    expect(await mediaJobQueue.resumeVideoHold(recoveryHold.id)).toBe(true);
+    expect(mediaJobQueue.listVideoHolds()).toEqual([]);
+    for (const id of retainedIds) { await tick(); await finish(id, null); }
+    expect(stubs.generateVideo.mock.calls.map(([params]) => params.jobId)).toEqual(retainedIds);
+    expect(readFileSync(file, 'utf8')).toBe(snapshot);
   });
 });

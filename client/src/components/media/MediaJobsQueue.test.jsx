@@ -713,6 +713,21 @@ describe('MediaJobsQueue — video retry decode override (#5449)', () => {
 });
 
 describe('MediaJobsQueue — local video holds', () => {
+  it('makes the scope of damaged-hold recovery explicit before resuming', async () => {
+    listMediaJobs.mockResolvedValue([]);
+    listMediaVideoHolds.mockResolvedValue([{ id: 'recovery-hold', scope: 'local-video', modelId: '*', runtime: '*',
+      cause: 'Saved video holds are damaged.', heldJobCount: 0 }]);
+    const user = userEvent.setup();
+    render(<MediaJobsQueue kind="video" />);
+    expect(await screen.findByText('All local video')).toBeInTheDocument();
+    expect(screen.queryByText(/Three matching failures/)).not.toBeInTheDocument();
+    resumeMediaVideoHold.mockResolvedValue({ resumed: true });
+    listMediaVideoHolds.mockResolvedValue([]);
+    await user.click(screen.getByRole('button', { name: 'Resume all local video' }));
+    await waitFor(() => expect(screen.queryByText('All local video')).not.toBeInTheDocument());
+    expect(resumeMediaVideoHold).toHaveBeenCalledWith('recovery-hold', { silent: true });
+  });
+
   it('retains held state on a failed resume and clears it only after a successful response', async () => {
     const hold = { id: 'example-hold', modelId: 'example-mlx', runtime: 'mlx_video', cause: 'Shader compilation failed', heldJobCount: 2 };
     const jobs = ['held-1', 'held-2'].map((id) => ({ id, kind: 'video', status: 'queued', hold, params: {} }));

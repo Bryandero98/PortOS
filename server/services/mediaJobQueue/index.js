@@ -466,7 +466,7 @@ export async function initMediaJobQueue() {
       // A malformed hold must neither kill server boot nor silently release a
       // batch. Preserve the snapshot under the existing unreadable-file latch.
       persistBlocked = true;
-      console.error('❌ media-job queue: invalid video holds — snapshot preserved and retained jobs not dispatched; repair the holds and restart');
+      console.error('❌ media-job queue: invalid video holds — snapshot preserved and local video held; repair the holds and restart');
     }
     const persistedJobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const restartedFailedIds = [];
@@ -486,8 +486,6 @@ export async function initMediaJobQueue() {
     // present is an orphan from the prior process.
     const videoReap = await reapAndCleanDetachedDirs(join(PATHS.videos, '.detached')).catch(() => ({ reaped: 0 }));
     if (videoReap.reaped) console.log(`🧹 reaped ${videoReap.reaped} surviving render(s) on boot`);
-    if (!holdsReadable) return;
-
     for (const j of persistedJobs) {
       if (j.status === 'running') {
         // A remote provider job survives this process: its local queue id is
