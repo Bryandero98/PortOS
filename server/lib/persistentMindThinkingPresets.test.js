@@ -48,6 +48,10 @@ describe('persistent mind thinking presets', () => {
       presets: [preset({ providerId: 'p'.repeat(100), model: 'm'.repeat(200), label: '' })],
     }).presets[0];
     expect(persistentMindThinkingSelectionSchema.safeParse(longRoute).success).toBe(true);
+    const legacy = normalizePersistentMindThinkingPresets({
+      presets: [preset({ id: 'i'.repeat(70), label: 'n'.repeat(100) })],
+    }).presets[0];
+    expect(legacy).toEqual(preset({ id: 'i'.repeat(64), label: 'n'.repeat(80) }));
   });
 
   it('keeps the first of a duplicated id and caps the stored list', () => {

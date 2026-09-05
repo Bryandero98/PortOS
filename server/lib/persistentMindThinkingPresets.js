@@ -87,7 +87,13 @@ export function asPersistentMindThinkingPresetId(value) {
 const storedThinkingPresetSchema = persistentMindThinkingPresetSchema.strip();
 
 const sanitizePreset = (value) => {
-  const parsed = storedThinkingPresetSchema.safeParse(value);
+  // Retain the legacy id/label repairs. Provider/model/effort are exact route
+  // fields: invalid values there must be refused, never truncated or defaulted.
+  const parsed = storedThinkingPresetSchema.safeParse({
+    ...value,
+    id: asPersistentMindThinkingPresetId(value?.id),
+    label: text(value?.label, PERSISTENT_MIND_THINKING_PRESET_LIMITS.LABEL_MAX),
+  });
   if (!parsed.success) return null;
   const { id, providerId, model, effort = '', label } = parsed.data;
   return {

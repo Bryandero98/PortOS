@@ -584,7 +584,7 @@ async function interruptActiveTurn(reason, status, { retry = false, expectedTurn
  *
  * `consumedAttempt` says the provider span had already opened, so a temporary
  * thinking session must not be replayed automatically. Every refusal decided
- * before that point normally requeues. A refused temporary route is explicitly
+ * before that point normally requeues. A revoked or unverified selection is
  * retired too: changing a preset back later must not resurrect refused work.
  */
 async function parkActiveTurn(turnId, reason, status = 'waiting', { retryAt = null, consumedAttempt = false, retireWake = false } = {}) {
@@ -923,7 +923,7 @@ async function runOnePersistentMindTurn() {
           })
         : await resolvePersistentMindProfile(routeConfig?.persistentMindProfile);
       if (!profile.ok) {
-        await parkActiveTurn(turn.id, profile.error, 'degraded', { retireWake: Boolean(thinkingPresetId) });
+        await parkActiveTurn(turn.id, profile.error, 'degraded', { retireWake: profile.requiresResubmission === true });
         return;
       }
       // Adapters receive the exact profile. They may prepare their text
@@ -979,7 +979,7 @@ async function runOnePersistentMindTurn() {
         });
         if (!await turnCanContinue(turn.id, generation, controller.signal)) return;
         if (!admissionProfile.ok) {
-          await parkActiveTurn(turn.id, admissionProfile.error, 'degraded', { retireWake: true });
+          await parkActiveTurn(turn.id, admissionProfile.error, 'degraded', { retireWake: admissionProfile.requiresResubmission === true });
           return;
         }
       }

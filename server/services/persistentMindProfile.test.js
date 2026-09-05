@@ -88,7 +88,7 @@ describe('resolvePersistentMindThinkingSession', () => {
 
   it('refuses instead of quietly answering on the default the user stepped away from', async () => {
     await expect(resolvePersistentMindThinkingSession({ presetId: 'removed', config })).resolves
-      .toEqual({ ok: false, error: 'Temporary thinking preset "removed" is no longer available' });
+      .toEqual({ ok: false, requiresResubmission: true, error: 'Temporary thinking preset "removed" is no longer available' });
     await expect(resolvePersistentMindThinkingSession({ presetId: 'retired', selection: config.persistentMindThinkingPresets.presets[1], config })).resolves
       .toMatchObject({ ok: false, error: /not available from provider/ });
     await expect(resolvePersistentMindThinkingSession({ presetId: 'strained', selection: config.persistentMindThinkingPresets.presets[2], config })).resolves
@@ -120,6 +120,6 @@ describe('resolvePersistentMindThinkingSession', () => {
     }
     mocks.provider.models = [];
     await expect(resolvePersistentMindThinkingSession({ presetId: 'deep', selection, config }))
-      .resolves.toMatchObject({ ok: false, error: /not available/ });
+      .resolves.toMatchObject({ ok: false, error: /no available model catalog/ });
   });
 });

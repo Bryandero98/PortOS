@@ -28,6 +28,7 @@ const mock = vi.hoisted(() => ({
   thinkingSession: null,
   useActualThinkingSession: false,
   providerOverride: null,
+  providerAvailable: true,
 }));
 
 vi.mock('./cosState.js', () => ({
@@ -75,8 +76,8 @@ vi.mock('./persistentMindProfile.js', async (importOriginal) => ({
 }));
 vi.mock('./providers.js', () => ({ getProviderById: vi.fn(async () => mock.providerOverride || mock.profile.provider) }));
 vi.mock('./providerStatus.js', () => ({
-  isProviderAvailable: () => true,
-  getProviderStatus: () => ({}),
+  isProviderAvailable: () => mock.providerAvailable,
+  getProviderStatus: () => ({ message: 'Endpoint is temporarily unavailable' }),
 }));
 vi.mock('./persistentMindImageCapability.js', () => ({
   resolvePersistentMindImageCapability: vi.fn(async () => mock.imageCapability),
@@ -118,6 +119,7 @@ describe('persistent mind supervisor', () => {
     mock.updateInProgress = false;
     mock.useActualThinkingSession = false;
     mock.providerOverride = null;
+    mock.providerAvailable = true;
     mock.recordUsage.mockClear();
     mock.profile = {
       ok: true,
@@ -838,9 +840,9 @@ describe('persistent mind supervisor', () => {
     expect(run).not.toHaveBeenCalled();
     expect(mock.root.persistentMind.status).toBe('degraded');
     expect(mock.root.persistentMind.pauseReason).toMatch(/Temporary thinking preset/);
-    // A refused route cannot revive if a preset with the same id reappears.
-    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
-    expect(mock.root.persistentMind.recentMessageIds).toContain('message-1');
+    // Nothing was spent and consent is intact; keep the accepted message while
+    // its configured provider/model becomes available.
+    expect(mock.root.persistentMind.queuedMessages.map((item) => item.id)).toEqual(['message-1']);
   });
 
   it('pins acceptance through persistence and refuses a later preset edit without reviving a matching retry', async () => {
@@ -948,6 +950,38 @@ describe('persistent mind supervisor', () => {
     expect(mock.recordUsage).not.toHaveBeenCalled();
     expect(mock.root.persistentMind.queuedMessages).toEqual([]);
     expect(mock.root.persistentMind.recentMessageIds).toContain('revoke-during-prepare');
+  });
+
+  it.each(['before preparation', 'during preparation'])('keeps unspent temporary messages when a provider goes offline %s', async (stage) => {
+    withDeepPreset();
+    mock.root.config.persistentMindThinkingPresets.presets[0].effort = '';
+    mock.useActualThinkingSession = true;
+    mock.providerOverride = { id: 'example-alt', type: 'api', models: ['alt-model'] };
+    let outage = true;
+    const prepare = vi.fn(async ({ profile }) => {
+      if (outage && stage === 'during preparation') mock.providerAvailable = false;
+      return { ok: true, provider: profile.provider };
+    });
+    const run = vi.fn(async () => ({}));
+    await supervisor.registerPersistentMindTurnAdapter({ prepare, run });
+    await supervisor.setPersistentMindEnabled(true);
+    await supervisor.startPersistentMind();
+    const input = { id: 'temporary-outage', text: 'Keep this accepted request.', thinkingPresetId: 'deep' };
+    await supervisor.enqueuePersistentMindMessage(input);
+    const accepted = structuredClone(mock.root.persistentMind.queuedMessages[0]);
+    if (stage === 'before preparation') mock.providerAvailable = false;
+    await supervisor.drainPersistentMind();
+    expect(mock.root.persistentMind.queuedMessages).toEqual([accepted]);
+    expect(mock.root.persistentMind.recentMessageIds).not.toContain(input.id);
+    expect(mock.prepareContext).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(await supervisor.enqueuePersistentMindMessage(input)).toMatchObject({ success: true, duplicate: true });
+    outage = false;
+    mock.providerAvailable = true;
+    mock.root.persistentMind.nextEligibleWakeAt = null;
+    await supervisor.drainPersistentMind();
+    expect(run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: 'alt-model' }));
+    expect(mock.root.persistentMind.queuedMessages).toEqual([]);
   });
 
   it('never auto-replays a temporary session interrupted after its provider span opened', async () => {

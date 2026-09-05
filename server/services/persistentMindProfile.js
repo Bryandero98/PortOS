@@ -42,6 +42,9 @@ async function resolveExactRoute({ providerId, model, effort, noun, incompleteEr
   }
 
   const models = providerModelIds(provider);
+  if (requireCatalog && models.length === 0) {
+    return { ok: false, error: `${noun} cannot verify model "${model}": provider "${provider.id}" has no available model catalog` };
+  }
   if ((requireCatalog || models.length > 0) && !models.includes(model)) {
     return { ok: false, error: `${noun} model "${model}" is not available from provider "${provider.id}"` };
   }
@@ -84,14 +87,14 @@ export async function resolvePersistentMindThinkingSession({ presetId, selection
   if (!profile.enabled) return { ok: false, error: 'Persistent mind profile is disabled' };
   const preset = findPersistentMindThinkingPreset(config?.persistentMindThinkingPresets, presetId);
   if (!preset) {
-    return { ok: false, error: `Temporary thinking preset "${presetId}" is no longer available` };
+    return { ok: false, requiresResubmission: true, error: `Temporary thinking preset "${presetId}" is no longer available` };
   }
   const accepted = normalizePersistentMindThinkingSelection(selection);
   if (!accepted || accepted.id !== presetId) {
-    return { ok: false, error: 'Temporary thinking session has no valid accepted route; send a new message to authorize it' };
+    return { ok: false, requiresResubmission: true, error: 'Temporary thinking session has no valid accepted route; send a new message to authorize it' };
   }
   if (!samePersistentMindThinkingSelection(accepted, preset)) {
-    return { ok: false, error: 'Temporary thinking preset changed after acceptance; send a new message to authorize its new route' };
+    return { ok: false, requiresResubmission: true, error: 'Temporary thinking preset changed after acceptance; send a new message to authorize its new route' };
   }
   const route = await resolveExactRoute({
     providerId: accepted.providerId,
