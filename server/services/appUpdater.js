@@ -43,7 +43,8 @@ function runCommand(cmd, args, cwd) {
  *   shape. Never rejects — a failed enqueue must not mask the conflict message.
  */
 async function failWithGitConflict({ app, repoPath, pullResult, stepId, emit, steps }) {
-  const message = `Could not update ${repoPath}: ${pullResult.error}. `
+  const error = pullResult.error || 'unknown git error';
+  const message = `Could not update ${repoPath}: ${error}. `
     + `A CoS agent has been queued to resolve it.`;
   emit(stepId, 'error', message);
   steps.push({ step: stepId, success: false, message });
@@ -55,7 +56,7 @@ async function failWithGitConflict({ app, repoPath, pullResult, stepId, emit, st
     app: app?.id || null,
     context: `Updating ${label} failed: the checkout could not be brought onto origin/${branch}. `
       + `A fast-forward and then a rebase with --autostash were both attempted. `
-      + `Error: ${pullResult.error || 'unknown'}\n\n`
+      + `Error: ${error}\n\n`
       + `Resolve the conflict in ${repoPath} (finish or abort any in-progress rebase, reconcile the `
       + `working tree, commit or restore the stashed work), then leave the checkout clean on `
       + `origin/${branch} so the update can be re-run.`,
