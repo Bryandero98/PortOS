@@ -12,7 +12,7 @@ import { randomSeed } from '../lib/genUtils';
 import {
   resolutionOptionsForModel, defaultResolutionForModel, snapAspectToImage,
 } from '../lib/videoGenResolutions';
-import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
+import { normalizeVideoTiling } from '../lib/videoTilingOptions';
 import {
   MAX_CHUNKS,
   videoModelMemoryGb, isModelAllowedForMode,
@@ -256,7 +256,8 @@ export function useVideoGenForm({
     // VIDEO_TILING_OPTIONS so a hand-edited URL or stale link can't push the
     // <select> into an invalid state and 400 the next POST.
     const urlTiling = get('tiling');
-    if (urlTiling && VIDEO_TILING_ENUM_SET.has(urlTiling)) setTiling(urlTiling);
+    const normalizedUrlTiling = normalizeVideoTiling(urlTiling);
+    if (normalizedUrlTiling) setTiling(normalizedUrlTiling);
     // disableAudio is a boolean; accept the common encodings a hand-edited URL
     // might carry ('1' from our own Remix builder, 'true' from a manual share).
     // Anything else (absent, '0', 'false', garbage) means "default off".
@@ -1038,7 +1039,8 @@ export function useVideoGenForm({
     // tiling must match the VIDEO_TILING_OPTIONS enum. Legacy sidecars sometimes
     // store a boolean here — silently ignore unknown values so the <select>
     // stays valid and the next POST doesn't 400.
-    if (typeof item.tiling === 'string' && VIDEO_TILING_ENUM_SET.has(item.tiling)) setTiling(item.tiling);
+    const tiling = normalizeVideoTiling(item.tiling);
+    if (tiling) setTiling(tiling);
     // ALWAYS set explicitly, like steps/guidanceScale above: history stamps the
     // strength only when it applied, so a missing field means "the model default"
     // and has to clear a leftover value rather than steer a render the user asked

@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import toast from '../components/ui/Toast';
 import { cleanGalleryImage, extractLastFrame, removeImageWatermark } from '../services/apiImageVideo';
-import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
+import { normalizeVideoTiling } from '../lib/videoTilingOptions';
 
 // Common image render-setting params shared by the image branch of Remix and by
 // Send-to-image-to-image — both open /media/image with these fields prefilled.
@@ -97,9 +97,8 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
       // tiling must match the server's enum. Legacy sidecars sometimes store
       // a boolean here — pass through only known-good string values so the
       // remixed POST doesn't 400 on /api/video-gen validation.
-      if (typeof raw.tiling === 'string' && VIDEO_TILING_ENUM_SET.has(raw.tiling)) {
-        params.set('tiling', raw.tiling);
-      }
+      const tiling = normalizeVideoTiling(raw.tiling);
+      if (tiling) params.set('tiling', tiling);
       const disableAudio = raw.disableAudio ?? raw.disable_audio;
       if (disableAudio === true) params.set('disableAudio', '1');
       navigate(`/media/video?${params}`);
